@@ -95,7 +95,11 @@ except Exception:
     tea_util_models = None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
+from gateway.platforms.helpers import (
+    MessageDeduplicator,
+    compile_mention_patterns,
+    parse_chat_id_set,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -454,6 +458,20 @@ class DingTalkAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _dingtalk_native_mention_only_chats(self) -> Set[str]:
+        """Return group chat IDs where ONLY a native @mention counts.
+
+        In these groups ``mention_patterns`` wake words do NOT satisfy
+        mention gating — the bot is addressed exclusively via the DingTalk
+        at-list (``is_in_at_list``). Mirrors Slack's
+        ``native_mention_only_channels``. Empty set means wake words count
+        everywhere.
+        """
+        raw = self.config.extra.get("native_mention_only_chats") if self.config.extra else None
+        if raw is None:
+            raw = os.getenv("DINGTALK_NATIVE_MENTION_ONLY_CHATS", "")
+        return parse_chat_id_set(raw)
+
     def _dingtalk_allowed_chats(self) -> Set[str]:
         """Return the whitelist of group chat IDs the bot will respond in.
 
@@ -557,7 +575,10 @@ class DingTalkAdapter(BasePlatformAdapter):
             return True
         if self._message_mentions_bot(message):
             return True
-        return self._message_matches_mention_patterns(text)
+        return (
+            chat_id not in self._dingtalk_native_mention_only_chats()
+            and self._message_matches_mention_patterns(text)
+        )
 
     def _spawn_bg(self, coro) -> None:
         """Start a fire-and-forget coroutine and track it for cleanup."""

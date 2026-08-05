@@ -22,6 +22,7 @@ def _make_adapter(
     group_allowed_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
+    native_mention_only_chats=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -65,6 +66,13 @@ def _make_adapter(
         extra["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if native_mention_only_chats is not None:
+        extra["native_mention_only_chats"] = native_mention_only_chats
+    else:
+        # Keep unit tests isolated from TELEGRAM_NATIVE_MENTION_ONLY_CHATS in
+        # the parent environment; production adapters without this explicit key
+        # still fall back to the env var.
+        extra["native_mention_only_chats"] = []
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -426,6 +434,103 @@ def test_guest_mode_allows_only_direct_mentions_outside_allowed_chats():
     assert adapter._should_process_message(_group_message("reply", chat_id=-201, reply_to_bot=True)) is False
     assert adapter._should_process_message(_group_message("chompy status", chat_id=-201)) is False
     assert adapter._should_process_message(_group_message("hello", chat_id=-201)) is False
+
+
+def test_native_mention_only_chats_scope_off_wake_words_per_chat():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"^\s*chompy\b"],
+        native_mention_only_chats=["-100"],
+    )
+
+    # Wake word in a listed chat no longer counts as a mention.
+    assert adapter._should_process_message(_group_message("chompy status", chat_id=-100)) is False
+    # The same wake-word message in an unlisted chat still dispatches.
+    assert adapter._should_process_message(_group_message("chompy status", chat_id=-101)) is True
+    # A real Telegram @mention entity in the listed chat still dispatches.
+    text = "hi @hermes_bot"
+    assert adapter._should_process_message(
+        _group_message(text, chat_id=-100, entities=[_mention_entity(text)])
+    ) is True
+    # Replies to the bot are native addressing too — unaffected by the list.
+    assert adapter._should_process_message(
+        _group_message("replying", chat_id=-100, reply_to_bot=True)
+    ) is True
+
+
+def test_native_mention_only_chats_parses_list_csv_and_empty_forms():
+    list_adapter = _make_adapter(native_mention_only_chats=["-100", -200])
+    assert list_adapter._telegram_native_mention_only_chats() == {"-100", "-200"}
+
+    csv_adapter = _make_adapter(native_mention_only_chats="-100, -200")
+    assert csv_adapter._telegram_native_mention_only_chats() == {"-100", "-200"}
+
+    assert _make_adapter(native_mention_only_chats=[])._telegram_native_mention_only_chats() == set()
+    assert _make_adapter(native_mention_only_chats="")._telegram_native_mention_only_chats() == set()
+
+
+def test_native_mention_only_chats_falls_back_to_env(monkeypatch):
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"^\s*chompy\b"],
+    )
+    # Production adapters without the explicit config key fall back to the
+    # env var (read via _scoped_gate_env, which is a plain os.getenv read
+    # outside multiplex) — drop the fixture's isolation key to exercise it.
+    adapter.config.extra.pop("native_mention_only_chats")
+    monkeypatch.setenv("TELEGRAM_NATIVE_MENTION_ONLY_CHATS", "-100,-300")
+
+    assert adapter._telegram_native_mention_only_chats() == {"-100", "-300"}
+    assert adapter._should_process_message(_group_message("chompy status", chat_id=-100)) is False
+    assert adapter._should_process_message(_group_message("chompy status", chat_id=-101)) is True
+
+    monkeypatch.delenv("TELEGRAM_NATIVE_MENTION_ONLY_CHATS")
+    assert adapter._telegram_native_mention_only_chats() == set()
+
+
+def test_native_mention_only_chats_extra_wins_over_env(monkeypatch):
+    """Config precedence contract: extra is consulted first, env only when
+    the extra key is absent."""
+    monkeypatch.setenv("TELEGRAM_NATIVE_MENTION_ONLY_CHATS", "-999")
+    adapter = _make_adapter(native_mention_only_chats=["-100"])
+
+    assert adapter._telegram_native_mention_only_chats() == {"-100"}
+
+
+def test_native_mention_only_wake_word_is_observed_instead_of_dispatched():
+    """Observe stays in lockstep with dispatch: a wake-word message that the
+    native-mention-only gate skips must be captured by the observe path when
+    the chat is in the observe allowlists."""
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+        mention_patterns=[r"^\s*chompy\b"],
+        native_mention_only_chats=["-100"],
+    )
+
+    wake_word = _group_message("chompy status", chat_id=-100)
+    assert adapter._should_process_message(wake_word) is False
+    assert adapter._should_observe_unmentioned_group_message(wake_word) is True
+
+    # A native @mention in the same chat dispatches and is not observed.
+    text = "hi @hermes_bot"
+    mentioned = _group_message(text, chat_id=-100, entities=[_mention_entity(text)])
+    assert adapter._should_process_message(mentioned) is True
+    assert adapter._should_observe_unmentioned_group_message(mentioned) is False
+
+    # Control: without the native-mention-only listing the same wake-word
+    # message dispatches, so the observe path must keep skipping it.
+    control = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+        mention_patterns=[r"^\s*chompy\b"],
+    )
+    assert control._should_process_message(wake_word) is True
+    assert control._should_observe_unmentioned_group_message(wake_word) is False
 
 
 def test_allowed_topics_drop_other_forum_topics_before_other_gates():

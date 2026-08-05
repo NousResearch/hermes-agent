@@ -509,6 +509,7 @@ from gateway.platforms.helpers import (
     TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE,
     compile_mention_patterns,
     convert_table_to_bullets as _wrap_markdown_tables,
+    parse_chat_id_set,
 )
 
 
@@ -7849,6 +7850,20 @@ class TelegramAdapter(BasePlatformAdapter):
         topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
         return f"{chat_id}:{topic_id}" in topics
 
+    def _telegram_native_mention_only_chats(self) -> set[str]:
+        """Return chat IDs where ONLY a native @username mention counts.
+
+        In these group chats ``mention_patterns`` wake words do NOT satisfy
+        mention gating — the bot is addressed exclusively via a real Telegram
+        @mention entity (or a reply to the bot). Mirrors Slack's
+        ``native_mention_only_channels``. Empty set means wake words count
+        everywhere.
+        """
+        raw = self.config.extra.get("native_mention_only_chats")
+        if raw is None:
+            raw = _scoped_gate_env("TELEGRAM_NATIVE_MENTION_ONLY_CHATS")
+        return parse_chat_id_set(raw)
+
     def _telegram_allowed_chats(self) -> set[str]:
         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
 
@@ -8357,7 +8372,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         if self._message_mentions_bot(message):
             return False
-        if self._message_matches_mention_patterns(message):
+        # Keep observe in lockstep with the dispatch gate: in
+        # native-mention-only chats a wake-word message is NOT dispatched,
+        # so it must be observed rather than skipped here.
+        if (
+            chat_id_str not in self._telegram_native_mention_only_chats()
+            and self._message_matches_mention_patterns(message)
+        ):
             return False
         return True
 
@@ -8743,7 +8764,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # _message_mentions_bot above — skip the redundant second call.
         if not self._telegram_guest_mode() and self._message_mentions_bot(message):
             return True
-        return self._message_matches_mention_patterns(message)
+        return (
+            chat_id_str not in self._telegram_native_mention_only_chats()
+            and self._message_matches_mention_patterns(message)
+        )
 
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups.

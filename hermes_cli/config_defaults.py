@@ -1895,6 +1895,9 @@ DEFAULT_CONFIG = {
         # Channel IDs where @mention is ALWAYS required, even when
         # require_mention is false globally (per-channel force-mention override).
         "require_mention_channels": "",
+        # Channel IDs where ONLY a native <@bot> mention counts — mention_patterns
+        # wake words are ignored there. Env: SLACK_NATIVE_MENTION_ONLY_CHANNELS.
+        "native_mention_only_channels": "",
         # Ignore a channel/thread message addressed to another user (first token
         # @mentions someone other than the bot) unless the bot is also mentioned.
         # Opt-in; default off keeps existing behaviour. Env: SLACK_IGNORE_OTHER_USER_MENTIONS.

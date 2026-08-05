@@ -9583,6 +9583,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
+        # Surface structured resolved-result metadata so the parent TUI
+        # process can mirror the live session without re-deriving any
+        # alias or re-reading the parent's profile-scoped provider
+        # config. The worker (this process) ran inside the session's
+        # ``profile_home`` scope, so these resolved values reflect that
+        # profile's provider / model resolution.
+        #
+        # SECURITY: never include credentials (``api_key``, tokens,
+        # ``Authorization``). The parent re-resolves credentials by
+        # entering the session's ``profile_home`` scope.
+        scope_value = (
+            "once" if one_turn
+            else ("global" if persist_global else "session")
+        )
+        self._last_slash_metadata = {
+            "side_effect": "model_switch",
+            "canonical": "model",
+            "scope": scope_value,
+            "resolved_model": str(result.new_model or ""),
+            "resolved_provider": str(result.target_provider or ""),
+            "base_url": str(result.base_url or "") or None,
+            "api_mode": str(result.api_mode or "") or None,
+            "raw_args": raw_args,
+        }
+
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.
 
@@ -9845,6 +9870,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Lowercase only for dispatch matching; preserve original case for arguments
         cmd_lower = command.lower().strip()
         cmd_original = command.strip()
+
+        # Reset side-effect metadata for the next command. Each ``process_command``
+        # invocation produces its own metadata snapshot; stale snapshots from a
+        # previous turn must NOT leak into the parent process's mirror decision.
+        self._last_slash_metadata = None
 
         # Resolve aliases via central registry so adding an alias is a one-line
         # change in hermes_cli/commands.py instead of touching every dispatch site.
@@ -10492,6 +10522,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 from hermes_cli.commands import COMMANDS
                 typed_base = cmd_lower.split()[0]
                 all_known = set(COMMANDS) | set(skill_commands) | set(skill_bundles)
+                # Model-alias shortcut: /<alias> -> /model <alias>. Done BEFORE
+                # prefix-matching so a typed alias like /ds-flash expands to
+                # /model ds-flash (and then to the resolved provider/model),
+                # instead of being misclassified as an unknown /d token.
+                # Mirrors the gateway's behaviour and reuses the same alias
+                # dictionaries. Done AFTER built-in / quick / plugin / skill
+                # checks above so a registered command with the same name
+                # always wins.
+                try:
+                    from hermes_cli.model_switch import (
+                        _ensure_direct_aliases,
+                        DIRECT_ALIASES,
+                        MODEL_ALIASES,
+                    )
+
+                    _ensure_direct_aliases()
+                    _alias_key = typed_base.lstrip("/").strip().lower()
+                    if _alias_key in DIRECT_ALIASES or _alias_key in MODEL_ALIASES:
+                        remainder = cmd_original[len(typed_base):].strip()
+                        aliased = f"/model {_alias_key} {remainder}".strip()
+                        return self.process_command(aliased)
+                except ImportError:
+                    pass
                 matches = [c for c in all_known if c.startswith(typed_base)]
                 if len(matches) > 1:
                     # Prefer an exact match (typed the full command name)

@@ -1195,8 +1195,41 @@ def _(rid, params: dict) -> dict:
                     return _err(rid, 5030, f"slash worker start failed: {e}")
 
     try:
-        output = worker.run(cmd)
-        warning = _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
+        output, slash_meta = worker.run_with_meta(cmd)
+        # Mirror decision MUST come from the worker-reported RESOLVED
+        # metadata (``resolved_model``, ``resolved_provider``,
+        # ``base_url``, ``api_mode``, ``scope``). The worker ran inside
+        # the session's ``profile_home`` scope, so its snapshot reflects
+        # THAT profile's provider / model resolution — never the parent
+        # process's global alias cache.
+        #
+        # The parent MUST NOT re-parse ``raw_args`` (which is
+        # deliberately absent from the mirror decision) and MUST NOT
+        # rebuild ``/model <alias>``. Re-parsing would force the parent
+        # to consult its own alias cache, pinning Profile B's session
+        # to Profile A's resolution when they disagree.
+        #
+        # The handler runs with server.py's ``__globals__`` (see
+        # ``method_ctx.HandlerRegistry.install``), so unqualified
+        # ``_mirror_resolved_model_switch`` resolves to the server
+        # module's helper.
+        warning = ""
+        if isinstance(slash_meta, dict) and slash_meta.get("side_effect") == "model_switch":
+            try:
+                warning = _mirror_resolved_model_switch(
+                    params.get("session_id", ""),
+                    session,
+                    slash_meta,
+                )
+            except Exception as exc:
+                warning = f"model mirror failed: {exc}"
+        else:
+            # Non-model or built-in/quick/plugin/bundle/skill command
+            # — pass through verbatim so other mirror side effects
+            # (compress, personality, prompt, …) still fire.
+            warning = _mirror_slash_side_effects(
+                params.get("session_id", ""), session, cmd
+            )
         payload = {"output": output or "(no output)"}
         if warning:
             payload["warning"] = warning

@@ -403,6 +403,24 @@ class _SlashWorker:
                 self.stderr_tail = (self.stderr_tail + [text])[-80:]
 
     def run(self, command: str) -> str:
+        """Run a slash command; return the captured Rich output string.
+
+        Kept for backwards compatibility with existing callers. New code
+        that needs the worker-reported canonical side-effect metadata
+        (e.g. ``model_switch``) should use ``run_with_meta()``.
+        """
+        return self.run_with_meta(command)[0]
+
+    def run_with_meta(self, command: str) -> tuple[str, dict | None]:
+        """Run a slash command and return ``(output, meta)``.
+
+        ``meta`` is the structured side-effect metadata the worker set on
+        its HermesCLI instance during command execution. ``None`` when the
+        command is non-model (built-in / quick / plugin / bundle / skill).
+        The metadata is read INSIDE the worker's session profile scope,
+        so Profile A and Profile B can each report different model
+        targets without cross-contamination.
+        """
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
 
@@ -423,7 +441,10 @@ class _SlashWorker:
                     continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
-                return str(msg.get("output", "")).rstrip()
+                return (
+                    str(msg.get("output", "")).rstrip(),
+                    msg.get("meta"),
+                )
 
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}"
@@ -4273,6 +4294,198 @@ def _persist_model_switch(result) -> None:
         # removal without needing a key-delete. Leaving the old value would
         # route the new model at the previous custom host (#48305).
         save_config_value("model.base_url", None)
+
+
+def _mirror_resolved_model_switch(sid: str, session: dict, slash_meta: dict) -> str:
+    """Mirror the worker-resolved model switch onto the live TUI session.
+
+    This is the canonical TUI mirror path. Unlike the legacy
+    ``_apply_model_switch(raw_input=...)`` path — which calls
+    ``switch_model()`` and re-resolves the alias through the parent's
+    provider cache — this helper ONLY consumes the structured
+    ``resolved_model`` / ``resolved_provider`` / ``base_url`` /
+    ``api_mode`` / ``scope`` snapshot the worker reported.
+
+    Fail-closed contract:
+      * Profile home scope AND secret scope MUST both be established
+        successfully before any provider / config / agent mutation runs.
+      * If either scope fails to establish, the helper returns a clear
+        warning string and leaves live agent / session / config
+        untouched. Tokens established earlier in the chain are reset
+        before return (reverse-order restoration via ``ExitStack``).
+      * Once any scope fails, we never reach provider resolution, agent
+        ``switch_model``, ``save_config_value``, or ``model_override``
+        mutation. No global ``os.environ`` mutation is ever performed.
+      * Agent ``switch_model`` failure during the apply step rolls the
+        helper back: scope tokens are reset and no session state is
+        mutated.
+
+    Returns a warning string (or empty) for the ``slash.exec`` payload.
+    Raises ``ValueError`` if the metadata is malformed or the worker's
+    snapshot is missing the required fields.
+    """
+    import contextlib
+
+    if not isinstance(slash_meta, dict) or slash_meta.get("side_effect") != "model_switch":
+        return ""
+    resolved_model = str(slash_meta.get("resolved_model") or "").strip()
+    resolved_provider = str(slash_meta.get("resolved_provider") or "").strip()
+    scope_value = str(slash_meta.get("scope") or "session").strip()
+    if not resolved_model or not resolved_provider:
+        # Worker reported the side effect but the resolved result is
+        # incomplete — refuse to mirror and let the user see the worker's
+        # own error output instead of silently drifting.
+        raise ValueError(
+            "slash worker reported model_switch without resolved_model/resolved_provider"
+        )
+
+    base_url = slash_meta.get("base_url") or ""
+    api_mode = slash_meta.get("api_mode") or ""
+
+    # Build profile home override and secret scope via context-local
+    # helpers. Both are required (in stack order) before any provider
+    # / config / agent mutation. Tokens are registered with an
+    # ExitStack so that any later failure (or our own return) restores
+    # them in reverse order, with no possibility of leak.
+    profile_home = session.get("profile_home")
+    api_key = ""
+    runtime = None
+    scoped_resolved = False
+
+    with contextlib.ExitStack() as stack:
+        if profile_home:
+            try:
+                from hermes_constants import set_hermes_home_override
+                home_token = set_hermes_home_override(Path(profile_home))
+                stack.callback(_safe_reset_home, home_token)
+            except Exception as exc:
+                return (
+                    f"mirror aborted: profile home scope failed ({exc})"
+                )
+            try:
+                from agent.secret_scope import (
+                    build_profile_secret_scope,
+                    set_secret_scope,
+                )
+                secret_token = set_secret_scope(
+                    build_profile_secret_scope(Path(profile_home))
+                )
+                stack.callback(_safe_reset_secret, secret_token)
+            except Exception as exc:
+                return (
+                    f"mirror aborted: secret scope failed ({exc})"
+                )
+
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                runtime = resolve_runtime_provider(
+                    requested=resolved_provider,
+                    target_model=resolved_model,
+                    explicit_base_url=str(base_url or "") or None,
+                )
+            except Exception as exc:
+                # Provider resolution failed even with scopes in place;
+                # the stack callback will reset tokens in reverse order
+                # before the function returns.
+                return f"mirror aborted: provider resolution failed ({exc})"
+
+            if runtime:
+                api_key = str(runtime.get("api_key") or "")
+                base_url = str(runtime.get("base_url") or base_url or "")
+                api_mode = str(runtime.get("api_mode") or api_mode or "")
+            scoped_resolved = True
+        else:
+            api_key = ""
+
+        # The two scopes are still live here only when scoped_resolved
+        # is True. We deliberately do not mutate agent / config / session
+        # until scopes have proven healthy.
+        restore_snapshot = None
+        agent = session.get("agent")
+        if agent is not None:
+            if scope_value == "once":
+                restore_snapshot = _snapshot_agent_model_runtime(agent)
+            try:
+                agent.switch_model(
+                    new_model=resolved_model,
+                    new_provider=resolved_provider,
+                    api_key=api_key,
+                    base_url=base_url,
+                    api_mode=api_mode,
+                )
+            except Exception as exc:
+                # Agent switch failed — restore_snapshot will not be
+                # installed on session (we raise before that step), so
+                # no rollback path needed beyond the live agent itself
+                # (the agent helper is responsible for its own rollback).
+                return f"model mirror failed: {exc}"
+
+        if scope_value == "global":
+            # Persist to THIS profile's config.yaml using the same
+            # scope established above. ``save_config_value`` reads the
+            # current context-local home override.
+            try:
+                from cli import save_config_value as _tui_save
+                _tui_save("model.default", resolved_model)
+                _tui_save("model.provider", resolved_provider)
+                _tui_save("model.base_url", base_url or None)
+                _tui_save("model.api_mode", api_mode or None)
+            except Exception as exc:
+                return f"model persistence failed: {exc}"
+
+        if scope_value == "once":
+            # Upstream native one-turn semantics (see _apply_model_switch):
+            # a /model --once must NOT pin a persistent session
+            # model_override — doing so would permanently skip config sync
+            # (_sync_agent_model_with_config returns early when
+            # session["model_override"] is set) and re-apply the temporary
+            # model on session rebuild/resume//new. Only the restore
+            # snapshot is latched; the turn finally consumes it and restores
+            # the agent runtime. A pre-existing session override (e.g. a
+            # prior /model A) is deliberately left untouched: the agent
+            # runtime snapshot restores the agent, and the original override
+            # dict still drives rebuilds exactly as before the once switch.
+            if restore_snapshot is not None:
+                session["one_turn_model_restore"] = restore_snapshot
+        else:
+            session["model_override"] = {
+                "provider": resolved_provider,
+                "model": resolved_model,
+                "base_url": base_url,
+                "api_key": api_key,
+                "api_mode": api_mode,
+                "scope": scope_value,
+            }
+            session.pop("one_turn_model_restore", None)
+        # Successful end: ExitStack __exit__ resets the tokens in
+        # reverse order (secret_token, home_token) before returning.
+        return ""
+
+
+def _safe_reset_home(token) -> None:
+    """ExitStack callback: reset the home override token (never raises)."""
+    if token is None:
+        return
+    try:
+        from hermes_constants import reset_hermes_home_override
+        reset_hermes_home_override(token)
+    except Exception:
+        # A truly final best-effort cleanup; the override token's
+        # resetter is allowed to silently no-op if hermes_constants is
+        # already gone. The helper is a guard against a teardown
+        # exception leaking past the stack callback boundary.
+        pass
+
+
+def _safe_reset_secret(token) -> None:
+    """ExitStack callback: reset the secret scope token (never raises)."""
+    if token is None:
+        return
+    try:
+        from agent.secret_scope import reset_secret_scope
+        reset_secret_scope(token)
+    except Exception:
+        pass
 
 
 def _snapshot_agent_model_runtime(agent) -> dict:

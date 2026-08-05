@@ -191,6 +191,7 @@ platform network disconnect as an event-loop failure.
 | Command | Description |
 |---------|-------------|
 | `/new` or `/reset` | Start a fresh conversation |
+| `/autoreset [status\|on\|daily HH:MM\|off\|inherit]` | Configure automatic reset for the current Telegram, Discord, or Slack thread |
 | `/model [provider:model]` | Show or change the model (supports `provider:model` syntax) |
 | `/personality [name]` | Set a personality (`none` to reset) |
 | `/retry` | Retry the last message |
@@ -262,14 +263,37 @@ session_reset:
   mode: idle        # "idle", "daily", "both", or "none" (default)
   idle_minutes: 1440  # for idle/both: minutes of inactivity before reset
   at_hour: 4          # for daily/both: hour of day (0-23, local time)
+  at_minute: 0        # for daily/both: minute of hour (0-59, local time)
 ```
 
 | Mode | Description |
 |------|-------------|
 | `none` | Never auto-reset (default) |
-| `daily` | Reset at a specific hour each day |
+| `daily` | Reset at a specific local time each day |
 | `idle` | Reset after N minutes of inactivity |
 | `both` | Whichever triggers first |
+
+#### Per-thread automatic reset
+
+Private and public Telegram topics, Discord threads, and Slack threads can
+override the inherited reset policy without changing global configuration.
+Both private and public threads are supported when the platform supplies
+stable, non-empty chat and thread IDs. Run the command inside the thread you
+want to configure:
+
+```text
+/autoreset status       # show the effective policy and whether it is inherited
+/autoreset on           # daily reset at 04:00 local server time
+/autoreset daily 06:30  # daily reset at an exact local server time
+/autoreset off          # explicitly disable auto-reset for this thread
+/autoreset inherit      # remove the override and use inherited configuration
+```
+
+Slack does not allow native slash commands inside threads, so type
+`!autoreset ...` there instead. The override is stored by profile, platform,
+chat, and thread; it survives `/new`, `/reset`, and gateway restarts. Root DMs,
+parent channels, other non-thread conversations, and unsupported platforms are
+rejected.
 
 A live background process (started with `terminal(background=true)`) normally
 protects its session from resetting so output isn't lost. To stop a forgotten

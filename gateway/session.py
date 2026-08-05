@@ -90,6 +90,10 @@ from .config import (
     SessionResetPolicy,  # noqa: F401 — re-exported via gateway/__init__.py
     HomeChannel,
 )
+from .thread_reset_policy import (
+    ThreadResetPolicyStore,
+    ThreadResetResolution,
+)
 from .whatsapp_identity import (
     canonical_whatsapp_identifier,
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
@@ -1246,6 +1250,9 @@ class SessionStore:
         self._transcript_append_failures: Dict[str, int] = {}
         self._fts_rebuild_attempted = False
         self._has_active_processes_fn = has_active_processes_fn
+        self._thread_reset_policies = ThreadResetPolicyStore(
+            Path(self.sessions_dir) / "thread_reset_policies.json"
+        )
         # Whether to keep writing the legacy sessions.json mirror alongside
         # the primary gateway_routing table in state.db. Default True for
         # backward compatibility; disable via gateway.write_sessions_json.
@@ -1731,6 +1738,75 @@ class SessionStore:
             profile=self._resolve_profile_for_key(source),
         )
 
+    @staticmethod
+    def _is_supported_thread(source: Optional[SessionSource]) -> bool:
+        return bool(
+            source is not None
+            and source.platform in {
+                Platform.TELEGRAM,
+                Platform.DISCORD,
+                Platform.SLACK,
+            }
+            and isinstance(source.chat_id, str)
+            and source.chat_id.strip()
+            and isinstance(source.thread_id, str)
+            and source.thread_id.strip()
+        )
+
+    def _thread_reset_route_key(self, source: SessionSource) -> str:
+        """Build a durable, user- and session-free identity for one thread."""
+        route_source = SessionSource(
+            platform=source.platform,
+            chat_id=str(source.chat_id),
+            chat_type="thread",
+            thread_id=str(source.thread_id),
+        )
+        return build_session_key(
+            route_source,
+            group_sessions_per_user=False,
+            thread_sessions_per_user=False,
+            profile=self._resolve_profile_for_key(source),
+        )
+
+    def get_effective_reset_policy(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        entry: Optional[SessionEntry] = None,
+    ) -> tuple[SessionResetPolicy, ThreadResetResolution]:
+        """Resolve thread override > platform > type > global reset policy."""
+        if source is None and entry is not None:
+            source = entry.origin
+        platform = source.platform if source is not None else (
+            entry.platform if entry is not None else None
+        )
+        session_type = source.chat_type if source is not None else (
+            entry.chat_type if entry is not None else None
+        )
+        inherited = self.config.get_reset_policy(
+            platform=platform,
+            session_type=session_type,
+        )
+        if not self._is_supported_thread(source):
+            return inherited, "inherited"
+        assert source is not None
+        route_key = self._thread_reset_route_key(source)
+        return self._thread_reset_policies.resolve(route_key, inherited)
+
+    def set_thread_reset_policy(
+        self,
+        source: SessionSource,
+        policy: Optional[SessionResetPolicy],
+    ) -> None:
+        """Set an explicit policy or delete (``None``) a thread override."""
+        if not self._is_supported_thread(source):
+            raise ValueError("source is not a supported thread")
+        route_key = self._thread_reset_route_key(source)
+        if policy is None:
+            self._thread_reset_policies.delete(route_key)
+        else:
+            self._thread_reset_policies.set(route_key, policy)
+
     def _legacy_slack_session_key(self, source: SessionSource) -> Optional[str]:
         """Return the pre-workspace Slack key for an explicitly scoped source.
 
@@ -2093,10 +2169,7 @@ class SessionStore:
             )
             return False
 
-        policy = self.config.get_reset_policy(
-            platform=entry.platform,
-            session_type=entry.chat_type,
-        )
+        policy, _resolution = self.get_effective_reset_policy(entry=entry)
 
         if policy.mode == "none":
             return False
@@ -2111,9 +2184,9 @@ class SessionStore:
         if policy.mode in {"daily", "both"}:
             today_reset = now.replace(
                 hour=policy.at_hour,
-                minute=0, second=0, microsecond=0,
+                minute=policy.at_minute, second=0, microsecond=0,
             )
-            if now.hour < policy.at_hour:
+            if (now.hour, now.minute) < (policy.at_hour, policy.at_minute):
                 today_reset -= timedelta(days=1)
             if entry.updated_at < today_reset:
                 return True
@@ -2143,10 +2216,7 @@ class SessionStore:
         sweep falls back to reaping the agent rather than pinning it).
         """
         try:
-            policy = self.config.get_reset_policy(
-                platform=entry.platform,
-                session_type=entry.chat_type,
-            )
+            policy, _resolution = self.get_effective_reset_policy(entry=entry)
             return policy.mode != "none"
         except Exception:
             return False
@@ -2194,10 +2264,7 @@ class SessionStore:
             )
             return None
 
-        policy = self.config.get_reset_policy(
-            platform=source.platform,
-            session_type=source.chat_type
-        )
+        policy, _resolution = self.get_effective_reset_policy(source=source)
         
         if policy.mode == "none":
             return None
@@ -2212,11 +2279,11 @@ class SessionStore:
         if policy.mode in {"daily", "both"}:
             today_reset = now.replace(
                 hour=policy.at_hour, 
-                minute=0, 
+                minute=policy.at_minute,
                 second=0, 
                 microsecond=0
             )
-            if now.hour < policy.at_hour:
+            if (now.hour, now.minute) < (policy.at_hour, policy.at_minute):
                 today_reset -= timedelta(days=1)
             
             if entry.updated_at < today_reset:
@@ -2441,9 +2508,8 @@ class SessionStore:
                     # resume marker must fall through to a normal resume of
                     # the preserved transcript, never a silent fresh session
                     # (#61052).
-                    _policy = self.config.get_reset_policy(
-                        platform=source.platform,
-                        session_type=source.chat_type,
+                    _policy, _resolution = self.get_effective_reset_policy(
+                        source=source
                     )
                     if _policy.mode != "none":
                         _fw = auto_continue_freshness_window()

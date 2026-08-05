@@ -108,6 +108,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="interrupt_then_dispatch", busy_handler="new"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
+    CommandDef("autoreset", "Manage automatic reset for this thread", "Session",
+               gateway_only=True,
+               args_hint="[status|on|daily HH:MM|off|inherit]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -1261,7 +1264,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     /hermes update on Slack. Demoted to free the native slot /approvals now
 #     claims — without this entry /approvals tips the registry past the 50-cap
 #     and silently clamps /update off, breaking Telegram parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update"})
+#   - autoreset: typed as !autoreset in Slack threads; no native slash slot.
+_SLACK_VIA_HERMES_ONLY = frozenset(
+    {"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "autoreset"}
+)
 
 
 def _sanitize_slack_name(raw: str) -> str:

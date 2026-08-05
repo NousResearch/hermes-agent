@@ -130,6 +130,7 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 | 命令 | 说明 |
 |---------|-------------|
 | `/new` 或 `/reset` | 开始新对话 |
+| `/autoreset [status\|on\|daily HH:MM\|off\|inherit]` | 配置当前 Telegram、Discord 或 Slack 线程的自动重置策略 |
 | `/model [provider:model]` | 显示或切换模型（支持 `provider:model` 语法） |
 | `/personality [name]` | 设置人格 |
 | `/retry` | 重试上一条消息 |
@@ -168,7 +169,8 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 session_reset:
   mode: idle        # "idle"、"daily"、"both" 或 "none"（默认）
   idle_minutes: 1440  # idle/both 模式：空闲多少分钟后重置
-  at_hour: 4          # daily/both 模式：每天的重置时间（0-23，本地时间）
+  at_hour: 4          # daily/both 模式：每天的重置小时（0-23，本地时间）
+  at_minute: 0        # daily/both 模式：每天的重置分钟（0-59，本地时间）
 ```
 
 | 模式 | 说明 |
@@ -177,6 +179,25 @@ session_reset:
 | `daily` | 每天在指定时间重置 |
 | `idle` | 空闲 N 分钟后重置 |
 | `both` | 以先触发者为准 |
+
+#### 每个线程的自动重置
+
+Telegram、Discord 和 Slack 的私有及公开线程可以覆盖继承的重置策略，
+而无需修改全局配置。只要平台提供稳定且非空的聊天 ID 和线程 ID，
+私有和公开线程都受支持。请在线程内运行：
+
+```text
+/autoreset status       # 查看生效策略及其是否继承
+/autoreset on           # 每天服务器本地时间 04:00 重置
+/autoreset daily 06:30  # 每天在指定的服务器本地时间重置
+/autoreset off          # 为当前线程明确禁用自动重置
+/autoreset inherit      # 删除覆盖并恢复继承配置
+```
+
+Slack 不允许在线程中使用原生斜杠命令，因此请改用 `!autoreset ...`。
+覆盖按配置文件、平台、聊天和线程持久保存，并在 `/new`、`/reset` 和
+网关重启后继续生效。根私信、父频道、其他非线程对话及不受支持的平台
+会被拒绝。
 
 在 `~/.hermes/gateway.json` 中配置各平台的覆盖设置：
 

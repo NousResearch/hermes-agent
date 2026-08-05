@@ -160,6 +160,7 @@ import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRoutePr
 import { fetchPrimaryProfileSessions } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import { destroyTray, isTrayEnabled, loadTrayPrefs, setTrayEnabled } from './tray'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   RemoteLivenessTracker,
@@ -2608,6 +2609,7 @@ let updateInFlight = false
 // set, window-all-closed calls app.quit() on every platform so the process
 // actually dies and the hand-off script can proceed immediately.
 let isQuittingForHandoff = false
+let isReallyQuitting = false
 
 // Quit-guard latches: one while the confirmation is on screen (a second
 // Cmd-Q must not stack dialogs), one after the user has said "quit anyway"
@@ -9346,6 +9348,17 @@ function createWindow() {
   mainWindow.on('unmaximize', schedulePersistWindowState)
   mainWindow.on('close', () => schedulePersistWindowState.flush())
 
+  // Close → tray: when the user opted in, the X button hides the window and
+  // keeps the backend alive behind a tray icon instead of tearing the app
+  // down. Real quits (before-quit handler, tray Quit item) set
+  // isReallyQuitting first so this handler steps aside.
+  mainWindow.on('close', event => {
+    if (isTrayEnabled() && !isReallyQuitting) {
+      event.preventDefault()
+      mainWindow?.hide()
+    }
+  })
+
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   const createdMainWindow = mainWindow
   mainWindow.on('closed', () => {
@@ -10323,6 +10336,44 @@ const claimedAmbientCue = createEventDeduper()
 // A window asks "do I own this ambient cue (turn-end sound / spoken reply)?".
 // The first caller within the window gets true; peers get false and stay quiet.
 ipcMain.handle('hermes:ambient:claim', (_event, key) => !claimedAmbientCue(String(key ?? '')))
+
+ipcMain.handle('hermes:tray:get', () => isTrayEnabled())
+
+ipcMain.handle('hermes:tray:set', (_event, enabled) => {
+  return setTrayEnabled(Boolean(enabled), {
+    onShow: () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show()
+        focusWindow(mainWindow)
+      }
+    },
+    onQuit: () => {
+      isReallyQuitting = true
+      app.quit()
+    }
+  })
+})
+
+// Restore the persisted choice on startup so the tray icon appears even
+// before the window first closes. Tray creation requires the app to be
+// ready — deferring via whenReady() avoids "Cannot create Tray before app
+// is ready" crashing the main process at module scope.
+if (loadTrayPrefs()) {
+  app.whenReady().then(() => {
+    setTrayEnabled(true, {
+      onShow: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show()
+          focusWindow(mainWindow)
+        }
+      },
+      onQuit: () => {
+        isReallyQuitting = true
+        app.quit()
+      }
+    })
+  })
+}
 
 ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) {
@@ -11956,6 +12007,9 @@ app.on('before-quit', event => {
   if (heldQuitForActiveWork(event)) {
     return
   }
+
+  isReallyQuitting = true
+  destroyTray()
 
   if ((sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0) && !sshQuitTeardownDone) {
     event.preventDefault()

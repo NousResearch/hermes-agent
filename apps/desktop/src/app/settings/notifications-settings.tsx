@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -30,6 +31,26 @@ function Caption({ children, className }: { children: ReactNode; className?: str
 export function NotificationsSettings() {
   const { t } = useI18n()
   const prefs = useStore($nativeNotifyPrefs)
+  const [closeToTray, setCloseToTray] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    window.hermesDesktop?.tray?.get().then(value => {
+      if (alive && typeof value === 'boolean') {
+        setCloseToTray(value)
+      }
+    })
+
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const toggleCloseToTray = (on: boolean) => {
+    setCloseToTray(on)
+    void window.hermesDesktop?.tray?.set(on)
+  }
+
   const completionSoundVariantId = useStore($completionSoundVariantId)
   const copy = t.settings.notifications
 
@@ -49,6 +70,13 @@ export function NotificationsSettings() {
         description={copy.enableAllDesc}
         label={copy.enableAll}
         onChange={setNativeNotifyEnabled}
+      />
+
+      <ToggleRow
+        checked={closeToTray}
+        description={copy.closeToTrayDesc}
+        label={copy.closeToTray}
+        onChange={toggleCloseToTray}
       />
 
       {NATIVE_NOTIFICATION_KINDS.map(kind => (

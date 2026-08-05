@@ -370,6 +370,8 @@ export const en: Translations = {
       intro: 'OS notifications (not in-app toasts). Per device.',
       enableAll: 'Enable notifications',
       enableAllDesc: 'Off silences every notification below.',
+      closeToTray: 'Minimize to tray on close',
+      closeToTrayDesc: 'Closing the window keeps Hermes running in the system tray — responses and approval requests still notify you.',
       focusedHint: 'Completion alerts only fire while Hermes is in the background.',
       kinds: {
         approval: {

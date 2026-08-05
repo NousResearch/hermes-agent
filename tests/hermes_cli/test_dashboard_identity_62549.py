@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+import types
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -194,3 +196,53 @@ def test_connection_identity_is_not_injected_for_internal_child():
     sanitized = ws._bind_connection_identity(request, {"user_id": "server-internal"})
     assert "pty_user_id" not in sanitized["params"]
     assert "pty_provider" not in sanitized["params"]
+
+
+def test_make_agent_passes_dashboard_user_id(monkeypatch):
+    from tui_gateway import server
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    stub = types.ModuleType("run_agent")
+    stub.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", stub)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_prompt_text", lambda value: "")
+    monkeypatch.setattr(server, "_parse_tui_skills_env", lambda: [])
+    monkeypatch.setattr(server, "_load_provider_routing", lambda: {})
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda _model: {})
+    monkeypatch.setattr(server, "_load_service_tier", lambda: None)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
+    monkeypatch.setattr(server, "_cfg_max_turns", lambda *_args: 10)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("model", None))
+    monkeypatch.setattr(
+        server,
+        "_resolve_runtime_with_fallback",
+        lambda _kwargs: SimpleNamespace(runtime={}, used_fallback=False),
+    )
+    monkeypatch.setattr(server, "_resolve_agent_platform", lambda value: value or "tui")
+    monkeypatch.setattr(server, "_load_fallback_model", lambda: None)
+    monkeypatch.setattr(server, "_agent_cbs", lambda _sid: {})
+
+    server._make_agent("sid", "key", pty_user_id="alice")
+    assert captured["user_id"] == "alice"
+
+
+def test_deferred_session_record_preserves_provider():
+    from tui_gateway import server
+
+    record = server._deferred_session_record(
+        "sid",
+        cols=80,
+        cwd="/tmp",
+        history=[],
+        lease=None,
+        pty_user_id="alice",
+        pty_provider="oauth",
+    )
+    assert record["pty_user_id"] == "alice"
+    assert record["pty_provider"] == "oauth"

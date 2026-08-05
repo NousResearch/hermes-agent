@@ -428,6 +428,53 @@ class TurnContext:
     preflight_compression_blocked: bool = False
 
 
+def _build_topic_shift_hint(
+    agent: Any,
+    current_message: str,
+    messages: list[Dict[str, Any]],
+) -> str | None:
+    """Detect topic shift and return a hint string for the LLM.
+
+    Uses the shared topic_detection module (S6 cosine only — no LLM call
+    in this path to avoid latency). When a shift is detected, returns a
+    short hint prompting the LLM to emit a new TOPIC: line.
+
+    Returns None when:
+    - topic_detection is unavailable or returns fallback
+    - no shift detected (same topic)
+    - fewer than 2 user messages in history
+    """
+    try:
+        # Extract last two user messages from conversation history
+        user_msgs = [
+            m.get("content", "") for m in messages
+            if isinstance(m, dict) and m.get("role") == "user"
+            and isinstance(m.get("content"), str)
+        ]
+        if len(user_msgs) < 2:
+            return None
+        prev = user_msgs[-2]
+        if not prev or not current_message:
+            return None
+
+        from agent.topic_detection import detect_topic_shift
+        result = detect_topic_shift(current_message, prev_msg=prev)
+
+        if not result or result.get("method") == "fallback":
+            return None
+        if result.get("topic_continuation", True):
+            return None  # same topic, no hint needed
+
+        method = result.get("method", "unknown")
+        confidence = result.get("confidence", 0)
+        return (
+            "[Topic shift detected — this message appears to start a new topic. "
+            "Emit a new TOPIC: <english-kebab-case-name> at the end of your response.]"
+        )
+    except Exception:
+        return None
+
+
 def build_turn_context(
     agent,
     user_message: Any,
@@ -1248,6 +1295,19 @@ def build_turn_context(
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
+
+    # ── Session-topics: topic shift hint ──
+    # When topic_detection detects a shift between the last two user messages,
+    # inject a hint into the api_content so the LLM knows to emit a new
+    # TOPIC: <name> line. This is session-topics' own injection channel —
+    # independent of skill-graph's candidate injection.
+    _topic_hint = _build_topic_shift_hint(agent, original_user_message, messages)
+    if _topic_hint:
+        plugin_user_context = (
+            plugin_user_context + "\n\n" + _topic_hint
+            if plugin_user_context
+            else _topic_hint
+        )
     agent._verification_stop_nudges = 0
     agent._pre_verify_nudges = 0
 

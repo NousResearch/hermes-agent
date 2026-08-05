@@ -379,6 +379,21 @@ def _build_topic_detection_block(agent: Any) -> str:
         "Append exactly one line to every response: TOPIC: <name>"
     )
     lines.append(
+        "Format rules (critical):"
+    )
+    lines.append(
+        "- The prefix MUST be the literal English word 'TOPIC:' — never "
+        "'主题：', '话题：', or any localized equivalent."
+    )
+    lines.append(
+        "- The topic <name> MUST be in English (kebab-case: "
+        "'docker-setup', 'pr-review', 'curriculum-design')."
+    )
+    lines.append(
+        "- One line, no trailing punctuation, placed at the very end of "
+        "your response."
+    )
+    lines.append(
         "For brief asides or one-off questions, stay on the"
         " current topic name. Only introduce a new name when"
         " the conversation shifts to a sustained new subject."

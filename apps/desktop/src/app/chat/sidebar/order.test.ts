@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
+import { clusterByTopic, orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 
 describe('resolveManualSessionOrderIds', () => {
   it('clears legacy auto-seeded order until the user manually reorders sessions', () => {
@@ -58,5 +58,70 @@ describe('sameIds', () => {
     expect(sameIds(['a', 'b'], ['a', 'b'])).toBe(true)
     expect(sameIds(['a', 'b'], ['b', 'a'])).toBe(false)
     expect(sameIds(['a'], ['a', 'b'])).toBe(false)
+  })
+})
+
+describe('clusterByTopic', () => {
+  const id = (item: { id: string }) => item.id
+  const title = (item: { id: string; title?: string | null }) => item.title
+
+  it('keeps items without topic prefixes in recency order', () => {
+    const items = [
+      { id: 'a', title: '最新会话' },
+      { id: 'b', title: null },
+      { id: 'c', title: '旧会话' }
+    ]
+    expect(clusterByTopic(items, id, title)).toEqual(items)
+  })
+
+  it('pulls siblings with the same [Topic] prefix together', () => {
+    const items = [
+      { id: 'a', title: '[凭证]录入' },
+      { id: 'b', title: '普通会话' },
+      { id: 'c', title: '[凭证]打印' },
+      { id: 'd', title: '[部署]新服务器' },
+      { id: 'e', title: '[凭证]导入' }
+    ]
+    expect(clusterByTopic(items, id, title)).toEqual([
+      { id: 'a', title: '[凭证]录入' },
+      { id: 'c', title: '[凭证]打印' },
+      { id: 'e', title: '[凭证]导入' },
+      { id: 'b', title: '普通会话' },
+      { id: 'd', title: '[部署]新服务器' }
+    ])
+  })
+
+  it('keeps unprefixed items in their original slots between clusters', () => {
+    const items = [
+      { id: 'new', title: '新会话' },
+      { id: 'p1', title: '[业务]流水' },
+      { id: 'mid', title: '中间会话' },
+      { id: 'p2', title: '[业务]代账' },
+      { id: 'old', title: '旧会话' }
+    ]
+    expect(clusterByTopic(items, id, title)).toEqual([
+      { id: 'new', title: '新会话' },
+      { id: 'p1', title: '[业务]流水' },
+      { id: 'p2', title: '[业务]代账' },
+      { id: 'mid', title: '中间会话' },
+      { id: 'old', title: '旧会话' }
+    ])
+  })
+
+  it('does not reorder siblings within a cluster (baseline order wins)', () => {
+    const items = [
+      { id: 'older', title: '[审计]旧' },
+      { id: 'newer', title: '[审计]新' },
+      { id: 'plain', title: '无前缀' }
+    ]
+    expect(clusterByTopic(items, id, title)).toEqual(items)
+  })
+
+  it('handles titles that look like prefixes but are not bracket-wrapped', () => {
+    const items = [
+      { id: 'a', title: '凭证]残缺' },
+      { id: 'b', title: '[完整' }
+    ]
+    expect(clusterByTopic(items, id, title)).toEqual(items)
   })
 })

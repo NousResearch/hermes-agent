@@ -68,3 +68,63 @@ export function reconcileOrderIds(currentIds: string[], orderIds: string[]): str
 export function sameIds(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index])
 }
+
+/**
+ * Cluster items whose titles share a `[Topic]` prefix so they sit adjacent,
+ * while preserving the caller's recency baseline: scan the (recency-sorted)
+ * list and, on first sight of a topic, pull every other item with the same
+ * prefix up to follow it. Untitled / unprefixed items stay in their original
+ * positions. Sibling order inside a cluster follows the baseline order.
+ */
+export function clusterByTopic<T>(
+  items: T[],
+  getId: (item: T) => string,
+  getTitle: (item: T) => string | null | undefined
+): T[] {
+  const topicOf = (title?: string | null) => title?.match(/^\[([^\]]+)\]/)?.[1] ?? null
+
+  const byTopic = new Map<string, T[]>()
+
+  for (const item of items) {
+    const topic = topicOf(getTitle(item))
+
+    if (topic) {
+      const siblings = byTopic.get(topic)
+
+      if (siblings) {
+        siblings.push(item)
+      } else {
+        byTopic.set(topic, [item])
+      }
+    }
+  }
+
+  const placed = new Set<string>()
+  const out: T[] = []
+
+  for (const item of items) {
+    const id = getId(item)
+
+    if (placed.has(id)) {
+      continue
+    }
+
+    out.push(item)
+    placed.add(id)
+
+    const topic = topicOf(getTitle(item))
+
+    if (topic) {
+      for (const sibling of byTopic.get(topic) ?? []) {
+        const siblingId = getId(sibling)
+
+        if (!placed.has(siblingId)) {
+          out.push(sibling)
+          placed.add(siblingId)
+        }
+      }
+    }
+  }
+
+  return out
+}

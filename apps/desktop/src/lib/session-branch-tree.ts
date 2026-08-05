@@ -1,4 +1,5 @@
 import type { SessionInfo } from '@/types/hermes'
+import { clusterByTopic } from '@/app/chat/sidebar/order'
 
 export interface SidebarSessionEntry {
   branchStem?: string
@@ -121,4 +122,41 @@ export function flattenSessionsWithBranches(
   }
 
   return out
+}
+
+/**
+ * Cluster entries whose root session title carries a `[Topic]` prefix so the
+ * whole parent→branches block moves together. Recency sorting inside
+ * flattenSessionsWithBranches reorders roots by group activity, which would
+ * otherwise scatter same-topic conversations across the date buckets; this
+ * runs after flattening (and before date bucketing) to pull them back
+ * together while keeping every block's internal order intact.
+ */
+export function clusterEntriesByTopic(entries: readonly SidebarSessionEntry[]): SidebarSessionEntry[] {
+  // Flatten emits depth-first, so each root is immediately followed by its
+  // branch children — cut blocks at every root.
+  const blocks: SidebarSessionEntry[][] = []
+
+  for (const entry of entries) {
+    if (!entry.branchStem) {
+      blocks.push([entry])
+    } else if (blocks.length) {
+      blocks[blocks.length - 1].push(entry)
+    } else {
+      // Defensive: a stray branch with no root still gets its own block.
+      blocks.push([entry])
+    }
+  }
+
+  if (blocks.length < 2) {
+    return entries as SidebarSessionEntry[]
+  }
+
+  const clustered = clusterByTopic(
+    blocks,
+    block => block[0].session.id,
+    block => block[0].session.title
+  )
+
+  return clustered.flat()
 }

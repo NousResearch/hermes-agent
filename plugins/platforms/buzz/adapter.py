@@ -1073,16 +1073,34 @@ class BuzzAdapter(BasePlatformAdapter):
     #     text visibly @mentions us (typed mention, with or without a reply
     #     ["e", ...] tag) — never on plain broadcasts.
     #
-    # So "p-tagged to self WITHOUT a visible mention in the content" is the
-    # DM discriminator: in a channel that combination does not occur, and a
-    # channel reply/mention that p-tags us is excluded because the mention
-    # is right there in the text.  As a second, independent guard, a
-    # conversation whose ``channels list`` metadata looks like a real
-    # community channel (real name / non-empty description) is never
-    # reclassified at all, whereas relay-materialized DMs are always named
-    # "DM" with an empty description.  Nothing is lost while unlatched: a
-    # DM message that DOES mention us dispatches through the mention gate
-    # anyway, so the latch flips exactly on the first message that needs it.
+    # DM-shaped metadata (``name == "DM"``, empty description) is strong
+    # evidence from ``channels list``: any p-tag to self is structural
+    # addressing and latches immediately.  That matters once the wake gate
+    # requires a literal ``@`` (#78798): a first message like ``Chip /whoami``
+    # is both a content reference (so the meta-less discriminator would refuse
+    # to latch) and not an ``@``-mention (so the gate would drop it) — silent
+    # death of the leaked-DM path (#68871).  DM-shaped meta short-circuits that
+    # trap.
+    #
+    # Meta-less conversations keep the stricter discriminator: p-tagged to
+    # self WITHOUT a visible self-reference.  That combination does not occur
+    # in real channels (p-tags only appear with typed @mentions), and keeps a
+    # p-tagged "waiting on Chip" from latching a meta-less group permanently
+    # onto the mention-free DM path.  Real community channels (real name /
+    # non-empty description) never reclassify at all.
+
+    def _has_dm_shaped_meta(self, channel_id: str) -> bool:
+        """True when ``channels list`` metadata looks like a relay-materialized DM.
+
+        Hosted relays that break ``dms list`` still surface DMs in
+        ``channels list`` as name ``"DM"`` with an empty description (#68871).
+        """
+        meta = self._channel_meta.get(channel_id)
+        if meta is None:
+            return False
+        name = str(meta.get("name") or "").strip()
+        description = str(meta.get("description") or "").strip()
+        return name == "DM" and not description
 
     def _may_reclassify_as_dm(self, channel_id: str) -> bool:
         """True when the conversation's metadata does not rule out a DM.
@@ -1092,18 +1110,26 @@ class BuzzAdapter(BasePlatformAdapter):
         p-tags us.  A conversation with no metadata at all is trusted only
         when the user did not explicitly configure it as a watched channel.
         """
+        if self._has_dm_shaped_meta(channel_id):
+            return True
         meta = self._channel_meta.get(channel_id)
         if meta is None:
             return channel_id not in self.channels
-        name = str(meta.get("name") or "").strip()
-        description = str(meta.get("description") or "").strip()
-        return name == "DM" and not description
+        return False
 
     def _is_direct_message_event(self, channel_id: str, event: dict) -> bool:
-        """True when ``event`` is shaped like a direct message to us: a chat
-        message from another user, p-tagged to our pubkey, whose content does
-        NOT visibly mention us — i.e. the p-tag is structural DM addressing,
-        not the artifact of a typed @mention (see block comment above)."""
+        """True when ``event`` is shaped like a direct message to us.
+
+        Always requires a chat message from another user p-tagged to our
+        pubkey.  Beyond that:
+
+        * **DM-shaped metadata** (``name == "DM"``): any self p-tag latches.
+          Bare-name openers (``Chip /whoami``) are common on the leaked-DM
+          path and must not be stuck behind the strict ``@`` wake gate.
+        * **Meta-less / unknown**: only latch when the p-tag is *unexplained*
+          by visible self-reference — so a p-tagged bare-name channel post
+          does not permanently disable the mention gate.
+        """
         if not self._self_pubkey or not self._may_reclassify_as_dm(channel_id):
             return False
         if int(event.get("kind") or 0) != _CHAT_KIND:
@@ -1123,6 +1149,9 @@ class BuzzAdapter(BasePlatformAdapter):
         )
         if not p_tagged_to_self:
             return False
+        # Strong metadata: latch on structural p-tag alone.
+        if self._has_dm_shaped_meta(channel_id):
+            return True
         content = event.get("content")
         return isinstance(content, str) and not self._content_references_self(content)
 
@@ -1167,9 +1196,11 @@ class BuzzAdapter(BasePlatformAdapter):
         agents get discussed in the third person constantly, so this fired on
         status updates, handoffs and retrospectives (#78798).
 
-        DMs never reach here (the dispatch site short-circuits on ``is_dm``),
-        and picker-inserted mentions carry a literal ``@Name``, so UI-driven
-        mentions still match.
+        Latched DMs never reach here (the dispatch site short-circuits on
+        ``is_dm``).  Unlatched DM-shaped conversations latch on any self
+        p-tag before this check runs (see :meth:`_is_direct_message_event`).
+        Picker-inserted mentions carry a literal ``@Name``, so UI-driven
+        channel mentions still match.
         """
         return self._matches_self(content, require_at=True)
 

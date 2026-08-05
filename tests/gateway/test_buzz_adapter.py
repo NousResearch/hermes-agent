@@ -356,6 +356,35 @@ class TestDmClassification:
         assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
         assert adapter._dispatched[0]["chat_type"] == "dm"
 
+    @pytest.mark.asyncio
+    async def test_dm_shaped_ptagged_bare_name_still_delivers(self, adapter):
+        """Leaked-DM opener with a bare name must latch and dispatch (#78798).
+
+        After the wake gate started requiring a literal ``@``, a p-tagged
+        ``Chip /whoami`` on an unlatched DM-shaped conversation would both
+        fail to latch (bare name "explained" the p-tag under the meta-less
+        discriminator) and fail the gate (no ``@``) — silent drop.  DM-shaped
+        metadata must treat any self p-tag as structural addressing.
+        """
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="Chip /whoami", p=SELF_PUBKEY),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+        assert adapter._dispatched[0]["chat_type"] == "dm"
+        # Leading bare name is stripped so slash commands still fire.
+        assert adapter._dispatched[0]["text"] == "/whoami"
+
+        # Follow-up with no name at all still dispatches once latched.
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event(
+                "e2", DM_CHANNEL, content="and also this", p=SELF_PUBKEY, created_at=1001,
+            ),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1", "e2"]
+        assert adapter._dispatched[1]["chat_type"] == "dm"
 
     @pytest.mark.asyncio
     async def test_general_reply_ptagging_self_stays_channel(self, adapter):

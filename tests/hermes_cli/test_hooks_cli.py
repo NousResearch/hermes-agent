@@ -80,6 +80,24 @@ class TestHooksList:
 
 
 class TestHooksTest:
+    def test_status_bar_render_payload_matches_plugin_contract(self, tmp_path):
+        capture = tmp_path / "captured.json"
+        script = _hook_script(
+            tmp_path,
+            f"#!/usr/bin/env bash\ncat - > {capture}\nprintf '{{}}\\n'\n",
+        )
+        cfg = {"hooks": {"on_status_bar_render": [{"command": str(script)}]}}
+
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            _run(SimpleNamespace(
+                hooks_action="test", event="on_status_bar_render",
+                for_tool=None, payload_file=None,
+            ))
+
+        extra = json.loads(capture.read_text())["extra"]
+        assert extra["snapshot"]["model_short"] == "claude-sonnet-4-6"
+        assert extra["telemetry_schema_version"] == "hermes.observer.v1"
+
     def test_synthetic_payload_matches_production_shape(self, tmp_path):
         """`hermes hooks test` must feed the script stdin in the same
         shape invoke_hook() would at runtime.  Prior to this fix,

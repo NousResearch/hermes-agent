@@ -94,6 +94,40 @@ def _run_bounded_on_exit_thread(fn: Callable[[], Any], timeout: float) -> Any:
     return result[0] if result else None
 
 
+def pop_relay_scope(
+    relay: Any,
+    handle: Any,
+    *,
+    output: Any = None,
+    metadata: Any = None,
+    timestamp: Any = None,
+) -> Any:
+    """Pop a Relay scope without passing kwargs the binding rejects.
+
+    NeMo Relay ``scope.pop`` gained ``metadata`` in 0.4+. Older wheels (e.g.
+    0.3.x) raise ``TypeError: pop() got an unexpected keyword argument
+    'metadata'`` when Hermes finalization forwards runtime metadata. Filter to
+    parameters the live binding accepts so turn/session close can complete.
+    """
+    pop = relay.scope.pop
+    kwargs: dict[str, Any] = {}
+    if output is not None:
+        kwargs["output"] = output
+    if metadata is not None:
+        kwargs["metadata"] = metadata
+    if timestamp is not None:
+        kwargs["timestamp"] = timestamp
+    try:
+        params = inspect.signature(pop).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if params and not any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+    ):
+        kwargs = {key: value for key, value in kwargs.items() if key in params}
+    return pop(handle, **kwargs)
+
+
 @dataclass
 class RelaySession:
     """One isolated Relay scope stack owned by a Hermes session."""
@@ -609,7 +643,8 @@ class RelayRuntime:
                 return a_uuid is not None and a_uuid == b_uuid
 
             try:
-                self.relay.scope.pop(
+                pop_relay_scope(
+                    self.relay,
                     handle,
                     output=close_output,
                     metadata=metadata,
@@ -630,7 +665,8 @@ class RelayRuntime:
                 ):
                     break
                 try:
-                    self.relay.scope.pop(
+                    pop_relay_scope(
+                        self.relay,
                         top,
                         output={
                             "outcome": "cancelled",
@@ -654,7 +690,8 @@ class RelayRuntime:
                     handle,
                 )
             try:
-                self.relay.scope.pop(
+                pop_relay_scope(
+                    self.relay,
                     handle,
                     output=close_output,
                     metadata=metadata,

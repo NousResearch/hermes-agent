@@ -428,6 +428,52 @@ class TurnContext:
     preflight_compression_blocked: bool = False
 
 
+# Cached embedding callable for topic shift hint (built once per process)
+_topic_embed_fn = None
+_topic_embed_fn_tried = False
+
+
+def _get_embed_fn():
+    """Return a callable for embedding text, or None.
+
+    Tries skill-graph's EmbeddingClient first (same backend the plugin uses
+    for candidate retrieval), then falls back to None. Cached per-process.
+    """
+    global _topic_embed_fn, _topic_embed_fn_tried
+    if _topic_embed_fn_tried:
+        return _topic_embed_fn
+    _topic_embed_fn_tried = True
+
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        sg = config.get("skills", {}).get("config", {}).get("skill-graph", {})
+        if not isinstance(sg, dict):
+            return None
+        endpoint = sg.get("embedding_api_url", "http://localhost:8081")
+
+        import requests as _req
+        # Quick health check
+        r = _req.get(f"{endpoint}/health", timeout=2)
+        if r.status_code != 200:
+            return None
+
+        def embed(text: str):
+            r = _req.post(
+                f"{endpoint}/embed",
+                json={"inputs": text},
+                timeout=10,
+            )
+            r.raise_for_status()
+            emb = r.json()
+            return emb[0] if isinstance(emb, list) and emb else emb
+
+        _topic_embed_fn = embed
+        return _topic_embed_fn
+    except Exception:
+        return None
+
+
 def _build_topic_shift_hint(
     agent: Any,
     current_message: str,
@@ -457,8 +503,13 @@ def _build_topic_shift_hint(
         if not prev or not current_message:
             return None
 
+        # Build embed_fn — try skill-graph's EmbeddingClient first, then TEI
+        embed_fn = _get_embed_fn()
+
         from agent.topic_detection import detect_topic_shift
-        result = detect_topic_shift(current_message, prev_msg=prev)
+        result = detect_topic_shift(
+            current_message, prev_msg=prev, embed_fn=embed_fn,
+        )
 
         if not result or result.get("method") == "fallback":
             return None

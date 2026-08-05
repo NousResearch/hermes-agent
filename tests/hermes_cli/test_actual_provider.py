@@ -195,4 +195,7 @@ def test_actual_provider_model_ids_use_local_profile_catalog(monkeypatch):
     with patch.object(profile, "fetch_models", return_value=["actual/local-model"]) as fetch:
         assert provider_model_ids("actual") == ["actual/local-model"]
 
-    fetch.assert_called_once_with(api_key=ACTUAL_LOCAL_NOAUTH_PLACEHOLDER)
+    fetch.assert_called_once_with(
+        api_key=ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
+        base_url=DEFAULT_ACTUAL_LOCAL_BASE_URL,
+    )

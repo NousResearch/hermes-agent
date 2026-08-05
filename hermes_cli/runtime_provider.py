@@ -2188,6 +2188,22 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
+        # Actual Computer: a loopback base_url configured in model_cfg (not
+        # just env) selects the daemon's local offline API, which requires no
+        # auth. Inject the placeholder BEFORE the usable-secret gate below,
+        # mirroring the env-driven path inside the credential resolver.
+        if provider == "actual" and not has_usable_secret(creds.get("api_key")):
+            _cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+            _cfg_url = ""
+            if _cfg_provider == provider:
+                _cfg_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            _effective_url = normalize_actual_base_url(
+                _cfg_url or creds.get("base_url", "").rstrip("/")
+            )
+            if is_actual_local_base_url(_effective_url):
+                creds = dict(creds)
+                creds["api_key"] = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
+                creds["source"] = creds.get("source") or "local-offline"
         # An explicitly selected API-key provider is authoritative. Returning
         # a runtime with an empty key defers failure until the first request and
         # can make a later fallback look like a silent provider switch. Fail at

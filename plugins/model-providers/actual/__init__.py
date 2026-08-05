@@ -46,10 +46,11 @@ class ActualProfile(ProviderProfile):
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         base_url = _normalize_actual_base_url(
-            os.getenv("ACTUAL_BASE_URL", "").strip() or self.base_url
+            os.getenv("ACTUAL_BASE_URL", "").strip() or base_url or self.base_url
         )
         if not base_url:
             return None

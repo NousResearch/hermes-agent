@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget, openPreviewTargetInBrowser } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { PREVIEW_PANE_ID } from '@/store/layout'
@@ -59,9 +60,23 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     }
   }
 
-  const openInBrowser = async () => {
+  const openDefaultTarget = async () => {
     try {
-      await openPreviewTargetInBrowser(await resolveTarget())
+      const target = await resolveTarget()
+
+      // A file:// URL resolved in remote mode names a file on the backend
+      // host, not on the machine running Electron. Keep local files and
+      // ordinary URLs on the browser path, but route remote files through the
+      // in-app preview pane so its filesystem adapter reads via the gateway.
+      // (Remote HTML stays on openPreviewTargetInBrowser, which stages a
+      // sanitized local copy before opening it.)
+      if (target.kind === 'file' && target.previewKind !== 'html' && isDesktopFsRemoteMode()) {
+        openPreview(target, 'tool-result')
+
+        return
+      }
+
+      await openPreviewTargetInBrowser(target)
     } catch (error) {
       notifyError(error, t.preview.unavailable)
     }
@@ -77,13 +92,14 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
           size="0.8rem"
         />
       }
-      // Plain click opens the link in the browser; ⌘/Ctrl-click opens it in the
-      // in-app preview pane instead. (isOpen still toggles the pane closed.)
+      // Plain click opens the link in the browser, except remote files which
+      // only the in-app gateway-backed preview can read. ⌘/Ctrl-click always
+      // uses the in-app preview pane. (isOpen still toggles the pane closed.)
       onActivate={event => {
         if (event.metaKey || event.ctrlKey) {
           void togglePreview()
         } else {
-          void openInBrowser()
+          void openDefaultTarget()
         }
       }}
       trailing={

@@ -469,6 +469,82 @@ def register(ctx):
 
 ---
 
+**Example — block stale patch anchors (`old_string` drift):**
+
+`patch` calls with `mode="replace"` require the `old_string` anchor to exist
+**exactly once** in the live file. This hook verifies that before the patch
+applies, preventing silent drift when the file changed under the agent.
+
+```python
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+
+def verify_anchor(file_text: str, old_string: str) -> tuple[str, Optional[str]]:
+    """Return ('ok', None) if old_string occurs exactly once, else ('block', reason)."""
+    if not old_string:
+        return "block", "old_string must be non-empty"
+    count = file_text.count(old_string)
+    if count == 0:
+        return "block", "old_string not found in live file — anchor drifted"
+    if count > 1:
+        return "block", f"old_string is ambiguous: found {count} times in live file"
+    return "ok", None
+
+
+def on_pre_tool_call(tool_name: str, args: Dict[str, Any], **kwargs: Any) -> Optional[Dict[str, str]]:
+    """Block stale or ambiguous patch anchors."""
+    if tool_name != "patch":
+        return None
+
+    if args.get("mode") != "replace":
+        return None  # skip V4A multi-file patches
+
+    old_string = args.get("old_string")
+    if not old_string:
+        return {"action": "block", "message": "patch old_string must be non-empty"}
+
+    target = Path(args.get("path", ""))
+    if not target.is_absolute():
+        target = Path(kwargs.get("cwd", ".")) / target
+
+    try:
+        text = target.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return {"action": "block", "message": f"file not found: {target}"}
+    except Exception as exc:
+        # Fail open on unexpected IO errors
+        print(f"hashline-guard read error: {exc}")
+        return None
+
+    status, reason = verify_anchor(text, old_string)
+    if status == "block":
+        return {
+            "action": "block",
+            "message": f"hashline-guard: {reason} in {target}. Re-read the file and re-issue the patch.",
+        }
+    return None
+
+
+def register(ctx):
+    ctx.register_hook("pre_tool_call", on_pre_tool_call)
+```
+
+**Block directives returned by this hook:**
+
+| Condition | Message |
+|---|---|
+| `old_string` absent | `old_string not found in live file — anchor drifted in <path>` |
+| `old_string` present 2+ times | `old_string is ambiguous: found N times in live file in <path>` |
+| `old_string` empty | `patch old_string must be non-empty` |
+| File missing | `file not found: <path>` |
+
+The hook is **fail-open**: any unexpected IO or encoding error logs a
+warning and allows the patch through. It never blocks on infrastructure
+problems.
+
+---
+
 ### `post_tool_call`
 
 Fires **immediately after** every tool execution returns.

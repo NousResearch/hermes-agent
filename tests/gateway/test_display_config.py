@@ -132,6 +132,24 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
 
+    def test_matrix_defaults_tool_progress_off(self):
+        """Matrix quiet default (permanent timeline noise otherwise)."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "matrix", "tool_progress") == "off"
+
+    def test_matrix_streaming_default_is_none(self):
+        """Matrix streaming inherits top-level StreamingConfig."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "matrix", "streaming") is None
+
+    def test_matrix_tool_progress_override_new(self):
+        from gateway.display_config import resolve_display_setting
+
+        cfg = {"display": {"platforms": {"matrix": {"tool_progress": "new"}}}}
+        assert resolve_display_setting(cfg, "matrix", "tool_progress") == "new"
+
     def test_low_tier_platforms(self):
         """Signal, BlueBubbles, etc. default to 'off' tool progress."""
         from gateway.display_config import resolve_display_setting

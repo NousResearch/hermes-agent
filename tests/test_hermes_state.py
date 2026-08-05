@@ -1150,6 +1150,17 @@ class TestPruneSessionFilters:
         rows = db.list_prune_candidates(cwd_prefix="/home/me/proj")
         assert {r["id"] for r in rows} == {"root", "child"}
 
+    def test_cwd_prefix_windows_separator_arm(self, db):
+        """The backslash child arm (``{esc}\\\\%`` in the pattern) must keep
+        matching Windows children while ``_`` stays literal — a guard against
+        'simplifying' the quadruple backslash."""
+        self._mk(db, "win_root", cwd=r"C:\Users\me\my_project")
+        self._mk(db, "win_child", cwd=r"C:\Users\me\my_project\src")
+        self._mk(db, "win_sibling", cwd=r"C:\Users\me\myXproject\src")
+
+        rows = db.list_prune_candidates(cwd_prefix=r"C:\Users\me\my_project")
+        assert {r["id"] for r in rows} == {"win_root", "win_child"}
+
     def test_unknown_filter_rejected(self, db):
         import pytest as _pytest
         with _pytest.raises(TypeError):

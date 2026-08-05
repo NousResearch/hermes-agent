@@ -170,6 +170,12 @@ def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
 
 
+# Sentinel returned by SessionDB._merge_model_config_json when the session row
+# doesn't exist and on_missing="skip" — distinguishes "no row" from the legal
+# None result ("merged config is empty → store NULL").
+_MODEL_CONFIG_ROW_MISSING = object()
+
+
 def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
     return "(s.cwd = ? OR s.cwd LIKE ? OR s.cwd LIKE ?)", [prefix, f"{prefix}/%", f"{prefix}\\%"]
@@ -4349,6 +4355,97 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
+    def _merge_model_config_json(
+        self,
+        conn,
+        session_id: str,
+        patch: Dict[str, Any],
+        *,
+        on_missing: str = "skip",
+    ):
+        """SELECT + tolerant-parse + merge ``patch`` into a session's model_config.
+
+        Shared by every model_config writer (``update_session_runtime_lock``,
+        ``set_session_yolo``, ``archive_and_compact``,
+        ``patch_session_model_config``) so the merge discipline that keeps
+        lineage markers like ``_branched_from`` / ``_delegate_from`` alive
+        lives in exactly one place. A ``None`` patch value deletes that key.
+        Must run inside an open write transaction (callers own the UPDATE).
+
+        Returns the serialized merged JSON — ``None`` when the merged dict is
+        empty (matching ``create_session``'s NULL convention) — or the
+        ``_MODEL_CONFIG_ROW_MISSING`` sentinel when the row doesn't exist and
+        ``on_missing == "skip"``; ``on_missing == "raise"`` raises ValueError.
+        """
+        row = conn.execute(
+            "SELECT model_config FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            if on_missing == "raise":
+                raise ValueError(f"Session not found: {session_id}")
+            return _MODEL_CONFIG_ROW_MISSING
+        raw = row["model_config"] if isinstance(row, sqlite3.Row) else row[0]
+        config: Dict[str, Any] = {}
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    config = parsed
+            except (json.JSONDecodeError, TypeError):
+                config = {}
+        elif isinstance(raw, dict):
+            config = dict(raw)
+        for key, value in patch.items():
+            if value is None:
+                config.pop(key, None)
+            else:
+                config[key] = value
+        return json.dumps(config) if config else None
+
+    def patch_session_model_config(
+        self, session_id: str, patch: Dict[str, Any]
+    ) -> None:
+        """Merge ``patch`` into a session's model_config JSON atomically.
+
+        A ``None`` patch value removes that key. No-op when the session row
+        doesn't exist or the patch is empty. This is the standalone setter for
+        callers that need to update model_config *without* rewriting the
+        transcript (the transcript-coupled path is ``archive_and_compact``'s
+        ``model_config_patch``, which shares the same merge helper).
+        """
+        if not session_id or not patch:
+            return
+
+        def _do(conn):
+            merged = self._merge_model_config_json(conn, session_id, patch)
+            if merged is _MODEL_CONFIG_ROW_MISSING:
+                return
+            conn.execute(
+                "UPDATE sessions SET model_config = ? WHERE id = ?",
+                (merged, session_id),
+            )
+
+        self._execute_write(_do)
+
+    def get_session_model_config_value(
+        self, session_id: str, key: str, default: Any = None
+    ) -> Any:
+        """Read one key out of a session's model_config JSON (tolerant parse)."""
+        session = self.get_session(session_id) or {}
+        raw = session.get("model_config")
+        config: Dict[str, Any] = {}
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    config = parsed
+            except (json.JSONDecodeError, TypeError):
+                config = {}
+        elif isinstance(raw, dict):
+            config = raw
+        return config.get(key, default)
+
     def update_session_runtime_lock(
         self,
         session_id: str,
@@ -4375,24 +4472,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         }
 
         def _do(conn):
-            row = conn.execute(
-                "SELECT model_config FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-            if row is None:
+            merged = self._merge_model_config_json(
+                conn, session_id, {"browser_model_lock": lock}
+            )
+            if merged is _MODEL_CONFIG_ROW_MISSING:
                 return
-            raw = row["model_config"] if isinstance(row, sqlite3.Row) else row[0]
-            config: Dict[str, Any] = {}
-            if isinstance(raw, str) and raw.strip():
-                try:
-                    parsed = json.loads(raw)
-                    if isinstance(parsed, dict):
-                        config = parsed
-                except Exception:
-                    config = {}
-            elif isinstance(raw, dict):
-                config = dict(raw)
-            config["browser_model_lock"] = lock
             conn.execute(
                 """UPDATE sessions SET
                    model_config = ?,
@@ -4400,7 +4484,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    system_prompt = NULL,
                    system_prompt_hash = NULL
                    WHERE id = ?""",
-                (json.dumps(config), model, session_id),
+                (merged, model, session_id),
             )
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
@@ -4421,27 +4505,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return
 
         def _do(conn):
-            row = conn.execute(
-                "SELECT model_config FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-            if row is None:
+            merged = self._merge_model_config_json(
+                conn, session_id, {"yolo_mode": bool(enabled)}
+            )
+            if merged is _MODEL_CONFIG_ROW_MISSING:
                 return
-            raw = row["model_config"] if isinstance(row, sqlite3.Row) else row[0]
-            config: Dict[str, Any] = {}
-            if isinstance(raw, str) and raw.strip():
-                try:
-                    parsed = json.loads(raw)
-                    if isinstance(parsed, dict):
-                        config = parsed
-                except Exception:
-                    config = {}
-            elif isinstance(raw, dict):
-                config = dict(raw)
-            config["yolo_mode"] = bool(enabled)
             conn.execute(
                 "UPDATE sessions SET model_config = ? WHERE id = ?",
-                (json.dumps(config), session_id),
+                (merged, session_id),
             )
         self._execute_write(_do)
 
@@ -6897,29 +6968,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         def _do(conn):
             patched_model_config = None
             if model_config_patch is not None:
-                row = conn.execute(
-                    "SELECT model_config FROM sessions WHERE id = ?",
-                    (session_id,),
-                ).fetchone()
-                if row is None:
-                    raise ValueError(f"Session not found: {session_id}")
-                raw = row["model_config"] if isinstance(row, sqlite3.Row) else row[0]
-                config: Dict[str, Any] = {}
-                if isinstance(raw, str) and raw.strip():
-                    try:
-                        parsed = json.loads(raw)
-                        if isinstance(parsed, dict):
-                            config = parsed
-                    except (json.JSONDecodeError, TypeError):
-                        config = {}
-                elif isinstance(raw, dict):
-                    config = dict(raw)
-                for key, value in model_config_patch.items():
-                    if value is None:
-                        config.pop(key, None)
-                    else:
-                        config[key] = value
-                patched_model_config = json.dumps(config) if config else None
+                # on_missing="raise": a prune/compaction must not commit
+                # against a vanished session row (the compressor's caller
+                # converts the raised error into a safe keep-the-original
+                # no-op), unlike the flag setters which tolerate missing rows.
+                patched_model_config = self._merge_model_config_json(
+                    conn, session_id, model_config_patch, on_missing="raise"
+                )
 
             # Soft-archive the live turns: active=0 hides them from the live
             # context load, compacted=1 marks them as "summarized away" (vs

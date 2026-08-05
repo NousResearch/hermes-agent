@@ -172,6 +172,42 @@ class TestSearXNGSearchProviderSearch:
         assert result["success"] is False
         assert "500" in result["error"]
 
+    def test_http_403_returns_safe_diagnostic_context(self, monkeypatch):
+        import httpx
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        request = httpx.Request(
+            "GET",
+            "http://localhost:8080/search",
+            params={"q": "private search terms", "format": "json", "pageno": 1},
+        )
+        response = httpx.Response(
+            403,
+            request=request,
+            headers={"server": "granian", "content-type": "text/html; charset=utf-8"},
+            text="Forbidden",
+        )
+
+        with patch("httpx.get", return_value=response):
+            result = SearXNGWebSearchProvider().search("private search terms", limit=5)
+
+        assert result["success"] is False
+        assert result["error"] == (
+            "SearXNG returned HTTP 403 for GET http://localhost:8080/search "
+            "(server=granian, content-type=text/html; charset=utf-8). "
+            "Verify that JSON is enabled in search.formats and that the API client is "
+            "allowed by SearXNG bot-detection/proxy settings."
+        )
+        assert "private search terms" not in result["error"]
+        assert result["diagnostics"] == {
+            "status_code": 403,
+            "method": "GET",
+            "endpoint": "http://localhost:8080/search",
+            "server": "granian",
+            "content_type": "text/html; charset=utf-8",
+        }
+
     def test_request_error_returns_failure(self, monkeypatch):
         import httpx
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")

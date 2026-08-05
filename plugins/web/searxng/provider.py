@@ -88,10 +88,40 @@ class SearXNGWebSearchProvider(WebSearchProvider):
             )
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            logger.warning("SearXNG HTTP error: %s", exc)
+            status_code = exc.response.status_code
+            request = exc.response.request
+            endpoint = str(request.url.copy_with(query=None))
+            server = exc.response.headers.get("server", "unknown")
+            content_type = exc.response.headers.get("content-type", "unknown")
+            diagnostics = {
+                "status_code": status_code,
+                "method": request.method,
+                "endpoint": endpoint,
+                "server": server,
+                "content_type": content_type,
+            }
+            logger.warning(
+                "SearXNG HTTP error: status=%d method=%s endpoint=%s server=%s content_type=%s",
+                status_code,
+                request.method,
+                endpoint,
+                server,
+                content_type,
+            )
+            if status_code == 403:
+                return {
+                    "success": False,
+                    "error": (
+                        f"SearXNG returned HTTP 403 for {request.method} {endpoint} "
+                        f"(server={server}, content-type={content_type}). "
+                        "Verify that JSON is enabled in search.formats and that the API client is "
+                        "allowed by SearXNG bot-detection/proxy settings."
+                    ),
+                    "diagnostics": diagnostics,
+                }
             return {
                 "success": False,
-                "error": f"SearXNG returned HTTP {exc.response.status_code}",
+                "error": f"SearXNG returned HTTP {status_code}",
             }
         except httpx.RequestError as exc:
             logger.warning("SearXNG request error: %s", exc)

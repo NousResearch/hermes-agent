@@ -20,12 +20,12 @@ Architecture:
 
   - :func:`find_comment_id` / :func:`upsert_comment` — thin API wrappers.
 
-  - :func:`fetch_all_review_statuses` — enumerates all
-    ``review-status-*`` artifacts across the orchestrator run and all
-    sub-workflow runs, downloads each, parses the ``review_status=``
-    line from ``review-status.json``, and merges into one array.
-    Recomputed from source every poll cycle, so statuses appear as
-    soon as each job uploads its artifact.
+  - :func:`fetch_all_review_statuses` — lists all ``review-status-*``
+    artifacts on the orchestrator run (GitHub attaches reusable-workflow
+    artifacts to the caller run), downloads each, parses the
+    ``review_status=`` line from ``review-status.json``, and merges into
+    one array. Recomputed from source every poll cycle, so statuses
+    appear as soon as each job uploads its artifact.
 
   - :func:`run` — the polling loop. Calls the API, classifies,
     fetches artifacts, assembles, upserts, sleeps, repeats. Before
@@ -280,32 +280,6 @@ def upsert_comment(
 _REVIEW_STATUS_ARTIFACT_PREFIX = "review-status-"
 
 
-def _list_run_ids(token: str, repo: str, run_id: str) -> list[str]:
-    """Return the orchestrator run ID + all sub-workflow run IDs.
-
-    Sub-workflow runs (workflow_call) may not exist yet on the first few
-    polls — that's fine, they just won't be in the list.
-    """
-    owner, repo_name = repo.split("/")
-    run_info = _api_request(
-        f"{API_BASE}/repos/{owner}/{repo_name}/actions/runs/{run_id}", token
-    )
-    created_at = run_info.get("created_at", "")
-    head_sha = run_info.get("head_sha", "")
-
-    run_ids = [run_id]
-
-    sub_runs = _api_get_paginated(
-        f"{API_BASE}/repos/{owner}/{repo_name}/actions/runs"
-        f"?head_sha={head_sha}&event=workflow_call&per_page=100",
-        token, list_key="workflow_runs",
-    )
-    sub_runs = [r for r in sub_runs if r.get("created_at", "") >= created_at]
-    run_ids.extend(str(r["id"]) for r in sub_runs)
-
-    return run_ids
-
-
 def _list_artifacts(token: str, repo: str, run_id: str) -> list[dict]:
     """List artifacts for a given run (paginated)."""
     owner, repo_name = repo.split("/")
@@ -313,6 +287,13 @@ def _list_artifacts(token: str, repo: str, run_id: str) -> list[dict]:
         f"{API_BASE}/repos/{owner}/{repo_name}/actions/runs/{run_id}/artifacts",
         token, list_key="artifacts",
     )
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that never follows — used to capture the Location."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
 
 
 def _download_artifact(
@@ -328,17 +309,33 @@ def _download_artifact(
     if not archive_download_url:
         return None
 
-    # The archive_download_url is an API URL that redirects to a S3 URL.
-    # Build the request with our auth headers so the redirect works.
-    req = urllib.request.Request(archive_download_url, headers={
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "ci-live-comment",
-    })
+    # The archive_download_url is an API URL that 302s to a signed blob
+    # URL. Hop 1 authenticates to the API; hop 2 follows the redirect
+    # WITHOUT the Authorization header — the blob rejects a request that
+    # carries both a SAS token and an Authorization header (401).
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    location = ""
+    try:
+        opener.open(urllib.request.Request(archive_download_url, headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "ci-live-comment",
+        }), timeout=30)
+    except urllib.error.HTTPError as e:
+        location = e.headers.get("Location", "") if e.code == 302 else ""
+    except Exception:
+        location = ""
+    if not location:
+        return None
+
     zip_path = dest_dir / f"{artifact['name']}.zip"
     try:
-        with urllib.request.urlopen(req) as resp:
+        # No auth headers here; further redirects are safe to follow.
+        with urllib.request.urlopen(
+            urllib.request.Request(location, headers={"User-Agent": "ci-live-comment"}),
+            timeout=60,
+        ) as resp:
             zip_path.write_bytes(resp.read())
     except Exception:
         return None
@@ -347,6 +344,8 @@ def _download_artifact(
     extract_dir.mkdir(parents=True, exist_ok=True)
     try:
         with zipfile.ZipFile(zip_path) as zf:
+            if any(".." in name or name.startswith("/") for name in zf.namelist()):
+                return None
             zf.extractall(extract_dir)
     except Exception:
         return None
@@ -372,12 +371,13 @@ def _parse_status_file(status_file: Path) -> list[dict]:
 def fetch_all_review_statuses(
     token: str, repo: str, run_id: str,
 ) -> list[dict]:
-    """Fetch and merge all review-status artifacts across all runs.
+    """Fetch and merge all review-status artifacts from the run.
 
-    Enumerates artifacts with the ``review-status-`` prefix from the
-    orchestrator run and all sub-workflow runs (workflow_call). Downloads
-    each, parses the ``review-status.json`` inside, and merges into a
-    single flat array.
+    Lists artifacts with the ``review-status-`` prefix on the orchestrator
+    run, downloads each, parses the ``review-status.json`` inside, and
+    merges into a single flat array. GitHub attaches artifacts uploaded by
+    reusable workflow jobs to the caller run, so one listing covers every
+    status-producing job.
 
     Returns the merged list of ``{source, results: [...]}`` objects.
     Artifacts that don't exist yet or fail to parse are silently skipped.
@@ -386,37 +386,43 @@ def fetch_all_review_statuses(
     temp_base = Path("/tmp/review-status-artifacts")
 
     try:
-        run_ids = _list_run_ids(token, repo, run_id)
+        artifacts = _list_artifacts(token, repo, run_id)
     except Exception:
         return all_statuses
 
-    for rid in run_ids:
-        try:
-            artifacts = _list_artifacts(token, repo, rid)
-        except Exception:
+    rs_artifacts = [
+        a for a in artifacts
+        if a.get("name", "").startswith(_REVIEW_STATUS_ARTIFACT_PREFIX)
+    ]
+    if not rs_artifacts:
+        return all_statuses
+
+    # Clean temp dir for this run's artifacts.
+    run_dl_dir = temp_base / str(run_id)
+    if run_dl_dir.exists():
+        shutil.rmtree(run_dl_dir)
+    run_dl_dir.mkdir(parents=True, exist_ok=True)
+
+    for artifact in rs_artifacts:
+        status_file = _download_artifact(token, repo, artifact, run_dl_dir)
+        if status_file is None:
             continue
+        statuses = _parse_status_file(status_file)
+        all_statuses.extend(statuses)
 
-        rs_artifacts = [
-            a for a in artifacts
-            if a.get("name", "").startswith(_REVIEW_STATUS_ARTIFACT_PREFIX)
-        ]
-        if not rs_artifacts:
+    # A re-run can leave several non-expired artifacts with the same name,
+    # each carrying the same source — dedupe by source so the comment
+    # doesn't render duplicate sections.
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for status in all_statuses:
+        src = status.get("source", "")
+        if src in seen:
             continue
-
-        # Clean temp dir for this run's artifacts.
-        run_dl_dir = temp_base / rid
-        if run_dl_dir.exists():
-            shutil.rmtree(run_dl_dir)
-        run_dl_dir.mkdir(parents=True, exist_ok=True)
-
-        for artifact in rs_artifacts:
-            status_file = _download_artifact(token, repo, artifact, run_dl_dir)
-            if status_file is None:
-                continue
-            statuses = _parse_status_file(status_file)
-            all_statuses.extend(statuses)
-
-    return all_statuses
+        if src:
+            seen.add(src)
+        deduped.append(status)
+    return deduped
 
 
 # ---------------------------------------------------------------------------
@@ -454,11 +460,6 @@ def build_comment_body(
     )
 
 
-def _merge_statuses(statuses: list[dict]) -> str:
-    """Merge a list of status arrays into one JSON string."""
-    return json.dumps(statuses) if statuses else ""
-
-
 def _commit_info_for_state(commit_info: str, pending: list[str]) -> str:
     """Use past tense in the final comment after every CI job completes."""
     if pending:
@@ -484,7 +485,9 @@ def run(
 ) -> int:
     """Poll for job statuses and update the PR comment until all done.
 
-    Returns 0 always — comment posting is best-effort.
+    Returns 0 on success; 1 when all jobs completed but a dependency
+    failed (so ``gh run rerun --failed`` can pick it up). Comment posting
+    is best-effort.
     """
     asm = _import_assembler()
     start = time.time()
@@ -526,14 +529,15 @@ def run(
         if gone_pending:
             print(f"  → {len(gone_pending)} job(s) disappeared from pending: {', '.join(gone_pending)}")
 
-        # Dynamically fetch all review-status artifacts from every run.
+        # Dynamically fetch all review-status artifacts from the run.
         artifact_statuses = fetch_all_review_statuses(token, repo, run_id)
-        if len(artifact_statuses) != prev_artifact_count:
+        artifact_count_changed = len(artifact_statuses) != prev_artifact_count
+        if artifact_count_changed:
             print(f"  Found {len(artifact_statuses)} review status entries from artifacts "
                   f"(was {prev_artifact_count} last poll)")
         prev_artifact_count = len(artifact_statuses)
 
-        merged_json = _merge_statuses(artifact_statuses)
+        merged_json = json.dumps(artifact_statuses) if artifact_statuses else ""
         current_commit_info = _commit_info_for_state(commit_info, pending)
 
         body = build_comment_body(
@@ -550,7 +554,7 @@ def run(
                 change_reasons.append(f"{len(new_pending)} new pending job(s)")
             if gone_pending:
                 change_reasons.append(f"{len(gone_pending)} job(s) left pending")
-            if len(artifact_statuses) != prev_artifact_count:
+            if artifact_count_changed:
                 change_reasons.append("artifact statuses updated")
             if not change_reasons:
                 change_reasons.append("initial post")

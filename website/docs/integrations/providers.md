@@ -28,6 +28,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
+| **Actual Computer** | `ACTUAL_API_KEY` in `~/.hermes/.env` for the hosted relay, or `ACTUAL_BASE_URL=http://127.0.0.1:8080` for the local daemon — no key needed on loopback (provider: `actual`; aliases: `actual-computer`, `actualcomputer`, `aci`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **xAI (Grok) — Responses API** | `XAI_API_KEY` in `~/.hermes/.env` (provider: `xai`) |
@@ -546,6 +547,35 @@ model:
 ```
 
 The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi-serving.com/v1`).
+
+### Actual Computer
+
+Your own hardware as a private inference cluster via [Actual Computer](https://actual.inc). Two serving modes, both OpenAI-compatible (Hermes uses the Responses API transport):
+
+- **Hosted relay** — `https://api.actual.inc`, end-to-end encrypted, routes to *your* cluster. Authenticate with an `ac_` inference key from [actual.inc/user/keys](https://actual.inc/user/keys).
+- **Local daemon** — on-device at `http://127.0.0.1:8080`, fully offline. No API key needed: Hermes detects the loopback base URL and authenticates with an internal placeholder automatically.
+
+```bash
+# Hosted relay (ACTUAL_API_KEY in ~/.hermes/.env)
+hermes chat --provider actual --model <model-id-from-your-cluster>
+
+# Local daemon (ACTUAL_BASE_URL=http://127.0.0.1:8080 in ~/.hermes/.env, no key)
+hermes chat --provider actual --model <installed-model-name>
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "actual"
+  default: "<model-id>"
+```
+
+Notes:
+- Model IDs come from your cluster's `GET /v1/models` — discover with `hermes model` or `curl -s https://api.actual.inc/v1/models -H "Authorization: Bearer $ACTUAL_API_KEY"`.
+- Bare hosts are normalized: `ACTUAL_BASE_URL=http://127.0.0.1:8080` becomes `http://127.0.0.1:8080/v1` automatically.
+- Reasoning effort is clamped to Actual's supported range (`none/low/medium/high/max`) — a global `xhigh`/`ultra` setting will not 400 requests.
+- Small local models: Hermes' full default toolset plus the system prompt can exceed a 32k context window, producing an empty-stream error from llama.cpp-family servers. Restrict the toolset (`-t file,web`) or load the model with a larger context. The optional `actual-setup` skill (`hermes skills install official/devops/actual-setup`) covers setup and troubleshooting in detail.
+- Aliases: `actual-computer`, `actualcomputer`, `aci`.
 
 ### StepFun
 
@@ -1145,6 +1175,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
+| [Actual Computer](https://actual.inc) | `https://api.actual.inc/v1` | Private relay to your own cluster; local daemon at `http://127.0.0.1:8080/v1` |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
 | [OpenAI](https://openai.com) | `https://api.openai.com/v1` | Direct OpenAI access |
@@ -1524,7 +1555,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/user-guide/features/fallback-providers).

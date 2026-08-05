@@ -177,6 +177,32 @@ def _resolve_terminal_script_path(candidate: str, cwd: Optional[str]) -> Path:
     return path
 
 
+def _looks_like_shell_script(path: Path) -> bool:
+    """True if *path* is plausibly a shell script (extension or shebang).
+
+    Absolute-path binaries (e.g. ``/usr/bin/python3``) are not scripts;
+    scanning their bytes is wasted work and risks false positives on binary
+    content (#76762). Extension-matched files always count; otherwise only
+    regular files whose first two bytes are a ``#!`` shebang do. Non-regular
+    or unreadable files fall through to the legacy scan so
+    ``_read_referenced_script`` keeps its fails-closed behaviour.
+    """
+    if path.suffix.lower() in {".sh", ".bash", ".zsh"}:
+        return True
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(path, flags)
+    except OSError:
+        return True
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            return True
+        return os.read(descriptor, 2) == b"#!"
+    finally:
+        os.close(descriptor)
+
+
 def _iter_referenced_shell_scripts(
     command: str,
     *,
@@ -226,7 +252,9 @@ def _iter_referenced_shell_scripts(
         # (#77131). Skip pure-separator tokens.
         if executable.strip("/"):
             if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
-                yield _resolve_terminal_script_path(executable, cwd)
+                candidate = _resolve_terminal_script_path(executable, cwd)
+                if _looks_like_shell_script(candidate):
+                    yield candidate
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:

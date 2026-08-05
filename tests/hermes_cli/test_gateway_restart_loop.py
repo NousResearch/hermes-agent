@@ -695,6 +695,28 @@ class TestLifecycleGuardModule:
         )
         assert result is False
 
+    def test_absolute_path_extensionless_non_script_is_not_walked(self, tmp_path):
+        """#76762 follow-up: an absolute path to a non-script file (no .sh
+        extension, no shebang) is not treated as a referenced shell script,
+        so its bytes are never read and scanned.
+
+        Before this fix the walker yielded every path containing ``/``,
+        reading and re-tokenizing arbitrary files (logs, data, binaries) —
+        wasted I/O and a false-positive source.
+        """
+        from cron.lifecycle_guard import _iter_referenced_shell_scripts
+
+        non_script = tmp_path / "notes.txt"
+        non_script.write_text("hermes gateway stop\n")
+        walked = list(_iter_referenced_shell_scripts(str(non_script)))
+        assert walked == []
+
+        shebang = tmp_path / "tool"  # extensionless, but a real script
+        shebang.write_text("#!/bin/bash\necho hi\n")
+        shebang.chmod(0o700)
+        walked = list(_iter_referenced_shell_scripts(str(shebang)))
+        assert walked == [shebang]
+
     def test_shell_script_reference_walk_still_works(self, tmp_path):
         """The referenced-script walk still applies to real shell scripts:
         a .sh script that itself invokes a lifecycle command is caught."""

@@ -239,7 +239,7 @@ class FederationMemorySync:
             )
         else:
             # Entry doesn't exist — append
-            with open(mem_path, "a") as f:
+            with open(mem_path, "a", encoding="utf-8") as f:
                 f.write(f"## {entry.node_id}\n{entry.content}\n")
             logger.info(
                 "Federation memory: added remote entry %s", entry.node_id,

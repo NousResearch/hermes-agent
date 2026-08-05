@@ -297,6 +297,12 @@ class ResponsesApiTransport(ProviderTransport):
         if params.get("is_xai_responses", False):
             # xAI Responses tops out at high; keep generic stronger values usable.
             _effort_clamp.update({"xhigh": "high", "max": "high", "ultra": "high"})
+        if (params.get("provider") or "").strip().lower() == "actual":
+            # Actual Computer relays to SGLang/vLLM backends that accept only
+            # none/low/medium/high/max for reasoning effort — a forwarded
+            # xhigh/ultra fails with a wrapped HTTP 400 ("Expecting value:
+            # line 1 column 1"). Clamp Hermes' wider set to the supported one.
+            _effort_clamp.update({"xhigh": "high", "ultra": "max"})
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)

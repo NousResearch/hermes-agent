@@ -199,3 +199,54 @@ def test_actual_provider_model_ids_use_local_profile_catalog(monkeypatch):
         api_key=ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
         base_url=DEFAULT_ACTUAL_LOCAL_BASE_URL,
     )
+
+
+def test_actual_codex_transport_clamps_reasoning_effort():
+    """Actual's SGLang/vLLM backends only accept none/low/medium/high/max.
+
+    A global xhigh/ultra reasoning_effort must be clamped before the wire,
+    otherwise every request fails with a wrapped HTTP 400. Regression for
+    the field-reported reasoning_effort trap.
+    """
+    from agent.transports.codex import ResponsesApiTransport
+
+    t = ResponsesApiTransport()
+    for requested, expected in (("xhigh", "high"), ("ultra", "max"), ("high", "high")):
+        kwargs = t.build_kwargs(
+            model="glm-5.2-nvfp4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            provider="actual",
+            reasoning_config={"effort": requested},
+            base_url=DEFAULT_ACTUAL_BASE_URL,
+        )
+        assert kwargs["reasoning"]["effort"] == expected, requested
+
+    # Other providers keep the wider values untouched on the generic path.
+    kwargs = t.build_kwargs(
+        model="some-model",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None,
+        provider="openai-codex",
+        reasoning_config={"effort": "xhigh"},
+    )
+    assert kwargs["reasoning"]["effort"] == "xhigh"
+
+
+def test_actual_runtime_config_local_base_url_without_key(monkeypatch):
+    """Config-driven loopback base_url (not just env) reaches the no-auth path."""
+    _clear_actual_env(monkeypatch)
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "actual",
+            "base_url": "http://localhost:8080",
+            "default": "actual/local-model",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="actual")
+
+    assert resolved["api_key"] == ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
+    assert resolved["api_mode"] == "codex_responses"

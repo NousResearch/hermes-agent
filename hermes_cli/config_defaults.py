@@ -3334,6 +3334,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "ACTUAL_API_KEY": {
+        "description": "Actual Computer inference key (ac_...)",
+        "prompt": "Actual Computer inference key",
+        "url": "https://actual.inc/user/keys",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ACTUAL_BASE_URL": {
+        "description": "Actual Computer base URL override (set to http://127.0.0.1:8080 for the local offline daemon)",
+        "prompt": "Actual Computer base URL (leave empty for hosted relay)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "FIREWORKS_API_KEY": {
         "description": "Fireworks AI API key",
         "prompt": "Fireworks AI API key",

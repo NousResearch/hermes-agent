@@ -185,7 +185,9 @@ class OrchBridge:
             code = getattr(exc, "code", None)
             if code:
                 raise BridgeError(f"bind_failed:{code}") from None
-            raise BridgeError("bind_failed") from None
+            # Preserve sqlite / API detail for operators (still fail-closed).
+            detail = str(exc).replace(" ", "_")[:160]
+            raise BridgeError(f"bind_failed:{type(exc).__name__}:{detail}") from None
         return bound
 
     def native_write_forbidden(self) -> None:

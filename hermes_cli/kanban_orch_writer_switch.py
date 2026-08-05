@@ -1,7 +1,9 @@
-"""Opt-in ORCH V4 live sidecar writer pointer.
+"""Opt-in / default ORCH V4 live sidecar writer pointer.
 
-Default is OFF. Enable only when:
-  os.environ.get("ORCH_V4_WRITER") == "1"
+Enabled when either:
+  - os.environ.get("ORCH_V4_WRITER") == "1", or
+  - writer json has enabled_default=true
+
 and /home/claw/.hermes/orch_v4_writer.json exists.
 """
 from __future__ import annotations
@@ -10,16 +12,29 @@ import json
 import os
 from pathlib import Path
 
-from hermes_cli.kanban_orch_bridge import OrchBridge, BridgeError
+from hermes_cli.kanban_orch_bridge import BridgeError, OrchBridge
 
 DEFAULT_CFG = Path.home() / ".hermes" / "orch_v4_writer.json"
 
 
+def _cfg_default_enabled(path: Path) -> bool:
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return bool(cfg.get("enabled_default") is True)
+
+
 def writer_enabled(cfg_path: str | os.PathLike[str] | None = None) -> bool:
     path = Path(cfg_path) if cfg_path else DEFAULT_CFG
-    if os.environ.get("ORCH_V4_WRITER") != "1":
+    if not path.is_file():
         return False
-    return path.is_file()
+    if os.environ.get("ORCH_V4_WRITER") == "0":
+        # explicit kill switch
+        return False
+    if os.environ.get("ORCH_V4_WRITER") == "1":
+        return True
+    return _cfg_default_enabled(path)
 
 
 def open_live_bridge(cfg_path: str | os.PathLike[str] | None = None) -> OrchBridge:

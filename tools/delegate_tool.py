@@ -1954,6 +1954,7 @@ def _build_child_agent(
                 log_prefix=f"[subagent-{task_index}]",
                 platform="subagent",
                 skip_context_files=True,
+                load_soul_identity=True,
                 skip_memory=True,
                 clarify_callback=None,
                 thinking_callback=child_thinking_cb,

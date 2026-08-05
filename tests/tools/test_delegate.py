@@ -139,6 +139,31 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertIn("YOUR TASK", prompt)
         self.assertNotIn("CONTEXT", prompt)
 
+
+class TestChildAgentContextIsolation(unittest.TestCase):
+    def test_child_keeps_soul_identity_while_skipping_context_and_memory(self):
+        parent = _make_mock_parent()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Inspect safely",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="leaf",
+            )
+
+        kwargs = MockAgent.call_args.kwargs
+        self.assertTrue(kwargs["load_soul_identity"])
+        self.assertTrue(kwargs["skip_context_files"])
+        self.assertTrue(kwargs["skip_memory"])
+
+
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])

@@ -6,6 +6,7 @@ import { FindBar } from '@/components/find-bar'
 import { I18nProvider } from '@/i18n'
 import { en } from '@/i18n/en'
 import { zh } from '@/i18n/zh'
+import { useKeybinds, type KeybindRuntimeDeps } from '@/app/hooks/use-keybinds'
 import { findBarClaimsCombo, findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
 import { KEYBIND_ACTIONS } from '@/lib/keybinds/actions'
 import { actionAllowedInInput } from '@/lib/keybinds/combo'
@@ -21,6 +22,13 @@ import {
   setFindQuery,
   updateFindResults
 } from '@/store/find-in-page'
+
+// useKeybinds only needs the theme context for resolvedMode/setMode; the real
+// provider persists themes and subscribes to backend sync, which is unrelated
+// to the find-in-page gate under test.
+vi.mock('@/themes/context', () => ({
+  useTheme: () => ({ resolvedMode: 'dark', setMode: vi.fn() })
+}))
 
 // ── Bridge double ───────────────────────────────────────────────────────────
 // Stands in for the preload `hermesDesktop` surface. `onFoundInPage` records
@@ -620,6 +628,55 @@ describe('FindBar', () => {
     // The store still has active=true but the component guard suppresses
     // rendering — a harmless state ghost that the next pathname-change
     // cleanup will drain via closeFindBar.
+    expect($findInPage.get().active).toBe(true)
+  })
+})
+
+// ── Keybind gate: view.findInPage on overlay routes ─────────────────────────
+// The component guard above proves hidden RENDERING; this proves the keybind
+// itself never OPENS the bar on an overlay route. Mounted against the real
+// useKeybinds listener + combo index so a regression in either the handler
+// wiring or the route classification fails the test.
+
+function KeybindHarness({ deps }: { deps: KeybindRuntimeDeps }) {
+  useKeybinds(deps)
+
+  return null
+}
+
+describe('view.findInPage keybind gate', () => {
+  function renderKeybinds(pathname: string) {
+    const deps: KeybindRuntimeDeps = {
+      toggleCommandCenter: vi.fn(),
+      startFreshSession: vi.fn(),
+      openNewSessionTab: vi.fn(),
+      toggleSelectedPin: vi.fn()
+    }
+
+    render(
+      <MemoryRouter initialEntries={[pathname]}>
+        <I18nProvider configClient={null} initialLocale="en">
+          <KeybindHarness deps={deps} />
+        </I18nProvider>
+      </MemoryRouter>
+    )
+
+    return deps
+  }
+
+  it('does not open the find bar for mod+f while an overlay route is showing', () => {
+    renderKeybinds('/settings')
+
+    fireEvent.keyDown(window, { key: 'f', metaKey: true })
+
+    expect($findInPage.get().active).toBe(false)
+  })
+
+  it('opens the find bar for mod+f on a normal chat route', () => {
+    renderKeybinds('/session/a')
+
+    fireEvent.keyDown(window, { key: 'f', metaKey: true })
+
     expect($findInPage.get().active).toBe(true)
   })
 })

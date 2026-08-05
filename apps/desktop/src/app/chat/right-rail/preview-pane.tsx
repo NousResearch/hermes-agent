@@ -2,11 +2,9 @@ import { useStore } from '@nanostores/react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-controls'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
-import { Bug } from '@/lib/icons'
 import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
@@ -19,11 +17,11 @@ import {
   compactUrl,
   formatLogLine,
   isNearConsoleBottom,
-  PreviewConsolePanel,
-  PreviewConsoleTitlebarIcon
+  PreviewConsolePanel
 } from './preview-console'
-import { type ConsoleEntry, createPreviewConsoleState } from './preview-console-state'
+import { type ConsoleEntry } from './preview-console-state'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
+import { previewConsoleState, registerPreviewDevTools } from './preview-strip-tools'
 
 type PreviewWebview = HTMLElement & {
   closeDevTools?: () => void
@@ -38,7 +36,9 @@ interface PreviewPaneProps {
   embedded?: boolean
   onRestartServer?: (url: string, context?: string) => Promise<string>
   reloadRequest?: number
-  setTitlebarToolGroup?: SetTitlebarToolGroup
+  /** The preview tab this pane renders. Keys the per-tab console store and the
+   *  DevTools handle the STRIP glyphs read (see preview-strip-tools). */
+  tabId?: string
   target: PreviewTarget
 }
 
@@ -121,18 +121,12 @@ function PreviewLoadError({
   )
 }
 
-const TITLEBAR_GROUP_ID = 'preview'
-
-export function PreviewPane({
-  embedded = false,
-  onRestartServer,
-  reloadRequest = 0,
-  setTitlebarToolGroup,
-  target
-}: PreviewPaneProps) {
+export function PreviewPane({ embedded = false, onRestartServer, reloadRequest = 0, tabId, target }: PreviewPaneProps) {
   const { t } = useI18n()
   const copy = t.preview.web
-  const [consoleState] = useState(() => createPreviewConsoleState())
+  // The console store belongs to the TAB, not this render: the toggles live on
+  // the tab and must read the same logs this pane appends to.
+  const consoleState = previewConsoleState(tabId ?? target.url)
   const consoleBodyRef = useRef<HTMLDivElement | null>(null)
   const consoleShouldStickRef = useRef(true)
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -297,45 +291,31 @@ export function PreviewPane({
 
     if (webview.isDevToolsOpened?.()) {
       webview.closeDevTools?.()
-      setDevtoolsOpen(false)
 
       return
     }
 
     webview.openDevTools()
-    setDevtoolsOpen(true)
   }, [])
 
+  // Publish the DevTools handle for THIS tab so the tab's own toggle can drive
+  // the webview (which only exists in here). Registered on every open/close
+  // change so the button's active state stays truthful.
   useEffect(() => {
-    if (!setTitlebarToolGroup) {
+    if (!isWebPreview || !tabId) {
       return
     }
 
-    const tools: TitlebarTool[] = [
-      ...(isWebPreview && !isRemoteHtml
-        ? [
-            {
-              active: consoleOpen,
-              icon: <PreviewConsoleTitlebarIcon consoleState={consoleState} />,
-              id: `${TITLEBAR_GROUP_ID}-console`,
-              label: consoleOpen ? copy.hideConsole : copy.showConsole,
-              onSelect: () => consoleState.setOpen(open => !open)
-            },
-            {
-              active: devtoolsOpen,
-              icon: <Bug />,
-              id: `${TITLEBAR_GROUP_ID}-devtools`,
-              label: devtoolsOpen ? copy.hideDevTools : copy.openDevTools,
-              onSelect: toggleDevTools
-            }
-          ]
-        : [])
-    ]
+    // Remote HTML renders in a sandboxed iframe, not a webview — there is no
+    // console and no DevTools to offer (same guard the titlebar tools had).
+    if (isRemoteHtml) {
+      return
+    }
 
-    setTitlebarToolGroup(TITLEBAR_GROUP_ID, tools)
+    registerPreviewDevTools(tabId, { open: devtoolsOpen, toggle: toggleDevTools })
 
-    return () => setTitlebarToolGroup(TITLEBAR_GROUP_ID, [])
-  }, [consoleOpen, consoleState, copy, devtoolsOpen, isRemoteHtml, isWebPreview, setTitlebarToolGroup, toggleDevTools])
+    return () => registerPreviewDevTools(tabId, null)
+  }, [devtoolsOpen, isRemoteHtml, isWebPreview, tabId, toggleDevTools])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -609,8 +589,15 @@ export function PreviewPane({
 
     const onStart = () => setLoading(true)
     const onStop = () => setLoading(false)
+    // The WEBVIEW is the source of truth for DevTools, not our click handler:
+    // closing the DevTools window itself fires devtools-closed with no click,
+    // and the glyph was left stuck "on" when we tracked it locally.
+    const onDevToolsOpened = () => setDevtoolsOpen(true)
+    const onDevToolsClosed = () => setDevtoolsOpen(false)
 
     webview.addEventListener('console-message', onConsole)
+    webview.addEventListener('devtools-closed', onDevToolsClosed)
+    webview.addEventListener('devtools-opened', onDevToolsOpened)
     webview.addEventListener('did-fail-load', onFail)
     webview.addEventListener('did-navigate', onNavigate)
     webview.addEventListener('did-navigate-in-page', onNavigate)
@@ -621,6 +608,8 @@ export function PreviewPane({
 
     return () => {
       webview.removeEventListener('console-message', onConsole)
+      webview.removeEventListener('devtools-closed', onDevToolsClosed)
+      webview.removeEventListener('devtools-opened', onDevToolsOpened)
       webview.removeEventListener('did-fail-load', onFail)
       webview.removeEventListener('did-navigate', onNavigate)
       webview.removeEventListener('did-navigate-in-page', onNavigate)

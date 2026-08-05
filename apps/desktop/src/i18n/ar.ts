@@ -2147,10 +2147,6 @@ export const ar = defineLocale({
   },
   preview: {
     tab: 'معاينة',
-    closeTab: label => `إغلاق ${label}`,
-    closeOthers: 'إغلاق الأخرى',
-    closeToRight: 'إغلاق ما على اليمين',
-    closeAll: 'إغلاق الكل',
     closePane: 'إغلاق جزء المعاينة',
     loading: 'جار تحميل المعاينة',
     unavailable: 'المعاينة غير متاحة',

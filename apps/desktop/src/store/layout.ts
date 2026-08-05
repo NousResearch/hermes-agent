@@ -41,7 +41,6 @@ export const FILE_BROWSER_PANE_ID = 'file-browser'
 /** The file tree's id in the LAYOUT TREE — distinct from the pane-state id
  *  above, which keys its open/width record. Toggles need both. */
 export const FILES_PANE_ID = 'files'
-export const PREVIEW_PANE_ID = 'preview'
 
 /** Every rail tab is a preview of something, namespaced by what backs it: a
  *  path on disk, a live URL, or an id into the in-memory artifact registry. */
@@ -49,7 +48,6 @@ export type RightRailTabId = `artifact:${string}` | `file:${string}` | `url:${st
 
 ensurePaneRegistered(CHAT_SIDEBAR_PANE_ID, { open: true })
 ensurePaneRegistered(FILE_BROWSER_PANE_ID, { open: false })
-ensurePaneRegistered(PREVIEW_PANE_ID, { open: true })
 
 export const $sidebarOpen: ReadableAtom<boolean> = computed(
   $paneStates,

@@ -1,14 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { $rightRailActiveTabId, PREVIEW_PANE_ID } from './layout'
-import { $paneOpen } from './panes'
+import { $rightRailActiveTabId } from './layout'
 import {
   $previewServerRestart,
   $previewServerRestartStatus,
   $previewTabs,
   $previewTarget,
   beginPreviewServerRestart,
-  closeActiveRightRailTab,
   closePreviewForSource,
   closeRightRail,
   closeRightRailTab,
@@ -58,7 +56,6 @@ describe('preview store', () => {
   it('opens the pane and fronts the new tab', () => {
     openPreview(fileTarget('/work/demo.html'), 'tool-result')
 
-    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
     expect($rightRailActiveTabId.get()).toBe('file:file:///work/demo.html')
     expect($previewTarget.get()?.path).toBe('/work/demo.html')
   })
@@ -69,6 +66,20 @@ describe('preview store', () => {
     openPreview(artifactTarget('session-1:dashboard'))
 
     expect($previewTabs.get().map(tab => tab.target.kind)).toEqual(['file', 'url', 'artifact'])
+  })
+
+  // The Browser is a SINGLETON: the tab names the surface, not the page, so a
+  // second URL navigates the browser it already has instead of stacking a
+  // second Browser tab beside the first.
+  it('keeps one Browser tab — a second url swaps its target instead of adding a tab', () => {
+    openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
+    openPreview(urlTarget('https://www.reddit.com'), 'tool-result')
+
+    const urlTabs = $previewTabs.get().filter(tab => tab.target.kind === 'url')
+
+    expect(urlTabs).toHaveLength(1)
+    expect(urlTabs[0].target.url).toBe('https://www.reddit.com')
+    expect($rightRailActiveTabId.get()).toBe(urlTabs[0].id)
   })
 
   it('re-fronts an existing tab instead of duplicating it, refreshing its target', () => {
@@ -89,23 +100,23 @@ describe('preview store', () => {
     expect($previewTarget.get()?.renderMode).toBe('preview')
   })
 
-  it('falls back to a neighbouring tab when the active one closes, and shuts the pane on the last', () => {
+  it('falls back to a neighbouring tab when the active one closes, and clears the selection on the last', () => {
     openPreview(fileTarget('/work/one.html'), 'file-browser')
     openPreview(fileTarget('/work/two.html'), 'file-browser')
 
     closeRightRailTab(previewTabId(fileTarget('/work/two.html')))
 
     expect($previewTarget.get()?.path).toBe('/work/one.html')
-    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
 
-    expect(closeActiveRightRailTab()).toBe(true)
+    closeRightRailTab(previewTabId(fileTarget('/work/one.html')))
     expect($previewTarget.get()).toBeNull()
     expect($rightRailActiveTabId.get()).toBeNull()
-    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(false)
   })
 
-  it('reports nothing to close when the rail is empty, so the shortcut falls through', () => {
-    expect(closeActiveRightRailTab()).toBe(false)
+  it('ignores a close for a tab that is not open, so the shortcut falls through', () => {
+    closeRightRailTab('file:file:///nowhere.html')
+
+    expect($previewTabs.get()).toHaveLength(0)
   })
 
   it('closes by the raw source the composer rows were handed', () => {

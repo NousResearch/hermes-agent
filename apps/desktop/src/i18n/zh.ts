@@ -2762,10 +2762,6 @@ export const zh: Translations = {
 
   preview: {
     tab: '预览',
-    closeTab: label => `关闭 ${label}`,
-    closeOthers: '关闭其他',
-    closeToRight: '关闭右侧',
-    closeAll: '全部关闭',
     closePane: '关闭预览面板',
     loading: '正在加载预览',
     unavailable: '预览不可用',

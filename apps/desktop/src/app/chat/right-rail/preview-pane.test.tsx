@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $connection } from '@/store/session'
 
 import { PreviewPane } from './preview-pane'
+import { forgetPreviewStripTools, previewConsoleState } from './preview-strip-tools'
 
 describe('PreviewPane console state', () => {
   beforeEach(() => {
@@ -34,7 +35,6 @@ describe('PreviewPane console state', () => {
     await act(async () => {
       render(
         <PreviewPane
-          setTitlebarToolGroup={vi.fn()}
           target={{
             kind: 'file',
             label: 'file.txt',
@@ -51,14 +51,19 @@ describe('PreviewPane console state', () => {
     expect(onPreviewFileChanged).not.toHaveBeenCalled()
   })
 
-  it('does not rebuild the pane titlebar group for streamed console logs', async () => {
-    const setTitlebarToolGroup = vi.fn()
+  // The console lives in the TAB's store (the toggles sit on the tab, not in the
+  // titlebar), so a streamed log has to land in the store keyed by tabId — that
+  // is what both the panel in the pane and the button on the tab read.
+  it('streams console logs into the tab-keyed console store', async () => {
+    const tabId = 'url:http://localhost:5174'
+
+    forgetPreviewStripTools(tabId)
 
     let rendered!: ReturnType<typeof render>
     await act(async () => {
       rendered = render(
         <PreviewPane
-          setTitlebarToolGroup={setTitlebarToolGroup}
+          tabId={tabId}
           target={{
             kind: 'url',
             label: 'Preview',
@@ -69,7 +74,6 @@ describe('PreviewPane console state', () => {
       )
     })
 
-    const initialCalls = setTitlebarToolGroup.mock.calls.length
     const webview = rendered.container.querySelector('webview')
 
     expect(webview).toBeInstanceOf(HTMLElement)
@@ -84,12 +88,13 @@ describe('PreviewPane console state', () => {
       )
     })
 
-    expect(setTitlebarToolGroup).toHaveBeenCalledTimes(initialCalls)
+    expect(previewConsoleState(tabId).$logs.get().at(-1)?.message).toBe('streamed log line')
+
+    forgetPreviewStripTools(tabId)
   })
 
   it('renders authenticated remote HTML safely and honors source mode', async () => {
     const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
-    const setTitlebarToolGroup = vi.fn()
 
     const target = {
       dataUrl,
@@ -103,26 +108,21 @@ describe('PreviewPane console state', () => {
 
     let rendered!: ReturnType<typeof render>
     await act(async () => {
-      rendered = render(<PreviewPane setTitlebarToolGroup={setTitlebarToolGroup} target={target} />)
+      rendered = render(<PreviewPane target={target} />)
     })
 
     const iframe = rendered.container.querySelector('iframe')
-    const tools = setTitlebarToolGroup.mock.calls.at(-1)?.[1] ?? []
 
     expect(rendered.container.querySelector('webview')).toBeNull()
     expect(iframe?.getAttribute('sandbox')).toBe('')
     expect(iframe?.getAttribute('referrerpolicy')).toBe('no-referrer')
     expect(iframe?.getAttribute('srcdoc')).toContain(`default-src 'none'`)
     expect(iframe?.getAttribute('srcdoc')).toContain('<h1>remote</h1>')
-    expect(tools).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: 'preview-devtools' })]))
     expect(rendered.container.textContent).not.toContain(dataUrl)
 
     await act(async () => {
       rendered.rerender(
-        <PreviewPane
-          setTitlebarToolGroup={setTitlebarToolGroup}
-          target={{ ...target, dataUrl: undefined, renderMode: 'source', transient: true }}
-        />
+        <PreviewPane target={{ ...target, dataUrl: undefined, renderMode: 'source', transient: true }} />
       )
     })
 

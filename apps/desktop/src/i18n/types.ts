@@ -2180,10 +2180,6 @@ export interface Translations {
 
   preview: {
     tab: string
-    closeTab: (label: string) => string
-    closeOthers: string
-    closeToRight: string
-    closeAll: string
     closePane: string
     loading: string
     unavailable: string

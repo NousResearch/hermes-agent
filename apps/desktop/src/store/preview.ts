@@ -3,8 +3,7 @@ import { atom, computed } from 'nanostores'
 import { persistentAtom } from '@/lib/persisted'
 import { normalize } from '@/lib/text'
 
-import { $rightRailActiveTabId, PREVIEW_PANE_ID, type RightRailTabId, selectRightRailTab } from './layout'
-import { setPaneOpen } from './panes'
+import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
 
 /**
  * PREVIEW RAIL — one list of tabs, one way in.
@@ -96,8 +95,16 @@ function isPreviewTab(value: unknown): value is PreviewTab {
 export const $previewTabs = persistentAtom<PreviewTab[]>(TABS_STORAGE_KEY, [], {
   decode: raw => {
     const parsed = JSON.parse(raw) as unknown
+    const tabs = Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []
 
-    return Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []
+    // One Browser: rekey restored URL tabs onto the singleton id (rows written
+    // before the id existed carried one id per address) and keep only the
+    // LAST — the most recently opened page is the one the browser shows.
+    const lastUrl = tabs.findLast(tab => tab.target.kind === 'url')
+
+    return tabs
+      .filter(tab => tab.target.kind !== 'url' || tab === lastUrl)
+      .map(tab => (tab.target.kind === 'url' ? { ...tab, id: previewTabId(tab.target) } : tab))
   },
   // Inline bytes are not restorable. Strip them from images, and skip remote
   // HTML and artifact tabs that cannot render without their in-memory payload.
@@ -147,14 +154,18 @@ export const $previewTarget = computed(
 export const $previewTabSources = computed($previewTabs, tabs => tabs.map(tab => tab.target.source))
 
 export const $previewReloadRequest = atom(0)
-/** Bumped by every `openPreview` call so the layout can reveal the pane even
- *  when the tab already existed (re-opening a hidden pane must still show it). */
-export const $previewOpenRequest = atom(0)
 export const $previewServerRestart = atom<PreviewServerRestart | null>(null)
 export const $previewServerRestartStatus = computed($previewServerRestart, restart => restart?.status ?? 'idle')
 
+/** The one Browser tab's id. URL targets all share it: the tab names the
+ *  SURFACE (Browser), not the page, so opening a second URL navigates the
+ *  browser it already has — re-front the tab, swap its target, and the pane
+ *  rebuilds its webview against the new url. Files and artifacts stay keyed
+ *  by identity; only the web surface is a singleton. */
+const BROWSER_TAB_ID: RightRailTabId = 'url:browser'
+
 export function previewTabId(target: PreviewTarget): RightRailTabId {
-  return `${target.kind}:${target.url}`
+  return target.kind === 'url' ? BROWSER_TAB_ID : `${target.kind}:${target.url}`
 }
 
 // Browsing files is "peek at the source"; a tool or an explicit link handing
@@ -171,9 +182,9 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
   return { ...target, renderMode: isFilePreviewSource(source) ? 'source' : 'preview' }
 }
 
-/** Open (or re-front) the rail tab for `target`. Re-opening an existing tab
- *  refreshes its target so a stale label/path can't outlive the thing it
- *  points at. The only way anything reaches the preview rail. */
+/** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes
+ *  its target so a stale label/path can't outlive the thing it points at. The
+ *  only way anything reaches a preview. */
 export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
   const resolved = previewTargetForSource(target, source)
   const id = previewTabId(resolved)
@@ -182,12 +193,10 @@ export function openPreview(target: PreviewTarget, source: PreviewRecordSource =
   const tab: PreviewTab = { id, target: resolved }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
-  setPaneOpen(PREVIEW_PANE_ID, true)
   selectRightRailTab(id)
-  $previewOpenRequest.set($previewOpenRequest.get() + 1)
 }
 
-export function closeRightRailTab(tabId: RightRailTabId) {
+export function closeRightRailTab(tabId: string) {
   const current = $previewTabs.get()
   const index = current.findIndex(tab => tab.id === tabId)
 
@@ -204,7 +213,7 @@ export function closeRightRailTab(tabId: RightRailTabId) {
   }
 
   if (next.length === 0) {
-    setPaneOpen(PREVIEW_PANE_ID, false)
+    selectRightRailTab(null)
   }
 }
 
@@ -231,50 +240,10 @@ export function closeArtifactPreviewTabs() {
   }
 }
 
-/** Close the tab the right rail is actually showing. Returns false when nothing
- *  closed, so ⌘W can fall through to the next handler. */
-export function closeActiveRightRailTab(): boolean {
-  const tab = activePreviewTab()
-
-  if (!tab) {
-    return false
-  }
-
-  closeRightRailTab(tab.id)
-
-  return true
-}
-
-/** Close every rail tab except `keepId`, then make `keepId` active. */
-export function closeOtherRightRailTabs(keepId: RightRailTabId) {
-  for (const tab of $previewTabs.get()) {
-    if (tab.id !== keepId) {
-      closeRightRailTab(tab.id)
-    }
-  }
-
-  selectRightRailTab(keepId)
-}
-
-/** Close every rail tab positioned after `tabId` (VS Code's "Close to the Right"). */
-export function closeRightRailTabsToRight(tabId: RightRailTabId) {
-  const tabs = $previewTabs.get()
-  const index = tabs.findIndex(tab => tab.id === tabId)
-
-  if (index === -1) {
-    return
-  }
-
-  for (const tab of tabs.slice(index + 1)) {
-    closeRightRailTab(tab.id)
-  }
-}
-
-/** Close every tab so the rail pane unmounts. */
+/** Close every tab so the rail's panes leave the tree. */
 export function closeRightRail() {
   $previewTabs.set([])
   selectRightRailTab(null)
-  setPaneOpen(PREVIEW_PANE_ID, false)
 }
 
 export function requestPreviewReload() {

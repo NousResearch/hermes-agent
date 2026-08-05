@@ -323,7 +323,7 @@ def _approval_adapter(reaction_response=None, item_id=501, reject_emoji=None):
     sent = []
     timeouts = {}
 
-    async def fake_send_command(command, timeout=30.0):
+    async def fake_send_command(command, timeout=30.0, **_kwargs):
         sent.append(command)
         timeouts[command.split(" ", 1)[0]] = timeout
         if command.startswith("/_send "):
@@ -567,7 +567,7 @@ async def test_exec_approval_reports_failure_when_daemon_rejects_the_send():
     """A rejected prompt send must fail so run.py falls back to plain text."""
     adapter = _adapter_with_ws()
 
-    async def fake_send_command(command, timeout=30.0):
+    async def fake_send_command(command, timeout=30.0, **_kwargs):
         return {"type": "chatCmdError", "chatError": {}}
 
     adapter._send_command = fake_send_command
@@ -756,6 +756,118 @@ async def test_tap_on_a_withdrawn_prompt_resolves_nothing(resolved_approvals):
     await _drain(adapter)
 
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_prompt_lost_to_a_dead_socket_keeps_the_session_typed_only(
+    resolved_approvals,
+):
+    """A prompt the user never saw still holds the session to typing.
+
+    ``tools/approval`` queues the approval before it notifies the adapter, so
+    a send that never leaves the process leaves command A pending in core with
+    no message of its own. If the socket then recovers and command B pends in
+    the same session, an unguarded adapter sees an empty prompt map, offers
+    the tap lane for B, and a tap resolves the FIFO head — A, which the user
+    never read.
+    """
+    calls, _state = resolved_approvals
+    adapter, _sent = _approval_adapter()
+
+    # A: WebSocket down. Nothing is sent, nothing is registered — but core
+    # has already queued it and will hold it for the approval window.
+    live_ws, adapter._ws = adapter._ws, None
+    result = await adapter.send_exec_approval(
+        chat_id="42", command="touch /tmp/unseen-A", session_key="s",
+        description="create A",
+    )
+    assert result.success is False
+
+    # The inner reconnect loop restores the socket without touching state.
+    adapter._ws = live_ws
+
+    # B: same session, and this one the user actually reads.
+    await adapter.send_exec_approval(
+        chat_id="42", command="touch /tmp/seen-B", session_key="s",
+        description="create B",
+    )
+    await _drain(adapter)
+
+    assert adapter._approval_prompts_by_item == {}
+    prompt_b = [t for t in _ws_texts(adapter) if "seen-B" in t]
+    assert len(prompt_b) == 1
+    assert "tap a reaction" not in prompt_b[0]
+    assert "/approve" in prompt_b[0]
+
+    # ...so a tap on B cannot run A.
+    await adapter._handle_event(_reaction_event("✅", item_id=501))
+    await _drain(adapter)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_unanchored_prompt_keeps_the_session_typed_only(resolved_approvals):
+    """An anchored send that timed out registers nothing — same hole.
+
+    The message may well have been delivered, so this path reports success,
+    but no item id came back and no prompt is tracked. Command A stays queued
+    in core and invisible to the single-prompt guard.
+    """
+    calls, _state = resolved_approvals
+    adapter, _sent = _approval_adapter()
+    daemon = adapter._send_command
+    slow = {"send": True}
+
+    async def flaky_send_command(command, timeout=30.0, **kwargs):
+        if slow["send"] and command.startswith("/_send "):
+            return None  # daemon slower than the anchored-send budget
+        return await daemon(command, timeout=timeout, **kwargs)
+
+    adapter._send_command = flaky_send_command
+
+    result = await adapter.send_exec_approval(
+        chat_id="42", command="touch /tmp/unanchored-A", session_key="s",
+        description="create A",
+    )
+    assert result.success is True
+    assert adapter._approval_prompts_by_item == {}
+
+    slow["send"] = False
+    await adapter.send_exec_approval(
+        chat_id="42", command="touch /tmp/seen-B", session_key="s",
+        description="create B",
+    )
+    await _drain(adapter)
+
+    assert adapter._approval_prompts_by_item == {}
+    prompt_b = [t for t in _ws_texts(adapter) if "seen-B" in t]
+    assert len(prompt_b) == 1
+    assert "tap a reaction" not in prompt_b[0]
+
+    await adapter._handle_event(_reaction_event("✅", item_id=501))
+    await _drain(adapter)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_send_that_raised_is_not_reported_as_delivered():
+    """A write that raised delivered nothing, and must not claim otherwise.
+
+    ``_send_command`` returns ``None`` for a reply timeout *and* for a failed
+    write; only the first means "possibly delivered". Conflating them told
+    ``run.py`` the prompt was out — suppressing its plain-text fallback — for
+    a message that never reached the socket.
+    """
+    adapter = _adapter_with_ws()
+    adapter._ws.send = AsyncMock(side_effect=ConnectionResetError("socket died"))
+
+    result = await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /", session_key="s", description="delete"
+    )
+
+    assert result.success is False
+    assert adapter._approval_prompts_by_item == {}
+    assert adapter._typed_only_sessions.get("s", 0.0) > time.monotonic()
 
 
 @pytest.mark.asyncio

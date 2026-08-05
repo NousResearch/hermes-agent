@@ -203,6 +203,15 @@ def _is_audio_ext(ext: str) -> bool:
     return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".opus"}
 
 
+class _SimplexCommandSendError(Exception):
+    """The command never reached the daemon — the WebSocket write failed.
+
+    Distinct from "no reply came back". A timeout leaves the command
+    possibly delivered; this means it certainly was not, so a caller must
+    not report the message it carried as sent.
+    """
+
+
 @dataclass
 class _SimplexApprovalPrompt:
     """Tracks a pending SimpleX reaction-based exec approval prompt.
@@ -898,12 +907,26 @@ class SimplexAdapter(BasePlatformAdapter):
             logger.warning("SimpleX: WS send error: %s", e)
 
     async def _send_command(
-        self, command: str, timeout: float = 30.0
+        self,
+        command: str,
+        timeout: float = 30.0,
+        *,
+        raise_on_send_error: bool = False,
     ) -> Optional[dict]:
-        """Send a command and await the correlated response."""
+        """Send a command and await the correlated response.
+
+        ``None`` means "no answer came back", which by default covers both a
+        reply timeout (the daemon very likely got the command) and a write
+        that raised (it certainly did not). Callers that have to tell those
+        apart — anything reporting delivery to a user — pass
+        ``raise_on_send_error=True`` and get :class:`_SimplexCommandSendError`
+        for the write failure instead of an indistinguishable ``None``.
+        """
         ws = self._ws
         if not ws:
             logger.warning("SimpleX: command sent but WebSocket not connected")
+            if raise_on_send_error:
+                raise _SimplexCommandSendError("WebSocket not connected")
             return None
 
         corr_id = self._make_corr_id()
@@ -914,17 +937,27 @@ class SimplexAdapter(BasePlatformAdapter):
         self._pending_responses[corr_id] = fut
 
         try:
-            await ws.send(payload)
+            try:
+                await ws.send(payload)
+            except Exception as e:
+                logger.warning(
+                    "SimpleX: command not sent: %s — %s", command[:50], e
+                )
+                if raise_on_send_error:
+                    raise _SimplexCommandSendError(str(e)) from e
+                return None
             result = await asyncio.wait_for(fut, timeout=timeout)
             return result
         except asyncio.TimeoutError:
             logger.warning("SimpleX: command timed out: %s", command[:50])
-            self._pending_responses.pop(corr_id, None)
             return None
+        except _SimplexCommandSendError:
+            raise
         except Exception as e:
             logger.warning("SimpleX: command failed: %s — %s", command[:50], e)
-            self._pending_responses.pop(corr_id, None)
             return None
+        finally:
+            self._pending_responses.pop(corr_id, None)
 
     async def _send_fire_and_forget(self, command: str) -> None:
         """Send a command without waiting for a correlated response.
@@ -1104,11 +1137,13 @@ class SimplexAdapter(BasePlatformAdapter):
         ``itemId`` for the message it decorates.
 
         ``delivered`` is False when the send was never attempted (no live
-        WebSocket) or when the daemon answered with an explicit error — both
-        cases mean the user will see nothing, so the caller must fail and let
-        ``gateway/run.py`` post its own plain-text prompt. A *timeout* is
-        different: the message is possibly delivered, so the caller reports
-        success and skips the reactions rather than double-posting.
+        WebSocket), when the write itself raised (the connection died between
+        the check and the write), or when the daemon answered with an explicit
+        error — all three mean the user will see nothing, so the caller must
+        fail and let ``gateway/run.py`` post its own plain-text prompt. A
+        *timeout* is different: the message is possibly delivered, so the
+        caller reports success and skips the reactions rather than
+        double-posting.
         """
         if not self._ws:
             logger.warning(
@@ -1116,10 +1151,20 @@ class SimplexAdapter(BasePlatformAdapter):
             )
             return None, False
         composed = json.dumps([{"msgContent": {"type": "text", "text": text}}])
-        resp = await self._send_command(
-            f"/_send {chat_ref} json {composed}",
-            timeout=ANCHORED_SEND_TIMEOUT_SECONDS,
-        )
+        try:
+            resp = await self._send_command(
+                f"/_send {chat_ref} json {composed}",
+                timeout=ANCHORED_SEND_TIMEOUT_SECONDS,
+                raise_on_send_error=True,
+            )
+        except _SimplexCommandSendError:
+            # The write failed, so nothing was delivered. Reporting this as
+            # sent would leave the user with no prompt at all for a command
+            # still queued in core.
+            logger.warning(
+                "SimpleX: approval prompt not sent — WebSocket write failed"
+            )
+            return None, False
         if resp is None:
             return None, True
         if resp.get("type") == "chatCmdError":
@@ -1244,6 +1289,12 @@ class SimplexAdapter(BasePlatformAdapter):
         a direct chat with exactly one live approval. Groups and concurrent
         approvals fall back to the typed lane — see the guards below.
 
+        Every exit that does not end with a registered prompt holds the
+        session to the typed lane for one approval window, because
+        ``tools/approval`` has already queued the approval by the time this
+        runs: an unregistered prompt is a pending command the single-prompt
+        guard cannot see.
+
         *command* arrives already credential-redacted from ``gateway/run.py``
         — do not re-redact it and do not log it.
         """
@@ -1268,59 +1319,95 @@ class SimplexAdapter(BasePlatformAdapter):
         if self._retire_live_prompt_for_session(session_key) or (
             self._typed_only_sessions.get(session_key, 0.0) > now
         ):
-            self._typed_only_sessions[session_key] = now + _approval_prompt_ttl()
             queued = True
         else:
             queued = False
 
-        chat_ref = self._chat_ref(chat_id)
-        # v1 keeps the reaction lane to direct chats. In a group, any member
-        # can react, and the only identity the daemon hands us for a group
-        # reactor is one this adapter cannot yet tie to a verified operator.
-        # Groups get the typed lane, which the gateway authorizes properly.
-        reaction_lane = (
-            bool(chat_ref) and not self._is_group_chat(chat_id) and not queued
-        )
-        # Seeding is a separate capability from the inbound lane: a daemon
-        # that refuses to let the bot place a reaction has not said anything
-        # about reactions a *user* places.
-        seed = reaction_lane and self._reactions_supported is not False
-
-        text = self._format_simplex_exec_approval(
-            command, description, smart_denied, choices, show_legend=seed
-        )
-        if not reaction_lane:
-            return await self.send(chat_id, text, metadata=metadata)
-
-        item_id, delivered = await self._send_anchored_text(str(chat_ref), text)
-        if not delivered:
-            # Let gateway/run.py fall back to its own plain-text prompt.
-            return SendResult(
-                success=False, error="SimpleX daemon rejected the approval prompt"
+        # Anything short of a registered prompt below leaves an approval
+        # pending in core with no tappable message of its own, so the
+        # session is held to the typed lane by the ``finally``. That covers
+        # the WebSocket being down, the write raising, the daemon rejecting
+        # or not answering the send, a group or display-name-addressed chat,
+        # and an exception escaping into gateway/run.py's text fallback.
+        registered = False
+        try:
+            chat_ref = self._chat_ref(chat_id)
+            # v1 keeps the reaction lane to direct chats. In a group, any
+            # member can react, and the only identity the daemon hands us for
+            # a group reactor is one this adapter cannot yet tie to a verified
+            # operator. Groups get the typed lane, which the gateway
+            # authorizes properly.
+            reaction_lane = (
+                bool(chat_ref) and not self._is_group_chat(chat_id) and not queued
             )
-        if not item_id:
-            # The prompt is out but unanchored; its typed instructions work.
-            return SendResult(success=True)
+            # Seeding is a separate capability from the inbound lane: a daemon
+            # that refuses to let the bot place a reaction has not said
+            # anything about reactions a *user* places.
+            seed = reaction_lane and self._reactions_supported is not False
 
-        prompt = _SimplexApprovalPrompt(
-            session_key=session_key,
-            chat_id=chat_id,
-            chat_ref=str(chat_ref),
-            item_id=item_id,
-            choices=frozenset(choice for _emoji, choice, _label in choices),
-            expires_at=time.monotonic() + _approval_prompt_ttl(),
-        )
-        self._approval_prompts_by_item[item_id] = prompt
-        self._approval_prompt_by_session[session_key] = item_id
+            text = self._format_simplex_exec_approval(
+                command, description, smart_denied, choices, show_legend=seed
+            )
+            if not reaction_lane:
+                return await self.send(chat_id, text, metadata=metadata)
 
-        if seed:
-            # Seed detached: every /_reaction waits on a correlated daemon
-            # reply, and gateway/run.py only allows send_exec_approval 15
-            # seconds before it abandons the button lane. Prompt state is
-            # already registered, so a reaction that beats the seeding still
-            # correlates.
-            self._spawn_background(self._seed_approval_reactions(prompt, choices))
-        return SendResult(success=True, message_id=item_id)
+            item_id, delivered = await self._send_anchored_text(str(chat_ref), text)
+            if not delivered:
+                # Let gateway/run.py fall back to its own plain-text prompt.
+                return SendResult(
+                    success=False,
+                    error="SimpleX daemon rejected the approval prompt",
+                )
+            if not item_id:
+                # The prompt is out but unanchored; its typed instructions
+                # work, and its reaction legend is a dud — nothing correlates
+                # a tap on a message whose item id we never learned.
+                return SendResult(success=True)
+
+            prompt = _SimplexApprovalPrompt(
+                session_key=session_key,
+                chat_id=chat_id,
+                chat_ref=str(chat_ref),
+                item_id=item_id,
+                choices=frozenset(choice for _emoji, choice, _label in choices),
+                expires_at=time.monotonic() + _approval_prompt_ttl(),
+            )
+            self._approval_prompts_by_item[item_id] = prompt
+            self._approval_prompt_by_session[session_key] = item_id
+            registered = True
+
+            if seed:
+                # Seed detached: every /_reaction waits on a correlated daemon
+                # reply, and gateway/run.py only allows send_exec_approval 15
+                # seconds before it abandons the button lane. Prompt state is
+                # already registered, so a reaction that beats the seeding
+                # still correlates.
+                self._spawn_background(
+                    self._seed_approval_reactions(prompt, choices)
+                )
+            return SendResult(success=True, message_id=item_id)
+        finally:
+            if not registered:
+                self._mark_session_typed_only(session_key)
+
+    def _mark_session_typed_only(self, session_key: str) -> None:
+        """Refuse the tap lane for *session_key* for one approval window.
+
+        ``tools/approval`` queues an approval entry *before* it notifies the
+        adapter, so any ``send_exec_approval`` call that ends without a
+        registered prompt still leaves a command pending in core — one the
+        single-live-prompt guard cannot see and the user may never have been
+        shown. A later prompt in the same session would then look
+        unambiguous, and a tap on it would resolve the FIFO head: the older,
+        unseen command. Holding the session typed-only until every entry that
+        could still be queued has timed out is the same principle the
+        pile-up latch applies, extended to the paths where nothing was sent.
+
+        Never shortens an existing window.
+        """
+        deadline = time.monotonic() + _approval_prompt_ttl()
+        if self._typed_only_sessions.get(session_key, 0.0) < deadline:
+            self._typed_only_sessions[session_key] = deadline
 
     def _sweep_expired_prompts(self) -> None:
         """Retire every prompt whose tap window has closed."""

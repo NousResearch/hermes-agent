@@ -165,6 +165,11 @@ cases fall back to typed commands, which the gateway authorizes in full:
   session keeps getting typed prompts until the approval window lapses —
   answering by typing happens inside the gateway, so the adapter cannot see
   that the queue drained.
+- **A prompt that could not be delivered or anchored.** If the connection to
+  the daemon is down, the send fails, or the daemon never answers it, the
+  approval is still waiting inside the agent even though no tappable message
+  exists for it. That session gets typed prompts for one approval window,
+  rather than a tap that would answer the earlier command you never saw.
 - **After a gateway restart.** Prompts live in memory. Reactions left on a
   message from before a restart do nothing — type `/approve` instead.
 - **A daemon that will not let the bot place reactions.** The bot says so

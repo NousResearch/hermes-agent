@@ -315,7 +315,7 @@ class FederationSkillSync:
                 continue
 
             # Read frontmatter to extract metadata
-            content = skill_file.read_text()
+            content = skill_file.read_text(encoding="utf-8")
             name = skill_dir.name
             category = ""
 
@@ -405,7 +405,7 @@ class FederationSkillSync:
         skill_file = skill_dir / "SKILL.md"
 
         if skill.content:
-            skill_file.write_text(skill.content)
+            skill_file.write_text(skill.content, encoding="utf-8")
             self._skills[skill.name] = skill
             logger.info(
                 "Federation skill: applied remote %s (v%d)",

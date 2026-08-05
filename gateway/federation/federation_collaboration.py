@@ -110,7 +110,7 @@ class FederationMemorySync:
             if not mem_path.exists():
                 continue
             try:
-                content = mem_path.read_text()
+                content = mem_path.read_text(encoding="utf-8")
                 # Parse markdown entries (simplified — each ## is a node)
                 lines = content.split("\n")
                 current_id = None
@@ -211,14 +211,14 @@ class FederationMemorySync:
 
         if not mem_path.exists():
             # Create new file
-            mem_path.write_text(f"## {entry.node_id}\n{entry.content}\n")
+            mem_path.write_text(f"## {entry.node_id}\n{entry.content}\n", encoding="utf-8")
             logger.info(
                 "Federation memory: created new entry %s", entry.node_id,
             )
             return
 
         # Update existing file
-        content = mem_path.read_text()
+        content = mem_path.read_text(encoding="utf-8")
         marker = f"## {entry.node_id}"
 
         if marker in content:
@@ -233,7 +233,7 @@ class FederationMemorySync:
                 else:
                     new_sections.append(f"## {section}")
 
-            mem_path.write_text("".join(new_sections))
+            mem_path.write_text("".join(new_sections), encoding="utf-8")
             logger.debug(
                 "Federation memory: updated entry %s", entry.node_id,
             )

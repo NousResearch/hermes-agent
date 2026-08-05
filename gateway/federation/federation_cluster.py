@@ -353,7 +353,7 @@ class FederationConfigSync:
         if not self.config_path.exists():
             return False
 
-        content = self.config_path.read_text()
+        content = self.config_path.read_text(encoding="utf-8")
         config_hash = self._compute_config_hash()
 
         msg = FedMessage(
@@ -413,7 +413,7 @@ class FederationConfigSync:
 
         # Write to temp file first, then rename (atomic on POSIX)
         temp_path = self.config_path.with_suffix(".yaml.tmp")
-        temp_path.write_text(content)
+        temp_path.write_text(content, encoding="utf-8")
         temp_path.rename(self.config_path)
 
         logger.info(

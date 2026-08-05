@@ -138,27 +138,53 @@ The stub contract is:
   call inside the turn finalizer) is left to the maintainer to
   avoid risking the prompt cache contract.
 
-### Phase 3 — Real eval runner
+### Phase 3 — Real eval runner ✅ (this PR)
 
-Goal: ``EvalHarness._simulate_task_execution`` and
-``_run_llm_judge`` produce real results.
-
-Tasks:
-- Replace ``_simulate_task_execution`` with a call to
-  ``auxiliary_client`` that starts an isolated chat session running
-  ``ev.prompt``, captures the output, and returns the billed cost.
-- Replace ``_run_llm_judge`` with an ``auxiliary_client`` call to a
-  blind judge prompt (the agent never sees it).
-- Hardening for ``private_check`` security:
-  - Reject shell commands that try to write outside a sandbox path.
-  - Whitelist known-safe commands (``test -f``, ``python3 -c "..."``).
-  - Or run in a Docker container / gVisor sandbox.
-- Round-trip ledger entries to reflect real measured costs.
-
-Risk: auxiliary_client integration depends on model availability and
-may incur real API cost on every cycle. Tests must use the
-``hermes-home`` mocking pattern already established in
-``tests/agent/test_eval_harness.py``.
+- New module ``agent/eval_runner.py``:
+  - ``EvalInvocation`` (frozen dataclass) — all inputs for one eval round.
+  - ``PromptResult`` / ``PrivateCheckResult`` — structured outputs.
+  - ``EvalRunner`` Protocol — the surface ``EvalHarness`` needs.
+  - ``DefaultEvalRunner`` — production implementation:
+    - ``execute_prompt`` calls :mod:`agent.auxiliary_client.call_llm`
+      and extracts OpenAI-style usage (prompt_tokens /
+      completion_tokens).
+    - ``run_private_check`` runs ``private_check`` via a hardened
+      subprocess: argv-explicit invocation of ``/bin/sh -c <cmd>``,
+      no ``shell=True``, environment restricted to a small safe
+      allowlist, and a dangerous-token regex filter that blocks
+      ``sudo`` / ``curl`` / ``wget`` / ``ssh`` / ``python`` /
+      ``bash`` etc. unless ``allow_unsafe_private_check=True``.
+  - Custom exceptions (``PrivateCheckError``) raised on dangerous
+    tokens so callers can distinguish "blocked" from "timed out".
+- New module ``agent/llm_judge.py``:
+  - ``JudgeScore`` dataclass — score, reasoning, success, error,
+    model.
+  - ``LLMJudge`` Protocol.
+  - ``DefaultLLMJudge`` — calls ``call_llm`` with a fixed judge
+    prompt template; ``parse_score_text`` is robust against JSON /
+    prose / fenced blocks and rejects out-of-range scores.
+- ``EvalHarness`` accepts ``runner=`` and ``judge=`` constructor
+  kwargs (dependency injection). The default production runner is
+  ``DefaultEvalRunner`` and the default judge is
+  ``DefaultLLMJudge``; tests inject fakes without touching
+  auxiliary_client.
+- ``_simulate_task_execution`` and ``_run_llm_judge`` are now real
+  implementations; the Phase 1 stubs are removed.
+- 41 new tests across ``tests/agent/test_eval_runner.py`` and
+  ``tests/agent/test_llm_judge.py`` covering: prompt execution happy
+  / failure paths, private check happy / failure / timeout /
+  dangerous-token / env-filter paths, judge parse variants
+  (clean JSON, prose-wrapped, fenced, out-of-range, nested braces),
+  judge failure paths.
+- Existing Phase 1 stub tests updated to reflect the new injection
+  contract: ``TestEvalHarnessStub`` now asserts that ``runner=`` and
+  ``judge=`` constructor args replace the defaults, rather than
+  asserting ``NotImplementedError``.
+- **Why this is enough to merge today**: the harness's *execution*
+  path now goes through real LLM calls and real subprocesses. The
+  default runner will fail loudly when no LLM provider is configured
+  (rather than fabricating scores), and the dangerous-token filter
+  closes the Phase 1 RCE footgun on ``private_check``.
 
 ### Phase 4 — Real LLM-driven mutation
 

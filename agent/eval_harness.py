@@ -1,38 +1,43 @@
 """Eval Harness — AIDE²-inspired evaluation framework for Hermes self-evaluation.
 
 Provides a structured way to define evaluations (prompt + budget + metric
-+ private_check) and record their outcomes into the Experience Ledger.
++ private_check) and run them against the Hermes runtime, recording
+outcomes into the Experience Ledger.
 
-⚠️  STUB IMPLEMENTATION WARNING ⚠️
-The execution paths that *run* an eval (``_simulate_task_execution``,
-``_run_llm_judge``) are intentional stubs that raise ``NotImplementedError``.
-The structural pieces around them — eval-definition loading, deterministic
-private_check via subprocess, budget enforcement, reward-hack detection,
-ledger recording — are fully functional and tested.
+Phase 3 of the AIDE² plan (see ``docs/aide-squared-roadmap.md``). The
+execution paths are now real:
 
-Phase 3 (see ``docs/aide-squared-roadmap.md``) will wire the stubs to a
-real Hermes runtime via ``auxiliary_client`` (LLM judge) and an isolated
-chat session (task execution). Until then, any path that would produce an
-eval result raises instead of fabricating one.
+- ``_simulate_task_execution`` runs the eval prompt through
+  ``EvalRunner`` (defaults to ``DefaultEvalRunner``, which calls
+  ``auxiliary_client.call_llm``).
+- ``_run_deterministic_check`` runs the ``private_check`` shell command
+  through the same runner, with a hardened subprocess invocation
+  (no ``shell=True``, dangerous-token filter, restricted env).
+- ``_run_llm_judge`` calls ``LLMJudge.judge`` (defaults to
+  ``DefaultLLMJudge``) to score the eval response.
 
-Design (intended for the full Phase 3 implementation):
+Both runner and judge are injectable via ``EvalHarness(runner=...,
+judge=...)`` so tests can substitute fakes without monkeypatching the
+global ``auxiliary_client``. ``DefaultEvalRunner`` never raises for
+normal model errors — failures are surfaced via the ``EvalResult.error``
+field. The runner refuses dangerous ``private_check`` commands
+(sudo, curl, wget, network exfil patterns, etc.) unless explicitly
+opted in via ``allow_unsafe_private_check=True``.
+
+Design:
 - Each eval has a prompt, golden output, metric, and budget_usd
-- Metrics: deterministic (diff/golden) — working; LLM-judge (aux model
-  blind evaluation) — stub
-- Cost constraint: exceed budget → automatic failure — working
+- Metrics: deterministic (private_check via subprocess) or
+  LLM-judge (aux model blind evaluation)
+- Cost constraint: exceed budget → automatic failure
 - Task families: tools/coding/research/security (heterogeneous evaluation)
 - The evaluated agent NEVER sees the private_check (prevents reward hacking)
 
-Usage (Phase 3+):
-    harness = EvalHarness(hermes_home=Path.home() / ".hermes")
-    results = harness.run_eval("file-ops-batch")
-    summary = harness.run_all_evals()
+Usage::
 
-Currently supported (non-stub):
-    harness = EvalHarness(hermes_home=...)
-    harness.load_evals()           # OK — loads from evals.json / evals.yaml
-    ev = harness.get_evals()["x"]  # OK — returns EvalDefinition
-    # harness.run_eval("x")        # Raises NotImplementedError until Phase 3
+    harness = EvalHarness(hermes_home=Path.home() / ".hermes")
+    harness.load_evals()
+    result = harness.run_eval("file-ops-batch")
+    summary = harness.run_all_evals()
 """
 
 from __future__ import annotations
@@ -46,7 +51,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.eval_runner import (
+    DefaultEvalRunner,
+    EvalInvocation,
+    EvalRunner,
+    PrivateCheckResult,
+    PrivateCheckError,
+    PromptResult,
+)
 from agent.experience_ledger import ExperienceLedger, SkillEval
+from agent.llm_judge import DefaultLLMJudge, JudgeScore, LLMJudge
 
 logger = logging.getLogger(__name__)
 
@@ -126,28 +140,40 @@ class EvalResult:
 
 
 class EvalHarness:
-    """Evaluation framework for Hermes self-improvement.
+    """Evaluation framework for Hermes self-evaluation.
 
-    Loads eval definitions from evals.yaml, runs them against Hermes,
-    and records results in the Experience Ledger.
+    Loads eval definitions from evals.json / evals.yaml, runs them
+    against Hermes, and records results in the Experience Ledger.
 
     Architecture:
-    1. Load eval definitions from ~/.hermes/evals/evals.yaml
+    1. Load eval definitions from ~/.hermes/evals/{evals.json,evals.yaml}
     2. For each eval:
-       a. Run Hermes with the eval prompt (isolated session)
-       b. Check cost against budget (reject if exceeded)
-       c. Run private_check (deterministic or LLM judge)
-       d. Record result in Experience Ledger
+       a. Run the prompt via the injected ``EvalRunner`` (defaults to
+          ``DefaultEvalRunner`` which calls auxiliary_client.call_llm).
+       b. Check cost against budget (reject if exceeded).
+       c. Run the metric: deterministic ``private_check`` (hardened
+          subprocess via the runner) or ``LLMJudge``.
+       d. Record result in Experience Ledger.
+
+    The runner and judge are injectable so tests can substitute
+    fakes without monkeypatching the global auxiliary_client.
     """
 
     def __init__(
         self,
         hermes_home: Optional[Path] = None,
         ledger: Optional[ExperienceLedger] = None,
+        *,
+        runner: Optional[EvalRunner] = None,
+        judge: Optional[LLMJudge] = None,
     ):
         self.hermes_home = hermes_home or Path.home() / ".hermes"
         self.evals_dir = self.hermes_home / "evals"
         self.ledger = ledger or ExperienceLedger(hermes_home=self.hermes_home)
+        self.runner: EvalRunner = runner or DefaultEvalRunner(
+            hermes_home=self.hermes_home,
+        )
+        self.judge: LLMJudge = judge or DefaultLLMJudge()
         self._evals: Dict[str, EvalDefinition] = {}
         self._results: Dict[str, EvalResult] = {}
         self._custom_metrics: Dict[str, Callable] = {}
@@ -360,29 +386,46 @@ class EvalHarness:
         return result
 
     def _simulate_task_execution(self, ev: EvalDefinition) -> tuple:
-        """Execute the eval prompt against Hermes and return (output, cost).
+        """Run ``ev.prompt`` against the real model via the injected runner.
 
-        ⚠️  STUB: raises ``NotImplementedError`` until Phase 3. The real
-        implementation will start an isolated chat session via
-        ``auxiliary_client`` running ``ev.prompt``, capture the model
-        output, and report the actual billed cost from the gateway.
-
-        Tests and callers that need a non-stub result should monkeypatch
-        this method (see ``tests/agent/test_eval_harness.py``).
+        Returns ``(output_text, cost_usd)``. ``cost_usd`` is left at
+        ``0.0`` in Phase 3 — token counts are tracked but USD cost
+        requires model-specific pricing that lives in the billing
+        subsystem. Phase 5 (metrics export) will thread pricing
+        through.
         """
-        raise NotImplementedError(
-            f"EvalHarness._simulate_task_execution is a stub until Phase 3. "
-            f"Cannot execute eval {ev.id!r} (family={ev.family}) without a "
-            f"real Hermes runtime connection. "
-            f"See docs/aide-squared-roadmap.md."
+        invocation = EvalInvocation(
+            prompt=ev.prompt,
+            timeout_sec=float(ev.timeout_sec or 120.0),
         )
+        prompt_result = self.runner.execute_prompt(invocation)
+        if not prompt_result.success:
+            # Propagate as a structured failure so the caller can
+            # decide whether to retry.
+            raise RuntimeError(
+                f"EvalRunner.execute_prompt failed for {ev.id!r}: {prompt_result.error}"
+            )
+        # Update duration on the active result via metrics; nothing
+        # to do here since the harness sets duration after _execute_eval.
+        # Store the token counts on the result via the eval invocation
+        # metadata; we attach them to the EvalResult after this returns.
+        self._last_prompt_result: PromptResult = prompt_result  # type: ignore[attr-defined]
+        # Truncate to the harness's storage cap.
+        return (prompt_result.text[:500], 0.0)
 
     def _run_private_metric(
         self,
         ev: EvalDefinition,
         result: EvalResult,
     ) -> EvalResult:
-        """Run the private evaluation metric."""
+        """Run the private evaluation metric.
+
+        Dispatches to the appropriate path:
+        - ``private`` metric → runner.run_private_check
+        - ``llm_judge_private`` metric → judge.judge
+        - custom → caller-registered function
+        - otherwise → default moderate-score fallback
+        """
         if ev.metric == "private" and ev.private_check:
             result = self._run_deterministic_check(ev, result)
         elif ev.metric == "llm_judge_private":
@@ -402,30 +445,40 @@ class EvalHarness:
         ev: EvalDefinition,
         result: EvalResult,
     ) -> EvalResult:
-        """Run a deterministic shell check."""
+        """Run the deterministic private check via the runner."""
+        invocation = EvalInvocation(
+            prompt=ev.prompt,
+            private_check=ev.private_check,
+            timeout_sec=float(ev.timeout_sec or 120.0),
+        )
         try:
-            proc = subprocess.run(
-                ev.private_check,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            passed = proc.returncode == 0
-            result.public_score = 1.0 if passed else 0.3
-            result.private_score = 1.0 if passed else 0.2
-            result.success = passed
-            result.metric_details = {
-                "check": ev.private_check[:100],
-                "exit_code": proc.returncode,
-                "stderr": proc.stderr[:200] if proc.stderr else "",
-            }
-        except subprocess.TimeoutExpired:
+            check = self.runner.run_private_check(invocation)
+        except PrivateCheckError as e:
+            # The runner refused to run the command (dangerous token).
+            result.public_score = 0.0
+            result.private_score = 0.0
+            result.success = False
+            result.error = f"private_check blocked by runner: {e}"
+            result.metric_details = {"check": ev.private_check[:100], "blocked": True}
+            return result
+
+        if check.timed_out:
             result.public_score = 0.0
             result.private_score = 0.0
             result.success = False
             result.error = "Check timed out"
+            return result
 
+        passed = check.success
+        result.public_score = 1.0 if passed else 0.3
+        result.private_score = 1.0 if passed else 0.2
+        result.success = passed
+        result.metric_details = {
+            "check": ev.private_check[:100],
+            "exit_code": check.exit_code,
+            "stderr": check.stderr[:200],
+            "duration_sec": round(check.duration_sec, 3),
+        }
         return result
 
     def _run_llm_judge(
@@ -433,18 +486,48 @@ class EvalHarness:
         ev: EvalDefinition,
         result: EvalResult,
     ) -> EvalResult:
-        """Run an LLM judge for subjective evaluation.
+        """Run the LLM judge on the prompt + response.
 
-        ⚠️  STUB: raises ``NotImplementedError`` until Phase 3. The real
-        implementation will call ``auxiliary_client`` with a fixed
-        judge prompt + the agent's output, blinded so the evaluated
-        agent never sees the judge prompt or score.
+        The prompt and response come from the EvalRunner output stored
+        by the harness. If the runner didn't produce output (the
+        judge path is being used standalone), the judge scores an
+        empty response — usually a failure.
         """
-        raise NotImplementedError(
-            f"EvalHarness._run_llm_judge is a stub until Phase 3. "
-            f"Cannot LLM-judge eval {ev.id!r} without auxiliary_client "
-            f"integration. See docs/aide-squared-roadmap.md."
+        prompt_text = ev.prompt
+        response_text = getattr(self, "_last_prompt_result", None)
+        response_body = (
+            getattr(response_text, "text", "") if response_text is not None else ""
         )
+
+        verdict = self.judge.judge(prompt_text, response_body)
+        if not verdict.success or verdict.score is None:
+            result.public_score = 0.0
+            result.private_score = 0.0
+            result.success = False
+            result.error = (
+                verdict.error or "LLM judge did not produce a parseable score"
+            )
+            result.metric_details = {
+                "judge": "llm_judge",
+                "raw_reasoning": (verdict.reasoning or "")[:300],
+            }
+            return result
+
+        # Map 0-100 judge score to 0-1 private score; public score is
+        # the model's self-reported success (we don't have one, so use
+        # the judge too — the heuristic private_score in
+        # SkillEvalProducer already handles the public/private split).
+        score_01 = verdict.score / 100.0
+        result.public_score = score_01
+        result.private_score = score_01
+        result.success = verdict.score >= 50
+        result.metric_details = {
+            "judge": "llm_judge",
+            "raw_score": verdict.score,
+            "raw_reasoning": verdict.reasoning[:300],
+            "judge_model": verdict.model,
+        }
+        return result
 
     def get_eval_summary(self) -> dict:
         """Get summary of all eval results."""

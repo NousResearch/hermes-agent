@@ -72,19 +72,25 @@ class TestEvalHarness:
         assert h.ledger.total_evals > 0
         assert result.not_implemented is False
 
-    def test_run_eval_stub_state(self, tmp_path):
-        """Without an injected execution, run_eval reports stub state
-        instead of fabricating an eval result.
+    def test_run_eval_without_provider_fails_gracefully(self, tmp_path):
+        """Without a configured LLM provider, run_eval fails gracefully
+        via the runner's structured error path (Phase 3) instead of
+        fabricating fake data.
+
+        Phase 1 raised ``NotImplementedError`` here. Phase 3 uses a
+        real runner that returns ``PromptResult(success=False, ...)``;
+        the harness translates that into ``EvalResult(success=False,
+        error=<runner error>)`` and does NOT pollute the ledger.
         """
         h = self._make_harness(tmp_path)
         h.load_evals()
 
         result = h.run_eval("file-ops-batch")
 
-        assert result.not_implemented is True
         assert result.success is False
-        assert "stub until Phase 3" in result.error
-        # Ledger must NOT be polluted with fake eval data.
+        assert result.error  # set to runner error
+        # Ledger MUST stay clean when execution fails — the harness
+        # only records real results.
         assert h.ledger.total_evals == 0
 
     def test_run_all_evals(self, tmp_path):

@@ -30,51 +30,52 @@ from agent.hermes_squared import HermesSquaredEngine
 
 
 class TestEvalHarnessStub:
-    def test_simulate_task_execution_raises(self, tmp_path: Path):
-        h = EvalHarness(hermes_home=tmp_path)
-        ev = h._evals.get("file-ops-batch")  # populated by default
-        if ev is None:
-            h.load_evals()
-            ev = list(h.get_evals().values())[0]
+    """Phase 3 replaced the _simulate_task_execution / _run_llm_judge
+    stubs with real implementations behind injectable runners/judges.
+    These tests pin the *injection* contract: passing a fake runner
+    lets callers exercise the harness without touching
+    auxiliary_client.
+    """
 
-        with pytest.raises(NotImplementedError) as exc:
-            h._simulate_task_execution(ev)
-        assert "Phase 3" in str(exc.value)
+    def test_runner_injection(self, tmp_path: Path):
+        """Passing an explicit runner to EvalHarness replaces the
+        default. This is how Phase 1 stubs became Phase 3 real code.
+        """
+        from agent.eval_runner import EvalInvocation, PromptResult
 
-    def test_run_llm_judge_raises(self, tmp_path: Path):
-        from agent.eval_harness import EvalResult
+        class _FakeRunner:
+            def execute_prompt(self, invocation):
+                return PromptResult(
+                    text="<skipped>",
+                    tokens_in=0,
+                    tokens_out=0,
+                    success=True,
+                    model="fake",
+                )
 
-        h = EvalHarness(hermes_home=tmp_path)
-        ev = list(h.get_evals().values())[0] if h.get_evals() else None
-        if ev is None:
-            h.load_evals()
-            ev = list(h.get_evals().values())[0]
+            def run_private_check(self, invocation):
+                from agent.eval_runner import PrivateCheckResult
 
-        with pytest.raises(NotImplementedError) as exc:
-            h._run_llm_judge(ev, EvalResult(eval_id=ev.id, skill_id="", success=False))
-        assert "Phase 3" in str(exc.value)
+                return PrivateCheckResult(
+                    exit_code=0,
+                    stdout="",
+                    stderr="",
+                    duration_sec=0.01,
+                    success=True,
+                )
 
-    def test_run_eval_reports_stub(self, tmp_path: Path):
-        h = EvalHarness(hermes_home=tmp_path)
-        h.load_evals()
-        result = h.run_eval("file-ops-batch")
+        h = EvalHarness(hermes_home=tmp_path, runner=_FakeRunner())
+        assert isinstance(h.runner, _FakeRunner)
 
-        assert result.not_implemented is True
-        assert result.success is False
-        assert "stub until Phase 3" in result.error
-        # Ledger MUST stay clean when execution is stubbed.
-        assert h.ledger.total_evals == 0
+    def test_llm_judge_injection(self, tmp_path: Path):
+        from agent.llm_judge import JudgeScore
 
-    def test_run_all_evals_reports_stub(self, tmp_path: Path):
-        h = EvalHarness(hermes_home=tmp_path)
-        h.load_evals()
-        results = h.run_all_evals()
+        class _FakeJudge:
+            def judge(self, prompt, response):
+                return JudgeScore(score=80, reasoning="ok", success=True, model="fake")
 
-        assert len(results) == len(h.get_evals())
-        for r in results.values():
-            assert r.not_implemented is True
-            assert r.success is False
-        assert h.ledger.total_evals == 0
+        h = EvalHarness(hermes_home=tmp_path, judge=_FakeJudge())
+        assert isinstance(h.judge, _FakeJudge)
 
 
 class TestDelegationEvolutionStub:

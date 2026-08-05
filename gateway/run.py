@@ -18665,8 +18665,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             _bg_procs = None
 
-        decision = mgr.evaluate_after_turn(
+        # Extract tool_calls from the last assistant message in history
+        _tc = None
+        try:
+            if self._session_db:
+                _msgs = self._session_db.get_messages(sid)
+                for m in reversed(_msgs):
+                    if m.get("role") == "assistant":
+                        _tc = m.get("tool_calls")
+                        break
+        except Exception:
+            pass
+
+        decision = mgr.evaluate_after_turn_enhanced(
             final_response or "",
+            tool_calls=_tc,
             user_initiated=True,
             background_processes=_bg_procs,
         )

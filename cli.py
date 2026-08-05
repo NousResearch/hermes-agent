@@ -10763,8 +10763,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             _bg_procs = None
 
-        decision = mgr.evaluate_after_turn(
+        try:
+            hist = self.conversation_history or []
+            _tc = None
+            for m in reversed(hist):
+                if m.get("role") == "assistant":
+                    _tc = m.get("tool_calls")
+                    break
+        except Exception:
+            _tc = None
+
+        decision = mgr.evaluate_after_turn_enhanced(
             last_response,
+            tool_calls=_tc,
             user_initiated=True,
             background_processes=_bg_procs,
         )

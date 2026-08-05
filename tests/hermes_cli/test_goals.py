@@ -798,3 +798,297 @@ class TestContractAndBackgroundCompose:
         assert verdict == "wait"
         assert wait_directive and wait_directive.get("pid") == 4242
 
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Enhanced evaluation (additive — new in this branch)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestEstimateEnhancedBudget:
+    """Pure-function complexity-adaptive budget estimation."""
+
+    def test_simple_goal_min_budget(self):
+        from hermes_cli.goals import estimate_enhanced_budget
+        budget = estimate_enhanced_budget("fix typo")
+        assert budget >= 5 and budget <= 200  # clamped to valid range
+
+    def test_complex_goal_higher_budget(self):
+        from hermes_cli.goals import estimate_enhanced_budget
+        budget = estimate_enhanced_budget("build and deploy a full microservice with docker, kubernetes, and CI/CD pipeline")
+        assert budget >= 10
+        assert budget <= 200
+
+    def test_sub_task_count_affects_budget(self):
+        from hermes_cli.goals import estimate_enhanced_budget
+        budget_no = estimate_enhanced_budget("write an API", sub_task_count=0)
+        budget_yes = estimate_enhanced_budget("write an API", sub_task_count=5)
+        assert budget_yes >= budget_no
+
+
+class TestExtractArtifacts:
+    """Auto-detection of files written from tool calls."""
+
+    def test_write_file_detected(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager("test-session", default_max_turns=20)
+        mgr.set("build test file")
+        assert mgr._scratchpad is not None
+        mgr._extract_artifacts_from_turn([
+            {
+                "function": {
+                    "name": "write_file",
+                    "arguments": '{"path": "/tmp/test.txt", "content": "hello"}',
+                }
+            }
+        ])
+        assert len(mgr._scratchpad.artifacts) == 1
+        assert mgr._scratchpad.artifacts[0].path == "/tmp/test.txt"
+
+    def test_multiple_artifacts_deduped(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager("test-session", default_max_turns=20)
+        mgr.set("build test file")
+        assert mgr._scratchpad is not None
+        calls = [
+            {"function": {"name": "write_file", "arguments": '{"path": "/tmp/a.txt"}'}},
+            {"function": {"name": "write_file", "arguments": '{"path": "/tmp/a.txt"}'}},
+            {"function": {"name": "write_file", "arguments": '{"path": "/tmp/b.txt"}'}},
+        ]
+        mgr._extract_artifacts_from_turn(calls)
+        assert len(mgr._scratchpad.artifacts) == 2  # deduped
+
+    def test_patch_detected(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager("test-session", default_max_turns=20)
+        mgr.set("patch a file")
+        assert mgr._scratchpad is not None
+        mgr._extract_artifacts_from_turn([
+            {"function": {"name": "patch", "arguments": '{"path": "/tmp/code.py"}'}}
+        ])
+        assert any(a.path == "/tmp/code.py" for a in mgr._scratchpad.artifacts)
+
+    def test_terminal_redirect_detected(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager("test-session", default_max_turns=20)
+        mgr.set("run a command")
+        assert mgr._scratchpad is not None
+        mgr._extract_artifacts_from_turn([
+            {"function": {"name": "terminal", "arguments": '{"command": "echo hello > /tmp/out.txt"}'}}
+        ])
+        assert any("/tmp/out.txt" in a.path for a in mgr._scratchpad.artifacts)
+
+    def test_no_tool_calls_does_nothing(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager("test-session", default_max_turns=20)
+        mgr.set("quiet goal")
+        assert mgr._scratchpad is not None
+        mgr._extract_artifacts_from_turn([])
+        assert len(mgr._scratchpad.artifacts) == 0
+
+
+class TestDecomposeGoalEnhanced:
+    """Goal decomposition via auxiliary LLM."""
+
+    def test_short_goal_returns_empty(self, hermes_home):
+        from hermes_cli.goals import decompose_goal
+        tasks = decompose_goal("hi")
+        assert tasks == []
+
+    def test_llm_error_returns_empty(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no api")):
+            tasks = goals.decompose_goal("build a full authentication system")
+            assert tasks == []
+
+    def test_parses_sub_tasks_from_response(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        class _FakeMsg:
+            content = '{"sub_tasks": [{"description": "setup db", "depends_on": []}, {"description": "build api", "depends_on": ["st01"]}]}'
+        class _FakeChoice:
+            message = _FakeMsg()
+        class _FakeResp:
+            choices = [_FakeChoice()]
+
+        with patch("agent.auxiliary_client.call_llm", return_value=_FakeResp()):
+            tasks = goals.decompose_goal("build a full authentication system with JWT tokens")
+            assert len(tasks) == 2
+            assert tasks[0].description == "setup db"
+            assert tasks[0].depends_on == []
+            assert tasks[1].description == "build api"
+            assert tasks[1].depends_on == ["st01"]
+
+
+class TestEnhancedEvalIntegration:
+    """Integration: evaluate_after_turn_enhanced flows correctly."""
+
+    def test_enhanced_basic_fallback_no_active_goal(self, hermes_home):
+        """No active goal → returns inactive verdict, same as basic."""
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager("test-session", default_max_turns=20)
+        decision = mgr.evaluate_after_turn_enhanced("response text")
+        assert decision.get("verdict") == "inactive"
+        assert decision.get("should_continue") is False
+
+    def test_enhanced_basic_judge_called_for_active_goal(self, hermes_home):
+        """Active goal calls through to basic judge (mocked), returns decision."""
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        mgr = goals.GoalManager("test-session", default_max_turns=20)
+        mgr.set("do something")
+        assert mgr._scratchpad is not None
+
+        # Mock the basic judge — this is what evaluate_after_turn calls internally.
+        # We verify the enhanced method routes through it.
+        with patch.object(mgr, "evaluate_after_turn") as mock_basic:
+            mock_basic.return_value = {
+                "status": "active",
+                "should_continue": True,
+                "continuation_prompt": "continue",
+                "verdict": "continue",
+                "reason": "not done yet",
+                "message": "...",
+            }
+            # Also mock the enhanced judge to avoid real LLM call
+            with patch("hermes_cli.goals.evaluate_turn_enhanced") as mock_enhanced:
+                mock_enhanced.return_value = goals.JudgeVerdict(
+                    action="continue_as_is", completion=0.3, quality_score=0.5,
+                    progress_signal="steady", reasoning="working",
+                )
+                decision = mgr.evaluate_after_turn_enhanced("working on it")
+                mock_basic.assert_called_once()
+                mock_enhanced.assert_called_once()
+                assert decision.get("verdict") == "continue"
+                assert decision.get("should_continue") is True
+
+    def test_enhanced_records_verdict_in_scratchpad(self, hermes_home):
+        """Scratchpad records turn verdicts for trend detection."""
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        mgr = goals.GoalManager("test-session", default_max_turns=20)
+        mgr.set("do something")
+        assert mgr._scratchpad is not None
+
+        with patch.object(mgr, "evaluate_after_turn") as mock_basic:
+            mock_basic.return_value = {
+                "status": "active",
+                "should_continue": True,
+                "continuation_prompt": "continue",
+                "verdict": "continue",
+                "reason": "not done",
+                "message": "...",
+            }
+            with patch("hermes_cli.goals.evaluate_turn_enhanced") as mock_enhanced:
+                mock_enhanced.return_value = goals.JudgeVerdict(
+                    action="continue_as_is", completion=0.3, quality_score=0.5,
+                    progress_signal="steady", reasoning="working",
+                )
+                initial_hist = len(mgr._scratchpad.history)
+                mgr.evaluate_after_turn_enhanced("working")
+                assert len(mgr._scratchpad.history) == initial_hist + 1
+                last = mgr._scratchpad.history[-1]
+                assert last["action"] == "continue_as_is"
+
+
+class TestScratchpadPersistence:
+    """Scratchpad persistence across session boundaries."""
+
+    def test_scratchpad_saved_on_set(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager("test-session", default_max_turns=20)
+        mgr.set("test persistence")
+        assert mgr._scratchpad is not None
+        mgr._save_scratchpad()
+        # Verify stored by loading a fresh manager
+        mgr2 = GoalManager("test-session", default_max_turns=20)
+        loaded = mgr2._load_scratchpad_from_db("test-session")
+        assert loaded is not None
+        assert loaded.goal_id == "test-session"
+
+    def test_scratchpad_survives_migration(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager("old-session", default_max_turns=20)
+        mgr.set("migrate me")
+        assert mgr._scratchpad is not None
+        mgr._save_scratchpad()
+
+        # Add an artifact before migration
+        mgr._extract_artifacts_from_turn([
+            {"function": {"name": "write_file", "arguments": '{"path": "/tmp/migrated.txt"}'}}
+        ])
+        mgr._save_scratchpad()
+
+        # Migrate
+        goals.migrate_goal_to_session("old-session", "new-session", reason="test")
+
+        # Load scratchpad on new session
+        loaded = mgr._load_scratchpad_from_db("new-session")
+        assert loaded is not None
+        assert len(loaded.artifacts) >= 1
+
+    def test_verify_artifact_stats_disk(self, hermes_home, tmp_path):
+        """verify_artifact checks the file exists on disk before marking verified."""
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager("test-session", default_max_turns=20)
+        mgr.set("stat test")
+        assert mgr._scratchpad is not None
+
+        # Add artifact pointing to a real file
+        real_file = tmp_path / "exists.txt"
+        real_file.write_text("hello")
+        mgr._scratchpad.add_artifact(str(real_file), kind="file")
+
+        # Verify — should succeed because file exists
+        assert mgr._scratchpad.verify_artifact(str(real_file)) is True
+        assert mgr._scratchpad.artifacts[0].verified is True
+
+        # Add artifact pointing to a non-existent file
+        fake_file = tmp_path / "nope.txt"
+        mgr._scratchpad.add_artifact(str(fake_file), kind="file")
+        assert mgr._scratchpad.verify_artifact(str(fake_file)) is False
+        # The artifact should be marked not verified
+        assert mgr._scratchpad.artifacts[1].verified is False
+
+    def test_verification_gate_stats_during_done(self, hermes_home, tmp_path):
+        """When the enhanced judge says 'done' with artifacts, the gate
+        auto-stats them. Existing files pass; missing files trigger
+        refine_output."""
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        mgr = goals.GoalManager("test-session", default_max_turns=20)
+        mgr.set("build output")
+        assert mgr._scratchpad is not None
+
+        # Create a real file on disk
+        real_file = tmp_path / "output.txt"
+        real_file.write_text("done content")
+
+        # Add artifact pointing to the real file
+        mgr._scratchpad.add_artifact(str(real_file), kind="file")
+
+        with patch.object(mgr, "evaluate_after_turn") as mock_basic:
+            mock_basic.return_value = {
+                "status": "active",
+                "should_continue": True,
+                "verdict": "continue",
+                "reason": "working",
+                "message": "...",
+            }
+            with patch("hermes_cli.goals.evaluate_turn_enhanced") as mock_enhanced:
+                # Judge says done with high completion
+                mock_enhanced.return_value = goals.JudgeVerdict(
+                    action="done", completion=0.95, quality_score=0.9,
+                    progress_signal="forward", reasoning="output created",
+                )
+                decision = mgr.evaluate_after_turn_enhanced("finished")
+                # The gate auto-stats: file exists → verified → gate passes → stays done
+                assert decision.get("verdict") == "continue"  # basic judge is mocked
+

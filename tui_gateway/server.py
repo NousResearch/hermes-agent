@@ -9898,8 +9898,21 @@ def _run_prompt_submit(
                                 _bg_procs = _gather_bg()
                             except Exception:
                                 _bg_procs = None
-                            decision = goal_mgr.evaluate_after_turn(
+                            # Extract tool_calls from the last assistant message
+                            _tc = None
+                            try:
+                                _tui_db = _get_db()
+                                if _tui_db:
+                                    _msgs = _tui_db.get_messages(sid_key)
+                                    for m in reversed(_msgs):
+                                        if m.get("role") == "assistant":
+                                            _tc = m.get("tool_calls")
+                                            break
+                            except Exception:
+                                pass
+                            decision = goal_mgr.evaluate_after_turn_enhanced(
                                 raw,
+                                tool_calls=_tc,
                                 user_initiated=True,
                                 background_processes=_bg_procs,
                             )

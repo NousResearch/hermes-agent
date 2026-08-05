@@ -239,6 +239,13 @@ def apply_lifecycle_transition_db(
     event: str,
     to_state: str,
     resume_state: str | None = None,
+    require_evidence: bool = True,
+    accepted_required_lanes: int | None = None,
+    has_result: bool | None = None,
+    delivery_satisfied: bool | None = None,
+    origin_kind: str | None = None,
+    retry_budget_remaining: int | None = None,
+    native_parent_done: bool | None = None,
 ) -> dict[str, Any]:
     """DB-backed lifecycle CAS using pure transition table + SQL revision fence."""
     tenant = "" if tenant_scope is None else str(tenant_scope)
@@ -260,7 +267,19 @@ def apply_lifecycle_transition_db(
             cancel_epoch=int(row["cancel_epoch"]),
             generation=int(row["generation"]),
         )
-        nxt = apply_transition(req, event, to_state, resume_state=resume_state)
+        nxt = apply_transition(
+            req,
+            event,
+            to_state,
+            resume_state=resume_state,
+            require_evidence=require_evidence,
+            accepted_required_lanes=accepted_required_lanes,
+            has_result=has_result,
+            delivery_satisfied=delivery_satisfied,
+            origin_kind=origin_kind,
+            retry_budget_remaining=retry_budget_remaining,
+            native_parent_done=native_parent_done,
+        )
         grant(
             conn,
             CapabilityGrant(
@@ -275,7 +294,13 @@ def apply_lifecycle_transition_db(
         )
         cur = conn.execute(
             "UPDATE orch_requests SET lifecycle_state=?, lifecycle_revision=?, cancel_epoch=?, "
-            "resume_state=?, blocked_from_state=?, block_revision=?, updated_at=? "
+            "resume_state=?, blocked_from_state=?, block_revision=?, "
+            "delivery_closed_at=CASE WHEN ?= 'completed' THEN COALESCE(delivery_closed_at, ?) ELSE delivery_closed_at END, "
+            "work_accepted_at=CASE WHEN ?= 'completed' THEN COALESCE(work_accepted_at, ?) ELSE work_accepted_at END, "
+            "terminal_reason_code=CASE WHEN ?= 'completed' THEN COALESCE(terminal_reason_code, ?) "
+            "WHEN ? IN ('failed','cancelled') THEN COALESCE(terminal_reason_code, ?) "
+            "ELSE terminal_reason_code END, "
+            "updated_at=? "
             "WHERE board_instance_id=? AND tenant_scope=? AND orch_id=? AND lifecycle_revision=?",
             (
                 nxt.state,
@@ -284,6 +309,14 @@ def apply_lifecycle_transition_db(
                 nxt.resume_state,
                 nxt.blocked_from_state,
                 nxt.block_revision,
+                nxt.state,
+                _now(),
+                nxt.state,
+                _now(),
+                nxt.state,
+                "board_only_parent_done" if event == "board_only_parent_done" else "completed",
+                nxt.state,
+                event,
                 _now(),
                 board_instance_id,
                 tenant,
@@ -300,6 +333,7 @@ def apply_lifecycle_transition_db(
             "to_state": nxt.state,
             "lifecycle_revision": nxt.lifecycle_revision,
             "cancel_epoch": nxt.cancel_epoch,
+            "event": event,
         }
     except Exception:
         conn.rollback()

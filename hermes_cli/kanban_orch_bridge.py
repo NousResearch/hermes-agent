@@ -100,6 +100,9 @@ class OrchBridge:
         from hermes_cli.kanban_orch_digest_udf import install_digest_udfs
 
         install_digest_udfs(self._sidecar)
+        from hermes_cli.kanban_orch_cmin_schema import apply_cmin_transition_patch
+
+        apply_cmin_transition_patch(self._sidecar)
 
         self._native_path = native_path
         self._sidecar_path = sidecar_path
@@ -222,8 +225,10 @@ def init_sidecar_db(sidecar_path: str) -> None:
     conn = sqlite3.connect(sidecar_path)
     try:
         from hermes_cli.kanban_orch_schema_sidecar import apply_sidecar_schema
+        from hermes_cli.kanban_orch_cmin_schema import apply_cmin_transition_patch
 
         apply_sidecar_schema(conn, test_open_capability=False)
+        apply_cmin_transition_patch(conn)
     finally:
         conn.close()
 

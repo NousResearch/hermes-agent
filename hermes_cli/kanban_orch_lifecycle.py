@@ -36,6 +36,13 @@ TRANSITION_TABLE = (
     ("delivery_blocked", "retry_authorized", "delivering"),
     ("blocked", "matching_input_resolved", "resume_state"),
     ("cancelling", "all_children_claims_sends_drained", "cancelled"),
+    # C-min board_only parent-terminal short path (sidecar judge; dual-bind parents)
+    ("submitted", "board_only_parent_done", "completed"),
+    ("decomposing", "board_only_parent_done", "completed"),
+    ("waiting_lanes", "board_only_parent_done", "completed"),
+    ("synthesizing", "board_only_parent_done", "completed"),
+    ("work_accepted", "board_only_parent_done", "completed"),
+    ("delivering", "board_only_parent_done", "completed"),
 )
 
 
@@ -177,6 +184,7 @@ def apply_transition(
     delivery_satisfied: bool | None = None,
     origin_kind: str | None = None,
     retry_budget_remaining: int | None = None,
+    native_parent_done: bool | None = None,
 ) -> Request:
     """Apply one revision-CAS transition and return a new request snapshot.
 
@@ -185,6 +193,7 @@ def apply_transition(
     - result_accepted: has_result is True
     - delivery_satisfied: delivery_satisfied is True
     - explicit_board_only: origin_kind == 'board_only'
+    - board_only_parent_done: origin_kind == 'board_only' and native_parent_done is True
     - retriable_lane_failure: retry_budget_remaining > 0
     - required_exhausted / unrecoverable_or_exhausted: retry_budget_remaining <= 0
     """
@@ -204,6 +213,9 @@ def apply_transition(
         elif event == "explicit_board_only":
             if origin_kind != "board_only":
                 raise LifecycleError("board_only_origin_required")
+        elif event == "board_only_parent_done":
+            if origin_kind != "board_only" or native_parent_done is not True:
+                raise LifecycleError("board_only_parent_not_done")
         elif event == "retriable_lane_failure":
             if retry_budget_remaining is None or retry_budget_remaining <= 0:
                 raise LifecycleError("retry_budget_exhausted_or_missing")

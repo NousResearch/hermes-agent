@@ -14257,11 +14257,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _goal_arg = (event.get_command_args() or "").strip().lower()
         _goal_verb = _goal_arg.split(None, 1)[0] if _goal_arg else ""
         # Exact-match control verbs (unchanged semantics), plus the
-        # wait/unwait barrier verbs which take a pid argument.
+        # wait/unwait barrier verbs which take a pid argument and the
+        # gate management verb (inspection/mutation of the gate list only —
+        # gates run at turn boundary, so editing them mid-run is safe).
         _is_control = (
             not _goal_arg
             or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done", "unwait"}
-            or _goal_verb == "wait"
+            or _goal_verb in {"wait", "gate"}
         )
         if _is_control:
             return await self._handle_goal_command(event)

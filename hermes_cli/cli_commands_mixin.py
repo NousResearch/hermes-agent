@@ -2369,7 +2369,7 @@ class CLICommandsMixin:
             print()
 
     def _handle_goal_command(self, cmd: str) -> None:
-        """Dispatch /goal subcommands: set / draft / show / status / pause / resume / clear."""
+        """Dispatch /goal subcommands: set / draft / show / gate / status / pause / resume / clear."""
         from cli import _DIM, _RST, _cprint
         parts = (cmd or "").strip().split(None, 1)
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -2464,6 +2464,49 @@ class CLICommandsMixin:
                 _cprint("  ▶ Wait barrier cleared — goal loop resumes.")
             else:
                 _cprint(f"  {_DIM}No wait barrier set.{_RST}")
+            return
+
+        # /goal gate ... — manage deterministic quality gates. A gate is a
+        # shell command that must pass before the judge may declare the goal
+        # done; a failing gate's output becomes the continuation prompt.
+        if lower == "gate" or lower.startswith("gate "):
+            gate_arg = arg[len("gate"):].strip()
+            gate_lower = gate_arg.lower()
+            if not gate_arg or gate_lower == "list":
+                for line in mgr.render_gates().splitlines():
+                    _cprint(f"  {line}")
+                return
+            if gate_lower.startswith("add "):
+                command = gate_arg[len("add"):].strip()
+                try:
+                    gate = mgr.add_gate(command)
+                except (RuntimeError, ValueError) as exc:
+                    _cprint(f"  /goal gate add: {exc}")
+                    return
+                _cprint(
+                    f"  ⚿ Gate added: $ {gate.command} "
+                    f"({gate.max_retries} retries, {gate.timeout_seconds}s timeout). "
+                    f"It must pass before the goal can complete."
+                )
+                return
+            if gate_lower.startswith("remove ") or gate_lower.startswith("rm "):
+                idx_text = gate_arg.split(None, 1)[1].strip()
+                try:
+                    removed = mgr.remove_gate(int(idx_text))
+                except (RuntimeError, ValueError, IndexError) as exc:
+                    _cprint(f"  /goal gate remove: {exc}")
+                    return
+                _cprint(f"  ✓ Gate removed: $ {removed}")
+                return
+            if gate_lower == "clear":
+                try:
+                    prev = mgr.clear_gates()
+                except RuntimeError as exc:
+                    _cprint(f"  /goal gate clear: {exc}")
+                    return
+                _cprint(f"  ✓ Cleared {prev} gate{'s' if prev != 1 else ''}.")
+                return
+            _cprint("  Usage: /goal gate [list | add <command> | remove <N> | clear]")
             return
 
         # Otherwise treat the arg as the goal text. Inline `field: value`

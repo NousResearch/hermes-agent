@@ -2680,6 +2680,38 @@ class GatewaySlashCommandsMixin:
                 return "▶ Wait barrier cleared — goal loop resumes."
             return "No wait barrier set."
 
+        # /goal gate ... — manage deterministic quality gates.
+        if lower == "gate" or lower.startswith("gate "):
+            gate_arg = args[len("gate"):].strip()
+            gate_lower = gate_arg.lower()
+            if not gate_arg or gate_lower == "list":
+                return mgr.render_gates()
+            if gate_lower.startswith("add "):
+                command = gate_arg[len("add"):].strip()
+                try:
+                    gate = mgr.add_gate(command)
+                except (RuntimeError, ValueError) as exc:
+                    return f"/goal gate add: {exc}"
+                return (
+                    f"⚿ Gate added: $ {gate.command} "
+                    f"({gate.max_retries} retries, {gate.timeout_seconds}s timeout). "
+                    f"It must pass before the goal can complete."
+                )
+            if gate_lower.startswith("remove ") or gate_lower.startswith("rm "):
+                idx_text = gate_arg.split(None, 1)[1].strip()
+                try:
+                    removed = mgr.remove_gate(int(idx_text))
+                except (RuntimeError, ValueError, IndexError) as exc:
+                    return f"/goal gate remove: {exc}"
+                return f"✓ Gate removed: $ {removed}"
+            if gate_lower == "clear":
+                try:
+                    prev = mgr.clear_gates()
+                except RuntimeError as exc:
+                    return f"/goal gate clear: {exc}"
+                return f"✓ Cleared {prev} gate{'s' if prev != 1 else ''}."
+            return "Usage: /goal gate [list | add <command> | remove <N> | clear]"
+
         # /goal draft <objective> → draft a structured completion contract,
         # then set it. The aux LLM call is sync; run it off the event loop.
         draft_contract_obj = None

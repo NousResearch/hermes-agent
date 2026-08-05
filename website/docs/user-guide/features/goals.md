@@ -66,6 +66,10 @@ What you'll see:
 | `/goal clear` | Drop the goal entirely. |
 | `/goal wait <pid> [reason]` | Park the loop on a background process — it stops re-poking the agent every turn while the process runs, and auto-resumes when it exits. |
 | `/goal unwait` | Drop the wait barrier and resume the loop immediately. |
+| `/goal gate add <command>` | Add a **quality gate**: a shell command that must pass before the goal can be judged done. See [Quality gates](#quality-gates). |
+| `/goal gate` or `/goal gate list` | List the goal's gates and their pass/fail state. |
+| `/goal gate remove <N>` | Remove the Nth gate (1-based). |
+| `/goal gate clear` | Remove all gates. |
 
 Works identically on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard).
 
@@ -123,6 +127,26 @@ While a goal is active you can append extra acceptance criteria with `/subgoal <
 Subgoals are persisted alongside the goal in `SessionDB.state_meta`, so they survive `/resume`. Setting a new `/goal <text>` replaces the goal and clears the subgoal list; `/goal clear` does the same.
 
 Use this when you start a loop ("fix the failing tests") and notice partway through that you also want it to "and add a regression test for the bug you just patched" — `/subgoal add a regression test` tightens the success criteria without breaking the running loop.
+
+## Quality gates
+
+A completion contract makes the judge stricter, but the judge is still an LLM reading prose. A **quality gate** is stronger: a deterministic shell command that must exit 0 before the goal can complete at all. Inspired by Prime-Agent's bounded autonomous mode (`--autonomous-gate`).
+
+```
+/goal Fix the flaky session tests
+/goal gate add scripts/run_tests.sh tests/hermes_cli/test_goals.py
+```
+
+How it works, each turn:
+
+1. **Gates run before the judge.** If any gate fails, the judge is *not called* — a red gate is deterministic evidence the goal isn't done. The gate's exit code and output tail (last ~3 KB) become the continuation prompt, so the agent iterates against the actual failure instead of a vibe.
+2. **All gates pass → normal judging.** The LLM judge then decides done/continue/wait exactly as before.
+3. **Unchanged workspace → no re-run.** If a gate failed and nothing changed in the workspace since (tracked via a git fingerprint of HEAD + working-tree status), the gate is not re-run — the recorded failure is replayed and the attempt count advances. A stuck agent can't burn wall-clock re-running an identical red suite. Outside a git repo, gates simply always re-run.
+4. **Retries are bounded.** Each gate defaults to 3 retries and a 5-minute timeout. When a gate exhausts its retries the goal auto-pauses (like the turn budget) with a message telling you to fix it manually, remove the gate, or `/goal resume`.
+
+Gates persist with the goal in `SessionDB.state_meta` (they survive `/resume` and context compression), and gate management (`/goal gate …`) is safe mid-run on the gateway — gates only run at turn boundary.
+
+Gates and contracts compose: use a contract to shape *what the agent aims for*, and gates to make *"done" mechanically checkable*. When both are set, gates run first.
 
 ## Parking on a background process: automatic, with a manual override
 

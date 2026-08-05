@@ -1,10 +1,37 @@
-"""Generic webhook platform adapter: aiohttp server that validates HMAC-signed POSTs (GitHub, GitLab,
-Svix, Linear, generic), renders payloads into agent prompts, and routes responses back (github_comment
-or any gateway platform). Routes live under platforms.webhook.extra.routes: events (header filter),
-secret (REQUIRED; "INSECURE_NO_AUTH" skips validation, loopback only), prompt template, skills,
-deliver/deliver_extra, deliver_only (rendered prompt IS the message). Per-route rate limiting,
-idempotency cache, body-size caps checked before reading. Generic HMAC V2 binds a timestamp for
-replay protection; body-only V1 is deprecated but accepted with a warning."""
+"""Generic webhook platform adapter.
+
+Runs an aiohttp HTTP server that receives webhook POSTs from external
+services (GitHub, GitLab, JIRA, Stripe, etc.), validates HMAC signatures,
+transforms payloads into agent prompts, and routes responses back to the
+source or to another configured platform.
+
+Configuration lives in config.yaml under platforms.webhook.extra.routes.
+Each route defines:
+  - events: which event types to accept (header-based filtering)
+  - secret: HMAC secret for signature validation (REQUIRED)
+  - prompt: template string formatted with the webhook payload
+  - skills: optional list of skills to load for the agent
+  - deliver: where to send the response (github_comment, telegram, etc.)
+  - deliver_extra: additional delivery config (repo, pr_number, chat_id)
+  - deliver_only: if true, skip the agent — the rendered prompt IS the
+    message that gets delivered.  Use for external push notifications
+    (Supabase, monitoring alerts, inter-agent pings) where zero LLM cost
+    and sub-second delivery matter more than agent reasoning.
+
+Security:
+  - HMAC secret is required per route (validated at startup)
+  - Rate limiting per route (fixed-window, configurable)
+  - Idempotency caches prevent duplicate agent runs on webhook retries:
+    delivery-level (same delivery id) and event-level (same logical event
+    re-POSTed under a fresh delivery id, 24h TTL configurable via
+    ``event_dedup_ttl``)
+  - Body size limits checked before reading payload
+  - Generic HMAC supports a V2 signature (X-Webhook-Signature-V2) that
+    binds a timestamp into the signed data for replay protection; the
+    legacy body-only V1 (X-Webhook-Signature) is deprecated but still
+    accepted with a warning, since it has no replay protection
+  - Set secret to "INSECURE_NO_AUTH" to skip validation (testing only)
+"""
 
 import asyncio
 import base64
@@ -183,6 +210,20 @@ class WebhookAdapter(BasePlatformAdapter):
         self._script_timeout_seconds: int = int(extra.get("script_timeout_seconds", DEFAULT_SCRIPT_TIMEOUT_SECONDS))
         self._route_processor = WebhookRouteProcessor(script_timeout_seconds=self._script_timeout_seconds)
 
+        # Event-level idempotency: TTL cache of logical event identities
+        # extracted from the payload / embedded message ID (NOT the delivery
+        # ID).  A sender that retries the SAME event under a fresh delivery
+        # ID (e.g. the ai-coach backend re-POSTing a crash-survivor event
+        # with a new ``X-Request-ID`` timestamp) must not wake the agent a
+        # second time.  Default TTL 24h, overridable per route
+        # (``event_dedup_ttl``) or globally (``platforms.webhook.extra.
+        # event_dedup_ttl``).
+        self._seen_events: Dict[str, float] = {}
+        self._event_dedup_ttl: int = int(
+            extra.get("event_dedup_ttl", 24 * 3600)
+        )
+        self._seen_events_next_prune_at: float = 0.0
+
     # --- Lifecycle ---
 
     def _validate_route(self, name: str, route: dict) -> None:
@@ -306,6 +347,137 @@ class WebhookAdapter(BasePlatformAdapter):
         self._seen_deliveries[delivery_id] = now
         if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
             self._prune_seen_deliveries(now)
+        return True
+
+    # ------------------------------------------------------------------
+    # Event-level idempotency
+    # ------------------------------------------------------------------
+
+    _EVENT_KEY_PAYLOAD_FIELDS = (
+        "dedup_key", "event_id", "eventId", "id",
+    )
+
+    @staticmethod
+    def _extract_event_key(
+        delivery_id: str,
+        event_type: str,
+        payload: dict,
+    ) -> str:
+        """Derive a stable identity for the LOGICAL event a POST carries.
+
+        The delivery ID is a retry/transport identifier: providers hand out a
+        fresh one on every attempt, so it cannot be used to recognise that two
+        deliveries are the SAME event.  This returns a deterministic key from
+        the parts that survive retries:
+
+        1. An explicit event identity in the payload — ``dedup_key``,
+           ``event_id``, ``eventId``, or ``id`` (the sender's own stable
+           event id, e.g. ai-coach's ``dedup_key`` / a svix ``msg_*`` id).
+        2. A composite body fingerprint over ``(trigger_type, data)`` — the
+           ai-coach backend identifies events by ``trigger_type`` + ``data``
+           (its delivery id ``ai-coach-<type>-<per-attempt-ts>`` changes on
+           every retry, so the payload is the only stable part).  Identical
+           re-POSTs of the same event fingerprint identically; genuinely new
+           events (new data) fingerprint differently.  Only payloads that
+           carry these event-specific semantic fields are fingerprinted —
+           a generic GitHub push whose fingerprint would be constant must
+           never become a 24h suppress-everything key.
+        3. The embedded message ID inside the delivery ID (``svix-id`` /
+           ``X-GitHub-Delivery`` style) when the payload carries NO semantic
+           identity at all — e.g. ``ai-coach-sleep_ready-1785938387``.  This
+           mirrors delivery-level dedup for senders that identify events
+           solely by their delivery id.
+
+        Returns ``""`` when NO stable identity can be derived (generic
+        delivery-ID-only POSTs with no payload id and an opaque delivery id
+        like ``d3f8a2``) — the caller then skips event-level dedup entirely,
+        preserving the existing delivery-level behaviour for those routes.
+
+        NOTE: the event ``type`` alone (``trigger_type`` / header event_type)
+        is deliberately NOT used as a standalone key — ``sleep_ready`` or
+        ``weight`` would wrongly suppress every subsequent event of that class
+        within the TTL.  The type is only a component of the composite
+        fingerprint.
+        """
+        # 1. Explicit event identity in the payload (sender-declared, stable).
+        for field in WebhookAdapter._EVENT_KEY_PAYLOAD_FIELDS:
+            if field not in payload:
+                continue
+            value = payload.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return str(value)
+        # 2. Composite body fingerprint — ONLY for payloads that carry
+        #    event-specific semantic fields (ai-coach shape:
+        #    ``{"trigger_type": ..., "data": {...}}``).  Generic webhooks
+        #    (GitHub pushes etc.) must NOT be fingerprinted here: their
+        #    fingerprint would be constant across events, and a constant key
+        #    would suppress every subsequent event of that type within the
+        #    TTL — the exact opposite of what this cache is for.
+        data = payload.get("data")
+        if isinstance(data, (dict, list)) or payload.get("trigger_type"):
+            semantic: Dict[str, Any] = {
+                "trigger_type": payload.get("trigger_type"),
+                "data": data,
+            }
+            for field in WebhookAdapter._EVENT_KEY_PAYLOAD_FIELDS:
+                if field in payload:
+                    semantic[field] = payload.get(field)
+            return "body:" + hashlib.sha256(
+                json.dumps(
+                    semantic, sort_keys=True, separators=(",", ":"), default=str
+                ).encode("utf-8")
+            ).hexdigest()
+        # 3. Embedded message ID inside the delivery ID.  Common shapes:
+        #    ``<prefix>-<event>-<seq>`` (ai-coach), ``msg_<id>`` (svix),
+        #    ``<uuid>`` (github).  Opaque 1-2 segment delivery ids
+        #    (``d3f8a2``, ``delivery-123``) are NOT stable event identities —
+        #    they change per attempt.
+        did = (delivery_id or "").strip()
+        if did:
+            segments = [s for s in did.replace("/", "-").split("-") if s]
+            if len(segments) >= 3:
+                return did
+        return ""
+
+    def _event_dedup_ttl_for_route(self, route_config: dict) -> int:
+        """Per-route ``event_dedup_ttl`` override, else the global default."""
+        raw = route_config.get("event_dedup_ttl")
+        if raw is None:
+            return self._event_dedup_ttl
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return self._event_dedup_ttl
+
+    def _prune_seen_events(self, now: float) -> None:
+        """Drop expired event identities without scanning every POST."""
+        if now < self._seen_events_next_prune_at:
+            return
+        cutoff = now - self._event_dedup_ttl
+        stale = [k for k, t in self._seen_events.items() if t < cutoff]
+        for k in stale:
+            self._seen_events.pop(k, None)
+        self._seen_events_next_prune_at = now + min(
+            3600.0, max(60.0, self._event_dedup_ttl / 10)
+        )
+
+    def _record_event(self, event_key: str, ttl: int, now: float) -> bool:
+        """Return True when this EVENT should be processed (first sight).
+
+        On a repeat within ``ttl`` seconds, returns False and leaves the
+        original timestamp untouched (so the 24h window is measured from
+        first sight, not extended by each retry).
+        """
+        seen_at = self._seen_events.get(event_key)
+        if seen_at is not None and now - seen_at < ttl:
+            return False
+        if seen_at is not None:
+            self._seen_events.pop(event_key, None)
+        self._seen_events[event_key] = now
+        if len(self._seen_events) > max(self._rate_limit * 2, 128):
+            self._prune_seen_events(now)
         return True
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -553,8 +725,51 @@ class WebhookAdapter(BasePlatformAdapter):
             "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         if not self._record_delivery_id(delivery_id, now):
-            logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
-            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
+            logger.info(
+                "[webhook] Skipping duplicate delivery %s", delivery_id
+            )
+            return web.json_response(
+                {"status": "duplicate", "delivery_id": delivery_id},
+                status=200,
+            )
+
+        # ── Event-level idempotency ─────────────────────────────
+        # The delivery-level check above only catches retries that reuse the
+        # SAME delivery ID.  Senders that re-POST the same logical event with
+        # a FRESH delivery ID (ai-coach backend crash-recovery, provider
+        # requeues) would otherwise wake the agent again for an event it
+        # already processed.  Derive a stable event identity from the payload
+        # / embedded message ID and no-op silently when it was already seen.
+        # If no stable identity can be derived, fall through to the existing
+        # behaviour (delivery-level dedup only).
+        event_key = self._extract_event_key(delivery_id, event_type, payload)
+        if event_key:
+            event_ttl = self._event_dedup_ttl_for_route(route_config)
+            if event_ttl > 0 and not self._record_event(event_key, event_ttl, now):
+                logger.info(
+                    "[webhook] Skipping duplicate event %s route=%s "
+                    "delivery=%s (event already processed within %ds TTL)",
+                    event_key,
+                    route_name,
+                    delivery_id,
+                    event_ttl,
+                )
+                return web.json_response(
+                    {
+                        "status": "duplicate",
+                        "reason": "event",
+                        "event": event_key,
+                        "delivery_id": delivery_id,
+                    },
+                    status=200,
+                )
+
+        # ── Direct delivery mode (deliver_only) ─────────────────
+        # Skip the agent entirely — the rendered prompt IS the message we
+        # deliver.  Use case: external services (Supabase, monitoring,
+        # cron jobs, other agents) that need to push a plain notification
+        # to a user's chat with zero LLM cost.  Reuses the same HMAC auth,
+        # rate limiting, idempotency, and template rendering as agent mode.
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id)
         return self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,

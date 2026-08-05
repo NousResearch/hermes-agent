@@ -570,6 +570,193 @@ class TestIdempotency:
 
 
 # ===================================================================
+# Event-level idempotency
+# ===================================================================
+
+
+class TestEventIdempotency:
+    """A retried event re-POSTed under a FRESH delivery ID must not wake the
+    agent again.
+
+    Delivery-level dedup only catches retries that reuse the exact same
+    delivery ID.  Senders like the ai-coach backend build the delivery ID
+    from a per-attempt timestamp (``ai-coach-<type>-<ts>``), so a requeue
+    or crash-recovery POST of the SAME event carries a DIFFERENT delivery ID
+    and sails past the delivery cache — waking the agent (and composing a
+    message) once per retry.  Event-level dedup keys on a stable identity
+    extracted from the payload / embedded message ID instead.
+    """
+
+    def _routes(self, **extra):
+        route = {
+            "secret": _INSECURE_NO_AUTH,
+            "prompt": "Event {trigger_type}: {data}",
+        }
+        route.update(extra)
+        return {"ev": route}
+
+    @staticmethod
+    def _ai_coach_payload(event_type="sleep_ready", sleep_min=430):
+        return {
+            "trigger_type": event_type,
+            "data": {"date": "2026-08-05", "sleep_min": sleep_min},
+            "synced_at": "2026-08-05T10:00:00+00:00",
+        }
+
+    def test_extract_event_key_ai_coach_same_event_diff_delivery_ids(self):
+        """The incident shape: same event, per-attempt delivery IDs."""
+        adapter = _make_adapter()
+        payload = self._ai_coach_payload()
+        k1 = adapter._extract_event_key(
+            "ai-coach-sleep_ready-1785938387", "unknown", payload
+        )
+        k2 = adapter._extract_event_key(
+            "ai-coach-sleep_ready-1785938388", "unknown", payload
+        )
+        assert k1 == k2
+        assert k1.startswith("body:")
+
+    def test_extract_event_key_new_data_fingerprints_differently(self):
+        """A genuinely new event (new data) must NOT be suppressed."""
+        adapter = _make_adapter()
+        k1 = adapter._extract_event_key(
+            "ai-coach-weight-1785939000", "unknown",
+            {"trigger_type": "weight", "data": {"date": "2026-08-05", "weight_kg": 82.5}},
+        )
+        k2 = adapter._extract_event_key(
+            "ai-coach-weight-1785939001", "unknown",
+            {"trigger_type": "weight", "data": {"date": "2026-08-05", "weight_kg": 82.6}},
+        )
+        assert k1 != k2
+
+    def test_extract_event_key_explicit_payload_id_wins(self):
+        """A sender-declared event id (svix ``msg_*``, ai-coach dedup_key)
+        is the most stable identity and is used as-is."""
+        adapter = _make_adapter()
+        key = adapter._extract_event_key(
+            "delivery-abc", "message.received",
+            {"event_id": "msg_2xabc", "data": {"x": 1}},
+        )
+        assert key == "msg_2xabc"
+
+    def test_extract_event_key_generic_push_no_semantic_no_key(self):
+        """Generic webhooks (GitHub push, no trigger_type/data, opaque
+        short delivery id) get NO event key — event-level dedup must not
+        turn a constant-ish fingerprint into a suppress-everything key."""
+        adapter = _make_adapter()
+        key = adapter._extract_event_key(
+            "delivery-123", "push",
+            {"ref": "main", "repository": {"full_name": "o/r"}},
+        )
+        assert key == ""
+
+    def test_extract_event_key_embedded_id_when_no_semantic(self):
+        """A 3+ segment delivery id (ai-coach style) IS the event identity
+        when the payload carries no semantic fields."""
+        adapter = _make_adapter()
+        key = adapter._extract_event_key(
+            "ai-coach-workout-1785939000", "unknown", {"note": "x"}
+        )
+        assert key == "ai-coach-workout-1785939000"
+
+    @pytest.mark.asyncio
+    async def test_same_event_fresh_delivery_id_suppressed(self):
+        """POST the same ai-coach event twice with different delivery IDs:
+        first 202 + one agent wake, second 200 duplicate + NO agent wake."""
+        adapter = _make_adapter(routes=self._routes())
+        wake_count = 0
+
+        async def _capture(event):
+            nonlocal wake_count
+            wake_count += 1
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+        payload = self._ai_coach_payload()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp1 = await cli.post(
+                "/webhooks/ev",
+                json=payload,
+                headers={"X-Request-ID": "ai-coach-sleep_ready-1785938387"},
+            )
+            assert resp1.status == 202
+            assert (await resp1.json())["status"] == "accepted"
+
+            resp2 = await cli.post(
+                "/webhooks/ev",
+                json=payload,
+                headers={"X-Request-ID": "ai-coach-sleep_ready-1785938388"},
+            )
+            assert resp2.status == 200
+            data = await resp2.json()
+            assert data["status"] == "duplicate"
+            assert data["reason"] == "event"
+
+        await asyncio.sleep(0.05)
+        assert wake_count == 1, "Event must wake the agent exactly once"
+
+    @pytest.mark.asyncio
+    async def test_different_events_not_suppressed(self):
+        """Two distinct events (different data) both wake the agent."""
+        adapter = _make_adapter(routes=self._routes())
+        wake_count = 0
+
+        async def _capture(event):
+            nonlocal wake_count
+            wake_count += 1
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            r1 = await cli.post(
+                "/webhooks/ev",
+                json=self._ai_coach_payload(event_type="weight", sleep_min=82),
+                headers={"X-Request-ID": "ai-coach-weight-1785939000"},
+            )
+            r2 = await cli.post(
+                "/webhooks/ev",
+                json=self._ai_coach_payload(event_type="weight", sleep_min=83),
+                headers={"X-Request-ID": "ai-coach-weight-1785939001"},
+            )
+            assert r1.status == 202
+            assert r2.status == 202
+
+        await asyncio.sleep(0.05)
+        assert wake_count == 2
+
+    @pytest.mark.asyncio
+    async def test_event_dedup_ttl_route_override(self):
+        """Per-route ``event_dedup_ttl`` overrides the global 24h default."""
+        adapter = _make_adapter(routes=self._routes(event_dedup_ttl=120))
+        assert adapter._event_dedup_ttl_for_route(
+            adapter._routes["ev"]
+        ) == 120
+
+    def test_event_dedup_ttl_zero_disables(self):
+        """``event_dedup_ttl: 0`` disables event-level dedup."""
+        adapter = _make_adapter(routes=self._routes(event_dedup_ttl=0))
+        assert adapter._event_dedup_ttl_for_route(
+            adapter._routes["ev"]
+        ) == 0
+        # Disabled TTL: even a repeat event must be processed.
+        now = 1000.0
+        assert adapter._record_event("evt-1", 0, now) is True
+        assert adapter._record_event("evt-1", 0, now + 1) is True
+
+    def test_record_event_preserves_first_seen_timestamp(self):
+        """A retry must not extend the TTL window (measured from first sight)."""
+        adapter = _make_adapter()
+        now = 1000.0
+        assert adapter._record_event("evt-1", 3600, now) is True
+        assert adapter._record_event("evt-1", 3600, now + 100) is False
+        assert adapter._seen_events["evt-1"] == now
+        # After the TTL elapses the event is processable again.
+        assert adapter._record_event("evt-1", 3600, now + 3601) is True
+
+
+# ===================================================================
 # Rate limiting
 # ===================================================================
 

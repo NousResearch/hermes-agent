@@ -32,10 +32,12 @@ from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
+    GATEWAY_MESSAGING_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
+    NON_MESSAGING_PLATFORM_KEYS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
@@ -463,6 +465,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         _effective_hint = _tui_embedded_pane_clarifier(_effective_hint)
     if _effective_hint:
         post_workspace_parts.append(_effective_hint)
+    # Gateway messaging sessions additionally get the shared operational
+    # constraints note (cannot self-restart the gateway; reply gating is
+    # enforced by gateway config, not by agent behavior/memory). Gated on
+    # ``_default_hint`` (not the config-overridable effective hint) plus the
+    # platform key. platform_key is fixed at agent construction;
+    # _default_hint is re-resolved each build but deterministic for the life
+    # of the process (PLATFORM_HINTS is a module constant, registry hints
+    # resolve idempotently, and the telegram config read never changes hint
+    # truthiness) — so the prompt stays byte-stable and cli/tui/cron/desktop
+    # prompt bytes are unchanged.
+    if _default_hint and platform_key not in NON_MESSAGING_PLATFORM_KEYS:
+        post_workspace_parts.append(GATEWAY_MESSAGING_GUIDANCE)
 
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []

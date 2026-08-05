@@ -135,3 +135,83 @@ def test_register_wires_supported_hooks(monkeypatch, tmp_path):
     ctx = Ctx()
     plugin.register(ctx)
     assert ctx.hooks == ["pre_llm_call", "on_session_finalize"]
+
+
+def test_register_disabled_does_not_wire_hooks(monkeypatch, tmp_path):
+    plugin = load_module("")
+    monkeypatch.setattr(plugin, "_load_settings", lambda: plugin.Settings(enabled=False, source_paths=(), index_path=tmp_path / "cache.db"))
+    monkeypatch.setattr(plugin, "_enqueue_refresh", lambda **_: None)
+    class Ctx:
+        def __init__(self): self.hooks = []
+        def register_hook(self, name, fn): self.hooks.append(name)
+    ctx = Ctx()
+    plugin.register(ctx)
+    assert ctx.hooks == []
+
+
+def test_enqueue_refresh_skips_when_disabled(monkeypatch, tmp_path):
+    plugin = load_module("")
+    monkeypatch.setattr(plugin, "_settings", plugin.Settings(enabled=False, source_paths=(), index_path=tmp_path / "cache.db"))
+    calls = []
+    monkeypatch.setattr(plugin, "_ensure_worker", lambda: calls.append("ensure"))
+    monkeypatch.setattr(plugin, "_jobs", plugin._settings.__dataclass_fields__)
+    assert plugin._enqueue_refresh(on_session_finalize=lambda: None) is None
+
+
+def test_missing_source_path_does_not_break_index(tmp_path):
+    index = load_module("index")
+    cache = tmp_path / "recall.db"
+    report = index.refresh_index([tmp_path / "does-not-exist.db"], cache)
+    assert report.sources_seen == 0
+    assert report.sources_failed == 0
+    assert report.sessions_changed == 0
+
+
+def test_corrupted_source_is_isolated_and_other_sources_still_index(tmp_path):
+    index = load_module("index")
+    bad = tmp_path / "bad.db"
+    bad.write_text("garbage", encoding="utf-8")
+    good = tmp_path / "good.db"
+    source_db(good, [
+        (1, "s1", "user", "recovery rollback test", 1.0, None, 1),
+    ])
+    cache = tmp_path / "recall.db"
+    report = index.refresh_index([bad, good], cache)
+    assert report.sources_failed == 1
+    assert report.sources_seen == 2
+    assert report.sessions_changed == 1
+    hits = index.recall(cache, "rollback test", active_session_id="x", now=2.0)
+    assert [h.session_id for h in hits] == ["s1"]
+
+
+def test_removed_index_path_recovers_from_missing_cache(tmp_path):
+    index = load_module("index")
+    source = tmp_path / "state.db"
+    cache = tmp_path / "recall.db"
+    source_db(source, [(1, "s1", "user", "cold cache recovery", 1.0, None, 1)])
+    index.refresh_index([source], cache)
+    cache.unlink()
+    report = index.refresh_index([source], cache)
+    assert report.sources_seen == 1
+    assert report.sources_failed == 0
+    assert report.sessions_changed == 1
+    hits = index.recall(cache, "cold cache", active_session_id="x", now=2.0)
+    assert [h.session_id for h in hits] == ["s1"]
+
+
+def test_incremental_refresh_skips_unchanged_and_detects_changed(tmp_path):
+    index = load_module("index")
+    source = tmp_path / "state.db"
+    cache = tmp_path / "recall.db"
+    source_db(source, [(1, "s1", "user", "first draft", 1.0, None, 1)])
+    first = index.refresh_index([source], cache)
+    assert first.sessions_changed == 1
+    second = index.refresh_index([source], cache)
+    assert second.sessions_changed == 0
+    con = sqlite3.connect(source)
+    con.execute("INSERT INTO messages(id,session_id,role,content,timestamp,api_content,active) VALUES(?,?,?,?,?,?,?)",
+                (2, "s1", "assistant", "revised draft", 2.0, None, 1))
+    con.commit()
+    con.close()
+    third = index.refresh_index([source], cache)
+    assert third.sessions_changed == 1

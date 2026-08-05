@@ -20,3 +20,5 @@ plugins:
 The index is incremental per source and per session. Cache changes are transactional. Missing, busy, malformed, or unsupported stores fail open and never prevent Hermes startup. `on_session_finalize` only queues background refresh work. Retrieval excludes the active session, deduplicates identical excerpts, and uses only `messages.content`; `api_content`, inactive messages, tool rows, and prior `<filesystem-recall>` blocks are not indexed.
 
 The cache is rebuildable and contains transcript excerpts. Protect it with the same filesystem permissions as `$HERMES_HOME`. Delete the configured index file to force a cold rebuild.
+
+See `USAGE.md` for setup, configuration details, injected-context format, retention/privacy guidance, troubleshooting, and how to clear or rebuild the index.

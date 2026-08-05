@@ -96,7 +96,14 @@ function ConfigSettingsInner({
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-  const { data: loadedConfig, isError: configLoadFailed, refetch: refetchConfig } = useHermesConfigRecord(scopeProfile)
+
+  const {
+    data: loadedConfig,
+    dataUpdatedAt: configUpdatedAt,
+    isError: configLoadFailed,
+    refetch: refetchConfig
+  } = useHermesConfigRecord(scopeProfile)
+
   // Writes land on the same cache key the query above reads (base key when
   // following the active profile, suffixed when a scope override is set).
   const writeConfigCache = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
@@ -123,6 +130,8 @@ function ConfigSettingsInner({
 
   // Seed the local draft once, the first time the shared record lands.
   // Background refetches thereafter must not clobber in-progress edits.
+  // dataUpdatedAt must remain a dependency because structurally equal profile
+  // configs can reuse the same data reference after a successful refetch.
   const configSeeded = useRef(false)
   // Snapshot of the record as it was when the draft was seeded. Autosave
   // diffs the draft against this (not against disk) so a field the user
@@ -142,7 +151,7 @@ function ConfigSettingsInner({
       savedDiscoverySignatureRef.current = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(loadedConfig))
       setConfig(loadedConfig)
     }
-  }, [loadedConfig])
+  }, [configUpdatedAt, loadedConfig])
 
   // A profile switch invalidates (but doesn't clear) the shared config query, so
   // the local draft would otherwise keep profile A's data and autosave it into

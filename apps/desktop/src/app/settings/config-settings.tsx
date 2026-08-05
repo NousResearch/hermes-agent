@@ -73,7 +73,13 @@ export function ConfigSettings({
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-  const { data: loadedConfig, isError: configLoadFailed, refetch: refetchConfig } = useHermesConfigRecord()
+
+  const {
+    data: loadedConfig,
+    dataUpdatedAt: configUpdatedAt,
+    isError: configLoadFailed,
+    refetch: refetchConfig
+  } = useHermesConfigRecord()
 
   const {
     data: schemaResponse,
@@ -94,6 +100,8 @@ export function ConfigSettings({
 
   // Seed the local draft once, the first time the shared record lands.
   // Background refetches thereafter must not clobber in-progress edits.
+  // dataUpdatedAt must remain a dependency because structurally equal profile
+  // configs can reuse the same data reference after a successful refetch.
   const configSeeded = useRef(false)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
@@ -103,7 +111,7 @@ export function ConfigSettings({
       savedDiscoverySignatureRef.current = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(loadedConfig))
       setConfig(loadedConfig)
     }
-  }, [loadedConfig])
+  }, [configUpdatedAt, loadedConfig])
 
   // A profile switch invalidates (but doesn't clear) the shared config query, so
   // the local draft would otherwise keep profile A's data and autosave it into

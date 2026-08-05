@@ -249,6 +249,17 @@ const drawAsciiDiffusion = (
   ctx.fillRect(0, 0, width, height)
 }
 
+// Cap concurrent animated instances — each rAF loop redraws the full canvas
+// every frame, so N instances multiply the CPU/GPU cost linearly (#79077).
+// Beyond the cap the canvas still mounts (so layout/layout is unchanged) but
+// the animation loop is skipped, giving a zero-cost static placeholder.
+const MAX_ANIMATED_INSTANCES = 2
+let activeAnimatedCount = 0
+
+// ~15fps paint target for the animated shimmer — visually equivalent at
+// placeholder scale, 4x fewer full-canvas redraws than display cadence.
+const FRAME_INTERVAL = 1000 / 15
+
 export const DiffusionCanvas: FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sizeRef = useRef({ width: 0, height: 0 })
@@ -300,7 +311,20 @@ export const DiffusionCanvas: FC = () => {
 
     sizeRef.current = fitCanvas(canvas, ctx)
 
+    // Over the concurrent cap — draw one static frame, skip the rAF loop so
+    // extra instances are zero-cost (#79077). Each animated instance redraws
+    // its full canvas per frame, so N instances multiply cost linearly.
+    if (activeAnimatedCount >= MAX_ANIMATED_INSTANCES) {
+      const { width, height } = sizeRef.current
+      drawAsciiDiffusion(ctx, themeRef.current, width, height, 0)
+
+      return
+    }
+
+    activeAnimatedCount++
+
     let frame = 0
+    let lastDraw = 0
     let stopped = false
     let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
 
@@ -326,9 +350,15 @@ export const DiffusionCanvas: FC = () => {
         return
       }
 
-      const { width, height } = sizeRef.current
-      ctx.clearRect(0, 0, width, height)
-      drawAsciiDiffusion(ctx, themeRef.current, width, height, now / 1000)
+      // 15fps is visually equivalent for this placeholder shimmer and does
+      // 4x fewer full-canvas redraws than display cadence (#79077).
+      if (now - lastDraw >= FRAME_INTERVAL) {
+        const { width, height } = sizeRef.current
+        ctx.clearRect(0, 0, width, height)
+        drawAsciiDiffusion(ctx, themeRef.current, width, height, now / 1000)
+        lastDraw = now
+      }
+
       scheduleFrame()
     }
 
@@ -344,6 +374,7 @@ export const DiffusionCanvas: FC = () => {
       stopped = true
       cancelFrame()
       pauseController.dispose()
+      activeAnimatedCount--
     }
   }, [])
 

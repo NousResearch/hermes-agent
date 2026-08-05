@@ -771,6 +771,19 @@ export function saveMemoryProviderConfig(provider: string, values: Record<string
   })
 }
 
+export function runMemoryProviderAction<T>(
+  provider: string,
+  action: string,
+  payload: Record<string, unknown>
+): Promise<T> {
+  return window.hermesDesktop.api<T>({
+    ...profileScoped(),
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/actions/${encodeURIComponent(action)}`,
+    method: 'POST',
+    body: { payload }
+  })
+}
+
 export function getEnvVars(): Promise<Record<string, EnvVarInfo>> {
   return window.hermesDesktop.api<Record<string, EnvVarInfo>>({
     ...profileScoped(),

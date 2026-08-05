@@ -4,10 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MemoryProviderConfig } from '@/types/hermes'
 
 const getMemoryProviderConfig = vi.fn()
+const runMemoryProviderAction = vi.fn()
 const saveMemoryProviderConfig = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getMemoryProviderConfig: (provider: string) => getMemoryProviderConfig(provider),
+  runMemoryProviderAction: (provider: string, action: string, payload: unknown) =>
+    runMemoryProviderAction(provider, action, payload),
   saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values)
 }))
 
@@ -98,8 +101,39 @@ function honchoSchema(): MemoryProviderConfig {
   }
 }
 
+function managedSchema(): MemoryProviderConfig {
+  return {
+    description: 'Configure Example Memory.',
+    docs_url: '',
+    fields: [
+      {
+        description: '',
+        group: '',
+        inline: false,
+        is_set: true,
+        key: 'name',
+        kind: 'text',
+        label: 'Profile name',
+        options: [],
+        placeholder: '',
+        required: true,
+        value: 'primary'
+      }
+    ],
+    label: 'Example Memory',
+    name: 'example',
+    status_action: 'health',
+    submit_action: 'save',
+    summary: {
+      items: [{ label: 'Active profile', value: 'primary' }],
+      status: { label: 'Checking', message: '', state: 'checking' }
+    }
+  }
+}
+
 beforeEach(() => {
   getMemoryProviderConfig.mockResolvedValue(honchoSchema())
+  runMemoryProviderAction.mockResolvedValue({ ok: true })
   saveMemoryProviderConfig.mockResolvedValue({ ok: true })
 })
 
@@ -198,6 +232,30 @@ describe('ProviderConfigPanel', () => {
     expect(await screen.findByDisplayValue('myws')).toBeTruthy()
   })
 
+  it('ignores a stale response after the selected provider changes', async () => {
+    let resolveHoncho: ((value: MemoryProviderConfig) => void) | undefined
+    const delayedHoncho = new Promise<MemoryProviderConfig>(resolve => {
+      resolveHoncho = resolve
+    })
+    const example = managedSchema()
+
+    getMemoryProviderConfig.mockImplementation((provider: string) =>
+      provider === 'honcho' ? delayedHoncho : Promise.resolve(example)
+    )
+
+    const { rerender } = await renderPanel('honcho')
+    const { ProviderConfigPanel } = await import('./provider-config-panel')
+
+    rerender(<ProviderConfigPanel provider="example" />)
+
+    expect(await screen.findByRole('button', { name: 'Configure' })).toBeTruthy()
+
+    resolveHoncho?.(honchoSchema())
+
+    await waitFor(() => expect(screen.queryByText('Honcho settings')).toBeNull())
+    expect(screen.getByText('Example Memory settings')).toBeTruthy()
+  })
+
   it('renders nothing for a provider with no declared config surface', async () => {
     getMemoryProviderConfig.mockResolvedValue({ name: 'builtin', label: 'builtin', docs_url: '', fields: [] })
 
@@ -205,5 +263,41 @@ describe('ProviderConfigPanel', () => {
 
     await waitFor(() => expect(getMemoryProviderConfig).toHaveBeenCalledWith('builtin'))
     expect(container.querySelector('section')).toBeNull()
+  })
+
+  it('renders managed settings before health completes and rechecks health after save', async () => {
+    let resolveFirstHealth: ((value: unknown) => void) | undefined
+
+    getMemoryProviderConfig.mockResolvedValue(managedSchema())
+    runMemoryProviderAction.mockImplementation((_provider: string, action: string) => {
+      if (action === 'health' && !resolveFirstHealth) {
+        return new Promise(resolve => (resolveFirstHealth = resolve))
+      }
+
+      if (action === 'health') {
+        return Promise.resolve({ label: 'Healthy', message: 'Ready', state: 'healthy' })
+      }
+
+      return Promise.resolve({ ok: true })
+    })
+
+    await renderPanel('example')
+
+    expect(await screen.findByRole('button', { name: 'Configure' })).toBeTruthy()
+    const summary = screen.getByRole('group', { name: 'Example Memory connection summary' })
+
+    expect(summary.parentElement?.className).toContain('@container')
+    expect(summary.className).toContain('@2xl:grid-cols')
+    expect(screen.getByText('Checking')).toBeTruthy()
+
+    resolveFirstHealth?.({ label: 'Healthy', message: 'Ready', state: 'healthy' })
+    expect(await screen.findByText('Healthy')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Configure' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Save setup' }))
+
+    await waitFor(() => {
+      expect(runMemoryProviderAction.mock.calls.filter(([, action]) => action === 'health')).toHaveLength(2)
+    })
   })
 })

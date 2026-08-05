@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -115,3 +115,82 @@ def test_principal_capability_is_opaque_and_forgery_fails():
 
     with pytest.raises(TicketInvalid):
         consume_principal_capability(f"forged-{capability}")
+
+
+def test_resolve_chat_argv_uses_capability_and_profile_environment(monkeypatch):
+    import hermes_cli.main
+
+    monkeypatch.setattr(
+        hermes_cli.main,
+        "_make_tui_argv",
+        lambda *_args, **_kwargs: (["fake-tui"], "/tmp"),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_build_gateway_ws_url",
+        lambda **kwargs: f"ws://gateway/?principal={kwargs['principal_capability']}",
+    )
+
+    _argv, _cwd, env = web_server._resolve_chat_argv(
+        user_id="alice", provider="oauth", principal_capability="opaque-cap"
+    )
+    assert env["HERMES_TUI_USER_ID"] == "alice"
+    assert env["HERMES_TUI_USER_PROVIDER"] == "oauth"
+    assert "opaque-cap" in env["HERMES_TUI_GATEWAY_URL"]
+
+
+def test_gateway_url_never_serializes_raw_user_id(monkeypatch):
+    monkeypatch.setattr(web_server, "_resolve_client_ws_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(web_server.app.state, "bound_port", 9999, raising=False)
+    monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+    url = web_server._build_gateway_ws_url(principal_capability="opaque-cap")
+    assert url is not None
+    query = parse_qs(urlparse(url).query)
+    assert query["principal"] == ["opaque-cap"]
+    assert "user_id" not in query
+
+
+def test_gateway_attach_principal_overwrites_rpc_identity():
+    from tui_gateway import ws
+
+    request = {"id": 1, "method": "session.create", "params": {"pty_user_id": "bob"}}
+    rewritten = ws._bind_connection_identity(request, {"user_id": "alice", "provider": "oauth"})
+    assert rewritten["params"]["pty_user_id"] == "alice"
+    assert rewritten["params"]["pty_provider"] == "oauth"
+
+
+def test_profile_child_keeps_identity_without_in_process_gateway(monkeypatch, tmp_path):
+    import hermes_cli.main
+
+    monkeypatch.setattr(
+        hermes_cli.main,
+        "_make_tui_argv",
+        lambda *_args, **_kwargs: (["fake-tui"], "/tmp"),
+    )
+    monkeypatch.setattr(web_server, "_resolve_profile_dir", lambda _name: tmp_path)
+    monkeypatch.setattr(
+        web_server,
+        "_build_gateway_ws_url",
+        lambda: pytest.fail("profile-scoped chat must spawn its own gateway"),
+    )
+
+    _argv, _cwd, env = web_server._resolve_chat_argv(
+        profile="alice", user_id="alice", provider="oauth"
+    )
+    assert env["HERMES_HOME"] == str(tmp_path)
+    assert env["HERMES_TUI_USER_ID"] == "alice"
+    assert env["HERMES_TUI_USER_PROVIDER"] == "oauth"
+    assert "HERMES_TUI_GATEWAY_URL" not in env
+
+
+def test_connection_identity_is_not_injected_for_internal_child():
+    from tui_gateway import ws
+
+    request = {
+        "id": 1,
+        "method": "session.create",
+        "params": {"pty_user_id": "bob", "pty_provider": "oauth"},
+    }
+    sanitized = ws._bind_connection_identity(request, {"user_id": "server-internal"})
+    assert "pty_user_id" not in sanitized["params"]
+    assert "pty_provider" not in sanitized["params"]

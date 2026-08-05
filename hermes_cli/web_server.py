@@ -15189,6 +15189,9 @@ async def _resolve_chat_argv_async(
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
     active_session_file: Optional[str] = None,
+    user_id: Optional[str] = None,
+    provider: Optional[str] = None,
+    principal_capability: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv without blocking the dashboard event loop.
 
@@ -15207,6 +15210,12 @@ async def _resolve_chat_argv_async(
     }
     if active_session_file is not None:
         kwargs["active_session_file"] = active_session_file
+    if user_id is not None:
+        kwargs["user_id"] = user_id
+    if provider is not None:
+        kwargs["provider"] = provider
+    if principal_capability is not None:
+        kwargs["principal_capability"] = principal_capability
 
     async with _get_chat_argv_lock(app):
         return await asyncio.to_thread(
@@ -15897,7 +15906,7 @@ async def pty_ws(ws: WebSocket) -> None:
     #     browser banner agree on the cause:
     #       4401 bad credential   4403 host/origin mismatch
     #       4408 peer not allowed  4404 chat disabled
-    auth_reason, cred = _ws_auth_reason(ws)
+    auth_reason, cred, auth_info = _ws_auth_with_info(ws)
     mode = _ws_auth_mode()
     if auth_reason is not None:
         _log.warning(
@@ -15961,6 +15970,16 @@ async def pty_ws(ws: WebSocket) -> None:
         "sidecar_url": sidecar_url,
         "profile": profile,
     }
+    if auth_info and auth_info.get("user_id") != "server-internal":
+        from hermes_cli.dashboard_auth.ws_tickets import mint_principal_capability
+
+        resolve_kwargs.update(
+            user_id=auth_info.get("user_id"),
+            provider=auth_info.get("provider"),
+            principal_capability=mint_principal_capability(
+                user_id=auth_info["user_id"], provider=auth_info["provider"]
+            ),
+        )
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
 
@@ -16075,7 +16094,8 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    auth_reason, _credential, auth_info = _ws_auth_with_info(ws)
+    if auth_reason is not None:
         await ws.close(code=4401)
         return
 
@@ -16085,7 +16105,7 @@ async def gateway_ws(ws: WebSocket) -> None:
 
     from tui_gateway.ws import handle_ws
 
-    await handle_ws(ws)
+    await handle_ws(ws, principal_info=auth_info)
 
 
 # ---------------------------------------------------------------------------

@@ -870,17 +870,12 @@ def write_profile_meta(
         existing["description"] = description.strip()
     if description_auto is not None:
         existing["description_auto"] = bool(description_auto)
-    # Route through the shared atomic helper (temp file + fsync + replace).
-    # A bare ``open(path, "w")`` truncates before the dump, so a crash or
-    # SIGINT mid-write leaves profile.yaml empty or half-written. The read
-    # half above swallows the resulting parse error and falls back to
-    # ``{}``, so the NEXT call would silently and permanently drop every
-    # field the caller did not pass — breaking this function's documented
-    # merge contract. atomic_yaml_write also emits emoji descriptions as
-    # real UTF-8 rather than ``\UXXXXXXXX`` escapes (GitHub #51356).
+    # Atomic write: bare open("w") truncates before the dump, and the read
+    # path above swallows parse errors as {}, so a crashed write would
+    # silently drop unspecified fields on the next call (#51356, #16743).
     from utils import atomic_yaml_write
 
-    atomic_yaml_write(path, existing, sort_keys=False, default_flow_style=False)
+    atomic_yaml_write(path, existing, sort_keys=False)
 
 
 # ---------------------------------------------------------------------------

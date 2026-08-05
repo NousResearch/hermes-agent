@@ -366,6 +366,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Kon nie die `hermes`-opdrag vind nie. Hermes loop, maar die opdateeropdrag kon nie die uitvoerbare lêer op PATH of via die huidige Python-vertolker vind nie. Probeer `hermes update` met die hand in jou terminale uitvoer."
     start_failed:            "✗ Kon nie opdatering begin nie: {error}"
     starting:                "⚕ Begin Hermes-opdatering… Ek sal vordering hier stroom."
+    already_running:         "⚕ 'n Hermes-opdatering loop reeds vir hierdie profiel. Ek sal die resultaat rapporteer in die geselsie wat dit begin het."
 
   usage:
     rate_limits:              "⏱️ **Tariefperke:** {state}"

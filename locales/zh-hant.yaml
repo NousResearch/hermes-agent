@@ -366,6 +366,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ 找不到 `hermes` 指令。Hermes 正在執行，但更新指令無法在 PATH 上或透過目前的 Python 解譯器找到執行檔。請嘗試在終端機中手動執行 `hermes update`。"
     start_failed:            "✗ 啟動更新失敗：{error}"
     starting:                "⚕ 正在啟動 Hermes 更新…… 進度將在此處顯示。"
+    already_running:         "⚕ 此設定檔已有一個 Hermes 更新正在執行。我會在發起該更新的聊天中回報結果。"
 
   usage:
     rate_limits:              "⏱️ **速率限制：** {state}"

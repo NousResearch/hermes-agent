@@ -370,6 +370,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ Níorbh fhéidir an t-ordú `hermes` a aimsiú. Tá Hermes ag rith, ach níorbh fhéidir leis an ordú nuashonraithe an inrite a aimsiú ar PATH ná tríd an léirmhínitheoir Python reatha. Bain triail as `hermes update` a rith de láimh i do theirminéal."
     start_failed:            "✗ Theip ar nuashonrú a thosú: {error}"
     starting:                "⚕ Ag tosú nuashonrú Hermes… Cuirfidh mé an dul chun cinn ar shruth anseo."
+    already_running:         "⚕ Tá nuashonrú Hermes ar siúl cheana féin don phróifíl seo. Tuairisceoidh mé an toradh sa chomhrá a thosaigh é."
 
   usage:
     rate_limits:              "⏱️ **Teorainneacha Ráta:** {state}"

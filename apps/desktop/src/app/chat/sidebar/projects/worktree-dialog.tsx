@@ -23,6 +23,7 @@ import {
   $worktreeDialog,
   closeWorktreeDialog,
   listRepoBranches,
+  projectIdForCwd,
   projectRootCwd,
   requestStartWorkSession,
   startWorkInRepo,
@@ -96,12 +97,24 @@ export function WorktreeDialog() {
 
       seen.add(path)
 
-      return [{ label: node.label, path }]
+      return [{ id: node.id, label: node.label, path }]
     })
   }, [projectTree])
 
-  const activeProjectLabel =
-    projectOptions.find(option => option.path === repoPath)?.label ?? repoPath.split('/').pop() ?? repoPath
+  // The project that owns the target repo. `repoPath` is often a linked
+  // worktree, for example `<repo>/.worktrees/<branch>`, and no project row has
+  // that exact path. An equality test against the rows therefore matches
+  // nothing, and the label falls back to the last path segment, which is the
+  // name of the BRANCH. Ask which project owns the path instead, then fall back
+  // to a path match: two projects can share a folder, and the dedupe above
+  // keeps only the first, so the owner's own row can be the one it dropped.
+  const activeOption = useMemo(() => {
+    const owner = projectTree.length > 0 ? projectIdForCwd(repoPath) : null
+
+    return projectOptions.find(o => o.id === owner) ?? projectOptions.find(o => o.path === repoPath) ?? null
+  }, [projectOptions, projectTree, repoPath])
+
+  const activeProjectLabel = activeOption?.label ?? repoPath.split('/').pop() ?? repoPath
 
   // Reset to a fresh state each time the dialog opens. Apply the resolved repo
   // and the base branch that the caller selected, for example "branch off from
@@ -251,7 +264,7 @@ export function WorktreeDialog() {
                       >
                         <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="repo" size="0.8rem" />
                         <span className="truncate">{option.label}</span>
-                        {option.path === repoPath && (
+                        {option === activeOption && (
                           <Codicon className="ml-auto shrink-0 text-(--ui-accent)" name="check" size="0.8rem" />
                         )}
                       </CommandItem>

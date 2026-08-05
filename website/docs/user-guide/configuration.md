@@ -1850,14 +1850,34 @@ stt:
   groq:
     language: ""               # per-provider override of stt.language
   openai:
+    base_url: ""               # optional OpenAI-compatible API base; Realtime support is required for streaming
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
+    streaming: true            # automatic when selected; false forces batch
+    streaming_model_id: "gpt-4o-mini-transcribe"  # semantic-VAD capable Realtime model
     language: ""               # per-provider override of stt.language
+  elevenlabs:
+    base_url: ""               # optional HTTP API base
+    wss_url: ""                # optional WebSocket API base
+    model_id: "scribe_v2"
+    streaming: true            # automatic when selected; false forces batch
+    streaming_model_id: "scribe_v2_realtime"
+    # Optional Realtime VAD tuning; omitted values use provider defaults:
+    # vad_threshold: 0.4
+    # vad_silence_threshold_secs: 1.5
+    # min_speech_duration_ms: 100
+    # min_silence_duration_ms: 100
+  xai:
+    base_url: ""               # API-key auth only; OAuth stays on its validated origin
+    language: ""
+    diarize: false
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
 
 Language resolution is the same for **every** STT provider (local, groq, openai, mistral, xai, elevenlabs, deepinfra, command providers, and plugins): `stt.<provider>.language` → `stt.language` → `HERMES_LOCAL_STT_LANGUAGE` env var → provider auto-detect. **The default is `stt.language: "en"`** — Whisper auto-detection frequently misidentifies short or accented clips, which shows up as voice notes transcribed in the wrong language. Non-English speakers should set `stt.language` to their language code once (e.g. `"es"`, `"zh"`, `"uk"`); set it to `""` to restore auto-detection for multilingual use.
 
 Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes for the agent but must not post the raw transcript back to the chat (for example, customer-facing WhatsApp bots).
+
+In classic CLI voice mode, explicitly selected OpenAI and ElevenLabs providers stream normal microphone turns automatically. Provider endpointing supplies the committed final transcript; partials are not displayed or submitted. Set `stt.<provider>.streaming: false` to force that provider onto batch transcription. Provider credentials and `base_url` are resolved once and shared by the streaming and batch transports. OpenAI delegates endpoint construction to its SDK, while ElevenLabs derives its WebSocket endpoint from the configured API base. A custom endpoint must implement that provider's Realtime transcription protocol. Unsupported providers, Termux, and other voice surfaces continue to use local endpointing followed by file transcription. Streaming failures recover through the locally retained WAV. Barge-in detection remains local, with provider partials as an additional confirmation signal.
 
 Provider behavior:
 

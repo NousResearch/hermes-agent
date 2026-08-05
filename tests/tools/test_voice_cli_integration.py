@@ -23,13 +23,31 @@ def _make_voice_cli(**overrides):
     cli._voice_mode = False
     cli._voice_tts = False
     cli._voice_recorder = None
+    cli._voice_stt_stream = None
     cli._voice_recording = False
+    cli._voice_recording_generation = 0
+    cli._voice_capture_started_generation = 0
     cli._voice_processing = False
     cli._voice_continuous = False
     cli._voice_tts_done = threading.Event()
     cli._voice_tts_done.set()
     cli._voice_tts_stop = None
     cli._voice_barge_capture = threading.Event()
+    cli._voice_stream_barge_release = threading.Event()
+    cli._voice_stream_audio_sink = None
+    cli._voice_stream_pending_finals = []
+    cli._voice_stream_final_sequence = 0
+    cli._voice_stream_drain_after = None
+    cli._voice_stream_barge_candidate_after = None
+    cli._voice_stream_seen_final_ids = set()
+    cli._voice_stream_endpoint_timer = None
+    cli._voice_stream_endpoint_token = 0
+    cli._voice_stream_endpoint_segment_id = None
+    cli._voice_stream_last_submitted_segment_id = None
+    cli._voice_stream_partial_barge_segment_id = None
+    cli._voice_stream_manual_commit = False
+    cli._voice_stream_dispatch_pending = False
+    cli._voice_stream_dispatch_barge = False
     cli._pending_input = queue.Queue()
     cli._app = None
     cli._attached_images = []
@@ -37,6 +55,13 @@ def _make_voice_cli(**overrides):
     for k, v in overrides.items():
         setattr(cli, k, v)
     return cli
+
+
+def _expire_streaming_endpoint(cli):
+    timer = cli._voice_stream_endpoint_timer
+    assert timer is not None
+    timer.cancel()
+    timer.function()
 
 
 # ============================================================================
@@ -179,6 +204,43 @@ class TestVoiceBeepConfigReal:
 
         recorder.start.assert_called_once()
         mock_beep.assert_not_called()
+
+    def test_start_cue_follows_input_preparation(self):
+        order = []
+        recorder = MagicMock()
+        recorder.supports_silence_autostop = True
+        recorder.prepare.side_effect = lambda: order.append("prepare")
+        recorder.start.side_effect = lambda **_kwargs: (
+            order.append("start") or True
+        )
+
+        cli = _make_voice_cli(_voice_recorder=recorder)
+        cli._voice_get_streaming_stt = MagicMock(return_value=None)
+
+        with (
+            patch("cli._cprint"),
+            patch(
+                "tools.voice_mode.check_voice_requirements",
+                return_value={
+                    "available": True,
+                    "audio_available": True,
+                    "stt_available": True,
+                    "details": "OK",
+                    "missing_packages": [],
+                },
+            ),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"voice": {"beep_enabled": True}},
+            ),
+            patch(
+                "tools.voice_mode.play_beep",
+                side_effect=lambda **_kwargs: order.append("beep"),
+            ),
+        ):
+            cli._voice_start_recording()
+
+        assert order == ["prepare", "beep", "start"]
 
 
 class TestMaxRecordingSecondsConfigReal:
@@ -365,6 +427,882 @@ class TestVoiceStopAndTranscribeReal:
         mock_transcribe.assert_called_once_with("/tmp/test.wav", model="whisper-1")
 
 
+class TestStreamingVoiceInputReal:
+    """Classic CLI streaming STT reuses the established voice lifecycle."""
+
+    def test_streaming_start_disables_local_silence_endpointing(self):
+        recorder = MagicMock()
+        recorder.supports_streaming_frames = True
+        recorder._max_recording_seconds = 0
+        coordinator = MagicMock()
+        coordinator.start_utterance.return_value = True
+        cli = _make_voice_cli(
+            _voice_recorder=recorder,
+            _voice_stream_pending_finals=["stale TTS transcript"],
+            _voice_stream_drain_after=2,
+            _voice_stream_barge_candidate_after=1,
+        )
+        cli._voice_get_streaming_stt = MagicMock(return_value=coordinator)
+
+        class _Timer:
+            daemon = True
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                pass
+
+        with patch("cli._cprint"), \
+             patch("cli.threading.Timer", _Timer), \
+             patch("cli.threading.Thread", return_value=MagicMock(start=MagicMock())), \
+             patch("tools.voice_mode.play_beep"), \
+             patch(
+                 "tools.voice_mode.check_voice_requirements",
+                 return_value={"audio_available": True, "stt_available": True},
+             ), \
+             patch(
+                 "hermes_cli.config.load_config",
+                 return_value={"voice": {"beep_enabled": False}},
+             ):
+            cli._voice_start_recording()
+
+        coordinator.start_utterance.assert_called_once_with()
+        start_kwargs = recorder.start.call_args.kwargs
+        assert start_kwargs["on_silence_stop"] is None
+        assert "frame_sink" not in start_kwargs
+        recorder.add_continuous_frame_sink.assert_called_once()
+        assert start_kwargs["on_no_speech"] == cli._voice_streaming_no_speech
+        assert start_kwargs["on_max_duration"] == cli._voice_streaming_commit
+        assert callable(start_kwargs["start_guard"])
+        assert "on_frame_sink_error" not in start_kwargs
+        assert cli._voice_stream_pending_finals == []
+        assert cli._voice_stream_drain_after is None
+        assert cli._voice_stream_barge_candidate_after is None
+        assert cli._voice_capture_started_generation == 1
+
+    def test_initial_stream_connection_failure_uses_local_endpointing(self):
+        recorder = MagicMock()
+        recorder.supports_streaming_frames = True
+        coordinator = MagicMock()
+        coordinator.start_utterance.return_value = False
+        cli = _make_voice_cli(_voice_recorder=recorder)
+        cli._voice_get_streaming_stt = MagicMock(return_value=coordinator)
+
+        with patch("cli._cprint"), \
+             patch("cli.threading.Thread", return_value=MagicMock(start=MagicMock())), \
+             patch("tools.voice_mode.play_beep"), \
+             patch(
+                 "tools.voice_mode.check_voice_requirements",
+                 return_value={"audio_available": True, "stt_available": True},
+             ), \
+             patch(
+                 "hermes_cli.config.load_config",
+                 return_value={"voice": {"beep_enabled": False}},
+             ):
+            cli._voice_start_recording()
+
+        start_kwargs = recorder.start.call_args.kwargs
+        assert callable(start_kwargs["on_silence_stop"])
+        assert "frame_sink" not in start_kwargs
+
+    def test_cancel_during_stream_handshake_never_starts_recorder(self):
+        recorder = MagicMock(supports_streaming_frames=True)
+        coordinator = MagicMock()
+        cli = _make_voice_cli(_voice_recorder=recorder)
+
+        def _finish_after_cancel():
+            with cli._voice_lock:
+                cli._voice_recording = False
+            return True
+
+        coordinator.start_utterance.side_effect = _finish_after_cancel
+        cli._voice_get_streaming_stt = MagicMock(return_value=coordinator)
+
+        with patch("cli._cprint"), patch(
+            "tools.voice_mode.check_voice_requirements",
+            return_value={"audio_available": True, "stt_available": True},
+        ), patch(
+            "hermes_cli.config.load_config",
+            return_value={"voice": {"beep_enabled": False}},
+        ):
+            cli._voice_start_recording()
+
+        recorder.start.assert_not_called()
+        coordinator.pause.assert_called_once_with()
+
+    def test_real_turn_controller_is_reused_across_two_cli_turns(self):
+        provider = MagicMock()
+        provider.name = "openai"
+        recorder = MagicMock(supports_streaming_frames=True)
+        cli = _make_voice_cli(_voice_recorder=recorder)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"stt": {"provider": "openai"}},
+        ), patch(
+            "tools.stt_streaming.resolve_streaming_stt_provider",
+            return_value=provider,
+        ):
+            first = cli._voice_get_streaming_stt()
+            first._coordinator.start_utterance = MagicMock(return_value=True)
+            first._coordinator.pause = MagicMock()
+            assert first.start_utterance() is True
+            first.pause()
+
+            second = cli._voice_get_streaming_stt()
+
+        assert second is first
+        assert second.provider_name == "openai"
+
+    def test_same_provider_with_changed_config_rebuilds_controller(self):
+        recorder = MagicMock(supports_streaming_frames=True)
+        cli = _make_voice_cli(_voice_recorder=recorder)
+        first_provider = SimpleNamespace(
+            name="openai",
+            configuration_key=("openai", "key", "https://one.example/v1"),
+        )
+        second_provider = SimpleNamespace(
+            name="openai",
+            configuration_key=("openai", "key", "https://two.example/v1"),
+        )
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"stt": {"provider": "openai"}},
+        ), patch(
+            "tools.stt_streaming.resolve_streaming_stt_provider",
+            side_effect=[first_provider, second_provider],
+        ):
+            first = cli._voice_get_streaming_stt()
+            second = cli._voice_get_streaming_stt()
+
+        assert second is not first
+        assert second.provider_configuration_key == second_provider.configuration_key
+
+    def test_committed_final_bypasses_wav_and_batch_transcription(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = MagicMock()
+        coordinator = MagicMock()
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=coordinator,
+        )
+
+        with patch("cli._cprint"), \
+             patch("tools.voice_mode.play_beep"), \
+             patch("tools.voice_mode.transcribe_recording") as transcribe:
+            cli._voice_streaming_final(
+                StreamingTranscriptEvent(
+                    "hello from stream", True, "final-1", "segment-1"
+                )
+            )
+            _expire_streaming_endpoint(cli)
+
+        assert str(cli._pending_input.get_nowait()) == "hello from stream"
+        recorder.cancel.assert_called_once()
+        recorder.stop.assert_not_called()
+        transcribe.assert_not_called()
+
+    def test_late_tts_final_cannot_end_new_recording_before_speech(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = MagicMock()
+        recorder.has_spoken = False
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=MagicMock(),
+        )
+
+        cli._voice_streaming_final(
+            StreamingTranscriptEvent("late text from TTS", True, "tts-final")
+        )
+
+        assert cli._voice_recording is True
+        assert cli._voice_processing is False
+        assert cli._voice_stream_pending_finals == []
+        assert cli._pending_input.empty()
+        recorder.cancel.assert_not_called()
+
+        recorder.has_spoken = True
+        with patch("cli._cprint"), patch("tools.voice_mode.play_beep"):
+            cli._voice_streaming_final(
+                StreamingTranscriptEvent(
+                    "actual user request",
+                    True,
+                    "user-final",
+                    "user-segment",
+                )
+            )
+            _expire_streaming_endpoint(cli)
+
+        assert str(cli._pending_input.get_nowait()) == "actual user request"
+        recorder.cancel.assert_called_once_with()
+
+    def test_late_final_cannot_claim_capture_before_recorder_starts(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = MagicMock()
+        recorder.has_spoken = True
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_recording=True,
+            _voice_recording_generation=2,
+            _voice_capture_started_generation=1,
+            _voice_recorder=recorder,
+            _voice_stt_stream=MagicMock(),
+        )
+
+        cli._voice_streaming_final(
+            StreamingTranscriptEvent("late prior turn", True, "late-final")
+        )
+
+        assert cli._voice_recording is True
+        assert cli._voice_processing is False
+        assert cli._voice_stream_pending_finals == []
+        assert cli._pending_input.empty()
+        recorder.cancel.assert_not_called()
+
+    def test_manual_commit_finishes_capture_immediately_and_only_once(self):
+        recorder = MagicMock()
+        coordinator = MagicMock()
+        coordinator.commit.return_value = True
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=coordinator,
+        )
+
+        cli._voice_streaming_commit()
+        cli._voice_streaming_commit()
+
+        assert cli._voice_recording is False
+        assert cli._voice_processing is True
+        recorder.finish_capture.assert_called_once_with()
+        coordinator.commit.assert_called_once_with()
+
+    def test_manual_stop_reuses_pending_boundary_flush(self):
+        recorder = MagicMock()
+        coordinator = MagicMock()
+        coordinator.commit.return_value = False
+        coordinator.delivering = False
+        coordinator.commit_pending = True
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=coordinator,
+        )
+        cli._voice_streaming_error = MagicMock()
+
+        cli._voice_streaming_commit()
+
+        assert cli._voice_recording is False
+        assert cli._voice_processing is True
+        assert cli._voice_stream_drain_after == 0
+        recorder.finish_capture.assert_called_once_with()
+        cli._voice_streaming_error.assert_not_called()
+
+    def test_manual_commit_final_discards_retained_fallback_audio(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = MagicMock()
+        coordinator = MagicMock()
+        coordinator.commit.return_value = True
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=coordinator,
+        )
+
+        with patch("cli._cprint"), patch("tools.voice_mode.play_beep"):
+            cli._voice_streaming_commit()
+            cli._voice_streaming_final(
+                StreamingTranscriptEvent("manual transcript", True)
+            )
+
+        assert str(cli._pending_input.get_nowait()) == "manual transcript"
+        recorder.finish_capture.assert_called_once_with()
+        recorder.cancel.assert_called_once_with()
+        recorder.stop.assert_not_called()
+        assert cli._voice_processing is False
+
+    def test_manual_commit_timeout_falls_back_with_retained_audio(self):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/retained.wav"
+        coordinator = MagicMock()
+        coordinator.commit.return_value = True
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=coordinator,
+        )
+
+        with patch("cli._cprint"), \
+             patch("cli.os.path.isfile", return_value=False), \
+             patch("tools.voice_mode.play_beep"), \
+             patch(
+                 "hermes_cli.config.load_config",
+                 return_value={"stt": {"provider": "openai"}},
+             ), \
+             patch(
+                 "tools.voice_mode.transcribe_recording",
+                 return_value={"success": True, "transcript": "recovered"},
+             ) as transcribe:
+            cli._voice_streaming_commit()
+            cli._voice_streaming_error(
+                RuntimeError("Streaming STT commit timed out")
+            )
+
+        recorder.finish_capture.assert_called_once_with()
+        recorder.stop.assert_called_once_with()
+        transcribe.assert_called_once_with("/tmp/retained.wav", model=None)
+        assert str(cli._pending_input.get_nowait()) == "recovered"
+
+    def test_provider_final_delivery_cannot_race_into_batch_path(self):
+        recorder = MagicMock()
+        coordinator = MagicMock()
+        coordinator.active = False
+        coordinator.delivering = True
+        coordinator.commit.return_value = False
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=coordinator,
+        )
+
+        with patch("tools.voice_mode.transcribe_recording") as transcribe:
+            cli._voice_stop_and_transcribe()
+
+        recorder.finish_capture.assert_called_once_with()
+        recorder.stop.assert_not_called()
+        transcribe.assert_not_called()
+        assert cli._voice_processing is True
+
+    def test_empty_committed_final_finishes_as_no_speech(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = MagicMock()
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=MagicMock(),
+        )
+
+        with patch("cli._cprint") as output, patch("tools.voice_mode.play_beep"):
+            cli._voice_streaming_final(
+                StreamingTranscriptEvent("", True, "empty", "empty-segment")
+            )
+            _expire_streaming_endpoint(cli)
+
+        assert cli._pending_input.empty()
+        assert cli._voice_processing is False
+        assert any("No speech detected" in call.args[0] for call in output.call_args_list)
+
+    def test_stream_error_uses_retained_audio_batch_fallback(self):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/retained.wav"
+        coordinator = MagicMock()
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=coordinator,
+        )
+
+        with patch("cli._cprint"), \
+             patch("cli.os.path.isfile", return_value=False), \
+             patch("tools.voice_mode.play_beep"), \
+             patch(
+                 "hermes_cli.config.load_config",
+                 return_value={"stt": {"provider": "openai"}},
+             ), \
+             patch(
+                 "tools.voice_mode.transcribe_recording",
+                 return_value={"success": True, "transcript": "recovered"},
+             ) as transcribe:
+            cli._voice_streaming_error(RuntimeError("socket closed"))
+
+        transcribe.assert_called_once_with("/tmp/retained.wav", model=None)
+        assert str(cli._pending_input.get_nowait()) == "recovered"
+
+    def test_no_speech_guard_keeps_stream_and_discards_empty_capture(self):
+        recorder = MagicMock()
+        coordinator = MagicMock()
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=coordinator,
+        )
+
+        with patch("cli._cprint"):
+            cli._voice_streaming_no_speech()
+
+        coordinator.pause.assert_not_called()
+        recorder.cancel.assert_called_once_with()
+        assert cli._voice_recording is False
+        assert cli._voice_processing is False
+
+    def test_stale_and_duplicate_finals_are_ignored(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = MagicMock()
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=MagicMock(),
+        )
+        event = StreamingTranscriptEvent(
+            "one transcript", True, "one-final", "one-segment"
+        )
+
+        with patch("cli._cprint"), patch("tools.voice_mode.play_beep"):
+            cli._voice_streaming_final(event)
+            cli._voice_streaming_final(event)
+            _expire_streaming_endpoint(cli)
+
+        assert cli._pending_input.qsize() == 1
+        recorder.cancel.assert_called_once()
+
+    def test_provider_final_is_authoritative_over_local_silence_state(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = SimpleNamespace(
+            has_spoken=True,
+            speech_silence_seconds=0.1,
+            cancel=MagicMock(),
+            clear_continuous_fallback_buffer=MagicMock(),
+        )
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=MagicMock(active=True),
+        )
+
+        with patch("cli._cprint"), patch("tools.voice_mode.play_beep"):
+            cli._voice_streaming_final(
+                StreamingTranscriptEvent(
+                    "provider committed transcript",
+                    True,
+                    "provider-final",
+                    "provider-segment",
+                )
+            )
+            _expire_streaming_endpoint(cli)
+
+        assert cli._voice_recording is False
+        assert str(cli._pending_input.get_nowait()) == "provider committed transcript"
+        assert cli._pending_input.empty()
+        recorder.cancel.assert_called_once_with()
+
+    def test_partial_during_endpoint_grace_keeps_logical_turn_open(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = MagicMock()
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=MagicMock(active=True),
+        )
+
+        with patch("cli._cprint"), patch("tools.voice_mode.play_beep"):
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "first clause", True, "final-1", "segment-1"
+                )
+            )
+            first_timer = cli._voice_stream_endpoint_timer
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "continuing", False, "partial-2", "segment-2"
+                )
+            )
+
+            assert cli._voice_stream_endpoint_timer is None
+            assert cli._voice_recording is True
+            assert cli._voice_stream_pending_finals == ["first clause"]
+            assert cli._pending_input.empty()
+
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "second clause", True, "final-2", "segment-2"
+                )
+            )
+            _expire_streaming_endpoint(cli)
+
+        first_timer.cancel()
+        assert str(cli._pending_input.get_nowait()) == (
+            "first clause second clause"
+        )
+        recorder.cancel.assert_called_once_with()
+
+    def test_partial_after_endpoint_grace_confirms_and_submits_barge(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = MagicMock()
+        agent = MagicMock()
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_continuous=True,
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=MagicMock(active=True),
+            _agent_running=False,
+            agent=agent,
+        )
+
+        with (
+            patch("cli._cprint"),
+            patch("tools.voice_mode.play_beep"),
+            patch("tools.voice_mode.is_audio_output_active", return_value=False),
+        ):
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "initial request", True, "final-1", "segment-1"
+                )
+            )
+            _expire_streaming_endpoint(cli)
+            assert str(cli._pending_input.get_nowait()) == "initial request"
+
+            cli._agent_running = True
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "interrupting", False, "partial-2", "segment-2"
+                )
+            )
+            assert cli._voice_barge_capture.is_set()
+            assert cli._voice_stream_drain_after == 1
+            agent.interrupt.assert_called_once_with()
+
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "interrupting now", True, "final-2", "segment-2"
+                )
+            )
+            _expire_streaming_endpoint(cli)
+
+        assert str(cli._pending_input.get_nowait()) == "interrupting now"
+        assert cli._pending_input.empty()
+
+    def test_partial_inside_grace_confirms_barge_once_during_agent_turn(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = MagicMock()
+        agent = MagicMock()
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_continuous=True,
+            _voice_recording=False,
+            _voice_recorder=recorder,
+            _voice_stt_stream=MagicMock(active=True),
+            _agent_running=True,
+            agent=agent,
+        )
+
+        with patch("cli._cprint"):
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "earlier words", True, "final-1", "segment-1"
+                )
+            )
+            endpoint_timer = cli._voice_stream_endpoint_timer
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "more words", False, "partial-2", "segment-2"
+                )
+            )
+            cli._voice_handle_barge_trigger("generation")
+
+        endpoint_timer.cancel()
+        assert cli._voice_stream_endpoint_timer is None
+        assert cli._voice_stream_pending_finals == ["earlier words"]
+        assert cli._voice_stream_drain_after == 1
+        agent.interrupt.assert_called_once_with()
+
+    def test_streaming_partial_preserves_playback_only_barge_semantics(self):
+        agent = MagicMock()
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_continuous=True,
+            _voice_tts=True,
+            _voice_stt_stream=MagicMock(active=True),
+            _agent_running=True,
+            agent=agent,
+        )
+        cli._voice_tts_done.clear()
+
+        with (
+            patch("cli._cprint"),
+            patch("tools.voice_mode.is_audio_output_active", return_value=True),
+            patch("tools.voice_mode.stop_playback") as stop_playback,
+            patch("tools.tts_streaming.mark_speech_interrupted"),
+        ):
+            cli._voice_handle_barge_trigger()
+            cli._voice_handle_barge_trigger("generation")
+
+        stop_playback.assert_called_once_with()
+        agent.interrupt.assert_not_called()
+
+    def test_endpoint_beep_continuation_interrupts_queued_voice_turn(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = MagicMock()
+        agent = MagicMock()
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_continuous=True,
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=MagicMock(active=True),
+            _agent_running=False,
+            agent=agent,
+        )
+
+        with (
+            patch("cli._cprint"),
+            patch("tools.voice_mode.play_beep"),
+            patch(
+                "tools.voice_mode.is_audio_output_active",
+                return_value=True,
+            ),
+            patch("tools.voice_mode.stop_playback") as stop_playback,
+        ):
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "first part", True, "final-1", "segment-1"
+                )
+            )
+            _expire_streaming_endpoint(cli)
+
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "still talking", False, "partial-2", "segment-2"
+                )
+            )
+
+        assert cli._voice_stream_dispatch_barge is True
+        agent.interrupt.assert_not_called()
+        stop_playback.assert_not_called()
+
+        cli._voice_apply_pending_streaming_barge(
+            agent,
+            voice_input=True,
+        )
+
+        agent.interrupt.assert_called_once_with()
+        assert cli._voice_stream_dispatch_pending is False
+        assert cli._voice_stream_dispatch_barge is False
+
+    def test_barge_drains_prior_finals_and_the_next_final_once(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = MagicMock()
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_recording=False,
+            _voice_recorder=recorder,
+            _voice_stt_stream=MagicMock(active=True),
+            _agent_running=True,
+        )
+
+        with patch("cli._cprint"), \
+             patch("tools.voice_mode.play_beep"), \
+             patch("tools.voice_mode.transcribe_recording") as transcribe:
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "first interruption", True, "final-1", "segment-1"
+                )
+            )
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "first interruption", True, "final-1", "segment-1"
+                )
+            )
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "second thought", True, "final-2", "segment-2"
+                )
+            )
+            assert cli._pending_input.empty()
+
+            cli._voice_streaming_barge_confirmed()
+            assert cli._voice_stream_barge_release.is_set()
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "finish this request", True, "final-3", "segment-3"
+                )
+            )
+            _expire_streaming_endpoint(cli)
+
+        assert str(cli._pending_input.get_nowait()) == (
+            "first interruption second thought finish this request"
+        )
+        assert cli._pending_input.empty()
+        assert not cli._voice_barge_capture.is_set()
+        recorder.cancel.assert_called_once_with()
+        transcribe.assert_not_called()
+
+    def test_confirmed_streaming_barge_releases_tts_wait(self):
+        class StuckThread:
+            def __init__(self):
+                self.join_calls = []
+
+            def is_alive(self):
+                return True
+
+            def join(self, timeout=None):
+                self.join_calls.append(timeout)
+
+        cli = _make_voice_cli()
+        thread = StuckThread()
+        cli._voice_stream_barge_release.set()
+
+        assert cli._voice_wait_for_streaming_tts(thread, timeout=120) is False
+        assert thread.join_calls == []
+
+    def test_uninterrupted_streaming_tts_waits_for_worker(self):
+        class FinishingThread:
+            def __init__(self):
+                self.alive = True
+                self.join_calls = []
+
+            def is_alive(self):
+                return self.alive
+
+            def join(self, timeout=None):
+                self.join_calls.append(timeout)
+                self.alive = False
+
+        cli = _make_voice_cli()
+        thread = FinishingThread()
+
+        assert cli._voice_wait_for_streaming_tts(thread, timeout=120) is True
+        assert thread.join_calls == [0.1]
+
+    def test_barge_stream_failure_preserves_prior_finals_in_batch_fallback(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/barge-retained.wav"
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_recording=False,
+            _voice_recorder=recorder,
+            _voice_stt_stream=MagicMock(active=True),
+            _agent_running=True,
+        )
+
+        with patch("cli._cprint"), \
+             patch("cli.os.path.isfile", return_value=False), \
+             patch("tools.voice_mode.play_beep"), \
+             patch(
+                 "hermes_cli.config.load_config",
+                 return_value={"stt": {"provider": "openai"}},
+             ), \
+             patch(
+                 "tools.voice_mode.transcribe_recording",
+                 return_value={"success": True, "transcript": "current words"},
+             ):
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent("earlier words", True)
+            )
+            cli._voice_streaming_barge_confirmed()
+            cli._voice_streaming_error(RuntimeError("socket closed"))
+
+        recorder.begin_continuous_fallback_capture.assert_called_once_with()
+        assert str(cli._pending_input.get_nowait()) == (
+            "earlier words current words"
+        )
+
+    def test_new_barge_candidate_replaces_a_decayed_noise_candidate(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_recording=False,
+            _voice_recorder=MagicMock(),
+            _voice_stt_stream=MagicMock(active=True),
+            _agent_running=True,
+        )
+
+        with patch("cli._cprint"), patch("tools.voice_mode.play_beep"):
+            cli._voice_streaming_barge_candidate()
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent("earlier unsent words", True)
+            )
+            cli._voice_streaming_barge_candidate()
+            cli._voice_streaming_barge_confirmed()
+            assert cli._pending_input.empty()
+
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent(
+                    "actual interruption",
+                    True,
+                    "actual-final",
+                    "actual-segment",
+                )
+            )
+            _expire_streaming_endpoint(cli)
+
+        assert str(cli._pending_input.get_nowait()) == (
+            "earlier unsent words actual interruption"
+        )
+
+    def test_streaming_stop_phrase_uses_existing_voice_shutdown(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=MagicMock(),
+            _voice_stt_stream=MagicMock(),
+        )
+        cli._disable_voice_mode = MagicMock()
+
+        with patch("cli._cprint"), \
+             patch("tools.voice_mode.play_beep"), \
+             patch("tools.voice_mode.is_voice_stop_phrase", return_value=True):
+            cli._voice_streaming_final(
+                StreamingTranscriptEvent("stop", True, "stop-final", "stop-segment")
+            )
+            _expire_streaming_endpoint(cli)
+
+        cli._disable_voice_mode.assert_called_once()
+        assert cli._pending_input.empty()
+
+    def test_disable_invalidates_turn_and_closes_persistent_session(self):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        coordinator = MagicMock()
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_processing=True,
+            _voice_stt_stream=coordinator,
+        )
+
+        class _Thread:
+            def __init__(self, target=None, **kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        with patch("cli._cprint"), \
+             patch("cli.threading.Thread", _Thread), \
+             patch("tools.voice_mode.stop_playback"):
+            cli._disable_voice_mode()
+            cli._voice_streaming_final(
+                StreamingTranscriptEvent("late transcript", True)
+            )
+
+        coordinator.close.assert_called_once()
+        assert cli._voice_stt_stream is None
+        assert cli._voice_processing is False
+        assert cli._pending_input.empty()
+
+
 # ---------------------------------------------------------------------------
 # Barge-in capture — the interruption is transcribed and queued directly
 # ---------------------------------------------------------------------------
@@ -527,6 +1465,91 @@ class TestVoiceFullDuplexListener:
         assert disabled == [True]     # chat ended by the stop phrase
         assert cli._pending_input.empty()  # stop phrase never reaches the agent
 
+    def test_streaming_barge_reuses_recorder_and_drains_provider_final(
+        self, monkeypatch
+    ):
+        from tools.stt_streaming import StreamingTranscriptEvent
+
+        observed = {}
+        interrupted = threading.Event()
+        recorder = MagicMock()
+        stream = MagicMock(active=True)
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_continuous=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=stream,
+            _agent_running=True,
+        )
+        cli.agent = SimpleNamespace(interrupt=lambda: interrupted.set())
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None, **kwargs):
+            observed.update(kwargs)
+            kwargs["on_candidate"]()
+            cli._voice_streaming_event(
+                StreamingTranscriptEvent("streamed interruption", True)
+            )
+            assert cli._pending_input.empty()
+            on_trigger("generation")
+            return None
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"voice": {"barge_in": True}},
+        )
+        monkeypatch.setattr("tools.voice_mode.full_duplex_listen", fake_listen)
+        monkeypatch.setattr("tools.voice_mode.is_audio_output_active", lambda: False)
+        monkeypatch.setattr("tools.voice_mode.stop_playback", lambda: None)
+
+        with patch("cli._cprint"), \
+             patch("tools.voice_mode.play_beep"), \
+             patch("tools.voice_mode.transcribe_recording") as transcribe:
+            cli._voice_full_duplex_listener()
+
+        assert interrupted.is_set()
+        assert observed["frame_queue"] is not None
+        assert observed["capture"]() is False
+        recorder.add_continuous_frame_sink.assert_called_once_with(
+            observed["frame_queue"].enqueue
+        )
+        recorder.remove_continuous_frame_sink.assert_called_once()
+        assert str(cli._pending_input.get_nowait()) == "streamed interruption"
+        transcribe.assert_not_called()
+
+    def test_batch_barge_reuses_persistent_recorder(self, monkeypatch):
+        """Batch STT must not open a second mic while the recorder stays open."""
+        observed = {}
+        recorder = MagicMock()
+        cli = _make_voice_cli(
+            _voice_mode=True,
+            _voice_continuous=True,
+            _voice_recorder=recorder,
+            _voice_stt_stream=None,
+            _agent_running=True,
+        )
+        cli.agent = SimpleNamespace(interrupt=lambda: None)
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None, **kwargs):
+            observed.update(kwargs)
+            return None
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"voice": {"barge_in": True}},
+        )
+        monkeypatch.setattr("tools.voice_mode.full_duplex_listen", fake_listen)
+        monkeypatch.setattr("tools.voice_mode.is_audio_output_active", lambda: False)
+        monkeypatch.setattr("tools.voice_mode.stop_playback", lambda: None)
+
+        cli._voice_full_duplex_listener()
+
+        assert observed["frame_queue"] is not None
+        assert observed["capture"]() is True
+        recorder.add_continuous_frame_sink.assert_called_once_with(
+            observed["frame_queue"].enqueue
+        )
+        recorder.remove_continuous_frame_sink.assert_called_once()
+
 
 # ============================================================================
 # Typed stop phrase — typing "stop" during a voice chat ends it
@@ -597,4 +1620,3 @@ class TestFallbackSpeakArmsBargeMonitor:
         # speak thread came and went without arming the mic.
         assert not cli._monitor_armed.wait(0.05)
         assert cli._monitor_calls == []
-

@@ -47,6 +47,8 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+_STREAMING_STT_ENDPOINT_GRACE_SECONDS = 0.5
+
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
@@ -4716,13 +4718,37 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._voice_mode = False
         self._voice_tts = False
         self._voice_recorder = None
+        self._voice_stt_stream = None
         self._voice_recording = False
+        self._voice_recording_generation = 0
+        self._voice_capture_started_generation = 0
         self._voice_processing = False
         self._voice_continuous = False
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
         self._voice_tts_stop = None  # active streaming pipeline's stop event
         self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
+        self._voice_stream_barge_release = threading.Event()
+        self._voice_stream_audio_sink = None
+        self._voice_stream_pending_finals = []
+        self._voice_stream_final_sequence = 0
+        self._voice_stream_drain_after = None
+        self._voice_stream_barge_candidate_after = None
+        self._voice_stream_seen_final_ids = set()
+        self._voice_stream_endpoint_timer = None
+        self._voice_stream_endpoint_token = 0
+        self._voice_stream_endpoint_segment_id = None
+        self._voice_stream_last_submitted_segment_id = None
+        self._voice_stream_partial_barge_segment_id = None
+        self._voice_stream_manual_commit = False
+        self._voice_stream_dispatch_pending = False
+        self._voice_stream_dispatch_barge = False
+        self._voice_stream_endpoint_timer = None
+        self._voice_stream_endpoint_token = 0
+        self._voice_stream_endpoint_segment_id = None
+        self._voice_stream_last_submitted_segment_id = None
+        self._voice_stream_partial_barge_segment_id = None
+        self._voice_stream_manual_commit = False
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
@@ -12176,6 +12202,39 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if self._voice_recording:
                 return
             self._voice_recording = True
+            self._voice_recording_generation += 1
+            recording_generation = self._voice_recording_generation
+            # Finals collected while no local barge was confirmed belong to
+            # the preceding idle/agent/TTS phase, not this new capture.
+            self._voice_stream_pending_finals = []
+            self._voice_stream_drain_after = None
+            self._voice_stream_barge_candidate_after = None
+            endpoint_timer = getattr(
+                self,
+                "_voice_stream_endpoint_timer",
+                None,
+            )
+            self._voice_stream_endpoint_timer = None
+            self._voice_stream_endpoint_token = (
+                getattr(self, "_voice_stream_endpoint_token", 0) + 1
+            )
+            self._voice_stream_endpoint_segment_id = None
+            self._voice_stream_partial_barge_segment_id = None
+            self._voice_stream_manual_commit = False
+            logger.debug(
+                "Voice capture armed: generation=%d stream_sequence=%d",
+                recording_generation,
+                self._voice_stream_final_sequence,
+            )
+        if endpoint_timer is not None:
+            endpoint_timer.cancel()
+
+        def _recording_attempt_active() -> bool:
+            with self._voice_lock:
+                return (
+                    self._voice_recording
+                    and recording_generation == self._voice_recording_generation
+                )
 
         # Load silence detection params from config. Shape-safe: a
         # hand-edited ``voice: true`` / ``voice: cmd+b`` leaves
@@ -12231,6 +12290,47 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             else 120.0
         )
 
+        # Streaming is selected only when the configured provider has a
+        # transcription-only realtime implementation and the recorder can
+        # expose callback frames. A failed handshake falls through to the
+        # existing local-endpoint/WAV path for this utterance.
+        stream_coordinator = None
+        try:
+            stream_coordinator = self._voice_get_streaming_stt()
+            if (
+                stream_coordinator is not None
+                and not stream_coordinator.start_utterance()
+            ):
+                stream_coordinator = None
+        except Exception:
+            logger.warning(
+                "Streaming STT setup failed; using batch transcription",
+                exc_info=True,
+            )
+            stream_coordinator = None
+
+        if not _recording_attempt_active():
+            if stream_coordinator is not None:
+                stream_coordinator.pause()
+            return
+
+        if stream_coordinator is not None:
+            self._voice_attach_stream_sink(stream_coordinator)
+
+        # The first PortAudio input open can take several seconds. Complete
+        # that work before the start cue so the cue still precedes capture,
+        # but capture can arm immediately afterward.
+        prepare_recorder = getattr(self._voice_recorder, "prepare", None)
+        if callable(prepare_recorder):
+            try:
+                prepare_recorder()
+            except Exception:
+                if stream_coordinator is not None:
+                    stream_coordinator.pause()
+                with self._voice_lock:
+                    self._voice_recording = False
+                raise
+
         def _on_silence():
             """Called by AudioRecorder when silence is detected after speech."""
             with self._voice_lock:
@@ -12249,14 +12349,41 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 pass
 
+        if not _recording_attempt_active():
+            if stream_coordinator is not None:
+                stream_coordinator.pause()
+            return
+
         try:
-            self._voice_recorder.start(on_silence_stop=_on_silence)
+            if stream_coordinator is not None:
+                started = self._voice_recorder.start(
+                    on_silence_stop=None,
+                    on_no_speech=self._voice_streaming_no_speech,
+                    on_max_duration=self._voice_streaming_commit,
+                    start_guard=_recording_attempt_active,
+                )
+            else:
+                started = self._voice_recorder.start(on_silence_stop=_on_silence)
         except Exception:
+            if stream_coordinator is not None:
+                stream_coordinator.pause()
             with self._voice_lock:
                 self._voice_recording = False
             raise
+        if started is False or not _recording_attempt_active():
+            if stream_coordinator is not None:
+                stream_coordinator.pause()
+            return
+        with self._voice_lock:
+            if (
+                self._voice_recording
+                and recording_generation == self._voice_recording_generation
+            ):
+                self._voice_capture_started_generation = recording_generation
         _label = self._voice_record_key_label()
-        if getattr(self._voice_recorder, "supports_silence_autostop", True):
+        if stream_coordinator is not None:
+            _recording_hint = f"provider endpointing | {_label} to stop & exit continuous"
+        elif getattr(self._voice_recorder, "supports_silence_autostop", True):
             _recording_hint = f"auto-stops on silence | {_label} to stop & exit continuous"
         elif _is_termux_environment():
             _recording_hint = f"Termux:API capture | {_label} to stop"
@@ -12308,6 +12435,487 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return ""
 
+    def _voice_get_streaming_stt(self):
+        """Return the persistent streamer for the selected STT provider."""
+        recorder = self._voice_recorder
+        if not getattr(recorder, "supports_streaming_frames", False):
+            return None
+        try:
+            from hermes_cli.config import load_config
+            from tools.stt_streaming import (
+                StreamingSTTTurnController,
+                resolve_streaming_stt_provider,
+            )
+
+            raw = load_config().get("stt", {})
+            stt_config = raw if isinstance(raw, dict) else {}
+            provider = resolve_streaming_stt_provider(stt_config)
+        except Exception:
+            logger.debug("Streaming STT resolution failed", exc_info=True)
+            return None
+        coordinator = getattr(self, "_voice_stt_stream", None)
+        if provider is None:
+            if coordinator is not None:
+                self._voice_detach_stream_sink()
+                self._voice_stt_stream = None
+                threading.Thread(target=coordinator.close, daemon=True).start()
+            return None
+
+        if (
+            coordinator is not None
+            and coordinator.provider_configuration_key == provider.configuration_key
+        ):
+            return coordinator
+        if coordinator is not None:
+            self._voice_detach_stream_sink()
+            threading.Thread(target=coordinator.close, daemon=True).start()
+        coordinator = StreamingSTTTurnController(
+            provider,
+            self._voice_streaming_event,
+            self._voice_streaming_error,
+            continuous=True,
+        )
+        self._voice_stt_stream = coordinator
+        return coordinator
+
+    def _voice_attach_stream_sink(self, coordinator) -> None:
+        recorder = self._voice_recorder
+        if recorder is None or not hasattr(recorder, "add_continuous_frame_sink"):
+            return
+        sink = getattr(self, "_voice_stream_audio_sink", None)
+        if sink is not None:
+            recorder.remove_continuous_frame_sink(sink)
+        sink = coordinator.enqueue_audio
+        self._voice_stream_audio_sink = sink
+        recorder.add_continuous_frame_sink(sink)
+
+    def _voice_detach_stream_sink(self) -> None:
+        recorder = self._voice_recorder
+        sink = getattr(self, "_voice_stream_audio_sink", None)
+        self._voice_stream_audio_sink = None
+        if (
+            recorder is not None
+            and sink is not None
+            and hasattr(recorder, "remove_continuous_frame_sink")
+        ):
+            recorder.remove_continuous_frame_sink(sink)
+
+    def _voice_streaming_commit(self) -> None:
+        """Commit a streaming utterance while retaining batch fallback audio."""
+        with self._voice_lock:
+            if not self._voice_recording or self._voice_processing:
+                return
+            self._voice_recording = False
+            self._voice_processing = True
+            self._voice_stream_drain_after = self._voice_stream_final_sequence
+            self._voice_stream_manual_commit = True
+            logger.debug(
+                "Streaming STT commit requested: drain_after=%d",
+                self._voice_stream_drain_after,
+            )
+        recorder = self._voice_recorder
+        if recorder is not None:
+            recorder.finish_capture()
+        if hasattr(self, '_app') and self._app:
+            self._app.invalidate()
+        coordinator = self._voice_stt_stream
+        if coordinator is None or not coordinator.commit():
+            # The provider may have committed automatically just before the
+            # keypress. Its callback owns the turn now; do not race that final
+            # into the retained-audio batch path.
+            if coordinator is not None and (
+                coordinator.delivering is True
+                or coordinator.commit_pending is True
+            ):
+                return
+            self._voice_streaming_error(
+                RuntimeError("Streaming STT commit was not accepted")
+            )
+
+    def _voice_streaming_event(self, event) -> None:
+        """Route provider events without stopping the continuous audio feed."""
+        if event.is_final:
+            self._voice_streaming_final(event)
+        else:
+            self._voice_streaming_partial(event)
+
+    def _voice_streaming_partial(self, event) -> None:
+        """Use a new partial to extend an endpoint or confirm a barge-in."""
+        transcript = str(event.text or "").strip()
+        if not transcript:
+            return
+        segment_id = str(getattr(event, "segment_id", None) or "").strip()
+        cancel_timer = None
+        confirm_barge = False
+        with self._voice_lock:
+            relevant = bool(
+                self._voice_mode
+                or self._voice_recording
+                or self._voice_processing
+                or self._voice_barge_capture.is_set()
+            )
+            if not relevant:
+                return
+            endpoint_timer = getattr(
+                self,
+                "_voice_stream_endpoint_timer",
+                None,
+            )
+            endpoint_segment_id = getattr(
+                self,
+                "_voice_stream_endpoint_segment_id",
+                None,
+            )
+            continues_after_endpoint = bool(
+                endpoint_timer is not None
+                and (
+                    not segment_id
+                    or not endpoint_segment_id
+                    or segment_id != endpoint_segment_id
+                )
+            )
+            if continues_after_endpoint:
+                cancel_timer = endpoint_timer
+                self._voice_stream_endpoint_timer = None
+                self._voice_stream_endpoint_token = (
+                    getattr(self, "_voice_stream_endpoint_token", 0) + 1
+                )
+                self._voice_stream_endpoint_segment_id = None
+                logger.debug(
+                    "Streaming STT endpoint extended by partial: "
+                    "segment_id=%s",
+                    segment_id or "-",
+                )
+                last_submitted = getattr(
+                    self,
+                    "_voice_stream_last_submitted_segment_id",
+                    None,
+                )
+                prior_barge = getattr(
+                    self,
+                    "_voice_stream_partial_barge_segment_id",
+                    None,
+                )
+                confirm_barge = bool(
+                    not self._voice_recording
+                    and segment_id
+                    and segment_id != last_submitted
+                    and segment_id != prior_barge
+                    and self._voice_continuous
+                )
+                if confirm_barge:
+                    self._voice_stream_partial_barge_segment_id = segment_id
+            elif not self._voice_recording:
+                last_submitted = getattr(
+                    self,
+                    "_voice_stream_last_submitted_segment_id",
+                    None,
+                )
+                prior_barge = getattr(
+                    self,
+                    "_voice_stream_partial_barge_segment_id",
+                    None,
+                )
+                confirm_barge = bool(
+                    segment_id
+                    and segment_id != last_submitted
+                    and segment_id != prior_barge
+                    and self._voice_continuous
+                )
+                if confirm_barge:
+                    self._voice_stream_partial_barge_segment_id = segment_id
+            if confirm_barge and getattr(
+                self,
+                "_voice_stream_dispatch_pending",
+                False,
+            ):
+                self._voice_stream_dispatch_barge = True
+        if cancel_timer is not None:
+            cancel_timer.cancel()
+        if confirm_barge:
+            logger.debug(
+                "Streaming STT partial confirmed barge: segment_id=%s",
+                segment_id,
+            )
+            self._voice_handle_barge_trigger()
+
+    def _voice_streaming_barge_confirmed(self) -> None:
+        """Drain buffered provider finals through the barge's next boundary."""
+        self._voice_barge_capture.set()
+        self._voice_stream_barge_release.set()
+        with self._voice_lock:
+            boundary = self._voice_stream_barge_candidate_after
+            if boundary is None:
+                boundary = self._voice_stream_final_sequence
+            self._voice_stream_drain_after = boundary
+            self._voice_stream_barge_candidate_after = None
+            self._voice_processing = True
+            logger.debug(
+                "Streaming STT barge confirmed: drain_after=%d sequence=%d",
+                boundary,
+                self._voice_stream_final_sequence,
+            )
+        recorder = self._voice_recorder
+        if recorder is not None and hasattr(
+            recorder,
+            "begin_continuous_fallback_capture",
+        ):
+            try:
+                recorder.begin_continuous_fallback_capture()
+            except Exception:
+                logger.debug(
+                    "Unable to retain continuous barge audio for fallback",
+                    exc_info=True,
+                )
+        self._voice_drain_streaming_finals(allow_recording=False)
+
+    def _voice_streaming_barge_candidate(self) -> None:
+        """Remember which provider finals predate a possible interruption."""
+        with self._voice_lock:
+            self._voice_stream_barge_candidate_after = (
+                self._voice_stream_final_sequence
+            )
+            logger.debug(
+                "Streaming STT barge candidate: sequence=%d",
+                self._voice_stream_final_sequence,
+            )
+
+    def _voice_take_streaming_pending_finals(self) -> list[str]:
+        with self._voice_lock:
+            endpoint_timer = getattr(
+                self,
+                "_voice_stream_endpoint_timer",
+                None,
+            )
+            self._voice_stream_endpoint_timer = None
+            self._voice_stream_endpoint_token = (
+                getattr(self, "_voice_stream_endpoint_token", 0) + 1
+            )
+            self._voice_stream_endpoint_segment_id = None
+            pending = self._voice_stream_pending_finals
+            self._voice_stream_pending_finals = []
+            self._voice_stream_drain_after = None
+            self._voice_stream_barge_candidate_after = None
+            self._voice_stream_manual_commit = False
+        if endpoint_timer is not None:
+            endpoint_timer.cancel()
+        return pending
+
+    def _voice_arm_streaming_endpoint(self, segment_id: str) -> None:
+        """Wait briefly for evidence that an automatic endpoint was early."""
+        with self._voice_lock:
+            old_timer = getattr(self, "_voice_stream_endpoint_timer", None)
+            token = getattr(self, "_voice_stream_endpoint_token", 0) + 1
+            self._voice_stream_endpoint_token = token
+            self._voice_stream_endpoint_segment_id = segment_id or None
+            timer = threading.Timer(
+                _STREAMING_STT_ENDPOINT_GRACE_SECONDS,
+                lambda: self._voice_drain_streaming_finals(
+                    allow_recording=True,
+                    endpoint_token=token,
+                ),
+            )
+            timer.daemon = True
+            self._voice_stream_endpoint_timer = timer
+        if old_timer is not None:
+            old_timer.cancel()
+        timer.start()
+
+    def _voice_streaming_final(self, event) -> None:
+        """Buffer provider finals and drain the current logical voice turn."""
+        transcript = str(event.text or "").strip()
+        event_id = str(event.event_id or "").strip()
+        segment_id = str(getattr(event, "segment_id", None) or "").strip()
+        recorder = self._voice_recorder
+        recorder_has_spoken = bool(getattr(recorder, "has_spoken", True))
+        with self._voice_lock:
+            capture_has_speech = bool(
+                recorder_has_spoken
+                and self._voice_capture_started_generation
+                == self._voice_recording_generation
+            )
+            relevant = bool(
+                self._voice_mode
+                or self._voice_recording
+                or self._voice_processing
+                or self._voice_barge_capture.is_set()
+            )
+            if not relevant:
+                return
+            if event_id:
+                if event_id in self._voice_stream_seen_final_ids:
+                    return
+                self._voice_stream_seen_final_ids.add(event_id)
+            # The provider connection also hears the idle/agent/TTS phase. A
+            # late final from that phase can cross the instant Ctrl+B arms a
+            # new capture. Do not let it close a capture that has not observed
+            # any new microphone speech. Manual commit and confirmed barge-in
+            # set a drain boundary and intentionally bypass this guard.
+            stale_for_new_capture = bool(
+                self._voice_recording
+                and self._voice_stream_drain_after is None
+                and not capture_has_speech
+            )
+            if transcript and not stale_for_new_capture:
+                self._voice_stream_pending_finals.append(transcript)
+            self._voice_stream_final_sequence += 1
+            self._voice_stream_partial_barge_segment_id = None
+            logger.debug(
+                "Streaming STT final routed: sequence=%d event_id=%s "
+                "segment_id=%s text_chars=%d recording=%s processing=%s speech=%s "
+                "drain_after=%s action=%s",
+                self._voice_stream_final_sequence,
+                event_id or "-",
+                segment_id or "-",
+                len(transcript),
+                self._voice_recording,
+                self._voice_processing,
+                capture_has_speech,
+                self._voice_stream_drain_after,
+                "discard-pre-capture" if stale_for_new_capture else "buffer",
+            )
+            if stale_for_new_capture:
+                return
+            drain_after = self._voice_stream_drain_after
+            crossed_boundary = bool(
+                drain_after is not None
+                and self._voice_stream_final_sequence > drain_after
+            )
+            manual_commit = bool(
+                crossed_boundary
+                and getattr(self, "_voice_stream_manual_commit", False)
+            )
+        if manual_commit:
+            self._voice_drain_streaming_finals(allow_recording=False)
+        else:
+            self._voice_arm_streaming_endpoint(segment_id)
+
+    def _voice_drain_streaming_finals(
+        self,
+        *,
+        allow_recording: bool,
+        endpoint_token: Optional[int] = None,
+    ) -> bool:
+        """Claim and submit buffered finals once the requested boundary lands."""
+        with self._voice_lock:
+            endpoint_timer = getattr(
+                self,
+                "_voice_stream_endpoint_timer",
+                None,
+            )
+            if endpoint_token is not None and (
+                endpoint_timer is None
+                or endpoint_token
+                != getattr(self, "_voice_stream_endpoint_token", 0)
+            ):
+                return False
+            drain_after = self._voice_stream_drain_after
+            crossed_boundary = bool(
+                drain_after is not None
+                and self._voice_stream_final_sequence > drain_after
+            )
+            if not crossed_boundary and not (
+                allow_recording and self._voice_recording
+            ):
+                if endpoint_token is not None:
+                    self._voice_stream_endpoint_timer = None
+                    self._voice_stream_endpoint_token = (
+                        getattr(self, "_voice_stream_endpoint_token", 0) + 1
+                    )
+                    self._voice_stream_endpoint_segment_id = None
+                return False
+            endpoint_segment_id = getattr(
+                self,
+                "_voice_stream_endpoint_segment_id",
+                None,
+            )
+            self._voice_stream_endpoint_timer = None
+            self._voice_stream_endpoint_token = (
+                getattr(self, "_voice_stream_endpoint_token", 0) + 1
+            )
+            self._voice_stream_endpoint_segment_id = None
+            self._voice_stream_last_submitted_segment_id = (
+                endpoint_segment_id
+            )
+            self._voice_stream_partial_barge_segment_id = None
+            self._voice_stream_manual_commit = False
+            self._voice_recording = False
+            self._voice_processing = True
+            pending = self._voice_stream_pending_finals
+            self._voice_stream_dispatch_pending = any(
+                str(segment).strip() for segment in pending
+            )
+            self._voice_stream_dispatch_barge = False
+            self._voice_stream_pending_finals = []
+            self._voice_stream_drain_after = None
+            self._voice_stream_barge_candidate_after = None
+            logger.debug(
+                "Streaming STT finals drained: reason=%s count=%d sequence=%d",
+                "boundary" if crossed_boundary else "normal-recording",
+                len(pending),
+                self._voice_stream_final_sequence,
+            )
+
+        if endpoint_timer is not None:
+            endpoint_timer.cancel()
+
+        if self._voice_recorder is not None:
+            self._voice_recorder.cancel()
+            if hasattr(
+                self._voice_recorder,
+                "clear_continuous_fallback_buffer",
+            ):
+                self._voice_recorder.clear_continuous_fallback_buffer()
+        self._voice_barge_capture.clear()
+
+        if self._voice_beeps_enabled():
+            try:
+                from tools.voice_mode import play_beep
+                play_beep(frequency=660, count=2)
+            except Exception:
+                pass
+
+        submitted = False
+        try:
+            combined = ""
+            for segment in pending:
+                segment = segment.strip()
+                if not segment:
+                    continue
+                if not combined:
+                    combined = segment
+                else:
+                    combined += f" {segment}"
+            if not combined:
+                _cprint(f"{_DIM}No speech detected.{_RST}")
+            else:
+                submitted = self._voice_submit_transcript(combined)
+        except Exception as e:
+            _cprint(f"\n{_DIM}Voice processing error: {e}{_RST}")
+        finally:
+            self._voice_finish_processing(submitted)
+        return submitted
+
+    def _voice_streaming_error(self, error: Exception) -> None:
+        """Recover an interrupted streaming turn through WAV transcription."""
+        with self._voice_lock:
+            if not self._voice_recording and not self._voice_processing:
+                return
+        logger.warning("Streaming STT failed; falling back to batch: %s", error)
+        self._voice_stop_and_transcribe(_stream_fallback=True)
+
+    def _voice_streaming_no_speech(self) -> None:
+        """End an empty streaming turn using the recorder's safety guard."""
+        with self._voice_lock:
+            if not self._voice_recording or self._voice_processing:
+                return
+            self._voice_recording = False
+            self._voice_processing = True
+        if self._voice_recorder is not None:
+            self._voice_recorder.cancel()
+        _cprint(f"{_DIM}No speech detected.{_RST}")
+        self._voice_finish_processing(False)
+
     def _voice_restart_recording_async(self) -> None:
         """Restart continuous-mode recording off-thread (start() can block)."""
         def _restart_recording():
@@ -12319,13 +12927,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
         threading.Thread(target=_restart_recording, daemon=True).start()
 
-    def _voice_stop_and_transcribe(self):
+    def _voice_stop_and_transcribe(self, _stream_fallback: bool = False):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
+        if not _stream_fallback:
+            stream = getattr(self, "_voice_stt_stream", None)
+            if stream is not None and (stream.active or stream.delivering):
+                self._voice_streaming_commit()
+                return
+
         # Atomic guard: only one thread can enter stop-and-transcribe.
         # Set _voice_processing immediately so concurrent Ctrl+B presses
         # don't race into the START path while recorder.stop() holds its lock.
         with self._voice_lock:
-            if not self._voice_recording:
+            if _stream_fallback:
+                if not self._voice_recording and not self._voice_processing:
+                    return
+            elif not self._voice_recording:
                 return
             self._voice_recording = False
             self._voice_processing = True
@@ -12338,6 +12955,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
 
             wav_path = self._voice_recorder.stop()
+            if _stream_fallback and hasattr(
+                self._voice_recorder,
+                "clear_continuous_fallback_buffer",
+            ):
+                self._voice_recorder.clear_continuous_fallback_buffer()
 
             # Audio cue: double beep after stream stopped (no CoreAudio conflict)
             if self._voice_beeps_enabled():
@@ -12348,7 +12970,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     pass
 
             if wav_path is None:
-                _cprint(f"{_DIM}No speech detected.{_RST}")
+                pending = (
+                    self._voice_take_streaming_pending_finals()
+                    if _stream_fallback
+                    else []
+                )
+                if pending:
+                    submitted = self._voice_submit_transcript(
+                        " ".join(pending).strip()
+                    )
+                else:
+                    _cprint(f"{_DIM}No speech detected.{_RST}")
                 return
 
             # _voice_processing is already True (set atomically above)
@@ -12368,21 +13000,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             result = transcribe_recording(wav_path, model=stt_model)
 
             if result.get("success") and result.get("transcript", "").strip():
-                transcript = result["transcript"].strip()
-                from tools.voice_mode import is_voice_stop_phrase
-                if is_voice_stop_phrase(transcript):
-                    # Bare "stop" (or configured phrase) ends the voice chat
-                    # instead of being sent to the agent.
-                    _cprint(f"{_DIM}Stop phrase detected — ending voice chat.{_RST}")
-                    self._disable_voice_mode()
-                    return
-                self._attached_images.clear()
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
-                self._pending_input.put(_VoiceInputMessage(transcript))
-                submitted = True
+                transcript_parts = (
+                    self._voice_take_streaming_pending_finals()
+                    if _stream_fallback
+                    else []
+                )
+                transcript_parts.append(result["transcript"].strip())
+                submitted = self._voice_submit_transcript(
+                    " ".join(transcript_parts).strip()
+                )
             elif result.get("success"):
-                _cprint(f"{_DIM}No speech detected.{_RST}")
+                pending = (
+                    self._voice_take_streaming_pending_finals()
+                    if _stream_fallback
+                    else []
+                )
+                if pending:
+                    submitted = self._voice_submit_transcript(
+                        " ".join(pending).strip()
+                    )
+                else:
+                    _cprint(f"{_DIM}No speech detected.{_RST}")
             else:
                 error = result.get("error", "Unknown error")
                 _cprint(f"\n{_DIM}Transcription failed: {error}{_RST}")
@@ -12392,10 +13030,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"\n{_DIM}Voice processing error: {e}{_RST}")
             transcription_failed = wav_path is not None
         finally:
-            with self._voice_lock:
-                self._voice_processing = False
-            if hasattr(self, '_app') and self._app:
-                self._app.invalidate()
             # Clean up temp file unless transcription failed. On failure, keep
             # the source recording so long dictation is not lost.
             try:
@@ -12407,42 +13041,65 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 pass
 
-            # Track consecutive no-speech cycles to avoid infinite restart loops.
-            # While the agent is mid-turn or TTS is speaking, the user is
-            # CORRECTLY silent (waiting/listening) — those cycles must not
-            # count, or a multi-minute tool run ends the voice chat under
-            # the user. The stop phrase and barge-in still work during the
-            # hold (they run on their own paths above).
-            stop_continuous_restart = False
-            _tts_done = getattr(self, "_voice_tts_done", None)
-            _activity_hold = bool(
-                getattr(self, "_agent_running", False)
-                or (_tts_done is not None and not _tts_done.is_set())
-            )
-            if not submitted:
-                if _activity_hold:
-                    pass  # held: keep listening without counting the cycle
-                else:
-                    self._no_speech_count = getattr(self, '_no_speech_count', 0) + 1
-                    if self._no_speech_count >= 3:
-                        self._voice_continuous = False
-                        self._no_speech_count = 0
-                        _cprint(f"{_DIM}No speech detected 3 times, continuous mode stopped.{_RST}")
-                        stop_continuous_restart = True
-            else:
-                self._no_speech_count = 0
+            self._voice_finish_processing(submitted)
 
-            # If no transcript was submitted but continuous mode is active,
-            # restart recording so the user can keep talking.
-            # (When transcript IS submitted, process_loop handles restart
-            # after chat() completes.)
-            if (
-                self._voice_continuous
-                and not submitted
-                and not self._voice_recording
-                and not stop_continuous_restart
-            ):
-                self._voice_restart_recording_async()
+    def _voice_submit_transcript(self, transcript: str) -> bool:
+        """Queue one final STT transcript, or consume a voice stop phrase."""
+        from tools.voice_mode import is_voice_stop_phrase
+        if is_voice_stop_phrase(transcript):
+            _cprint(f"{_DIM}Stop phrase detected — ending voice chat.{_RST}")
+            self._disable_voice_mode()
+            return False
+        self._attached_images.clear()
+        if hasattr(self, '_app') and self._app:
+            self._app.invalidate()
+        self._pending_input.put(_VoiceInputMessage(transcript))
+        return True
+
+    def _voice_finish_processing(self, submitted: bool) -> None:
+        """Apply shared post-transcription counters and restart behavior."""
+        with self._voice_lock:
+            self._voice_processing = False
+            if not submitted:
+                self._voice_stream_dispatch_pending = False
+                self._voice_stream_dispatch_barge = False
+        if hasattr(self, '_app') and self._app:
+            self._app.invalidate()
+
+        # Track consecutive no-speech cycles to avoid infinite restart loops.
+        # While the agent is mid-turn or TTS is speaking, the user is
+        # correctly silent (waiting/listening) — those cycles must not count,
+        # or a multi-minute tool run ends the voice chat under the user. The
+        # stop phrase and barge-in still work during the hold.
+        stop_continuous_restart = False
+        _tts_done = getattr(self, "_voice_tts_done", None)
+        _activity_hold = bool(
+            getattr(self, "_agent_running", False)
+            or (_tts_done is not None and not _tts_done.is_set())
+        )
+        if not submitted:
+            if _activity_hold:
+                pass  # held: keep listening without counting the cycle
+            else:
+                self._no_speech_count = getattr(self, '_no_speech_count', 0) + 1
+                if self._no_speech_count >= 3:
+                    self._voice_continuous = False
+                    self._no_speech_count = 0
+                    _cprint(f"{_DIM}No speech detected 3 times, continuous mode stopped.{_RST}")
+                    stop_continuous_restart = True
+        else:
+            self._no_speech_count = 0
+
+        # If no transcript was submitted but continuous mode is active,
+        # restart recording so the user can keep talking. When a transcript
+        # is submitted, process_loop restarts after chat() completes.
+        if (
+            self._voice_continuous
+            and not submitted
+            and not self._voice_recording
+            and not stop_continuous_restart
+        ):
+            self._voice_restart_recording_async()
 
     def _voice_speak_response_async(self, text: str) -> None:
         """Schedule TTS and mark it pending before continuous recording can restart."""
@@ -12464,6 +13121,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 target=self._voice_full_duplex_listener,
                 daemon=True,
             ).start()
+
+    def _voice_wait_for_streaming_tts(self, thread, timeout: float) -> bool:
+        """Wait for spoken output unless streaming STT confirmed a barge."""
+        deadline = time.monotonic() + timeout
+        while thread.is_alive():
+            release = getattr(self, "_voice_stream_barge_release", None)
+            if release is not None and release.is_set():
+                logger.debug(
+                    "Streaming TTS wait released by streaming STT barge"
+                )
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            thread.join(timeout=min(0.1, remaining))
+        return True
 
     def _voice_speak_response(self, text: str):
         """Speak the agent's response aloud using TTS (runs in background thread)."""
@@ -12537,6 +13210,80 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         finally:
             self._voice_tts_done.set()
 
+    def _voice_tts_is_playing(self) -> bool:
+        """Return whether enabled voice TTS is currently producing audio."""
+        if not self._voice_tts or self._voice_tts_done.is_set():
+            return False
+        try:
+            from tools.voice_mode import is_audio_output_active
+
+            return is_audio_output_active()
+        except Exception:
+            return False
+
+    def _voice_apply_pending_streaming_barge(
+        self,
+        agent,
+        *,
+        voice_input: bool,
+    ) -> None:
+        """Carry a confirmed continuation into its queued streaming turn."""
+        if not voice_input:
+            return
+        with self._voice_lock:
+            interrupt = bool(
+                getattr(self, "_voice_stream_dispatch_pending", False)
+                and getattr(self, "_voice_stream_dispatch_barge", False)
+            )
+            self._voice_stream_dispatch_pending = False
+            self._voice_stream_dispatch_barge = False
+        if interrupt:
+            logger.debug(
+                "Applying streaming STT barge at voice turn dispatch"
+            )
+            agent.interrupt()
+
+    def _voice_handle_barge_trigger(self, phase: Optional[str] = None) -> None:
+        """Apply one confirmed barge from either audio or transcript activity."""
+        already_confirmed = self._voice_barge_capture.is_set()
+        self._voice_barge_capture.set()
+        if already_confirmed:
+            return
+        stream = getattr(self, "_voice_stt_stream", None)
+        if stream is not None and stream.active:
+            self._voice_streaming_barge_confirmed()
+
+        if phase is None:
+            phase = (
+                "playback"
+                if self._voice_tts_is_playing()
+                else "generation"
+            )
+
+        if phase == "playback":
+            logger.debug("TTS CUT: voice barge confirmed during playback")
+            from tools.tts_streaming import mark_speech_interrupted
+            from tools.voice_mode import stop_playback
+
+            mark_speech_interrupted()
+            pipeline_stop = getattr(self, "_voice_tts_stop", None)
+            if pipeline_stop is not None:
+                pipeline_stop.set()
+            stop_playback()
+            return
+
+        logger.debug(
+            "Voice barge confirmed during generation — interrupting agent turn"
+        )
+        pipeline_stop = getattr(self, "_voice_tts_stop", None)
+        if pipeline_stop is not None:
+            pipeline_stop.set()
+        try:
+            if self.agent is not None and getattr(self, "_agent_running", False):
+                _cprint(f"\n{_DIM}🎤 Voice interjection — interrupting…{_RST}")
+                self.agent.interrupt()
+        except Exception as e:
+            logger.debug("voice interjection interrupt failed: %s", e)
 
     def _voice_full_duplex_listener(self) -> None:
         """Full-duplex agent-turn listener: mic live for the WHOLE turn.
@@ -12553,15 +13300,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         * generation (no TTS audio yet): speech interrupts the in-flight
           agent turn via ``self.agent.interrupt()`` — the same seam the
-          typed/Ctrl+C interrupt uses — and the captured utterance is
-          submitted as the next message.
+          typed/Ctrl+C interrupt uses.
         * playback: speech cuts TTS (pipeline stop event + stop_playback)
-          and the interruption is captured with pre-roll and submitted.
+          while microphone capture continues.
+
+        Streaming STT already has the interruption audio, so its buffered
+        finals are drained through the next provider endpoint. Batch-only
+        providers retain the existing pre-roll WAV transcription path.
 
         The stop phrase ends the voice chat in BOTH phases (a stop during
-        generation means "stop everything": the turn is already interrupted
-        at trip time, then ``_voice_submit_barge_utterance`` disables voice
-        mode).
+        generation means "stop everything": the turn is interrupted at trip
+        time and the committed transcript disables voice mode).
         """
         fd_active = getattr(self, "_voice_fd_active", None)
         if fd_active is None:
@@ -12570,16 +13319,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if fd_active.is_set():
             return  # one listener owns the mic for this turn
         fd_active.set()
+        frame_queue = None
+        frame_sink = None
         try:
             from hermes_cli.config import load_config
             voice_cfg = load_config().get("voice") or {}
             if not (isinstance(voice_cfg, dict) and voice_cfg.get("barge_in", True)):
                 return
             from tools.voice_mode import (
+                ContinuousAudioFrameQueue,
                 full_duplex_listen,
                 is_audio_output_active,
-                stop_playback,
             )
+
+            stream = getattr(self, "_voice_stt_stream", None)
+            recorder = self._voice_recorder
+            # AudioRecorder keeps its input stream open across turns for both
+            # batch and streaming STT. Reuse it so the barge listener never
+            # opens a competing microphone stream.
+            shared_stream = bool(
+                recorder is not None
+                and hasattr(recorder, "add_continuous_frame_sink")
+            )
+            if shared_stream:
+                frame_queue = ContinuousAudioFrameQueue()
+                frame_sink = frame_queue.enqueue
+                recorder.add_continuous_frame_sink(frame_sink)
 
             try:
                 _mult = float(voice_cfg.get("barge_in_threshold_multiplier", 0) or 0)
@@ -12605,33 +13370,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             def _on_trigger(phase: str) -> None:
                 # Latch BEFORE cutting anything: suppresses process_loop's
                 # auto-restart until the capture is submitted.
-                self._voice_barge_capture.set()
-                if phase == "playback":
-                    logger.debug(
-                        "TTS CUT: full-duplex listener tripped during playback"
-                    )
-                    from tools.tts_streaming import mark_speech_interrupted
-                    mark_speech_interrupted()
-                    _pipe_stop = getattr(self, "_voice_tts_stop", None)
-                    if _pipe_stop is not None:
-                        _pipe_stop.set()
-                    stop_playback()
-                else:
-                    # Generation phase: no audio to cut — interrupt the
-                    # in-flight agent turn (same seam as typed interrupt).
-                    logger.debug(
-                        "full-duplex listener tripped during generation — "
-                        "interrupting agent turn"
-                    )
-                    _pipe_stop = getattr(self, "_voice_tts_stop", None)
-                    if _pipe_stop is not None:
-                        _pipe_stop.set()  # never let the stale reply speak
-                    try:
-                        if self.agent is not None and getattr(self, "_agent_running", False):
-                            _cprint(f"\n{_DIM}🎤 Voice interjection — interrupting…{_RST}")
-                            self.agent.interrupt()
-                    except Exception as e:
-                        logger.debug("voice interjection interrupt failed: %s", e)
+                self._voice_handle_barge_trigger(phase)
 
             wav_path = full_duplex_listen(
                 _should_stop,
@@ -12639,15 +13378,34 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 on_trigger=_on_trigger,
                 multiplier=_mult or None,
                 grace_ms=max(0, _grace_ms),
+                frame_queue=frame_queue,
+                capture=lambda: not (stream is not None and stream.active),
+                on_candidate=(
+                    self._voice_streaming_barge_candidate
+                    if stream is not None and stream.active
+                    else None
+                ),
             )
             if wav_path and self._voice_barge_capture.is_set():
                 self._voice_submit_barge_utterance(wav_path)
+            elif (
+                stream is not None
+                and stream.active
+                and self._voice_barge_capture.is_set()
+            ):
+                # The provider already has the entire interruption. Its next
+                # final drains this barge together with earlier unsent finals.
+                pass
             else:
                 self._voice_barge_capture.clear()
         except Exception as e:
             self._voice_barge_capture.clear()
             logger.debug("Voice full-duplex listener failed: %s", e)
         finally:
+            if frame_queue is not None:
+                frame_queue.close()
+            if frame_sink is not None and self._voice_recorder is not None:
+                self._voice_recorder.remove_continuous_frame_sink(frame_sink)
             fd_active.clear()
 
     def _voice_submit_barge_utterance(self, wav_path: str) -> None:
@@ -12793,14 +13551,42 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _disable_voice_mode(self):
         """Disable voice mode, cancel any active recording, and stop TTS."""
         recorder = None
+        stt_stream = None
         with self._voice_lock:
-            if self._voice_recording and self._voice_recorder:
-                self._voice_recorder.cancel()
+            if self._voice_recording:
                 self._voice_recording = False
             recorder = self._voice_recorder
+            stt_stream = getattr(self, "_voice_stt_stream", None)
+            self._voice_stt_stream = None
             self._voice_mode = False
             self._voice_tts = False
             self._voice_continuous = False
+            self._voice_processing = False
+            self._voice_stream_pending_finals = []
+            self._voice_stream_drain_after = None
+            self._voice_stream_barge_candidate_after = None
+            self._voice_stream_seen_final_ids.clear()
+            endpoint_timer = getattr(
+                self,
+                "_voice_stream_endpoint_timer",
+                None,
+            )
+            self._voice_stream_endpoint_timer = None
+            self._voice_stream_endpoint_token = (
+                getattr(self, "_voice_stream_endpoint_token", 0) + 1
+            )
+            self._voice_stream_endpoint_segment_id = None
+            self._voice_stream_last_submitted_segment_id = None
+            self._voice_stream_partial_barge_segment_id = None
+            self._voice_stream_manual_commit = False
+            self._voice_stream_dispatch_pending = False
+            self._voice_stream_dispatch_barge = False
+
+        if endpoint_timer is not None:
+            endpoint_timer.cancel()
+        self._voice_detach_stream_sink()
+        if recorder is not None:
+            recorder.cancel()
 
         # Shut down the persistent audio stream in background
         if recorder is not None:
@@ -12811,6 +13597,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     pass
             threading.Thread(target=_bg_shutdown, daemon=True).start()
             self._voice_recorder = None
+
+        if stt_stream is not None:
+            threading.Thread(target=stt_stream.close, daemon=True).start()
 
         # Stop any active TTS playback (file player + streaming pipeline)
         try:
@@ -13686,6 +14475,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         agent = self.agent
         if agent is None:
             return None
+        self._voice_apply_pending_streaming_barge(
+            agent,
+            voice_input=voice_input,
+        )
 
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
@@ -13815,6 +14608,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # across intermediate turn boundaries (tool-calling loops) — only
             # reset at the start of each user turn.
             self._reasoning_shown_this_turn = False
+            release = getattr(self, "_voice_stream_barge_release", None)
+            if release is not None:
+                release.clear()
 
             # Full-duplex agent-turn listener (continuous voice mode): arm
             # the mic NOW — at utterance-submit — not when TTS playback
@@ -14168,7 +14964,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if use_streaming_tts and text_queue is not None:
                 text_queue.put(None)  # sentinel
                 if tts_thread is not None:
-                    tts_thread.join(timeout=120)
+                    self._voice_wait_for_streaming_tts(tts_thread, timeout=120)
                 # Mark normal completion only if the thread actually
                 # finished.  If join() timed out and the thread is still
                 # alive, leave _tts_normal_exit False so the finally block
@@ -14293,6 +15089,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         self.agent.clear_interrupt()
                 except Exception:
                     pass
+
+            # Recover prompt_toolkit before rendering the interrupted turn's
+            # response. ChatConsole routes background-thread output through
+            # run_in_terminal, so recovering afterward can replay the panel
+            # while its original print is still queued and show it twice.
+            if self._last_turn_interrupted:
+                self._recover_terminal_after_interrupt()
 
             response_previewed = result.get("response_previewed", False) if result else False
 
@@ -14488,7 +15291,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 logger.info("TTS CUT: exception finally block setting stop_event")
                 stop_event.set()
             if tts_thread is not None and tts_thread.is_alive():
-                tts_thread.join(timeout=5)
+                release = getattr(self, "_voice_stream_barge_release", None)
+                timeout = (
+                    0.2
+                    if release is not None and release.is_set()
+                    else 5
+                )
+                tts_thread.join(timeout=timeout)
+            release = getattr(self, "_voice_stream_barge_release", None)
+            if release is not None:
+                release.clear()
     
     def _clear_terminal_on_exit(self):
         """Clear screen + scrollback so nothing is stranded above the exit summary.
@@ -14772,7 +15584,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if self._agent_running:
             return _state_fragment("class:prompt-working", "⚕")
         if self._voice_mode:
-            return _state_fragment("class:voice-prompt", "🎤")
+            # Keep the editable prompt prefix single-cell. Emoji microphone
+            # width differs between prompt_toolkit's wcwidth table and some
+            # terminals, which shifts the physical cursor into the placeholder.
+            return _state_fragment("class:voice-prompt", "♪")
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:
@@ -15153,13 +15968,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._voice_mode = False        # Whether voice mode is enabled
         self._voice_tts = False         # Whether TTS output is enabled
         self._voice_recorder = None     # AudioRecorder instance (lazy init)
+        self._voice_stt_stream = None   # Persistent streaming STT voice controller
         self._voice_recording = False   # Whether currently recording
+        self._voice_recording_generation = 0  # Revokes a blocked recording start
+        self._voice_capture_started_generation = 0
         self._voice_processing = False  # Whether STT is in progress
         self._voice_continuous = False  # Whether to auto-restart after agent responds
         self._voice_tts_done = threading.Event()  # Signals TTS playback finished
         self._voice_tts_done.set()  # Initially "done" (no TTS pending)
         self._voice_tts_stop = None  # active streaming pipeline's stop event
         self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
+        self._voice_stream_barge_release = threading.Event()
+        self._voice_stream_audio_sink = None
+        self._voice_stream_pending_finals = []
+        self._voice_stream_final_sequence = 0
+        self._voice_stream_drain_after = None
+        self._voice_stream_barge_candidate_after = None
+        self._voice_stream_seen_final_ids = set()
+        self._voice_stream_dispatch_pending = False
+        self._voice_stream_dispatch_barge = False
 
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._install_tool_callbacks()
@@ -17458,17 +18285,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
                         app.invalidate()  # Refresh status line
 
-                        # Post-turn terminal recovery (#33271): after an
-                        # interrupt the prompt_toolkit renderer may have
-                        # drifted from the physical terminal state — CSI 6n
-                        # cursor position reports can leak as literal text
-                        # (^[[19;1R), and the VT100 input parser can stall in
-                        # a partial-escape state, accepting no further
-                        # keystrokes.  Drain stray escape bytes from the OS
-                        # input buffer and force a clean renderer redraw.
-                        if self._last_turn_interrupted:
-                            self._recover_terminal_after_interrupt()
-
                         # Re-queue any messages that arrived in _interrupt_queue
                         # while the agent was running and were never claimed by
                         # the explicit interrupt path. See
@@ -17776,6 +18592,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     request_hard_interrupt(self.agent)
                 except Exception:
                     pass
+            # Stop provider forwarding before closing either side of the
+            # persistent microphone-to-STT pipeline.
+            self._voice_detach_stream_sink()
+            stt_stream = getattr(self, "_voice_stt_stream", None)
+            if stt_stream is not None:
+                try:
+                    stt_stream.close()
+                except Exception:
+                    pass
+                self._voice_stt_stream = None
             # Shut down voice recorder (release persistent audio stream)
             if hasattr(self, '_voice_recorder') and self._voice_recorder:
                 try:

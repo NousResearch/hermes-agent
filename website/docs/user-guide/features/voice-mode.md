@@ -111,7 +111,7 @@ If `faster-whisper` is installed, voice mode works with **zero API keys** for ST
 
 ## CLI Voice Mode
 
-Voice mode is available in both the **classic CLI** (`hermes chat`) and the **TUI** (`hermes --tui`). Behavior is identical across both — same slash commands, same VAD silence detection, same streaming TTS, same hallucination filter. The TUI additionally forwards crash-forensic logs to `~/.hermes/logs/` so push-to-talk failures on exotic audio backends can be reported with a full stack trace rather than disappearing silently.
+Voice mode is available in both the **classic CLI** (`hermes chat`) and the **TUI** (`hermes --tui`). They share slash commands, streaming TTS, and transcript filtering. In the classic CLI, OpenAI and ElevenLabs can additionally stream microphone audio to the selected STT provider and use its end-of-turn detection. Other providers and surfaces keep the WAV-based transcription path.
 
 ### Quick Start
 
@@ -136,9 +136,9 @@ Then use these commands inside the CLI:
 1. Start the CLI with `hermes` and enable voice mode with `/voice on`
 2. **Press Ctrl+B** — a beep plays (880Hz), recording starts
 3. **Speak** — a live audio level bar shows your input: `● [▁▂▃▅▇▇▅▂] ❯`
-4. **Stop speaking** — after 3 seconds of silence, recording auto-stops
+4. **Stop speaking** — the selected streaming provider detects the end of the turn, or the local recorder detects 3 seconds of silence on the batch path
 5. **Two beeps** play (660Hz) confirming the recording ended
-6. Audio is transcribed via Whisper and sent to the agent
+6. The final transcript is sent to the agent
 7. If TTS is enabled, the agent's reply is spoken aloud
 8. Recording **automatically restarts** — speak again without pressing any key
 
@@ -148,7 +148,13 @@ This loop continues until you press **Ctrl+B** during recording (exits continuou
 The record key is configurable via `voice.record_key` in `~/.hermes/config.yaml` (default: `ctrl+b`).
 :::
 
-### Silence Detection
+### End-of-turn detection
+
+The classic CLI automatically streams normal-turn microphone frames when the explicitly selected provider is `openai` or `elevenlabs` and its credential is available. OpenAI uses semantic VAD and ElevenLabs uses its VAD commit strategy. Partial transcripts stay internal; only committed text is submitted. A short grace window after each automatic endpoint lets a new partial keep the same user turn open and also gives streaming STT a second way to confirm barge-in.
+
+The microphone and provider connection remain open between turns so interruption audio reaches streaming STT immediately. The existing local barge-in detector remains active; provider partials can confirm the same barge-in path, while batch-only providers continue to capture interruptions to WAV. If the streaming connection fails before recording, Hermes uses the batch path; if it fails during an utterance, Hermes transcribes the locally retained recording instead.
+
+For local STT, unsupported providers, Termux, TUI, and Desktop, the existing two-stage local detector remains in use:
 
 Two-stage algorithm detects when you've finished speaking:
 
@@ -157,7 +163,7 @@ Two-stage algorithm detects when you've finished speaking:
 
 If no speech is detected at all for 15 seconds, recording stops automatically.
 
-Both `silence_threshold` and `silence_duration` are configurable in `config.yaml`. You can also disable the record start/stop beeps with `voice.beep_enabled: false`.
+Both `silence_threshold` and `silence_duration` are configurable in `config.yaml` and apply to the local batch path. You can force a supported provider onto its batch path with `stt.<provider>.streaming: false`, or disable the record start/stop beeps with `voice.beep_enabled: false`.
 
 ### Ending a voice chat by voice
 
@@ -430,6 +436,23 @@ stt:
     language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   groq:
     language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+  openai:
+    base_url: ""                     # optional OpenAI-compatible API base; Realtime support is required for streaming
+    model: "whisper-1"               # batch/file model
+    streaming: true                  # automatic when selected; false forces batch
+    streaming_model_id: "gpt-4o-mini-transcribe"  # semantic-VAD capable Realtime model
+  elevenlabs:
+    base_url: ""                     # optional HTTP API base
+    wss_url: ""                      # optional WebSocket API base
+    model_id: "scribe_v2"            # batch/file model
+    streaming: true                  # automatic when selected; false forces batch
+    streaming_model_id: "scribe_v2_realtime"
+    # vad_threshold: 0.4              # optional Realtime VAD tuning
+    # vad_silence_threshold_secs: 1.5
+  xai:
+    base_url: ""                     # API-key auth only; OAuth uses its validated origin
+    language: ""
+    diarize: false
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech

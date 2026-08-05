@@ -2,6 +2,7 @@
 
 import os
 import struct
+import threading
 import time
 import wave
 from pathlib import Path
@@ -209,7 +210,9 @@ class TestDetectAudioEnvironment:
                             lambda: (MagicMock(), MagicMock()))
 
         proc_version = tmp_path / "proc_version"
-        proc_version.write_text("Linux 5.15.0-microsoft-standard-WSL2")
+        proc_version.write_text(
+            "Linux 5.15.0-microsoft-standard-WSL2", encoding="utf-8"
+        )
 
         _real_open = open
         def _fake_open(f, *a, **kw):
@@ -381,6 +384,24 @@ class TestTermuxAudioRecorder:
 
 
 class TestAudioRecorder:
+    def test_prepare_opens_stream_before_capture_is_armed(self, mock_sd):
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.prepare()
+
+        assert recorder.is_recording is False
+        mock_sd.InputStream.assert_called_once()
+        mock_stream.start.assert_called_once_with()
+
+        recorder.start()
+
+        assert recorder.is_recording is True
+        mock_sd.InputStream.assert_called_once()
+
     def test_start_raises_without_audio_libs(self, monkeypatch):
         def _fail_import():
             raise ImportError("no sounddevice")
@@ -423,6 +444,108 @@ class TestAudioRecorder:
         assert recorder.is_recording is True
         mock_sd.InputStream.assert_called_once()
         mock_stream.start.assert_called_once()
+
+    def test_frame_sink_receives_copied_frame_and_native_rate(self, mock_sd):
+        np = pytest.importorskip("numpy")
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+        received = []
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.start(frame_sink=lambda frame, rate: received.append((frame, rate)))
+        callback = mock_sd.InputStream.call_args.kwargs["callback"]
+        source = np.full((480, 1), 1000, dtype=np.int16)
+        callback(source, 480, None, None)
+        source[:] = 0
+
+        assert len(received) == 1
+        assert received[0][1] == recorder._sample_rate
+        assert received[0][0][0, 0] == 1000
+        assert recorder._frames[0][0, 0] == 1000
+
+    def test_frame_sink_exception_does_not_escape_audio_callback(self, mock_sd):
+        np = pytest.importorskip("numpy")
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.start(frame_sink=MagicMock(side_effect=RuntimeError("boom")))
+        callback = mock_sd.InputStream.call_args.kwargs["callback"]
+        callback(np.ones((480, 1), dtype=np.int16), 480, None, None)
+        callback(np.ones((480, 1), dtype=np.int16), 480, None, None)
+
+        assert len(recorder._frames) == 2
+        assert recorder._frame_sink is None
+
+    def test_frame_sink_exception_reports_away_from_audio_callback(self, mock_sd):
+        np = pytest.importorskip("numpy")
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+        reported = []
+        delivered = threading.Event()
+        callback_thread = threading.current_thread()
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.start(
+            frame_sink=MagicMock(side_effect=RuntimeError("boom")),
+            on_frame_sink_error=lambda error: (
+                reported.append((str(error), threading.current_thread())),
+                delivered.set(),
+            ),
+        )
+        callback = mock_sd.InputStream.call_args.kwargs["callback"]
+        callback(np.ones((480, 1), dtype=np.int16), 480, None, None)
+
+        assert delivered.wait(1.0)
+        assert reported[0][0] == "boom"
+        assert reported[0][1] is not callback_thread
+        recorder.cancel()
+
+    def test_clear_frame_sink_retains_batch_fallback_frames(self, mock_sd):
+        np = pytest.importorskip("numpy")
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.start(frame_sink=MagicMock())
+        callback = mock_sd.InputStream.call_args.kwargs["callback"]
+        callback(np.ones((480, 1), dtype=np.int16), 480, None, None)
+        recorder.clear_frame_sink()
+
+        assert recorder.is_recording is True
+        assert len(recorder._frames) == 1
+
+    def test_continuous_sink_receives_frames_between_logical_recordings(
+        self, mock_sd
+    ):
+        np = pytest.importorskip("numpy")
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+        received = []
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.add_continuous_frame_sink(
+            lambda frame, rate: received.append((frame.copy(), rate))
+        )
+        recorder.start()
+        callback = mock_sd.InputStream.call_args.kwargs["callback"]
+        callback(np.full((480, 1), 1000, dtype=np.int16), 480, None, None)
+        recorder.cancel()
+        callback(np.full((480, 1), 2000, dtype=np.int16), 480, None, None)
+        recorder.start()
+
+        assert [int(frame[0, 0]) for frame, _ in received] == [1000, 2000]
+        assert mock_sd.InputStream.call_count == 1
 
 class TestAudioRecorderStop:
     def test_stop_writes_wav_file(self, mock_sd, temp_voice_dir):
@@ -472,6 +595,70 @@ class TestAudioRecorderStop:
 
         wav_path = recorder.stop()
         assert wav_path is None
+
+    def test_finish_capture_retains_only_pre_commit_audio(
+        self, mock_sd, temp_voice_dir
+    ):
+        np = pytest.importorskip("numpy")
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+        sink = MagicMock()
+
+        from tools.voice_mode import AudioRecorder, SAMPLE_RATE
+
+        recorder = AudioRecorder()
+        recorder.start(frame_sink=sink)
+        callback = mock_sd.InputStream.call_args.kwargs["callback"]
+        frame = np.full((SAMPLE_RATE, 1), 1000, dtype="int16")
+        callback(frame, SAMPLE_RATE, None, None)
+
+        assert recorder.finish_capture() is True
+        callback(frame, SAMPLE_RATE, None, None)
+        wav_path = recorder.stop()
+
+        assert recorder.is_recording is False
+        assert sink.call_count == 1
+        assert wav_path is not None
+        with wave.open(wav_path, "rb") as wf:
+            assert wf.getnframes() == SAMPLE_RATE
+
+    def test_continuous_barge_buffer_is_available_for_batch_fallback(
+        self, mock_sd, temp_voice_dir
+    ):
+        np = pytest.importorskip("numpy")
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.add_continuous_frame_sink(lambda frame, rate: None)
+        recorder.start()
+        callback = mock_sd.InputStream.call_args.kwargs["callback"]
+        recorder.cancel()
+        recorder.clear_continuous_fallback_buffer()
+        samples = int(recorder._sample_rate * 0.2)
+        callback(
+            np.full((samples, 1), 1000, dtype=np.int16),
+            samples,
+            None,
+            None,
+        )
+
+        assert recorder.begin_continuous_fallback_capture()
+        callback(
+            np.full((samples, 1), 2000, dtype=np.int16),
+            samples,
+            None,
+            None,
+        )
+        wav_path = recorder.stop()
+
+        assert wav_path is not None
+        with wave.open(wav_path, "rb") as wf:
+            audio = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2")
+        assert int(audio[0]) == 1000
+        assert int(audio[-1]) == 2000
 
 
 class TestAudioRecorderCancel:
@@ -713,6 +900,62 @@ class TestPlayBeep:
 # ============================================================================
 
 class TestSilenceDetection:
+    def test_streaming_mode_keeps_no_speech_guard_without_local_endpointing(
+        self, mock_sd, fake_clock
+    ):
+        np = pytest.importorskip("numpy")
+        import threading
+
+        mock_sd.InputStream.return_value = MagicMock()
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder._max_wait = 0.05
+        no_speech = threading.Event()
+
+        recorder.start(
+            on_silence_stop=None,
+            on_no_speech=no_speech.set,
+            frame_sink=MagicMock(),
+        )
+        callback = mock_sd.InputStream.call_args.kwargs["callback"]
+        silent_frame = np.zeros((1600, 1), dtype="int16")
+        callback(silent_frame, 1600, None, None)
+        fake_clock.advance(0.06)
+        callback(silent_frame, 1600, None, None)
+
+        assert no_speech.wait(timeout=5.0) is True
+        assert recorder._on_silence_stop is None
+        recorder.cancel()
+
+    def test_streaming_mode_keeps_max_duration_guard_without_local_endpointing(
+        self, mock_sd, fake_clock
+    ):
+        np = pytest.importorskip("numpy")
+        import threading
+
+        mock_sd.InputStream.return_value = MagicMock()
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder._max_recording_seconds = 0.05
+        max_duration = threading.Event()
+
+        recorder.start(
+            on_silence_stop=None,
+            on_max_duration=max_duration.set,
+            frame_sink=MagicMock(),
+        )
+        callback = mock_sd.InputStream.call_args.kwargs["callback"]
+        loud_frame = np.full((1600, 1), 5000, dtype="int16")
+        callback(loud_frame, 1600, None, None)
+        fake_clock.advance(0.06)
+        callback(loud_frame, 1600, None, None)
+
+        assert max_duration.wait(timeout=5.0) is True
+        assert recorder._on_silence_stop is None
+        recorder.cancel()
+
     def test_silence_callback_fires_after_speech_then_silence(self, mock_sd, fake_clock):
         np = pytest.importorskip("numpy")
         import threading
@@ -911,6 +1154,40 @@ class TestPlaybackInterrupt:
         with _playback_lock:
             assert vm._active_playback is None
 
+    def test_interrupted_system_player_does_not_try_next_player(
+        self,
+        sample_wav,
+    ):
+        """An intentional stop is not a player failure requiring fallback."""
+        from tools import voice_mode as vm
+
+        class InterruptedProcess:
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                if self.returncode is None:
+                    vm.stop_playback()
+                return self.returncode
+
+        process = InterruptedProcess()
+        with patch("tools.voice_mode.platform.system", return_value="Darwin"), \
+             patch("tools.voice_mode.shutil.which", return_value="/usr/bin/player"), \
+             patch(
+                 "tools.voice_mode.subprocess.Popen",
+                 return_value=process,
+             ) as popen:
+            result = vm.play_audio_file(sample_wav)
+
+        assert result is True
+        popen.assert_called_once()
+        assert process._hermes_interrupted is True
+
 # ============================================================================
 # Continuous mode flow
 # ============================================================================
@@ -1028,6 +1305,7 @@ class TestConfigurableSilenceParams:
             fake_clock.advance(0.02)
 
         assert recorder._has_spoken is False
+        assert recorder.has_spoken is False
         assert fired.wait(timeout=0.2) is False
 
         # Now send really loud audio (above 5000 threshold)
@@ -1036,6 +1314,7 @@ class TestConfigurableSilenceParams:
         fake_clock.advance(0.06)
         callback(very_loud, 1600, None, None)
         assert recorder._has_spoken is True
+        assert recorder.has_spoken is True
 
         recorder.cancel()
 
@@ -1249,6 +1528,56 @@ class TestFullDuplexListen:
         assert path == "/tmp/fd.wav"
         assert phases == ["generation"]
         assert int((audio == 5000).sum()) > 0  # speech onset in the capture
+
+    def test_callback_frames_use_same_detector_without_opening_input_stream(
+        self, mock_sd
+    ):
+        np = pytest.importorskip("numpy")
+        from tools.voice_mode import ContinuousAudioFrameQueue, full_duplex_listen
+
+        frame_queue = ContinuousAudioFrameQueue(max_seconds=10.0)
+        for level in [100] * self.CALIB + [5000] * 30:
+            frame_queue.enqueue(
+                np.full((self.BLOCK, 1), level, dtype=np.int16),
+                16000,
+            )
+        events = []
+
+        assert full_duplex_listen(
+            lambda: False,
+            is_playing=lambda: False,
+            on_trigger=events.append,
+            frame_queue=frame_queue,
+            capture=False,
+            on_candidate=lambda: events.append("candidate"),
+        ) is None
+        assert events == ["candidate", "generation"]
+        mock_sd.InputStream.assert_not_called()
+
+    def test_candidate_restarts_after_unconfirmed_window_decays(
+        self, mock_sd, monkeypatch
+    ):
+        candidates = []
+        phases = []
+        levels = (
+            [100] * self.CALIB
+            + [5000]
+            + [100] * self.TRIP
+            + [5000] * 30
+        )
+
+        path, _, _ = self._run(
+            mock_sd,
+            monkeypatch,
+            levels,
+            capture=False,
+            on_candidate=lambda: candidates.append(True),
+            on_trigger=phases.append,
+        )
+
+        assert path is None
+        assert candidates == [True, True]
+        assert phases == ["generation"]
 
     def test_playback_bleed_alone_does_not_trip(self, mock_sd, monkeypatch):
         """Speaker bleed (~1000 RMS) during playback stays below the playback

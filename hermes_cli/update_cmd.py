@@ -4582,6 +4582,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Never let the cron safety net break an otherwise-good update.
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
+        try:
+            from hermes_cli.gateway import is_macos as _gateway_is_macos
+
+            defer_update_complete_message = _gateway_is_macos()
+        except Exception:
+            defer_update_complete_message = sys.platform == "darwin"
+
         print()
         if node_failures:
             print(
@@ -4590,7 +4597,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             print("  Code and Python deps are updated, but the dashboard/TUI may")
             print("  be in a mixed state until the Node deps are rebuilt.")
-        else:
+        elif not defer_update_complete_message:
             print("✓ Update complete!")
 
         # Search-index optimization notice (v23). Existing installs keep their
@@ -5188,27 +5195,39 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if is_macos():
                 try:
                     from hermes_cli.gateway import (
+                        LaunchdGatewayDiscoveryError,
                         launchd_restart,
-                        get_launchd_label,
-                        get_launchd_plist_path,
+                        running_launchd_gateway_labels,
                     )
 
-                    plist_path = get_launchd_plist_path()
-                    if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
-                            capture_output=True,
-                            text=True, encoding="utf-8", errors="replace",
-                            timeout=5,
-                        )
-                        if check.returncode == 0:
-                            try:
-                                launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
-                                print(f"  ⚠ Gateway restart failed: {stderr}")
-                except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
+                    for launchd_label in running_launchd_gateway_labels(
+                        require_success=True
+                    ):
+                        try:
+                            launchd_restart(launchd_label)
+                            restarted_services.append(launchd_label)
+                        except subprocess.CalledProcessError as e:
+                            failed_or_stale_units.append(launchd_label)
+                            stderr = (getattr(e, "stderr", "") or "").strip()
+                            print(
+                                f"  ⚠ Gateway restart failed for {launchd_label}: "
+                                f"{stderr}"
+                            )
+                        except subprocess.TimeoutExpired as e:
+                            failed_or_stale_units.append(launchd_label)
+                            print(
+                                f"  ⚠ launchctl timed out restarting {launchd_label} "
+                                f"({e.cmd if e.cmd else 'unknown command'}); "
+                                f"continuing with remaining gateways"
+                            )
+                except LaunchdGatewayDiscoveryError as e:
+                    discovery_name = "macOS launchd gateway discovery"
+                    failed_or_stale_units.append(discovery_name)
+                    print(
+                        f"  ⚠ {discovery_name} failed: {e}; "
+                        "running launchd gateways may still need restart"
+                    )
+                except (FileNotFoundError, ImportError):
                     pass
 
             # --- Manual (non-service) gateways ---
@@ -5404,6 +5423,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Preserve the safety rule above: a failed Node refresh leaves the
         # currently running dashboard untouched.
         _finish_dashboard_update_cleanup(node_failures)
+
+        if (
+            defer_update_complete_message
+            and not node_failures
+            and not gateway_fleet_restart_incomplete
+        ):
+            print()
+            print("✓ Update complete!")
 
         print()
         print("Tip: You can now select a provider and model:")

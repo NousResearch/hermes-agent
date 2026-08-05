@@ -146,33 +146,8 @@ def _get_service_pids() -> set:
 
     # --- launchd (macOS) ---
     if is_macos():
-        try:
-            label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=5,
-            )
-            if result.returncode == 0:
-                # Try plist format first (macOS 26+): "PID" = <N>;
-                pid = _parse_launchd_pid_from_list_output(result.stdout)
-                if pid is not None and pid > 0:
-                    pids.add(pid)
-                else:
-                    # Fall back to legacy tab-separated format:
-                    # "PID\tStatus\tLabel"
-                    for line in result.stdout.strip().splitlines():
-                        parts = line.split()
-                        if len(parts) >= 3 and parts[2] == label:
-                            try:
-                                pid = int(parts[0])
-                                if pid > 0:
-                                    pids.add(pid)
-                            except ValueError:
-                                pass
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        for _label, _pid in _running_launchd_gateway_jobs():
+            pids.add(_pid)
 
     return pids
 
@@ -1277,6 +1252,74 @@ def _parse_launchd_pid_from_list_output(output: str) -> int | None:
                 except ValueError:
                     return None
     return None
+
+
+def _parse_launchd_gateway_jobs_from_list_output(output: str) -> list[tuple[str, int]]:
+    """Return running Hermes gateway jobs from ``launchctl list`` output."""
+    jobs: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for raw_line in output.splitlines():
+        parts = raw_line.split()
+        if len(parts) < 3:
+            continue
+        pid_text, _status, label = parts[0], parts[1], parts[2]
+        if label != "ai.hermes.gateway" and not label.startswith("ai.hermes.gateway-"):
+            continue
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid <= 0 or label in seen:
+            continue
+        seen.add(label)
+        jobs.append((label, pid))
+    return jobs
+
+
+class LaunchdGatewayDiscoveryError(RuntimeError):
+    """Raised when running launchd gateways cannot be enumerated."""
+
+
+def _running_launchd_gateway_jobs(
+    *, require_success: bool = False
+) -> list[tuple[str, int]]:
+    """Discover running launchd-managed Hermes gateways without starting jobs."""
+    try:
+        result = subprocess.run(
+            ["launchctl", "list"],
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired as exc:
+        if require_success:
+            raise LaunchdGatewayDiscoveryError(
+                "launchctl list timed out"
+            ) from exc
+        return []
+    except FileNotFoundError as exc:
+        if require_success:
+            raise LaunchdGatewayDiscoveryError(
+                "launchctl executable was not found"
+            ) from exc
+        return []
+    if result.returncode != 0:
+        if require_success:
+            raise LaunchdGatewayDiscoveryError(
+                f"launchctl list exited with status {result.returncode}"
+            )
+        return []
+    return _parse_launchd_gateway_jobs_from_list_output(result.stdout or "")
+
+
+def running_launchd_gateway_labels(*, require_success: bool = False) -> list[str]:
+    """Return running Hermes launchd gateway labels, default and named profiles."""
+    return [
+        label
+        for label, _pid in _running_launchd_gateway_jobs(
+            require_success=require_success
+        )
+    ]
 
 
 def _probe_launchd_service_running() -> bool:
@@ -4530,11 +4573,17 @@ def _wait_for_gateway_exit(
     return True
 
 
-def launchd_restart():
-    label = get_launchd_label()
+def launchd_restart(label: str | None = None):
+    label = label or get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
+
+    if label != get_launchd_label():
+        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        print(f"✓ Service restarted ({label})")
+        _clear_launchd_unsupported_marker()
+        return
 
     try:
         pid = get_running_pid()

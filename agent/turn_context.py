@@ -196,7 +196,7 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
     return fallback
 
 
-def _compression_made_progress(
+def compression_made_progress(
     orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
 ) -> bool:
     """Return ``True`` if a compression pass materially reduced the request.
@@ -217,6 +217,13 @@ def _compression_made_progress(
     if new_len < orig_len:
         return True
     return orig_tokens > 0 and new_tokens < orig_tokens * 0.95
+
+
+# Back-compat alias: this predicate was module-private until the gateway's
+# session-hygiene recovery gate needed the same semantics (#79624).  Keeping the
+# old name bound means existing callers and any test that patches
+# ``_compression_made_progress`` continue to work unchanged.
+_compression_made_progress = compression_made_progress
 
 
 def _compression_warrants_another_preflight_pass(

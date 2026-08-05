@@ -60,6 +60,9 @@ from agent.conversation_compression import (
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
+from agent.turn_context import (
+    compression_made_progress as _compression_made_progress,
+)
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -118,6 +121,67 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r")",
     re.IGNORECASE | re.DOTALL,
 )
+
+
+_HYGIENE_COOLDOWN_LADDER_MULTIPLIERS = (1, 3, 9)
+# Absolute ceiling on an escalated hygiene cooldown, mirroring
+# _RECONNECT_BACKOFF_CAP above: with an operator-raised base the multiplier
+# ladder alone would reach 9h (base 3600 -> 32400s), which is indistinguishable
+# from "compaction silently switched off". 1h is well past the point where a
+# retry is cheap and still recovers within a session.
+_HYGIENE_COOLDOWN_MAX_SECONDS = 3600.0
+
+
+def _hygiene_cooldown_for_failure(
+    gateway,
+    session_key: str,
+    base_cooldown_seconds: float,
+) -> float:
+    """Bump the hygiene failure streak and return the escalated cooldown.
+
+    The in-agent compressor escalates repeat summary timeouts 60 -> 300 -> 900s
+    (``ContextCompressor.record_timeout_failure``), but that ladder reads the
+    in-memory ``_consecutive_timeout_failures`` counter which
+    ``bind_session_state`` zeroes.  Session hygiene constructs a FRESH
+    ``AIAgent`` per run and re-binds state every time, so from the gateway the
+    streak is structurally always 0 and only the flat
+    ``hygiene_failure_cooldown_seconds`` could ever be recorded — a session
+    whose summary model always times out retried on that same fixed interval
+    forever (#79624).
+
+    The streak lives on ``PersistentState`` instead, which outlives the per-run
+    agent, so consecutive failures climb the ladder.  Multiplies the configured
+    base so operators who tuned ``hygiene_failure_cooldown_seconds`` keep their
+    first rung, then clamps to ``_HYGIENE_COOLDOWN_MAX_SECONDS``.
+    """
+    streak = 1
+    try:
+        state = gateway._session_state(session_key).persistent
+        state.hygiene_failure_streak += 1
+        streak = state.hygiene_failure_streak
+    except Exception as exc:
+        # The caller uses the return value to record the cooldown, so an
+        # escaping exception would mean NO cooldown at all (hot retry loop) —
+        # strictly worse than no escalation.  Degrade to the base rung.
+        logger.debug("hygiene failure streak update failed: %s", exc)
+    multiplier = _HYGIENE_COOLDOWN_LADDER_MULTIPLIERS[
+        min(streak, len(_HYGIENE_COOLDOWN_LADDER_MULTIPLIERS)) - 1
+    ]
+    return min(base_cooldown_seconds * multiplier, _HYGIENE_COOLDOWN_MAX_SECONDS)
+
+
+def _reset_hygiene_failure_streak(gateway, session_key: str) -> None:
+    """Clear the hygiene failure streak after a compression that reduced context.
+
+    Peeks rather than get-or-creates: writing a 0 that is already 0 must not
+    materialise a ``_sessions`` entry (those are never evicted).
+    """
+    try:
+        state = gateway._peek_session_state(session_key)
+        if state is not None:
+            state.persistent.hygiene_failure_streak = 0
+    except Exception as exc:
+        logger.debug("hygiene failure streak reset failed: %s", exc)
 
 
 def _record_hygiene_cooldown(gateway, session_id: str, cooldown_seconds: float) -> None:
@@ -16912,7 +16976,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             if _hyg_failure_cooldown_seconds >= 0:
                                                 _record_hygiene_cooldown(
                                                     self, session_entry.session_id,
-                                                    _hyg_failure_cooldown_seconds,
+                                                    _hygiene_cooldown_for_failure(
+                                                        self, session_key,
+                                                        _hyg_failure_cooldown_seconds,
+                                                    ),
                                                 )
                                             from agent.session_activity import (
                                                 ActivityProvenance,
@@ -17103,11 +17170,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # /compress to retry or /reset to start
                                     # fresh.
                                     _comp = getattr(_hyg_agent, "context_compressor", None)
-                                    if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
+                                    _hyg_aborted = _comp is not None and getattr(
+                                        _comp, "_last_compress_aborted", False
+                                    )
+                                    if not _hyg_aborted:
+                                        # Only a run that materially reduced the
+                                        # request counts as recovery.  The
+                                        # degenerate "did not rotate or compact
+                                        # in place" branch above leaves both
+                                        # counts equal and is NOT aborted, so
+                                        # gating on "not aborted" alone would
+                                        # clear the streak on every wedged run
+                                        # and the cooldown could never escalate
+                                        # (#79624).  Reuse the canonical
+                                        # progress predicate rather than a
+                                        # hand-rolled token comparison: rows
+                                        # dropping is progress even when the
+                                        # summary keeps the token estimate flat,
+                                        # and a sub-5% token wobble is noise,
+                                        # not recovery (#39548).
+                                        if _compression_made_progress(
+                                            _msg_count, _new_count,
+                                            _approx_tokens, _new_tokens,
+                                        ):
+                                            _reset_hygiene_failure_streak(
+                                                self, session_key
+                                            )
+                                    if _hyg_aborted:
                                         if _hyg_failure_cooldown_seconds >= 0:
                                             _record_hygiene_cooldown(
                                                 self, session_entry.session_id,
-                                                _hyg_failure_cooldown_seconds,
+                                                _hygiene_cooldown_for_failure(
+                                                    self, session_key,
+                                                    _hyg_failure_cooldown_seconds,
+                                                ),
                                             )
                                         from agent.session_activity import (
                                             ActivityProvenance,

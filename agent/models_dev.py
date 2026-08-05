@@ -156,6 +156,21 @@ def _mdev_provider_id(provider_id: str) -> str:
         provider_id = provider_id[len("custom:"):]
     return PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
 
+
+def _mdev_provider_id_strict(provider_id: str) -> Optional[str]:
+    """Resolve a Hermes provider id to a models.dev catalog id, strictly.
+
+    Plain provider ids must be keys of PROVIDER_TO_MODELS_DEV — an unknown
+    id resolves to None instead of being passed through, so an arbitrary
+    string never triggers a catalog fetch. ``custom:<name>`` providers pass
+    through to the catalog under the bare name (custom:hyper → hyper),
+    matching the mapping's pass-through contract for custom endpoints.
+    """
+    if provider_id.startswith("custom:"):
+        provider_id = provider_id[len("custom:"):]
+        return PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+    return PROVIDER_TO_MODELS_DEV.get(provider_id)
+
 # Hermes provider names → models.dev provider IDs
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter",
@@ -501,7 +516,7 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     Returns the context window in tokens, or None if not found.
     Handles case-insensitive matching and filters out context=0 entries.
     """
-    mdev_provider_id = _mdev_provider_id(provider)
+    mdev_provider_id = _mdev_provider_id_strict(provider)
     if not mdev_provider_id:
         return None
 
@@ -592,7 +607,7 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
 
     Returns the models dict or None if the provider is unknown or has no data.
     """
-    mdev_provider_id = _mdev_provider_id(provider)
+    mdev_provider_id = _mdev_provider_id_strict(provider)
     if not mdev_provider_id:
         return None
 

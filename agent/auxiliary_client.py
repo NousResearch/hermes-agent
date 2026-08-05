@@ -5085,12 +5085,22 @@ def _candidate_context_window(
     """
     if not model:
         return None
+    # Load custom_providers from config so per-model context_length
+    # overrides (custom_providers[].models.<id>.context_length) are
+    # honored for fallback candidates too — not just the main model.
+    _custom_providers: list | None = None
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+        _custom_providers = get_compatible_custom_providers(load_config_readonly())
+    except Exception:
+        pass
     try:
         ctx = get_model_context_length(
             model,
             base_url=base_url,
             api_key=api_key,
             provider=provider,
+            custom_providers=_custom_providers,
         )
     except Exception as exc:
         logger.debug(

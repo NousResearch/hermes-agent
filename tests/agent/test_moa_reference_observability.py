@@ -1,4 +1,4 @@
-"""MoA per-reference duration/stats + metrics-lite (independent of save_traces)."""
+"""MoA per-reference duration/stats + metrics-lite (gated with save_traces)."""
 
 from __future__ import annotations
 
@@ -24,11 +24,10 @@ def test_slot_trace_includes_duration_and_stats():
     assert row["usage"]["input_tokens"] == 10
 
 
-def test_save_moa_turn_writes_metrics_even_when_traces_off(tmp_path, monkeypatch):
-    """metrics/moa-refs.jsonl must write even if moa.save_traces is false."""
+def test_save_moa_turn_writes_metrics_when_traces_on(tmp_path, monkeypatch):
+    """metrics/moa-refs.jsonl writes alongside the full trace when enabled."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # Force traces off via config stub
-    with patch("agent.moa_trace._traces_enabled_and_dir", return_value=None):
+    with patch("agent.moa_trace._traces_enabled_and_dir", return_value=Path(tmp_path) / "moa-traces"):
         save_moa_turn(
             session_id="sess-1",
             preset_name="test-preset",
@@ -55,9 +54,8 @@ def test_save_moa_turn_writes_metrics_even_when_traces_off(tmp_path, monkeypatch
         )
 
     metrics_path = Path(tmp_path) / "metrics" / "moa-refs.jsonl"
-    assert metrics_path.is_file(), "metrics-lite must write without save_traces"
-    # traces dir must NOT appear
-    assert not (Path(tmp_path) / "moa-traces").exists()
+    assert metrics_path.is_file(), "metrics-lite must write when traces are on"
+    assert (Path(tmp_path) / "moa-traces" / "sess-1.jsonl").is_file()
     line = metrics_path.read_text(encoding="utf-8").strip().splitlines()[-1]
     rec = json.loads(line)
     assert rec["session_id"] == "sess-1"
@@ -67,6 +65,38 @@ def test_save_moa_turn_writes_metrics_even_when_traces_off(tmp_path, monkeypatch
     # no message bodies in metrics-lite
     assert "input_messages" not in rec["references"][0]
     assert "output" not in rec["references"][0]
+
+
+def test_save_moa_turn_writes_nothing_when_traces_off(tmp_path, monkeypatch):
+    """Tracing off must mean NO file I/O at all — full trace AND metrics-lite."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("agent.moa_trace._traces_enabled_and_dir", return_value=None):
+        save_moa_turn(
+            session_id="sess-off",
+            preset_name="test-preset",
+            reference_outputs=[
+                (
+                    "r1",
+                    "hello",
+                    _RefAccounting(
+                        CanonicalUsage(input_tokens=3, output_tokens=2),
+                        duration_s=0.5,
+                        stats={},
+                    ),
+                )
+            ],
+            aggregator_label="agg",
+            aggregator_model="agg-m",
+            aggregator_provider="xai",
+            aggregator_temperature=0.2,
+            aggregator_input_messages=[],
+            aggregator_output="done",
+            aggregator_streamed=False,
+        )
+
+    assert not (Path(tmp_path) / "metrics" / "moa-refs.jsonl").exists(), \
+        "metrics-lite must NOT write when save_traces is off"
+    assert not (Path(tmp_path) / "moa-traces").exists()
 
 
 def test_usage_summary_forwards_response_stats():

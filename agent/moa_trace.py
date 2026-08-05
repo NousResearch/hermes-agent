@@ -18,6 +18,8 @@ files, keyed by session id, and are safe to delete.
 
 Cost model note: gated OFF by default. When off, the only overhead is the
 ``_traces_enabled()`` config read (cheap) — no file I/O, no serialization.
+The metrics-lite record (``<hermes_home>/metrics/moa-refs.jsonl``) follows
+the same gate: it is written alongside the full trace, never before it.
 """
 
 from __future__ import annotations
@@ -122,9 +124,9 @@ def save_moa_turn(
     that resolved text was unavailable, it falls back to None and the record
     points at the session store via ``output_location``.
     """
-    # Metrics-lite always-on (independent of save_traces). Preset editors that
-    # rewrite the moa: block and drop save_traces must not silence proposer
-    # observability.
+    base = _traces_enabled_and_dir()
+    if base is None:
+        return
     try:
         _save_moa_metrics(
             session_id=session_id,
@@ -134,9 +136,6 @@ def save_moa_turn(
     except Exception as exc:  # pragma: no cover
         logger.debug("MoA metrics-lite write failed (session=%s): %s", session_id, exc)
 
-    base = _traces_enabled_and_dir()
-    if base is None:
-        return
     try:
         base.mkdir(parents=True, exist_ok=True)
         path = base / f"{_sanitize_session_id(session_id)}.jsonl"
@@ -187,11 +186,11 @@ def _save_moa_metrics(
     preset_name: str,
     reference_outputs: list[tuple[str, str, Any]],
 ) -> None:
-    """Append a metrics-lite MoA record (no message bodies) every turn.
+    """Append a metrics-lite MoA record (no message bodies) per trace turn.
 
-    Always-on observer path for per-proposer duration/usage/stats. Independent
-    of ``moa.save_traces`` so preset editors that rewrite the moa: block and
-    drop ``save_traces`` cannot silence proposer observability.
+    Observer path for per-proposer duration/usage/stats. Writes under the same
+    ``moa.save_traces`` gate as the full trace (caller checks it first), so
+    tracing off means no file I/O at all — matching the module docstring.
     """
     base = get_hermes_home() / "metrics"
     base.mkdir(parents=True, exist_ok=True)

@@ -996,7 +996,9 @@ _ADVISORY_INSTRUCTION = (
     "[The conversation above is the current state of the task. Give your "
     "most intelligent judgement: what is going on, what should happen next, "
     "what risks or mistakes you see, and how the acting agent should "
-    "proceed.]"
+    "proceed. You have NO tools — any `[called tool: ...]` or `[tool result: ...]` "
+    "lines above are the ACTING AGENT's history, not yours. Do not restate them "
+    "as if you executed them; describe your advice in plain prose.]"
 )
 
 

@@ -63,12 +63,15 @@ def test_messaging_routes_registered():
     assert "/api/messaging/platforms/{platform_id}/test" in paths
 
 
-def test_get_messaging_platforms_returns_list():
+def test_get_messaging_platforms_returns_platforms_dict():
     client, pa, pb = _client_with_app_state()
     try:
         resp = client.get("/api/messaging/platforms")
         assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+        body = resp.json()
+        assert isinstance(body, dict)
+        assert "platforms" in body
+        assert isinstance(body["platforms"], list)
     finally:
         _restore(pa, pb)
         client.close()

@@ -569,9 +569,11 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   try {
     const previousStatus = $backendUpdateStatus.get()
     const requestedTargetSha = previousStatus?.commits?.at(0)?.sha
+
     const previousVersion = previousStatus?.targetSha?.startsWith('backend:')
       ? previousStatus.targetSha.slice('backend:'.length)
       : undefined
+
     const started = await updateHermes()
 
     if (!started.ok) {

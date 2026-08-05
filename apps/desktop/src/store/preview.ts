@@ -117,6 +117,7 @@ function isPdfFileTarget(target: PreviewTarget): boolean {
  * obsolete raw-binary path after Desktop itself has been upgraded. */
 export function decodePreviewTabs(raw: string): PreviewTab[] {
   const parsed = JSON.parse(raw) as unknown
+
   const tabs = (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab =>
     isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
       ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }

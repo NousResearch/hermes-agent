@@ -1,9 +1,6 @@
 import { atom } from 'nanostores'
 
-import {
-  type ClientWakeCaptureHandle,
-  startClientWakeCapture
-} from '@/lib/wake-client-capture'
+import { type ClientWakeCaptureHandle, startClientWakeCapture } from '@/lib/wake-client-capture'
 import { $gateway } from '@/store/gateway'
 
 // "Hey Hermes" wake-word listener state for the composer toggle. The gateway is
@@ -48,13 +45,17 @@ export function stopClientCapture(): void {
 
 async function maybeStartClientCapture(result: WakeStartResponse | null | undefined): Promise<void> {
   stopClientCapture()
+
   if (!result?.started) {
     return
   }
+
   const mode = (result.capture || '').toLowerCase()
+
   if (mode !== 'client' && mode !== 'remote' && mode !== 'external') {
     return
   }
+
   try {
     clientCapture = await startClientWakeCapture({
       frameLength: result.frame_length,
@@ -65,12 +66,10 @@ async function maybeStartClientCapture(result: WakeStartResponse | null | undefi
     $wakeWord.set({
       ...current,
       listening: false,
-      notice:
-        error instanceof Error
-          ? error.message
-          : 'Failed to open the client microphone for wake word',
+      notice: error instanceof Error ? error.message : 'Failed to open the client microphone for wake word',
       pending: false
     })
+
     // Best-effort: release server lease if client mic failed.
     try {
       await gatewayRequester('wake.stop', {})
@@ -255,12 +254,14 @@ export async function armWakeWord(request: WakeRequester = gatewayRequester): Pr
       client_capture: true,
       surface: 'gui'
     })
+
     applyWakeStatus(status)
 
     if (!status?.available || status.listening) {
       // Armed already (e.g. another surface/restart) — reattach feeder if client.
       if (status?.listening) {
         const mode = (status.capture || '').toLowerCase()
+
         if (mode === 'client' || mode === 'remote' || mode === 'external') {
           void maybeStartClientCapture({
             started: true,
@@ -269,6 +270,7 @@ export async function armWakeWord(request: WakeRequester = gatewayRequester): Pr
           })
         }
       }
+
       return
     }
 
@@ -276,6 +278,7 @@ export async function armWakeWord(request: WakeRequester = gatewayRequester): Pr
       surface: 'gui',
       client_capture: true
     })
+
     applyWakeStartResult(result)
   } catch {
     // Older backends / transient failures — keep whatever we last knew.
@@ -350,6 +353,7 @@ export async function resumeWakeAfterVoice(request: WakeRequester = gatewayReque
         client_capture: true,
         surface: 'gui'
       })
+
       applyWakeStatus(status)
 
       // Config says off (or the feature can't run) — off is the correct rest
@@ -362,6 +366,7 @@ export async function resumeWakeAfterVoice(request: WakeRequester = gatewayReque
         // Server lease is still armed (e.g. wake.resume after voice).
         // Client PCM was stopped on wake.detected — reattach if needed.
         const mode = (status.capture || '').toLowerCase()
+
         if (mode === 'client' || mode === 'remote' || mode === 'external') {
           void maybeStartClientCapture({
             started: true,
@@ -369,6 +374,7 @@ export async function resumeWakeAfterVoice(request: WakeRequester = gatewayReque
             frame_length: status.frame_length ?? 1280
           })
         }
+
         return
       }
 
@@ -376,6 +382,7 @@ export async function resumeWakeAfterVoice(request: WakeRequester = gatewayReque
         surface: 'gui',
         client_capture: true
       })
+
       applyWakeStartResult(started)
 
       if (started?.started) {

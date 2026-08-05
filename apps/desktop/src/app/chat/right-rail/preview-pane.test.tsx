@@ -179,10 +179,9 @@ describe('PreviewPane console state', () => {
       )
     })
 
-    await waitFor(
-      () => expect(rendered.container.querySelector('iframe')).not.toBeNull(),
-      { container: rendered.container }
-    )
+    await waitFor(() => expect(rendered.container.querySelector('iframe')).not.toBeNull(), {
+      container: rendered.container
+    })
     expect(rendered.container.querySelector('iframe')?.getAttribute('src')).toBe('blob:pdf-preview-1')
     expect(readFileDataUrl).toHaveBeenCalledWith('/tmp/spec.pdf')
     const blob = createObjectURL.mock.calls[0]?.[0]
@@ -328,10 +327,9 @@ describe('PreviewPane console state', () => {
       $connection.set({ baseUrl: 'http://macmini', mode: 'remote', profile: 'macmini' } as never)
     })
 
-    await waitFor(
-      () => expect(rendered.container.querySelector('iframe')).not.toBeNull(),
-      { container: rendered.container }
-    )
+    await waitFor(() => expect(rendered.container.querySelector('iframe')).not.toBeNull(), {
+      container: rendered.container
+    })
     expect(api).toHaveBeenCalledWith({
       path: `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`,
       profile: 'macmini'

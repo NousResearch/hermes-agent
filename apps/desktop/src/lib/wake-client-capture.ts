@@ -10,10 +10,7 @@
 const TARGET_RATE = 16_000
 const DEFAULT_FRAME = 1280 // 80 ms @ 16 kHz — matches tools/wake_word.py
 
-export type WakeFeedRequester = (
-  method: string,
-  params?: Record<string, unknown>
-) => Promise<unknown>
+export type WakeFeedRequester = (method: string, params?: Record<string, unknown>) => Promise<unknown>
 
 export interface ClientWakeCaptureOptions {
   /** Samples per frame at 16 kHz (from wake.start response). */
@@ -31,33 +28,41 @@ function downsampleTo16k(input: Float32Array, inputRate: number): Float32Array {
   if (inputRate === TARGET_RATE) {
     return input
   }
+
   if (inputRate <= 0) {
     return new Float32Array(0)
   }
+
   const ratio = inputRate / TARGET_RATE
   const outLen = Math.max(1, Math.floor(input.length / ratio))
   const out = new Float32Array(outLen)
+
   for (let i = 0; i < outLen; i++) {
     const start = Math.floor(i * ratio)
     const end = Math.min(input.length, Math.floor((i + 1) * ratio))
     let sum = 0
     let count = 0
+
     for (let j = start; j < end; j++) {
       sum += input[j] ?? 0
       count++
     }
+
     out[i] = count > 0 ? sum / count : 0
   }
+
   return out
 }
 
 function floatToInt16LE(input: Float32Array): ArrayBuffer {
   const buf = new ArrayBuffer(input.length * 2)
   const view = new DataView(buf)
+
   for (let i = 0; i < input.length; i++) {
     const s = Math.max(-1, Math.min(1, input[i] ?? 0))
     view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true)
   }
+
   return buf
 }
 
@@ -65,9 +70,11 @@ function bytesToBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf)
   let binary = ''
   const chunk = 0x8000
+
   for (let i = 0; i < bytes.length; i += chunk) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
   }
+
   return btoa(binary)
 }
 
@@ -75,15 +82,15 @@ function bytesToBase64(buf: ArrayBuffer): string {
  * Start streaming the default microphone to `wake.feed`.
  * Returns a handle whose `stop()` ends tracks + audio graph.
  */
-export async function startClientWakeCapture(
-  options: ClientWakeCaptureOptions
-): Promise<ClientWakeCaptureHandle> {
+export async function startClientWakeCapture(options: ClientWakeCaptureOptions): Promise<ClientWakeCaptureHandle> {
   const frameLength = Math.max(160, Math.trunc(options.frameLength || DEFAULT_FRAME))
   const audioWindow = window as Window & { webkitAudioContext?: typeof AudioContext }
   const AudioContextCtor = window.AudioContext || audioWindow.webkitAudioContext
+
   if (!AudioContextCtor) {
     throw new Error('AudioContext unavailable for client wake capture')
   }
+
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error('getUserMedia unavailable for client wake capture')
   }
@@ -123,13 +130,17 @@ export async function startClientWakeCapture(
     if (draining) {
       return
     }
+
     draining = true
+
     try {
       while (!stopped && queue.length > 0) {
         const batch = queue.splice(0, MAX_FRAMES_PER_FEED)
+
         if (batch.length === 0) {
           break
         }
+
         try {
           const merged = new Float32Array(batch.length * frameLength)
           batch.forEach((frame, i) => merged.set(frame, i * frameLength))
@@ -145,6 +156,7 @@ export async function startClientWakeCapture(
       }
     } finally {
       draining = false
+
       if (!stopped && queue.length > 0) {
         void drainQueue()
       }
@@ -155,10 +167,13 @@ export async function startClientWakeCapture(
     if (stopped) {
       return
     }
+
     queue.push(frame)
+
     while (queue.length > MAX_QUEUED_FRAMES) {
       queue.shift()
     }
+
     void drainQueue()
   }
 
@@ -166,6 +181,7 @@ export async function startClientWakeCapture(
     if (stopped) {
       return
     }
+
     const input = event.inputBuffer.getChannelData(0)
     const at16k = downsampleTo16k(input, context.sampleRate)
     // Append to pending and emit full frames
@@ -173,11 +189,13 @@ export async function startClientWakeCapture(
     merged.set(pending, 0)
     merged.set(at16k, pending.length)
     let offset = 0
+
     while (offset + frameLength <= merged.length) {
       const frame = merged.subarray(offset, offset + frameLength)
       offset += frameLength
       enqueueFrame(new Float32Array(frame))
     }
+
     pending = merged.subarray(offset)
   }
 
@@ -197,8 +215,10 @@ export async function startClientWakeCapture(
       if (stopped) {
         return
       }
+
       stopped = true
       queue.length = 0
+
       try {
         processor.disconnect()
         source.disconnect()
@@ -206,6 +226,7 @@ export async function startClientWakeCapture(
       } catch {
         // ignore
       }
+
       void context.close().catch(() => undefined)
       stream.getTracks().forEach(t => t.stop())
     }

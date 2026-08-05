@@ -772,6 +772,7 @@ describe('applyBackendUpdate recovery', () => {
 
   it('restores the fixed action deadline after reconnecting', async () => {
     updateHermesSpy.mockResolvedValue({ action_id: 'a'.repeat(32), ok: true, name: 'hermes-update', pid: 1 })
+
     const running = {
       exit_code: null,
       lines: ['still running'],
@@ -783,6 +784,7 @@ describe('applyBackendUpdate recovery', () => {
     for (let attempt = 0; attempt < 119; attempt += 1) {
       getActionStatusSpy.mockResolvedValueOnce(running)
     }
+
     getActionStatusSpy.mockRejectedValueOnce(new Error('ECONNRESET')).mockResolvedValue(running)
 
     const promise = applyBackendUpdate()

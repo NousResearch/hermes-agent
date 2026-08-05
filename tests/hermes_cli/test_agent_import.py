@@ -675,6 +675,162 @@ class TestExistingConfigPreserved:
 
 
 # ---------------------------------------------------------------------------
+# skills/ durability (sibling of the MEMORY.md and config.yaml cases above)
+# ---------------------------------------------------------------------------
+
+SENTINEL = "keep me: hand-edited notes that exist nowhere else\n"
+
+
+def skill_items(report):
+    return [i for i in report["items"] if i["kind"] == "skill"]
+
+
+class TestImportSkillsDurability:
+    """An import must not destroy the skill directory it is replacing.
+
+    ``import_skills`` was the last of import-agent's four destinations with no
+    read-safety, no backup and no atomic swap: it called
+    ``shutil.rmtree(destination)`` and *then* ``shutil.copytree`` into the hole
+    it had just made.  Any failure in between left the user's skill deleted and
+    half-rebuilt, and the exception escaped past the per-item report — so the
+    user was not even told which items had already landed in config.yaml and
+    memories/MEMORY.md.
+    """
+
+    @pytest.fixture()
+    def dest_root(self, hermes_home):
+        root = hermes_home / "skills" / "claude-code-imports"
+        root.mkdir(parents=True)
+        return root
+
+    @pytest.fixture()
+    def seeded_skill(self, dest_root):
+        """A previously-imported skill the user has since edited."""
+        dest = dest_root / "deploy-helper"
+        dest.mkdir()
+        (dest / "SKILL.md").write_text("mine\n", encoding="utf-8")
+        (dest / "notes.md").write_text(SENTINEL, encoding="utf-8")
+        return dest
+
+    # -- destroy-then-copy: the copy fails, the skill is already gone ------
+
+    def test_failed_copy_leaves_the_existing_skill_intact(
+            self, claude_tree, hermes_home, seeded_skill, monkeypatch):
+        from hermes_cli import agent_import
+
+        def boom(*_args, **_kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(agent_import.shutil, "copytree", boom)
+
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True, overwrite=True)
+
+        # The user's skill survives, byte for byte.
+        assert (seeded_skill / "SKILL.md").read_text(encoding="utf-8") == "mine\n"
+        assert (seeded_skill / "notes.md").read_text(encoding="utf-8") == SENTINEL
+        # ... and the failure is reported per item rather than aborting the run.
+        assert [i["status"] for i in skill_items(report)] == ["error"]
+        assert "no space left on device" in skill_items(report)[0]["reason"]
+
+    def test_failed_copy_leaves_no_staging_directory_behind(
+            self, claude_tree, hermes_home, dest_root, seeded_skill,
+            monkeypatch):
+        from hermes_cli import agent_import
+
+        def boom(*_args, **_kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(agent_import.shutil, "copytree", boom)
+
+        run_import("claude-code", claude_tree, hermes_home,
+                   execute=True, overwrite=True)
+
+        assert sorted(p.name for p in dest_root.iterdir()) == ["deploy-helper"]
+
+    # -- symlinks in the SOURCE skill --------------------------------------
+
+    def test_source_skill_with_a_dangling_symlink_is_imported(
+            self, claude_tree, hermes_home):
+        """``copytree`` dereferenced source links, so one dangling link
+        aborted the copy — on a FIRST import, with no --overwrite involved."""
+        (claude_tree / "skills" / "deploy-helper" / "missing-link").symlink_to(
+            "does-not-exist.md")
+
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True)
+
+        assert [i["status"] for i in skill_items(report)] == ["imported"]
+        dest = hermes_home / "skills" / "claude-code-imports" / "deploy-helper"
+        assert (dest / "SKILL.md").exists()
+        # The link is reproduced as a link, still dangling — not dereferenced.
+        assert (dest / "missing-link").is_symlink()
+        assert not (dest / "missing-link").exists()
+
+    # -- symlinks at the DESTINATION ---------------------------------------
+
+    def test_symlinked_destination_is_written_through_not_clobbered(
+            self, claude_tree, hermes_home, dest_root, tmp_path):
+        """``rmtree`` refuses a symlink outright ("Cannot call rmtree on a
+        symbolic link"), so overwriting a symlinked skill always crashed."""
+        real = tmp_path / "external-deploy-helper"
+        real.mkdir()
+        (real / "SKILL.md").write_text("mine\n", encoding="utf-8")
+        link = dest_root / "deploy-helper"
+        link.symlink_to(real, target_is_directory=True)
+
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True, overwrite=True)
+
+        assert [i["status"] for i in skill_items(report)] == ["imported"]
+        # The link the user set up deliberately survives ...
+        assert link.is_symlink()
+        assert link.resolve() == real.resolve()
+        # ... and the skill behind it is the imported one.
+        assert "Deploy things." in (real / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_dangling_destination_symlink_is_a_conflict_without_overwrite(
+            self, claude_tree, hermes_home, dest_root):
+        """``exists()`` follows links, so a dangling one read as "nothing
+        here": no conflict was reported and ``copytree`` died on the link."""
+        link = dest_root / "deploy-helper"
+        link.symlink_to(dest_root / "gone")
+
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True)
+
+        assert [i["status"] for i in skill_items(report)] == ["conflict"]
+        assert link.is_symlink()
+
+    def test_dangling_destination_symlink_is_replaced_with_overwrite(
+            self, claude_tree, hermes_home, dest_root):
+        link = dest_root / "deploy-helper"
+        link.symlink_to(dest_root / "gone")
+
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True, overwrite=True)
+
+        assert [i["status"] for i in skill_items(report)] == ["imported"]
+        assert not link.is_symlink()
+        assert "Deploy things." in (link / "SKILL.md").read_text(encoding="utf-8")
+
+    # -- the ordinary overwrite still works --------------------------------
+
+    def test_overwrite_replaces_the_skill_and_leaves_no_leftovers(
+            self, claude_tree, hermes_home, dest_root, seeded_skill):
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True, overwrite=True)
+
+        assert [i["status"] for i in skill_items(report)] == ["imported"]
+        assert "Deploy things." in (
+            seeded_skill / "SKILL.md").read_text(encoding="utf-8")
+        # The stale member of the old skill is gone (a replace, not a merge) ...
+        assert not (seeded_skill / "notes.md").exists()
+        # ... and no staging/backup sibling is left behind.
+        assert sorted(p.name for p in dest_root.iterdir()) == ["deploy-helper"]
+
+
+# ---------------------------------------------------------------------------
 # CLI wiring
 # ---------------------------------------------------------------------------
 

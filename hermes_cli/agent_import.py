@@ -44,6 +44,7 @@ import re
 import shutil
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -289,6 +290,22 @@ def backup_memory_file(path: Path) -> Optional[Path]:
     shutil.copy2(path, backup)
     return backup
 
+
+def discard_path(path: Path) -> None:
+    """Remove a staging/backup path, without ever raising.
+
+    Only called while unwinding a failed directory swap, where the exception
+    that is already in flight is the one worth reporting: a cleanup error
+    would mask it, and the leftover is a hidden sibling of the destination,
+    not user data.
+    """
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        logger.debug("Could not remove temporary path %s", path, exc_info=True)
 
 
 def merge_entries(
@@ -822,19 +839,108 @@ class AgentImporter:
             return
         for skill_dir in skill_dirs:
             destination = destination_root / skill_dir.name
-            if destination.exists() and not self.overwrite:
+            # ``exists()`` follows symlinks, so a DANGLING link at the
+            # destination used to read as "nothing here" — and the import then
+            # deleted it without ``--overwrite`` ever being asked for.  A link
+            # the user put there is state, present or not.
+            occupied = destination.exists() or destination.is_symlink()
+            if occupied and not self.overwrite:
                 self.record("skill", skill_dir, destination, "conflict",
                             "Destination skill already exists")
                 continue
             if self.execute:
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if destination.exists():
-                    shutil.rmtree(destination)
-                shutil.copytree(skill_dir, destination)
+                try:
+                    self._install_skill_dir(skill_dir, destination)
+                except OSError as exc:
+                    # ``shutil.Error`` subclasses OSError, so this covers a
+                    # partially-failed copytree too.  Recording the failure
+                    # instead of raising keeps ONE bad skill from aborting the
+                    # run: the caller's ``except Exception`` in
+                    # import_agent_command returns without ever calling
+                    # print_import_report, so an escaping exception would hide
+                    # the config.yaml and MEMORY.md entries that already landed.
+                    self.record("skill", skill_dir, destination, "error",
+                                f"Could not import skill directory: {exc}")
+                    continue
                 self.record("skill", skill_dir, destination, "imported")
             else:
                 self.record("skill", skill_dir, destination, "imported",
                             "Would copy skill directory")
+
+    def _install_skill_dir(self, source: Path, destination: Path) -> None:
+        """Stage a copy of ``source`` beside ``destination``, then swap it in.
+
+        The previous implementation called ``shutil.rmtree(destination)`` and
+        *then* ``shutil.copytree`` into the hole it had just made, so any
+        failure during the copy — a full disk, an unreadable member, a symlink
+        it could not follow — left the user's skill deleted and half-rebuilt,
+        with no backup and no way back.  Skills are the only one of
+        ``import-agent``'s four destinations that had no such safety net; this
+        restores the invariant the other three already hold (see
+        :func:`load_yaml_file`, :func:`dump_yaml_file` and
+        :func:`backup_memory_file`): build the replacement first, swap it in
+        second, and keep the previous state until the swap has succeeded.
+
+        Staging and backup live beside the destination so the swap is a rename
+        on one filesystem rather than a second full copy.
+        """
+        token = uuid.uuid4().hex[:8]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        # A symlinked destination is a deliberate choice by the user, so write
+        # THROUGH it and leave the link itself alone — the same thing
+        # ``atomic_replace`` does for a symlinked config.yaml.  It also keeps
+        # ``shutil.rmtree`` away from a symlink, which it refuses outright
+        # ("Cannot call rmtree on a symbolic link").
+        target = destination
+        if destination.is_symlink():
+            resolved = destination.resolve()
+            if resolved.is_dir():
+                target = resolved
+            else:
+                # Dangling, or pointing at a non-directory: there is no skill
+                # behind the link to preserve, and ``copytree`` would abort on
+                # the link itself with FileExistsError.
+                destination.unlink()
+
+        staged = target.parent / f".{target.name}.import-{token}"
+        backup = target.parent / f".{target.name}.bak-{token}"
+
+        # 1. Build the replacement completely, off to the side.  ``symlinks``
+        #    reproduces links AS links: a skill directory may legitimately hold
+        #    a dangling or absolute symlink, and dereferencing one aborts the
+        #    copy part-way through (hermes_cli/profiles.py passes the same flag
+        #    when cloning and exporting profiles, for the same reason).
+        try:
+            shutil.copytree(source, staged, symlinks=True)
+        except BaseException:
+            discard_path(staged)
+            raise
+
+        # 2. Move the old tree aside, swap the new one in, drop the old.
+        backed_up = False
+        try:
+            if target.exists():
+                target.rename(backup)
+                backed_up = True
+            staged.rename(target)
+        except BaseException:
+            discard_path(staged)
+            if backed_up and not target.exists():
+                try:
+                    backup.rename(target)
+                except OSError:
+                    # Never delete the backup when the restore failed — the
+                    # user's skill is still on disk under this name.  Report
+                    # the original failure, not this one.
+                    logger.error(
+                        "Could not restore %s after a failed skill import; "
+                        "the previous contents are preserved at %s",
+                        target, backup,
+                    )
+            raise
+        if backed_up:
+            discard_path(backup)
 
 
 # ---------------------------------------------------------------------------

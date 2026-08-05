@@ -1263,6 +1263,9 @@ class CLICommandsMixin:
                         "tool_calls": msg.get("tool_calls"),
                         "tool_call_id": msg.get("tool_call_id"),
                         "reasoning": msg.get("reasoning"),
+                        "reasoning_details": msg.get("reasoning_details"),
+                        "codex_reasoning_items": msg.get("codex_reasoning_items"),
+                        "codex_message_items": msg.get("codex_message_items"),
                         # Keep the api_content sidecar so the branch's first turn
                         # replays the parent's exact wire bytes (warm provider
                         # prompt cache) instead of a full cold prefill.

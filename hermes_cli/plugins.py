@@ -161,6 +161,19 @@ VALID_HOOKS: Set[str] = {
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    # CLI session-switch hooks (observer, no mutation).
+    #
+    # session_switch_starting:
+    #   Fires in new_session() before session rotation.
+    #   Payload: old_session_id=str, cli=<CLI ref>
+    #   Privacy: carries old session ID only (no user content).
+    #
+    # session_switched:
+    #   Fires after session rotation completes.
+    #   Payload: old_session_id=str, new_session_id=str, cli=<CLI ref>
+    #   Privacy: carries session IDs only (no user content).
+    "session_switch_starting",
+    "session_switched",
     "subagent_start",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent

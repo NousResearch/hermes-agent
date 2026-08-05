@@ -1901,6 +1901,12 @@ export const ar = defineLocale({
     applyingClose: 'ستُغلق هذه النافذة أثناء تشغيل التحديث، ثم يعيد Hermes فتح نفسه تلقائيا.',
     errorTitle: 'لم يكتمل التحديث',
     errorBody: 'لا داعي للقلق — لم يُفقد شيء. يمكنك إعادة المحاولة الآن.',
+    blockerTitle: 'إغلاق المعاينات المحلية لتحديث Hermes؟',
+    blockerBody: 'يحتاج Hermes إلى إيقاف هذه المعاينات المحلية قبل التحديث. لن يؤدي ذلك إلى تعديل ملفاتك أو حذفها.',
+    closePreviewsAndUpdate: 'إغلاق المعاينات والتحديث',
+    localPreview: 'معاينة محلية',
+    portLabel: port => `المنفذ ${port}`,
+    technicalDetails: 'التفاصيل التقنية',
     notNow: 'ليس الآن',
     applyStatus: {
       preparing: 'جار تحديث الواجهة الخلفية...',

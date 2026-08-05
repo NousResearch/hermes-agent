@@ -14,7 +14,12 @@ import {
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { Progress } from '@/components/ui/progress'
-import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
+import type {
+  DesktopUpdateBlocker,
+  DesktopUpdateCommit,
+  DesktopUpdateStage,
+  DesktopUpdateStatus
+} from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
@@ -80,6 +85,14 @@ export function UpdatesOverlay() {
             ? 'error'
             : 'idle'
 
+  const safeBlockers =
+    !isBackend &&
+    apply.error === 'venv-blocked' &&
+    apply.blockers?.length &&
+    apply.blockers.every(blocker => blocker.kind === 'local-preview' && blocker.safeToStop)
+      ? apply.blockers
+      : null
+
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
       return
@@ -117,9 +130,17 @@ export function UpdatesOverlay() {
 
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
 
-        {phase === 'error' && (
+        {phase === 'error' && safeBlockers ? (
+          <BlockerView
+            blockers={safeBlockers}
+            onDismiss={() => handleClose(false)}
+            onStopAndUpdate={() => void applyUpdates({ stopSafeBlockers: true })}
+          />
+        ) : null}
+
+        {phase === 'error' && !safeBlockers ? (
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
-        )}
+        ) : null}
 
         {phase === 'idle' && (
           <IdleView
@@ -416,6 +437,62 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
       ) : null}
 
       <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
+    </div>
+  )
+}
+
+export function BlockerView({
+  blockers,
+  onDismiss,
+  onStopAndUpdate
+}: {
+  blockers: readonly DesktopUpdateBlocker[]
+  onDismiss: () => void
+  onStopAndUpdate: () => void
+}) {
+  const { t } = useI18n()
+  const u = t.updates
+
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <div className="grid size-12 place-items-center rounded-full bg-warning/15 text-warning">
+          <AlertCircle aria-hidden className="size-6" />
+        </div>
+        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.blockerTitle}</DialogTitle>
+        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
+          {u.blockerBody}
+        </DialogDescription>
+      </div>
+
+      <div className="grid gap-2">
+        {blockers.map(blocker => (
+          <div className="rounded-lg border border-border/70 bg-muted/35 px-3 py-2.5" key={blocker.pid}>
+            <div className="text-sm font-medium">{blocker.label || u.localPreview}</div>
+            {blocker.port ? <div className="text-xs text-muted-foreground">{u.portLabel(blocker.port)}</div> : null}
+          </div>
+        ))}
+      </div>
+
+      <details className="rounded-md border border-border/60 px-3 py-2 text-xs text-muted-foreground">
+        <summary className="cursor-pointer select-none font-medium">{u.technicalDetails}</summary>
+        <div className="mt-2 grid gap-2 font-mono text-[11px] leading-4">
+          {blockers.map(blocker => (
+            <div className="break-all" key={blocker.pid}>
+              PID {blocker.pid} · {blocker.cmdline}
+            </div>
+          ))}
+        </div>
+      </details>
+
+      <div className="grid gap-1">
+        <Button className="font-semibold" onClick={onStopAndUpdate} size="lg">
+          {u.closePreviewsAndUpdate}
+        </Button>
+        <Button onClick={onDismiss} variant="text">
+          {u.notNow}
+        </Button>
+      </div>
     </div>
   )
 }

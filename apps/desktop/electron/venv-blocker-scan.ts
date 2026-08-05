@@ -18,10 +18,17 @@ const execFileAsync = promisify(execFile)
 // Types
 // ---------------------------------------------------------------------------
 
+export type VenvBlockerKind = 'local-preview' | 'other'
+
 export interface VenvBlockerProcess {
   pid: number
   name: string
   cmdline: string
+  kind: VenvBlockerKind
+  safeToStop: boolean
+  label?: string
+  port?: number
+  createTime?: number
 }
 
 export interface VenvBlockerScanResult {
@@ -44,6 +51,99 @@ const SCAN_MODULE = 'hermes_cli._scan_venv_blockers'
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+function classifyVenvBlocker(
+  process: Pick<VenvBlockerProcess, 'pid' | 'name' | 'cmdline'>,
+  hints?: Record<string, unknown>
+): VenvBlockerProcess {
+  const moduleMatch = process.cmdline.match(/(?:^|\s)-m\s+http\.server(?:\s+(\d{1,5}))?(?:\s|$)/i)
+  const isPython = /^python(?:w)?(?:\.exe)?$/i.test(process.name)
+  const hintedCreateTime = typeof hints?.createTime === 'number' ? hints.createTime : undefined
+
+  const trustedScannerIdentity =
+    hints?.kind === 'local-preview' &&
+    hints.safeToStop === true &&
+    hintedCreateTime !== undefined &&
+    Number.isFinite(hintedCreateTime) &&
+    hintedCreateTime > 0
+
+  if (!isPython || !moduleMatch || !trustedScannerIdentity) {
+    return { ...process, kind: 'other', safeToStop: false }
+  }
+
+  const parsedPort = moduleMatch[1] ? Number(moduleMatch[1]) : 8000
+  const hintedPort = trustedScannerIdentity && typeof hints?.port === 'number' ? hints.port : undefined
+  const candidatePort = hintedPort ?? parsedPort
+
+  const port =
+    Number.isInteger(candidatePort) && candidatePort > 0 && candidatePort <= 65535 ? candidatePort : undefined
+
+  const directoryMatch = process.cmdline.match(/(?:^|\s)--directory\s+(?:"([^"]+)"|'([^']+)'|(.+))$/i)
+  const directory = (directoryMatch?.[1] || directoryMatch?.[2] || directoryMatch?.[3] || '').trim()
+  const parsedLabel = directory ? path.win32.basename(directory.replace(/["']$/, '')) : undefined
+  const hintedLabel = trustedScannerIdentity && typeof hints?.label === 'string' ? hints.label.trim() : ''
+  const label = hintedLabel || parsedLabel
+
+  return {
+    ...process,
+    kind: 'local-preview',
+    safeToStop: true,
+    ...(label ? { label } : {}),
+    ...(port ? { port } : {}),
+    createTime: hintedCreateTime
+  }
+}
+
+/**
+ * Stop only blockers that the fresh scanner identified as Python static-file
+ * preview servers. Unknown Python/Hermes processes are deliberately ignored.
+ */
+export async function stopSafeVenvBlockers(
+  updateRoot: string,
+  result: VenvBlockerScanResult,
+  execOverride?: typeof execFileAsync,
+  resolvePython: typeof resolveVenvPython = resolveVenvPython
+): Promise<{ stopped: number[]; failed: number[] }> {
+  const execFn = execOverride || execFileAsync
+  const stopped: number[] = []
+  const failed: number[] = []
+  const pythonPath = resolvePython(updateRoot)
+
+  for (const process of result.processes) {
+    if (
+      !pythonPath ||
+      !process.safeToStop ||
+      process.kind !== 'local-preview' ||
+      !process.createTime ||
+      !Number.isFinite(process.createTime)
+    ) {
+      if (process.safeToStop && process.kind === 'local-preview') {
+        failed.push(process.pid)
+      }
+
+      continue
+    }
+
+    try {
+      await execFn(
+        pythonPath,
+        [
+          '-m',
+          'hermes_cli._scan_venv_blockers',
+          '--terminate-safe',
+          String(process.pid),
+          String(process.createTime)
+        ],
+        { cwd: updateRoot, windowsHide: true, timeout: 10_000, maxBuffer: 256 * 1024 }
+      )
+      stopped.push(process.pid)
+    } catch {
+      failed.push(process.pid)
+    }
+  }
+
+  return { stopped, failed }
+}
 
 /**
  * Strictly validate and parse the JSON output from the venv-blocker scan.
@@ -91,7 +191,7 @@ export function parseVenvBlockerScanOutput(raw: string): ScanOutcome {
       return { kind: 'probe-failure', error: 'process cmdline must be a string' }
     }
 
-    processes.push({ pid, name, cmdline })
+    processes.push(classifyVenvBlocker({ pid, name, cmdline }, entry))
   }
 
   // Reject inconsistent combinations

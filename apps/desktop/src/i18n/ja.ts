@@ -2096,6 +2096,12 @@ export const ja = defineLocale({
     applyingClose: 'このウィンドウは更新中に閉じ、その後 Hermes が自動的に再度開きます。',
     errorTitle: '更新が完了しませんでした',
     errorBody: 'ご安心ください。何も失われていません。今すぐ再試行できます。',
+    blockerTitle: 'Hermes を更新するためにローカルプレビューを閉じますか？',
+    blockerBody: '更新する前に、これらのローカルプレビューを停止する必要があります。ファイルが変更または削除されることはありません。',
+    closePreviewsAndUpdate: 'プレビューを閉じて更新',
+    localPreview: 'ローカルプレビュー',
+    portLabel: port => `ポート ${port}`,
+    technicalDetails: '技術的な詳細',
     notNow: '今は後で',
     applyStatus: {
       preparing: 'バックエンドを更新しています…',

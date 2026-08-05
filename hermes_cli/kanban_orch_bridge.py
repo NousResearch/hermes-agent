@@ -6,7 +6,8 @@ The bridge is the ONLY cross-DB write path. It enforces:
 - Native kanban.db: read-only (mode=ro URI); any write attempt raises BridgeError
 - Sidecar orch_v4.db: readwrite; all orch_* mutations go here
 - Soft FK: parent_task_id written to sidecar only after native RO confirms existence
-- No cross-DB atomic transaction; eventual consistency via reconcile queue (M6)
+- Real capability grants on sidecar (fail-closed UDF)
+- Durable orch_requests binding for parent tasks
 
 Hard rules:
 - native_writable=False is the ONLY allowed mode in this slice
@@ -22,9 +23,13 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
+from hermes_cli.kanban_orch_api import BoundParent, bootstrap_board_only_request, ensure_board_identity
+from hermes_cli.kanban_orch_capability import install_fail_closed_udf, unbind_context
+
 
 class BridgeError(ValueError):
     """Bridge protocol violation."""
+
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
@@ -33,6 +38,7 @@ class BridgeError(ValueError):
 @dataclass(frozen=True)
 class NativeTaskRef:
     """Soft FK reference to a native task (read-only)."""
+
     task_id: str
     title: str
     status: str
@@ -43,7 +49,7 @@ class OrchBridge:
     """Dual-connection bridge between native kanban.db and sidecar orch_v4.db.
 
     Native connection is always opened mode=ro.
-    Sidecar connection is readwrite with foreign_keys=ON.
+    Sidecar connection is readwrite with foreign_keys=ON + fail-closed capability.
     """
 
     def __init__(
@@ -61,18 +67,19 @@ class OrchBridge:
             raise BridgeError("sidecar_db_not_found")
 
         # Native: always read-only via URI
-        self._native = sqlite3.connect(
-            f"file:{native_path}?mode=ro", uri=True
-        )
+        self._native = sqlite3.connect(f"file:{native_path}?mode=ro", uri=True)
         self._native.row_factory = sqlite3.Row
 
-        # Sidecar: readwrite
+        # Sidecar: readwrite + real capability UDF (fail-closed until grants)
         self._sidecar = sqlite3.connect(sidecar_path)
         self._sidecar.row_factory = sqlite3.Row
         self._sidecar.execute("PRAGMA foreign_keys=ON")
-
-        # Register orch_capability_ok stub UDF on sidecar (bridge is the real authority)
-        self._sidecar.create_function("orch_capability_ok", 7, lambda *a: 1)
+        fk = self._sidecar.execute("PRAGMA foreign_keys").fetchone()[0]
+        if int(fk) != 1:
+            self._native.close()
+            self._sidecar.close()
+            raise BridgeError("sidecar_foreign_keys_off")
+        install_fail_closed_udf(self._sidecar)
 
         self._native_path = native_path
         self._sidecar_path = sidecar_path
@@ -82,7 +89,8 @@ class OrchBridge:
     def read_native_task(self, task_id: str) -> NativeTaskRef | None:
         """Read a task from native DB (read-only)."""
         row = self._native.execute(
-            "SELECT id, title, status FROM tasks WHERE id = ?", (task_id,)
+            "SELECT id, title, status FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if row is None:
             return None
@@ -97,13 +105,11 @@ class OrchBridge:
         """Soft FK: confirm task exists in native before sidecar write."""
         ref = self.read_native_task(task_id)
         if ref is None:
-            raise BridgeError(f"soft_fk_violation:task_not_found:{task_id}")
+            raise BridgeError("soft_fk_violation:task_not_found")
         return ref
 
     def read_native_board_identity(self, board_key: str) -> dict[str, Any] | None:
         """Read board identity from native DB (if available)."""
-        # Native may not have orch board_identity; return None for now
-        # In full implementation, this reads from tasks or config
         return None
 
     # ── Sidecar write operations ───────────────────────────────────
@@ -114,11 +120,10 @@ class OrchBridge:
         canonical_board_key: str,
     ) -> None:
         """Upsert board identity mirror into sidecar (from native read)."""
-        self._sidecar.execute(
-            "INSERT OR IGNORE INTO kanban_board_identity "
-            "(singleton, board_instance_id, canonical_board_key, created_at) "
-            "VALUES (1, ?, ?, unixepoch())",
-            (board_instance_id, canonical_board_key),
+        ensure_board_identity(
+            self._sidecar,
+            board_instance_id=board_instance_id,
+            canonical_board_key=canonical_board_key,
         )
         self._sidecar.commit()
 
@@ -128,35 +133,39 @@ class OrchBridge:
         tenant_scope: str,
         orch_id: str,
         parent_task_id: str,
-    ) -> None:
+    ) -> BoundParent:
         """Bind parent task in sidecar after soft FK verification.
 
-        This writes ONLY to the sidecar DB. The native task is not modified.
-        The soft FK check is the key invariant: if the task doesn't exist in
-        native, we raise before any sidecar write.
+        Writes durable orch_replay_selectors + orch_origins + orch_requests rows
+        in the sidecar only. Native task bytes are never modified.
         """
-        # Soft FK: verify task exists in native (read-only)
         self.assert_task_exists(parent_task_id)
-
-        # Sidecar-only write: record the binding via board mirror upsert.
-        # This is a real sidecar write that proves native is untouched.
-        # In full implementation, this would create orch_requests rows.
-        self.ensure_board_mirror(board_instance_id, f"orch-{orch_id}")
-        self._sidecar.commit()
+        try:
+            bound = bootstrap_board_only_request(
+                self._sidecar,
+                board_instance_id=board_instance_id,
+                tenant_scope=tenant_scope,
+                parent_task_id=parent_task_id,
+                orch_id=orch_id,
+                title=f"bound:{parent_task_id}",
+            )
+        except Exception as exc:
+            # Normalize API/SQL failures to bridge codes without leaking SQL text.
+            code = getattr(exc, "code", None)
+            if code:
+                raise BridgeError(f"bind_failed:{code}") from None
+            raise BridgeError("bind_failed") from None
+        return bound
 
     # ── Native protection ──────────────────────────────────────────
 
     def native_write_forbidden(self) -> None:
         """Assert that native DB was never opened for writing."""
-        # The connection was opened with mode=ro, so any write would
-        # raise sqlite3.OperationalError. This method is a documentation
-        # point and a test hook.
-        pass
+        return None
 
     def native_sha256(self) -> str:
         """Compute SHA-256 of native DB file (for zero-mutation proof)."""
-        import hashlib as hl
-        h = hl.sha256()
+        h = hashlib.sha256()
         with open(self._native_path, "rb") as f:
             while chunk := f.read(65536):
                 h.update(chunk)
@@ -166,8 +175,11 @@ class OrchBridge:
 
     def close(self) -> None:
         """Close both connections."""
-        self._native.close()
-        self._sidecar.close()
+        try:
+            unbind_context(self._sidecar)
+        finally:
+            self._native.close()
+            self._sidecar.close()
 
     def __enter__(self):
         return self
@@ -184,15 +196,21 @@ def init_sidecar_db(sidecar_path: str) -> None:
     if os.path.exists(sidecar_path):
         raise BridgeError("sidecar_exists")
 
-    # Create the file
     conn = sqlite3.connect(sidecar_path)
     try:
         from hermes_cli.kanban_orch_schema_sidecar import apply_sidecar_schema
-        apply_sidecar_schema(conn)
+
+        # Fresh empty DB needs open capability only for schema bootstrap DDL
+        # that itself is not capability-gated; UDF still installed fail-closed
+        # for subsequent mutation triggers.
+        apply_sidecar_schema(conn, test_open_capability=False)
     finally:
         conn.close()
 
 
 __all__ = [
-    "BridgeError", "NativeTaskRef", "OrchBridge", "init_sidecar_db",
+    "BridgeError",
+    "NativeTaskRef",
+    "OrchBridge",
+    "init_sidecar_db",
 ]

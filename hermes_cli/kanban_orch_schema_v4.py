@@ -227,14 +227,19 @@ def create_existing_table_stubs(conn: sqlite3.Connection) -> None:
     conn.executescript(_STUB_DDL)
 
 
-def apply_schema(conn: sqlite3.Connection) -> None:
+def apply_schema(conn: sqlite3.Connection, *, test_open_capability: bool = False) -> None:
     """Apply all V4 schema DDL + triggers to a fresh SQLite connection.
 
     The caller normally enables foreign keys, but enabling it here as well
     makes the isolated compiler fail closed instead of silently accepting an
     invalid test connection.  Legacy table stubs must exist before SQLite
     compiles V4 foreign keys and triggers that reference them.
+
+    Capability UDF is fail-closed by default. Tests that need writes must
+    either pass test_open_capability=True or install explicit grants.
     """
+    from hermes_cli.kanban_orch_capability import install_fail_closed_udf, install_test_open_udf
+
     conn.execute("PRAGMA foreign_keys=ON")
     create_existing_table_stubs(conn)
 
@@ -244,10 +249,10 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(ddl)
     conn.commit()
 
-    # Register orch_capability_ok stub UDF (temp DB only).
-    # In production, this is a runtime-private SQLite authorizer.
-    # For tests, it always returns 1 (allow) so triggers pass.
-    conn.create_function("orch_capability_ok", 7, lambda *a: 1)
+    if test_open_capability:
+        install_test_open_udf(conn)
+    else:
+        install_fail_closed_udf(conn)
 
 
 def get_table_names(conn: sqlite3.Connection) -> list[str]:

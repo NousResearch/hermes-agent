@@ -123,6 +123,8 @@ class SidecarTestHarness:
 def submit_orch_request(harness: SidecarTestHarness, *, board_instance_id: str,
                         tenant_scope: str, orch_id: str, parent_task_id: str) -> dict[str, Any]:
     """Submit: soft FK check (native RO) + sidecar write (board identity)."""
+    from hermes_cli.kanban_orch_api import ensure_board_identity
+
     row = harness.native_conn.execute(
         "SELECT id, title, status FROM tasks WHERE id = ?", (parent_task_id,)
     ).fetchone()
@@ -135,9 +137,11 @@ def submit_orch_request(harness: SidecarTestHarness, *, board_instance_id: str,
                 "selector_key": "a" * 64,
                 "lineage_id": f"lin-{orch_id}",
                 "generation": 1}
-    harness.sidecar_conn.execute(
-        "INSERT OR IGNORE INTO kanban_board_identity (singleton, board_instance_id, canonical_board_key, created_at) "
-        "VALUES (1, ?, ?, unixepoch())", (board_instance_id, board_instance_id))
+    ensure_board_identity(
+        harness.sidecar_conn,
+        board_instance_id=board_instance_id,
+        canonical_board_key=board_instance_id,
+    )
     harness.sidecar_conn.commit()
 
     return {"request_key": request_key(artifact), "artifact_digest": digest(artifact),

@@ -116,7 +116,7 @@ def test_board_mirror_roundtrip(bridge_env):
 
 
 def test_bind_parent_task_sidecar_only(bridge_env):
-    """bind_parent_task writes only to sidecar, not native.
+    """bind_parent_task writes durable orch_requests in sidecar, not native.
 
     The key invariant: soft FK is enforced (native task must exist),
     and native DB bytes are unchanged after the operation.
@@ -124,14 +124,20 @@ def test_bind_parent_task_sidecar_only(bridge_env):
     bridge, native_path, sidecar_path, sha_before, _ = bridge_env
 
     # Bind task-1 (exists in native)
-    bridge.bind_parent_task("board_0123456789abcdef", "", "orch-1", "task-1")
+    bound = bridge.bind_parent_task("board_0123456789abcdef", "", "orch-1", "task-1")
+    assert bound.orch_id == "orch-1"
+    assert bound.parent_task_id == "task-1"
+    assert bound.lifecycle_state == "submitted"
 
-    # Verify sidecar was written to (board mirror exists)
-    rows = bridge._sidecar.execute(
-        "SELECT count(*) as cnt FROM kanban_board_identity WHERE board_instance_id = ?",
-        ("board_0123456789abcdef",)
+    # Durable request row exists
+    row = bridge._sidecar.execute(
+        "SELECT parent_task_id, lifecycle_state FROM orch_requests "
+        "WHERE board_instance_id=? AND orch_id=?",
+        ("board_0123456789abcdef", "orch-1"),
     ).fetchone()
-    assert rows["cnt"] >= 1, "Sidecar should have board mirror entry after bind"
+    assert row is not None
+    assert row["parent_task_id"] == "task-1"
+    assert row["lifecycle_state"] == "submitted"
 
     # Verify native unchanged
     sha_after = _sha256_file(native_path)

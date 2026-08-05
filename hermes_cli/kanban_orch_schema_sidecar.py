@@ -43,14 +43,18 @@ NATIVE_TABLES = frozenset({
 })
 
 
-def apply_sidecar_schema(conn: sqlite3.Connection) -> None:
+def apply_sidecar_schema(conn: sqlite3.Connection, *, test_open_capability: bool = False) -> None:
     """Apply sidecar V4 schema DDL to a fresh SQLite connection.
 
     This does NOT create native table stubs. The sidecar DB contains only
     orch_* tables + board identity + write fence + commit clock + migration ops.
     Cross-DB FKs to native tables (tasks.id) are removed; the bridge enforces
     soft FK at the application layer.
+
+    Capability UDF is fail-closed by default.
     """
+    from hermes_cli.kanban_orch_capability import install_fail_closed_udf, install_test_open_udf
+
     conn.execute("PRAGMA foreign_keys=ON")
 
     sql_path = os.path.join(_SCHEMA_DIR, "orch_v4_schema_sidecar.sql")
@@ -59,10 +63,10 @@ def apply_sidecar_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(ddl)
     conn.commit()
 
-    # Register orch_capability_ok stub UDF (sidecar-local).
-    # In production, the bridge provides a real capability check.
-    # For isolated testing, always allow (1).
-    conn.create_function("orch_capability_ok", 7, lambda *a: 1)
+    if test_open_capability:
+        install_test_open_udf(conn)
+    else:
+        install_fail_closed_udf(conn)
 
 
 def get_sidecar_table_names(conn: sqlite3.Connection) -> list[str]:

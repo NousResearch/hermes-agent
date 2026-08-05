@@ -113,20 +113,32 @@ def check_exact_multiset(
 ) -> Finding | None:
     """§9.4: Expected/observed node multiset must be exact.
 
-    No missing, no extra, no duplicate.
+    No missing, no extra, no duplicate on either side.
     """
-    expected_keys = {n.node_key for n in expected_nodes}
-    observed_set = set(observed_node_keys)
+    from collections import Counter
 
-    missing = expected_keys - observed_set
-    extra = observed_set - expected_keys
+    expected_keys = [n.node_key for n in expected_nodes]
+    expected_counts = Counter(expected_keys)
+    observed_counts = Counter(observed_node_keys)
 
+    if any(v > 1 for v in expected_counts.values()):
+        dups = sorted(k for k, v in expected_counts.items() if v > 1)
+        return Finding(EXIT_HARD_VIOLATION, "duplicate_expected_nodes", f"dups: {dups}")
+    if any(v > 1 for v in observed_counts.values()):
+        dups = sorted(k for k, v in observed_counts.items() if v > 1)
+        return Finding(EXIT_HARD_VIOLATION, "duplicate_observed_nodes", f"dups: {dups}")
+
+    expected_set = set(expected_counts)
+    observed_set = set(observed_counts)
+    missing = expected_set - observed_set
+    extra = observed_set - expected_set
     if missing:
         return Finding(EXIT_HARD_VIOLATION, "missing_observed_nodes", f"missing: {missing}")
     if extra:
         return Finding(EXIT_HARD_VIOLATION, "extra_observed_nodes", f"extra: {extra}")
-    if len(observed_node_keys) != len(observed_set):
-        return Finding(EXIT_HARD_VIOLATION, "duplicate_observed_nodes")
+    # counts must match exactly (defensive; dups already rejected)
+    if expected_counts != observed_counts:
+        return Finding(EXIT_HARD_VIOLATION, "multiset_count_mismatch")
     return None
 
 
@@ -210,17 +222,66 @@ def check_parent_terminal_before_synthesis(
 
 def check_delivery_satisfied(
     origin_kind: str,
-    required_count: int,
-    acked_count: int,
+    required_count: int | None = None,
+    acked_count: int | None = None,
+    *,
+    required_obligation_keys: list[str] | None = None,
+    acked_obligation_keys: list[str] | None = None,
 ) -> Finding | None:
-    """§9.4: Delivery manifest must be satisfied for parent completion."""
+    """§9.4: Delivery manifest must be satisfied for parent completion.
+
+    Prefer exact obligation-key multisets. Count-only inputs remain as a
+    compatibility path but cannot pass when keys are also supplied and disagree.
+    """
+    from collections import Counter
+
+    if required_obligation_keys is not None or acked_obligation_keys is not None:
+        req_keys = list(required_obligation_keys or [])
+        ack_keys = list(acked_obligation_keys or [])
+        if origin_kind == "board_only":
+            if req_keys:
+                return Finding(EXIT_HARD_VIOLATION, "board_only_has_required_obligations")
+            return None
+        if not req_keys:
+            return Finding(EXIT_HARD_VIOLATION, "delivery_required_set_empty")
+        req_counts = Counter(req_keys)
+        ack_counts = Counter(ack_keys)
+        if any(v != 1 for v in req_counts.values()):
+            return Finding(EXIT_HARD_VIOLATION, "duplicate_required_obligation_keys")
+        if any(v != 1 for v in ack_counts.values()):
+            return Finding(EXIT_HARD_VIOLATION, "duplicate_acked_obligation_keys")
+        missing = sorted(set(req_counts) - set(ack_counts))
+        extra = sorted(set(ack_counts) - set(req_counts))
+        if missing or extra:
+            return Finding(
+                EXIT_HARD_VIOLATION,
+                "delivery_required_acks_missing",
+                f"missing={missing} extra={extra}",
+            )
+        return None
+
+    # Compatibility count path (weaker; still fail-closed on gaps)
+    rc = 0 if required_count is None else int(required_count)
+    ac = 0 if acked_count is None else int(acked_count)
     if origin_kind == "board_only":
-        if required_count != 0:
+        if rc != 0:
             return Finding(EXIT_HARD_VIOLATION, "board_only_has_required_obligations")
         return None
-    if required_count > 0 and acked_count < required_count:
-        return Finding(EXIT_HARD_VIOLATION, "delivery_required_acks_missing",
-                       f"required={required_count} acked={acked_count}")
+    if rc > 0 and ac < rc:
+        return Finding(
+            EXIT_HARD_VIOLATION,
+            "delivery_required_acks_missing",
+            f"required={rc} acked={ac}",
+        )
+    if rc > 0 and ac != rc:
+        # exact count equality required when using count path
+        return Finding(
+            EXIT_HARD_VIOLATION,
+            "delivery_ack_count_mismatch",
+            f"required={rc} acked={ac}",
+        )
+    if rc == 0 and origin_kind != "board_only":
+        return Finding(EXIT_HARD_VIOLATION, "delivery_required_set_empty")
     return None
 
 
@@ -239,6 +300,8 @@ def run_observer(
     origin_kind: str = "messaging",
     required_acks: int = 0,
     acked_count: int = 0,
+    required_obligation_keys: list[str] | None = None,
+    acked_obligation_keys: list[str] | None = None,
     has_legacy_title: bool = False,
 ) -> int:
     """Run all observer checks and return the exit code by precedence.
@@ -272,7 +335,13 @@ def run_observer(
     if f:
         findings.append(f)
 
-    f = check_delivery_satisfied(origin_kind, required_acks, acked_count)
+    f = check_delivery_satisfied(
+        origin_kind,
+        required_acks,
+        acked_count,
+        required_obligation_keys=required_obligation_keys,
+        acked_obligation_keys=acked_obligation_keys,
+    )
     if f:
         findings.append(f)
 

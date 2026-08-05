@@ -25,7 +25,8 @@ def fresh_db():
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys=ON")
     try:
-        apply_schema(conn)
+        # Compile + allow test writes through explicit open capability grant.
+        apply_schema(conn, test_open_capability=True)
         conn.execute("PRAGMA foreign_keys=ON")
     except Exception:
         conn.close()

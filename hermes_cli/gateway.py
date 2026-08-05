@@ -98,17 +98,25 @@ class ProfileGatewayProcess:
     pid: int
 
 
-def _get_service_pids() -> set:
+def _get_service_pids(all_profiles: bool = False) -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
     Used to avoid killing freshly-restarted service processes when sweeping
-    for stale manual gateway processes after a service restart.  Relies on the
-    service manager having committed the new PID before the restart command
+    for stale manual gateway processes after a service restart.  Relies on
+    the service manager having committed the new PID before the restart command
     returns (true for both systemd and launchd in practice).
+
+    ``all_profiles`` widens the launchd branch to every installed
+    ``ai.hermes.gateway*`` agent — the update path needs the whole fleet
+    excluded from its sweep so sibling-profile launchd gateways found by the
+    ps scan aren't misclassified as manual processes (#73626).  Default-scope
+    callers (``gateway status``, cron checks) keep seeing only the current
+    profile's service.
     """
     pids: set = set()
 
     # --- systemd (Linux): user and system scopes ---
+    # systemd always lists every hermes-gateway* unit regardless of scope.
     if supports_systemd_services():
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
@@ -148,30 +156,55 @@ def _get_service_pids() -> set:
     # --- launchd (macOS) ---
     if is_macos():
         try:
-            label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=5,
-            )
-            if result.returncode == 0:
-                # Try plist format first (macOS 26+): "PID" = <N>;
-                pid = _parse_launchd_pid_from_list_output(result.stdout)
-                if pid is not None and pid > 0:
-                    pids.add(pid)
-                else:
-                    # Fall back to legacy tab-separated format:
-                    # "PID\tStatus\tLabel"
+            if all_profiles:
+                # Enumerate every ai.hermes.gateway* agent across profiles
+                # so the update sweep's exclude set is complete (#73626).
+                # Without this, sibling-profile launchd gateways found by the
+                # (now-working) ps scan would be misclassified as manual and
+                # killed, racing with KeepAlive → duplicate gateways.
+                result = subprocess.run(
+                    ["launchctl", "list"],
+                    capture_output=True,
+                    text=True, encoding='utf-8', errors='replace',
+                    timeout=5,
+                )
+                if result.returncode == 0:
                     for line in result.stdout.strip().splitlines():
                         parts = line.split()
-                        if len(parts) >= 3 and parts[2] == label:
+                        if len(parts) >= 3 and parts[-1].startswith(
+                            "ai.hermes.gateway"
+                        ):
                             try:
                                 pid = int(parts[0])
                                 if pid > 0:
                                     pids.add(pid)
                             except ValueError:
                                 pass
+            else:
+                label = get_launchd_label()
+                result = subprocess.run(
+                    ["launchctl", "list", label],
+                    capture_output=True,
+                    text=True, encoding='utf-8', errors='replace',
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    # Try plist format first (macOS 26+): "PID" = <N>;
+                    pid = _parse_launchd_pid_from_list_output(result.stdout)
+                    if pid is not None and pid > 0:
+                        pids.add(pid)
+                    else:
+                        # Fall back to legacy tab-separated format:
+                        # "PID\tStatus\tLabel"
+                        for line in result.stdout.strip().splitlines():
+                            parts = line.split()
+                            if len(parts) >= 3 and parts[2] == label:
+                                try:
+                                    pid = int(parts[0])
+                                    if pid > 0:
+                                        pids.add(pid)
+                                except ValueError:
+                                    pass
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -626,7 +659,13 @@ def _scan_gateway_pids(
 
             if not _found_via_proc:
                 result = subprocess.run(
-                    ["ps", "-A", "eww", "-o", "pid=,command="],
+                    # ``-Aww`` (not ``-A eww``): the BSD ``e`` flag (show
+                    # environment) is illegal on macOS/BSD ps and makes the
+                    # whole command fail with rc 1, silently returning [] on
+                    # every macOS machine (#73626).  The matcher only needs
+                    # argv, not env vars, so ``e`` is unnecessary.  ``-ww``
+                    # keeps unlimited-width output on both BSD and procps ps.
+                    ["ps", "-Aww", "-o", "pid=,command="],
                     capture_output=True,
                     text=True, encoding='utf-8', errors='replace',
                     timeout=10,
@@ -734,7 +773,7 @@ def find_gateway_pids(
             _append_unique_pid(pids, get_running_pid(), _exclude)
         except Exception:
             pass
-    for pid in _get_service_pids():
+    for pid in _get_service_pids(all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)
     try:
         include_restart_managers = not supports_systemd_services()

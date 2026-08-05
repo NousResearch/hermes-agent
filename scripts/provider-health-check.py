@@ -17,7 +17,7 @@ import json
 import time
 from pathlib import Path
 
-HERMES = Path(os.environ.get("HERMES_HOME", "/home/kensei/.hermes"))
+HERMES = Path(_os.environ.get("HERMES_HOME", "/home/kensei/.hermes"))
 
 # Providers to check (name, base_url, endpoint) - only actively configured providers
 PROVIDERS = [

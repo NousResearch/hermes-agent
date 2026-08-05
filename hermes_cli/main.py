@@ -5071,6 +5071,7 @@ from hermes_cli.update_cmd import (  # noqa: F401
     _print_curator_recent_run_notice,
     _print_fts_optimize_available_notice,
     _print_stash_cleanup_guidance,
+    _print_update_completion,
     _record_npm_lockfile_hash,
     _refresh_active_lazy_features,
     _refresh_active_memory_provider_dependencies,

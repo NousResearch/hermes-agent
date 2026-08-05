@@ -19,6 +19,7 @@ Lanes:
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
 * ``npm_lock``    — semantic package-lock.json diff PR comment.
+* ``installer``   — PowerShell installer tests (Windows runner).
 * ``mcp_catalog`` — bundled MCP catalog / installer review.
 
 Docker is not a lane — it builds on push-to-main and release only,
@@ -68,6 +69,11 @@ _SCAN_FILES = {"setup.cfg", "pyproject.toml"}
 _MCP_CATALOG_PATHS = ("optional-mcps/",)
 _MCP_CATALOG_FILES = {"hermes_cli/mcp_catalog.py"}
 
+# Windows installer + its PowerShell tests. These only run on a Windows runner,
+# so they get their own lane rather than riding along with ``python``.
+_INSTALLER_PATHS = ("scripts/tests/",)
+_INSTALLER_FILES = {"scripts/install.ps1", "scripts/install.cmd"}
+
 def _is_docs(p: str) -> bool:
     if p.startswith(("skills/", "optional-skills/")):
         return False
@@ -98,6 +104,10 @@ def _is_mcp_catalog(p: str) -> bool:
     return p.startswith(_MCP_CATALOG_PATHS) or p in _MCP_CATALOG_FILES
 
 
+def _is_installer(p: str) -> bool:
+    return p.startswith(_INSTALLER_PATHS) or p in _INSTALLER_FILES
+
+
 def _is_ci_review(p: str) -> bool:
     if p in _CI_REVIEW_FILES or p.startswith(_CI_REVIEW_PATHS):
         return True
@@ -123,6 +133,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         "scan": any(_is_scan(f) for f in files),
         "deps": any(f == "pyproject.toml" for f in files),
         "npm_lock": any(f.split("/")[-1] == "package-lock.json" for f in files),
+        "installer": any(_is_installer(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
         "ci_review": any(_is_ci_review(f) for f in files),
     }
@@ -135,6 +146,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["scan"] = True
         ret["deps"] = True
         ret["npm_lock"] = True
+        ret["installer"] = True
         ret["ci_review"] = True
 
         # explicitly skip mcp catalog here. it's not needed unless those files are modified.

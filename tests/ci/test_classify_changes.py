@@ -30,12 +30,13 @@ DEFAULT = {
     "scan": True,
     "deps": True,
     "npm_lock": True,
+    "installer": True,
     "mcp_catalog": False,
     "ci_review": True,
 }
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm_lock=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm_lock=False, installer=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     return {
@@ -47,6 +48,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm
         "scan": scan,
         "deps": deps,
         "npm_lock": npm_lock,
+        "installer": installer,
         "mcp_catalog": mcp_catalog,
         "ci_review": ci_review,
     }
@@ -67,6 +69,14 @@ CASES = {
     # skill edit must still run Python.
     "skill md → python + site": (["skills/github/SKILL.md"], _lanes(python=True, site=True)),
     "dockerfile → docker meta": (["Dockerfile"], _lanes(docker_meta=True)),
+    # install.ps1 is a shell script Python never imports, but it's also not
+    # provably prose, so python stays on (fail-open) alongside the Windows lane.
+    "install.ps1 → installer": (["scripts/install.ps1"], _lanes(python=True, installer=True)),
+    "installer test → installer": (
+        ["scripts/tests/test-install-ps1-longpath.ps1"],
+        _lanes(python=True, installer=True),
+    ),
+    "python source alone → no installer lane": (["run_agent.py"], _lanes(python=True, scan=True)),
     # Unknown top-level file keeps Python on rather than risk a silent skip.
     "unknown toplevel → python": (["Makefile"], _lanes(python=True)),
     "mixed docs+python → python": (["README.md", "agent/x.py"], _lanes(python=True, scan=True)),

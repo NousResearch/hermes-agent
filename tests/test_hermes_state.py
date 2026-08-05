@@ -78,6 +78,24 @@ def db(tmp_path):
     session_db.close()
 
 
+@pytest.fixture(autouse=True)
+def _no_fts_rebuild_throttle(monkeypatch):
+    """Zero the FTS-rebuild inter-chunk throttle for every test in this file.
+
+    ``optimize_fts_storage`` sleeps ``max(_FTS_REBUILD_MIN_PAUSE,
+    chunk_cost * _FTS_REBUILD_DUTY_FACTOR)`` between chunks so a LIVE
+    gateway/CLI sharing the DB isn't starved of the write lock. Tests run
+    against a private tmp-path DB with no concurrent process — the sleep
+    protects nobody and was pure dead time (measured: 4.1s of a 4.6s
+    migration test was time.sleep; ~20s across the file, whose total was
+    ~52s). The duty-cycle POLICY (sleep >= 4x chunk cost) stays covered by
+    the production constants themselves; no test asserts on wall-clock
+    pacing.
+    """
+    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_MIN_PAUSE", 0.0)
+    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_DUTY_FACTOR", 0.0)
+
+
 # =========================================================================
 # Connection lifecycle
 # =========================================================================
@@ -3564,8 +3582,19 @@ class TestGetMessagesPagination:
 
     def _seed(self, db, n=10):
         db.create_session(session_id="s1", source="cli")
-        for i in range(n):
-            db.append_message("s1", "user" if i % 2 == 0 else "assistant", f"msg-{i}")
+        # One write transaction for the whole seed: per-row append_message
+        # pays a commit (and, off WAL, an fsync) per message, which at
+        # n=3000 was ~10s of pure seeding before the query under test ran.
+        db.append_messages_batch(
+            "s1",
+            [
+                {
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": f"msg-{i}",
+                }
+                for i in range(n)
+            ],
+        )
 
     def test_default_returns_all_messages(self, db):
         self._seed(db)

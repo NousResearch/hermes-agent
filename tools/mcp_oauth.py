@@ -60,19 +60,69 @@ logger = logging.getLogger(__name__)
 # Lazy imports -- MCP SDK with OAuth support is optional
 # ---------------------------------------------------------------------------
 
-_OAUTH_AVAILABLE=False
-try:
-    from mcp.client.auth import OAuthClientProvider
-    from mcp.shared.auth import (
-        OAuthClientInformationFull,
-        OAuthClientMetadata,
-        OAuthMetadata,
-        OAuthToken,
-    )
+# Availability is detected WITHOUT importing the mcp SDK (which costs
+# ~170 ms at module load). The actual classes are imported lazily on first
+# use via _ensure_sdk_loaded(); the module-level names below are kept as
+# placeholders so tests can patch them (patch.object requires the attribute
+# to exist on the module).
+import importlib.util as _importlib_util
 
-    _OAUTH_AVAILABLE=True
-except ImportError:
+_OAUTH_AVAILABLE = _importlib_util.find_spec("mcp") is not None
+if not _OAUTH_AVAILABLE:
     logger.debug("MCP OAuth types not available -- OAuth MCP auth disabled")
+
+# Lazily-bound SDK names (rebound by _ensure_sdk_loaded on first use).
+# Annotated ``Any`` so quoted type annotations elsewhere in the file remain
+# valid for static checkers while the runtime value starts as None.
+OAuthClientProvider: Any = None
+OAuthClientInformationFull: Any = None
+OAuthClientMetadata: Any = None
+OAuthMetadata: Any = None
+OAuthToken: Any = None
+
+# Cache of the real SDK classes so a test that temporarily patches one of the
+# module-level names (and restores it to None afterwards) doesn't strand the
+# module in a broken state.
+_SDK_CLASSES: dict[str, Any] = {}
+_SDK_LOAD_FAILED = False
+
+
+def _ensure_sdk_loaded() -> bool:
+    """Import the MCP SDK OAuth classes on first use and bind module globals.
+
+    Returns True when the SDK classes are available. Module-level names that
+    have been replaced (e.g. patched by tests) are left untouched; only names
+    that are currently ``None`` are (re)bound to the real SDK classes.
+    """
+    global _SDK_LOAD_FAILED, _OAUTH_AVAILABLE
+    if _SDK_LOAD_FAILED:
+        return False
+    if not _SDK_CLASSES:
+        try:
+            from mcp.client.auth import OAuthClientProvider as _Provider
+            from mcp.shared.auth import (
+                OAuthClientInformationFull as _InfoFull,
+                OAuthClientMetadata as _ClientMeta,
+                OAuthMetadata as _Meta,
+                OAuthToken as _Token,
+            )
+        except ImportError:
+            _SDK_LOAD_FAILED = True
+            _OAUTH_AVAILABLE = False
+            logger.debug("MCP OAuth types not available -- OAuth MCP auth disabled")
+            return False
+        _SDK_CLASSES.update(
+            OAuthClientProvider=_Provider,
+            OAuthClientInformationFull=_InfoFull,
+            OAuthClientMetadata=_ClientMeta,
+            OAuthMetadata=_Meta,
+            OAuthToken=_Token,
+        )
+    g = globals()
+    for _name, _cls in _SDK_CLASSES.items():
+        if g.get(_name) is None:
+            g[_name] = _cls
+    return True
 
 try:
     from pydantic import AnyUrl
@@ -131,17 +181,15 @@ _USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
 # ---------------------------------------------------------------------------
 
 
-def _get_token_dir() -> Path:
+def _get_token_dir(hermes_home: str | Path | None = None) -> Path:
     """Return the directory for MCP OAuth token files.
 
     Uses HERMES_HOME so each profile gets its own OAuth tokens.
     Layout: ``HERMES_HOME/mcp-tokens/``
     """
-    try:
-        from hermes_constants import get_hermes_home
-        base = Path(get_hermes_home())
-    except ImportError:
-        base = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    from hermes_constants import get_hermes_home
+
+    base = Path(hermes_home) if hermes_home is not None else Path(get_hermes_home())
     return base / "mcp-tokens"
 
 
@@ -226,6 +274,24 @@ def _cached_redirect_port(storage: "HermesTokenStorage | None") -> int | None:
             and parsed.port is not None
         ):
             return int(parsed.port)
+    return None
+
+
+def _cached_redirect_uri(storage: "HermesTokenStorage | None") -> str | None:
+    """Return a cached non-loopback redirect URI, if one was registered."""
+    if storage is None:
+        return None
+    try:
+        data = _read_json(storage._client_info_path())
+    except (AttributeError, TypeError, ValueError):
+        return None
+    for uri in (data or {}).get("redirect_uris") or []:
+        try:
+            parsed = urlparse(str(uri))
+        except (TypeError, ValueError):
+            continue
+        if parsed.scheme == "https" and parsed.netloc:
+            return str(uri)
     return None
 
 
@@ -370,23 +436,26 @@ class HermesTokenStorage:
         HERMES_HOME/mcp-tokens/<server_name>.meta.json     -- oauth server metadata
     """
 
-    def __init__(self, server_name: str):
+    def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
         self._server_name = _safe_filename(server_name)
+        self._hermes_home = Path(hermes_home) if hermes_home is not None else None
 
     def _tokens_path(self) -> Path:
-        return _get_token_dir() / f"{self._server_name}.json"
+        return _get_token_dir(self._hermes_home) / f"{self._server_name}.json"
 
     def _client_info_path(self) -> Path:
-        return _get_token_dir() / f"{self._server_name}.client.json"
+        return _get_token_dir(self._hermes_home) / f"{self._server_name}.client.json"
 
     def _meta_path(self) -> Path:
-        return _get_token_dir() / f"{self._server_name}.meta.json"
+        return _get_token_dir(self._hermes_home) / f"{self._server_name}.meta.json"
 
     # -- tokens ------------------------------------------------------------
 
     async def get_tokens(self) -> "OAuthToken | None":
         data = _read_json(self._tokens_path())
         if data is None:
+            return None
+        if OAuthToken is None and not _ensure_sdk_loaded():
             return None
         # Hermes records an absolute wall-clock ``expires_at`` alongside the
         # SDK's serialized token (see ``set_tokens``). On read we rewrite
@@ -449,6 +518,8 @@ class HermesTokenStorage:
         data = _read_json(self._client_info_path())
         if data is None:
             return None
+        if OAuthClientInformationFull is None and not _ensure_sdk_loaded():
+            return None
         try:
             return OAuthClientInformationFull.model_validate(data)
         except (ValueError, TypeError, KeyError) as exc:
@@ -474,6 +545,8 @@ class HermesTokenStorage:
     def load_oauth_metadata(self) -> "OAuthMetadata | None":
         data = _read_json(self._meta_path())
         if data is None:
+            return None
+        if OAuthMetadata is None and not _ensure_sdk_loaded():
             return None
         try:
             return OAuthMetadata.model_validate(data)
@@ -503,12 +576,21 @@ class HermesTokenStorage:
                 pass
         return snap
 
-    def restore(self, snapshot: dict[str, bytes]) -> None:
-        """Revert to a ``snapshot()`` capture (dropping any newer partial state)."""
+    def restore(self, snapshot: dict[str, bytes], *, only_if_absent: bool = False) -> None:
+        """Revert to a snapshot without overwriting a concurrent successful write."""
+        if only_if_absent and any(
+            path.exists()
+            for path in (self._tokens_path(), self._client_info_path(), self._meta_path())
+        ):
+            logger.info(
+                "Skipping OAuth rollback for %s because newer state exists",
+                self._server_name,
+            )
+            return
         self.remove()
         if not snapshot:
             return
-        token_dir = _get_token_dir()
+        token_dir = _get_token_dir(self._hermes_home)
         token_dir.mkdir(parents=True, exist_ok=True)
         for fname, data in snapshot.items():
             path = token_dir / fname
@@ -630,6 +712,13 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None):
         Opens the browser automatically when possible; always prints the URL
         as a fallback for headless/SSH/gateway environments.
         """
+        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
+
+        dashboard_flow = get_dashboard_oauth_flow()
+        if dashboard_flow is not None:
+            await dashboard_flow.publish_authorization_url(authorization_url)
+            return
+
         # Fail fast at the authorization boundary in non-interactive contexts
         # (systemd gateway, cron, background MCP discovery). A cached-but-unusable
         # token (expired/revoked, refresh rejected) makes the SDK fall through to
@@ -743,6 +832,12 @@ def _make_callback_waiter(port: int):
     """
 
     async def _wait() -> tuple[str, str | None]:
+        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
+
+        dashboard_flow = get_dashboard_oauth_flow()
+        if dashboard_flow is not None:
+            return await dashboard_flow.wait_for_callback()
+
         # Reject before binding the callback listener in non-interactive
         # contexts. Reaching here means the SDK entered the authorization-code
         # flow (a valid or refreshable token would never call the callback
@@ -934,9 +1029,13 @@ def _paste_callback_reader(result: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def remove_oauth_tokens(server_name: str) -> None:
+def remove_oauth_tokens(
+    server_name: str,
+    *,
+    hermes_home: str | Path | None = None,
+) -> None:
     """Delete stored OAuth tokens and client info for a server."""
-    storage = HermesTokenStorage(server_name)
+    storage = HermesTokenStorage(server_name, hermes_home=hermes_home)
     storage.remove()
     logger.info("OAuth tokens removed for '%s'", server_name)
 
@@ -972,6 +1071,18 @@ def _configure_callback_port(
     consolidation PR.
     """
     global _oauth_port
+    from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
+
+    dashboard_flow = get_dashboard_oauth_flow()
+    if dashboard_flow is not None:
+        cfg["_resolved_port"] = 0
+        cfg["redirect_uri"] = cfg.get("redirect_uri") or dashboard_flow.redirect_uri
+        return 0
+    cached_redirect_uri = _cached_redirect_uri(storage)
+    if not cfg.get("redirect_uri") and cached_redirect_uri:
+        cfg["redirect_uri"] = cached_redirect_uri
+        cfg["_resolved_port"] = 0
+        return 0
     requested = int(cfg.get("redirect_port", 0))
     # Precedence: explicit config port → cached client-registration port →
     # fresh ephemeral port. The cached port keeps re-auth consistent with the
@@ -1011,6 +1122,68 @@ def _resolve_redirect_uri(cfg: dict, port: int) -> str:
     return f"http://{host}:{port}/callback"
 
 
+# Figma's remote MCP (https://mcp.figma.com/mcp) implement RFC 7591 DCR as a
+# *name allowlist*, not open registration. POST /v1/oauth/mcp/register returns
+# 403 Forbidden for any client_name outside a short fixed set. Empirically (as
+# of 2026-07, verified by live call against api.figma.com):
+#   "Claude Code" → 200
+#   "Codex"       → 200
+#   "Hermes Agent" / "Hermes" / "Cursor" / "VS Code" / … → 403
+# pi-figma-remote-auth and similar tools work around this the same way — register
+# under an allowlisted name so the browser flow can start. User can still pin a
+# different name via oauth.client_name if Figma ever admits one.
+_FIGMA_DCR_CLIENT_NAME = "Claude Code"
+_FIGMA_DEFAULT_SCOPE = "mcp:connect"
+
+
+def _is_figma_remote_mcp(
+    server_name: str | None = None,
+    server_url: str | None = None,
+) -> bool:
+    """True when this MCP server is Figma's hosted remote endpoint."""
+    url = (server_url or "").lower()
+    name = (server_name or "").lower()
+    if "mcp.figma.com" in url or "figma.com/mcp" in url:
+        return True
+    # Name-only match only when the URL isn't some other host called figma-*.
+    if "figma" in name and (not url or "figma" in url):
+        return True
+    return False
+
+
+def apply_oauth_provider_defaults(
+    cfg: dict,
+    *,
+    server_name: str = "",
+    server_url: str | None = None,
+) -> dict:
+    """Mutate *cfg* with provider-specific OAuth workarounds. Returns *cfg*.
+
+    Call this before :func:`_build_client_metadata` /
+    :func:`_maybe_preregister_client`. Only fills keys the user left unset —
+    an explicit ``oauth.client_name`` / ``oauth.scope`` always wins.
+    """
+    if _is_figma_remote_mcp(server_name, server_url):
+        if not cfg.get("client_name"):
+            cfg["client_name"] = _FIGMA_DCR_CLIENT_NAME
+            logger.info(
+                "MCP OAuth '%s': Figma DCR allowlist — registering as "
+                "client_name=%r (override via oauth.client_name)",
+                server_name or server_url,
+                _FIGMA_DCR_CLIENT_NAME,
+            )
+        if not cfg.get("scope"):
+            cfg["scope"] = _FIGMA_DEFAULT_SCOPE
+        # Figma's register response advertises token_endpoint_auth_method=none
+        # *and* returns a client_secret — then the token endpoint rejects the
+        # exchange with "Client secret is required". Request confidential-
+        # client registration so the SDK includes client_secret on the token
+        # POST (auth method client_secret_post).
+        if not cfg.get("token_endpoint_auth_method"):
+            cfg["token_endpoint_auth_method"] = "client_secret_post"
+    return cfg
+
+
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
     """Build OAuthClientMetadata from the oauth config dict.
 
@@ -1022,21 +1195,27 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         raise ValueError(
             "_configure_callback_port() must be called before _build_client_metadata()"
         )
+    if OAuthClientMetadata is None:
+        _ensure_sdk_loaded()
     client_name = cfg.get("client_name", "Hermes Agent")
     scope = cfg.get("scope")
     redirect_uri = _resolve_redirect_uri(cfg, port)
+
+    # Default public client; confidential only when a secret is already known
+    # or the provider (e.g. Figma) needs confidential-style token posts.
+    auth_method = cfg.get("token_endpoint_auth_method")
+    if not auth_method:
+        auth_method = "client_secret_post" if cfg.get("client_secret") else "none"
 
     metadata_kwargs: dict[str, Any] = {
         "client_name": client_name,
         "redirect_uris": [AnyUrl(redirect_uri)],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
-        "token_endpoint_auth_method": "none",
+        "token_endpoint_auth_method": auth_method,
     }
     if scope:
         metadata_kwargs["scope"] = scope
-    if cfg.get("client_secret"):
-        metadata_kwargs["token_endpoint_auth_method"] = "client_secret_post"
 
     return OAuthClientMetadata.model_validate(metadata_kwargs)
 
@@ -1050,6 +1229,8 @@ def _maybe_preregister_client(
     client_id = cfg.get("client_id")
     if not client_id:
         return
+    if OAuthClientInformationFull is None:
+        _ensure_sdk_loaded()
     port = cfg["_resolved_port"]
     redirect_uri = _resolve_redirect_uri(cfg, port)
 
@@ -1072,6 +1253,56 @@ def _maybe_preregister_client(
     logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
 
 
+def humanize_oauth_registration_error(
+    server_name: str,
+    exc: BaseException | str,
+    *,
+    server_url: str | None = None,
+) -> str | None:
+    """Turn a Dynamic Client Registration refusal into a useful next step.
+
+    Returns a humanized message when the error is a registration 403/Forbidden,
+    else ``None`` so the caller keeps the original exception text.
+
+    Figma's remote MCP gates DCR on exact ``client_name``. Hermes auto-sets
+    ``Claude Code`` (known-good); this message fires when the user overrode
+    that with something Figma still rejects, or an older Hermes is running.
+    """
+    msg = str(exc)
+    lowered = msg.lower()
+    if "403" not in msg and "forbidden" not in lowered:
+        return None
+    looks_like_registration = (
+        "regist" in lowered
+        or "client registration" in lowered
+        or "dcr" in lowered
+        or "dynamic client" in lowered
+        or lowered.strip() in {"forbidden", "403 forbidden", "http 403: forbidden"}
+        or ("403" in msg and "forbidden" in lowered)
+    )
+    if not looks_like_registration:
+        return None
+
+    if _is_figma_remote_mcp(server_name, server_url):
+        return (
+            f"'{server_name}' is Figma's remote MCP — DCR is allowlisted by "
+            f"exact client_name (\"{_FIGMA_DCR_CLIENT_NAME}\" and \"Codex\" "
+            "work; most other names 403). Hermes defaults to "
+            f"client_name: {_FIGMA_DCR_CLIENT_NAME!r} automatically. If you "
+            "set oauth.client_name yourself, change it to one of those, or "
+            "clear it and re-run:\n"
+            f"  hermes mcp login {server_name}"
+        )
+
+    return (
+        f"'{server_name}' only allows pre-approved OAuth clients — it rejected "
+        "client registration (403), so no browser flow can start. Options: "
+        "set oauth.client_name to a name the provider allowlists, add a "
+        "pre-registered client (oauth: {client_id: ..., client_secret: ...}), "
+        "or use the provider's stdio / API-key / local server instead."
+    )
+
+
 def build_oauth_auth(
     server_name: str,
     server_url: str,
@@ -1092,7 +1323,9 @@ def build_oauth_auth(
         An ``OAuthClientProvider`` instance, or None if the MCP SDK lacks
         OAuth support.
     """
-    if not _OAUTH_AVAILABLE:
+    if not _OAUTH_AVAILABLE or (
+        OAuthClientProvider is None and not _ensure_sdk_loaded()
+    ):
         logger.warning(
             "MCP OAuth requested for '%s' but SDK auth types are not available. "
             "Install with: pip install 'mcp>=1.26.0'",
@@ -1101,6 +1334,9 @@ def build_oauth_auth(
         return None
 
     cfg = dict(oauth_config or {})  # copy — we mutate _resolved_port
+    apply_oauth_provider_defaults(
+        cfg, server_name=server_name, server_url=server_url
+    )
     storage = HermesTokenStorage(server_name)
 
     if not _is_interactive() and not storage.has_cached_tokens():

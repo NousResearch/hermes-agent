@@ -16,19 +16,22 @@ import { Tip } from '@/components/ui/tooltip'
 import type { HermesReviewFile } from '@/global'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { displayPath } from '@/lib/display-path'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $renamingPath, copyFilePath, revealFile, toRelativePath } from '@/store/file-actions'
-import { $sidebarWorkspaceCollapsedIds, revealFileInTree, toggleWorkspaceNodeCollapsed } from '@/store/layout'
+import { $sidebarWorkspaceNodeOpen, revealFileInTree, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { setCurrentSessionPreviewTarget } from '@/store/preview'
+import { openPreview } from '@/store/preview'
 import {
   $reviewFiles,
   $reviewLoading,
   $reviewOpen,
+  $reviewScopeCwd,
   $reviewSelectedPath,
   $reviewTreeMode,
   requestRevert,
+  reviewRepoCwd,
   selectReviewFile,
   stageReviewFile,
   unstageReviewFile
@@ -54,16 +57,13 @@ const STATUS_GLYPH: Record<string, { icon: string; tone: string }> = {
 }
 
 // Review paths are repo-relative; the composer drop expects absolute paths, so
-// join against the active session cwd (the repo we probed).
+// join against the pane's repo (its pinned scope, else the active session cwd).
 function absolutePath(relative: string): string {
   if (/^([a-zA-Z]:[\\/]|\/)/.test(relative)) {
     return relative
   }
 
-  const cwd = $currentCwd
-    .get()
-    ?.trim()
-    .replace(/[\\/]+$/, '')
+  const cwd = reviewRepoCwd()?.replace(/[\\/]+$/, '')
 
   return cwd ? `${cwd}/${relative}` : relative
 }
@@ -105,6 +105,7 @@ export function ReviewFileTree() {
   const [animate, setAnimate] = useState(false)
   const armed = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!open) {
       armed.current = false
@@ -112,6 +113,7 @@ export function ReviewFileTree() {
     }
   }, [open])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (open && !loading && !armed.current) {
       armed.current = true
@@ -198,9 +200,9 @@ function ReviewDirRow({
   motion: boolean
   node: ReviewTreeNode
 }) {
-  const collapsed = useStore($sidebarWorkspaceCollapsedIds)
+  const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
   const id = `review:${node.id}`
-  const open = !collapsed.includes(id)
+  const open = nodeOpen[id] ?? true
   const toggle = () => toggleWorkspaceNodeCollapsed(id)
 
   return (
@@ -235,7 +237,11 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
   const selected = file.path === selectedPath
   const glyph = STATUS_GLYPH[file.status] ?? STATUS_GLYPH.M
   const dragPath = absolutePath(file.path)
-  const cwd = useStore($currentCwd)
+  // Reactive mirror of reviewRepoCwd(): the pinned scope wins, else the
+  // active session's cwd (subscribing to both keeps the row live either way).
+  const scopeCwd = useStore($reviewScopeCwd)
+  const activeCwd = useStore($currentCwd)
+  const cwd = scopeCwd?.trim() || activeCwd
 
   // Single-click shows the inline diff; double-click opens the file in the main
   // preview pane (matching the file browser). They're mutually exclusive: defer
@@ -275,7 +281,7 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
         const preview = await normalizeOrLocalPreviewTarget(dragPath)
 
         if (preview) {
-          setCurrentSessionPreviewTarget(preview, 'file-browser', dragPath)
+          openPreview(preview, 'file-browser')
         }
       } catch (error) {
         notifyError(error, t.rightSidebar.previewUnavailable)
@@ -318,7 +324,7 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
           event.dataTransfer.setData('text/plain', dragPath)
         }}
         style={rowStyle(depth)}
-        title={dragPath}
+        title={displayPath(dragPath)}
       >
         <Codicon className={cn('shrink-0', glyph.tone)} name={glyph.icon} size="0.8rem" />
         {/* Dir collapses first (huge shrink); the name only ellipsizes once the

@@ -46,6 +46,9 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level Anthropic PKCE credential store remains sensitive even
             # when a profile is active; default/non-profile sessions still read it.
             str(hermes_root / ".anthropic_oauth.json"),
+            # Bitwarden Secrets Manager encrypted disk cache.
+            str(hermes_home / "cache" / "bws_cache.enc.json"),
+            str(hermes_root / "cache" / "bws_cache.enc.json"),
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),
@@ -118,6 +121,17 @@ def _classify_write_denial(path: str) -> Optional[str]:
             continue
 
     for base_real in hermes_dirs:
+        # Session transcripts are application-owned state.  Letting the agent's
+        # generic file tools rewrite state.db or legacy JSON snapshots can
+        # falsify conversation history and invalidate resume/compression state.
+        try:
+            if resolved == os.path.realpath(os.path.join(base_real, "state.db")):
+                return True
+            sessions_real = os.path.realpath(os.path.join(base_real, "sessions"))
+            if resolved == sessions_real or resolved.startswith(sessions_real + os.sep):
+                return True
+        except Exception:
+            pass
         try:
             mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
             if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):

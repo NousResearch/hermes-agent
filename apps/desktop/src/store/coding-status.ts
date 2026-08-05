@@ -1,26 +1,94 @@
-import { atom, computed } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import type { HermesGitWorktree, HermesRepoStatus } from '@/global'
 import { desktopGit } from '@/lib/desktop-git'
 
 import { $worktreeRefreshToken } from './projects'
-import { $busy, $currentCwd } from './session'
+import { $busy, $currentCwd, $selectedStoredSessionId } from './session'
 import { $workspaceChangeTick } from './workspace-events'
 
-// Live working-tree status for the active session's cwd — the data backbone of
-// the composer coding rail. It's the same "cheaply re-read git truth at the
-// right moments" model as the sidebar worktree probe: a single bounded
-// `git status --porcelain=v2` per refresh, driven by structural edges (cwd
-// change, turn settle, window focus, worktree mutation), never per-token and
-// never touching the conversation/system-prompt cache.
+// Live working-tree status for every git surface on screen — the data backbone
+// of the composer coding rail. Keyed PER CWD: the main pane and each session
+// tile can sit in different worktrees, so a single global status would paint
+// the primary repo's branch/± onto every rail (the "tile shows main's diff"
+// bug). It's the same "cheaply re-read git truth at the right moments" model
+// as the sidebar worktree probe: a single bounded `git status --porcelain=v2`
+// per on-screen worktree per refresh, driven by structural edges (cwd change,
+// turn settle, window focus, worktree mutation), never per-token and never
+// touching the conversation/system-prompt cache.
 
-export const $repoStatus = atom<HermesRepoStatus | null>(null)
+const REPO_STATUS_REFRESH_DEBOUNCE_MS = 100
+
+const normalizeCwd = (cwd?: null | string): null | string => cwd?.trim() || null
+
+const EMPTY_WORKTREES: HermesGitWorktree[] = []
+
+// Status + worktrees per normalized cwd. Entries outlive their surface (the
+// map stays bounded by the worktrees touched this run) so re-opening a tile
+// paints its last-known status instantly while the fresh probe runs.
+export const $repoStatusByCwd = atom<Record<string, HermesRepoStatus | null>>({})
+export const $repoWorktreesByCwd = atom<Record<string, HermesGitWorktree[]>>({})
+
+// The PRIMARY (main pane) view — the active session's slice of the per-cwd
+// truth. Existing consumers (keybind gate, base-branch picker, file tree) keep
+// reading these; only surfaces that can live in ANOTHER worktree (tile rails)
+// need the per-cwd accessors below.
+export const $repoStatus: ReadableAtom<HermesRepoStatus | null> = computed(
+  [$repoStatusByCwd, $currentCwd],
+  (byCwd, cwd) => byCwd[normalizeCwd(cwd) ?? ''] ?? null
+)
+
 export const $repoStatusLoading = atom(false)
 
 // The repo's real worktrees (for the coding rail's "jump to a worktree" menu).
 // Refreshed on the same edges as the status probe; empty off a repo.
-export const $repoWorktrees = atom<HermesGitWorktree[]>([])
-const REPO_STATUS_REFRESH_DEBOUNCE_MS = 100
+export const $repoWorktrees: ReadableAtom<HermesGitWorktree[]> = computed(
+  [$repoWorktreesByCwd, $currentCwd],
+  (byCwd, cwd) => byCwd[normalizeCwd(cwd) ?? ''] ?? EMPTY_WORKTREES
+)
+
+// Reference-stable per-cwd slices, so any number of rails can each subscribe
+// to their own worktree's status without re-deriving atoms per render.
+const statusAtomByCwd = new Map<string, ReadableAtom<HermesRepoStatus | null>>()
+const worktreesAtomByCwd = new Map<string, ReadableAtom<HermesGitWorktree[]>>()
+const $noRepoStatus = atom<HermesRepoStatus | null>(null)
+const $noWorktrees = atom<HermesGitWorktree[]>(EMPTY_WORKTREES)
+
+/** Reactive status for one repo cwd (a tile's worktree). Stable per cwd. */
+export function repoStatusForCwd(cwd?: null | string): ReadableAtom<HermesRepoStatus | null> {
+  const key = normalizeCwd(cwd)
+
+  if (!key) {
+    return $noRepoStatus
+  }
+
+  let $slice = statusAtomByCwd.get(key)
+
+  if (!$slice) {
+    $slice = computed($repoStatusByCwd, byCwd => byCwd[key] ?? null)
+    statusAtomByCwd.set(key, $slice)
+  }
+
+  return $slice
+}
+
+/** Reactive worktree list for one repo cwd. Stable per cwd. */
+export function repoWorktreesForCwd(cwd?: null | string): ReadableAtom<HermesGitWorktree[]> {
+  const key = normalizeCwd(cwd)
+
+  if (!key) {
+    return $noWorktrees
+  }
+
+  let $slice = worktreesAtomByCwd.get(key)
+
+  if (!$slice) {
+    $slice = computed($repoWorktreesByCwd, byCwd => byCwd[key] ?? EMPTY_WORKTREES)
+    worktreesAtomByCwd.set(key, $slice)
+  }
+
+  return $slice
+}
 
 export type RepoChangeKind = 'added' | 'conflicted' | 'modified'
 
@@ -44,26 +112,70 @@ export const $repoChangeByPath = computed([$repoStatus, $currentCwd], (status, c
   return map
 })
 
-async function loadWorktrees(target: string): Promise<void> {
-  const list = desktopGit()?.worktreeList
+/**
+ * Per-row Git decoration subscription. A visible file row reads one scalar, so
+ * a fresh repo-status map only re-renders that row when its own kind changed.
+ */
+export function repoChangeKindForPath(path: string): ReadableAtom<RepoChangeKind | undefined> {
+  return computed($repoChangeByPath, changes => changes.get(path))
+}
 
-  if (!list) {
-    $repoWorktrees.set([])
+// Cwds whose rails are on screen right now (refcounted — two tiles in one
+// worktree register it twice). Every refresh edge re-probes each registered
+// cwd plus the primary workspace, so a tile's rail moves when ITS agent
+// touches the tree — not only when main's does.
+const registeredCwds = new Map<string, number>()
 
+/** Keep `cwd` in the refresh set while its rail is mounted. Returns a release
+ *  (undefined for a blank cwd), kicking off an immediate probe on register. */
+export function registerRepoStatusCwd(cwd?: null | string): (() => void) | undefined {
+  const key = normalizeCwd(cwd)
+
+  if (!key) {
+    return undefined
+  }
+
+  registeredCwds.set(key, (registeredCwds.get(key) ?? 0) + 1)
+  scheduleRepoStatusRefresh(key)
+
+  let released = false
+
+  return () => {
+    if (released) {
+      return
+    }
+
+    released = true
+    const count = registeredCwds.get(key) ?? 0
+
+    if (count <= 1) {
+      registeredCwds.delete(key)
+    } else {
+      registeredCwds.set(key, count - 1)
+    }
+  }
+}
+
+function setRepoStatusEntry(target: string, status: HermesRepoStatus | null): void {
+  const byCwd = $repoStatusByCwd.get()
+
+  // Skip the no-op null→null write so a repeated failed probe doesn't churn
+  // every rail's computed slice.
+  if (target in byCwd && byCwd[target] === status) {
     return
   }
 
-  try {
-    const worktrees = await list(target)
+  $repoStatusByCwd.set({ ...byCwd, [target]: status })
+}
 
-    if (inflightCwd === target) {
-      $repoWorktrees.set(worktrees)
-    }
-  } catch {
-    if (inflightCwd === target) {
-      $repoWorktrees.set([])
-    }
+function setRepoWorktreesEntry(target: string, worktrees: HermesGitWorktree[]): void {
+  const byCwd = $repoWorktreesByCwd.get()
+
+  if (target in byCwd && byCwd[target] === worktrees) {
+    return
   }
+
+  $repoWorktreesByCwd.set({ ...byCwd, [target]: worktrees })
 }
 
 interface RepoStatusRefreshRequest {
@@ -73,51 +185,81 @@ interface RepoStatusRefreshRequest {
 }
 
 // Coalesce overlapping probes: many triggers can fire around a turn boundary
-// (busy flip + worktree token + focus), but only the latest cwd matters. Keep
-// one probe in flight and retain at most one trailing request so a slow Git
-// status cannot multiply into an unbounded subprocess pile-up.
-let inflightCwd: null | string = null
-let pendingRepoStatusRefresh: RepoStatusRefreshRequest | null = null
+// (busy flip + worktree token + focus), and several worktrees can need a
+// re-probe at once. Keep ONE probe in flight and at most one trailing request
+// per cwd so a slow `git status` cannot multiply into an unbounded subprocess
+// pile-up.
+const seqByCwd = new Map<string, number>()
+const pendingByCwd = new Map<string, RepoStatusRefreshRequest>()
 let repoStatusRefreshInFlight: Promise<void> | null = null
-let repoStatusRefreshSeq = 0
 let repoStatusRefreshTimer: ReturnType<typeof setTimeout> | null = null
+const scheduledCwds = new Set<string>()
+let scheduledAllTargets = false
 
-const normalizeCwd = (cwd?: null | string): null | string => cwd?.trim() || null
+// A result only lands while it is still the newest request for ITS cwd. The
+// debounce below deliberately delays the next probe; without this live check,
+// an old probe can land during that gap and briefly make a session look like
+// it is on a stale branch.
+const isCurrentSeq = (target: string, seq: number): boolean => seqByCwd.get(target) === seq
+
+async function loadWorktrees(target: string, seq: number): Promise<void> {
+  const list = desktopGit()?.worktreeList
+
+  if (!list) {
+    setRepoWorktreesEntry(target, EMPTY_WORKTREES)
+
+    return
+  }
+
+  try {
+    const worktrees = await list(target)
+
+    if (isCurrentSeq(target, seq)) {
+      setRepoWorktreesEntry(target, worktrees)
+    }
+  } catch {
+    if (isCurrentSeq(target, seq)) {
+      setRepoWorktreesEntry(target, EMPTY_WORKTREES)
+    }
+  }
+}
 
 /**
- * Re-probe the working tree for `cwd` (defaults to the active session's cwd).
- * Best-effort: a non-repo, a remote backend, or a missing probe clears the
- * status so the rail hides rather than showing stale data.
+ * Re-probe the working tree for one cwd. Best-effort: a non-repo, a remote
+ * backend, or a missing probe clears that cwd's entry so its rail hides
+ * rather than showing stale data.
  */
 async function runRepoStatusRefresh({ probe, seq, target }: RepoStatusRefreshRequest): Promise<void> {
   try {
     const status = await probe(target)
 
-    // Drop the result if the cwd moved on while we were probing (a fast session
-    // switch) — the newer probe owns the atom.
-    if (seq === repoStatusRefreshSeq && inflightCwd === target) {
-      $repoStatus.set(status)
+    // Drop the result if a newer refresh for this cwd started while we were
+    // probing — the newer probe owns the entry.
+    if (!isCurrentSeq(target, seq)) {
+      return
+    }
 
-      // Worktrees only matter inside a repo; clear them otherwise.
-      if (status) {
-        void loadWorktrees(target)
-      } else {
-        $repoWorktrees.set([])
-      }
+    setRepoStatusEntry(target, status)
+
+    // Worktrees only matter inside a repo; clear them otherwise.
+    if (status) {
+      void loadWorktrees(target, seq)
+    } else {
+      setRepoWorktreesEntry(target, EMPTY_WORKTREES)
     }
   } catch {
-    if (seq === repoStatusRefreshSeq && inflightCwd === target) {
-      $repoStatus.set(null)
-      $repoWorktrees.set([])
+    if (isCurrentSeq(target, seq)) {
+      setRepoStatusEntry(target, null)
+      setRepoWorktreesEntry(target, EMPTY_WORKTREES)
     }
   }
 }
 
 async function drainRepoStatusRefreshes(): Promise<void> {
-  while (pendingRepoStatusRefresh) {
-    const request = pendingRepoStatusRefresh
+  while (pendingByCwd.size > 0) {
+    const [target, request] = pendingByCwd.entries().next().value as [string, RepoStatusRefreshRequest]
 
-    pendingRepoStatusRefresh = null
+    pendingByCwd.delete(target)
     await runRepoStatusRefresh(request)
   }
 
@@ -131,20 +273,30 @@ async function drainRepoStatusRefreshes(): Promise<void> {
 export function refreshRepoStatus(cwd?: null | string): Promise<void> {
   const target = normalizeCwd(cwd ?? $currentCwd.get())
   const probe = desktopGit()?.repoStatus
-  const seq = (repoStatusRefreshSeq += 1)
 
-  if (!target || !probe) {
-    pendingRepoStatusRefresh = null
-    inflightCwd = null
-    $repoStatus.set(null)
-    $repoWorktrees.set([])
+  if (!probe) {
+    // Remote backend / no bridge: there is no local git truth at all — wipe
+    // every entry so no rail shows stale local status, and invalidate any
+    // in-flight probe results.
+    pendingByCwd.clear()
+    seqByCwd.clear()
+    $repoStatusByCwd.set({})
+    $repoWorktreesByCwd.set({})
     $repoStatusLoading.set(false)
 
     return repoStatusRefreshInFlight || Promise.resolve()
   }
 
-  inflightCwd = target
-  pendingRepoStatusRefresh = { probe, seq, target }
+  if (!target) {
+    // No cwd (a detached fresh chat). The primary computed already reads null
+    // for a blank cwd, and other worktrees' entries stay valid.
+    return repoStatusRefreshInFlight || Promise.resolve()
+  }
+
+  const seq = (seqByCwd.get(target) ?? 0) + 1
+
+  seqByCwd.set(target, seq)
+  pendingByCwd.set(target, { probe, seq, target })
   $repoStatusLoading.set(true)
 
   if (!repoStatusRefreshInFlight) {
@@ -154,30 +306,98 @@ export function refreshRepoStatus(cwd?: null | string): Promise<void> {
   return repoStatusRefreshInFlight
 }
 
+/** Registered (on-screen) worktrees + the primary workspace. */
+function refreshTargets(): Set<string> {
+  const targets = new Set(registeredCwds.keys())
+  const primary = normalizeCwd($currentCwd.get())
+
+  if (primary) {
+    targets.add(primary)
+  }
+
+  return targets
+}
+
+/** Re-probe every on-screen worktree (and the primary). Awaits the drain. */
+export async function refreshAllRepoStatuses(): Promise<void> {
+  const targets = refreshTargets()
+
+  if (targets.size === 0) {
+    return
+  }
+
+  // Queue every target, then await the single in-flight drain once.
+  let last: Promise<void> = Promise.resolve()
+
+  for (const target of targets) {
+    last = refreshRepoStatus(target)
+  }
+
+  await last
+}
+
+// `cwd` scopes the refresh to one worktree; omit it to re-probe every
+// on-screen worktree (turn settle, window focus — the tree may have changed
+// under any of them).
 function scheduleRepoStatusRefresh(cwd?: null | string): void {
+  if (cwd === undefined) {
+    scheduledAllTargets = true
+  } else {
+    const key = normalizeCwd(cwd)
+
+    if (key) {
+      scheduledCwds.add(key)
+    }
+  }
+
   if (repoStatusRefreshTimer) {
     clearTimeout(repoStatusRefreshTimer)
   }
 
   repoStatusRefreshTimer = setTimeout(() => {
     repoStatusRefreshTimer = null
-    void refreshRepoStatus(cwd)
+    const targets = new Set(scheduledCwds)
+
+    if (scheduledAllTargets) {
+      for (const target of refreshTargets()) {
+        targets.add(target)
+      }
+    }
+
+    scheduledCwds.clear()
+    scheduledAllTargets = false
+
+    for (const target of targets) {
+      void refreshRepoStatus(target)
+    }
   }, REPO_STATUS_REFRESH_DEBOUNCE_MS)
 }
 
 // ── Triggers ─────────────────────────────────────────────────────────────────
 // Wired once at module load (mirrors projects.ts's module-scope subscriptions).
-// Each is a structural edge where the working tree may have changed under us.
+// Each is a structural edge where a working tree may have changed under us.
 
-// The active session's cwd changed (session switch / new chat) → re-probe.
+// The active session's cwd changed (session switch / new chat) → the primary
+// computed re-keys instantly (a keyboard action in the switch-to-probe gap can
+// only ever see the NEW repo's last-known facts, never the previous
+// worktree's), then the debounced probe refreshes that repo's truth.
 $currentCwd.subscribe(cwd => scheduleRepoStatusRefresh(cwd))
+
+// Switching sessions can land on the same cwd but a different checked-out
+// branch (the agent ran `git checkout` in another session's terminal). The cwd
+// subscription above won't fire when the path is identical, so the branch label
+// would stay stale until a window focus or turn-settle triggers a refresh.
+// Treat the stored-session id as a structural edge in its own right.
+$selectedStoredSessionId.subscribe(() => scheduleRepoStatusRefresh())
 
 // A worktree add/remove (desktop op, or the agent's out-of-band git in a settled
 // turn / a window refocus — both already bump this token) → re-probe.
 $worktreeRefreshToken.subscribe(() => scheduleRepoStatusRefresh())
 
 // A file-mutating tool finished (event-driven, not polled) → re-probe so the
-// rail's branch/+/- move exactly when the agent touches the tree.
+// rails' branch/+/- move exactly when an agent touches a tree. Unscoped on
+// purpose: the tool may belong to a background tile's session, so every
+// on-screen worktree re-probes, not just the primary.
 $workspaceChangeTick.subscribe(() => scheduleRepoStatusRefresh())
 
 // A turn settling is the backstop for changes no tool diff announced (e.g. a
@@ -192,8 +412,25 @@ $busy.subscribe(busy => {
   prevBusy = busy
 })
 
-// External changes while the window was away (an outside terminal) — refresh on
-// refocus, the git-GUI standard.
+// Window focus: external changes while we were away (an outside terminal).
 if (typeof window !== 'undefined') {
   window.addEventListener('focus', () => scheduleRepoStatusRefresh())
+}
+
+/** Test-only: drop in-flight / pending / registered state so cases don't leak. */
+export function _resetCodingStatusForTests(): void {
+  if (repoStatusRefreshTimer) {
+    clearTimeout(repoStatusRefreshTimer)
+    repoStatusRefreshTimer = null
+  }
+
+  scheduledCwds.clear()
+  scheduledAllTargets = false
+  pendingByCwd.clear()
+  seqByCwd.clear()
+  registeredCwds.clear()
+  repoStatusRefreshInFlight = null
+  $repoStatusByCwd.set({})
+  $repoWorktreesByCwd.set({})
+  $repoStatusLoading.set(false)
 }

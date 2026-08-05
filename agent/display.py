@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
@@ -185,6 +186,15 @@ def _truncate_preview(text: str, max_len: int | None) -> str:
             return "." * max_len
         return text[:max_len - 3] + "..."
     return text
+
+
+@dataclass(frozen=True)
+class ToolPreview:
+    """A compact tool preview plus presentation facts lost to truncation."""
+
+    text: str
+    truncated: bool = False
+    url: str | None = None
 
 
 _SHELL_SILENT_HEADS = {"cd", "pushd", "popd", "export", "set", "unset", "source", ".", "true", "false", ":"}
@@ -556,6 +566,35 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     return preview
 
 
+def prepare_tool_preview(
+    tool_name: str,
+    args: dict | None,
+    *,
+    fallback: str,
+    max_len: int,
+) -> ToolPreview:
+    """Build one canonical compact preview before platform formatting.
+
+    The uncapped preview is rebuilt from the tool arguments when possible so
+    an upstream display cap cannot discard its link target.  Platforms then
+    receive explicit truncation and URL metadata instead of inferring either
+    fact from the rendered text.
+    """
+    full_text = build_tool_preview(tool_name, args, max_len=0) or fallback
+    text = _truncate_preview(full_text, max_len)
+    truncated = text != full_text
+    url = None
+    if truncated:
+        candidate = _display_url(full_text)
+        try:
+            parsed = urlsplit(candidate)
+        except ValueError:
+            parsed = None
+        if parsed and parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+            url = candidate
+    return ToolPreview(text=text, truncated=truncated, url=url)
+
+
 # =========================================================================
 # Friendly tool labels (human-phrased verbs for built-in tools)
 #
@@ -643,6 +682,52 @@ def tool_verb_connector(tool_name: str) -> str:
 def verb_drops_preview(tool_name: str) -> bool:
     """Whether the verb should render alone, without the argument preview."""
     return tool_name in _TOOL_VERBS_NO_PREVIEW
+
+
+def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) -> str | None:
+    """Build a short present-tense status phrase for platform status surfaces.
+
+    Used by text-rendering "typing" indicators (Slack's
+    ``assistant.threads.setStatus`` line) to show what the agent is doing
+    right now: ``is running scripts/run_tests.sh…`` instead of a static
+    ``is thinking...``.  The phrase is phrased to follow the bot's display
+    name ("Hermes is running …"), so it starts lowercase with "is".
+
+    Pass ``args=None`` for a verb-only phrase (``is running…``) — used when
+    ``display.live_status`` is ``verb`` to keep argument previews out of
+    shared channels.
+
+    Returns None for the ``_thinking`` pseudo-tool and when friendly labels
+    are disabled (callers fall back to their static default).  ``max_len``
+    caps the total phrase length; Slack truncates its status line around 50
+    characters, so the default stays just under that.
+    """
+    if not tool_name or tool_name == "_thinking":
+        return None
+    if not _friendly_tool_labels:
+        return None
+
+    verb = _TOOL_VERBS.get(tool_name)
+    if verb:
+        head = f"is {verb[0].lower()}{verb[1:]}"
+    else:
+        # Custom / plugin / MCP tools: generic but still informative.
+        head = f"is using {tool_name}"
+
+    phrase = head
+    if args and verb and tool_name not in _TOOL_VERBS_NO_PREVIEW:
+        preview = build_tool_preview(tool_name, args, max_len=None)
+        if preview:
+            # Previews can contain newlines (terminal commands); keep the
+            # status to the first line.
+            preview = preview.splitlines()[0].strip()
+            phrase = f"{head}{tool_verb_connector(tool_name)}{preview}"
+
+    if len(phrase) > max_len - 1:
+        phrase = phrase[: max_len - 2].rstrip() + "…"
+    else:
+        phrase = phrase + "…"
+    return phrase
 
 
 def build_tool_label(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
@@ -1460,5 +1545,3 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
-

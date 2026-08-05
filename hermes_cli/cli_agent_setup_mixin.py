@@ -111,8 +111,13 @@ class CLIAgentSetupMixin:
                     base_url, _source,
                 )
             else:
-                print("\n⚠️  Provider resolver returned an empty API key. "
-                      "Set OPENROUTER_API_KEY or run: hermes setup")
+                _prov = (resolved_provider or self.requested_provider or "").strip()
+                if _prov and _prov != "auto":
+                    print(f"\n⚠️  No API key found for provider '{_prov}'.")
+                else:
+                    print("\n⚠️  No inference provider is configured.")
+                print("   Run 'hermes model' to choose a provider, or "
+                      "'hermes setup' for first-time setup.")
                 return False
         if not isinstance(base_url, str) or not base_url:
             print("\n⚠️  Provider resolver returned an empty base URL. "
@@ -179,6 +184,104 @@ class CLIAgentSetupMixin:
 
         return True
 
+    def _runtime_credentials_ready(self) -> bool:
+        """Silently probe whether any inference provider can be resolved.
+
+        Unlike ``_ensure_runtime_credentials`` this never prints and never
+        mutates CLI state — it exists so the interactive first-run path can
+        detect a completely unconfigured install *before* the user types a
+        message into a chat that cannot work (#62935-adjacent UX class:
+        keyless first run must route into onboarding, not a broken chat).
+        """
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        try:
+            runtime = resolve_runtime_provider(
+                requested=self.requested_provider,
+                explicit_api_key=self._explicit_api_key,
+                explicit_base_url=self._explicit_base_url,
+            )
+        except Exception:
+            return False
+        if not isinstance(runtime, dict):
+            return False
+        api_key = runtime.get("api_key")
+        base_url = runtime.get("base_url")
+        if callable(api_key) and not isinstance(api_key, str):
+            return bool(base_url)
+        if isinstance(api_key, str) and api_key:
+            return bool(base_url)
+        # Keyless custom/local endpoints (ollama, llama.cpp, vLLM…) are fine.
+        return bool(
+            isinstance(base_url, str)
+            and base_url
+            and "openrouter.ai" not in base_url
+        )
+
+    def _offer_first_run_setup(self) -> bool:
+        """Offer the provider picker when no provider is configured at all.
+
+        Called from the interactive startup path when
+        ``_runtime_credentials_ready()`` is False and stdin is a TTY. Runs the
+        exact same flow as ``hermes model`` (which fronts Quick Setup / Nous
+        Portal OAuth as the first, recommended option) so there is a single
+        source of truth for provider onboarding. Returns True when a provider
+        was configured.
+        """
+        from cli import _cprint, logger
+
+        _cprint("")
+        _cprint("⚕ No inference provider is configured yet — let's fix that.")
+        _cprint("  You'll pick a provider (Nous Portal OAuth is the fastest; "
+                "no API key needed) and a model.")
+        try:
+            answer = input("  Set up a provider now? [Y/n]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            answer = "n"
+        if answer in {"n", "no"}:
+            _cprint("  Skipped. Run 'hermes model' or 'hermes setup' any time.")
+            return False
+
+        try:
+            from hermes_cli.main import select_provider_and_model
+            select_provider_and_model()
+        except (KeyboardInterrupt, EOFError, SystemExit):
+            print()
+            _cprint("  Setup cancelled. Run 'hermes model' any time.")
+            return False
+        except Exception as exc:
+            logger.debug("first-run provider setup failed: %s", exc)
+            _cprint(f"  ⚠️  Provider setup failed: {exc}")
+            _cprint("  Run 'hermes model' to try again.")
+            return False
+
+        # Re-sync CLI state from what the picker persisted so the very next
+        # turn uses the new provider without a restart.
+        try:
+            from hermes_cli.config import load_config
+            _model_cfg = (load_config().get("model") or {})
+            if isinstance(_model_cfg, dict):
+                _new_provider = (_model_cfg.get("provider") or "").strip()
+                if _new_provider:
+                    self.requested_provider = _new_provider
+                _new_model = (
+                    _model_cfg.get("default") or _model_cfg.get("model") or ""
+                ).strip()
+                if _new_model:
+                    self.model = _new_model
+        except Exception as exc:
+            logger.debug("first-run config re-sync failed: %s", exc)
+        # Force credential re-resolution + agent rebuild on next use.
+        self.agent = None
+        self._active_agent_route_signature = None
+
+        if self._runtime_credentials_ready():
+            _cprint("  ✓ Provider configured — you're ready to chat.")
+            return True
+        _cprint("  Provider setup didn't complete. Run 'hermes model' to retry.")
+        return False
+
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
@@ -193,6 +296,9 @@ class CLIAgentSetupMixin:
             "api_key": self.api_key,
             "base_url": self.base_url,
             "provider": self.provider,
+            "requested_provider": getattr(
+                self, "requested_provider", self.provider
+            ),
             "api_mode": self.api_mode,
             "command": self.acp_command,
             "args": list(self.acp_args or []),
@@ -204,6 +310,7 @@ class CLIAgentSetupMixin:
             "signature": (
                 self.model,
                 runtime["provider"],
+                runtime["requested_provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
                 runtime["command"],
@@ -242,9 +349,12 @@ class CLIAgentSetupMixin:
         if not self._ensure_runtime_credentials():
             return False
 
-        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+        from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
 
-        wait_for_mcp_discovery()
+        ensure_mcp_discovery_before_agent_build(
+            logger=logger,
+            single_query=getattr(self, "_single_query_mode", False),
+        )
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:
@@ -319,6 +429,7 @@ class CLIAgentSetupMixin:
                         f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
                     )
                 self._restore_session_cwd(session_meta, quiet=_quiet_mode)
+                self._restore_session_yolo(session_meta, quiet=_quiet_mode)
             else:
                 if _quiet_mode:
                     print(
@@ -344,6 +455,9 @@ class CLIAgentSetupMixin:
                 "api_key": self.api_key,
                 "base_url": self.base_url,
                 "provider": self.provider,
+                "requested_provider": getattr(
+                    self, "requested_provider", self.provider
+                ),
                 "api_mode": self.api_mode,
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
@@ -355,6 +469,7 @@ class CLIAgentSetupMixin:
                 api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
+                requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
@@ -429,6 +544,7 @@ class CLIAgentSetupMixin:
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
+                runtime.get("requested_provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
                 runtime.get("command"),
@@ -449,7 +565,12 @@ class CLIAgentSetupMixin:
                     # Keep _pending_title so it can be retried after row creation succeeds
             return True
         except Exception as e:
-            ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
+            console = ChatConsole()
+            console.print(f"[bold red]Failed to initialize agent: {e}[/]")
+            from hermes_constants import partial_update_hint
+
+            for line in partial_update_hint(e):
+                console.print(line)
             return False
 
     def _preload_resumed_session(self) -> bool:
@@ -494,13 +615,21 @@ class CLIAgentSetupMixin:
             if resolved_meta:
                 session_meta = resolved_meta
 
-        restored = self._session_db.get_messages_as_conversation(
-            self.session_id, repair_alternation=True
-        )
+        model_history, display_history = self._session_db.get_resume_conversations(self.session_id)
+        restored = model_history
         if restored:
             restored = [m for m in restored if m.get("role") != "session_meta"]
             self.conversation_history = restored
-            msg_count = len([m for m in restored if m.get("role") == "user"])
+            self._resume_display_history = [
+                m for m in display_history if m.get("role") != "session_meta"
+            ]
+            msg_count = len(
+                [
+                    m
+                    for m in self._resume_display_history
+                    if m.get("role") == "user" and not m.get("display_kind")
+                ]
+            )
             title_part = ""
             if session_meta.get("title"):
                 title_part = f' "{session_meta["title"]}"'
@@ -512,6 +641,7 @@ class CLIAgentSetupMixin:
                 f"{len(restored)} total messages)[/]"
             )
             self._restore_session_cwd(session_meta)
+            self._restore_session_yolo(session_meta)
         else:
             accent_color = _accent_hex()
             self._console_print(
@@ -542,7 +672,9 @@ class CLIAgentSetupMixin:
         an indicator for earlier hidden messages.
         """
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
-        if not self.conversation_history:
+        from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
+        display_history = getattr(self, "_resume_display_history", self.conversation_history)
+        if not display_history:
             return
 
         # Check config: resume_display setting
@@ -561,10 +693,23 @@ class CLIAgentSetupMixin:
         entries = []  # list of (role, display_text)
         _last_asst_idx = None       # index of last assistant entry
         _last_asst_full = None      # un-truncated display text for last assistant
-        for msg in self.conversation_history:
+        for msg in display_history:
             role = msg.get("role", "")
+            display_kind = msg.get("display_kind")
             content = msg.get("content")
             tool_calls = msg.get("tool_calls") or []
+
+            if display_kind == "hidden":
+                continue
+            if display_kind == "model_switch":
+                entries.append(("event", "model changed"))
+                continue
+            if display_kind == "async_delegation_complete":
+                entries.append(("event", "background delegation completed"))
+                continue
+            if display_kind == "auto_continue":
+                entries.append(("event", "resumed interrupted turn"))
+                continue
 
             if role == "system":
                 continue
@@ -582,13 +727,18 @@ class CLIAgentSetupMixin:
                         elif isinstance(part, dict) and part.get("type") == "image_url":
                             parts.append("[image]")
                     text = " ".join(parts)
+                # Stored history is untrusted for display: strip escape
+                # sequences/control chars so replaying a message can't
+                # clear the screen, retitle the window, or restyle the
+                # recap panel (see tools/ansi_strip.sanitize_display_text).
+                text = _sanitize_display_text(text)
                 if len(text) > MAX_USER_LEN:
                     text = text[:MAX_USER_LEN] + "..."
                 entries.append(("user", text))
 
             elif role == "assistant":
                 text = "" if content is None else str(content)
-                text = _strip_reasoning_tags(text)
+                text = _sanitize_display_text(_strip_reasoning_tags(text))
                 parts = []
                 full_parts = []  # un-truncated version
                 if text:
@@ -667,7 +817,9 @@ class CLIAgentSetupMixin:
             )
 
         for i, (role, text) in enumerate(entries):
-            if role == "user":
+            if role == "event":
+                lines.append(f"  ◈ {text}\n", style="dim italic")
+            elif role == "user":
                 lines.append("  ● You: ", style=f"dim bold {_session_label_c}")
                 # Show first line inline, indent rest
                 msg_lines = text.splitlines()

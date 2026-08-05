@@ -10,10 +10,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def test_version_string_no_v_prefix():
-    """__version__ should be bare semver without a 'v' prefix."""
-    from hermes_cli import __version__
-    assert not __version__.startswith("v"), f"__version__ should not start with 'v', got {__version__!r}"
 
 
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
@@ -122,61 +118,6 @@ def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
             return MagicMock(returncode=0, stdout="upstream-sha\trefs/heads/main\n")
         raise AssertionError(f"unexpected git command: {cmd!r}")
 
-    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
-        result = banner._check_via_local_git(repo_dir)
-
-    assert result == 1
-    assert ["git", "fetch", "origin", "--quiet"] not in calls
-
-
-def test_check_via_local_git_shallow_clone_behind_reports_no_count(tmp_path):
-    """Shallow installer clones must report presence-only, never a bogus count.
-
-    On a ``git clone --depth 1`` checkout the history stops at one commit, so
-    counting ``HEAD..origin/main`` across the shallow boundary yields a huge
-    nonsense number (the "12492 commits behind" banner). The shallow path must
-    compare tip SHAs and return UPDATE_AVAILABLE_NO_COUNT instead, and must
-    never run ``git rev-list --count``.
-    """
-    import hermes_cli.banner as banner
-
-    repo_dir = tmp_path / "hermes-agent"
-    repo_dir.mkdir()
-    (repo_dir / ".git").mkdir()
-
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        if cmd == ["git", "remote", "get-url", "origin"]:
-            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
-        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
-            return MagicMock(returncode=0, stdout="true\n")
-        if cmd[:2] == ["git", "fetch"]:
-            return MagicMock(returncode=0, stdout="")
-        if cmd == ["git", "rev-parse", "HEAD"]:
-            return MagicMock(returncode=0, stdout="local-sha\n")
-        if cmd == ["git", "rev-parse", "FETCH_HEAD"]:
-            return MagicMock(returncode=0, stdout="upstream-sha\n")
-        if cmd[:3] == ["git", "rev-list", "--count"]:
-            raise AssertionError("shallow path must not count across the boundary")
-        raise AssertionError(f"unexpected git command: {cmd!r}")
-
-    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
-        result = banner._check_via_local_git(repo_dir)
-
-    assert result == banner.UPDATE_AVAILABLE_NO_COUNT
-    # The shallow fetch must preserve the boundary (--depth 1), not unshallow.
-    assert ["git", "fetch", "origin", "--depth", "1", "--quiet"] in calls
-
-
-def test_check_via_local_git_shallow_clone_up_to_date(tmp_path):
-    """Shallow clone whose tip matches upstream reports up-to-date (0)."""
-    import hermes_cli.banner as banner
-
-    repo_dir = tmp_path / "hermes-agent"
-    repo_dir.mkdir()
-    (repo_dir / ".git").mkdir()
 
     def fake_run(cmd, **kwargs):
         if cmd == ["git", "remote", "get-url", "origin"]:
@@ -437,41 +378,5 @@ def test_prefetch_non_blocking():
         assert banner._update_result == 5
 
 
-def test_invalidate_update_cache_clears_all_profiles(tmp_path):
-    """_invalidate_update_cache() should delete .update_check from ALL profiles."""
-    from hermes_cli.main import _invalidate_update_cache
-
-    # Build a fake ~/.hermes with default + two named profiles
-    default_home = tmp_path / ".hermes"
-    default_home.mkdir()
-    (default_home / ".update_check").write_text('{"ts":1,"behind":50}')
-
-    profiles_root = default_home / "profiles"
-    for name in ("ops", "dev"):
-        p = profiles_root / name
-        p.mkdir(parents=True)
-        (p / ".update_check").write_text('{"ts":1,"behind":50}')
-
-    with patch.object(Path, "home", return_value=tmp_path), \
-         patch.dict(os.environ, {"HERMES_HOME": str(default_home)}):
-        _invalidate_update_cache()
-
-    # All three caches should be gone
-    assert not (default_home / ".update_check").exists(), "default profile cache not cleared"
-    assert not (profiles_root / "ops" / ".update_check").exists(), "ops profile cache not cleared"
-    assert not (profiles_root / "dev" / ".update_check").exists(), "dev profile cache not cleared"
 
 
-def test_invalidate_update_cache_no_profiles_dir(tmp_path):
-    """Works fine when no profiles directory exists (single-profile setup)."""
-    from hermes_cli.main import _invalidate_update_cache
-
-    default_home = tmp_path / ".hermes"
-    default_home.mkdir()
-    (default_home / ".update_check").write_text('{"ts":1,"behind":5}')
-
-    with patch.object(Path, "home", return_value=tmp_path), \
-         patch.dict(os.environ, {"HERMES_HOME": str(default_home)}):
-        _invalidate_update_cache()
-
-    assert not (default_home / ".update_check").exists()

@@ -30,6 +30,7 @@ import {
   getActionStatus,
   getLogs,
   getMcpCatalog,
+  getMcpOAuthFlow,
   type HermesGateway,
   installMcpCatalogEntry,
   type McpCatalogEntry,
@@ -38,6 +39,7 @@ import {
   testMcpServer
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -461,6 +463,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // in-progress edit — the draft is the user's until they save or reset.
   const draftSeeded = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     // profilePending: config still holds the PREVIOUS profile's record right
     // after a switch — seeding from it would latch the wrong profile's doc.
@@ -523,6 +526,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // on a fresh success, errorUpdatedAt on a fresh failure. Releasing on error too
   // means a failed refetch surfaces the retry UI instead of leaving mutations
   // silently no-op forever.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (
       profilePending &&
@@ -578,7 +582,14 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     setProbes(current => ({ ...current, [serverName]: 'probing' }))
 
     try {
-      const result = await authMcpServer(serverName)
+      const flow = await completeMcpDesktopOAuth({
+        serverName,
+        start: authMcpServer,
+        status: getMcpOAuthFlow,
+        openExternal: url => window.hermesDesktop.openExternal(url)
+      })
+
+      const result: McpTestResult = { ok: true, tools: flow.tools ?? [] }
 
       // Bail if the user switched profiles mid-flow — this result is profile A's.
       if (profileEpoch.current !== epoch) {
@@ -719,7 +730,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     return next
   }
 
-  const toggleServer = async (serverName: string, enabled: boolean) => {
+  const setServerEnabled = async (serverName: string, enabled: boolean) => {
     if (profilePending) {
       return
     }
@@ -967,7 +978,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
             onBack={() => setCursor(0)}
             onProbe={() => void runProbe(selected)}
             onRemove={() => void removeServer(selected)}
-            onToggle={checked => void toggleServer(selected, checked)}
+            onToggle={checked => void setServerEnabled(selected, checked)}
             onToggleTool={toolName => void toggleTool(selected, toolName)}
             probe={probes[selected]}
             saved={savedEntry !== undefined}
@@ -1008,7 +1019,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
                         onProbe={() => void runProbe(serverName)}
                         onRemove={() => void removeServer(serverName)}
                         onSelect={() => focusServer(serverName)}
-                        onToggle={checked => void toggleServer(serverName, checked)}
+                        onToggle={checked => void setServerEnabled(serverName, checked)}
                         status={status}
                         statusText={statusLine(m, status, probes[serverName], server)}
                       />

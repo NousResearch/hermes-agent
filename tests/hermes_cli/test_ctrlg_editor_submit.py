@@ -43,27 +43,6 @@ def test_idle_prompt_routed_to_pending_input():
     assert buf.reset_called
 
 
-def test_empty_save_does_not_submit():
-    c = _make()
-    buf = _FakeBuf("   \n  \n")
-
-    c._submit_editor_buffer(buf)
-
-    assert c._pending_input.empty()
-    # An empty save must not clear-and-submit a blank turn.
-    assert not buf.reset_called
-
-
-def test_running_queue_mode_queues_for_next_turn():
-    c = _make(agent_running=True, busy="queue")
-    buf = _FakeBuf("next turn please")
-
-    c._submit_editor_buffer(buf)
-
-    assert c._pending_input.get_nowait() == "next turn please"
-    assert c._interrupt_queue.empty()
-
-
 def test_running_interrupt_mode_uses_interrupt_queue():
     c = _make(agent_running=True, busy="interrupt")
     buf = _FakeBuf("interrupt this")

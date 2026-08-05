@@ -1,9 +1,10 @@
 import { act, cleanup, render } from '@testing-library/react'
-import type { MutableRefObject } from 'react'
+import { type MutableRefObject, useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
+  $activeSessionStoredIdRotation,
   $currentFastMode,
   $currentModel,
   $currentProvider,
@@ -11,6 +12,8 @@ import {
   $currentServiceTier,
   $messages,
   $turnStartedAt,
+  setActiveSessionId,
+  setActiveSessionStoredIdRotation,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentProvider,
@@ -28,6 +31,54 @@ interface HarnessProps {
   onReady: (cache: Cache) => void
   selectedStoredSessionId: string | null
 }
+
+describe('useSessionStateCache — stored-id rotation provenance', () => {
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setActiveSessionStoredIdRotation(null)
+  })
+
+  it('emits the previous, next, and runtime ids and removes the stale reverse mapping', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toEqual({
+      nextStoredSessionId: 'stored-A-next',
+      previousStoredSessionId: 'stored-A',
+      runtimeSessionId: 'runtime-A'
+    })
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+  })
+
+  it('does not publish a foreground-navigation event for a background runtime rotation', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-B')
+    render(
+      <Harness activeSessionId="runtime-B" onReady={value => (cache = value)} selectedStoredSessionId="stored-B" />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+  })
+})
 
 function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
   const busyRef: MutableRefObject<boolean> = { current: false }
@@ -206,6 +257,111 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentServiceTier.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
+  })
+})
+
+interface LayoutProbeHarnessProps {
+  activeSessionId: string | null
+  onLayoutSnapshot: (snapshot: { active: string | null; selected: string | null }) => void
+  onReady: (cache: Cache) => void
+  selectedStoredSessionId: string | null
+}
+
+function LayoutProbeHarness({
+  activeSessionId,
+  onLayoutSnapshot,
+  onReady,
+  selectedStoredSessionId
+}: LayoutProbeHarnessProps) {
+  const busyRef: MutableRefObject<boolean> = { current: false }
+
+  const cache = useSessionStateCache({
+    activeSessionId,
+    busyRef,
+    selectedStoredSessionId,
+    setAwaitingResponse: () => undefined,
+    setBusy: () => undefined,
+    setMessages: () => undefined
+  })
+
+  onReady(cache)
+
+  // useLayoutEffect fires synchronously right after the DOM commit, BEFORE
+  // the hook's own useEffect (a passive effect) has a chance to mirror the
+  // new props into activeSessionIdRef/selectedStoredSessionIdRef. Anything
+  // that reads the refs in this window — including a synchronous DOM event
+  // handler firing against the just-committed view — observes the outgoing
+  // session's ids.
+  useLayoutEffect(() => {
+    onLayoutSnapshot({
+      active: cache.activeSessionIdRef.current,
+      selected: cache.selectedStoredSessionIdRef.current
+    })
+  })
+
+  return null
+}
+
+describe('useSessionStateCache — refs stay coherent with the committed session on switch (#59305)', () => {
+  afterEach(() => cleanup())
+
+  it('reflects the new session ids from the layout phase right after switching to a new session', () => {
+    let cache!: Cache
+    const snapshots: Array<{ active: string | null; selected: string | null }> = []
+
+    const { rerender } = render(
+      <LayoutProbeHarness
+        activeSessionId="runtime-A"
+        onLayoutSnapshot={s => snapshots.push(s)}
+        onReady={c => (cache = c)}
+        selectedStoredSessionId="stored-A"
+      />
+    )
+
+    void cache
+    snapshots.length = 0 // drop the initial-mount snapshot; only the switch matters
+
+    rerender(
+      <LayoutProbeHarness
+        activeSessionId="runtime-B"
+        onLayoutSnapshot={s => snapshots.push(s)}
+        onReady={c => (cache = c)}
+        selectedStoredSessionId="stored-B"
+      />
+    )
+
+    // The refs must already reflect B by the layout phase — a callback firing
+    // in this window must never observe the outgoing session's ids.
+    expect(snapshots[0]).toEqual({ active: 'runtime-B', selected: 'stored-B' })
+  })
+
+  it('does not clobber an imperative ref pin on a re-render that leaves the props unchanged (#54527-class)', () => {
+    // submit.ts pins activeSessionIdRef.current to a freshly resumed runtime id
+    // WITHOUT updating the source atom that feeds the activeSessionId prop (by
+    // design — see submit.ts's "pin the foreground session context" comment).
+    // The prop-mirroring here must only fire when the prop itself changes; an
+    // unconditional resync would silently undo that pin on the next incidental
+    // render (wiring.tsx re-renders constantly during an active turn).
+    let cache!: Cache
+
+    const { rerender } = render(
+      <Harness activeSessionId="runtime-A" onReady={c => (cache = c)} selectedStoredSessionId="stored-A" />
+    )
+
+    // Simulate submit.ts's imperative pin: a resume swapped in a new runtime
+    // id without touching the prop.
+    cache.activeSessionIdRef.current = 'runtime-resumed'
+
+    // A re-render with the SAME props (e.g. an unrelated $busy/$messages
+    // change elsewhere in the tree) must not touch the pinned ref.
+    rerender(<Harness activeSessionId="runtime-A" onReady={c => (cache = c)} selectedStoredSessionId="stored-A" />)
+
+    expect(cache.activeSessionIdRef.current).toBe('runtime-resumed')
+
+    // A genuine prop change (a real navigation/selection move) still wins.
+    rerender(<Harness activeSessionId="runtime-B" onReady={c => (cache = c)} selectedStoredSessionId="stored-B" />)
+
+    expect(cache.activeSessionIdRef.current).toBe('runtime-B')
   })
 })
 

@@ -45,6 +45,14 @@ class TurnRetryState:
     nous_auth_retry_attempted: bool = False
     nous_paid_entitlement_refresh_attempted: bool = False
     copilot_auth_retry_attempted: bool = False
+    # Copilot surfaces a stale/degraded credential as a 400
+    # ``model_not_available_for_integrator`` / ``model_not_supported`` instead
+    # of a clean 401 (e.g. a raw OAuth token seeded when the token exchange
+    # degraded at startup, routing the request to the restricted
+    # ``copilot-language-server`` integrator). Guard a single-shot forced
+    # re-exchange + client rebuild for that case, separate from the 401 guard
+    # so both can fire within one attempt if needed.
+    copilot_stale_cred_retry_attempted: bool = False
     vertex_auth_retry_attempted: bool = False
 
     # ── Format / payload recovery guards ─────────────────────────────────
@@ -73,6 +81,10 @@ class TurnRetryState:
     # was rolled back off ``messages`` and the loop should re-issue the API
     # call against the newly-activated provider (#32421).
     restart_with_rebuilt_messages: bool = False
+    # A user correction cancelled the in-flight provider request. The outer
+    # loop must append a role-safe checkpoint + user message, rebuild the API
+    # payload, and retry the same logical iteration.
+    restart_with_redirected_messages: bool = False
 
     def __iter__(self):
         # Convenience for debugging / tests: iterate (name, value) pairs.

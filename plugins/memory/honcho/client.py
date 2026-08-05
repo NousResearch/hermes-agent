@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
+from agent.secret_scope import get_secret
 from hermes_constants import get_hermes_home
 from hermes_cli.profiles import _get_default_hermes_home
 from plugins.plugin_utils import SingletonSlot
@@ -469,7 +470,7 @@ class HonchoClientConfig:
     ) -> HonchoClientConfig:
         """Create config from environment variables (fallback)."""
         resolved_host = host or resolve_active_host()
-        api_key = os.environ.get("HONCHO_API_KEY")
+        api_key = get_secret("HONCHO_API_KEY")
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
         timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
         return cls(
@@ -525,7 +526,7 @@ class HonchoClientConfig:
         api_key = (
             host_block.get("apiKey")
             or raw.get("apiKey")
-            or os.environ.get("HONCHO_API_KEY")
+            or get_secret("HONCHO_API_KEY")
         )
 
         environment = (
@@ -742,7 +743,7 @@ class HonchoClientConfig:
         try:
             root = subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, cwd=cwd, timeout=5,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', cwd=cwd, timeout=5,
                 stdin=subprocess.DEVNULL,
             )
             if root.returncode == 0:
@@ -856,46 +857,75 @@ class HonchoClientConfig:
 
 _honcho_client_slot: SingletonSlot = SingletonSlot()
 _cached_timeout: float | None = None
-# Memo for the config.yaml-derived timeout, keyed on the file's mtime_ns so
+# Memo for the honcho.json-derived timeout, keyed on the file's mtime_ns so
 # the staleness check on every get_honcho_client() call costs one stat()
-# instead of a full YAML load. (None, None) = not yet populated.
-_config_timeout_memo: tuple[int | None, float | None] = (None, None)
+# instead of a JSON parse. mtime -1 = file absent; (None, None) = not yet
+# populated. config.yaml needs no such memo: load_config_readonly() is
+# internally cached on both the user and managed files' signatures, and a
+# bespoke key here would have to duplicate that invalidation logic.
+_honcho_json_timeout_memo: tuple[int | None, float | None] = (None, None)
 
 
 def _config_yaml_timeout() -> float | None:
-    """Read honcho.timeout / honcho.request_timeout from config.yaml, memoized on mtime."""
-    global _config_timeout_memo
+    """Read honcho.timeout / honcho.request_timeout via the cached config loader."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_config_readonly
 
-        cfg_path = get_hermes_home() / "config.yaml"
-        try:
-            mtime_ns: int | None = cfg_path.stat().st_mtime_ns
-        except OSError:
-            mtime_ns = None
-        if _config_timeout_memo[0] is not None and _config_timeout_memo[0] == mtime_ns:
-            return _config_timeout_memo[1]
-
-        from hermes_cli.config import load_config
-
-        honcho_cfg = load_config().get("honcho", {})
-        timeout = None
+        honcho_cfg = load_config_readonly().get("honcho", {})
         if isinstance(honcho_cfg, dict):
-            timeout = _resolve_optional_float(
+            return _resolve_optional_float(
                 honcho_cfg.get("timeout"),
                 honcho_cfg.get("request_timeout"),
             )
-        _config_timeout_memo = (mtime_ns, timeout)
+        return None
+    except Exception:
+        return None
+
+
+def _honcho_json_timeout() -> float | None:
+    """Read timeout/requestTimeout from honcho.json (host block wins), memoized on mtime."""
+    global _honcho_json_timeout_memo
+    try:
+        path = resolve_config_path()
+        try:
+            mtime_ns: int = path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = -1
+        if _honcho_json_timeout_memo[0] == mtime_ns:
+            return _honcho_json_timeout_memo[1]
+
+        timeout = None
+        if mtime_ns != -1:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            host_block = _host_block(raw, resolve_active_host())
+            timeout = _resolve_optional_float(
+                host_block.get("timeout"),
+                host_block.get("requestTimeout"),
+                raw.get("timeout"),
+                raw.get("requestTimeout"),
+            )
+        _honcho_json_timeout_memo = (mtime_ns, timeout)
         return timeout
     except Exception:
         return None
 
 
 def _resolve_timeout_from_sources(config: HonchoClientConfig | None) -> float:
-    """Resolve the effective timeout from env, config.yaml, and the explicit config."""
-    timeout = config.timeout if config is not None else None
-    if timeout is None:
-        timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
+    """Mirror the build path's timeout resolution so the staleness check agrees with it.
+
+    With an explicit config this matches ``_build`` (config.timeout, then
+    config.yaml, then default).  With no config it matches what
+    ``from_global_config`` + ``_build`` would produce: honcho.json host
+    block/root keys, then HONCHO_TIMEOUT, then config.yaml, then default.
+    Any source skew here makes the check disagree with the built client
+    forever and rebuild it on every call.
+    """
+    if config is not None:
+        timeout = config.timeout
+    else:
+        timeout = _honcho_json_timeout()
+        if timeout is None:
+            timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
     if timeout is None:
         timeout = _config_yaml_timeout()
     return timeout if timeout is not None else _DEFAULT_HTTP_TIMEOUT
@@ -1077,7 +1107,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
 def reset_honcho_client() -> None:
     """Reset the Honcho client singleton (useful for testing)."""
-    global _cached_timeout, _config_timeout_memo
+    global _cached_timeout, _honcho_json_timeout_memo
     _honcho_client_slot.reset()
     _cached_timeout = None
-    _config_timeout_memo = (None, None)
+    _honcho_json_timeout_memo = (None, None)

@@ -42,7 +42,7 @@ import subprocess
 import sys
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, Optional
 
 try:
     from aiohttp import web
@@ -63,8 +63,38 @@ from gateway.platforms.webhook_filters import (
     DEFAULT_SCRIPT_TIMEOUT_SECONDS,
     WebhookRouteProcessor,
 )
+from gateway.response_filters import is_autonomous_silence_response
 
 logger = logging.getLogger(__name__)
+
+
+def _is_webhook_silence_response(content: Any) -> bool:
+    """Whether an agent response means "deliberately say nothing".
+
+    Webhook routes are autonomous background lanes: a subscription prompt tells
+    the agent to answer with ``[SILENT]`` when a tick produced nothing worth a
+    human's attention (a duplicate inbound, a stand-down because a sibling lane
+    already replied, a routine close).  Nobody is waiting on the other end, so
+    there is no reader for whom a "nothing happened" message is useful.
+
+    The reason this is the loose autonomous rule rather than the live gateway's
+    is what the two lanes optimise for.  In an interactive chat, swallowing a
+    real answer because it happens to open with a marker is much worse than
+    showing a stray marker, so ``is_intentional_silence_response`` demands the
+    response be EXACTLY a marker.  A webhook run has the opposite payoff: the
+    cost of a leaked non-story is a pointless notification on every tick, and
+    models reliably add a sentence explaining why they stayed quiet — which
+    under the strict rule flips the whole thing back to "deliver".  That is not
+    a hypothetical: it is why a Helper support lane kept messaging its owner to
+    report that it had nothing to report.
+
+    So use the shared autonomous-lane matcher (also used by cron), which treats
+    a marker on its own first or last line as silence while still delivering
+    prose that merely mentions one mid-sentence.  Sharing the function keeps
+    the two autonomous lanes from drifting apart, and keeps the interactive
+    path untouched.
+    """
+    return is_autonomous_silence_response(content)
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
@@ -146,6 +176,12 @@ def check_webhook_requirements() -> bool:
 
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
+
+    # No human is present to answer a "session restored — what next?" prompt:
+    # webhook runs are event-triggered.  The startup auto-resume turn must
+    # instruct the model to FINISH the interrupted work instead of emitting an
+    # interactive acknowledgement that abandons the task (#57056).
+    interactive_resume: bool = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)
@@ -330,6 +366,12 @@ class WebhookAdapter(BasePlatformAdapter):
         do not consume the entry and silently downgrade the final response
         to the ``log`` deliver type.  TTL cleanup happens on POST.
         """
+        if _is_webhook_silence_response(content):
+            logger.info(
+                "[webhook] Response for %s is a silence marker — not delivering", chat_id
+            )
+            return SendResult(success=True)
+
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
 
@@ -517,6 +559,28 @@ class WebhookAdapter(BasePlatformAdapter):
             return _PROFILE_REJECTED
         return profile
 
+    @staticmethod
+    def _route_allows_profile(
+        route_config: dict,
+        request_profile: Optional[str],
+    ) -> bool:
+        """Return whether a route is bound to the URL-selected profile.
+
+        Omitting ``profile`` keeps a route on the default profile. An explicit
+        null, blank, or non-string value is malformed and fails closed.
+        """
+        if "profile" not in route_config:
+            configured_profile = "default"
+        else:
+            configured_profile = route_config.get("profile")
+        if not isinstance(configured_profile, str):
+            return False
+        configured_profile = configured_profile.strip()
+        if not configured_profile:
+            return False
+        effective_profile = request_profile or "default"
+        return configured_profile == effective_profile
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
@@ -533,6 +597,19 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         if not route_config:
+            return web.json_response(
+                {"error": f"Unknown route: {route_name}"}, status=404
+            )
+
+        if not self._route_allows_profile(route_config, profile):
+            effective_profile = profile or "default"
+            logger.warning(
+                "[webhook] Route %s is not authorized for profile %r",
+                route_name,
+                effective_profile,
+            )
+            # Match the unknown-route response so callers cannot use profile
+            # mismatches to enumerate route bindings.
             return web.json_response(
                 {"error": f"Unknown route: {route_name}"}, status=404
             )
@@ -1253,7 +1330,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     content,
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 timeout=30,
             )
             if result.returncode == 0:

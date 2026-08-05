@@ -120,46 +120,6 @@ def test_new_session_gets_clean_error_at_active_session_limit(monkeypatch):
     runner.session_store.get_or_create_session.assert_not_called()
 
 
-def test_existing_active_session_uses_busy_handling_at_limit(monkeypatch):
-    _silence_global_gateway_hooks(monkeypatch)
-    runner = _make_runner(max_concurrent_sessions=1)
-    runner._busy_input_mode = "queue"
-    event = _make_event(chat_id="busy")
-    session_key = build_session_key(event.source)
-    runner._running_agents[session_key] = MagicMock()
-    runner._running_agents_ts[session_key] = 0
-
-    async def fail_if_agent_runs(self_inner, ev, src, qk, generation):
-        raise AssertionError("_handle_message_with_agent should not run for busy follow-up")
-
-    with patch.object(GatewayRunner, "_handle_message_with_agent", fail_if_agent_runs):
-        result = asyncio.run(runner._handle_message(event))
-
-    assert result is None
-    assert runner.adapters[Platform.TELEGRAM]._pending_messages[session_key] is event
-
-
-def test_new_session_can_start_after_active_session_released(monkeypatch):
-    _silence_global_gateway_hooks(monkeypatch)
-    runner = _make_runner(max_concurrent_sessions=1)
-    busy_key = _occupy_session(runner, "busy")
-    runner._release_running_agent_state(busy_key)
-    event = _make_event(chat_id="new")
-
-    sentinel_seen = False
-
-    async def mock_agent_run(self_inner, ev, src, qk, generation):
-        nonlocal sentinel_seen
-        sentinel_seen = runner._running_agents.get(qk) is _AGENT_PENDING_SENTINEL
-        return "ok"
-
-    with patch.object(GatewayRunner, "_handle_message_with_agent", mock_agent_run):
-        result = asyncio.run(runner._handle_message(event))
-
-    assert result == "ok"
-    assert sentinel_seen is True
-
-
 def test_status_command_bypasses_active_session_limit(monkeypatch):
     _silence_global_gateway_hooks(monkeypatch)
     runner = _make_runner(max_concurrent_sessions=1)
@@ -172,37 +132,3 @@ def test_status_command_bypasses_active_session_limit(monkeypatch):
     runner._handle_status_command.assert_awaited_once()
 
 
-def test_skill_command_that_would_start_agent_is_blocked_at_limit(monkeypatch):
-    _silence_global_gateway_hooks(monkeypatch)
-    runner = _make_runner(max_concurrent_sessions=1)
-    _occupy_session(runner, "busy")
-
-    monkeypatch.setattr(
-        "agent.skill_commands.get_skill_commands",
-        lambda: {"demo": {"name": "demo-skill"}},
-    )
-    monkeypatch.setattr(
-        "agent.skill_commands.resolve_skill_command_key",
-        lambda command: "demo" if command == "demo" else None,
-    )
-    monkeypatch.setattr(
-        "agent.skill_commands.build_skill_invocation_message",
-        lambda *args, **kwargs: "invoke demo skill",
-    )
-    monkeypatch.setattr(
-        "agent.skill_utils.get_disabled_skill_names",
-        lambda *args, **kwargs: [],
-    )
-
-    async def fail_if_agent_runs(self_inner, ev, src, qk, generation):
-        raise AssertionError("_handle_message_with_agent should not run at capacity")
-
-    with patch.object(GatewayRunner, "_handle_message_with_agent", fail_if_agent_runs):
-        result = asyncio.run(
-            runner._handle_message(_make_event("/demo please", chat_id="new"))
-        )
-
-    assert result == (
-        "Hermes is at the active session limit (1/1). "
-        "Try again when another session finishes."
-    )

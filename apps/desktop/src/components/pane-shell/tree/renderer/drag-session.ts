@@ -35,7 +35,8 @@ import { ESCAPE_PRIORITY, pushEscapeLayer } from '@/lib/escape-layers'
 import { reorderCommitHaptic, reorderStepHaptic } from '@/lib/reorder'
 
 import type { DropPosition } from '../model'
-import { $dropHint, $treeDragging, type DropHint, mergeTreeZones, moveTreePane, reorderTreePane } from '../store'
+import { $dropHint, $treeDragging, type DropHint, mergeTreeZones, moveTreePanes, reorderTreePanes } from '../store'
+import { clearTabSelection } from '../tab-selection'
 import { type EngineZone, HighlightedZones, primaryZone, type ZoneRect } from '../zones-engine'
 
 const DRAG_THRESHOLD_PX = 4
@@ -96,10 +97,18 @@ const stripSlots = (strip: HTMLElement): StripSlot[] =>
   })
 
 /** Insertion slot from the pointer x against the OTHER tabs' midpoints:
- *  stack BEFORE the returned pane id (`null` = append). */
-export function slotBefore(slots: StripSlot[], x: number, excludePaneId = ''): { before: null | string } {
+ *  stack BEFORE the returned pane id (`null` = append). `exclude` is the
+ *  dragged tab — or the whole selection on a multi-tab drag, so the block
+ *  can't target a slot inside itself. */
+export function slotBefore(
+  slots: StripSlot[],
+  x: number,
+  exclude: readonly string[] | string = ''
+): { before: null | string } {
+  const excluded = typeof exclude === 'string' ? [exclude] : exclude
+
   for (const slot of slots) {
-    if (slot.id === excludePaneId) {
+    if (excluded.includes(slot.id)) {
       continue
     }
 
@@ -422,7 +431,11 @@ export function startPaneDrag(
   onTap?: () => void,
   reorder?: ReorderContext,
   double?: DoubleTapContext,
-  ghostLabel?: string
+  ghostLabel?: string,
+  /** Multi-tab selection riding this drag (strip order, includes `paneId`).
+   *  The whole block moves/reorders together; `paneId` stays the pressed tab
+   *  (it fronts at the destination). */
+  selection?: readonly string[]
 ) {
   if (e.button !== 0) {
     return
@@ -431,17 +444,28 @@ export function startPaneDrag(
   e.preventDefault()
   e.stopPropagation()
 
+  // The moving block: the selection when the pressed tab rides one, else just
+  // the pressed tab. Order is strip order (selectionFor guarantees it).
+  const moving: readonly string[] = selection && selection.length > 1 ? selection : [paneId]
+
   const highlighted = new HighlightedZones()
   let zones: EngineZone[] = []
   let strips: StripSnapshot[] = []
   let mode: 'reorder' | 'zone' | null = null
-  let dimmed: HTMLElement | null = null
+  let dimmed: HTMLElement[] = []
 
   const markSource = () => {
-    // The dragged tab dims for the drag's life — the divider says where it
-    // GOES, the dim says what MOVES. No live shuffle (placement-on-release).
-    dimmed ??= reorder?.strip.querySelector<HTMLElement>(`[data-tree-tab="${CSS.escape(paneId)}"]`) ?? null
-    dimmed?.style.setProperty('opacity', '0.45')
+    // Every dragged tab dims for the drag's life — the divider says where they
+    // GO, the dim says what MOVES. No live shuffle (placement-on-release).
+    if (dimmed.length === 0 && reorder) {
+      dimmed = moving
+        .map(id => reorder.strip.querySelector<HTMLElement>(`[data-tree-tab="${CSS.escape(id)}"]`))
+        .filter((el): el is HTMLElement => el !== null)
+    }
+
+    for (const el of dimmed) {
+      el.style.setProperty('opacity', '0.45')
+    }
   }
 
   const enterZoneMode = () => {
@@ -494,7 +518,7 @@ export function startPaneDrag(
             groupId: reorder!.groupId,
             groupIds: [reorder!.groupId],
             pos: 'center',
-            stack: slotBefore(reorderStrip().slots, x, paneId)
+            stack: slotBefore(reorderStrip().slots, x, moving)
           }
         }
 
@@ -525,7 +549,7 @@ export function startPaneDrag(
       const strip =
         groupIds.length === 1 && groupId ? strips.find(s => s.groupId === groupId && rectContains(s.rect, x, y)) : null
 
-      const stack = strip ? slotBefore(strip.slots, x, paneId) : undefined
+      const stack = strip ? slotBefore(strip.slots, x, moving) : undefined
 
       const pos: DropPosition = stack
         ? 'center'
@@ -537,17 +561,26 @@ export function startPaneDrag(
     },
 
     onCommit(hint) {
+      // A multi-tab selection is spent by a LANDED drop (reorder or zone) —
+      // a deny-area release keeps it, so a missed drop can just be retried.
+      const spendSelection = () => {
+        if (moving.length > 1) {
+          clearTabSelection()
+        }
+      }
+
       if (mode === 'reorder' && reorder && hint?.stack !== undefined) {
-        // Slot -> index among the OTHER tabs (reorderPaneInGroup inserts there).
+        // Slot -> index among the OTHER tabs (the block re-inserts there).
         const others = [...reorder.strip.querySelectorAll<HTMLElement>('[data-tree-tab]')]
           .map(el => el.dataset.treeTab)
-          .filter((id): id is string => Boolean(id) && id !== paneId)
+          .filter((id): id is string => Boolean(id) && !moving.includes(id!))
 
         const toIndex = hint.stack.before ? others.indexOf(hint.stack.before) : others.length
 
         if (toIndex >= 0) {
-          reorderTreePane(reorder.groupId, paneId, toIndex)
+          reorderTreePanes(reorder.groupId, moving, toIndex)
           reorderCommitHaptic()
+          spendSelection()
         }
       }
 
@@ -559,18 +592,28 @@ export function startPaneDrag(
         const targets = hint?.groupIds ?? []
 
         if (targets.length > 1) {
-          // Shift-span: merge the highlighted zones, dropping the pane across them.
-          mergeTreeZones([...targets], paneId, hint?.groupId ?? null)
+          // Shift-span: merge the highlighted zones, dropping the block across them.
+          mergeTreeZones([...targets], moving, hint?.groupId ?? null)
+          spendSelection()
         } else if (hint?.groupId) {
           // strip = stack at the divider slot; center = join the stack;
-          // an edge = split the zone and land there.
-          moveTreePane(paneId, { groupId: hint.groupId, pos: hint.pos ?? 'center', before: hint.stack?.before })
+          // an edge = split the zone and land there. The whole selection
+          // rides — the pressed tab fronts at the destination.
+          moveTreePanes(
+            moving,
+            { groupId: hint.groupId, pos: hint.pos ?? 'center', before: hint.stack?.before },
+            paneId
+          )
+          spendSelection()
         }
       }
     },
 
     onEnd() {
-      dimmed?.style.removeProperty('opacity')
+      for (const el of dimmed) {
+        el.style.removeProperty('opacity')
+      }
+
       highlighted.reset()
     }
   })

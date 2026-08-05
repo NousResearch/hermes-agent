@@ -45,12 +45,25 @@ const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session
 // cookies above. `privy-token` is the access token (the required signal);
 // variants cover the secured-prefix forms and the older `privy-session` name.
 const PRIVY_SESSION_COOKIE_VARIANTS = ['__Host-privy-token', '__Secure-privy-token', 'privy-token', 'privy-session']
+// Keep this aligned with hermes_cli.profiles.validate_profile_name(). `default`
+// is the built-in root alias; these names cannot be created as profiles.
+const RESERVED_REMOTE_PROFILES = new Set(['hermes', 'test', 'tmp', 'root', 'sudo'])
 
 function normalizeRemoteBaseUrl(rawUrl) {
-  const value = String(rawUrl || '').trim()
+  let value = String(rawUrl || '').trim()
 
   if (!value) {
     throw new Error('Remote gateway URL is required.')
+  }
+
+  // Users routinely paste scheme-less "host:port" (a Tailscale IP, a LAN
+  // hostname). Without this, `new URL('100.64.0.1:9119')` either throws or —
+  // worse — parses `host:` as the protocol and produces a baffling
+  // "must be http:// or https://, got myhost:" error. Only a real
+  // `scheme://` prefix opts out, so explicit non-http schemes (ftp://,
+  // file://) still reach the protocol check below and get rejected.
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    value = `http://${value}`
   }
 
   let parsed
@@ -88,6 +101,43 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
   return `${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`
 }
 
+/** True only when a gateway explicitly rejected the current OAuth session. */
+function isGatewayAuthRejection(error) {
+  if (error && typeof error === 'object' && (error as any).needsOauthLogin === true) {
+    return true
+  }
+
+  const statusCode = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+
+  return statusCode === 401 || statusCode === 403
+}
+
+function gatewayTicketFailure(error, authMessage, transportMessage) {
+  const needsOauthLogin = isGatewayAuthRejection(error)
+  const err = new Error(needsOauthLogin ? authMessage : transportMessage)
+
+  if (needsOauthLogin) {
+    ;(err as any).needsOauthLogin = true
+  }
+
+  err.cause = error
+
+  return err
+}
+
+/** Serialize a fresh-WS-URL attempt across Electron's IPC boundary. */
+async function gatewayWsUrlIpcResult(resolveWsUrl: () => Promise<string>) {
+  try {
+    return { ok: true as const, wsUrl: await resolveWsUrl() }
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      ...(isGatewayAuthRejection(error) ? { needsOauthLogin: true as const } : {}),
+      ok: false as const
+    }
+  }
+}
+
 /**
  * Build the WS URL the renderer would connect with, so the connection test can
  * exercise the same transport the app actually uses.
@@ -102,12 +152,10 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
  *   - oauth, mint ok       → ws(s)://…/api/ws?ticket=…
  *   - oauth, mint fails    → THROWS  (NOT a skip)
  *
- * The oauth-mint-failure throw is the important case: the real boot path
- * (resolveRemoteBackend in main.ts) treats a mint failure as a hard
- * "session expired" auth error and refuses to connect. Swallowing it here
- * would re-introduce the exact false-positive this test exists to catch —
- * HTTP /api/status passes, the test reports "reachable", then the renderer
- * can't authenticate /api/ws and boot dies with "Could not connect".
+ * The oauth-mint-failure throw is the important case: swallowing it here would
+ * re-introduce the exact false-positive this test exists to catch. An explicit
+ * 401/403 asks for sign-in; transport and server failures remain connectivity
+ * errors so a temporary outage is not mislabeled as an expired session.
  *
  * @param {string} baseUrl
  * @param {'token'|'oauth'} authMode
@@ -128,14 +176,12 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
     try {
       ticket = await mintTicket(baseUrl)
     } catch (error) {
-      const err = new Error(
-        'Reached the gateway over HTTP, but could not mint a WebSocket ticket for the OAuth session ' +
-          '(it may have expired). Open Settings → Gateway and sign in again.'
+      throw gatewayTicketFailure(
+        error,
+        'Reached the gateway over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +
+          'Open Settings → Gateway and sign in again.',
+        'Reached the gateway over HTTP, but could not mint a WebSocket ticket. Check the remote gateway connection and try again.'
       )
-
-      ;(err as any).needsOauthLogin = true
-      err.cause = error
-      throw err
     }
 
     return buildGatewayWsUrlWithTicket(baseUrl, ticket)
@@ -170,6 +216,137 @@ function modeIsRemoteLike(mode) {
   return mode === 'remote' || mode === 'cloud'
 }
 
+function normalizeSshConfig(entry) {
+  if (!entry || typeof entry !== 'object' || entry.mode !== 'ssh') {
+    return null
+  }
+
+  let host = String(entry.host || '').trim()
+
+  if (!host) {
+    return null
+  }
+
+  let parsedUser
+  let parsedPort
+  const at = host.indexOf('@')
+
+  if (at > 0) {
+    parsedUser = host.slice(0, at)
+    host = host.slice(at + 1)
+  }
+
+  const bracketed = /^\[([^\]]+)](?::(\d+))?$/.exec(host)
+
+  if (bracketed) {
+    host = bracketed[1]
+
+    if (bracketed[2]) {
+      parsedPort = Number(bracketed[2])
+    }
+  } else if ((host.match(/:/g) || []).length === 1) {
+    const [name, rawPort] = host.split(':')
+
+    if (/^\d+$/.test(rawPort)) {
+      host = name
+      parsedPort = Number(rawPort)
+    }
+  }
+
+  if (!host) {
+    return null
+  }
+
+  const out: any = { mode: 'ssh', host }
+  const user = String(entry.user || '').trim() || parsedUser || ''
+
+  if (user) {
+    out.user = user
+  }
+
+  const rawExplicitPort = String(entry.port ?? '').trim()
+  const explicitPort = /^\d+$/.test(rawExplicitPort) ? Number(rawExplicitPort) : null
+  const port = explicitPort ?? parsedPort
+
+  if (Number.isInteger(port) && port > 0 && port <= 65535 && port !== 22) {
+    out.port = port
+  }
+
+  const keyPath = String(entry.keyPath || '').trim()
+
+  if (keyPath) {
+    out.keyPath = keyPath
+  }
+
+  const remoteHermesPath = String(entry.remoteHermesPath || '').trim()
+
+  if (remoteHermesPath) {
+    out.remoteHermesPath = remoteHermesPath
+  }
+
+  // A Desktop profile can be a local routing label rather than the profile
+  // name used by the remote Hermes installation. Preserve an explicit mapping
+  // when it is a valid Hermes profile identifier; otherwise fall back to the
+  // historical same-name behavior in the caller.
+  const remoteProfile = String(entry.remoteProfile || '').trim()
+
+  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
+    out.remoteProfile = remoteProfile
+  }
+
+  return out
+}
+
+function profileSshOverride(config, profile) {
+  const key = connectionScopeKey(profile)
+  const entry = key ? config?.profiles?.[key] : null
+
+  return normalizeSshConfig(entry)
+}
+
+function savedProfileSsh(config, profile) {
+  const key = connectionScopeKey(profile)
+  const entry = key ? config?.profiles?.[key] : null
+
+  if (!entry || entry.mode !== 'local') {
+    return null
+  }
+
+  return normalizeSshConfig(entry.savedSsh)
+}
+
+function profileHasRemoteConnection(config, profile) {
+  return Boolean(profileRemoteOverride(config, profile) || profileSshOverride(config, profile))
+}
+
+function localProfileEntry(existing) {
+  const ssh = normalizeSshConfig(existing) || normalizeSshConfig(existing?.savedSsh)
+
+  return ssh ? { mode: 'local', savedSsh: ssh } : null
+}
+
+function hostLabelFromBaseUrl(baseUrl) {
+  const raw = String(baseUrl || '').trim()
+
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = new URL(raw)
+
+    if (!parsed.hostname) {
+      return null
+    }
+
+    return parsed.port && parsed.port !== '80' && parsed.port !== '443'
+      ? `${parsed.hostname}:${parsed.port}`
+      : parsed.hostname
+  } catch {
+    return null
+  }
+}
+
 /**
  * Select a profile's explicit remote override from a connection config, or null
  * when it has none (so the caller falls back to env → global remote → local).
@@ -196,16 +373,68 @@ function profileRemoteOverride(config, profile) {
   return { url, authMode: normAuthMode(entry.authMode), token: entry.token }
 }
 
+export interface ProfileRouteOptions {
+  globalRemote?: boolean
+  primaryProfile?: null | string
+  profileRemoteOverride?: boolean
+}
+
+export interface ProfileBackendRoute {
+  /** Which backend serves this profile: the window backend, or a pooled one. */
+  backend: 'pool' | 'primary'
+  /**
+   * Profile to tag on the returned descriptor when the backend is shared and
+   * therefore not itself scoped to that profile. Null when the backend already
+   * belongs to the profile.
+   */
+  descriptorProfile: null | string
+  /** Whether REST paths on this route must carry `?profile=` to be scoped. */
+  scopePath: boolean
+}
+
 /**
- * In global-remote mode one backend serves every Desktop profile, so REST calls
- * that are scoped by renderer-side `request.profile` must carry that scope as a
- * query parameter. Local pooled backends and per-profile remote overrides do not
- * need this: they already run against a backend scoped to the target profile.
+ * The one place that answers "which backend serves profile P, and does its
+ * REST path need a profile scope?". Four routes, in precedence order:
+ *
+ *  1. The primary profile owns the window backend outright.
+ *  2. A profile with its own remote override gets a pooled descriptor for that
+ *     host, which is already scoped to it.
+ *  3. A profile inheriting the app-global remote shares the primary backend —
+ *     one host serves every profile — so it is scoped per request instead.
+ *  4. Any other local profile gets its own pooled backend, spawned with
+ *     `--profile`, so its `HERMES_HOME` scopes it.
+ *
+ * Routing used to be spread across three overlapping predicates that each
+ * re-derived part of this table, which is how case 3 ended up registering
+ * reapable pool entries for backends it never owned.
  */
-function pathWithGlobalRemoteProfile(path, profile, opts: any = {}) {
+function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): ProfileBackendRoute {
+  const scopedProfile = connectionScopeKey(profile)
+  const primaryProfile = connectionScopeKey(opts.primaryProfile) || 'default'
+
+  if (!scopedProfile || scopedProfile === primaryProfile) {
+    return { backend: 'primary', descriptorProfile: null, scopePath: false }
+  }
+
+  if (opts.profileRemoteOverride) {
+    return { backend: 'pool', descriptorProfile: null, scopePath: false }
+  }
+
+  if (opts.globalRemote) {
+    return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+  }
+
+  return { backend: 'pool', descriptorProfile: null, scopePath: false }
+}
+
+/**
+ * Add renderer-side `request.profile` to a REST path when the route says the
+ * serving backend is not already scoped to that profile.
+ */
+function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = {}) {
   const scopedProfile = connectionScopeKey(profile)
 
-  if (!scopedProfile || !opts.globalRemote || opts.profileRemoteOverride) {
+  if (!resolveProfileBackendRoute(profile, opts).scopePath) {
     return path
   }
 
@@ -337,14 +566,24 @@ export {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  gatewayTicketFailure,
+  gatewayWsUrlIpcResult,
+  hostLabelFromBaseUrl,
+  isGatewayAuthRejection,
+  localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
   PRIVY_SESSION_COOKIE_VARIANTS,
+  profileHasRemoteConnection,
   profileRemoteOverride,
+  profileSshOverride,
   resolveAuthMode,
+  resolveProfileBackendRoute,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  savedProfileSsh,
   tokenPreview
 }

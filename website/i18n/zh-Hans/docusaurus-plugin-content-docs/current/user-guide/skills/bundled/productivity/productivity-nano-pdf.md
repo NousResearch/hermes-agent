@@ -1,14 +1,14 @@
 ---
-title: "Nano Pdf — 通过 nano-pdf CLI 编辑 PDF 文本/错别字/标题（自然语言 prompt）"
+title: "Nano Pdf — 通过自然语言指令编辑现有 PDF 中的文本"
 sidebar_label: "Nano Pdf"
-description: "通过 nano-pdf CLI 编辑 PDF 文本/错别字/标题（自然语言 prompt）"
+description: "通过自然语言指令编辑现有 PDF 中的文本"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Nano Pdf
 
-通过 nano-pdf CLI 编辑 PDF 文本/错别字/标题（自然语言 prompt（提示词））。
+通过自然语言指令（prompt）编辑现有 PDF 中的文本。
 
 ## Skill 元数据
 

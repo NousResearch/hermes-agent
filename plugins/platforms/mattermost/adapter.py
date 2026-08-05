@@ -78,6 +78,34 @@ def _url_and_token(config) -> Tuple[str, str]:
             getattr(config, "token", None) or _get_scoped_secret("MATTERMOST_TOKEN", ""))
 
 
+def _make_connector() -> Any:
+    """Return an ``aiohttp.TCPConnector`` tuned to drain idle keep-alive sockets promptly.
+
+    aiohttp's default ``keepalive_timeout`` is 15s. Behind a reverse proxy
+    or load balancer with a shorter idle timeout, the peer can close a
+    pooled connection before aiohttp reaps it, so the next request reuses
+    an already-dead socket and fails instead of transparently reconnecting.
+
+    This is the same class of issue as #18451 (CLOSE_WAIT accumulation
+    from idle pooled connections), whose fix was rolled out to the
+    httpx-based platform adapters via ``gateway/platforms/_http_client_limits.py``
+    and to Weixin's aiohttp connector (``gateway/platforms/weixin.py::_make_ssl_connector``,
+    #69089) — but never to Mattermost, which builds a bare
+    ``aiohttp.ClientSession()`` with no connector tuning at all.
+
+    ``keepalive_timeout=2`` mirrors the Weixin fix. ``enable_cleanup_closed=True``
+    helps the connector clean up sockets the remote side has already closed.
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return None
+    return aiohttp.TCPConnector(
+        keepalive_timeout=2,
+        enable_cleanup_closed=True,
+    )
+
+
 def check_mattermost_requirements() -> bool:
     """Return True if the Mattermost adapter runtime dependency is available."""
     try:
@@ -233,7 +261,11 @@ class MattermostAdapter(BasePlatformAdapter):
         if not self._base_url or not self._token:
             logger.error("Mattermost: URL or token not configured")
             return False
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), trust_env=gateway_trust_env())
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=gateway_trust_env(),
+            connector=_make_connector(),
+        )
         self._closing = False
         me = await self._api_get("users/me")
         if not me or "id" not in me:

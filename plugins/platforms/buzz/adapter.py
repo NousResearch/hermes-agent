@@ -837,6 +837,81 @@ class BuzzAdapter(BasePlatformAdapter):
             return False
         return True
 
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Edit a previously sent message.
+
+        Implementing this is what lets the gateway stream a reply on Buzz: the
+        stream consumer sends a first partial message and then re-edits that one
+        message as tokens arrive.  Without it the adapter inherits the base
+        stub, which returns ``success=False``, and the whole answer is delivered
+        in one block when the turn finishes.
+
+        ``buzz-cli`` reports a NEW event id for the edit itself, but the edit
+        TARGET stays the original id, and the stream consumer holds a single
+        ``message_id`` across the whole stream.  So this returns the id it was
+        given, not the one the CLI reports; returning the CLI's id would make
+        every edit after the first address a message that was never sent.
+
+        ``finalize`` is a no-op here.  Buzz edits carry no lifecycle state, the
+        same as Telegram, Slack and Discord.
+        """
+        if not message_id:
+            return SendResult(success=False, error="Buzz edit needs a message id")
+        if not content:
+            return SendResult(success=False, error="Empty message")
+        args = ["messages", "edit", "--event", str(message_id), "--content", "-"]
+        code, out, err = await self._run_cli(args, input_text=content)
+        if code != 0:
+            return SendResult(
+                success=False,
+                error=_cli_error_message(err, code),
+                retryable=code == 2,
+            )
+        try:
+            data = json.loads(out or "{}")
+        except ValueError:
+            data = {}
+        edit_event_id = data.get("event_id")
+        if edit_event_id:
+            # The edit is itself an event on the relay and comes back on our own
+            # subscription; mark it seen so the de-dupe does not treat our own
+            # edit as inbound traffic.
+            self._mark_seen(str(chat_id), str(edit_event_id))
+        return SendResult(
+            success=bool(data.get("accepted", True)),
+            message_id=str(message_id),
+            raw_response=data,
+        )
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent message.
+
+        Used by the stream consumer's fresh-final cleanup path, which replaces a
+        long-lived preview with a completed reply rather than editing in place.
+        """
+        if not message_id:
+            return False
+        code, out, _err = await self._run_cli(
+            ["messages", "delete", "--event", str(message_id)]
+        )
+        if code != 0:
+            return False
+        try:
+            data = json.loads(out or "{}")
+        except ValueError:
+            return True
+        event_id = data.get("event_id")
+        if event_id:
+            self._mark_seen(str(chat_id), str(event_id))
+        return bool(data.get("accepted", True))
+
     async def send_image(
         self,
         chat_id: str,

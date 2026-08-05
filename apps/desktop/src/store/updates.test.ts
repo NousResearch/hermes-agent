@@ -499,6 +499,7 @@ describe('applyBackendUpdate recovery', () => {
     const result = await promise
 
     expect(result.ok).toBe(true)
+    expect(updateHermesSpy).toHaveBeenCalledWith()
     expect($backendUpdateApply.get().stage).toBe('idle')
     expect($backendUpdateApply.get().applying).toBe(false)
   })

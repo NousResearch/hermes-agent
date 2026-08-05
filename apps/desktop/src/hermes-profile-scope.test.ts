@@ -80,4 +80,26 @@ describe('backend action helpers are profile-scoped', () => {
       expect(call[0].profile).toBe('jarvis')
     }
   })
+
+  it('always sends typed restart and update mutation bodies', () => {
+    vi.spyOn(crypto, 'randomUUID')
+      .mockReturnValueOnce('00000000-0000-4000-8000-000000000001')
+      .mockReturnValueOnce('00000000-0000-4000-8000-000000000002')
+
+    void restartGateway()
+    void updateHermes()
+
+    expect(api.mock.calls.at(-2)?.[0]).toMatchObject({
+      body: {
+        confirmation: 'RESTART',
+        idempotency_key: '00000000-0000-4000-8000-000000000001'
+      }
+    })
+    expect(api.mock.calls.at(-1)?.[0]).toMatchObject({
+      body: {
+        confirmation: 'UPDATE',
+        idempotency_key: '00000000-0000-4000-8000-000000000002'
+      }
+    })
+  })
 })

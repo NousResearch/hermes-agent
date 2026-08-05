@@ -20,6 +20,7 @@ import { HashRouter } from 'react-router'
 
 import App from './app'
 import { ErrorBoundary } from './components/error-boundary'
+import { GatewayRestartConfirmation } from './components/gateway-restart-confirmation'
 import { HapticsProvider } from './components/haptics-provider'
 import { RootTooltipProvider } from './components/ui/tooltip'
 import { I18nProvider } from './i18n'
@@ -70,6 +71,7 @@ if (winParam === 'overlay') {
                     Disabling transitions makes navigate() commit at default priority. */}
                   <HashRouter useTransitions={false}>
                     <App />
+                    <GatewayRestartConfirmation />
                   </HashRouter>
                 </RootTooltipProvider>
               </HapticsProvider>

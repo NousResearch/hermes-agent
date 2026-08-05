@@ -148,7 +148,12 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
     setRestarting(true)
 
     try {
-      await runGatewayRestart()
+      const confirmed = await runGatewayRestart()
+
+      if (!confirmed) {
+        return
+      }
+
       setRestartNeeded(false)
       setRestartError(null)
       // Give the receiver a moment to bind before re-reading state.

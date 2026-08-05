@@ -1,10 +1,10 @@
 import { atom } from 'nanostores'
 
-import { $gateway } from '@/store/gateway'
 import {
-  startClientWakeCapture,
-  type ClientWakeCaptureHandle
+  type ClientWakeCaptureHandle,
+  startClientWakeCapture
 } from '@/lib/wake-client-capture'
+import { $gateway } from '@/store/gateway'
 
 // "Hey Hermes" wake-word listener state for the composer toggle. The gateway is
 // the single source of truth (the listener lives in the backend and is shared

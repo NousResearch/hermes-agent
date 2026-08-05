@@ -40,8 +40,13 @@ To use the active Hermes model/provider/auth instead, set `llm_provider` to
 Hindsight daemon. The bridge forwards extraction/consolidation/reflect calls
 through the host-owned `ctx.llm` facade; it does not read or copy provider
 credentials and ignores Hindsight's requested model name in favor of Hermes'
-active model. Each provider instance receives an isolated Hindsight profile and
-bridge, and both are stopped/cleaned up with the memory provider.
+active model. Each provider instance receives an isolated daemon profile and
+bridge. The daemon profile is ephemeral, while the default pg0 database name is
+stable for the configured logical profile, so a provider restart does not create
+an empty memory store. An advanced `database_url`/`hindsight_database_url`
+config value can override that database URL when an operator manages storage
+outside the embedded default. The daemon and bridge are stopped/cleaned up
+with the memory provider; the persistent database is intentionally retained.
 
 Daemon startup logs: `~/.hermes/logs/hindsight-embed.log`
 Daemon runtime logs: `~/.hindsight/profiles/<profile>.log`

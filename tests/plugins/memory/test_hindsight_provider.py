@@ -355,6 +355,25 @@ class TestConfig:
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
 
+    def test_hermes_inheritance_uses_stable_database_independent_of_daemon_profile(self):
+        provider = HindsightMemoryProvider()
+        assert provider._effective_embedded_database_url(
+            {"profile": "jarpis", "llm_provider": "hermes"},
+            inherit_hermes_llm=True,
+        ) == "pg0://hindsight-embed-jarpis"
+        assert provider._effective_embedded_database_url(
+            {"profile": "jarpis", "llm_provider": "openai"},
+            inherit_hermes_llm=False,
+        ) is None
+        assert provider._effective_embedded_database_url(
+            {
+                "profile": "jarpis",
+                "llm_provider": "hermes",
+                "database_url": "postgresql://managed/hindsight",
+            },
+            inherit_hermes_llm=True,
+        ) == "postgresql://managed/hindsight"
+
 
 class TestPostSetup:
     def test_setup_cancel_at_mode_picker_writes_nothing(self, tmp_path, monkeypatch):

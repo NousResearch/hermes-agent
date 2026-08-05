@@ -1224,6 +1224,31 @@ class HindsightMemoryProvider(MemoryProvider):
             self._embedded_profile_override = f"{base}-hermes-{uuid.uuid4().hex[:12]}"
         return self._embedded_profile_override
 
+    def _effective_embedded_database_url(
+        self,
+        config: dict[str, Any],
+        *,
+        inherit_hermes_llm: bool,
+    ) -> str | None:
+        """Resolve the persistent database independently from daemon profile.
+
+        Hermes inheritance uses a per-instance daemon profile so its loopback
+        bridge credentials and port cannot race with another provider instance.
+        Hindsight also uses that profile as the default pg0 database name,
+        though, so using it directly would make memories disappear after a
+        provider restart. Keep the daemon/profile identity ephemeral while
+        deriving a stable database name from the configured logical profile.
+        An explicit ``database_url`` remains an escape hatch for deployments
+        that manage their own Hindsight database.
+        """
+        configured = config.get("database_url") or config.get("hindsight_database_url")
+        if configured:
+            return str(configured)
+        if not inherit_hermes_llm:
+            return None
+        logical_profile = _sanitize_bank_segment(_embedded_profile_name(config)) or "hermes"
+        return f"pg0://hindsight-embed-{logical_profile}"
+
     def _get_client(self):
         """Return the cached Hindsight client (created once, reused)."""
         if self._client is None:
@@ -1291,6 +1316,12 @@ class HindsightMemoryProvider(MemoryProvider):
                     kwargs["llm_model"] = "hermes-inherited"
                 elif self._llm_base_url:
                     kwargs["llm_base_url"] = self._llm_base_url
+                database_url = self._effective_embedded_database_url(
+                    config,
+                    inherit_hermes_llm=inherit_hermes_llm,
+                )
+                if database_url:
+                    kwargs["database_url"] = database_url
                 idle_timeout = _parse_int_setting(
                     self._config.get("idle_timeout")
                     if self._config.get("idle_timeout") is not None

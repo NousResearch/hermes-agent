@@ -641,7 +641,11 @@ def test_resolve_capture_mode_auto_and_prefer_client(monkeypatch):
     assert ww.resolve_capture_mode({"capture": "auto"}, force_local=True) == "local"
     monkeypatch.setattr(ww, "_local_input_device_ready", lambda: True)
     assert ww.resolve_capture_mode({"capture": "auto"}) == "local"
-    assert ww.resolve_capture_mode({"capture": "auto"}, prefer_client=True) == "client"
+    # A working backend mic wins under auto even for a preferring surface, so
+    # local desktops keep PortAudio + wake_word.input_device selection.
+    assert ww.resolve_capture_mode({"capture": "auto"}, prefer_client=True) == "local"
+    # Explicit client still forces streaming (backend mic exists but is wrong).
+    assert ww.resolve_capture_mode({"capture": "client"}, prefer_client=True) == "client"
 
 
 def test_requirements_client_capture_without_local_mic(monkeypatch):
@@ -674,7 +678,7 @@ def test_requirements_client_capture_without_local_mic(monkeypatch):
 
 
 def test_client_capture_feed_fires(monkeypatch, tmp_path):
-    import numpy as np
+    np = pytest.importorskip("numpy")
 
     monkeypatch.setattr(ww, "_build_engine", lambda cfg: _FakeEngine(fire=True))
     monkeypatch.setattr(ww, "_lock_path", lambda: tmp_path / "wake.lock")

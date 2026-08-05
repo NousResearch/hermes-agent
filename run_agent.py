@@ -461,6 +461,12 @@ class _TopicDriftTracker:
         else:
             self._pending_name = name
             self._pending_count = 1
+            # When threshold is 1 (e.g., topic_detection confirmed shift),
+            # confirm immediately on first occurrence
+            if self._pending_count >= self._threshold:
+                self._pending_name = None
+                self._pending_count = 0
+                return name
         return None
 
     def reset(self) -> None:

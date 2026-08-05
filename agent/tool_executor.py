@@ -97,6 +97,11 @@ _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 # Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
 # guard does not preempt a slow-but-valid summarization attempt.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
+# Upper bound a concurrent worker will wait at the start-order gate for all
+# earlier-ordered tools to advance before proceeding out of order. Long enough
+# to cover slow-but-legitimate authorization (e.g. an approval round-trip),
+# short enough that one wedged dispatch cannot starve the batch forever.
+_START_ORDER_GATE_TIMEOUT_S = 120.0
 
 
 def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
@@ -806,12 +811,35 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     def _begin_in_order(order: int, callback=None) -> None:
         nonlocal next_start_order
         with start_condition:
-            start_condition.wait_for(lambda: order == next_start_order)
+            # Bounded wait: a tool that wedges during its dispatch must not
+            # park every later-ordered worker forever. Without the timeout,
+            # one blocking dispatch starves the whole batch (the parked tools
+            # then get falsely reported as "timed out" by the batch deadline
+            # despite never having started) and the parked threads leak
+            # permanently after the batch is abandoned — f.cancel() cannot
+            # cancel running threads and nothing ever notifies the condition
+            # again. On expiry, proceed out of order: the worst case is
+            # interleaved approval prompts, strictly better than permanent
+            # starvation. The >= predicate (rather than ==) lets one worker's
+            # timeout-jump release every skipped worker immediately instead
+            # of each burning its own full timeout; max() keeps the counter
+            # monotonic when workers advance out of order.
+            in_order = start_condition.wait_for(
+                lambda: next_start_order >= order,
+                timeout=_START_ORDER_GATE_TIMEOUT_S,
+            )
+            if not in_order:
+                logger.warning(
+                    "start-order gate timed out (order=%d next=%d); "
+                    "proceeding out of order",
+                    order,
+                    next_start_order,
+                )
             try:
                 if callback is not None:
                     callback()
             finally:
-                next_start_order += 1
+                next_start_order = max(next_start_order, order + 1)
                 start_condition.notify_all()
 
     # Touch activity before launching workers so the gateway knows

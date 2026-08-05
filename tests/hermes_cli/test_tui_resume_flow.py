@@ -113,7 +113,8 @@ def test_oneshot_subprocess_exits_without_teardown_abort():
         from hermes_cli.main import _exit_after_oneshot
 
         oneshot._run_agent = lambda *args, **kwargs: ("ok", {"final_response": "ok"})
-        _exit_after_oneshot(oneshot.run_oneshot("hello"))
+        rc, _session_id = oneshot.run_oneshot("hello")
+        _exit_after_oneshot(rc)
         """
     )
 

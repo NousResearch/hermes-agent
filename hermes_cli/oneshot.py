@@ -188,7 +188,9 @@ def run_oneshot(
             run — even when the run fails — so pipelines can account for
             spend per invocation.
 
-    Returns the exit code.  The caller owns process termination.
+    Returns a ``(exit_code, session_id)`` tuple. ``session_id`` is the run's
+    session id (for Relay lifecycle finalization) or None when the run never
+    bound one. The caller owns process termination.
     """
     session_id: str | None = None
     # Silence every stdlib logger for the duration.  AIAgent, tools, and

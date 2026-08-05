@@ -10075,6 +10075,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception as exc:
                 logger.debug("preflight-compression switch warning failed: %s", exc)
 
+        # Run the confirm + apply sequence off the main thread. The
+        # expensive-model confirmation modal blocks the calling thread on a
+        # response queue (see _prompt_text_input_modal); running it on the
+        # prompt_toolkit main thread freezes TUI rendering, so the modal never
+        # appears and the switch silently cancels after the 120s timeout.
+        # Mirror the picker path (_handle_model_picker_selection), which
+        # already dispatches confirm+apply on a worker thread.
+        if getattr(self, "_app", None):
+            threading.Thread(
+                target=self._confirm_and_apply_cli_model_switch,
+                args=(result, persist_global, one_turn, custom_provs),
+                daemon=True,
+            ).start()
+            return
+        self._confirm_and_apply_cli_model_switch(
+            result, persist_global, one_turn, custom_provs
+        )
+        return
+
+    def _confirm_and_apply_cli_model_switch(
+        self, result, persist_global: bool, one_turn: bool, custom_provs=None
+    ) -> None:
+        """Confirm an expensive model switch and apply it to CLI state.
+
+        Runs on a worker thread when the TUI is active (see
+        _handle_model_switch) so the confirmation modal can render.
+        """
         if not self._confirm_expensive_model_switch(result):
             _cprint("  Model switch cancelled.")
             return

@@ -2120,7 +2120,9 @@ class ProcessRegistry:
                 if _IS_WINDOWS:
                     pty_data = data.decode("utf-8") if isinstance(data, bytes) else str(data)
                 else:
-                    pty_data = data.encode("utf-8") if isinstance(data, str) else data
+                    # surrogateescape: a PTY is a byte stream — round-trip the
+                    # original bytes instead of crashing on surrogate content.
+                    pty_data = data.encode("utf-8", "surrogateescape") if isinstance(data, str) else data
                 session._pty.write(pty_data)
                 return {"status": "ok", "bytes_written": len(data)}
             except Exception as e:

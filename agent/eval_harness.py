@@ -1,27 +1,44 @@
-"""Eval Harness — AIDE²-inspired evaluation framework for Hermes self-improvement.
+"""Eval Harness — AIDE²-inspired evaluation framework for Hermes self-evaluation.
 
-Provides a structured way to evaluate Hermes skills, configs, and behaviors
-against objective metrics. Inspired by AIDE²'s fixed-cost budget and
-heterogeneous task evaluation protocol.
+Provides a structured way to define evaluations (prompt + budget + metric
++ private_check) and record their outcomes into the Experience Ledger.
 
-Key design:
+⚠️  STUB IMPLEMENTATION WARNING ⚠️
+The execution paths that *run* an eval (``_simulate_task_execution``,
+``_run_llm_judge``) are intentional stubs that raise ``NotImplementedError``.
+The structural pieces around them — eval-definition loading, deterministic
+private_check via subprocess, budget enforcement, reward-hack detection,
+ledger recording — are fully functional and tested.
+
+Phase 3 (see ``docs/aide-squared-roadmap.md``) will wire the stubs to a
+real Hermes runtime via ``auxiliary_client`` (LLM judge) and an isolated
+chat session (task execution). Until then, any path that would produce an
+eval result raises instead of fabricating one.
+
+Design (intended for the full Phase 3 implementation):
 - Each eval has a prompt, golden output, metric, and budget_usd
-- Metrics: deterministic (diff/golden) or LLM-judge (aux model blind evaluation)
-- Cost constraint: exceed budget → automatic failure
+- Metrics: deterministic (diff/golden) — working; LLM-judge (aux model
+  blind evaluation) — stub
+- Cost constraint: exceed budget → automatic failure — working
 - Task families: tools/coding/research/security (heterogeneous evaluation)
 - The evaluated agent NEVER sees the private_check (prevents reward hacking)
 
-Usage:
+Usage (Phase 3+):
     harness = EvalHarness(hermes_home=Path.home() / ".hermes")
     results = harness.run_eval("file-ops-batch")
     summary = harness.run_all_evals()
+
+Currently supported (non-stub):
+    harness = EvalHarness(hermes_home=...)
+    harness.load_evals()           # OK — loads from evals.json / evals.yaml
+    ev = harness.get_evals()["x"]  # OK — returns EvalDefinition
+    # harness.run_eval("x")        # Raises NotImplementedError until Phase 3
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import random
 import subprocess
 import time
 import uuid
@@ -81,6 +98,7 @@ class EvalResult:
     duration_sec: float = 0.0
     budget_exceeded: bool = False
     reward_hack_detected: bool = False
+    not_implemented: bool = False  # True if execution raised NotImplementedError
     output: str = ""
     error: str = ""
     metric_details: dict = field(default_factory=dict)
@@ -98,6 +116,7 @@ class EvalResult:
             "duration_sec": self.duration_sec,
             "budget_exceeded": self.budget_exceeded,
             "reward_hack_detected": self.reward_hack_detected,
+            "not_implemented": self.not_implemented,
             "output": self.output,
             "error": self.error,
             "metric_details": self.metric_details,
@@ -209,7 +228,19 @@ class EvalHarness:
         self._custom_metrics[name] = fn
 
     def run_eval(self, eval_id: str) -> EvalResult:
-        """Run a single evaluation."""
+        """Run a single evaluation.
+
+        The structural pieces (eval lookup, ledger recording, budget check,
+        reward-hack detection) are functional. The execution path that
+        *runs* the prompt against Hermes (``_simulate_task_execution``)
+        is a stub that raises ``NotImplementedError`` until Phase 3.
+
+        On NotImplementedError, the result is returned with
+        ``not_implemented=True``, ``success=False``, and the original
+        error message. This lets callers discover the stub state without
+        being surprised by uncaught exceptions and without polluting the
+        ledger with fake eval records.
+        """
         if eval_id not in self._evals:
             return EvalResult(
                 eval_id=eval_id,
@@ -234,7 +265,7 @@ class EvalHarness:
         )
 
         try:
-            # Run the eval (simulated — real implementation would invoke Hermes)
+            # Run the eval (stub: raises NotImplementedError until Phase 3)
             result = self._execute_eval(ev, result)
 
             # Record in ledger
@@ -251,6 +282,19 @@ class EvalHarness:
                 )
             )
 
+        except NotImplementedError as e:
+            # Stub path: surface clearly without recording fake data.
+            result.not_implemented = True
+            result.success = False
+            result.error = str(e)
+            result.completed_at = time.time()
+            result.duration_sec = result.completed_at - result.started_at
+            logger.warning(
+                "Eval harness: %s is a stub until Phase 3 — "
+                "no eval result recorded in ledger. %s",
+                eval_id,
+                e,
+            )
         except Exception as e:
             result.success = False
             result.error = str(e)
@@ -258,7 +302,9 @@ class EvalHarness:
             result.duration_sec = result.completed_at - result.started_at
 
         self._results[eval_id] = result
-        self.ledger.save()
+        # Only persist ledger when a real result was recorded.
+        if not result.not_implemented:
+            self.ledger.save()
         return result
 
     def run_all_evals(self) -> Dict[str, EvalResult]:
@@ -314,24 +360,22 @@ class EvalHarness:
         return result
 
     def _simulate_task_execution(self, ev: EvalDefinition) -> tuple:
-        """Simulate task execution for testing.
+        """Execute the eval prompt against Hermes and return (output, cost).
 
-        In production, this would call the actual Hermes gateway.
+        ⚠️  STUB: raises ``NotImplementedError`` until Phase 3. The real
+        implementation will start an isolated chat session via
+        ``auxiliary_client`` running ``ev.prompt``, capture the model
+        output, and report the actual billed cost from the gateway.
+
+        Tests and callers that need a non-stub result should monkeypatch
+        this method (see ``tests/agent/test_eval_harness.py``).
         """
-        # Default simulation: partial success with moderate cost
-        success = random.random() > 0.3  # 70% success rate
-        # Clamp the simulated cost strictly below budget so the harness
-        # exercises the metric path rather than the budget-exceeded path
-        # in normal runs. Tests that want to exercise budget-exceeded
-        # should construct a result with cost > budget directly.
-        cost = random.uniform(0.05, ev.budget_usd * 0.8)
-
-        if success:
-            output = f"Task '{ev.id}' completed successfully."
-        else:
-            output = f"Task '{ev.id}' completed with issues."
-
-        return output, cost
+        raise NotImplementedError(
+            f"EvalHarness._simulate_task_execution is a stub until Phase 3. "
+            f"Cannot execute eval {ev.id!r} (family={ev.family}) without a "
+            f"real Hermes runtime connection. "
+            f"See docs/aide-squared-roadmap.md."
+        )
 
     def _run_private_metric(
         self,
@@ -391,18 +435,16 @@ class EvalHarness:
     ) -> EvalResult:
         """Run an LLM judge for subjective evaluation.
 
-        Uses auxiliary model for blind evaluation (agent doesn't see prompt).
+        ⚠️  STUB: raises ``NotImplementedError`` until Phase 3. The real
+        implementation will call ``auxiliary_client`` with a fixed
+        judge prompt + the agent's output, blinded so the evaluated
+        agent never sees the judge prompt or score.
         """
-        # In production, this would call auxiliary_client.py
-        # For now, simulate with moderate scores
-        import random
-
-        score = random.uniform(0.5, 0.9)
-        result.public_score = min(score + random.uniform(-0.1, 0.1), 1.0)
-        result.private_score = score
-        result.success = score >= 0.5
-        result.metric_details = {"judge": "simulated_llm", "raw_score": round(score, 3)}
-        return result
+        raise NotImplementedError(
+            f"EvalHarness._run_llm_judge is a stub until Phase 3. "
+            f"Cannot LLM-judge eval {ev.id!r} without auxiliary_client "
+            f"integration. See docs/aide-squared-roadmap.md."
+        )
 
     def get_eval_summary(self) -> dict:
         """Get summary of all eval results."""

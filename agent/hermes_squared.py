@@ -1,20 +1,39 @@
-"""Hermes² — Outer Loop self-improvement engineer.
+"""Hermes² — Outer Loop self-improvement engineer (skeleton).
 
 Inspired by AIDE²'s outer-loop agent: this cron-driven engineer periodically
 reads the Experience Ledger, identifies skills needing improvement, proposes
 mutations, validates them through the Eval Harness, and only retains changes
 that improve the private score.
 
-Key principles from AIDE²:
+⚠️  STUB IMPLEMENTATION WARNING ⚠️
+The execution paths that *produce* eval results and *apply* mutations are
+intentional stubs that raise ``NotImplementedError`` until Phases 3 and 4:
+
+- ``_run_validation_eval`` (Phase 3): runs the eval prompt against Hermes
+  via auxiliary_client + isolated chat session. Currently raises.
+- ``_apply_mutation`` (Phase 4): writes a new SKILL.md based on LLM-generated
+  content. Currently raises to prevent corrupting user SKILL.md files with
+  hard-coded text appendages (the previous string-append implementation was
+  actively harmful — it would add noise like "## Validation Steps" sections
+  to every skill regardless of what the skill does).
+
+Working parts (fully tested):
+- Cycle orchestration (load → worst-skills → propose → validate → accept/reject)
+- Proposal generation from SkillSummary symptoms
+- Budget enforcement
+- Stale-fallback: if ``_apply_proposal`` finds no SKILL.md, skip
+- Report serialization
+
+Key principles from AIDE² (for the full Phase 3+4 implementation):
 1. Read experience ledger → find worst performers
 2. Propose 1-3 mutations (rewrite SKILL.md / add skill / adjust memory)
 3. Validate via eval harness with private score
 4. Only retain if private score improves AND cost doesn't exceed budget
 5. ~90% rejection rate (strict evaluation)
 
-Usage:
+Usage (Phase 3+4):
     # Create cron job (every Sunday 2am)
-    hermes cron create --prompt "Run Hermes² self-improvement cycle" \
+    hermes cron create --prompt "Run Hermes² self-improvement cycle" \\
         --schedule "0 2 * * 0" --skills "hermes-agent"
 
     # Or run manually
@@ -27,7 +46,6 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -355,106 +373,118 @@ class HermesSquaredEngine:
         strategy: str,
         skill_id: str,
     ) -> str:
-        """Apply a mutation to the skill content."""
-        if strategy == "add_validation":
-            # Add validation section
-            validation_text = """
+        """Generate a new SKILL.md from ``content`` given ``strategy``.
 
-## Validation Steps
-After executing this skill, verify:
-1. All outputs match expected format
-2. No errors in tool execution
-3. User has not requested corrections
-"""
-            return content + validation_text
+        ⚠️  STUB: raises ``NotImplementedError`` until Phase 4. The real
+        implementation will call an LLM (via ``auxiliary_client``) with
+        the current SKILL.md, the skill's evaluation summary, and the
+        proposed strategy, then return the LLM's full new SKILL.md content
+        for the caller to apply via file_ops V4A patch.
 
-        elif strategy == "rewrite_skill":
-            # Add clarity markers
-            return content.replace(
-                "##",
-                "## [IMPROVED FOR CLARITY] ##",
-                1,
-            )
-
-        elif strategy == "fundamental_rewrite":
-            # Add performance notes
-            perf_notes = """
-
-## Performance Notes
-- This skill has been rewritten for better reliability
-- All edge cases have been addressed
-- Validation is stricter than previous version
-"""
-            return content + perf_notes
-
-        else:  # optimize
-            # Add optimization hints
-            opt_hints = """
-
-## Optimization
-- Execution has been optimized for speed and accuracy
-- Token usage reduced where possible
-"""
-            return content + opt_hints
+        The previous implementation appending hard-coded markdown
+        sections ("## Validation Steps", "## Performance Notes", etc.)
+        was **actively harmful** — it polluted every skill with the same
+        generic noise regardless of what the skill does, and the
+        ``rewrite_skill`` variant even mangled headings. Stubbing here
+        until LLM-driven mutation is real.
+        """
+        raise NotImplementedError(
+            f"HermesSquaredEngine._apply_mutation is a stub until Phase 4. "
+            f"Strategy {strategy!r} on skill {skill_id!r} would be applied "
+            f"via LLM-generated content; until then this raises to prevent "
+            f"corrupting the user's SKILL.md. See docs/aide-squared-roadmap.md."
+        )
 
     async def _run_validation_eval(
         self,
         eval_id: str,
         skill_id: str,
     ) -> Dict[str, Any]:
-        """Run a validation eval for a specific skill."""
-        # In production, this would run actual evals
-        # For now, simulate with improvement probability
+        """Run a validation eval for a specific skill.
 
-        # 60% chance of actual improvement
-        improved = random.random() < 0.6
-        new_score = random.uniform(0.5, 0.9) if improved else random.uniform(0.2, 0.5)
+        ⚠️  STUB: raises ``NotImplementedError`` until Phase 3. The real
+        implementation will call ``EvalHarness.run_eval`` (with the
+        helper wired through ``auxiliary_client`` in Phase 3) and return
+        the actual measured private_score and cost.
 
-        return {
-            "success": improved,
-            "private_score": new_score,
-            "cost_usd": random.uniform(0.1, 0.5),
-        }
+        Tests and callers that need a non-stub result should monkeypatch
+        this method.
+        """
+        raise NotImplementedError(
+            f"HermesSquaredEngine._run_validation_eval is a stub until "
+            f"Phase 3. Cannot validate proposal for skill {skill_id!r} "
+            f"(eval {eval_id!r}) without a real EvalHarness execution "
+            f"path. See docs/aide-squared-roadmap.md."
+        )
 
     async def _apply_proposal(self, proposal: ImprovementProposal) -> None:
-        """Apply an accepted proposal permanently."""
+        """Apply an accepted proposal permanently to the user's SKILL.md.
+
+        Stubbed until Phase 4. The real implementation will back up the
+        current SKILL.md to ``<skill_dir>/SKILL.md.bak`` before mutation,
+        call ``_apply_mutation`` to get LLM-generated content, write it
+        back, and roll back from the backup if anything fails.
+
+        Until Phase 4, ``_apply_mutation`` raises ``NotImplementedError``,
+        which we catch and log so an accidentally-triggered apply (e.g.
+        from a direct API call) does not corrupt SKILL.md or leave
+        orphan backup files.
+        """
         skill_dir = self.hermes_home / "skills" / proposal.skill_id
         skill_file = skill_dir / "SKILL.md"
 
         if not skill_file.exists():
             return
 
-        # Apply the mutation permanently
-        content = skill_file.read_text(encoding="utf-8")
-        mutated = self._apply_mutation(
-            content,
-            proposal.changes.get("strategy", "optimize"),
-            proposal.skill_id,
-        )
-        skill_file.write_text(mutated, encoding="utf-8")
-
-        # Record in ledger with lineage
-        self.ledger.record_eval(
-            SkillEval(
-                skill_id=proposal.skill_id,
-                eval_event_id=f"evolved-{proposal.proposal_id}",
-                task_family="self_improvement",
-                public_score=proposal.expected_private_score,
-                private_score=proposal.expected_private_score,
-                cost_usd=proposal.validation_result.get("cost_usd", 0.0)
-                if proposal.validation_result
-                else 0.0,
-                outcome="success",
-                lineage=proposal.proposal_id,
+        try:
+            # Apply the mutation permanently
+            content = skill_file.read_text(encoding="utf-8")
+            mutated = self._apply_mutation(
+                content,
+                proposal.changes.get("strategy", "optimize"),
+                proposal.skill_id,
             )
-        )
-        self.ledger.save()
+            skill_file.write_text(mutated, encoding="utf-8")
 
-        logger.info(
-            "Hermes²: applied improvement to %s (proposal %s)",
-            proposal.skill_id,
-            proposal.proposal_id,
-        )
+            # Record in ledger with lineage
+            self.ledger.record_eval(
+                SkillEval(
+                    skill_id=proposal.skill_id,
+                    eval_event_id=f"evolved-{proposal.proposal_id}",
+                    task_family="self_improvement",
+                    public_score=proposal.expected_private_score,
+                    private_score=proposal.expected_private_score,
+                    cost_usd=proposal.validation_result.get("cost_usd", 0.0)
+                    if proposal.validation_result
+                    else 0.0,
+                    outcome="success",
+                    lineage=proposal.proposal_id,
+                )
+            )
+            self.ledger.save()
+
+            logger.info(
+                "Hermes²: applied improvement to %s (proposal %s)",
+                proposal.skill_id,
+                proposal.proposal_id,
+            )
+        except NotImplementedError as e:
+            logger.warning(
+                "Hermes²: cannot apply proposal %s for skill %s — "
+                "_apply_mutation is a stub until Phase 4. %s",
+                proposal.proposal_id,
+                proposal.skill_id,
+                e,
+            )
+            proposal.status = "rejected_stub"
+        except Exception as e:
+            logger.error(
+                "Hermes²: failed to apply proposal %s for skill %s: %s",
+                proposal.proposal_id,
+                proposal.skill_id,
+                e,
+            )
+            proposal.status = "apply_failed"
 
     def _generate_summary(self, report: EvolutionReport) -> str:
         """Generate a human-readable summary of the cycle."""

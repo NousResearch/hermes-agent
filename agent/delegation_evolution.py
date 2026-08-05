@@ -1,21 +1,35 @@
-"""Delegation Evolution — AIDE²-inspired multi-strategy agent dispatch.
+"""Delegation Evolution — AIDE²-inspired multi-strategy agent dispatch (skeleton).
 
-Inspired by AIDE's bandit + greedy + fork search strategy: when delegate_task
-is called with evolution=True, it dispatches multiple subagents with different
-strategies, scores their results, and forks to new strategies when stagnation
-is detected.
+Inspired by AIDE²'s bandit + greedy + fork search strategy: when
+``delegate_task`` is called with ``evolution=True``, it dispatches multiple
+subagents with different strategies, scores their results, and forks to new
+strategies when stagnation is detected.
 
-Key principles from AIDE²:
+⚠️  STUB IMPLEMENTATION WARNING ⚠️
+The execution paths that *dispatch* a strategy to a subagent
+(``_dispatch_strategy``, ``_fork_strategy``) are intentional stubs that
+raise ``NotImplementedError`` until Phase 3 (after the real EvalHarness
+execution path lands). They previously returned fake scores via
+``random.uniform``; that has been removed.
+
+Working parts (fully functional):
+- Bandit strategy selection from historical scores
+- Stagnation detection (consecutive non-improvements)
+- Strategy fork logic (pick untried strategy on stagnation)
+- Lineage tracking (parent → child relationships)
+- Persistent state for both strategy scores and lineage history
+
+Key principles from AIDE² (for the full Phase 3 implementation):
 - Bandit dispatch: weight strategies by historical success
 - Stagnation detection: if N consecutive runs show no improvement, fork
 - Strategy fork: take the best result and try a completely new approach
 - Lineage tracking: parent-child relationships between attempts
 
-Usage:
+Usage (Phase 3):
     from agent.delegation_evolution import DelegationEvolution
     de = DelegationEvolution(hermes_home=Path.home() / ".hermes")
 
-    # Evolve a task
+    # Evolve a task — strategy selection works; dispatch raises until Phase 3
     results = await de.evolve_task(
         goal="Optimize this script",
         max_agents=3,
@@ -27,7 +41,6 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -363,41 +376,21 @@ class DelegationEvolution:
         context: Optional[str],
         task_id: str,
     ) -> StrategyResult:
-        """Dispatch a single strategy (simulated).
+        """Dispatch a single strategy to a subagent and return the result.
 
-        In production, this would call delegate_task with the strategy's
-        role and goal.
+        ⚠️  STUB: raises ``NotImplementedError`` until Phase 3. The real
+        implementation will call ``delegate_task`` (or equivalent
+        subagent dispatch) with ``strategy``'s role prompt + ``goal``,
+        then return the subagent's measured score and cost.
+
+        Tests and callers that need a non-stub result should monkeypatch
+        this method.
         """
-        start = time.time()
-        template = STRATEGY_TEMPLATES.get(strategy, {})
-        role = template.get("role", "")
-
-        lineage_id = f"{task_id}-{strategy}"
-
-        # Different strategies have different success profiles
-        if strategy == "aggressive":
-            score = random.uniform(0.4, 0.95)  # High variance
-            cost = random.uniform(0.1, 0.5)
-        elif strategy == "conservative":
-            score = random.uniform(0.6, 0.85)  # Low variance, moderate
-            cost = random.uniform(0.05, 0.2)
-        elif strategy == "creative":
-            score = random.uniform(0.3, 0.9)  # High variance, high ceiling
-            cost = random.uniform(0.2, 0.6)
-        elif strategy == "analytical":
-            score = random.uniform(0.5, 0.8)  # Moderate variance
-            cost = random.uniform(0.15, 0.4)
-        else:  # minimal
-            score = random.uniform(0.5, 0.75)
-            cost = random.uniform(0.05, 0.15)
-
-        return StrategyResult(
-            strategy=strategy,
-            score=round(score, 3),
-            cost_usd=round(cost, 4),
-            duration_sec=round(time.time() - start, 3),
-            output=f"Strategy '{strategy}' completed the task.",
-            lineage_id=lineage_id,
+        raise NotImplementedError(
+            f"DelegationEvolution._dispatch_strategy is a stub until Phase 3. "
+            f"Cannot dispatch strategy {strategy!r} for task {task_id!r} "
+            f"without a real subagent runtime. "
+            f"See docs/aide-squared-roadmap.md."
         )
 
     async def _fork_strategy(
@@ -409,41 +402,16 @@ class DelegationEvolution:
     ) -> StrategyResult:
         """Fork to a new strategy when stagnation is detected.
 
-        Takes the best result so far and tries a completely different approach.
+        ⚠️  STUB: raises ``NotImplementedError`` until Phase 3. The real
+        implementation will pick an untried strategy, dispatch it via
+        ``_dispatch_strategy``, and return the measured result. The
+        previous random.uniform stub has been removed.
         """
-        # Pick a strategy that hasn't been tried yet
-        tried = {r.strategy for r in [best_result]}
-        available = [s for s in STRATEGY_TEMPLATES if s not in tried]
-
-        if not available:
-            # All strategies tried — retry best with variation
-            fork_strategy = f"{best_result.strategy}-variant"
-        else:
-            fork_strategy = random.choice(available)
-
-        lineage_id = f"{task_id}-fork-{fork_strategy}"
-
-        logger.info(
-            "Delegation evolution: forking to '%s' (from '%s')",
-            fork_strategy,
-            best_result.strategy,
-        )
-
-        # Fork has 50% chance of breaking stagnation
-        score = (
-            random.uniform(0.6, 0.95)
-            if random.random() < 0.5
-            else random.uniform(0.3, 0.6)
-        )
-        cost = random.uniform(0.1, 0.4)
-
-        return StrategyResult(
-            strategy=fork_strategy,
-            score=round(score, 3),
-            cost_usd=round(cost, 4),
-            output=f"Fork strategy '{fork_strategy}' completed.",
-            lineage_id=lineage_id,
-            parent_lineage=best_result.lineage_id,
+        raise NotImplementedError(
+            f"DelegationEvolution._fork_strategy is a stub until Phase 3. "
+            f"Cannot fork from {best_result.strategy!r} for task "
+            f"{task_id!r} without a real subagent runtime. "
+            f"See docs/aide-squared-roadmap.md."
         )
 
     def get_strategy_performance(self) -> Dict[str, Dict[str, Any]]:

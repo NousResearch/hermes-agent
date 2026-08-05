@@ -54,13 +54,38 @@ class TestEvalHarness:
     def test_run_eval_records_in_ledger(self, tmp_path):
         h = self._make_harness(tmp_path)
         h.load_evals()
+
+        # Phase 3 will wire the real Hermes runtime. Until then
+        # _simulate_task_execution raises; tests that exercise the
+        # ledger-recording path inject a fake execution.
+        h._simulate_task_execution = lambda ev: (
+            f"Task '{ev.id}' completed.",
+            ev.budget_usd * 0.5,
+        )
+
         result = h.run_eval("file-ops-batch")
 
         assert result.eval_id == "file-ops-batch"
         assert result.cost_usd >= 0
         assert result.duration_sec >= 0
-        # Should be recorded in ledger
+        # Recorded in ledger (not stubbed out)
         assert h.ledger.total_evals > 0
+        assert result.not_implemented is False
+
+    def test_run_eval_stub_state(self, tmp_path):
+        """Without an injected execution, run_eval reports stub state
+        instead of fabricating an eval result.
+        """
+        h = self._make_harness(tmp_path)
+        h.load_evals()
+
+        result = h.run_eval("file-ops-batch")
+
+        assert result.not_implemented is True
+        assert result.success is False
+        assert "stub until Phase 3" in result.error
+        # Ledger must NOT be polluted with fake eval data.
+        assert h.ledger.total_evals == 0
 
     def test_run_all_evals(self, tmp_path):
         h = self._make_harness(tmp_path)

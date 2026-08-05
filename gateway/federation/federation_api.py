@@ -49,6 +49,49 @@ from aiohttp import web
 logger = logging.getLogger(__name__)
 
 
+# ─── Middleware (must be defined before FederationAPI class) ────────────────────
+
+def _make_auth_middleware(expected_token: str):
+    """Factory: returns an aiohttp auth middleware capturing expected_token."""
+    @web.middleware
+    async def auth_middleware(request, handler):
+        if request.path == "/api/federation/health":
+            return await handler(request)
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return web.json_response(
+                {"error": "Unauthorized", "message": "Missing or invalid Authorization header"},
+                status=401,
+            )
+        token = auth_header[7:]
+        if expected_token and token != expected_token:
+            return web.json_response(
+                {"error": "Forbidden", "message": "Invalid federation token"},
+                status=403,
+            )
+        return await handler(request)
+    return auth_middleware
+
+
+@web.middleware
+async def cors_middleware(request, handler):
+    """CORS middleware for Desktop app (Electron localhost)."""
+    if request.method == "OPTIONS":
+        return web.Response(
+            status=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Authorization, Content-Type",
+            },
+        )
+    response = await handler(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+    return response
+
+
 @dataclass
 class FederationAPIConfig:
     """Configuration for the federation HTTP API."""
@@ -58,7 +101,6 @@ class FederationAPIConfig:
     host: str = "127.0.0.1"  # localhost only (security)
     cors_origins: List[str] = field(default_factory=lambda: ["http://localhost:5173"])
     require_auth: bool = True  # Admin endpoints require auth token
-
 
 @dataclass
 class PeerStatus:
@@ -193,9 +235,10 @@ class FederationAPI:
         try:
             from aiohttp import web
 
+            expected_token = getattr(self.adapter, "_auth_token", "") or ""
             app = web.Application(middlewares=[
-                self._auth_middleware,
-                self._cors_middleware,
+                _make_auth_middleware(expected_token),
+                cors_middleware,
             ])
             # Public endpoints (no auth required)
             app.router.add_get("/api/federation/health", self._health)
@@ -223,42 +266,6 @@ class FederationAPI:
             )
         except Exception as e:
             logger.error("Federation API: failed to start: %s", e)
-
-    async def _cors_middleware(self, request, handler):
-        """CORS middleware for Desktop app (Electron localhost)."""
-        if request.method == "OPTIONS":
-            response = web.Response(status=200)
-        else:
-            response = await handler(request)
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
-        return response
-
-    async def _auth_middleware(self, request, handler):
-        """Authentication middleware — requires federation auth token for non-health endpoints."""
-        # Health endpoint is public (used by monitoring probes)
-        if request.path == "/api/federation/health":
-            return await handler(request)
-
-        # Check Authorization header
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return web.json_response(
-                {"error": "Unauthorized", "message": "Missing or invalid Authorization header"},
-                status=401,
-            )
-
-        token = auth_header[7:]  # Strip "Bearer "
-        # Compare with federation auth token
-        expected_token = getattr(self.adapter, "_auth_token", "")
-        if not expected_token or token != expected_token:
-            return web.json_response(
-                {"error": "Forbidden", "message": "Invalid federation token"},
-                status=403,
-            )
-
-        return await handler(request)
 
     async def stop(self) -> None:
         """Stop the HTTP API server."""

@@ -14,6 +14,7 @@ Design principles (from AIDE² research):
 
 This is the foundation for Hermes² self-improvement (P1-1 outer loop).
 """
+
 from __future__ import annotations
 
 import json
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 # ========================================================================
 # Data structures
 # ========================================================================
+
 
 @dataclass
 class SkillEval:
@@ -90,6 +92,8 @@ class SkillSummary:
     last_eval_at: float = 0.0
     days_since_last_eval: float = 0.0
     staleness_score: float = 0.0  # 0=fresh, 1=very stale
+    public_private_gap: float = 0.0  # >0.3 = suspected reward hacking
+    is_suspected_reward_hack: bool = False
 
     @property
     def is_stale(self) -> bool:
@@ -137,11 +141,9 @@ class ExperienceLedger:
             return
 
         try:
-            data = json.loads(self.ledger_path.read_text())
+            data = json.loads(self.ledger_path.read_text(encoding="utf-8"))
             for skill_id, eval_list in data.get("evals", {}).items():
-                self._evals[skill_id] = [
-                    SkillEval.from_dict(e) for e in eval_list
-                ]
+                self._evals[skill_id] = [SkillEval.from_dict(e) for e in eval_list]
             logger.info(
                 "Experience ledger: loaded %d skills, %d total evals",
                 len(self._evals),
@@ -159,9 +161,13 @@ class ExperienceLedger:
                 for skill_id, evals in self._evals.items()
             },
         }
-        self.ledger_path.write_text(json.dumps(data, indent=2))
+        self.ledger_path.write_text(
+            json.dumps(data, indent=2),
+            encoding="utf-8",
+        )
         logger.debug(
-            "Experience ledger: saved to %s", self.ledger_path,
+            "Experience ledger: saved to %s",
+            self.ledger_path,
         )
 
     def record_eval(self, eval_record: SkillEval) -> None:
@@ -173,30 +179,36 @@ class ExperienceLedger:
 
         # Trim history if needed
         if len(self._evals[eval_record.skill_id]) > self.max_history:
-            self._evals[eval_record.skill_id] = (
-                self._evals[eval_record.skill_id][-self.max_history:]
-            )
+            self._evals[eval_record.skill_id] = self._evals[eval_record.skill_id][
+                -self.max_history :
+            ]
 
-        # Update summary
-        self._summaries[eval_record.skill_id] = self._compute_summary(
-            eval_record.skill_id,
-        )
+        # Invalidate cached summary; recompute on next read.
+        # Recomputing on every read (rather than caching at write time)
+        # avoids stale-cache bugs where external mutations to the
+        # underlying _evals list would not be reflected.
+        self._summaries.pop(eval_record.skill_id, None)
 
     def get_summary(self, skill_id: str) -> Optional[SkillSummary]:
-        """Get aggregated summary for a skill."""
-        if skill_id not in self._summaries:
-            if skill_id in self._evals:
-                self._summaries[skill_id] = self._compute_summary(skill_id)
-            else:
-                return None
-        return self._summaries[skill_id]
+        """Get aggregated summary for a skill.
+
+        Always recomputes from the raw eval list so external mutations
+        (e.g. backdating ``created_at`` to simulate staleness) are
+        reflected immediately.
+        """
+        if skill_id not in self._evals:
+            return None
+        summary = self._compute_summary(skill_id)
+        self._summaries[skill_id] = summary
+        return summary
 
     def get_all_summaries(self) -> Dict[str, SkillSummary]:
-        """Get summaries for all skills."""
+        """Get summaries for all skills. Always recomputes."""
+        summaries: Dict[str, SkillSummary] = {}
         for skill_id in self._evals:
-            if skill_id not in self._summaries:
-                self._summaries[skill_id] = self._compute_summary(skill_id)
-        return dict(self._summaries)
+            summaries[skill_id] = self._compute_summary(skill_id)
+        self._summaries = summaries
+        return dict(summaries)
 
     def get_stale_skills(self) -> List[SkillSummary]:
         """Get skills that are stale (low private score or old)."""
@@ -254,6 +266,12 @@ class ExperienceLedger:
         quality_factor = 1.0 - avg_private  # Low score = high staleness
         staleness = 0.6 * recency_factor + 0.4 * quality_factor
 
+        # Reward-hacking signal: agent reports a high public score but the
+        # hidden private signal is much lower. A gap > 0.3 with sufficient
+        # evals is a strong indicator of gaming.
+        public_private_gap = round(max(avg_public - avg_private, 0.0), 3)
+        is_suspected_reward_hack = total >= 3 and public_private_gap > 0.3
+
         return SkillSummary(
             skill_id=skill_id,
             total_evals=total,
@@ -267,6 +285,8 @@ class ExperienceLedger:
             last_eval_at=last_eval,
             days_since_last_eval=round(days_since, 1),
             staleness_score=round(staleness, 3),
+            public_private_gap=public_private_gap,
+            is_suspected_reward_hack=is_suspected_reward_hack,
         )
 
     @property

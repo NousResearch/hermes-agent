@@ -22,10 +22,12 @@ Usage:
         stagnation_threshold=3,
     )
 """
+
 from __future__ import annotations
 
 import json
 import logging
+import random
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -105,16 +107,24 @@ class DelegationEvolution:
         self,
         hermes_home: Optional[Path] = None,
         default_strategies: Optional[List[str]] = None,
+        max_history_per_strategy: int = 100,
+        max_lineage_history: int = 500,
     ):
         self.hermes_home = hermes_home or Path.home() / ".hermes"
         self.state_dir = self.hermes_home / "state" / "delegation_evolution"
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
-        self.default_strategies = default_strategies or ["aggressive", "conservative", "creative"]
+        self.default_strategies = default_strategies or [
+            "aggressive",
+            "conservative",
+            "creative",
+        ]
         self._strategy_scores: Dict[str, List[float]] = {}
         self._lineage_history: Dict[str, List[StrategyResult]] = {}
         self._stagnation_counter: int = 0
         self._last_best_score: float = 0.0
+        self.max_history_per_strategy = max_history_per_strategy
+        self.max_lineage_history = max_lineage_history
 
         self._load_state()
 
@@ -122,27 +132,64 @@ class DelegationEvolution:
         """Load historical strategy performance data."""
         scores_file = self.state_dir / "strategy_scores.json"
         if scores_file.exists():
-            self._strategy_scores = json.loads(scores_file.read_text())
+            try:
+                self._strategy_scores = json.loads(
+                    scores_file.read_text(encoding="utf-8"),
+                )
+            except (OSError, ValueError) as e:
+                logger.warning(
+                    "DelegationEvolution: failed to load strategy_scores.json: %s",
+                    e,
+                )
+                self._strategy_scores = {}
 
         lineage_file = self.state_dir / "lineage_history.json"
         if lineage_file.exists():
-            data = json.loads(lineage_file.read_text())
-            for task_id, results in data.items():
-                self._lineage_history[task_id] = [
-                    StrategyResult(**r) for r in results
-                ]
+            try:
+                data = json.loads(lineage_file.read_text(encoding="utf-8"))
+                for task_id, results in data.items():
+                    self._lineage_history[task_id] = [
+                        StrategyResult(**r) for r in results
+                    ]
+            except (OSError, ValueError, TypeError) as e:
+                logger.warning(
+                    "DelegationEvolution: failed to load lineage_history.json: %s",
+                    e,
+                )
 
     def _save_state(self) -> None:
-        """Persist state for future runs."""
+        """Persist state for future runs.
+
+        Disk errors are logged but never raised: a transient write failure
+        should not lose an in-progress evolution cycle.
+        """
         scores_file = self.state_dir / "strategy_scores.json"
-        scores_file.write_text(json.dumps(self._strategy_scores, indent=2))
+        try:
+            scores_file.write_text(
+                json.dumps(self._strategy_scores, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            logger.warning(
+                "DelegationEvolution: failed to write strategy_scores.json: %s",
+                e,
+            )
 
         lineage_data = {
             task_id: [r.__dict__ for r in results]
             for task_id, results in self._lineage_history.items()
         }
         lineage_file = self.state_dir / "lineage_history.json"
-        lineage_file.write_text(json.dumps(lineage_data, indent=2))
+        try:
+            lineage_file.write_text(
+                json.dumps(lineage_data, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            logger.warning(
+                "DelegationEvolution: failed to write lineage_history.json: %s",
+                e,
+            )
 
     async def evolve_task(
         self,
@@ -167,7 +214,8 @@ class DelegationEvolution:
 
         logger.info(
             "Delegation evolution: starting task %s (goal='%s')",
-            task_id, goal[:50],
+            task_id,
+            goal[:50],
         )
 
         result = EvolutionResult(task_id=task_id)
@@ -179,7 +227,10 @@ class DelegationEvolution:
         # Dispatch subagents (in production, this calls delegate_task)
         for strategy in strategies:
             strat_result = await self._dispatch_strategy(
-                strategy, goal, context, task_id,
+                strategy,
+                goal,
+                context,
+                task_id,
             )
             result.results.append(strat_result)
             result.total_attempts += 1
@@ -212,7 +263,10 @@ class DelegationEvolution:
 
                 # Fork: try a new strategy
                 fork_result = await self._fork_strategy(
-                    best, goal, context, task_id,
+                    best,
+                    goal,
+                    context,
+                    task_id,
                 )
                 result.results.append(fork_result)
                 result.fork_performed = True
@@ -229,17 +283,36 @@ class DelegationEvolution:
                 if r.strategy not in self._strategy_scores:
                     self._strategy_scores[r.strategy] = []
                 self._strategy_scores[r.strategy].append(r.score)
+                # Trim per-strategy history to bound growth on long-running
+                # deployments where the same strategy may be retried many
+                # times.
+                if (
+                    len(self._strategy_scores[r.strategy])
+                    > self.max_history_per_strategy
+                ):
+                    self._strategy_scores[r.strategy] = self._strategy_scores[
+                        r.strategy
+                    ][-self.max_history_per_strategy :]
 
-            # Store lineage
+            # Store lineage, then evict oldest entries once we exceed the
+            # lineage history cap. We evict in insertion order which roughly
+            # matches task completion order.
             self._lineage_history[task_id] = result.results
+            if len(self._lineage_history) > self.max_lineage_history:
+                excess = len(self._lineage_history) - self.max_lineage_history
+                for old_task_id in list(self._lineage_history)[:excess]:
+                    del self._lineage_history[old_task_id]
 
         result.duration_sec = time.time() - start_time
         self._save_state()
 
         logger.info(
             "Delegation evolution: task %s done — best=%s (score=%.2f), attempts=%d, fork=%s",
-            task_id, result.best_strategy, result.best_score,
-            result.total_attempts, result.fork_performed,
+            task_id,
+            result.best_strategy,
+            result.best_score,
+            result.total_attempts,
+            result.fork_performed,
         )
 
         return result
@@ -301,9 +374,6 @@ class DelegationEvolution:
 
         lineage_id = f"{task_id}-{strategy}"
 
-        # Simulate execution with strategy-specific characteristics
-        import random
-
         # Different strategies have different success profiles
         if strategy == "aggressive":
             score = random.uniform(0.4, 0.95)  # High variance
@@ -349,20 +419,22 @@ class DelegationEvolution:
             # All strategies tried — retry best with variation
             fork_strategy = f"{best_result.strategy}-variant"
         else:
-            import random
             fork_strategy = random.choice(available)
 
         lineage_id = f"{task_id}-fork-{fork_strategy}"
 
         logger.info(
             "Delegation evolution: forking to '%s' (from '%s')",
-            fork_strategy, best_result.strategy,
+            fork_strategy,
+            best_result.strategy,
         )
 
-        # Simulate forked execution
-        import random
         # Fork has 50% chance of breaking stagnation
-        score = random.uniform(0.6, 0.95) if random.random() < 0.5 else random.uniform(0.3, 0.6)
+        score = (
+            random.uniform(0.6, 0.95)
+            if random.random() < 0.5
+            else random.uniform(0.3, 0.6)
+        )
         cost = random.uniform(0.1, 0.4)
 
         return StrategyResult(

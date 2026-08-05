@@ -22,10 +22,12 @@ Usage:
     engine = HermesSquaredEngine()
     report = await engine.run_improvement_cycle()
 """
+
 from __future__ import annotations
 
 import json
 import logging
+import random
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -33,7 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.eval_harness import EvalHarness
-from agent.experience_ledger import ExperienceLedger, SkillSummary
+from agent.experience_ledger import ExperienceLedger, SkillEval, SkillSummary
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +144,8 @@ class HermesSquaredEngine:
         start_time = time.time()
 
         logger.info(
-            "Hermes²: starting improvement cycle %s", cycle_id,
+            "Hermes²: starting improvement cycle %s",
+            cycle_id,
         )
 
         report = EvolutionReport(
@@ -209,15 +212,14 @@ class HermesSquaredEngine:
             if report.total_cost_usd > self.budget:
                 logger.warning(
                     "Hermes²: budget exceeded (%.2f > %.2f), stopping cycle",
-                    report.total_cost_usd, self.budget,
+                    report.total_cost_usd,
+                    self.budget,
                 )
                 break
 
         # Step 5: Calculate rejection rate (AIDE² reference: ~90%)
         if report.proposals_made > 0:
-            report.rejection_rate = (
-                report.proposals_rejected / report.proposals_made
-            )
+            report.rejection_rate = report.proposals_rejected / report.proposals_made
 
         report.duration_sec = time.time() - start_time
         report.summary = self._generate_summary(report)
@@ -237,7 +239,9 @@ class HermesSquaredEngine:
         return report
 
     async def _generate_proposal(
-        self, skill_id: str, summary: SkillSummary,
+        self,
+        skill_id: str,
+        summary: SkillSummary,
     ) -> Optional[ImprovementProposal]:
         """Generate an improvement proposal for a skill."""
         proposal_id = str(uuid.uuid4())[:8]
@@ -290,7 +294,8 @@ class HermesSquaredEngine:
         )
 
     async def _validate_proposal(
-        self, proposal: ImprovementProposal,
+        self,
+        proposal: ImprovementProposal,
     ) -> Dict[str, Any]:
         """Validate a proposal by running it through eval harness."""
         skill_id = proposal.skill_id
@@ -308,23 +313,23 @@ class HermesSquaredEngine:
             }
 
         # Save original content
-        original_content = skill_file.read_text()
+        original_content = skill_file.read_text(encoding="utf-8")
 
         try:
             # Apply mutation
             mutated_content = self._apply_mutation(
-                original_content, strategy, skill_id,
+                original_content,
+                strategy,
+                skill_id,
             )
-            skill_file.write_text(mutated_content)
+            skill_file.write_text(mutated_content, encoding="utf-8")
 
             # Run eval
             eval_id = f"validate-{proposal.proposal_id}"
             result = await self._run_validation_eval(eval_id, skill_id)
 
             # Compare scores
-            improved = (
-                result.get("private_score", 0.0) > proposal.current_private_score
-            )
+            improved = result.get("private_score", 0.0) > proposal.current_private_score
 
             return {
                 "improved": improved,
@@ -342,10 +347,13 @@ class HermesSquaredEngine:
             }
         finally:
             # Restore original content (proposal not yet accepted)
-            skill_file.write_text(original_content)
+            skill_file.write_text(original_content, encoding="utf-8")
 
     def _apply_mutation(
-        self, content: str, strategy: str, skill_id: str,
+        self,
+        content: str,
+        strategy: str,
+        skill_id: str,
     ) -> str:
         """Apply a mutation to the skill content."""
         if strategy == "add_validation":
@@ -390,12 +398,13 @@ After executing this skill, verify:
             return content + opt_hints
 
     async def _run_validation_eval(
-        self, eval_id: str, skill_id: str,
+        self,
+        eval_id: str,
+        skill_id: str,
     ) -> Dict[str, Any]:
         """Run a validation eval for a specific skill."""
         # In production, this would run actual evals
         # For now, simulate with improvement probability
-        import random
 
         # 60% chance of actual improvement
         improved = random.random() < 0.6
@@ -416,31 +425,35 @@ After executing this skill, verify:
             return
 
         # Apply the mutation permanently
-        content = skill_file.read_text()
+        content = skill_file.read_text(encoding="utf-8")
         mutated = self._apply_mutation(
             content,
             proposal.changes.get("strategy", "optimize"),
             proposal.skill_id,
         )
-        skill_file.write_text(mutated)
+        skill_file.write_text(mutated, encoding="utf-8")
 
         # Record in ledger with lineage
-        from agent.experience_ledger import SkillEval
-        self.ledger.record_eval(SkillEval(
-            skill_id=proposal.skill_id,
-            eval_event_id=f"evolved-{proposal.proposal_id}",
-            task_family="self_improvement",
-            public_score=proposal.expected_private_score,
-            private_score=proposal.expected_private_score,
-            cost_usd=proposal.validation_result.get("cost_usd", 0.0) if proposal.validation_result else 0.0,
-            outcome="success",
-            lineage=proposal.proposal_id,
-        ))
+        self.ledger.record_eval(
+            SkillEval(
+                skill_id=proposal.skill_id,
+                eval_event_id=f"evolved-{proposal.proposal_id}",
+                task_family="self_improvement",
+                public_score=proposal.expected_private_score,
+                private_score=proposal.expected_private_score,
+                cost_usd=proposal.validation_result.get("cost_usd", 0.0)
+                if proposal.validation_result
+                else 0.0,
+                outcome="success",
+                lineage=proposal.proposal_id,
+            )
+        )
         self.ledger.save()
 
         logger.info(
             "Hermes²: applied improvement to %s (proposal %s)",
-            proposal.skill_id, proposal.proposal_id,
+            proposal.skill_id,
+            proposal.proposal_id,
         )
 
     def _generate_summary(self, report: EvolutionReport) -> str:
@@ -472,6 +485,7 @@ After executing this skill, verify:
         """Save evolution report to disk."""
         report_file = self.reports_dir / f"cycle-{report.cycle_id}.json"
         report_file.write_text(
-            json.dumps(report.to_dict(), indent=2)
+            json.dumps(report.to_dict(), indent=2),
+            encoding="utf-8",
         )
         logger.info("Hermes²: saved report to %s", report_file)

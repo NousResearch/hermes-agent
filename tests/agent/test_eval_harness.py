@@ -1,4 +1,5 @@
 """Tests for AIDE² P0-2: Eval Harness."""
+
 from __future__ import annotations
 
 import json
@@ -119,12 +120,86 @@ class TestEvalHarness:
                 budget_usd=0.3,
             ).to_dict()
         ]
-        (evals_dir / "evals.json").write_text(json.dumps(evals))
+        # Write with explicit UTF-8 to mirror the Windows-footgun fix.
+        (evals_dir / "evals.json").write_text(
+            json.dumps(evals, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
         h = self._make_harness(tmp_path)
         count = h.load_evals()
         assert count == 1
         assert "json-eval" in h.get_evals()
+
+    def test_load_from_json_with_unicode(self, tmp_path):
+        """Regression: eval definitions with non-ASCII fields must round-trip
+        under UTF-8 encoding (Windows-footgun fix).
+        """
+        evals_dir = tmp_path / "evals"
+        evals_dir.mkdir(parents=True)
+
+        evals = [
+            EvalDefinition(
+                id="unicode-eval-✓",
+                family="research",
+                prompt="研究 Python 异步最佳实践",
+                description="包含中文的描述",
+                budget_usd=0.5,
+            ).to_dict()
+        ]
+        (evals_dir / "evals.json").write_text(
+            json.dumps(evals, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        h = self._make_harness(tmp_path)
+        count = h.load_evals()
+        assert count == 1
+        ev = h.get_evals()["unicode-eval-✓"]
+        assert "研究" in ev.prompt
+        assert "中文" in ev.description
+
+    def test_budget_exceeded_when_cost_strictly_over(self, tmp_path):
+        """Cost strictly greater than budget triggers budget_exceeded."""
+        h = self._make_harness(tmp_path)
+        ev = EvalDefinition(
+            id="over-budget",
+            family="tools",
+            prompt="Force over-budget",
+            budget_usd=0.10,
+        )
+        h._evals[ev.id] = ev
+
+        # Override the simulator to return a guaranteed over-budget cost.
+        h._simulate_task_execution = lambda ev: (
+            "ran",
+            ev.budget_usd + 0.01,  # cost = $0.11, budget = $0.10
+        )
+
+        result = h.run_eval("over-budget")
+        assert result.budget_exceeded is True
+        assert result.success is False
+        assert result.public_score == 0.0
+        assert result.private_score == 0.0
+        assert "exceeded budget" in result.error.lower()
+
+    def test_cost_equal_to_budget_passes(self, tmp_path):
+        """Cost == budget is allowed (strictly-greater threshold)."""
+        h = self._make_harness(tmp_path)
+        ev = EvalDefinition(
+            id="at-budget",
+            family="tools",
+            prompt="Hit budget exactly",
+            budget_usd=0.20,
+        )
+        h._evals[ev.id] = ev
+
+        h._simulate_task_execution = lambda ev: ("ran", ev.budget_usd)
+        # Default metric will assign moderate scores.
+
+        result = h.run_eval("at-budget")
+        assert result.budget_exceeded is False
+        # Should not short-circuit; metric path runs.
 
     def test_reward_hack_detection(self, tmp_path):
         h = self._make_harness(tmp_path)

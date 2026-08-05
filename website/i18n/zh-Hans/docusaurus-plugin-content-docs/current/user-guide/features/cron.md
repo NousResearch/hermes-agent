@@ -442,7 +442,7 @@ hermes cron create "every 5m" \
 - 最后一行输出 `{"wakeAgent": false}` → 静默 tick（与 LLM 任务使用相同的门控）。
 - 无 token、无模型、无 provider 回退——任务永远不会触及推理层。
 
-`.sh`/`.bash` 文件在 `/bin/bash` 下运行；其他文件在当前 Python 解释器（`sys.executable`）下运行。脚本必须位于 `~/.hermes/scripts/`（与预运行脚本门控相同的沙箱规则）。
+`.sh`/`.bash` 文件优先使用 `PATH` 中的 `bash`，不可用时回退到 `/bin/bash`（这对 Windows Git Bash 尤其重要）；其他文件默认使用当前 Python 解释器（`sys.executable`）。脚本路径必须解析到 `$HERMES_HOME/scripts/` 内部——只要解析后的目标仍位于该目录，相对路径、绝对路径和以 `~` 开头的路径都可以；逃逸该目录的路径会被拒绝。Python 脚本也可以通过在创建/编辑时传入 `--interpreter ~/venvs/.../bin/python` 来指定一个用户自管的 venv（用于 Hermes 运行时不携带的包）——参见[使用你自己的 Python 环境](/guides/cron-script-only#使用你自己的-python-环境)。Hermes 管理的 venv 仍归 Hermes 所有；系统不会自动安装或恢复任何包。子进程环境会被净化，因此 cron 脚本**不会**继承 provider API 凭据和其他由 Hermes 管理的秘密。
 
 ### Agent 为你设置这些
 

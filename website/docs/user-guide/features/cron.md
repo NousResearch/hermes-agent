@@ -480,7 +480,7 @@ Semantics:
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
 
-`.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. Subprocess env is sanitized (`_sanitize_subprocess_env`): provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
+`.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. A Python script can also pin a user-managed venv (for packages the Hermes runtime doesn't carry) by passing `--interpreter ~/venvs/.../bin/python` at create/edit time — see [Using your own Python environment](/guides/cron-script-only#using-your-own-python-environment). The Hermes-managed venv stays Hermes-owned; nothing is installed or restored automatically. The subprocess environment is sanitized, so provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
 
 ### The agent sets these up for you
 

@@ -83,6 +83,16 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         dest="model_provider",
         help="Inference provider paired with --model (e.g. 'openrouter', 'nous').",
     )
+    cron_create.add_argument(
+        "--interpreter",
+        help=(
+            "Optional Python interpreter for the script — an absolute or ~-prefixed "
+            "path to a Python executable in a user-managed venv (e.g. "
+            "~/venvs/reporting/bin/python3). Lets a Python script import packages "
+            "the Hermes runtime does not carry. Applies only to Python scripts; "
+            ".sh/.bash always run via bash. Omit to use Hermes' own Python."
+        ),
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -159,6 +169,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--provider",
         dest="model_provider",
         help="Inference provider paired with --model. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--interpreter",
+        help=(
+            "Optional Python interpreter for the script — an absolute or ~-prefixed "
+            "path to a Python executable in a user-managed venv. Pass an empty string "
+            "to clear (revert to Hermes' own Python). Applies only to Python scripts."
+        ),
     )
 
     # lifecycle actions

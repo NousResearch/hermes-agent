@@ -1032,12 +1032,19 @@ def spawn_background_review_thread(
     messages_snapshot: List[Dict],
     review_memory: bool = False,
     review_skills: bool = False,
+    focus: Optional[str] = None,
 ):
     """Build the review thread target and prompt for a background review.
 
     Returns a ``(target, prompt)`` tuple.  The caller (``AIAgent._spawn_background_review``)
     owns the actual ``threading.Thread`` construction so test-level patches
     of ``run_agent.threading.Thread`` keep working.
+
+    ``focus`` is optional user steering (the ``/refine [instructions]``
+    path): appended to the chosen review prompt so the fork prioritizes what
+    the user asked for while keeping the same guardrails. Automatic
+    post-turn reviews pass ``None`` — their prompts are byte-identical to
+    before this parameter existed.
     """
     # Pick the right prompt based on which triggers fired.  Allow per-agent
     # override (the prompts moved to module-level constants but old code paths
@@ -1048,6 +1055,15 @@ def spawn_background_review_thread(
         prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
     else:
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
+
+    focus = (focus or "").strip()
+    if focus:
+        prompt = (
+            f"{prompt}\n\n"
+            f"The user explicitly requested this review with the following "
+            f"focus — prioritize it over the general instructions above:\n"
+            f"{focus}"
+        )
 
     def _target() -> None:
         _run_review_in_thread(agent, messages_snapshot, prompt)

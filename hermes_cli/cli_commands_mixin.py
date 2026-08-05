@@ -2453,6 +2453,47 @@ class CLICommandsMixin:
             f"durable schedules.{_RST}"
         )
 
+    def _handle_refine_command(self, cmd: str) -> None:
+        """Dispatch /refine — run the memory/skill review fork on demand.
+
+        Same machinery as the automatic post-turn self-improvement loop
+        (``AIAgent._spawn_background_review``), but user-triggered and with
+        optional focus instructions. Writes go to the memory + skill stores
+        in a background fork; the live conversation and prompt cache are
+        never touched.
+        """
+        from cli import _DIM, _RST, _cprint
+
+        parts = (cmd or "").strip().split(None, 1)
+        focus = parts[1].strip() if len(parts) > 1 else ""
+
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            _cprint(f"  {_DIM}Nothing to refine yet — send a message first.{_RST}")
+            return
+
+        snapshot = list(getattr(self, "conversation_history", None) or [])
+        if not snapshot:
+            _cprint(f"  {_DIM}Nothing to refine yet — the conversation is empty.{_RST}")
+            return
+
+        review_skills = "skill_manage" in getattr(agent, "valid_tool_names", set())
+        try:
+            agent._spawn_background_review(
+                messages_snapshot=snapshot,
+                review_memory=True,
+                review_skills=review_skills,
+                focus=focus or None,
+            )
+        except Exception as exc:
+            _cprint(f"  /refine failed to start: {exc}")
+            return
+        tail = f" (focus: {focus})" if focus else ""
+        _cprint(
+            f"  ⚗ Reviewing this conversation in the background{tail} — "
+            f"any memory/skill updates will be reported when done."
+        )
+
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / draft / show / gate / status / pause / resume / clear."""
         from cli import _DIM, _RST, _cprint

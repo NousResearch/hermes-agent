@@ -2844,6 +2844,50 @@ class GatewaySlashCommandsMixin:
             "elapsed. Lives while the gateway runs — use `hermes cron` for durable schedules."
         )
 
+    async def _handle_refine_command(self, event: "MessageEvent") -> str:
+        """Handle /refine — run the memory/skill review fork on demand.
+
+        Uses the session's cached AIAgent (idle agents live in
+        ``_agent_cache``). The review runs in a daemon thread against a
+        snapshot of the conversation; the live session and prompt cache are
+        untouched. Requires the session to have at least one completed turn.
+        """
+        args = (event.get_command_args() or "").strip()
+        quick_key = self._session_key_for_source(event.source) if event.source else None
+        if not quick_key:
+            return "Refine unavailable (no session)."
+        if quick_key in self._running_agents:
+            return "Agent is running — wait for the turn to finish, then /refine."
+
+        agent = None
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+        if cache_lock is not None:
+            with cache_lock:
+                cached = self._agent_cache.get(quick_key)
+                agent = cached[0] if isinstance(cached, tuple) else cached if cached else None
+        if agent is None:
+            return "Nothing to refine yet — send a message first."
+
+        snapshot = list(getattr(agent, "_session_messages", None) or [])
+        if not snapshot:
+            return "Nothing to refine yet — the conversation is empty."
+
+        review_skills = "skill_manage" in getattr(agent, "valid_tool_names", set())
+        try:
+            agent._spawn_background_review(
+                messages_snapshot=snapshot,
+                review_memory=True,
+                review_skills=review_skills,
+                focus=args or None,
+            )
+        except Exception as exc:
+            return f"/refine failed to start: {exc}"
+        tail = f" (focus: {args})" if args else ""
+        return (
+            f"⚗ Reviewing this conversation in the background{tail} — "
+            f"any memory/skill updates will be reported when done."
+        )
+
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).
 

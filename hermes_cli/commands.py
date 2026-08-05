@@ -163,6 +163,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("hb",), args_hint="[every <interval> <prompt> | status | pause | resume | clear]",
                subcommands=("status", "pause", "resume", "clear"),
                busy_policy="dispatch"),
+    CommandDef("refine", "Review this conversation now and save lessons to memory/skills", "Session",
+               args_hint="[focus instructions]"),
     CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
                args_hint="<prompt>", busy_policy="reject", busy_handler="moa"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
@@ -1267,7 +1269,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     and silently clamps /update off, breaking Telegram parity.
 #   - heartbeat: session heartbeat management; reached via /hermes heartbeat
 #     on Slack. Added at the 50-cap — a native slot would clamp /insights.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat"})
+#   - refine: on-demand memory/skill review; reached via /hermes refine on
+#     Slack. Added at the 50-cap — a native slot would clamp an existing
+#     native slash.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

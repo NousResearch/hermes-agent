@@ -292,20 +292,38 @@ def backup_memory_file(path: Path) -> Optional[Path]:
 
 
 def discard_path(path: Path) -> None:
-    """Remove a staging/backup path, without ever raising.
+    """Remove a staging/backup path, logging rather than raising on failure.
 
     Only called while unwinding a failed directory swap, where the exception
-    that is already in flight is the one worth reporting: a cleanup error
-    would mask it, and the leftover is a hidden sibling of the destination,
-    not user data.
+    already in flight is the one worth reporting: a cleanup error must not
+    mask it.  It must not vanish either, though —
+    ``rmtree(..., ignore_errors=True)`` would swallow a permission or I/O
+    problem outright and leave a hidden ``.import-*`` / ``.bak-*`` sibling
+    behind with no signal at all.  So failures are collected and logged while
+    the removal still gets as far as it can.
     """
+    failures: List[Tuple[str, Any]] = []
+
+    def on_error(_func, failed_path, error) -> None:
+        # ``onexc`` (3.12+) passes the exception instance; ``onerror`` (3.11)
+        # passes a sys.exc_info() triple.  Same split as
+        # ``hermes_cli.profiles._rmtree_with_retry``.
+        failures.append(
+            (str(failed_path), error[1] if isinstance(error, tuple) else error)
+        )
+
     try:
         if path.is_symlink() or path.is_file():
             path.unlink()
         elif path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-    except OSError:
-        logger.debug("Could not remove temporary path %s", path, exc_info=True)
+            if sys.version_info >= (3, 12):
+                shutil.rmtree(path, onexc=on_error)
+            else:
+                shutil.rmtree(path, onerror=on_error)
+    except OSError as exc:
+        failures.append((str(path), exc))
+    for failed_path, error in failures:
+        logger.debug("Could not remove temporary path %s: %s", failed_path, error)
 
 
 def merge_entries(

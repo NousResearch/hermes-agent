@@ -11,6 +11,7 @@ the real ~/.hermes.
 """
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -813,6 +814,37 @@ class TestImportSkillsDurability:
         assert [i["status"] for i in skill_items(report)] == ["imported"]
         assert not link.is_symlink()
         assert "Deploy things." in (link / "SKILL.md").read_text(encoding="utf-8")
+
+    # -- cleanup failures are reported, not swallowed ----------------------
+
+    def test_failed_cleanup_is_logged_rather_than_swallowed(
+            self, tmp_path, caplog):
+        """``rmtree(..., ignore_errors=True)`` would drop a permission problem
+        on the floor, leaving a hidden ``.import-*`` sibling with no signal."""
+        import os
+
+        if os.name != "posix":
+            pytest.skip("chmod-based permission denial is POSIX-only")
+        if getattr(os, "geteuid", lambda: 1)() == 0:
+            pytest.skip("root bypasses file permissions")
+
+        from hermes_cli import agent_import
+
+        stray = tmp_path / ".deploy-helper.import-abcd1234"
+        locked = stray / "locked"
+        locked.mkdir(parents=True)
+        (locked / "SKILL.md").write_text("staged\n", encoding="utf-8")
+        # r-x: the child is readable but the directory is not writable, so it
+        # cannot be unlinked.
+        locked.chmod(0o500)
+        try:
+            with caplog.at_level(logging.DEBUG, logger=agent_import.__name__):
+                agent_import.discard_path(stray)  # must not raise
+        finally:
+            locked.chmod(0o700)
+
+        assert "Could not remove temporary path" in caplog.text
+        assert "SKILL.md" in caplog.text
 
     # -- the ordinary overwrite still works --------------------------------
 

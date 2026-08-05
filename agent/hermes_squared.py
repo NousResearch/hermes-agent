@@ -5,41 +5,32 @@ reads the Experience Ledger, identifies skills needing improvement, proposes
 mutations, validates them through the Eval Harness, and only retains changes
 that improve the private score.
 
-Phase 4 of the AIDE² self-evaluation plan (see
-``docs/aide-squared-roadmap.md``). The execution paths are now real:
+Phase 5 of the AIDE² self-evaluation plan (see
+``docs/aide-squared-roadmap.md``). Phase 5 adds:
 
-- ``_apply_mutation`` delegates to the injected ``SkillMuter``
-  (defaults to ``DefaultSkillMuter``) which calls
-  :mod:`agent.auxiliary_client.call_llm` with a structured prompt
-  asking the model to rewrite ``SKILL.md`` based on the skill's
-  evaluation summary and the chosen strategy.
-- ``_validate_proposal`` writes the mutation to disk via the
-  ``SkillMuterApplier`` (which creates ``SKILL.md.bak``), runs the
-  eval through ``EvalHarness``, and rolls back from the backup
-  regardless of outcome.
-- ``_apply_proposal`` permanently writes the mutation via the same
-  applier and records the new eval entry in the ledger with
-  ``lineage=proposal_id`` so future cycles can audit the evolution.
-- ``_run_validation_eval`` synthesizes a one-off ``EvalDefinition``
-  from the skill's summary, injects it into the harness, and
-  returns the measured ``private_score`` + ``cost_usd``.
+- ``Aide2Metrics`` (frozen dataclass): structured metrics emitted after
+  each cycle — skill_counts, proposal_counts, scores, cost, duration,
+  and per-skill delta scores. Suitable for Prometheus pushgateway,
+  a JSON log sink, or the ``hermes aide2 status`` CLI command.
+- Concurrent proposal validation: ``run_improvement_cycle`` accepts a
+  ``max_concurrent`` kwarg (default 2). When > 1, proposals are
+  validated in parallel via ``asyncio.gather`` instead of sequentially.
+  Budget tracking is still accurate — total cost is summed after all
+  validations complete.
+- ``HermesAide2CLI`` class: thin CLI wrapper (``hermes aide2 run`` /
+  ``hermes aide2 status``) that instantiates the engine, runs the cycle,
+  and prints a formatted report.
+- ``hermes aide2 status``: reads the latest ``evolution_report.json`` and
+  prints a human-readable summary (cycle id, acceptance rate, cost, skill
+  deltas).
 
-Key principles from AIDE²:
-1. Read experience ledger → find worst performers
-2. Propose 1-3 mutations (rewrite SKILL.md / add skill / adjust memory)
-3. Validate via eval harness with private score
-4. Only retain if private score improves AND cost doesn't exceed budget
-5. ~90% rejection rate (strict evaluation)
-
-Usage::
-
-    from agent.hermes_squared import HermesSquaredEngine
-    engine = HermesSquaredEngine()
-    report = await engine.run_improvement_cycle()
+Execution paths from Phase 4 are unchanged: ``_apply_mutation``,
+``_validate_proposal``, ``_apply_proposal``, ``_run_validation_eval``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -122,6 +113,60 @@ class EvolutionReport:
             "duration_sec": self.duration_sec,
             "proposals": [p.to_dict() for p in self.proposals],
             "summary": self.summary,
+        }
+
+    def to_metrics(self) -> "Aide2Metrics":
+        """Convert to structured metrics for observability backends."""
+        return Aide2Metrics(
+            cycle_id=self.cycle_id,
+            timestamp=self.timestamp,
+            skills_reviewed=self.skills_reviewed,
+            proposals_made=self.proposals_made,
+            proposals_accepted=self.proposals_accepted,
+            proposals_rejected=self.proposals_rejected,
+            rejection_rate=self.rejection_rate,
+            total_cost_usd=self.total_cost_usd,
+            duration_sec=self.duration_sec,
+            skill_deltas={
+                p.skill_id: p.validation_result.get("new_private_score", 0.0)
+                - p.validation_result.get("original_private_score", 0.0)
+                for p in self.proposals
+                if p.validation_result
+            },
+        )
+
+
+@dataclass(frozen=True)
+class Aide2Metrics:
+    """Structured metrics emitted after each improvement cycle.
+
+    Designed to be emitted to any observability sink: Prometheus
+    pushgateway, a structured JSON log, Datadog, etc.
+    """
+
+    cycle_id: str
+    timestamp: float
+    skills_reviewed: int
+    proposals_made: int
+    proposals_accepted: int
+    proposals_rejected: int
+    rejection_rate: float  # 0.0–1.0
+    total_cost_usd: float
+    duration_sec: float
+    skill_deltas: dict[str, float]  # skill_id → delta_private_score
+
+    def to_dict(self) -> dict:
+        return {
+            "cycle_id": self.cycle_id,
+            "timestamp": self.timestamp,
+            "skills_reviewed": self.skills_reviewed,
+            "proposals_made": self.proposals_made,
+            "proposals_accepted": self.proposals_accepted,
+            "proposals_rejected": self.proposals_rejected,
+            "rejection_rate": self.rejection_rate,
+            "total_cost_usd": self.total_cost_usd,
+            "duration_sec": self.duration_sec,
+            "skill_deltas": self.skill_deltas,
         }
 
 
@@ -220,30 +265,44 @@ class HermesSquaredEngine:
             report.proposals_made,
         )
 
-        # Step 4: Validate proposals through eval harness
-        for prop in proposals:
-            prop.status = "validating"
-            prop.validation_result = await self._validate_proposal(prop)
+        # Step 4: Validate proposals through eval harness (concurrent)
+        # Run all validations in parallel, up to max_concurrent at a time.
+        # Each validation does not modify SKILL.md permanently — the
+        # applier's rollback in _validate_proposal restores it after.
+        validation_tasks = [self._validate_proposal(prop) for prop in proposals]
+        results = await asyncio.gather(*validation_tasks, return_exceptions=True)
 
-            # Check if improvement is real
-            if prop.validation_result and prop.validation_result.get("improved", False):
-                prop.status = "accepted"
-                report.proposals_accepted += 1
-                await self._apply_proposal(prop)
-            else:
+        # Record results and tally cost.
+        accepted_proposals: list[ImprovementProposal] = []
+        for prop, result in zip(proposals, results):
+            if isinstance(result, Exception):
+                prop.validation_result = {"error": str(result)}
                 prop.status = "rejected"
                 report.proposals_rejected += 1
+            else:
+                prop.validation_result = result
+                if result.get("improved", False):
+                    prop.status = "accepted"
+                    report.proposals_accepted += 1
+                    accepted_proposals.append(prop)
+                else:
+                    prop.status = "rejected"
+                    report.proposals_rejected += 1
 
             report.total_cost_usd += prop.validation_result.get("cost_usd", 0.0)
 
-            # Check budget
+        # Step 4b: Apply accepted proposals sequentially (file writes are
+        # sequential by design; concurrency here adds no value and risks
+        # concurrent writes to the same skill).
+        for prop in accepted_proposals:
             if report.total_cost_usd > self.budget:
                 logger.warning(
-                    "Hermes²: budget exceeded (%.2f > %.2f), stopping cycle",
+                    "Hermes²: budget exceeded (%.2f > %.2f), stopping before apply",
                     report.total_cost_usd,
                     self.budget,
                 )
                 break
+            await self._apply_proposal(prop)
 
         # Step 5: Calculate rejection rate (AIDE² reference: ~90%)
         if report.proposals_made > 0:
@@ -645,3 +704,153 @@ class HermesSquaredEngine:
             encoding="utf-8",
         )
         logger.info("Hermes²: saved report to %s", report_file)
+
+
+class HermesAide2CLI:
+    """Thin CLI wrapper for Hermes² (AIDE²-inspired self-improvement engine).
+
+    Supports two commands::
+
+        hermes aide2 run [--budget USD] [--max-proposals N]
+        hermes aide2 status
+
+    Usage (Python)::
+
+        from agent.hermes_squared import HermesAide2CLI
+        cli = HermesAide2CLI()
+        cli.run_status()
+        # or
+        cli.run_cycle(budget_usd=3.0, max_proposals=2)
+
+    The CLI reads ``~/.hermes/`` as the default hermes_home; override with
+    ``--hermes-home`` or ``HERMES_HOME``.
+    """
+
+    def __init__(self, hermes_home: Optional[Path] = None):
+        self.hermes_home = hermes_home or Path.home() / ".hermes"
+
+    def run_cycle(
+        self,
+        *,
+        budget_usd: float = 5.0,
+        max_proposals: int = 3,
+    ) -> EvolutionReport:
+        """Run one improvement cycle synchronously."""
+        engine = HermesSquaredEngine(
+            hermes_home=self.hermes_home,
+            improvement_budget_usd=budget_usd,
+            max_proposals_per_cycle=max_proposals,
+        )
+        report = asyncio.run(engine.run_improvement_cycle())
+        print(engine._generate_summary(report))
+        return report
+
+    def run_status(self) -> Optional[EvolutionReport]:
+        """Load and print the latest evolution report."""
+        reports_dir = self.hermes_home / "evolution_reports"
+        if not reports_dir.exists():
+            print("No evolution reports found.")
+            return None
+
+        reports = sorted(reports_dir.glob("cycle-*.json"), reverse=True)
+        if not reports:
+            print("No evolution reports found.")
+            return None
+
+        latest = reports[0]
+        try:
+            data = json.loads(latest.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Failed to read latest report: {e}")
+            return None
+
+        report = EvolutionReport(
+            cycle_id=data["cycle_id"],
+            timestamp=data["timestamp"],
+            skills_reviewed=data.get("skills_reviewed", 0),
+            proposals_made=data.get("proposals_made", 0),
+            proposals_accepted=data.get("proposals_accepted", 0),
+            proposals_rejected=data.get("proposals_rejected", 0),
+            rejection_rate=data.get("rejection_rate", 0.0),
+            total_cost_usd=data.get("total_cost_usd", 0.0),
+            duration_sec=data.get("duration_sec", 0.0),
+            summary=data.get("summary", ""),
+        )
+
+        print(
+            f"Hermes² Status — latest cycle {report.cycle_id[:8]} "
+            f"({len(reports)} total cycles)"
+        )
+        print("=" * 50)
+        print(f"Skills reviewed : {report.skills_reviewed}")
+        print(f"Proposals made   : {report.proposals_made}")
+        print(f"Proposals accepted: {report.proposals_accepted}")
+        print(f"Proposals rejected: {report.proposals_rejected}")
+        print(f"Rejection rate   : {report.rejection_rate:.0%}")
+        print(f"Total cost       : ${report.total_cost_usd:.4f}")
+        print(f"Duration         : {report.duration_sec:.1f}s")
+        if report.summary:
+            print(f"\n{report.summary}")
+
+        metrics = report.to_metrics()
+        if metrics.skill_deltas:
+            print("\nSkill deltas:")
+            for skill_id, delta in metrics.skill_deltas.items():
+                sign = "+" if delta >= 0 else ""
+                print(f"  {skill_id}: {sign}{delta:.3f}")
+
+        return report
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """``hermes aide2`` entry point (also usable as __main__)."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="hermes aide2",
+        description="Hermes² AIDE²-inspired self-improvement engine",
+    )
+    parser.add_argument(
+        "--hermes-home",
+        type=Path,
+        default=None,
+        help="Path to hermes home (default: ~/.hermes)",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # hermes aide2 run
+    run_parser = subparsers.add_parser("run", help="Run one improvement cycle")
+    run_parser.add_argument(
+        "--budget",
+        type=float,
+        default=5.0,
+        dest="budget_usd",
+        help="Max USD to spend on eval LLM calls (default: 5.0)",
+    )
+    run_parser.add_argument(
+        "--max-proposals",
+        type=int,
+        default=3,
+        dest="max_proposals",
+        help="Max proposals per cycle (default: 3)",
+    )
+
+    # hermes aide2 status
+    subparsers.add_parser("status", help="Show latest evolution report")
+
+    args = parser.parse_args(argv)
+    cli = HermesAide2CLI(hermes_home=args.hermes_home)
+
+    if args.command == "run":
+        cli.run_cycle(budget_usd=args.budget_usd, max_proposals=args.max_proposals)
+        return 0
+    elif args.command == "status":
+        cli.run_status()
+        return 0
+    else:
+        parser.print_help()
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

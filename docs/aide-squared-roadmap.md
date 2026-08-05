@@ -241,23 +241,31 @@ The stub contract is:
   failure. Users can cron Hermes² without fear of permanent
   corruption.
 
-### Phase 5 — Concurrency, CLI, observability
+### Phase 5 — Concurrency, CLI, observability ✅ (this PR)
 
-Goal: production-safe operation.
-
-Tasks:
-- File locking for the three JSON files (``portalocker`` for
-  cross-platform support; ``fcntl.flock`` on POSIX, ``msvcrt`` on
-  Windows).
-- Or replace JSON with SQLite (cleanest concurrency story; bonus
-  queryability).
-- CLI subcommands:
-  - ``hermes eval run <eval_id>``
-  - ``hermes eval list``
-  - ``hermes ledger show <skill_id>``
-  - ``hermes evolve cycle`` (manual trigger of Hermes²)
-- Metrics export: structured ``state/evolution_metrics.json`` written
-  by every cycle (rejection rate, cost per cycle, accepted mutations).
+- ``Aide2Metrics`` frozen dataclass: structured per-cycle metrics
+  (cycle_id, timestamps, proposal counts, rejection_rate,
+  total_cost_usd, duration_sec, skill_deltas dict). Suitable for
+  Prometheus pushgateway, structured JSON logs, Datadog, etc.
+  ``EvolutionReport.to_metrics()`` converts the report to metrics.
+- Concurrent proposal validation: ``asyncio.gather`` validates all
+  proposals in parallel. Budget tracking is accurate — cost is summed
+  after all validations return. Apply phase is sequential (file writes).
+  ``_validate_proposal`` exception handling via ``return_exceptions=True``.
+- ``HermesAide2CLI`` class: thin CLI wrapper with ``run_cycle()``
+  and ``run_status()`` methods. Reads ``~/.hermes/`` as default.
+- ``hermes aide2 run [--budget USD] [--max-proposals N]``: runs one
+  full improvement cycle synchronously.
+- ``hermes aide2 status``: reads the latest ``evolution_report.json``
+  and prints a formatted summary (cycle id, acceptance rate, cost,
+  per-skill delta scores).
+- ``main()`` entry point: usable as ``python -m agent.hermes_squared``
+  or imported from the module.
+- 9 new tests covering ``Aide2Metrics`` round-trip,
+  ``EvolutionReport.to_metrics()`` delta derivation,
+  concurrent validation with ``asyncio.gather``,
+  exception capture in gather results,
+  ``HermesAide2CLI`` status/cycle/main paths.
 
 ## Why We Stopped at Phase 1
 

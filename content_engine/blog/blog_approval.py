@@ -310,10 +310,12 @@ def parse_discord_command(text: str) -> Optional[dict]:
       !approve <slug>
       !reject <slug> [reason...]
       !amend <slug> [notes...]
+      !approve-idea <idea-id>
+      !reject-idea <idea-id> [reason...]
 
     Returns dict with keys: {'command': str, 'slug': str, 'args': str} or None.
     """
-    m = re.match(r"^!(approve|reject|amend|preview)\s+(\S+)\s*(.*)", text.strip(), re.IGNORECASE)
+    m = re.match(r"^!(approve-idea|reject-idea|approve|reject|amend|preview)\s+(\S+)\s*(.*)", text.strip(), re.IGNORECASE)
     if not m:
         return None
     return {
@@ -336,6 +338,28 @@ def handle_discord_command(text: str) -> dict:
 
     slug = cmd["slug"]
     action = cmd["command"]
+
+    if action == "approve-idea":
+        from blog.idea_backlog import approve as _idea_approve
+        # route: idea id may collide with blog slug names, so keep them distinct.
+        res = _idea_approve(slug)
+        if res.get("status") == "approved":
+            return {"handled": True, "action": "idea_approved", "slug": slug,
+                    "message": f"💡 Idea **{slug}** approved and queued to its stream backlog for generation."}
+        if res.get("status") == "not_found":
+            return {"handled": True, "action": "not_found", "slug": slug,
+                    "message": f"❌ No pending idea found for `{slug}`."}
+        return {"handled": True, "action": "idea_already", "slug": slug,
+                "message": f"ℹ️ Idea `{slug}` already processed ({res.get('status')})."}
+
+    elif action == "reject-idea":
+        from blog.idea_backlog import reject as _idea_reject
+        res = _idea_reject(slug)
+        if res.get("status") == "rejected":
+            return {"handled": True, "action": "idea_rejected", "slug": slug,
+                    "message": f"💡 Idea **{slug}** rejected."}
+        return {"handled": True, "action": "not_found", "slug": slug,
+                "message": f"❌ No pending idea found for `{slug}`."}
 
     if action == "approve":
         if approve(slug):

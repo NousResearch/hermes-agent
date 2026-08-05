@@ -398,11 +398,11 @@ _FREE_FALLBACK_CHAIN = [
 ]
 
 # Long-form / factual tier (articles + blog): stronger models with fallback.
-# Primary: ollama-cloud (glm-5.2/deepseek). Secondary: opencode-go.
+# Primary: CommandCode (deepseek-v4-flash 0731 build). Secondary: opencode-go.
 # Final fallback: Gemini's OpenAI-compatible endpoint. If all fail, callers
 # such as the art_director hard-stop rather than silently degrading.
 _LONGFORM_CHAIN = [
-    {"base": "https://ollama.com/v1", "model": "glm-5.2", "provider": "ollama"},
+    {"base": "https://api.commandcode.ai/provider/v1", "model": "deepseek/deepseek-v4-flash", "provider": "commandcode"},
     {"base": "https://ollama.com/v1", "model": "deepseek-v4-flash", "provider": "ollama"},
     {"base": "https://opencode.ai/zen/go/v1", "model": "minimax-m3", "provider": "opencode"},
     {"base": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-2.5-flash", "provider": "gemini"},
@@ -427,6 +427,8 @@ def _key_for(provider: str) -> str:
         return (os.getenv("GEMINI_API_KEY", "")
                 or os.getenv("GOOGLE_AI_API_KEY", "")
                 or os.getenv("GOOGLE_API_KEY", "")).strip()
+    if provider == "commandcode":
+        return os.getenv("COMMANDCODE_API_KEY", "").strip()
     return _opencode_key()
 
 

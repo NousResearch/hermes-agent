@@ -27,6 +27,7 @@ from pathlib import Path
 # Reused low-level helpers (import only — do not modify the source modules).
 from blog.preview import md_to_html, _image_to_data_uri, parse_frontmatter, _read_mdx
 from scripts.build_xarticle_previews import embed_image_resized
+from blog.idea_backlog import idea_cards
 import database
 
 ENGINE = Path(__file__).resolve().parent.parent
@@ -49,6 +50,7 @@ COMPRESSION_LEVELS = [(800, 80), (680, 72), (560, 64), (460, 55)]
 BLOG_GROUP = "SAHILSBLOG"
 X_GROUP = "X/TWITTER"
 LINKEDIN_GROUP = "LINKEDIN"
+IDEAS_GROUP = "IDEAS"
 
 
 # ── Design: the approved validation-*.html palette + minimal layout CSS ──────
@@ -240,12 +242,39 @@ def _img_card(label: str, uri: str, meta: str) -> str:
 
 # ── Gather + render articles ─────────────────────────────────────────────────
 
-def _blog_items(max_width: int = 800, quality: int = 80) -> list[dict]:
-    """Render a pane per pending blog post from pending_approvals.jsonl."""
-    items = []
+def _pending_tracker_entries() -> list[dict]:
+    """Tracker entries that are genuinely awaiting review.
+
+    Filters out entries whose MDX frontmatter is already `approved: true`
+    (those posts are live on production and must not be counted or rendered
+    as pending). Shared by _blog_items and the main() count so the reported
+    number matches what is actually rendered.
+    """
+    out = []
     for entry in _read_jsonl(TRACKER):
         if entry.get("status") != "pending":
             continue
+        mdx = entry.get("mdx_path", "")
+        p = Path(mdx) if mdx else None
+        if p and p.exists():
+            fm, _ = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+            if str(fm.get("approved", "")).strip().lower() == "true":
+                continue  # already approved/live — not a pending review
+        out.append(entry)
+    return out
+
+
+def _blog_items(max_width: int = 800, quality: int = 80) -> list[dict]:
+    """Render a pane per pending blog post from pending_approvals.jsonl.
+
+    A tracker entry is only a genuine pending review if its MDX frontmatter
+    still reads `approved: false`. Posts that have been approved (frontmatter
+    `approved: true`) are LIVE on production — even if they remain in the
+    tracker with status "pending" (the tracker is not auto-cleaned on deploy).
+    Skip them so they are not re-flagged as awaiting review.
+    """
+    items = []
+    for entry in _pending_tracker_entries():
         items.append(_render_blog_pane(entry, max_width, quality))
     return items
 
@@ -391,30 +420,39 @@ def _summary_pane(sections: list[tuple[str, list[dict]]], indexed: list[tuple[in
     nblog = counts.get(BLOG_GROUP, 0)
     nx = counts.get(X_GROUP, 0)
     nlinkedin = counts.get(LINKEDIN_GROUP, 0)
+    nideas = counts.get(IDEAS_GROUP, 0)
     total = nblog + nx + nlinkedin
 
     rows = []
     for idx, it in indexed:
-        group = {BLOG_GROUP: "Blog", X_GROUP: "X/Twitter", LINKEDIN_GROUP: "LinkedIn"}[it["group"]]
+        group = {BLOG_GROUP: "Blog", X_GROUP: "X/Twitter", LINKEDIN_GROUP: "LinkedIn", IDEAS_GROUP: "Idea"}[it["group"]]
+        slug = it.get("slug") or it.get("id", "")
+        action_cell = (
+            f"<code>!approve-idea {_esc(slug)}</code><br><code>!reject-idea {_esc(slug)}</code>"
+            if it["group"] == IDEAS_GROUP else
+            f"<code>!approve {_esc(slug)}</code><br><code>!reject {_esc(slug)}</code>"
+        )
         rows.append(
             f"<tr><td class='num'>{idx}</td>"
             f"<td><a class='rowtitle' onclick='show({idx})'>{_esc(it['title'])}</a>"
-            f"<br><span class='slug'>{_esc(it['slug'])}</span></td>"
+            f"<br><span class='slug'>{_esc(slug)}</span></td>"
             f"<td><span class='pill'>{_esc(group)}</span></td>"
-            f"<td><code>!approve {_esc(it['slug'])}</code><br><code>!reject {_esc(it['slug'])}</code></td></tr>"
+            f"<td>{action_cell}</td></tr>"
         )
     table = (
-        "<table><thead><tr><th>#</th><th>Article</th><th>Platform</th><th>Actions</th></tr></thead>"
+        "<table><thead><tr><th>#</th><th>Item</th><th>Type</th><th>Actions</th></tr></thead>"
         f"<tbody>{''.join(rows) or '<tr><td colspan=4><em>None pending.</em></td></tr>'}</tbody></table>"
     )
+    idea_line = f" + {nideas} idea concepts" if nideas else ""
     return (
         f"<h1>Pending Review</h1>"
-        f'<p class="deck">{today} · {nblog} blog posts + {nx} X/Twitter articles + {nlinkedin} LinkedIn articles awaiting review '
+        f'<p class="deck">{today} · {nblog} blog posts + {nx} X/Twitter articles + {nlinkedin} LinkedIn articles awaiting review{idea_line} '
         f"(total {total})</p>"
-        f"{_meta_dl(Blog=nblog, **{'X/Twitter': nx, 'LinkedIn': nlinkedin}, Total=total)}"
+        f"{_meta_dl(Blog=nblog, **{'X/Twitter': nx, 'LinkedIn': nlinkedin, 'Ideas': nideas}, Total=total)}"
         f"{table}"
         f'<p class="source">Approve: <code>!approve &lt;slug&gt;</code> · '
-        f"Reject: <code>!reject &lt;slug&gt;</code> · Batch: <code>!approve all</code></p>"
+        f"Reject: <code>!reject &lt;slug&gt;</code> · Idea: <code>!approve-idea &lt;id&gt;</code> · "
+        f"Batch: <code>!approve all</code></p>"
     )
 
 
@@ -501,19 +539,21 @@ def build() -> list[str]:
     x0, linkedin0 = article_groups0[X_GROUP], article_groups0[LINKEDIN_GROUP]
     if diagnostics:
         raise RuntimeError("article approval state mismatch: " + "; ".join(diagnostics))
-    if not blog0 and not x0 and not linkedin0:
+    ideas0 = idea_cards()
+    if not blog0 and not x0 and not linkedin0 and not ideas0:
         return []
 
-    last_blog, last_x, last_linkedin = blog0, x0, linkedin0
+    last_blog, last_x, last_linkedin, last_ideas = blog0, x0, linkedin0, ideas0
     for i, (width, quality) in enumerate(COMPRESSION_LEVELS):
         blog = blog0 if i == 0 else _blog_items(width, quality)
         article_groups, diagnostics = (article_groups0, diagnostics) if i == 0 else _pending_article_items(width, quality)
         if diagnostics:
             raise RuntimeError("article approval state mismatch: " + "; ".join(diagnostics))
         x, linkedin = article_groups[X_GROUP], article_groups[LINKEDIN_GROUP]
-        last_blog, last_x, last_linkedin = blog, x, linkedin
+        ideas = ideas0  # idea cards are lightweight text; no compression dependency
+        last_blog, last_x, last_linkedin, last_ideas = blog, x, linkedin, ideas
         combined = render(
-            [(BLOG_GROUP, blog), (X_GROUP, x), (LINKEDIN_GROUP, linkedin)],
+            [(IDEAS_GROUP, ideas), (BLOG_GROUP, blog), (X_GROUP, x), (LINKEDIN_GROUP, linkedin)],
             "Pending Review",
         )
         if len(combined.encode("utf-8")) <= SIZE_CAP:
@@ -522,7 +562,9 @@ def build() -> list[str]:
     # Even the most aggressive level overflows — split per platform, then chunk
     # any platform still too big so no single file exceeds the cap.
     outputs = []
-    for group, slug, items in ((BLOG_GROUP, "blog", last_blog), (X_GROUP, "x", last_x), (LINKEDIN_GROUP, "linkedin", last_linkedin)):
+    groups = [(IDEAS_GROUP, "ideas", last_ideas), (BLOG_GROUP, "blog", last_blog),
+              (X_GROUP, "x", last_x), (LINKEDIN_GROUP, "linkedin", last_linkedin)]
+    for group, slug, items in groups:
         if not items:
             continue
         chunks = _chunk_by_size(items)
@@ -536,7 +578,7 @@ def build() -> list[str]:
 
 
 def main() -> None:
-    blog_n = len([e for e in _read_jsonl(TRACKER) if e.get("status") == "pending"])
+    blog_n = len(_pending_tracker_entries())
     outputs = build()
     pending_articles = database.list_article_approvals(status="pending")
     x_n = sum(str(row.get("platform", "")).lower() in {"x", "twitter"} for row in pending_articles)

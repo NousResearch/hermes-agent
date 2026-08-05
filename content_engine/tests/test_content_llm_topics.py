@@ -38,7 +38,7 @@ def test_longform_chain_has_provider_fallbacks(monkeypatch):
     monkeypatch.delenv("CONTENT_LLM_MODEL", raising=False)
     cfgs = lg._llm_configs(longform=True)
     models = [c["model"] for c in cfgs]
-    assert models[0] == "glm-5.2"
+    assert models[0] == "deepseek/deepseek-v4-flash"
     assert "deepseek-v4-flash" in models
     assert "minimax-m3" in models
     assert "gemini-2.5-flash" in models
@@ -50,7 +50,7 @@ def test_short_and_longform_differ(monkeypatch):
     short = [c["model"] for c in lg._llm_configs(longform=False)]
     long = [c["model"] for c in lg._llm_configs(longform=True)]
     assert short[0] == "deepseek-v4-flash"
-    assert long[0] == "glm-5.2"
+    assert long[0] == "deepseek/deepseek-v4-flash"
 
 
 def test_fabricated_numbers_catches_growth_metrics():

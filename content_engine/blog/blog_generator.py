@@ -44,8 +44,8 @@ def retrieve_kb(topic: str, limit: int = 3) -> list[str]:
 def _call_llm_first(system: str, user: str) -> Optional[str]:
     """Try the LLM chain once; return first non-empty body or None.
 
-    Uses the longform chain (minimax-m3, glm-5.2) since blog posts are
-    long-form content where prose quality matters.
+    Uses the longform chain (CommandCode deepseek-v4-flash, opencode minimax-m3)
+    since blog posts are long-form content where prose quality matters.
     """
     for cfg in _llm_configs(longform=True):
         body = _call_llm(system, user, cfg, timeout=180, max_tokens=8000)

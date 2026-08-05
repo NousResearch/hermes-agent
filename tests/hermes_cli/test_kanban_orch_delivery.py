@@ -136,6 +136,7 @@ def test_receipt_exact_binding():
     attempt = start_attempt(obl, attempt_id=1, send_nonce="n1", payload_digest=D,
                             result_digest=D, claim_owner="w1", claim_token_hash="t1",
                             claim_epoch=1, lifecycle_revision=0, cancel_epoch=0)
+    finish_attempt(obl, attempt, terminal_state="adapter_accepted", now=150)
 
     # Valid receipt
     receipt = DeliveryReceipt(
@@ -150,8 +151,9 @@ def test_receipt_exact_binding():
     # Reset for negative tests
     obl.state = "claimed"
     obl.acceptance_attempt_id = None
-    attempt.state = "started"
-    attempt.finished_at = None
+    obl.open_attempt_id = None
+    attempt.state = "adapter_accepted"
+    attempt.finished_at = 150
 
     # Wrong attempt ID
     bad_receipt = DeliveryReceipt(
@@ -276,7 +278,7 @@ def test_outcome_atomic_bundle():
     attempt2 = DeliveryAttempt(
         attempt_id=2, obligation_id="o2", send_nonce="n2", payload_digest=D,
         result_digest=D, route_digest=D, claim_owner="w1", claim_token_hash="t1",
-        claim_epoch=1, lifecycle_revision=0, cancel_epoch=0,
+        claim_epoch=1, lifecycle_revision=0, cancel_epoch=0, state="adapter_accepted",
     )
     bad_receipt = DeliveryReceipt(
         attempt_id=2, obligation_id="o2", send_nonce="n2",
@@ -303,7 +305,7 @@ def test_accepted_unknown_recovery():
     process_receipt(obl, DeliveryAttempt(
         attempt_id=1, obligation_id="o1", send_nonce="n1", payload_digest=D,
         result_digest=D, route_digest=D, claim_owner="w1", claim_token_hash="t1",
-        claim_epoch=1, lifecycle_revision=0, cancel_epoch=0,
+        claim_epoch=1, lifecycle_revision=0, cancel_epoch=0, state="unknown",
     ), receipt, now=500)
     assert obl.state == "acked"
     assert obl.acceptance_attempt_id == 1

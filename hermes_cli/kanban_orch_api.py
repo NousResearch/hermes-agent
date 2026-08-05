@@ -108,7 +108,10 @@ def bootstrap_board_only_request(
         "requirements": [],
     }
     request_json = json.dumps(request_obj, separators=(",", ":"), sort_keys=True)
-    request_digest = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
+    # Server recomputes request digest; caller cannot forge identity.
+    from hermes_cli.kanban_orch_canonical import request_digest as recompute_request_digest
+
+    request_digest = recompute_request_digest(request_obj)
     now = _now()
 
     begin_immediate(conn)

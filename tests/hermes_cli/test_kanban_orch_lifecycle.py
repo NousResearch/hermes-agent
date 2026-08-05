@@ -46,6 +46,7 @@ def test_transition_table_total() -> None:
         applied = apply_transition(
             request, event, resolved_target,
             resume_state=(resume if source == "blocked" else None),
+            require_evidence=False,
         )
         assert applied.state == resolved_target
         assert applied.lifecycle_revision == 1
@@ -130,6 +131,8 @@ def test_cancel_cascade_fencing() -> None:
 
     # Drain the active task/node and resolve the started send ambiguity.
     runs[0].ended_at = 1235
+    tasks[1].status = "cancelled"
+    tasks[1].cancellation_requested_at = None
     nodes[1].state = "cancelled"
     attempts[0].state = "unknown"
     obligations[2].state = "dead_letter"

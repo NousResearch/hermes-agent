@@ -27,6 +27,7 @@ class CanonicalError(ValueError):
         super().__init__(code)
         self.code = code
         self.__cause__ = None
+        self.__context__ = None
         self.__suppress_context__ = True
 
 
@@ -51,6 +52,27 @@ def require_exact_type(value: Any, expected: type | tuple[type, ...], *, code: s
     return value
 
 
+def assert_digest_matches(value: Any, claimed: Any, *, code: str = "digest_mismatch") -> str:
+    """Server-side recompute: caller digest is assertion-only, never authority."""
+    claimed_hex = require_sha256_hex(claimed, code="invalid_digest")
+    actual = digest(value)
+    if actual != claimed_hex:
+        raise CanonicalError(code)
+    return actual
+
+
+def assert_raw_json_digest_matches(raw_json: str | bytes, claimed: Any, *, code: str = "digest_mismatch") -> str:
+    """Recompute digest from raw JSON text/bytes after strict parse."""
+    if type(raw_json) is str:
+        raw = raw_json.encode("utf-8")
+    elif type(raw_json) is bytes:
+        raw = raw_json
+    else:
+        raise CanonicalError("invalid_json")
+    parsed = strict_json_loads(raw)
+    return assert_digest_matches(parsed, claimed, code=code)
+
+
 def require_sha256_hex(value: Any, *, code: str = "invalid_digest") -> str:
     s = require_exact_type(value, str, code=code)
     if len(s) != 64 or any(ch not in "0123456789abcdef" for ch in s):
@@ -64,8 +86,9 @@ def _normalize_string(value: str) -> str:
         raise CanonicalError("invalid_unicode")
     try:
         encoded = normalized.encode("utf-8", errors="strict")
-    except UnicodeEncodeError:
-        raise CanonicalError("invalid_unicode") from None
+    except UnicodeEncodeError as exc:
+        err = CanonicalError("invalid_unicode")
+        raise err from None
     if len(encoded) > MAX_STRING_BYTES:
         raise CanonicalError("string_too_large")
     return normalized
@@ -114,6 +137,10 @@ def strict_json_loads(raw: bytes) -> Any:
             parse_constant=_reject_constant,
         )
     except json.JSONDecodeError:
+        raise CanonicalError("invalid_json") from None
+    except CanonicalError:
+        raise
+    except Exception:
         raise CanonicalError("invalid_json") from None
     return _validate_value(value, depth=0)
 

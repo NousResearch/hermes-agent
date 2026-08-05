@@ -176,8 +176,8 @@ def run_full_orch_lifecycle(harness: SidecarTestHarness, *,
     results["acceptances"] = {"run1": {"node_key": r1.node_key}, "run2": {"node_key": r2.node_key}}
 
     # Step 4: Synthesize (M3)
-    lifecycle_req = apply_transition(req, "required_set_accepted", "synthesizing")
-    lifecycle_req = apply_transition(lifecycle_req, "result_accepted", "work_accepted")
+    lifecycle_req = apply_transition(req, "required_set_accepted", "synthesizing", accepted_required_lanes=2)
+    lifecycle_req = apply_transition(lifecycle_req, "result_accepted", "work_accepted", has_result=True)
     results["synthesis"] = {"state": lifecycle_req.state, "revision": lifecycle_req.lifecycle_revision}
 
     # Step 5: Observer (M4)
@@ -197,7 +197,9 @@ def run_full_orch_lifecycle(harness: SidecarTestHarness, *,
 
     # Step 7: Complete (M3)
     lifecycle_req = apply_transition(lifecycle_req, "required_routes_exist", "delivering")
-    lifecycle_req = apply_transition(lifecycle_req, "delivery_satisfied", "completed")
+    lifecycle_req = apply_transition(
+        lifecycle_req, "delivery_satisfied", "completed", delivery_satisfied=True
+    )
     results["completion"] = {"state": lifecycle_req.state, "terminal": is_terminal(lifecycle_req.state), "revision": lifecycle_req.lifecycle_revision}
 
     # Step 8: Reconcile (M6)

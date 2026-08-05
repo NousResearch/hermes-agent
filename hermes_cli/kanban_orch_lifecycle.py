@@ -171,10 +171,46 @@ def apply_transition(
     to_state: str,
     *,
     resume_state: str | None = None,
+    require_evidence: bool = True,
+    accepted_required_lanes: int | None = None,
+    has_result: bool | None = None,
+    delivery_satisfied: bool | None = None,
+    origin_kind: str | None = None,
+    retry_budget_remaining: int | None = None,
 ) -> Request:
-    """Apply one revision-CAS transition and return a new request snapshot."""
+    """Apply one revision-CAS transition and return a new request snapshot.
+
+    When require_evidence=True (default), gated events need durable evidence:
+    - required_set_accepted: accepted_required_lanes >= 2
+    - result_accepted: has_result is True
+    - delivery_satisfied: delivery_satisfied is True
+    - explicit_board_only: origin_kind == 'board_only'
+    - retriable_lane_failure: retry_budget_remaining > 0
+    - required_exhausted / unrecoverable_or_exhausted: retry_budget_remaining <= 0
+    """
     if not transition_allowed(request.state, event, to_state, resume_state=resume_state):
         raise LifecycleError(f"invalid_transition:{request.state}:{event}:{to_state}")
+
+    if require_evidence:
+        if event == "required_set_accepted":
+            if accepted_required_lanes is None or accepted_required_lanes < 2:
+                raise LifecycleError("missing_required_lane_acceptances")
+        elif event == "result_accepted":
+            if has_result is not True:
+                raise LifecycleError("missing_synthesis_result")
+        elif event == "delivery_satisfied":
+            if delivery_satisfied is not True:
+                raise LifecycleError("delivery_not_satisfied")
+        elif event == "explicit_board_only":
+            if origin_kind != "board_only":
+                raise LifecycleError("board_only_origin_required")
+        elif event == "retriable_lane_failure":
+            if retry_budget_remaining is None or retry_budget_remaining <= 0:
+                raise LifecycleError("retry_budget_exhausted_or_missing")
+        elif event in {"required_exhausted", "unrecoverable_or_exhausted"}:
+            if retry_budget_remaining is None or retry_budget_remaining > 0:
+                raise LifecycleError("exhaustion_not_proven")
+
     next_resume = resume_state if to_state == "blocked" else None
     next_blocked = request.state if to_state == "blocked" else None
     next_cancel_epoch = request.cancel_epoch + (1 if to_state == "cancelling" else 0)
@@ -185,6 +221,7 @@ def apply_transition(
         state=to_state,
         lifecycle_revision=request.lifecycle_revision + 1,
         cancel_epoch=next_cancel_epoch,
+        generation=request.generation,
         resume_state=next_resume,
         blocked_from_state=next_blocked,
         block_revision=request.block_revision + (1 if to_state == "blocked" else 0),
@@ -305,6 +342,16 @@ def cancellation_satisfied(
 ) -> bool:
     """Shared §7.4 predicate for the final cancelling→cancelled CAS."""
     if request.state != "cancelling":
+        return False
+    # Running/ready work must drain; cancellation_requested is not terminal.
+    if any(
+        _same_scope(task, request)
+        and (
+            task.status in {"planned", "ready", "running"}
+            or task.cancellation_requested_at is not None and task.status != "cancelled"
+        )
+        for task in tasks
+    ):
         return False
     if any(_same_scope(run, request) and run.ended_at is None for run in task_runs):
         return False

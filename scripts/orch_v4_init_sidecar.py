@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
 """ORCH V4 Sidecar Init — create-only new orch_v4.db.
 
-Source: 拆卡機制四大缺陷-詳細實作計畫.md §15.0 Sidecar Architecture Decision.
-
-Usage:
-    python scripts/orch_v4_init_sidecar.py \
-        --sidecar-db /path/to/orch_v4.db \
-        --native-db /path/to/kanban.db \
-        --receipt /path/to/receipt.json
-
 Hard rules:
-- Sidecar path must not exist (O_EXCL)
+- Sidecar path must not exist (atomic O_CREAT|O_EXCL|O_NOFOLLOW)
+- Receipt path must not exist (atomic create-only)
 - Native DB opened mode=ro only
 - No native schema mutation
-- Receipt records native_sha256 + sidecar_sha256 + native_mutated=false
 """
+
+from __future__ import annotations
 
 import argparse
 import hashlib
@@ -34,6 +28,27 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def _atomic_create_file(path: Path, mode: int = 0o600) -> None:
+    flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(str(path), flags, mode)
+    os.close(fd)
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    data = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    fd = os.open(str(path), flags, 0o644)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Initialize ORCH V4 sidecar DB")
     parser.add_argument("--sidecar-db", required=True, help="Path for new sidecar orch_v4.db")
@@ -46,24 +61,25 @@ def main() -> int:
     native_path = Path(args.native_db)
     receipt_path = Path(args.receipt)
 
-    # O_EXCL: sidecar must not exist
-    if sidecar_path.exists():
+    if sidecar_path.exists() or os.path.lexists(sidecar_path):
         print(f"ERROR: sidecar path already exists: {sidecar_path}", file=sys.stderr)
         return 1
-
-    # Native must exist
+    if receipt_path.exists() or os.path.lexists(receipt_path):
+        print(f"ERROR: receipt path already exists: {receipt_path}", file=sys.stderr)
+        return 1
     if not native_path.exists():
         print(f"ERROR: native DB not found: {native_path}", file=sys.stderr)
         return 1
 
-    # Hash native BEFORE (zero-mutation baseline)
-    native_sha_before = sha256_file(str(native_path))
+    # Refuse live default native path unless operator is explicit via env.
+    live = Path.home() / ".hermes" / "kanban.db"
+    if native_path.resolve() == live.resolve() and os.environ.get("ORCH_V4_ALLOW_LIVE") != "1":
+        print("ERROR: live native path forbidden without ORCH_V4_ALLOW_LIVE=1", file=sys.stderr)
+        return 2
 
-    # Open native RO (verify it works)
+    native_sha_before = sha256_file(str(native_path))
     native_conn = sqlite3.connect(f"file:{native_path}?mode=ro", uri=True)
-    native_conn.row_factory = sqlite3.Row
     try:
-        # Verify we can read
         native_conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
     except sqlite3.Error as e:
         print(f"ERROR: native DB read failed: {e}", file=sys.stderr)
@@ -71,7 +87,15 @@ def main() -> int:
     finally:
         native_conn.close()
 
-    # Create sidecar DB
+    try:
+        _atomic_create_file(sidecar_path)
+    except FileExistsError:
+        print(f"ERROR: sidecar path already exists: {sidecar_path}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"ERROR: sidecar create failed: {e}", file=sys.stderr)
+        return 1
+
     sidecar_conn = sqlite3.connect(str(sidecar_path))
     try:
         sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -83,29 +107,21 @@ def main() -> int:
         )
 
         apply_sidecar_schema(sidecar_conn)
-
-        # Verify
         tables = get_sidecar_table_names(sidecar_conn)
         triggers = get_sidecar_trigger_names(sidecar_conn)
         verify_no_native_tables(sidecar_conn)
-
-        # Count
         table_count = len([t for t in tables if not t.startswith("sqlite_")])
         trigger_count = len(triggers)
     finally:
         sidecar_conn.close()
 
-    # Hash native AFTER (must be unchanged)
     native_sha_after = sha256_file(str(native_path))
     sidecar_sha = sha256_file(str(sidecar_path))
-
     if native_sha_before != native_sha_after:
         print("FATAL: native DB hash changed during init!", file=sys.stderr)
-        # Rollback: delete sidecar
         sidecar_path.unlink(missing_ok=True)
         return 1
 
-    # Write receipt
     receipt = {
         "init_id": f"sidecar-init-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
         "sidecar_path": str(sidecar_path),
@@ -113,19 +129,23 @@ def main() -> int:
         "native_path": str(native_path),
         "native_sha256_before": native_sha_before,
         "native_sha256_after": native_sha_after,
-        "native_mutated": native_sha_before != native_sha_after,
+        "native_mutated": False,
         "sidecar_table_count": table_count,
         "sidecar_trigger_count": trigger_count,
         "native_opened_mode": "ro",
+        "create_mode": "O_CREAT|O_EXCL|O_NOFOLLOW",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
     }
-
-    receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    receipt_path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n")
+    try:
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(receipt_path, receipt)
+    except FileExistsError:
+        print(f"ERROR: receipt path already exists: {receipt_path}", file=sys.stderr)
+        return 1
 
     print(f"Sidecar created: {sidecar_path}")
     print(f"  Tables: {table_count}, Triggers: {trigger_count}")
-    print(f"  Native SHA-256: {native_sha_before[:16]}... (unchanged: {native_sha_before == native_sha_after})")
+    print(f"  Native SHA-256: {native_sha_before[:16]}... (unchanged)")
     print(f"  Receipt: {receipt_path}")
     return 0
 

@@ -50,6 +50,7 @@ class DeliveryObligation:
     claim_token_hash: str | None = None
     claim_epoch: int = 0
     acceptance_attempt_id: int | None = None
+    open_attempt_id: int | None = None
     acked_at: int | None = None
     duplicate_possible: bool = False
 
@@ -149,6 +150,7 @@ def claim_obligation(
     obligation.claim_owner = owner
     obligation.claim_token_hash = token_hash
     obligation.claim_epoch += 1
+    obligation.open_attempt_id = None
     return obligation.claim_epoch
 
 
@@ -165,7 +167,10 @@ def start_attempt(
     lifecycle_revision: int,
     cancel_epoch: int,
 ) -> DeliveryAttempt:
-    """§10.2: Pre-send intent — durable started marker."""
+    """§10.2: Pre-send intent — durable started marker.
+
+    At most one open attempt per claim epoch (CAS).
+    """
     if obligation.state != "claimed":
         raise DeliveryError("attempt_not_claimed")
     if obligation.claim_owner != claim_owner:
@@ -174,7 +179,9 @@ def start_attempt(
         raise DeliveryError("attempt_wrong_token")
     if obligation.claim_epoch != claim_epoch:
         raise DeliveryError("attempt_wrong_epoch")
-    return DeliveryAttempt(
+    if obligation.open_attempt_id is not None:
+        raise DeliveryError("attempt_already_open")
+    attempt = DeliveryAttempt(
         attempt_id=attempt_id,
         obligation_id=obligation.obligation_id,
         send_nonce=send_nonce,
@@ -187,6 +194,8 @@ def start_attempt(
         lifecycle_revision=lifecycle_revision,
         cancel_epoch=cancel_epoch,
     )
+    obligation.open_attempt_id = attempt_id
+    return attempt
 
 
 def finish_attempt(
@@ -207,6 +216,8 @@ def finish_attempt(
     attempt.state = terminal_state
     attempt.finished_at = now
     attempt.adapter_evidence_digest = evidence_digest
+    if obligation.open_attempt_id == attempt.attempt_id:
+        obligation.open_attempt_id = None
     return attempt
 
 
@@ -220,6 +231,8 @@ def process_receipt(
     """§10.3: Positive path — verify receipt, ACK obligation.
 
     Receipt must bind exact attempt/nonce/payload/result/route/family/strength.
+    Rejected attempts can never ACK. Only adapter_accepted (or unknown recovery)
+    attempts are acceptable.
     """
     if receipt.attempt_id != attempt.attempt_id:
         raise DeliveryError("receipt_attempt_mismatch")
@@ -239,13 +252,18 @@ def process_receipt(
         raise DeliveryError("ack_strength_mismatch")
     if not receipt.verified:
         raise DeliveryError("receipt_not_verified")
+    if attempt.state == "rejected":
+        raise DeliveryError("rejected_attempt_cannot_ack")
+    if attempt.state not in {"adapter_accepted", "unknown"}:
+        raise DeliveryError("receipt_attempt_not_acceptable")
 
-    # CAS: claimed or unknown → accepted → acked
+    # CAS: claimed or unknown → acked
     if obligation.state not in ("claimed", "unknown"):
         raise DeliveryError("ack_not_authorized")
     obligation.state = "acked"
     obligation.acceptance_attempt_id = attempt.attempt_id
     obligation.acked_at = now
+    obligation.open_attempt_id = None
 
 
 def check_delivery_satisfied(

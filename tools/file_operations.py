@@ -875,9 +875,16 @@ class ShellFileOperations(FileOperations):
         # Fall through to init-time self.cwd only if the env doesn't track cwd.
         effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
         result = self.env.execute(command, cwd=effective_cwd, **kwargs)
+        exit_code = result.get("returncode", 0)
+        # A stdin write failure with an otherwise-clean child exit is still
+        # a failure: the child never received the intended input. write_file
+        # rejects such content up front (Task 3); this mapping is
+        # defense-in-depth for any other stdin caller.
+        if result.get("stdin_error") and exit_code == 0:
+            exit_code = 1
         return ExecuteResult(
             stdout=result.get("output", ""),
-            exit_code=result.get("returncode", 0)
+            exit_code=exit_code
         )
     
     def _has_command(self, cmd: str) -> bool:

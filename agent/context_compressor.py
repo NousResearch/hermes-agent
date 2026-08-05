@@ -1730,19 +1730,11 @@ class ContextCompressor(ContextEngine):
         """Restore the cache-boundary runway for a resumed durable session."""
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
-        getter = getattr(session_db, "get_session", None)
+        getter = getattr(session_db, "get_session_model_config_value", None)
         if not session_id or not callable(getter):
             return
         try:
-            session = getter(session_id) or {}
-            raw = session.get("model_config")
-            if isinstance(raw, str):
-                raw = json.loads(raw) if raw.strip() else {}
-            value = (
-                raw.get(PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, 0)
-                if isinstance(raw, dict)
-                else 0
-            )
+            value = getter(session_id, PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, 0)
             self._proactive_prune_rearm_tokens = max(
                 0,
                 int(value) if isinstance(value, (int, float, str)) else 0,
@@ -1751,6 +1743,23 @@ class ContextCompressor(ContextEngine):
             logger.debug("proactive prune runway lookup failed: %s", exc)
         except Exception as exc:
             logger.debug("proactive prune runway lookup failed (non-sqlite): %s", exc)
+
+    def _clear_durable_proactive_prune_rearm(self) -> None:
+        """Remove the persisted runway key without touching the transcript.
+
+        Best-effort companion to zeroing the in-memory mirror at sites that
+        void the runway (model switch): without it a restart would reload a
+        runway computed under thresholds that no longer apply.
+        """
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        patcher = getattr(session_db, "patch_session_model_config", None)
+        if not session_id or not callable(patcher):
+            return
+        try:
+            patcher(session_id, {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None})
+        except Exception as exc:
+            logger.debug("proactive prune runway clear failed: %s", exc)
 
     def _persist_fallback_compression_streak(self) -> None:
         session_db = getattr(self, "_session_db", None)
@@ -2111,7 +2120,12 @@ class ContextCompressor(ContextEngine):
             self._clear_compression_failure_cooldown()
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
+        # The prune runway was computed against the PREVIOUS model's trigger
+        # sizes. Same durable-sync discipline as the strike reset above: clear
+        # the model_config copy too, so a restart doesn't resurrect a runway
+        # this recalibration just voided.
         self._proactive_prune_rearm_tokens = 0
+        self._clear_durable_proactive_prune_rearm()
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
     # window, compacting at the percentage (50% → 32K of a 64K window) wastes
@@ -3101,6 +3115,18 @@ class ContextCompressor(ContextEngine):
         before = sum(_estimate_msg_budget_tokens(m) for m in messages)
         if before < self._proactive_prune_rearm_tokens:
             return messages, 0
+        # Capability gate BEFORE the expensive 3-pass scan: a bound store that
+        # can't persist the prune atomically (duck-typed/plugin session store
+        # without archive_and_compact) makes every prune a permanent no-op, so
+        # don't pay the scan for it on every eligible iteration.
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        if (
+            session_db
+            and session_id
+            and not callable(getattr(session_db, "archive_and_compact", None))
+        ):
+            return messages, 0
         pruned_msgs, pruned_count = self._prune_old_tool_results(
             messages,
             protect_tail_count=self.protect_last_n,
@@ -3128,14 +3154,10 @@ class ContextCompressor(ContextEngine):
             self.proactive_prune_min_reclaim_tokens,
         )
         next_rearm_tokens = after + runway
-        session_db = getattr(self, "_session_db", None)
-        session_id = getattr(self, "_session_id", "")
         if session_db and session_id:
-            archive_and_compact = getattr(session_db, "archive_and_compact", None)
-            if not callable(archive_and_compact):
-                return messages, 0
+            # The capability gate above guarantees archive_and_compact exists.
             try:
-                archive_and_compact(
+                session_db.archive_and_compact(
                     session_id,
                     pruned_msgs,
                     model_config_patch={

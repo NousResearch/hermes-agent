@@ -3340,6 +3340,18 @@ def compress_context(
                     messages[:] = copy.deepcopy(messages_before_compression)
                     compressed = messages
                     _compression_made_progress = False
+                    # Restore ONLY the prune runway, not the full attempt
+                    # snapshot: _restore_compressor_attempt_state is reserved
+                    # for pre-commit cancels (fence deny / explicit cancel),
+                    # while this branch is post-attempt — the other snapshot
+                    # fields (telemetry, aborted flags) must keep the failed
+                    # attempt's values. The runway is a property of transcript
+                    # state, and the transcript was just rolled back to its
+                    # pre-compression copy, so the runway rolls back with it.
+                    # (compress() zeroed it in-memory on summary success; the
+                    # durable copy was never cleared — that clear only rides
+                    # the atomic archive_and_compact / child-row publication
+                    # that just failed.)
                     if "_proactive_prune_rearm_tokens" in _compressor_attempt_snapshot:
                         agent.context_compressor._proactive_prune_rearm_tokens = (
                             _compressor_attempt_snapshot[

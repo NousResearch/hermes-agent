@@ -209,3 +209,65 @@ def test_archive_model_config_patch_rolls_back_with_transcript(tmp_path: Path) -
 
     assert db.get_messages_as_conversation(session_id)[0]["content"] == "original"
     assert _model_config(db, session_id) == {"keep": "value", _REARM_KEY: 120_000}
+
+
+def test_model_switch_clears_durable_runway(tmp_path: Path) -> None:
+    """update_model must clear BOTH the in-memory and the durable runway."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "MODEL_SWITCH_CLEARS_RUNWAY"
+    db.create_session(
+        session_id,
+        source="telegram",
+        model_config={"keep": "value", _REARM_KEY: 120_000},
+    )
+    agent = _build_agent(db, session_id)
+    compressor = agent.context_compressor
+    assert compressor._proactive_prune_rearm_tokens == 120_000
+
+    compressor.update_model("other/model", 200_000)
+
+    assert compressor._proactive_prune_rearm_tokens == 0
+    assert _REARM_KEY not in _model_config(db, session_id)
+    assert _model_config(db, session_id)["keep"] == "value"
+
+
+def test_patch_session_model_config_merge_and_delete(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PATCH_MODEL_CONFIG"
+    db.create_session(
+        session_id, source="cli", model_config={"keep": "value", "drop": 1},
+    )
+
+    db.patch_session_model_config(session_id, {"drop": None, "added": 7})
+    assert _model_config(db, session_id) == {"keep": "value", "added": 7}
+
+    # Missing rows and empty patches are no-ops, never errors.
+    db.patch_session_model_config("NO_SUCH_SESSION", {"x": 1})
+    db.patch_session_model_config(session_id, {})
+
+
+def test_incapable_store_short_circuits_before_prune_scan(tmp_path: Path) -> None:
+    """A bound store without archive_and_compact must not pay the prune scan."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "INCAPABLE_STORE_FAST_NOOP"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    compressor = agent.context_compressor
+
+    class _NoArchiveStore:
+        pass
+
+    compressor.bind_session_state(_NoArchiveStore(), session_id)
+    messages = db.get_messages_as_conversation(session_id)
+    with patch.object(
+        type(compressor), "_prune_old_tool_results",
+        side_effect=AssertionError("scan must not run for incapable stores"),
+    ):
+        result, count = compressor.prune_tool_results_only(
+            messages, current_tokens=120_000,
+        )
+
+    assert result is messages
+    assert count == 0

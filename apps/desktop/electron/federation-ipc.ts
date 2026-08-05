@@ -1,3 +1,5 @@
+import http from 'node:http'
+
 /**
  * Federation IPC bridge — Electron main process ↔ Gateway API.
  *
@@ -9,7 +11,6 @@
  * - Response sanitized (no raw HTTP details exposed)
  */
 import { ipcMain } from 'electron'
-import http from 'node:http'
 
 interface FederationAPIConfig {
   port: number
@@ -53,10 +54,13 @@ async function callFederationAPI(path: string, method = 'GET', body?: unknown): 
         // Security: validate response status
         if (res.statusCode === 401 || res.statusCode === 403) {
           reject(new Error('Federation API: unauthorized'))
+
           return
         }
+
         if (res.statusCode !== 200) {
           reject(new Error(`Federation API: HTTP ${res.statusCode}`))
+
           return
         }
 
@@ -79,6 +83,7 @@ async function callFederationAPI(path: string, method = 'GET', body?: unknown): 
     if (body && method !== 'GET') {
       req.write(JSON.stringify(body))
     }
+
     req.end()
   })
 }

@@ -25,11 +25,11 @@ import {
 } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
+import { FederationDevicesOverlay } from '../federation/federation-devices-overlay'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
-import { FederationDevicesOverlay } from '../federation/federation-devices-overlay'
 import { SKILLS_ROUTE } from '../routes'
 
 import { AboutSettings } from './about-settings'

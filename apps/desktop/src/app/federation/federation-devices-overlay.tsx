@@ -12,7 +12,6 @@
  * - Compute capability display
  */
 import { useStore } from '@nanostores/react'
-import { useCallback, useMemo, useState } from 'react'
 import {
   Cpu,
   Globe,
@@ -27,6 +26,7 @@ import {
   WifiOff,
   X,
 } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
 
 import { Badge, badgeVariants } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -37,7 +37,6 @@ import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
-
 import {
   $fedDevices,
   $fedEnabled,
@@ -54,26 +53,34 @@ import {
 
 function formatUptime(lastSeen: number): string {
   const diff = Date.now() / 1000 - lastSeen
-  if (diff < 60) return `${Math.floor(diff)}s ago`
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+
+  if (diff < 60) {return `${Math.floor(diff)}s ago`}
+
+  if (diff < 3600) {return `${Math.floor(diff / 60)}m ago`}
+
   return `${Math.floor(diff / 3600)}h ago`
 }
 
 function latencyColor(ms: number): string {
-  if (ms < 50) return 'text-emerald-500'
-  if (ms < 150) return 'text-amber-500'
+  if (ms < 50) {return 'text-emerald-500'}
+
+  if (ms < 150) {return 'text-amber-500'}
+
   return 'text-red-500'
 }
 
 function statusBadge(status: string) {
   switch (status) {
     case 'online':
-      return <Badge variant="default" className="gap-1"><SignalHigh className="size-3" />Online</Badge>
+      return <Badge className="gap-1" variant="default"><SignalHigh className="size-3" />Online</Badge>
+
     case 'connecting':
-      return <Badge variant="default" className="gap-1"><Wifi className="size-3 animate-pulse" />Connecting</Badge>
+      return <Badge className="gap-1" variant="default"><Wifi className="size-3 animate-pulse" />Connecting</Badge>
+
     case 'offline':
+
     default:
-      return <Badge variant="muted" className="gap-1"><WifiOff className="size-3" />Offline</Badge>
+      return <Badge className="gap-1" variant="muted"><WifiOff className="size-3" />Offline</Badge>
   }
 }
 
@@ -92,7 +99,6 @@ function DeviceCard({
 
   return (
     <button
-      type="button"
       className={cn(
         'group relative flex w-full flex-col overflow-hidden rounded-xl border text-left transition-all duration-200',
         'hover:shadow-md hover:border-(--stroke-nous)',
@@ -103,6 +109,7 @@ function DeviceCard({
       )}
       onClick={onSelect}
       onKeyDown={(e: React.KeyboardEvent) => e.key === 'Enter' && onSelect()}
+      type="button"
     >
       {/* Status bar */}
       <div className="flex items-center justify-between border-b border-(--ui-border) px-3 py-2">
@@ -156,7 +163,7 @@ function DeviceCard({
 
       {/* Configure button on hover */}
       <div className="absolute right-2 top-11 hidden group-hover:block">
-        <Button size="icon" variant="ghost" className="size-6 rounded-full">
+        <Button className="size-6 rounded-full" size="icon" variant="ghost">
           <Settings2 className="size-3" />
         </Button>
       </div>
@@ -184,7 +191,7 @@ function DeviceDetailPanel({
     <div className="rounded-lg border border-(--ui-border) bg-(--ui-bg-elevated) p-4">
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-sm font-semibold">{device.name}</h3>
-        <Button variant="ghost" size="icon" className="size-6" onClick={onClose}>
+        <Button className="size-6" onClick={onClose} size="icon" variant="ghost">
           <X className="size-3" />
         </Button>
       </div>
@@ -228,16 +235,16 @@ function AddDeviceDialog({
   const [tab, setTab] = useState('auto')
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+    <Dialog onOpenChange={(v) => !v && onClose()} open={open}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Add Federation Device</DialogTitle>
         </DialogHeader>
 
-        <Tabs value={tab} onValueChange={setTab} className="gap-2">
+        <Tabs className="gap-2" onValueChange={setTab} value={tab}>
           <TabsList className="w-full">
-            <TabsTrigger value="auto" className="flex-1">Auto (mDNS)</TabsTrigger>
-            <TabsTrigger value="manual" className="flex-1">Manual URL</TabsTrigger>
+            <TabsTrigger className="flex-1" value="auto">Auto (mDNS)</TabsTrigger>
+            <TabsTrigger className="flex-1" value="manual">Manual URL</TabsTrigger>
           </TabsList>
 
           <div className="py-4">
@@ -257,9 +264,9 @@ function AddDeviceDialog({
                   Enter the WebSocket URL of the remote device.
                 </p>
                 <Input
+                  onChange={(e) => setManualUrl(e.target.value)}
                   placeholder="wss://192.168.1.10:18765"
                   value={manualUrl}
-                  onChange={(e) => setManualUrl(e.target.value)}
                 />
                 <Button className="w-full" disabled={!manualUrl}>
                   Connect
@@ -270,7 +277,7 @@ function AddDeviceDialog({
         </Tabs>
 
         <div className="flex justify-end">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={onClose} variant="ghost">Cancel</Button>
         </div>
       </DialogContent>
     </Dialog>
@@ -293,20 +300,25 @@ export function FederationDevicesOverlay() {
   // Sorted: local first, then online, then offline
   const sortedDevices = useMemo(() => {
     return [...devices].sort((a, b) => {
-      if (a.is_local) return -1
-      if (b.is_local) return 1
-      if (a.status === 'online' && b.status !== 'online') return -1
-      if (b.status === 'online' && a.status !== 'online') return 1
+      if (a.is_local) {return -1}
+
+      if (b.is_local) {return 1}
+
+      if (a.status === 'online' && b.status !== 'online') {return -1}
+
+      if (b.status === 'online' && a.status !== 'online') {return 1}
+
       return b.score - a.score
     })
   }, [devices])
 
   const handleDrop = useCallback(
     (targetId: string) => {
-      if (!dragId || dragId === targetId) return
+      if (!dragId || dragId === targetId) {return}
       const target = devices.find((d) => d.device_id === targetId)
       const source = devices.find((d) => d.device_id === dragId)
-      if (!target || !source) return
+
+      if (!target || !source) {return}
 
       updateFedDevice(dragId, { grid_x: target.grid_x, grid_y: target.grid_y })
       updateFedDevice(targetId, { grid_x: source.grid_x, grid_y: source.grid_y })
@@ -345,7 +357,7 @@ export function FederationDevicesOverlay() {
         </div>
         <div className="flex items-center gap-2">
           <Switch checked={enabled} onCheckedChange={setFedEnabled} />
-          <Button variant="outline" size="sm" onClick={() => setShowAddDialog(true)}>
+          <Button onClick={() => setShowAddDialog(true)} size="sm" variant="outline">
             <Plus className="mr-1.5 size-4" />
             Add Device
           </Button>
@@ -357,7 +369,7 @@ export function FederationDevicesOverlay() {
         <div className="flex items-center gap-2">
           <Globe className="size-4 text-muted-foreground" />
           <span className="text-sm">Mode</span>
-          <Select value={mode} onValueChange={(v) => setFedMode(v as 'shared_db' | 'lan' | 'auto')}>
+          <Select onValueChange={(v) => setFedMode(v as 'shared_db' | 'lan' | 'auto')} value={mode}>
             <SelectTrigger className="w-36">
               <SelectValue />
             </SelectTrigger>
@@ -390,21 +402,21 @@ export function FederationDevicesOverlay() {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {sortedDevices.map((device) => (
               <div
-                key={device.device_id}
-                draggable
-                onDragStart={() => setDragId(device.device_id)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => handleDrop(device.device_id)}
                 className="cursor-grab active:cursor-grabbing"
+                draggable
+                key={device.device_id}
+                onDragOver={(e) => e.preventDefault()}
+                onDragStart={() => setDragId(device.device_id)}
+                onDrop={() => handleDrop(device.device_id)}
               >
                 <DeviceCard
                   device={device}
-                  selected={selectedDevice?.device_id === device.device_id}
                   onSelect={() =>
                     setSelectedDevice(
                       selectedDevice?.device_id === device.device_id ? null : device,
                     )
                   }
+                  selected={selectedDevice?.device_id === device.device_id}
                 />
               </div>
             ))}
@@ -422,7 +434,7 @@ export function FederationDevicesOverlay() {
         )}
       </div>
 
-      <AddDeviceDialog open={showAddDialog} onClose={() => setShowAddDialog(false)} />
+      <AddDeviceDialog onClose={() => setShowAddDialog(false)} open={showAddDialog} />
     </div>
   )
 }

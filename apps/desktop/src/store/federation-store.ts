@@ -71,6 +71,7 @@ export const updateFedDevice = (device_id: string, patch: Partial<FederationDevi
 export const addFedDevice = (device: FederationDevice) => {
   setFedDevices((prev) => {
     const exists = prev.find((d) => d.device_id === device.device_id)
+
     return exists ? prev.map((d) => (d.device_id === device.device_id ? { ...d, ...device } : d)) : [...prev, device]
   })
 }

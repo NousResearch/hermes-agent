@@ -12,20 +12,16 @@
  * Gateway API (Python) → Electron IPC (auth proxy) → nanostores (renderer cache) → UI
  */
 import { ipcRenderer } from 'electron'
+
 import {
-  $fedDevices,
-  $fedEnabled,
-  $fedMode,
-  $fedHealth,
-  $fedDiscovering,
-  setFedDevices,
-  setFedEnabled,
-  setFedMode,
-  setFedHealth,
-  setFedDiscovering,
-  type FederationDevice,
-  type DeviceStatus,
   type DeviceRole,
+  type DeviceStatus,
+  type FederationDevice,
+  setFedDevices,
+  setFedDiscovering,
+  setFedEnabled,
+  setFedHealth,
+  setFedMode,
 } from '@/store/federation-store'
 
 /**
@@ -48,6 +44,7 @@ export async function refreshFederationStatus(): Promise<void> {
 
     setFedEnabled(status.device_count > 0)
     setFedMode(status.mode as 'auto' | 'lan' | 'shared_db')
+
     // Health = percentage of online devices
     if (status.device_count > 0) {
       setFedHealth(Math.round((status.online_count / status.device_count) * 100))
@@ -118,6 +115,7 @@ export async function refreshFederationTasks(): Promise<void> {
 
     // Count active tasks per device
     const taskCounts: Record<string, number> = {}
+
     for (const task of tasks) {
       if (task.status === 'running' || task.status === 'pending') {
         taskCounts[task.target] = (taskCounts[task.target] || 0) + 1
@@ -142,6 +140,7 @@ export async function refreshFederationTasks(): Promise<void> {
 export async function checkFederationHealth(): Promise<boolean> {
   try {
     const health = await ipcRenderer.invoke('fed:health') as { status: string; uptime_sec: number }
+
     return health.status === 'healthy'
   } catch {
     return false
@@ -195,6 +194,7 @@ export function initFederationBridge(): void {
       if (healthy) {
         startFederationRefresh()
       }
+
       setFedDiscovering(false)
     })
     .catch(() => {

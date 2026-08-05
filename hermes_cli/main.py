@@ -6876,6 +6876,9 @@ def _desktop_linux_needs_no_sandbox() -> bool:
     unprivileged desktop user on an AppArmor-restricted host. The root case
     should remain an explicit user choice.
     """
+    if os.environ.get("ELECTRON_DISABLE_SANDBOX", 0) == "1":
+        return True
+
     if sys.platform != "linux":
         return False
     if hasattr(os, "geteuid") and os.geteuid() == 0:

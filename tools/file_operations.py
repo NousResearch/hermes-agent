@@ -465,7 +465,8 @@ class FileOperations(ABC):
         ...
 
     @abstractmethod
-    def write_file(self, path: str, content: str) -> WriteResult:
+    def write_file(self, path: str, content: str,
+                   pre_content: Optional[str] = None) -> WriteResult:
         """Write content to a file, creating directories as needed."""
         ...
 
@@ -660,14 +661,8 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
 
 def _lint_toml_inproc(content: str) -> tuple[bool, str]:
     """In-process TOML syntax check (stdlib tomllib, Python 3.11+)."""
-    try:
-        import tomllib as _toml
-    except ImportError:
-        # Pre-3.11 fallback via tomli, if installed.
-        try:
-            import tomli as _toml  # type: ignore[no-redef]
-        except ImportError:
-            return True, "__SKIP__"
+    import tomllib as _toml
+
     try:
         _toml.loads(content)
         return True, ""
@@ -1012,6 +1007,9 @@ class ShellFileOperations(FileOperations):
         ``.hermes-tmp`` file next to the user's data, and the original file
         is left untouched. Content rides stdin so there is no ARG_MAX limit.
 
+        ``mkdir -p`` for the parent directory is folded into this script
+        (one fewer subprocess vs. a separate ``mkdir -p`` call).
+
         Returns an :class:`ExecuteResult`; ``exit_code == 0`` means the file
         was swapped into place atomically. A non-zero exit means nothing was
         renamed and the original (if any) is intact.
@@ -1025,6 +1023,9 @@ class ShellFileOperations(FileOperations):
         tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
 
         # One shell script, fully quoted. Notes:
+        #  - `mkdir -p "$d"` is folded in here so the parent directory is
+        #    created in the same subprocess that writes the temp file —
+        #    saves one entire subprocess spawn vs. a separate mkdir call.
         #  - `mktemp` lands the temp in the target's own dir (-p) so `mv` is
         #    same-FS atomic; we fall back to a PID-stamped name if the
         #    backend lacks mktemp (rare; busybox/macOS/Linux all ship it).
@@ -1058,6 +1059,11 @@ class ShellFileOperations(FileOperations):
             'rt="$(readlink -f "$t" 2>/dev/null || realpath "$t" 2>/dev/null || true)"; '
             '[ -n "$rt" ] && { t="$rt"; d="$(dirname "$t")"; }; '
             "fi; "
+            # Create the parent dir in the SAME subprocess that writes the
+            # temp file (one fewer exec vs. a separate mkdir call). Runs
+            # AFTER symlink resolution so a resolved target's directory is
+            # the one created/confirmed.
+            'mkdir -p "$d"; '
             'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
             '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
             '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
@@ -1102,13 +1108,16 @@ class ShellFileOperations(FileOperations):
     def _file_has_bom(self, path: str, pre_content: Optional[str] = None) -> bool:
         """Whether the file on disk starts with a UTF-8 BOM.
 
-        Uses ``pre_content`` if we already read the file (zero extra exec
-        calls); otherwise issues a tiny ``head -c 3`` to sample just the
-        marker. A missing/empty file returns False (new writes get no BOM
+        Always probes the first 3 bytes on disk — do NOT trust
+        ``pre_content`` for BOM detection because the most common
+        provider (``read_file_raw``) deliberately strips BOMs so the
+        agent never sees U+FEFF glyphs.  Passing BOM-stripped content
+        through ``pre_content`` would cause a false-negative and
+        silently remove the marker on rewrite.
+
+        A missing/empty file returns False (new writes get no BOM
         unless the caller explicitly includes one).
         """
-        if pre_content is not None:
-            return _has_bom(pre_content)
         head_cmd = f"head -c 3 {self._escape_shell_arg(path)} 2>/dev/null"
         head_result = self._exec(head_cmd)
         if head_result.exit_code != 0 or not head_result.stdout:
@@ -1400,7 +1409,8 @@ class ShellFileOperations(FileOperations):
     # WRITE Implementation
     # =========================================================================
 
-    def write_file(self, path: str, content: str) -> WriteResult:
+    def write_file(self, path: str, content: str,
+                   pre_content: Optional[str] = None) -> WriteResult:
         """
         Write content to a file, creating parent directories as needed.
 
@@ -1427,6 +1437,15 @@ class ShellFileOperations(FileOperations):
         Args:
             path: File path to write
             content: Content to write
+            pre_content: Pre-edit file content if the caller already has it
+                (e.g. patch_replace read the file for fuzzy matching).
+                When provided, skips a redundant ``cat`` subprocess to
+                re-read the file for lint baseline / line-ending
+                detection. BOM detection always probes disk (the most
+                common provider — ``read_file_raw`` — strips BOMs, so
+                trusting ``pre_content`` for BOM would cause false
+                negatives and silent marker loss on rewrite). When
+                None, reads from disk as before.
 
         Returns:
             WriteResult with bytes written, lint summary, or error.
@@ -1492,17 +1511,21 @@ class ShellFileOperations(FileOperations):
         # the UNION of in-process lint coverage and LSP coverage.  For
         # extensions outside both sets (binaries, opaque formats),
         # skipping the read keeps the hot path fast.
-        pre_content: Optional[str] = None
         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
         if want_pre:
-            # Best-effort read; failure (file missing, permission) leaves
-            # pre_content as None which makes both downstream consumers
-            # degrade gracefully (lint reports all errors; LSP skips the
-            # shift map).
-            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
-            read_result = self._exec(read_cmd)
-            if read_result.exit_code == 0 and read_result.stdout:
-                pre_content = read_result.stdout
+            if pre_content is not None:
+                # Caller already has file content (e.g. patch_replace read it
+                # for fuzzy matching) — reuse directly, skip redundant cat.
+                pass
+            else:
+                # Best-effort read; failure (file missing, permission) leaves
+                # pre_content as None which makes both downstream consumers
+                # degrade gracefully (lint reports all errors; LSP skips the
+                # shift map).
+                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+                read_result = self._exec(read_cmd)
+                if read_result.exit_code == 0 and read_result.stdout:
+                    pre_content = read_result.stdout
 
         # ── Line-ending preservation (Roo Code pattern) ──────────────
         # If the file existed with CRLF endings and the agent's content
@@ -1534,15 +1557,15 @@ class ShellFileOperations(FileOperations):
         # rather than an external IDE.
         self._snapshot_lsp_baseline(path)
 
-        # Create parent directories
+        # Write atomically.  ``mkdir -p`` is folded into _atomic_write
+        # (one fewer subprocess vs. a separate mkdir call).
+        # ``dirs_created`` has always meant "parent dirs ensured" —
+        # ``mkdir -p`` exits 0 even when the dirs pre-exist, so the old
+        # separate-mkdir code reported True in exactly the same cases.
+        # A mkdir failure now surfaces as the atomic-write error return
+        # below, before this field is ever emitted.
         parent = os.path.dirname(path)
-        dirs_created = False
-
-        if parent:
-            mkdir_cmd = f"mkdir -p {self._escape_shell_arg(parent)}"
-            mkdir_result = self._exec(mkdir_cmd)
-            if mkdir_result.exit_code == 0:
-                dirs_created = True
+        dirs_created = bool(parent)
 
         # Write atomically: stream into a temp file in the SAME directory,
         # then ``mv`` it over the target. The rename is atomic on POSIX
@@ -1564,14 +1587,16 @@ class ShellFileOperations(FileOperations):
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
 
-        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
-
-        try:
-            bytes_written = int(stat_result.stdout.strip())
-        except ValueError:
-            bytes_written = len(content.encode('utf-8'))
+        # Get bytes written — compute from the content we just wrote
+        # (len of the UTF-8 encoding matches wc -c) instead of spawning a
+        # ``wc -c`` subprocess. ``surrogatepass`` matches the sha256
+        # verification below: content that flowed through a surrogateescape
+        # decode (backend output via patch_replace) may carry lone
+        # surrogates a strict encode would reject.  Encode ONCE and share
+        # the bytes with the sha256 block — a second full encode of a
+        # multi-MB file is measurable.
+        content_bytes = content.encode('utf-8', 'surrogatepass')
+        bytes_written = len(content_bytes)
 
         # Post-write content verification (cheap, one shell call): compare
         # the on-disk sha256 to the intended content's hash. Production
@@ -1586,7 +1611,7 @@ class ShellFileOperations(FileOperations):
             hash_result = self._exec(hash_cmd)
             if hash_result.exit_code == 0 and hash_result.stdout.strip():
                 disk_sha = hash_result.stdout.strip().split()[0]
-                expected_sha = hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()
+                expected_sha = hashlib.sha256(content_bytes).hexdigest()
                 content_verified = disk_sha == expected_sha
                 if not content_verified:
                     return WriteResult(
@@ -1659,6 +1684,9 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=f"Failed to read file: {path}")
         
         content = read_result.stdout
+        # Preserve raw content (including BOM) for write_file's pre_content
+        # so write_file can detect/restore BOM correctly.
+        raw_content = content
         # Strip a leading UTF-8 BOM before matching so the fuzzy matcher and
         # the diff operate on clean content (a phantom U+FEFF before line 1
         # defeats an exact first-line match). write_file restores the BOM on
@@ -1711,8 +1739,11 @@ class ShellFileOperations(FileOperations):
         if file_ending:
             new_content = _normalize_line_endings(new_content, file_ending)
 
-        # Write back
-        write_result = self.write_file(path, new_content)
+        # Write back — pass pre_content (original read, with BOM) to avoid
+        # a redundant cat subprocess inside write_file.  Must be the raw
+        # content (before _strip_bom) so write_file can detect/restore BOM.
+        write_result = self.write_file(path, new_content,
+                                       pre_content=raw_content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
 

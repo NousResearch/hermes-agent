@@ -1032,11 +1032,22 @@ def _coerce_boolean(value: str):
     return value
 
 
-def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optional[str]]:
+def _tool_result_observer_fields(
+    tool_name: str,
+    result: Any,
+) -> tuple[str, Optional[str], Optional[str]]:
     try:
         parsed_result = json.loads(result) if isinstance(result, str) else result
         if isinstance(parsed_result, dict) and parsed_result.get("error"):
             return "error", "tool_error", str(parsed_result.get("error"))
+    except Exception:
+        pass
+    try:
+        from agent.display import _detect_tool_failure
+
+        failed, suffix = _detect_tool_failure(tool_name, result)
+        if failed:
+            return "error", "tool_error", suffix.strip().strip("[]") or None
     except Exception:
         pass
     return "ok", None, None
@@ -1072,7 +1083,10 @@ def _emit_post_tool_call_hook(
         if not has_hook("post_tool_call"):
             return
         if status is None:
-            status, error_type, error_message = _tool_result_observer_fields(result)
+            status, error_type, error_message = _tool_result_observer_fields(
+                function_name,
+                result,
+            )
         invoke_hook(
             "post_tool_call",
             tool_name=function_name,
@@ -1145,6 +1159,23 @@ def handle_function_call(
     # inline. tool_call is unwrapped to the underlying tool so that every
     # downstream hook (pre/post, edit approval, guardrails) sees the real
     # tool name, not the bridge.
+    _dispatch_start = time.monotonic()
+
+    def _return_bridge_result(result: Any) -> Any:
+        _emit_post_tool_call_hook(
+            function_name=function_name,
+            function_args=function_args,
+            result=result,
+            task_id=task_id,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+            duration_ms=int((time.monotonic() - _dispatch_start) * 1000),
+            middleware_trace=list(_tool_middleware_trace),
+        )
+        return result
+
     _ts_mod = None
     try:
         from tools import tool_search as _ts_mod  # noqa: F401
@@ -1174,15 +1205,25 @@ def handle_function_call(
         except Exception:
             current_defs = []
         if function_name == _ts_mod.TOOL_SEARCH_NAME:
-            return _ts_mod.dispatch_tool_search(function_args or {},
-                                                current_tool_defs=current_defs)
+            return _return_bridge_result(
+                _ts_mod.dispatch_tool_search(
+                    function_args or {},
+                    current_tool_defs=current_defs,
+                )
+            )
         if function_name == _ts_mod.TOOL_DESCRIBE_NAME:
-            return _ts_mod.dispatch_tool_describe(function_args or {},
-                                                  current_tool_defs=current_defs)
+            return _return_bridge_result(
+                _ts_mod.dispatch_tool_describe(
+                    function_args or {},
+                    current_tool_defs=current_defs,
+                )
+            )
         if function_name == _ts_mod.TOOL_CALL_NAME:
             underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
             if err or not underlying_name:
-                return tool_error(err or "tool_call could not be resolved")
+                return _return_bridge_result(
+                    tool_error(err or "tool_call could not be resolved")
+                )
             # Defense in depth: the underlying tool MUST be in the session's
             # scoped deferrable catalog. resolve_underlying_call() only checks
             # that the name is deferrable in the global registry; this gate
@@ -1191,16 +1232,18 @@ def handle_function_call(
             # the bridge even if the catalog scoping above regressed.
             _scoped_deferrable = _ts_mod.scoped_deferrable_names(current_defs)
             if underlying_name not in _scoped_deferrable:
-                return tool_error(
-                    f"'{underlying_name}' is not available in this session. "
-                    "Use tool_search to find tools you can call."
+                return _return_bridge_result(
+                    tool_error(
+                        f"'{underlying_name}' is not available in this session. "
+                        "Use tool_search to find tools you can call."
+                    )
                 )
             # Probe-validate against the deferred tool's schema (ironclaw#5149):
             # a blind call missing required arguments returns the parameter
             # schema instead of dispatching into an opaque downstream failure.
             _probe_err = _ts_mod.validate_deferred_call_args(underlying_name, underlying_args)
             if _probe_err is not None:
-                return _probe_err
+                return _return_bridge_result(_probe_err)
             # Recurse with the underlying tool. All hooks fire against the
             # real tool name. The bridge is invisible to hooks by design.
             return handle_function_call(
@@ -1209,6 +1252,8 @@ def handle_function_call(
                 task_id=task_id,
                 tool_call_id=tool_call_id,
                 session_id=session_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
                 user_task=user_task,
                 enabled_tools=enabled_tools,
                 skip_pre_tool_call_hook=skip_pre_tool_call_hook,
@@ -1297,11 +1342,38 @@ def handle_function_call(
 
             edit_block_message = maybe_require_edit_approval(function_name, function_args)
             if edit_block_message is not None:
+                _emit_post_tool_call_hook(
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=edit_block_message,
+                    task_id=task_id,
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    status="blocked",
+                    error_type="edit_approval_denied",
+                    middleware_trace=list(_tool_middleware_trace),
+                )
                 return edit_block_message
         except Exception as _edit_approval_err:
             logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
             if function_name in {"write_file", "patch"}:
-                return tool_error("Edit approval denied: approval guard failed")
+                result = tool_error("Edit approval denied: approval guard failed")
+                _emit_post_tool_call_hook(
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=result,
+                    task_id=task_id,
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    status="blocked",
+                    error_type="edit_approval_error",
+                    middleware_trace=list(_tool_middleware_trace),
+                )
+                return result
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).
@@ -1400,7 +1472,10 @@ def handle_function_call(
         try:
             from hermes_cli.lifecycle import has_hook, invoke_hook
             if has_hook("transform_tool_result"):
-                status, error_type, error_message = _tool_result_observer_fields(result)
+                status, error_type, error_message = _tool_result_observer_fields(
+                    function_name,
+                    result,
+                )
                 hook_results = invoke_hook(
                     "transform_tool_result",
                     tool_name=function_name,
@@ -1428,7 +1503,28 @@ def handle_function_call(
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
-        return tool_error(_sanitize_tool_error(error_msg))
+        result = tool_error(_sanitize_tool_error(error_msg))
+        duration_ms = (
+            int((time.monotonic() - _dispatch_start) * 1000)
+            if _dispatch_start is not None
+            else 0
+        )
+        _emit_post_tool_call_hook(
+            function_name=function_name,
+            function_args=function_args,
+            result=result,
+            task_id=task_id,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+            duration_ms=duration_ms,
+            status="error",
+            error_type=type(e).__name__,
+            error_message=str(e),
+            middleware_trace=list(_tool_middleware_trace),
+        )
+        return result
 
 
 # =============================================================================

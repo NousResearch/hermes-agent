@@ -42,7 +42,7 @@ import {
 } from '@/store/profile'
 import { openFolderAsProject, requestNewWorktree } from '@/store/projects'
 import { toggleReview } from '@/store/review'
-import { setModelPickerOpen } from '@/store/session'
+import { $selectedStoredSessionId, setModelPickerOpen } from '@/store/session'
 import { reopenLastClosedTile } from '@/store/session-states'
 import {
   $switcherOpen,
@@ -62,11 +62,13 @@ import { useTheme } from '@/themes/context'
 import { requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
 import { openSession } from '../open-session'
 import {
+  $workspaceIsPage,
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
   navigateToWorkspacePage,
+  NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
   sessionRoute,
   SETTINGS_ROUTE,
@@ -99,11 +101,29 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   const profileSwitchHandlers: HandlerMap = {}
 
+  // A tab key that lands on the WORKSPACE tab while a full page (skills /
+  // messaging / artifacts / a plugin route) covers it must also route back to
+  // the chat: the workspace pane is already the zone's active tab behind the
+  // page, so fronting it alone changes nothing on screen and the key reads
+  // dead. Mirrors `openSession`'s full-page rule — only a route change puts
+  // the chat back.
+  const leavePageForWorkspaceChat = (paneId: null | string) => {
+    if (paneId === 'workspace' && $workspaceIsPage.get()) {
+      const selected = $selectedStoredSessionId.get()
+
+      navigate(selected ? sessionRoute(selected) : NEW_CHAT_ROUTE)
+    }
+  }
+
   for (let slot = 1; slot <= PROFILE_SLOT_COUNT; slot += 1) {
     // ⌘1…⌘9 switch the FOCUSED zone's tab when it's a real tab strip; only a
     // single-pane (or unfocused) layout falls through to the profile switch.
     profileSwitchHandlers[`profile.switch.${slot}`] = () => {
-      if (!activateTreeTabSlot(slot)) {
+      const pane = activateTreeTabSlot(slot)
+
+      if (pane) {
+        leavePageForWorkspaceChat(pane)
+      } else {
         switchProfileToSlot(slot)
       }
     }
@@ -130,6 +150,19 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   const stepSession = (direction: 1 | -1) => {
     onSwitcherTabDown()
     goToSession(openOrAdvanceSwitcher(direction))
+  }
+
+  // ⌃Tab cycles the focused session/main tab strip; only a non-tabbed focus
+  // falls through to the recent-session switcher. Landing on the workspace
+  // under a full page routes back to the chat (same as ⌘1).
+  const cycleTab = (direction: 1 | -1) => {
+    const pane = cycleTreeTabInFocusedZone(direction)
+
+    if (pane) {
+      leavePageForWorkspaceChat(pane)
+    } else {
+      stepSession(direction)
+    }
   }
 
   const showFiles = () => {
@@ -170,10 +203,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     },
     'session.newTab': () => deps.openNewSessionTab(),
     'session.newWindow': () => void openNewWindow(),
-    // ⌃Tab cycles the focused session/main tab strip; only a non-tabbed focus
-    // falls through to the recent-session switcher.
-    'session.next': () => void (cycleTreeTabInFocusedZone(1) || stepSession(1)),
-    'session.prev': () => void (cycleTreeTabInFocusedZone(-1) || stepSession(-1)),
+    'session.next': () => cycleTab(1),
+    'session.prev': () => cycleTab(-1),
     ...sessionSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,

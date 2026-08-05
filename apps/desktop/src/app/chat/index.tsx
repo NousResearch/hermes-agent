@@ -8,6 +8,7 @@ import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
+import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
@@ -63,6 +64,7 @@ import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
+import { selectTranscriptWindow } from './transcript-window'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
@@ -220,9 +222,34 @@ function ChatRuntimeBoundary({
   onThreadMessagesChange,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
-  const storeMessages = useMessagesWhileVisible(useSessionView().$messages)
+  const view = useSessionView()
+  const runtimeId = useStore(view.$runtimeId)
+  const storeMessages = useMessagesWhileVisible(view.$messages)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
-  const runtimeMessageRepository = useRuntimeMessageRepository(messages)
+
+  const [windowPages, setWindowPages] = useState(1)
+  const [windowSessionKey, setWindowSessionKey] = useState(runtimeId)
+
+  // Reset the window on session swap during RENDER, so a large expand from the
+  // previous chat can't leak into the next one's first paint (#55191).
+  if (windowSessionKey !== runtimeId) {
+    setWindowSessionKey(runtimeId)
+    setWindowPages(1)
+  }
+
+  const { messages: windowedMessages, windowed } = useMemo(
+    () => selectTranscriptWindow(messages, windowPages),
+    [messages, windowPages]
+  )
+
+  const runtimeMessageRepository = useRuntimeMessageRepository(windowedMessages)
+
+  const expandWindow = useCallback(() => setWindowPages(pages => pages + 1), [])
+
+  const transcriptWindow = useMemo(
+    () => ({ olderAvailable: windowed, expandWindow }),
+    [expandWindow, windowed]
+  )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,
@@ -237,7 +264,11 @@ function ChatRuntimeBoundary({
     onReload
   })
 
-  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+  return (
+    <TranscriptWindowProvider value={transcriptWindow}>
+      <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+    </TranscriptWindowProvider>
+  )
 }
 
 // Memoized: the tile caller (session-tile.tsx) and the contrib surface re-render

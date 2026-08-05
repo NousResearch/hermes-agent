@@ -5,6 +5,9 @@ import pytest
 pytest.importorskip("nemo_relay")
 
 from agent import auxiliary_client, relay_llm, relay_runtime
+from hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_cli.observability.shared_metrics_contract import MODEL_ROUTE_METRIC
+from hermes_cli.observability.shared_metrics_subscriber import SharedMetricsSubscriber
 
 
 @pytest.fixture()
@@ -54,8 +57,8 @@ def test_auxiliary_retries_share_logical_relay_identity(monkeypatch):
     monkeypatch.setattr(
         relay_llm,
         "complete_logical_call",
-        lambda request_id, *, outcome: logical_completions.append(
-            (request_id, outcome)
+        lambda request_id, *, outcome, model_name, provider_name, response_model_name: logical_completions.append(
+            (request_id, outcome, model_name, provider_name, response_model_name)
         ),
     )
 
@@ -92,8 +95,169 @@ def test_auxiliary_retries_share_logical_relay_identity(monkeypatch):
     assert attempts[0]["metadata"]["call_role"] == "auxiliary:compression"
     assert all(attempt["defer_logical_completion"] is True for attempt in attempts)
     assert logical_completions == [
-        (attempts[0]["metadata"]["api_request_id"], "success")
+        (
+            attempts[0]["metadata"]["api_request_id"],
+            "success",
+            "test-model",
+            "openrouter",
+            None,
+        )
     ]
+
+
+def test_auxiliary_provider_fallback_closes_one_real_logical_call(
+    relay_turn,
+    monkeypatch,
+):
+    relay, turn = relay_turn
+    consumer = "test.auxiliary-provider-fallback"
+    turn.lease.host.retain_managed_execution(consumer)
+    logical_outputs = []
+    original_pop = relay.scope.pop
+
+    def record_pop(*args, **kwargs):
+        logical_outputs.append(kwargs.get("output") or {})
+        return original_pop(*args, **kwargs)
+
+    monkeypatch.setattr(relay.scope, "pop", record_pop)
+    responses = iter([
+        SimpleNamespace(choices=[]),
+        SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="recovered"))]
+        ),
+    ])
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_kwargs: next(responses),
+            )
+        )
+    )
+
+    @auxiliary_client._relay_auxiliary_call
+    def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "nvidia",
+            "nvidia/test-model",
+            "chat_completions",
+        )
+        with pytest.raises(RuntimeError, match="invalid response"):
+            auxiliary_client._validate_llm_response(
+                auxiliary_client._relay_sync_completion(
+                    client,
+                    {"model": "nvidia/test-model", "messages": []},
+                ),
+                task,
+            )
+        assert len(turn.logical_llm_calls) == 1
+
+        auxiliary_client._set_relay_auxiliary_route(
+            "openrouter",
+            "openrouter/test-model",
+            "chat_completions",
+        )
+        return auxiliary_client._validate_llm_response(
+            auxiliary_client._relay_sync_completion(
+                client,
+                {"model": "openrouter/test-model", "messages": []},
+            ),
+            task,
+        )
+
+    try:
+        result = run("compression")
+    finally:
+        turn.lease.host.release_managed_execution(consumer)
+
+    assert result.choices[0].message.content == "recovered"
+    assert turn.logical_llm_calls == {}
+    assert logical_outputs == [
+        {
+            "model": "openrouter/test-model",
+            "outcome": "success",
+            "provider": "openrouter",
+        }
+    ]
+
+
+def test_auxiliary_provider_fallback_records_one_terminal_model_route(
+    relay_turn,
+    tmp_path,
+):
+    relay, turn = relay_turn
+    store = SharedMetricsStore(
+        tmp_path / "metrics.sqlite3",
+        tmp_path / "outbox",
+    )
+    subscriber = SharedMetricsSubscriber(
+        store,
+        "test-version",
+        runtime_id=turn.lease.host.runtime_id,
+    )
+    subscriber_name = "test.auxiliary-model-route"
+    relay.subscribers.register(subscriber_name, subscriber)
+    turn.lease.host.retain_managed_execution(subscriber_name)
+    responses = iter([
+        SimpleNamespace(model="failed/model", choices=[]),
+        SimpleNamespace(
+            model="Accepted/Model",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="recovered"))],
+        ),
+    ])
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_kwargs: next(responses),
+            )
+        )
+    )
+
+    @auxiliary_client._relay_auxiliary_call
+    def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "nvidia",
+            "failed/configured-model",
+            "chat_completions",
+        )
+        with pytest.raises(RuntimeError, match="invalid response"):
+            auxiliary_client._validate_llm_response(
+                auxiliary_client._relay_sync_completion(
+                    client,
+                    {"model": "failed/configured-model", "messages": []},
+                ),
+                task,
+            )
+        auxiliary_client._set_relay_auxiliary_route(
+            "OpenRouter",
+            "fallback/configured-model",
+            "chat_completions",
+        )
+        return auxiliary_client._validate_llm_response(
+            auxiliary_client._relay_sync_completion(
+                client,
+                {"model": "fallback/configured-model", "messages": []},
+            ),
+            task,
+        )
+
+    try:
+        result = run("compression")
+        relay.subscribers.flush()
+    finally:
+        turn.lease.host.release_managed_execution(subscriber_name)
+        relay.subscribers.deregister(subscriber_name)
+
+    assert result.choices[0].message.content == "recovered"
+    snapshot = store.counter_snapshot()
+    assert len(snapshot) == 1
+    assert snapshot[0]["metric_name"] == MODEL_ROUTE_METRIC
+    assert snapshot[0]["hermes_version"] == "test-version"
+    assert snapshot[0]["dimensions"] == {
+        "model": "accepted/model",
+        "provider": "openrouter",
+    }
+    assert snapshot[0]["value"] == 1
+    assert snapshot[0]["packaged_value"] == 0
 
 
 @pytest.mark.asyncio
@@ -123,8 +287,8 @@ async def test_async_auxiliary_attempt_uses_inherited_relay_adapter(monkeypatch)
     monkeypatch.setattr(
         relay_llm,
         "complete_logical_call",
-        lambda request_id, *, outcome: logical_completions.append(
-            (request_id, outcome)
+        lambda request_id, *, outcome, model_name, provider_name, response_model_name: logical_completions.append(
+            (request_id, outcome, model_name, provider_name, response_model_name)
         ),
     )
 
@@ -150,7 +314,13 @@ async def test_async_auxiliary_attempt_uses_inherited_relay_adapter(monkeypatch)
     assert captured["metadata"]["call_role"] == "auxiliary:title_generation"
     assert captured["defer_logical_completion"] is True
     assert logical_completions == [
-        (captured["metadata"]["api_request_id"], "success")
+        (
+            captured["metadata"]["api_request_id"],
+            "success",
+            "claude-test",
+            "anthropic",
+            None,
+        )
     ]
 
 
@@ -166,11 +336,11 @@ def test_partial_auxiliary_stream_failure_closes_before_recovery(
     _relay, turn = relay_turn
     consumer = "test.partial-auxiliary-stream-failure"
     turn.lease.host.retain_managed_execution(consumer)
-    outcomes = []
+    logical_outputs = []
     original_pop = turn.lease.host.relay.scope.pop
 
     def record_pop(*args, **kwargs):
-        outcomes.append((kwargs.get("output") or {}).get("outcome"))
+        logical_outputs.append(kwargs.get("output") or {})
         return original_pop(*args, **kwargs)
 
     monkeypatch.setattr(turn.lease.host.relay.scope, "pop", record_pop)
@@ -248,20 +418,33 @@ def test_partial_auxiliary_stream_failure_closes_before_recovery(
             next(stream)
 
         assert caught.value is provider_error
-        assert outcomes == ["failed"]
+        assert logical_outputs == [
+            {
+                "model": "test-model",
+                "outcome": "failed",
+                "provider": "openrouter",
+            }
+        ]
         assert turn.logical_llm_calls == {}
 
         result = recover("moa")
 
         assert result.choices[0].message.content == "recovered"
-        assert outcomes == ["failed", "success"]
+        assert logical_outputs == [
+            {
+                "model": "test-model",
+                "outcome": "failed",
+                "provider": "openrouter",
+            },
+            {
+                "model": "test-model",
+                "outcome": "success",
+                "provider": "openrouter",
+            },
+        ]
         assert turn.logical_llm_calls == {}
     finally:
         turn.lease.host.release_managed_execution(consumer)
-
-
-
-
 def test_auxiliary_stream_unwraps_completed_response(relay_turn):
     """MoA aggregator on an Anthropic-protocol provider: the client returns a
     completed response for ``stream=True`` (the adapter ignores the flag), so

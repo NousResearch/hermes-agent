@@ -124,6 +124,17 @@ SUPPORTED_POOL_STRATEGIES = {
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+# When a pool has no other credential to rotate to (the offending key is the
+# sole non-DEAD entry), a 1-hour bench means an hour of hard failures with
+# nothing to fall back to. Throttles (429/403/5xx) are transient and reset in
+# seconds, so a sole credential cools down briefly instead — same rationale as
+# the short 401 cooldown above. Provider-supplied reset_at still overrides.
+EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS = 60   # 1 minute
+
+# ``FailoverReason.billing`` as a bare string. The pool stores classified
+# failure semantics as plain text (it persists to JSON and must not import
+# the classifier), so the value is duplicated here rather than referenced.
+FAILURE_REASON_BILLING = "billing"
 
 # Throttle window for the "no available entries" INFO line. Credential
 # selection runs on a hot path (every model call, plus auxiliary tasks like
@@ -150,6 +161,13 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
+    # Classified failure semantics for the last exhaustion, as decided by
+    # agent/error_classifier.py. The raw HTTP status is not enough to size a
+    # cooldown: providers return 403 for both an edge throttle (transient,
+    # seconds) and a spending/key limit (billing, needs a real fix). Persisted
+    # with the entry so a restart doesn't downgrade a billing bench back to a
+    # 60s transient cooldown.
+    "failure_reason",
 })
 
 
@@ -289,13 +307,39 @@ def _is_manual_source(source: str) -> bool:
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
 
 
-def _exhausted_ttl(error_code: Optional[int]) -> int:
-    """Return cooldown seconds based on the HTTP status that caused exhaustion."""
+def _exhausted_ttl(
+    error_code: Optional[int],
+    *,
+    sole_credential: bool = False,
+    failure_reason: Optional[str] = None,
+) -> int:
+    """Return cooldown seconds based on the HTTP status that caused exhaustion.
+
+    When *sole_credential* is True the pool has no other entry to rotate to, so
+    a long bench just blocks the only key. Transient throttles (429 and the
+    catch-all default, which covers 403/5xx/unknown) are capped to a brief
+    cooldown so the sole key can recover — mirroring the short 401 path. 401
+    keeps its own (already short) TTL.
+
+    *failure_reason* is the classified semantics from
+    ``agent/error_classifier.py``. The raw status alone can't size the
+    cooldown: an OpenRouter ``key limit exceeded`` and an xAI spending-limit
+    block both arrive as **403** but classify as ``billing``, and a 60s retry
+    on a spent account just re-fails every minute. Billing keeps the full
+    bench regardless of status; 402 does too, since it is billing by
+    definition even when nothing classified it.
+    """
     if error_code == 401:
         return EXHAUSTED_TTL_401_SECONDS
-    if error_code == 429:
-        return EXHAUSTED_TTL_429_SECONDS
-    return EXHAUSTED_TTL_DEFAULT_SECONDS
+    base = EXHAUSTED_TTL_429_SECONDS if error_code == 429 else EXHAUSTED_TTL_DEFAULT_SECONDS
+    # Sole credential: shorten only TRANSIENT throttles (429 rate-limit, 403
+    # edge-throttle, 5xx server, or unknown). Billing exhaustion — whether
+    # classified as such or self-evident from a 402 — is a genuine depletion
+    # where a quick retry can't help, so it keeps the full bench.
+    is_billing = error_code == 402 or failure_reason == FAILURE_REASON_BILLING
+    if sole_credential and not is_billing:
+        return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
+    return base
 
 
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:
@@ -376,14 +420,18 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
     return normalized
 
 
-def _exhausted_until(entry: PooledCredential) -> Optional[float]:
+def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
     if entry.last_status != STATUS_EXHAUSTED:
         return None
     reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
     if reset_at is not None:
         return reset_at
     if entry.last_status_at:
-        return entry.last_status_at + _exhausted_ttl(entry.last_error_code)
+        return entry.last_status_at + _exhausted_ttl(
+            entry.last_error_code,
+            sole_credential=sole_credential,
+            failure_reason=getattr(entry, "failure_reason", None),
+        )
     return None
 
 
@@ -645,11 +693,18 @@ class CredentialPool:
             available, _pending = self._available_entries()
             if available:
                 return None
+            # Mirror _available_entries: if the pool has no other credential
+            # to rotate to, the sole entry's transient throttle cools down in
+            # seconds — next_available_at must report that shorter window too,
+            # or the fallback restore gate waits an hour for a 60s cooldown.
+            sole_credential = sum(
+                1 for e in self._entries if e.last_status != STATUS_DEAD
+            ) <= 1
             candidates: List[float] = []
             for entry in self._entries:
                 if entry.last_status != STATUS_EXHAUSTED:
                     continue
-                until = _exhausted_until(entry)
+                until = _exhausted_until(entry, sole_credential=sole_credential)
                 if until is not None:
                     candidates.append(until)
             return min(candidates) if candidates else None
@@ -742,6 +797,7 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
         *,
         persist: bool = True,
+        failure_reason: Optional[str] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
@@ -755,6 +811,15 @@ class CredentialPool:
             terminal_status = STATUS_DEAD
         else:
             terminal_status = STATUS_EXHAUSTED
+        # Carry the classifier's verdict onto the entry so the cooldown can be
+        # sized by what actually failed, not just the HTTP status (a billing
+        # 403 must not get the sole-credential transient cooldown). Absent a
+        # classification, clear any stale verdict from a previous failure.
+        updated_extra = dict(entry.extra)
+        if failure_reason:
+            updated_extra["failure_reason"] = failure_reason
+        else:
+            updated_extra.pop("failure_reason", None)
         updated = replace(
             entry,
             last_status=terminal_status,
@@ -763,6 +828,7 @@ class CredentialPool:
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
             last_error_reset_at=normalized_error.get("reset_at"),
+            extra=updated_extra,
         )
         self._replace_entry(entry, updated)
         if persist:
@@ -1759,6 +1825,12 @@ class CredentialPool:
         # that can block for 20+ seconds.  We collect them under self._lock
         # and refresh outside the lock to avoid stalling all pool consumers.
         pending_refresh: List[tuple] = []  # (entry, sync_entry_fn)
+        # DEAD entries never re-enter rotation, so if at most one non-DEAD entry
+        # exists there is nothing to rotate to: an exhausted sole credential
+        # should cool down briefly rather than bench the only key for an hour.
+        sole_credential = sum(
+            1 for e in self._entries if e.last_status != STATUS_DEAD
+        ) <= 1
         for entry in self._entries:
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load.  A stale duplicate row
@@ -1839,7 +1911,7 @@ class CredentialPool:
                 # the re-auth case for OAuth singletons.
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
-                exhausted_until = _exhausted_until(entry)
+                exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
                 if exhausted_until is not None and now < exhausted_until:
                     # Codex quota windows can reopen EARLY: the user redeems a
                     # banked rate-limit reset (Codex CLI / ChatGPT UI), upgrades
@@ -1963,6 +2035,7 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
+        failure_reason: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             entry = None
@@ -2041,7 +2114,9 @@ class CredentialPool:
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
-            self._mark_exhausted(entry, status_code, error_context)
+            self._mark_exhausted(
+                entry, status_code, error_context, failure_reason=failure_reason
+            )
             # A 402/429/401 is an API-key–level failure: the account is out of
             # balance, rate-limited, or its key is rejected.  The same key can
             # back more than one pool entry (e.g. an explicit pool entry plus a
@@ -2061,7 +2136,11 @@ class CredentialPool:
                         continue
                     if sibling.runtime_api_key == failed_runtime_key:
                         self._mark_exhausted(
-                            sibling, status_code, error_context, persist=False
+                            sibling,
+                            status_code,
+                            error_context,
+                            persist=False,
+                            failure_reason=failure_reason,
                         )
                         siblings_marked = True
                 if siblings_marked:
@@ -2300,6 +2379,11 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
     field_updates = {}
     extra_updates = {}
     _field_names = {f.name for f in fields(existing)}
+    token_changed = (
+        "access_token" in payload
+        and payload["access_token"] is not None
+        and payload["access_token"] != existing.access_token
+    )
     for key, value in payload.items():
         if key in {"id", "priority"} or value is None:
             continue
@@ -2311,6 +2395,15 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
         elif key in _EXTRA_KEYS:
             if existing.extra.get(key) != value:
                 extra_updates[key] = value
+    # When the credential token itself changes (key rotation), clear any
+    # exhaustion/error state — the old status is stale for the new key.
+    if token_changed and existing.last_status is not None:
+        field_updates["last_status"] = None
+        field_updates["last_status_at"] = None
+        field_updates["last_error_code"] = None
+        field_updates["last_error_reason"] = None
+        field_updates["last_error_message"] = None
+        field_updates["last_error_reset_at"] = None
     if field_updates or extra_updates:
         if extra_updates:
             field_updates["extra"] = {**existing.extra, **extra_updates}
@@ -2728,6 +2821,31 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
     return changed, active_sources
 
 
+# Prefer ~/.hermes/.env over os.environ — the user's config file is the
+# authoritative source for Hermes credentials. Stale env vars from parent
+# processes (Codex CLI, test scripts, etc.) should not override deliberate
+# changes to the .env file. load_env() memoizes on the .env mtime, so
+# per-call reads (pool seeding, per-turn credential refresh) cost a stat()
+# when the file is unchanged.
+def get_env_prefer_dotenv(key: str) -> str:
+    env_file = load_env()
+    raw = env_file.get(key, "").strip()
+    scoped_value = (_get_secret(key, "") or "").strip()
+    # If .env contains an unresolved op:// reference, prefer the
+    # already-resolved value supplied by the active secret scope (or by
+    # os.environ in legacy single-profile mode), set by
+    # load_hermes_dotenv() -> apply_onepassword_secrets()).  The raw
+    # "op://Vault/Item/field" string would otherwise win and every
+    # provider auth attempt would receive a URL instead of a key.  This
+    # happens during a partial migration, or when the user wrote op://
+    # references straight into .env rather than the secrets.onepassword
+    # config block.  For every non-op:// value the original
+    # .env-takes-precedence behaviour is preserved unchanged.
+    if raw.startswith("op://") and scoped_value:
+        return scoped_value
+    return raw or scoped_value
+
+
 def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     changed = False
     active_sources: Set[str] = set()
@@ -2746,27 +2864,10 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     if provider == "copilot":
         return False, active_sources
 
-    # Prefer ~/.hermes/.env over os.environ — the user's config file is the
-    # authoritative source for Hermes credentials. Stale env vars from parent
-    # processes (Codex CLI, test scripts, etc.) should not override deliberate
-    # changes to the .env file.
-    def _get_env_prefer_dotenv(key: str) -> str:
-        env_file = load_env()
-        raw = env_file.get(key, "").strip()
-        scoped_value = (_get_secret(key, "") or "").strip()
-        # If .env contains an unresolved op:// reference, prefer the
-        # already-resolved value supplied by the active secret scope (or by
-        # os.environ in legacy single-profile mode), set by
-        # load_hermes_dotenv() -> apply_onepassword_secrets()).  The raw
-        # "op://Vault/Item/field" string would otherwise win and every
-        # provider auth attempt would receive a URL instead of a key.  This
-        # happens during a partial migration, or when the user wrote op://
-        # references straight into .env rather than the secrets.onepassword
-        # config block.  For every non-op:// value the original
-        # .env-takes-precedence behaviour is preserved unchanged.
-        if raw.startswith("op://") and scoped_value:
-            return scoped_value
-        return raw or scoped_value
+    # The .env-preferring resolution lives at module level
+    # (``get_env_prefer_dotenv``) so the pool seeder and the per-turn
+    # credential refresh share one implementation.
+    _get_env_prefer_dotenv = get_env_prefer_dotenv
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an
     # env-seeded credential marks the env:<VAR> source as suppressed so it

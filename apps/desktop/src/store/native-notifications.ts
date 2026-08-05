@@ -9,7 +9,14 @@ import { $activeSessionId } from './session'
 
 // Native OS notifications (Electron `Notification`), separate from the in-app
 // toast feed in `notifications.ts`. Each kind toggles independently.
-export type NativeNotificationKind = 'approval' | 'backgroundDone' | 'credits' | 'input' | 'turnDone' | 'turnError'
+export type NativeNotificationKind =
+  | 'approval'
+  | 'backgroundDone'
+  | 'credits'
+  | 'input'
+  | 'plugin'
+  | 'turnDone'
+  | 'turnError'
 
 export const NATIVE_NOTIFICATION_KINDS: readonly NativeNotificationKind[] = [
   'approval',
@@ -17,7 +24,8 @@ export const NATIVE_NOTIFICATION_KINDS: readonly NativeNotificationKind[] = [
   'turnDone',
   'turnError',
   'backgroundDone',
-  'credits'
+  'credits',
+  'plugin'
 ]
 
 // Blocking prompts — surface even while focused if they're for another session.
@@ -32,7 +40,15 @@ const STORAGE_KEY = 'hermes:native-notifications'
 
 const DEFAULT_PREFS: NativeNotificationPrefs = {
   enabled: true,
-  kinds: { approval: true, backgroundDone: true, credits: true, input: true, turnDone: true, turnError: true }
+  kinds: {
+    approval: true,
+    backgroundDone: true,
+    credits: true,
+    input: true,
+    plugin: true,
+    turnDone: true,
+    turnError: true
+  }
 }
 
 function readPrefs(): NativeNotificationPrefs {
@@ -152,6 +168,12 @@ export interface NativeNotificationInput {
   global?: boolean
   silent?: boolean
   actions?: NativeNotificationAction[]
+  /**
+   * Extra throttle/dedupe discriminator for session-less notifications (e.g.
+   * the plugin id), so unrelated emitters of the same kind don't collapse
+   * into one another. Never drives click-to-focus like `sessionId` does.
+   */
+  tag?: string
 }
 
 export function dispatchNativeNotification(input: NativeNotificationInput): void {
@@ -169,7 +191,7 @@ export function dispatchNativeNotification(input: NativeNotificationInput): void
     return
   }
 
-  if (throttled(`${input.kind}:${input.sessionId ?? (input.global ? 'global' : '')}`, Date.now())) {
+  if (throttled(`${input.kind}:${input.sessionId ?? input.tag ?? (input.global ? 'global' : '')}`, Date.now())) {
     return
   }
 
@@ -179,8 +201,26 @@ export function dispatchNativeNotification(input: NativeNotificationInput): void
     kind: input.kind,
     sessionId: input.sessionId ?? undefined,
     silent: input.silent,
+    tag: input.tag,
     title: input.title
   })
+}
+
+// -- the plugin door (`ctx.os.notify`) ----------------------------------------
+
+export interface PluginNativeNotificationInput {
+  title: string
+  body?: string
+  silent?: boolean
+}
+
+/** Native OS notification on behalf of a plugin. One "Plugin notifications"
+ *  preference gates all plugins; the plugin id keys throttling/dedupe so two
+ *  plugins can't collapse each other's notifications. Fires only while the
+ *  user is away from Hermes — the in-app toast (`host.notify`) covers the
+ *  foreground case. */
+export function dispatchPluginNativeNotification(pluginId: string, input: PluginNativeNotificationInput): void {
+  dispatchNativeNotification({ ...input, global: true, kind: 'plugin', tag: pluginId })
 }
 
 // Resolve a pending approval from a notification button, mirroring the in-app

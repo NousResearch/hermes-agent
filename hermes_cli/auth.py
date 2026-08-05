@@ -1652,6 +1652,7 @@ def write_credential_pool(
     entries: List[Dict[str, Any]],
     *,
     removed_ids: Optional[Iterable[str]] = None,
+    reset_cooldowns: bool = False,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
@@ -1670,6 +1671,16 @@ def write_credential_pool(
 
     Pass ``removed_ids`` for entries the caller intentionally removed, so the
     merge does not resurrect them from the on-disk copy.
+
+    Pass ``reset_cooldowns=True`` ONLY for an explicit user-initiated reset
+    (``hermes auth reset``): it skips the status-field merge entirely, so even
+    still-binding on-disk cooldowns are erased. This is a deliberate user
+    override of the lost-update protection — never pass it from automatic
+    rotation/exhaustion/refresh paths, or a stale snapshot could erase a fresh
+    cooldown and every process would resume hammering a rate-limited key.
+    Entries present on disk but missing from the snapshot are still preserved
+    (with their own status), and all entries still pass through
+    ``sanitize_borrowed_credential_payload``.
     """
     removed = {rid for rid in (removed_ids or ()) if rid}
     with _auth_store_lock():
@@ -1696,11 +1707,11 @@ def write_credential_pool(
             if isinstance(entry, dict) and entry.get("id")
         }
         merged: List[Dict[str, Any]] = [
-            _merge_disk_cooldown_state(
+            entry
+            if not isinstance(entry, dict) or reset_cooldowns
+            else _merge_disk_cooldown_state(
                 entry, existing_by_id.get(entry.get("id")), provider_id
             )
-            if isinstance(entry, dict)
-            else entry
             for entry in sanitized_entries
         ]
         for disk_entry in existing_list:

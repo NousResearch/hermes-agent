@@ -757,7 +757,12 @@ class CredentialPool:
                     self._entries[idx] = new
                     return
 
-    def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
+    def _persist(
+        self,
+        *,
+        removed_ids: Optional[List[str]] = None,
+        reset_cooldowns: bool = False,
+    ) -> None:
         # Self-locking (RLock): snapshotting self._entries must not race a
         # concurrent rotation when called from the deferred refresh path.
         with self._lock:
@@ -765,6 +770,7 @@ class CredentialPool:
                 self.provider,
                 [entry.to_dict() for entry in self._entries],
                 removed_ids=removed_ids,
+                reset_cooldowns=reset_cooldowns,
             )
 
     def _is_terminal_auth_failure(
@@ -2302,7 +2308,12 @@ class CredentialPool:
                     new_entries.append(entry)
             if count:
                 self._entries = new_entries
-                self._persist()
+                # reset_cooldowns=True: this is an explicit user reset, so the
+                # write must bypass _merge_disk_cooldown_state — otherwise the
+                # recency merge resurrects every still-binding on-disk cooldown
+                # (cleared last_status_at=None sorts older than the active
+                # timestamp) and the reset silently never lands on disk.
+                self._persist(reset_cooldowns=True)
             return count
 
     def remove_index(self, index: int) -> Optional[PooledCredential]:

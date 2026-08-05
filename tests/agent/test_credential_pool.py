@@ -2024,3 +2024,192 @@ class TestCredentialPoolQueryLocking:
             inner.release()
 
         assert done.wait(timeout=2.0), f"{method}() did not complete after lock release"
+
+
+# ---------------------------------------------------------------------------
+# hermes auth reset (explicit user reset) must bypass the disk-cooldown merge
+# ---------------------------------------------------------------------------
+
+def _pool_payload(entries):
+    return {
+        "version": 1,
+        "credential_pool": {"openai-codex": entries},
+    }
+
+
+def _exhausted_entry(entry_id, label, *, age_seconds, error_code=429):
+    """A still-binding (or expired, per age_seconds) exhausted pool entry."""
+    return {
+        "id": entry_id,
+        "label": label,
+        "auth_type": "api_key",
+        "priority": 0,
+        "source": "manual",
+        "access_token": f"sk-mock-{entry_id}",
+        "last_status": "exhausted",
+        "last_status_at": time.time() - age_seconds,
+        "last_error_code": error_code,
+        "last_error_reason": "rate_limit_error",
+        "last_error_message": "mock upstream message",
+        "last_error_reset_at": None,
+    }
+
+
+def test_reset_statuses_clears_active_cooldowns_on_disk(tmp_path, monkeypatch):
+    """The user-reset regression: an active on-disk cooldown must not be
+    resurrected by the recency merge when `hermes auth reset` persists."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: None)
+    _write_auth_store(
+        tmp_path,
+        _pool_payload(
+            [
+                _exhausted_entry("cred-1", "alice", age_seconds=60),
+                _exhausted_entry("cred-2", "bob", age_seconds=120, error_code=402),
+            ]
+        ),
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    assert pool.has_available() is False
+
+    count = pool.reset_statuses()
+
+    assert count == 2
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    for entry in auth_payload["credential_pool"]["openai-codex"]:
+        if entry["id"] in ("cred-1", "cred-2"):
+            assert entry.get("last_status") is None
+            assert entry.get("last_status_at") is None
+            assert entry.get("last_error_code") is None
+            assert entry.get("last_error_reason") is None
+            assert entry.get("last_error_message") is None
+            # identity must survive the reset untouched
+            assert entry["id"] in ("cred-1", "cred-2")
+            assert entry["access_token"] == f"sk-mock-{entry["id"]}"
+
+    # A fresh load must see the pool as healthy again.
+    reloaded = load_pool("openai-codex")
+    assert reloaded.has_available() is True
+
+
+def test_reset_statuses_noop_when_nothing_to_reset(tmp_path, monkeypatch):
+    """No statuses -> count 0 and no disk write."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: None)
+    healthy = _exhausted_entry("cred-1", "alice", age_seconds=60)
+    for key in (
+        "last_status",
+        "last_status_at",
+        "last_error_code",
+        "last_error_reason",
+        "last_error_message",
+        "last_error_reset_at",
+    ):
+        healthy.pop(key, None)
+    _write_auth_store(tmp_path, _pool_payload([healthy]))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    auth_file = tmp_path / "hermes" / "auth.json"
+    before = auth_file.read_bytes()
+
+    assert pool.reset_statuses() == 0
+    assert auth_file.read_bytes() == before
+
+
+def test_reset_statuses_clears_expired_cooldowns_too(tmp_path, monkeypatch):
+    """Expired cooldowns (already ignored by selection) are also cleared, and
+    the reset write must not resurrect them either."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: None)
+    _write_auth_store(
+        tmp_path,
+        _pool_payload([_exhausted_entry("cred-1", "alice", age_seconds=3 * 3600)]),
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    assert pool.reset_statuses() == 1
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entry = auth_payload["credential_pool"]["openai-codex"][0]
+    assert entry.get("last_status") is None
+    assert entry.get("last_status_at") is None
+
+
+def test_normal_persist_still_resurrects_active_disk_cooldown(tmp_path, monkeypatch):
+    """Regression guard for the lost-update protection (3d67f00fe1): a normal
+    (non-reset) persist from a stale in-memory snapshot must STILL resurrect an
+    active on-disk cooldown. Only the explicit user reset may bypass it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: None)
+    _write_auth_store(
+        tmp_path,
+        _pool_payload([_exhausted_entry("cred-1", "alice", age_seconds=60)]),
+    )
+
+    from agent.credential_pool import load_pool, replace
+
+    pool = load_pool("openai-codex")
+    # Simulate another process marking the key exhausted on disk AFTER this
+    # process took its healthy in-memory snapshot.
+    pool._entries = [
+        replace(
+            pool._entries[0],
+            last_status=None,
+            last_status_at=None,
+            last_error_code=None,
+            last_error_reason=None,
+            last_error_message=None,
+            last_error_reset_at=None,
+        )
+    ]
+    pool._persist()
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entry = auth_payload["credential_pool"]["openai-codex"][0]
+    assert entry.get("last_status") == "exhausted"
+    assert entry.get("last_status_at") is not None
+
+
+def test_reset_statuses_preserves_concurrent_disk_entries(tmp_path, monkeypatch):
+    """A reset write must not drop entries another process added to disk after
+    this pool snapshot was loaded (the missing-entry append path survives)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: None)
+    _write_auth_store(
+        tmp_path,
+        _pool_payload([_exhausted_entry("cred-1", "alice", age_seconds=60)]),
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+
+    # Concurrent writer adds cred-2 (healthy) to disk behind our back.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    concurrent = _exhausted_entry("cred-2", "bob", age_seconds=60)
+    for key in (
+        "last_status",
+        "last_status_at",
+        "last_error_code",
+        "last_error_reason",
+        "last_error_message",
+        "last_error_reset_at",
+    ):
+        concurrent.pop(key, None)
+    auth_payload["credential_pool"]["openai-codex"].append(concurrent)
+    (tmp_path / "hermes" / "auth.json").write_text(json.dumps(auth_payload))
+
+    assert pool.reset_statuses() == 1
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    by_id = {e["id"]: e for e in auth_payload["credential_pool"]["openai-codex"]}
+    assert set(by_id) == {"cred-1", "cred-2"}
+    assert by_id["cred-1"].get("last_status") is None
+    assert by_id["cred-2"].get("last_status") is None

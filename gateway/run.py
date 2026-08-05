@@ -1815,11 +1815,27 @@ class SecondaryPortBindingConfigError(MultiplexConfigError):
     """A secondary profile conflicts with the multiplexer's shared listener."""
 
 
+def _load_profile_terminal_config() -> Optional[Dict[str, str]]:
+    """Resolve the active profile's terminal config into terminal env vars."""
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env, read_raw_config
+
+        raw_config = read_raw_config()
+        if not isinstance(raw_config.get("terminal"), dict):
+            return None
+        return apply_terminal_config_to_env(
+            env={}, config=raw_config, override=True
+        )
+    except Exception:
+        logger.debug("Could not load profile terminal config", exc_info=True)
+        return None
+
+
 @_contextmanager
 def _profile_runtime_scope(profile_home: "Path"):
     """Scope config/skills/memory AND credentials to a profile for one turn.
 
-    Combines the two seams the multiplexer needs:
+    Combines the three seams the multiplexer needs:
       1. ``set_hermes_home_override`` — redirects ``get_hermes_home()`` (config,
          skills, memory, SOUL, sessions) to the profile's home. Contextvar, so
          it propagates into the agent worker thread via ``copy_context()``.
@@ -1827,6 +1843,8 @@ def _profile_runtime_scope(profile_home: "Path"):
          authoritative credential source, so ``get_secret`` reads this profile's
          keys and never the process-global ``os.environ`` (which in a
          multiplexer may hold another profile's values).
+      3. ``set_terminal_config_scope`` — redirects terminal.* configuration to
+         this profile instead of the process-global terminal environment.
 
     Only used on the multiplexed inbound path. Single-profile gateways never
     enter this scope, so their behavior is unchanged. Loading the profile's
@@ -1841,14 +1859,20 @@ def _profile_runtime_scope(profile_home: "Path"):
         reset_secret_scope,
     )
     from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from tools.terminal_tool import (
+        reset_terminal_config_scope,
+        set_terminal_config_scope,
+    )
 
     home_token = set_hermes_home_override(str(profile_home))
     hydrate_profile_secret_sources(Path(profile_home))
+    terminal_token = set_terminal_config_scope(_load_profile_terminal_config())
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
     try:
         yield
     finally:
         reset_secret_scope(secret_token)
+        reset_terminal_config_scope(terminal_token)
         reset_hermes_home_override(home_token)
 
 

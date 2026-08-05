@@ -6,6 +6,16 @@ that share (api_url, credential, api_mode, extra_headers) into one picker row,
 mirroring section 4's grouping for ``custom_providers:``. These are invariant
 tests — grouping identity, header-routed separation, list-of-dict model
 declarations, and display-only RID stripping.
+
+Extended for the "distinct name" invariant: two entries at the same endpoint
+whose names carry no shared version pattern (unlike "Palantir Claude 4.6/4.7
+Opus") are genuinely distinct providers, not "one provider, several models",
+and must stay separate picker rows regardless of whether anything else in
+their config differs — extra_body, extra_headers, or nothing at all. Before
+this, section 3 grouped purely on connection identity (never on name), so a
+second same-named-endpoint entry could become permanently unreachable from
+the picker even when perfectly valid via ``--provider <name>`` or a direct
+config edit.
 """
 
 import hermes_cli.providers as providers_mod
@@ -107,6 +117,37 @@ def test_different_extra_body_keeps_distinct_rows(monkeypatch):
     assert len(rows) == 2, f"expected 2 rows, got {len(rows)}: {rows}"
     slugs = {row["slug"] for row in rows}
     assert slugs == {"vllm", "vllm-no-think"}
+
+
+def test_distinctly_named_entries_stay_separate_even_with_identical_config(monkeypatch):
+    """Two providers: entries at the same endpoint, with IDENTICAL config in
+    every other respect (no extra_body, no extra_headers, same credential),
+    but deliberately different names must still stay separate rows — name is
+    the primary signal, not a fallback used only when something else also
+    differs. Neither "vLLM" nor "vLLM No-Think" carries a version-number
+    pattern, so the Palantir-style suffix-stripping heuristic leaves both
+    unchanged and they don't collapse."""
+    rows = _user_rows(_providers(monkeypatch, {
+        "vllm": {
+            "name": "vLLM",
+            "base_url": "http://192.168.15.115:8000/v1",
+            "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+            "discover_models": False,
+            "models": {"unsloth/Qwen3.6-35B-A3B-NVFP4": {}},
+        },
+        "vllm-no-think": {
+            "name": "vLLM No-Think",
+            "base_url": "http://192.168.15.115:8000/v1",
+            "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+            "discover_models": False,
+            "models": {"unsloth/Qwen3.6-35B-A3B-NVFP4": {}},
+        },
+    }))
+    assert len(rows) == 2, f"expected 2 rows, got {len(rows)}: {rows}"
+    slugs = {row["slug"] for row in rows}
+    assert slugs == {"vllm", "vllm-no-think"}
+    names = {row["name"] for row in rows}
+    assert names == {"vLLM", "vLLM No-Think"}
 
 
 class TestFormatModelForDisplay:

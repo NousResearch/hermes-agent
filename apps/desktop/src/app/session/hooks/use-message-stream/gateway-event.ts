@@ -3,6 +3,7 @@ import type { HermesSkin } from '@hermes/shared/skin'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
@@ -1008,6 +1009,22 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           void $gateway.get()?.request('terminal.read.respond', {
             request_id: requestId,
             text: result ? JSON.stringify(result) : ''
+          })
+        }
+      } else if (event.type === 'preview.read.request') {
+        // read_preview tool: serialize the active preview tab (a Browser
+        // webview's page text is async) and answer. Empty text = nothing open.
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const start = typeof payload?.start === 'number' ? payload.start : undefined
+          const count = typeof payload?.count === 'number' ? payload.count : undefined
+
+          void readActivePreview({ count, start }).then(result => {
+            void $gateway.get()?.request('preview.read.respond', {
+              request_id: requestId,
+              text: result ? JSON.stringify(result) : ''
+            })
           })
         }
       } else if (event.type === 'agent.terminal.output') {

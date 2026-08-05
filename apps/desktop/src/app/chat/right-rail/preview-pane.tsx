@@ -21,10 +21,13 @@ import {
 } from './preview-console'
 import { type ConsoleEntry } from './preview-console-state'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
+import { registerPreviewPageReader } from './preview-reader'
 import { previewConsoleState, registerPreviewDevTools } from './preview-strip-tools'
 
 type PreviewWebview = HTMLElement & {
   closeDevTools?: () => void
+  executeJavaScript?: (code: string) => Promise<unknown>
+  getTitle?: () => string
   getURL?: () => string
   isDevToolsOpened?: () => boolean
   openDevTools?: () => void
@@ -316,6 +319,32 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     return () => registerPreviewDevTools(tabId, null)
   }, [devtoolsOpen, isRemoteHtml, isWebPreview, tabId, toggleDevTools])
+
+  // Publish the PAGE reader for this tab (the read_preview tool): extract the
+  // rendered page's title + visible text from the webview. innerText (not
+  // textContent) so hidden nodes and script/style bodies stay out, matching
+  // what the user actually sees.
+  useEffect(() => {
+    if (!isWebPreview || !tabId) {
+      return
+    }
+
+    return registerPreviewPageReader(tabId, async () => {
+      const webview = webviewRef.current
+
+      if (!webview?.executeJavaScript) {
+        throw new Error('preview webview is not ready')
+      }
+
+      const text = await webview.executeJavaScript('document.body ? document.body.innerText : ""')
+
+      return {
+        text: typeof text === 'string' ? text : '',
+        title: webview.getTitle?.() ?? '',
+        url: webview.getURL?.() ?? ''
+      }
+    })
+  }, [isWebPreview, tabId])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {

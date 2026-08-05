@@ -37,7 +37,7 @@ _HERMES_CORE_TOOLS = [
     # read-only terminal tab, open a URL/file in the preview pane, focus a
     # pane, and react to a message with an emoji (all gated on HERMES_DESKTOP
     # via check_fn — hidden outside the GUI).
-    "read_terminal", "close_terminal", "open_preview", "focus_pane", "react_to_message",
+    "read_terminal", "close_terminal", "open_preview", "read_preview", "focus_pane", "react_to_message",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
@@ -376,6 +376,7 @@ TOOLSETS = {
         "tools": [
             "web_search", "web_extract",
             "terminal", "process", "read_terminal", "close_terminal",
+            "open_preview", "read_preview",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",

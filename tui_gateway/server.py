@@ -3138,6 +3138,7 @@ def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> 
         "sudo.request",
         "clarify.request",
         "terminal.read.request",
+        "preview.read.request",
     }:
         _emit(
             f"{event.removesuffix('.request')}.expire",
@@ -5673,6 +5674,16 @@ def _agent_cbs(sid: str) -> dict:
             sid,
             {k: v for k, v in (("start", start), ("count", count)) if v is not None},
             timeout=30,
+        ),
+        # read_preview tool (desktop GUI): the renderer serializes the active
+        # preview tab (a Browser webview's readable text, a file's identity)
+        # and answers preview.read.respond. Longer timeout than the terminal
+        # read — a URL tab extracts text from a live page.
+        "read_preview_callback": lambda start=None, count=None: _block(
+            "preview.read.request",
+            sid,
+            {k: v for k, v in (("start", start), ("count", count)) if v is not None},
+            timeout=45,
         ),
     }
 

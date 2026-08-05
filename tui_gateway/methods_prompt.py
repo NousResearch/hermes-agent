@@ -894,6 +894,14 @@ def _(rid, params: dict) -> dict:
     return _respond(rid, params, "text", allow_expired=True)
 
 
+@method("preview.read.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string of the active preview tab's serialized contents.
+    # allow_expired=True for the same reason as terminal.read: the tool's
+    # bounded wait can expire while a slow page extraction is still running.
+    return _respond(rid, params, "text", allow_expired=True)
+
+
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
     return _respond(rid, params, "password", allow_expired=True)

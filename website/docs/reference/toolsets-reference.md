@@ -77,7 +77,7 @@ Or in-session:
 | `session_search` | `session_search` | Search past conversation sessions. |
 | `skills` | `skill_manage`, `skill_view`, `skills_list` | Skill CRUD and browsing. |
 | `spotify` | `spotify_albums`, `spotify_devices`, `spotify_library`, `spotify_playback`, `spotify_playlists`, `spotify_queue`, `spotify_search` | Native Spotify control (playback, queue, search, playlists, albums, library). Registered by the bundled `spotify` plugin. |
-| `terminal` | `close_terminal`, `focus_pane`, `open_preview`, `process`, `read_terminal`, `terminal` | Shell command execution and background process management. `read_terminal`, `close_terminal`, `open_preview`, and `focus_pane` drive the desktop GUI's embedded panes and are check_fn-gated — they only register in desktop-app sessions. |
+| `terminal` | `close_terminal`, `focus_pane`, `open_preview`, `process`, `read_preview`, `read_terminal`, `terminal` | Shell command execution and background process management. `read_terminal`, `close_terminal`, `open_preview`, `read_preview`, and `focus_pane` drive the desktop GUI's embedded panes and are check_fn-gated — they only register in desktop-app sessions. |
 | `todo` | `todo` | Task list management within a session. |
 | `tts` | `text_to_speech` | Text-to-speech audio generation. |
 | `vision` | `vision_analyze` | Image analysis via vision-capable models. |
@@ -92,7 +92,7 @@ Platform toolsets define the complete tool configuration for a deployment target
 
 | Toolset | Differences from `hermes-cli` |
 |---------|-------------------------------|
-| `hermes-cli` | Full toolset — the default for interactive CLI sessions. Includes file, terminal (plus the desktop-GUI pane tools `read_terminal`, `close_terminal`, `open_preview`, `focus_pane`), web, browser, memory, skills, vision, image_gen, todo, tts, delegation, code_execution, cronjob, session_search, clarify, computer_use, Home Assistant, and the kanban tools (all check_fn-gated at runtime). |
+| `hermes-cli` | Full toolset — the default for interactive CLI sessions. Includes file, terminal (plus the desktop-GUI pane tools `read_terminal`, `close_terminal`, `open_preview`, `read_preview`, `focus_pane`), web, browser, memory, skills, vision, image_gen, todo, tts, delegation, code_execution, cronjob, session_search, clarify, computer_use, Home Assistant, and the kanban tools (all check_fn-gated at runtime). |
 | `hermes-acp` | Drops `clarify`, `cronjob`, `image_generate`, `text_to_speech`, `computer_use`, all four Home Assistant tools, the kanban tools, and the desktop-GUI pane tools. Focused on coding tasks in IDE context. |
 | `hermes-api-server` | Drops `clarify`, `text_to_speech`, `computer_use`, the kanban tools, and the desktop-GUI pane tools. Keeps everything else — suitable for programmatic access where user interaction isn't possible. |
 | `hermes-cron` | Same as `hermes-cli`. |

@@ -794,7 +794,7 @@ compression:
   hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
   hygiene_timeout_seconds: 30                       # Max seconds of NO summary-model output before hygiene compression is cut off
   hygiene_total_ceiling_seconds: 600                # Absolute cap on the hygiene wait even while tokens are still streaming
-  hygiene_failure_cooldown_seconds: 300             # Skip repeated failed hygiene attempts for this session
+  hygiene_failure_cooldown_seconds: 300             # First rung of the per-session hygiene-failure backoff (x1/x3/x9, capped at 1h)
   context_timeout_seconds: 120                      # Inactivity budget for in-agent compress_context (loop /compress / preflight) — see below
   context_total_ceiling_seconds: 600                # Absolute cap on the *pre-commit* in-agent compress_context wait even while tokens are still streaming (an already-started SessionDB commit is never abandoned; overruns are logged + surfaced)
   proactive_prune_tokens: 0                         # Opt-in tokens trigger for the no-LLM tool-result prune (0 = off; see below)
@@ -822,6 +822,8 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 `hygiene_total_ceiling_seconds` (default `600`) bounds the total wait even while tokens are still moving, so a degenerate trickle stream can't hold a turn hostage indefinitely. It is clamped to at least `hygiene_timeout_seconds`.
 
 `hygiene_failure_cooldown_seconds` controls that per-session cooldown after a hygiene compression timeout or abort. During the cooldown, the gateway skips repeated hygiene attempts for the same oversized session so every incoming message does not block on the same broken auxiliary backend. `/compress`, `/reset`, or a healthy later turn can still recover the session.
+
+The value is the **first rung** of an escalating ladder, not a fixed interval: consecutive failures for the same session wait `1x`, `3x`, then `9x` this value, capped at one hour. A session whose summary model is permanently broken therefore backs off instead of retrying forever on a fixed interval, and a run that actually shrinks the transcript resets it to the first rung. Escalation is per-session and process-local — a gateway restart resets it to the first rung while the cooldown deadline itself survives.
 
 `context_timeout_seconds` (default `120`) is the same **inactivity budget** for in-agent `compress_context` — the conversation loop, preflight compaction, and manual `/compress` — so a hung summary model cannot stall a session indefinitely. Streamed summary tokens extend the wait; only a silent worker is cut off. On timeout Hermes skips compaction, keeps the existing messages, and warns the user. Set to `0` to disable. Gateway session hygiene keeps its own `hygiene_timeout_seconds` path and is not double-wrapped.
 

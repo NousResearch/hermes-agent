@@ -305,16 +305,19 @@ hermes memory setup    # select "openviking"
 hermes config set memory.provider openviking
 ```
 
-`hermes memory setup` can reuse or copy connection values from
-`~/.openviking/ovcli.conf`. Manual setup uses the active profile's `.env` file;
-for the default profile that is `~/.hermes/.env`, and for named profiles use
-`~/.hermes/profiles/<profile>/.env`.
+`hermes memory setup` and Hermes Desktop can link an existing OpenViking CLI
+profile or create a named `~/.openviking/ovcli.conf.<name>` profile. Hermes
+stores only the profile link; connection secrets remain in the OpenViking
+profile. Manual environment overrides use the active Hermes profile's `.env`
+file. For the default profile that is `~/.hermes/.env`, and for named profiles
+use `~/.hermes/profiles/<profile>/.env`.
 
 ```text
-OPENVIKING_ENDPOINT=http://127.0.0.1:1933
+OPENVIKING_URL=http://127.0.0.1:1933
 # OPENVIKING_API_KEY=...
 # OPENVIKING_ACCOUNT=default
 # OPENVIKING_USER=default
+# OPENVIKING_ACTOR_PEER_ID=work-assistant
 ```
 
 OpenViking server settings live in `ov.conf` (`--config`,
@@ -342,6 +345,10 @@ existing paths. Ranking and result limits determine which memories are returned.
 Set `memory.openviking.agent: hermes` to restore the old peer-scoped writes.
 Memories written at user scope before this change stay there and remain
 searchable. The setting changes future writes, not existing memory locations.
+
+New configuration should use `OPENVIKING_URL` and
+`OPENVIKING_ACTOR_PEER_ID`. `OPENVIKING_ENDPOINT` and `OPENVIKING_AGENT`
+remain runtime fallbacks for existing installations.
 
 Hermes sends `User-Agent: openviking-memory-hermes/<version>` on OpenViking
 requests. This standard harness identifier contains no per-user identifier and

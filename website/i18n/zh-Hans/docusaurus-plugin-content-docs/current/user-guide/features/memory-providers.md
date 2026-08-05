@@ -283,8 +283,14 @@ openviking-server
 hermes memory setup    # 选择 "openviking"
 # 或手动配置：
 hermes config set memory.provider openviking
-echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
+echo "OPENVIKING_URL=http://localhost:1933" >> ~/.hermes/.env
 ```
+
+`hermes memory setup` 和 Hermes Desktop 都可以连接现有的 OpenViking CLI
+配置，或创建命名的 `~/.openviking/ovcli.conf.<name>` 配置。Hermes 只保存配置
+文件链接，API 密钥仍保存在 OpenViking CLI 配置中。现有安装中的
+`OPENVIKING_ENDPOINT` 和 `OPENVIKING_AGENT` 仍可作为兼容回退；新配置应使用
+`OPENVIKING_URL` 和 `OPENVIKING_ACTOR_PEER_ID`。
 
 **主要特性：**
 - 分层上下文加载：L0（约 100 tokens）→ L1（约 2k）→ L2（完整）

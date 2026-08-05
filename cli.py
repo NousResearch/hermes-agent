@@ -10300,6 +10300,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "heartbeat":
+            self._handle_heartbeat_command(cmd_original)
         elif canonical == "moa":
             # /moa is one-shot sugar only: run a single prompt through the
             # default MoA preset, then restore the prior model. To *switch* to a
@@ -10577,6 +10579,72 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         self._goal_manager = mgr
         return mgr
+
+    def _get_heartbeat_manager(self):
+        """Return the HeartbeatManager bound to the current session_id.
+
+        Cached on ``self._heartbeat_manager`` and rebound lazily when
+        ``session_id`` changes (mirrors ``_get_goal_manager``).
+        """
+        try:
+            from hermes_cli.heartbeat import HeartbeatManager
+        except Exception as exc:
+            logging.debug("heartbeat manager unavailable: %s", exc)
+            return None
+
+        sid = getattr(self, "session_id", None) or ""
+        if not sid:
+            return None
+
+        existing = getattr(self, "_heartbeat_manager", None)
+        if existing is not None and getattr(existing, "session_id", None) == sid:
+            return existing
+
+        mgr = HeartbeatManager(session_id=sid)
+        self._heartbeat_manager = mgr
+        return mgr
+
+    def _start_heartbeat_watchdog(self):
+        """Start the idle-poll thread that fires due heartbeats.
+
+        Same pattern as the wake-word watchdog: a daemon thread polls a few
+        times a minute; when the session is idle (no agent running, empty
+        input queue) and the heartbeat is due, its prompt is injected into
+        ``_pending_input`` as a normal user turn. Missed ticks coalesce —
+        the anchor resets on fire, so a busy hour yields ONE heartbeat turn,
+        not a backlog. Idempotent; safe to call on every /heartbeat set.
+        """
+        if getattr(self, "_heartbeat_watchdog_started", False):
+            return
+        self._heartbeat_watchdog_started = True
+
+        from hermes_cli.heartbeat import POLL_SECONDS
+
+        def _loop():
+            try:
+                while not getattr(self, "_should_exit", False):
+                    time.sleep(POLL_SECONDS)
+                    try:
+                        mgr = self._get_heartbeat_manager()
+                        if mgr is None or not mgr.is_active():
+                            continue
+                        busy = (
+                            self._agent_running
+                            or getattr(self, "_voice_recording", False)
+                            or getattr(self, "_voice_processing", False)
+                            or not self._pending_input.empty()
+                        )
+                        if busy:
+                            continue
+                        prompt = mgr.due_prompt()
+                        if prompt:
+                            self._pending_input.put(prompt)
+                    except Exception as exc:
+                        logging.debug("heartbeat watchdog tick failed: %s", exc)
+            finally:
+                self._heartbeat_watchdog_started = False
+
+        threading.Thread(target=_loop, daemon=True, name="heartbeat-watchdog").start()
 
 
 

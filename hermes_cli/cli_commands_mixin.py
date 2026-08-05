@@ -2368,6 +2368,91 @@ class CLICommandsMixin:
             print("   status       Show current browser mode")
             print()
 
+    def _handle_heartbeat_command(self, cmd: str) -> None:
+        """Dispatch /heartbeat: set / status / pause / resume / clear.
+
+        ``/heartbeat every 10m Check the deployment`` sets the session's one
+        recurring instruction; the idle watchdog injects it as a normal user
+        turn whenever due. Session-scoped and in-process — for durable
+        cross-process schedules use `hermes cron`.
+        """
+        from cli import _DIM, _RST, _cprint
+        from hermes_cli.heartbeat import parse_interval, format_interval
+
+        parts = (cmd or "").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        lower = arg.lower()
+
+        mgr = self._get_heartbeat_manager()
+        if mgr is None:
+            _cprint(f"  {_DIM}Heartbeats unavailable (no active session).{_RST}")
+            return
+
+        if not arg or lower == "status":
+            _cprint(f"  {mgr.status_line()}")
+            return
+
+        if lower == "pause":
+            state = mgr.pause()
+            if state is None:
+                _cprint(f"  {_DIM}No heartbeat set.{_RST}")
+            else:
+                _cprint(f"  ⏸ Heartbeat paused: {state.prompt}")
+            return
+
+        if lower == "resume":
+            state = mgr.resume()
+            if state is None:
+                _cprint(f"  {_DIM}No heartbeat to resume.{_RST}")
+            else:
+                self._start_heartbeat_watchdog()
+                _cprint(f"  ▶ Heartbeat resumed (every {format_interval(state.interval_seconds)}): {state.prompt}")
+            return
+
+        if lower in {"clear", "stop", "off"}:
+            if mgr.clear():
+                _cprint("  ✓ Heartbeat cleared.")
+            else:
+                _cprint(f"  {_DIM}No heartbeat set.{_RST}")
+            return
+
+        # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
+        tokens = arg.split(None, 2)
+        interval = None
+        prompt = ""
+        if tokens and tokens[0].lower() == "every" and len(tokens) >= 2:
+            interval = parse_interval(f"every {tokens[1]}")
+            prompt = tokens[2] if len(tokens) > 2 else ""
+        elif tokens:
+            interval = parse_interval(tokens[0])
+            prompt = arg[len(tokens[0]):].strip() if interval and interval > 0 else ""
+
+        if interval is None:
+            _cprint("  Usage: /heartbeat every <interval> <prompt>   (e.g. /heartbeat every 10m Check CI)")
+            _cprint(f"  {_DIM}Also: /heartbeat status | pause | resume | clear{_RST}")
+            return
+        if interval < 0:
+            from hermes_cli.heartbeat import MIN_INTERVAL_SECONDS
+            _cprint(f"  Interval too small — minimum is {MIN_INTERVAL_SECONDS}s.")
+            return
+        if not prompt.strip():
+            _cprint("  Usage: /heartbeat every <interval> <prompt> — the prompt is required.")
+            return
+
+        try:
+            state = mgr.set(prompt, interval)
+        except ValueError as exc:
+            _cprint(f"  Invalid heartbeat: {exc}")
+            return
+        self._start_heartbeat_watchdog()
+        _cprint(f"  ♥ Heartbeat set (every {format_interval(state.interval_seconds)}): {state.prompt}")
+        _cprint(
+            f"  {_DIM}Fires as a normal turn whenever the session is idle and the "
+            f"interval has elapsed. /heartbeat pause | resume | clear to manage; "
+            f"lives only while this Hermes process runs — use `hermes cron` for "
+            f"durable schedules.{_RST}"
+        )
+
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / draft / show / gate / status / pause / resume / clear."""
         from cli import _DIM, _RST, _cprint

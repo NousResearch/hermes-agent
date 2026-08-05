@@ -159,6 +159,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
                busy_policy="dispatch", busy_handler="goal"),
+    CommandDef("heartbeat", "Set a recurring prompt that re-enters this session when idle", "Session",
+               aliases=("hb",), args_hint="[every <interval> <prompt> | status | pause | resume | clear]",
+               subcommands=("status", "pause", "resume", "clear"),
+               busy_policy="dispatch"),
     CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
                args_hint="<prompt>", busy_policy="reject", busy_handler="moa"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
@@ -1261,7 +1265,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     /hermes update on Slack. Demoted to free the native slot /approvals now
 #     claims — without this entry /approvals tips the registry past the 50-cap
 #     and silently clamps /update off, breaking Telegram parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update"})
+#   - heartbeat: session heartbeat management; reached via /hermes heartbeat
+#     on Slack. Added at the 50-cap — a native slot would clamp /insights.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -2188,8 +2194,12 @@ class SlashCommandAutoSuggest(AutoSuggest):
 
         if len(parts) == 1 and not text.endswith(" "):
             # Still typing the command name: /upd → suggest "ate"
+            # Prefer the SHORTEST matching command so a short, high-frequency
+            # command keeps its ghost text when a longer command shares its
+            # prefix (e.g. /he → "lp" for /help, not "artbeat" for
+            # /heartbeat; type one more letter to steer).
             word = text[1:].lower()
-            for cmd in COMMANDS:
+            for cmd in sorted(COMMANDS, key=len):
                 if self._completer is not None and not self._completer._command_allowed(cmd):
                     continue
                 cmd_name = cmd[1:]  # strip leading /

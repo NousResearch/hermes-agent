@@ -2772,6 +2772,78 @@ class GatewaySlashCommandsMixin:
             return f"{base}\n(Couldn't draft a contract — running as a free-form goal.)"
         return base
 
+    async def _handle_heartbeat_command(self, event: "MessageEvent") -> str:
+        """Handle /heartbeat for gateway platforms (mirror of CLI handler).
+
+        Sets/manages the session's one recurring re-entry prompt. The
+        gateway-wide poller injects due heartbeats through the adapter FIFO
+        as ordinary user turns, so alternation and caching are untouched.
+        """
+        from hermes_cli.heartbeat import parse_interval, format_interval, MIN_INTERVAL_SECONDS
+
+        args = (event.get_command_args() or "").strip()
+        lower = args.lower()
+
+        mgr, session_entry = await self._get_heartbeat_manager_for_event(event)
+        if mgr is None:
+            return "Heartbeats unavailable (no session)."
+
+        quick_key = self._session_key_for_source(event.source) if event.source else None
+
+        if not args or lower == "status":
+            return mgr.status_line()
+
+        if lower == "pause":
+            state = mgr.pause()
+            return f"⏸ Heartbeat paused: {state.prompt}" if state else "No heartbeat set."
+
+        if lower == "resume":
+            state = mgr.resume()
+            if state is None:
+                return "No heartbeat to resume."
+            if quick_key and event.source is not None:
+                self._register_heartbeat_watch(quick_key, event.source, mgr.session_id)
+            return f"▶ Heartbeat resumed (every {format_interval(state.interval_seconds)}): {state.prompt}"
+
+        if lower in {"clear", "stop", "off"}:
+            had = mgr.clear()
+            if quick_key:
+                self._unregister_heartbeat_watch(quick_key)
+            return "✓ Heartbeat cleared." if had else "No heartbeat set."
+
+        # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
+        tokens = args.split(None, 2)
+        interval = None
+        prompt = ""
+        if tokens and tokens[0].lower() == "every" and len(tokens) >= 2:
+            interval = parse_interval(f"every {tokens[1]}")
+            prompt = tokens[2] if len(tokens) > 2 else ""
+        elif tokens:
+            interval = parse_interval(tokens[0])
+            prompt = args[len(tokens[0]):].strip() if interval and interval > 0 else ""
+
+        if interval is None:
+            return (
+                "Usage: /heartbeat every <interval> <prompt>  (e.g. /heartbeat every 10m Check CI)\n"
+                "Also: /heartbeat status | pause | resume | clear"
+            )
+        if interval < 0:
+            return f"Interval too small — minimum is {MIN_INTERVAL_SECONDS}s."
+        if not prompt.strip():
+            return "Usage: /heartbeat every <interval> <prompt> — the prompt is required."
+
+        try:
+            state = mgr.set(prompt, interval)
+        except ValueError as exc:
+            return f"Invalid heartbeat: {exc}"
+        if quick_key and event.source is not None:
+            self._register_heartbeat_watch(quick_key, event.source, mgr.session_id)
+        return (
+            f"♥ Heartbeat set (every {format_interval(state.interval_seconds)}): {state.prompt}\n"
+            "Fires as a normal turn whenever this session is idle and the interval has "
+            "elapsed. Lives while the gateway runs — use `hermes cron` for durable schedules."
+        )
+
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).
 

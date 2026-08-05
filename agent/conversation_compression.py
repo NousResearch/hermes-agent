@@ -3304,6 +3304,12 @@ def compress_context(
                         migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
                     except Exception as _goal_err:
                         logger.debug("Could not migrate goal on compression: %s", _goal_err)
+                    # Same boundary hazard for /heartbeat state — carry it too.
+                    try:
+                        from hermes_cli.heartbeat import migrate_heartbeat_to_session
+                        migrate_heartbeat_to_session(old_session_id, agent.session_id)
+                    except Exception as _hb_err:
+                        logger.debug("Could not migrate heartbeat on compression: %s", _hb_err)
                     # Auto-number the title for the continuation session
                     if old_title:
                         try:

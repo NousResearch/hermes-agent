@@ -5611,6 +5611,17 @@ class AIAgent:
             adopt = current_base == default_base and not (
                 base_url == current_base and api_key == self.api_key
             )
+            # #79156: if the session already holds a pool-rotated key, do
+            # not treat that divergence as a boot-time env adoption. First
+            # look would otherwise stomp the rotated key with the env value
+            # while leaving ``_credential_pool_entry_id`` on the fallback.
+            if (
+                adopt
+                and api_key != self.api_key
+                and getattr(self, "_credential_pool", None) is not None
+                and getattr(self, "_credential_pool_entry_id", None)
+            ):
+                adopt = False
         else:
             # Env unchanged → no-op; any drift from self.* is rotation/
             # failover or config precedence — leave it alone. An edit is
@@ -5653,6 +5664,19 @@ class AIAgent:
             self._client_kwargs.clear()
             self._client_kwargs.update(prior_client_kwargs)
             return False
+
+        # Rebind the pool entry id to the key we just adopted. Leaving a
+        # stale id after a key rewrite makes mark_exhausted_and_rotate
+        # quarantine the wrong credential on the next 429 (#79156).
+        try:
+            from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+
+            sync_credential_pool_entry_id(self)
+        except Exception:
+            logger.debug(
+                "sync_credential_pool_entry_id after env refresh failed",
+                exc_info=True,
+            )
 
         self._env_creds_seen = resolved
         logger.info(

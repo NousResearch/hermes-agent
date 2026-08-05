@@ -860,6 +860,174 @@ class TestWebServerEndpoints:
         memory_config = load_config().get("memory", {})
         assert "openviking" not in memory_config
 
+    def test_openviking_declared_surface_registers_managed_actions(self, monkeypatch, tmp_path):
+        import plugins.memory.openviking as openviking_module
+
+        monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
+
+        resp = self.client.get(
+            "/api/memory/providers/openviking/config?surface=declared"
+        )
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        fields = self._provider_field_map(payload)
+        assert payload["submit_action"] == "save"
+        assert payload["status_action"] == "health"
+        assert [action["name"] for action in payload["actions"]] == ["start-local"]
+        assert payload["actions"][0]["visible_when"] == [
+            {"key": "setup_type", "values": ["custom"], "pattern": ""},
+            {
+                "key": "url",
+                "values": [],
+                "pattern": r"^http://(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:/|$)",
+            },
+        ]
+        assert fields["setup_type"]["kind"] == "segmented"
+        assert fields["setup_type"]["label"] == "Setup Type"
+        assert fields["profile_path"]["dynamic_options"] is True
+        assert fields["profile_path"]["searchable"] is True
+        assert fields["profile_path"]["search_placeholder"] == "Search profiles..."
+        assert fields["profile_name"]["label"] == "Profile Name"
+        assert fields["api_key"]["value"] == ""
+        assert fields["api_key_service"]["value"] == ""
+
+    def test_openviking_declared_surface_rejects_unregistered_action(self):
+        resp = self.client.post(
+            "/api/memory/providers/openviking/actions/delete-everything",
+            json={"payload": {}},
+        )
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == (
+            "Unknown memory provider action: delete-everything"
+        )
+
+    def test_openviking_declared_surface_rejects_field_by_field_put(self):
+        resp = self.client.put(
+            "/api/memory/providers/openviking/config?surface=declared",
+            json={"values": {"url": "https://unvalidated.example"}},
+        )
+
+        assert resp.status_code == 405
+        assert "registered submit action" in resp.json()["detail"]
+
+    def test_openviking_action_rejects_credential_role_mismatch(self, monkeypatch, tmp_path):
+        import plugins.memory.openviking as openviking_module
+
+        monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(
+            openviking_module,
+            "_validate_openviking_setup_values",
+            lambda _values, *, require_api_key=False: (True, "", "root"),
+        )
+
+        resp = self.client.post(
+            "/api/memory/providers/openviking/actions/save",
+            json={
+                "payload": {
+                    "values": {
+                        "setup_type": "custom",
+                        "profile_name": "work",
+                        "url": "https://openviking.example",
+                        "credential": "user",
+                        "api_key": "root-key",
+                        "actor_peer_id": "hermes",
+                    }
+                }
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "This key has root access" in resp.json()["detail"]
+        assert not (tmp_path / ".openviking" / "ovcli.conf.work").exists()
+
+    def test_openviking_action_returns_conflict_for_different_profile(self, monkeypatch, tmp_path):
+        import plugins.memory.openviking as openviking_module
+
+        monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(
+            openviking_module,
+            "_validate_openviking_setup_values",
+            lambda _values, *, require_api_key=False: (True, "", "user"),
+        )
+        profile_path = tmp_path / ".openviking" / "ovcli.conf.work"
+        profile_path.parent.mkdir()
+        original = {
+            "url": "https://old.example",
+            "api_key": "old-key",
+            "actor_peer_id": "hermes",
+        }
+        profile_path.write_text(json.dumps(original), encoding="utf-8")
+
+        resp = self.client.post(
+            "/api/memory/providers/openviking/actions/save",
+            json={
+                "payload": {
+                    "values": {
+                        "setup_type": "custom",
+                        "profile_name": "work",
+                        "url": "https://new.example",
+                        "credential": "user",
+                        "api_key": "new-key",
+                        "actor_peer_id": "hermes",
+                    }
+                }
+            },
+        )
+
+        assert resp.status_code == 409
+        assert json.loads(profile_path.read_text(encoding="utf-8")) == original
+
+    def test_openviking_action_save_is_profile_scoped(self, monkeypatch, tmp_path):
+        import plugins.memory.openviking as openviking_module
+        from hermes_cli import profiles as profiles_mod
+
+        monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(
+            openviking_module,
+            "_validate_openviking_setup_values",
+            lambda _values, *, require_api_key=False: (True, "", "user"),
+        )
+        profile_path = tmp_path / ".openviking" / "ovcli.conf.worker"
+        profile_path.parent.mkdir()
+        profile_path.write_text(
+            json.dumps({
+                "url": "https://worker.example",
+                "api_key": "worker-key",
+                "actor_peer_id": "worker-agent",
+            }),
+            encoding="utf-8",
+        )
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+        (worker_home / ".env").write_text(
+            "OPENVIKING_URL=https://stale.example\nOTHER_KEY=keep\n",
+            encoding="utf-8",
+        )
+
+        resp = self.client.post(
+            "/api/memory/providers/openviking/actions/save?profile=worker",
+            json={
+                "payload": {
+                    "values": {
+                        "setup_type": "profile",
+                        "profile_path": str(profile_path),
+                    }
+                }
+            },
+        )
+
+        assert resp.status_code == 200
+        worker_config = yaml.safe_load((worker_home / "config.yaml").read_text(encoding="utf-8"))
+        assert worker_config["memory"]["provider"] == "openviking"
+        assert worker_config["memory"]["openviking"] == {
+            "use_ovcli_config": True,
+            "ovcli_config_path": str(profile_path),
+        }
+        assert "OPENVIKING_" not in (worker_home / ".env").read_text(encoding="utf-8")
+        assert "OTHER_KEY=keep" in (worker_home / ".env").read_text(encoding="utf-8")
+
 
 
 

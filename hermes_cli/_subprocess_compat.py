@@ -381,7 +381,7 @@ def _kill_git_process_tree(proc: "subprocess.Popen") -> None:
 
             pgid = os.getpgid(proc.pid)
             if pgid == proc.pid:
-                os.killpg(pgid, _signal.SIGKILL)
+                os.killpg(pgid, _signal.SIGKILL)  # windows-footgun: ok — inside `if not IS_WINDOWS` gate
         except Exception:
             pass
     try:

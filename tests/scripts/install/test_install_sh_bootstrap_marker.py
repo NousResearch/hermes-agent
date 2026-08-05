@@ -82,14 +82,22 @@ def test_marker_publish_leaves_no_temp_sibling(tmp_path):
     assert not (install_dir / ".hermes-bootstrap-complete.tmp").exists()
 
 
-def test_explicit_commit_pin_wins_over_head(tmp_path):
+def test_installed_head_wins_over_requested_commit(tmp_path):
     install_dir = make_checkout(tmp_path)
     pinned = "abcdef1234567890abcdef1234567890abcdef12"
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=install_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
     run_write_marker(install_dir, commit=pinned)
 
     payload = json.loads((install_dir / ".hermes-bootstrap-complete").read_text())
-    assert payload["pinnedCommit"] == pinned
+    assert payload["pinnedCommit"] == head
 
 
 def test_no_marker_written_when_head_cannot_be_resolved(tmp_path):

@@ -25668,9 +25668,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # user gets one corrected message; on edit failure fall through
                 # with already_sent unset so the normal final send delivers the
                 # complete text.
+                #
+                # Not valid for a multi-message split delivery: there
+                # ``message_id`` is only the LAST chunk, so editing it with the
+                # complete response would repeat every sealed head chunk's text
+                # inside the tail message. Fall through to the normal final send
+                # instead (#78541).
                 _sc_msg_id = _sc.message_id
                 _sc_adapter = getattr(_sc, "adapter", None)
-                if _sc_msg_id and _sc_msg_id != "__no_edit__" and _sc_adapter is not None:
+                if getattr(_sc, "_turn_split_delivery", False):
+                    logger.info(
+                        "Stale streamed finalize detected for session %s on a multi-message split; skipping the in-place reconciliation edit and delivering the complete response via normal final send (#78541).",
+                        session_key or "?",
+                    )
+                elif _sc_msg_id and _sc_msg_id != "__no_edit__" and _sc_adapter is not None:
                     try:
                         _reconcile_res = await _sc_adapter.edit_message(
                             chat_id=source.chat_id,

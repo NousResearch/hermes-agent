@@ -419,16 +419,19 @@ class GatewayStreamConsumer:
         self._stream_ledger += text
 
     def _record_turn_final_payload(self, text: str) -> None:
-        """Record the exact cleaned payload of a turn-final delivery.
+        """Record what the user has actually seen as this turn's final answer.
 
         Normalized the same way ``_send_or_edit`` normalizes outgoing text
         (media-directive strip + fence closing) so the gateway can compare it
         against the completed ``final_response`` (#71643).
 
-        For multi-message split delivery, prefer ``_stream_ledger`` (the
-        unsplit segment text) so reconciliation still works (#78541).  Older
-        code cleared the record on split and forced legacy trust; that let a
-        payload-less stale flag suppress later complete replies.
+        ``text`` is what the *calling* path just delivered. On a multi-message
+        split that is only the trailing chunk — the overflow paths truncate
+        ``_accumulated`` once head chunks are sealed — so ``_stream_ledger``
+        (the un-truncated segment text) is preferred there and ``text`` is
+        ignored. Without that substitution a split turn records a tail-only
+        payload, which the gateway reads as a mismatch and re-sends on top of
+        an answer the user already received (#78541).
         """
         source = text or ""
         if self._turn_split_delivery and self._stream_ledger:
@@ -945,6 +948,16 @@ class GatewayStreamConsumer:
                             self._message_created_ts = None
                             self._last_sent_text = ""
 
+                        if chunks_delivered:
+                            # A sealed head is on screen, so this turn is now a
+                            # multi-message delivery.  Flag it BEFORE the tail
+                            # send below: the fresh-final route replaces every
+                            # tracked preview with one message, which is only
+                            # valid while the active message holds the whole
+                            # answer.  Once heads are sealed it does not, and
+                            # deleting them would drop delivered text (#78541).
+                            self._turn_split_delivery = True
+
                         self._last_edit_time = time.monotonic()
                         if got_done:
                             tail_delivered = True
@@ -963,9 +976,7 @@ class GatewayStreamConsumer:
                                 # still reconcile against final_response
                                 # (#71643, #78541).
                                 self._turn_split_delivery = True
-                                self._record_turn_final_payload(
-                                    self._stream_ledger or "".join(chunks)
-                                )
+                                self._record_turn_final_payload(self._accumulated)
                             return
                         if got_segment_break:
                             self._message_id = None
@@ -1422,7 +1433,11 @@ class GatewayStreamConsumer:
                 self._final_response_sent = True
                 self._final_content_delivered = True
                 # The visible partial equals the complete final text (#71643).
-                self._delivered_final_text = final_text.strip()
+                # Route through the recorder so a split turn records the full
+                # ledger rather than this tail-only payload — an unrecorded or
+                # tail-only split now reads as a mismatch and would re-send
+                # text the user already has (#78541).
+                self._record_turn_final_payload(final_text)
                 return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
@@ -1528,7 +1543,10 @@ class GatewayStreamConsumer:
         # The fallback delivered the complete ``final_text`` (as one message
         # or prefix + continuation chunks that union to it), so record it as
         # the turn-final payload for the gateway's reconciliation (#71643).
-        self._delivered_final_text = final_text.strip()
+        # On a split turn ``final_text`` is only the tail — the recorder
+        # substitutes the unsplit ledger so the sealed heads count as
+        # delivered too (#78541).
+        self._record_turn_final_payload(final_text)
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
@@ -1600,7 +1618,9 @@ class GatewayStreamConsumer:
         self._final_response_sent = True
         self._final_content_delivered = True
         # Fresh commit of the complete answer after a failed finalize (#71643).
-        self._delivered_final_text = final_text.strip()
+        # Recorder-routed so a split turn records the unsplit ledger instead of
+        # a tail-only payload the gateway would read as stale (#78541).
+        self._record_turn_final_payload(final_text)
         self._last_sent_text = final_text
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
@@ -1923,6 +1943,15 @@ class GatewayStreamConsumer:
         # current one plus any continuation fragments tracked while streaming
         # (an oversized reply split across the platform's edit limit).  All of
         # them are replaced by the single fresh message below.
+        #
+        # That replacement is only sound while ``text`` holds the whole answer.
+        # On a multi-message split the head chunks were sealed and dropped out
+        # of ``_accumulated``, so ``text`` is just the tail — deleting the
+        # sealed heads would erase text the user already received and leave the
+        # complete reply nowhere on screen (#78541).  Keep the sealed messages
+        # and take the normal edit path instead.
+        if self._turn_split_delivery:
+            return False
         stale_ids = set(self._preview_message_ids)
         if self._message_id and self._message_id != "__no_edit__":
             stale_ids.add(self._message_id)
@@ -2226,9 +2255,12 @@ class GatewayStreamConsumer:
                             self._final_content_delivered = True
                             # ``text`` is already cleaned/fence-closed here and
                             # equals the visible prefix — the on-screen content
-                            # IS this finalize payload (#71643).
-                            if not self._turn_split_delivery:
-                                self._delivered_final_text = text.strip()
+                            # IS this finalize payload (#71643).  Record it on
+                            # split turns too: post-#78541 an unrecorded split
+                            # reads as a mismatch and would re-send this
+                            # already-visible answer, reintroducing the
+                            # duplicate #45517 fixed (#36965 / #25349).
+                            self._record_turn_final_payload(text)
                         raw_response = getattr(result, "raw_response", None)
                         if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
                             # Telegram edited/sent one or more overflow chunks,

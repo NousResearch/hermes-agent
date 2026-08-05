@@ -2807,9 +2807,9 @@ def _abandon_timed_out_gateway_turn(
         timeout_fired.set()
 
     agent = agent_holder[0] if agent_holder else None
-    if agent is not None:
+    if agent is not None and hasattr(agent, "interrupt"):
         try:
-            request_hard_interrupt(agent, _INTERRUPT_REASON_TIMEOUT)
+            agent.interrupt(_INTERRUPT_REASON_TIMEOUT)
         except Exception:
             logger.debug("Timed-out agent interrupt failed", exc_info=True)
 
@@ -22823,7 +22823,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _process_task_id = ""
         _process_baseline = None
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            request_hard_interrupt(running_agent, interrupt_reason)
+            running_agent.interrupt(interrupt_reason)
             _process_task_id = getattr(
                 running_agent, "_gateway_turn_process_task_id", ""
             )

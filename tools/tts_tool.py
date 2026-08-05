@@ -3753,6 +3753,29 @@ def stream_tts_to_speaker(
             # sentence N+1 is already buffering while sentence N plays.
             _enqueue_audio(cleaned)
 
+        def _speak_via_sync(cleaned: str):
+            """Synthesize one sentence via the proven sync tool, then block on
+            playback. No chunked API, but per-*sentence* granularity keeps the
+            flow conversational for edge and every other non-streaming provider.
+            """
+            tmp_path = None
+            try:
+                fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+                os.close(fd)
+                text_to_speech_tool(text=cleaned, output_path=tmp_path)
+                if (not stop_event.is_set() and os.path.isfile(tmp_path)
+                        and os.path.getsize(tmp_path) > 0):
+                    from tools.voice_mode import play_audio_file
+                    play_audio_file(tmp_path)
+            except Exception as exc:
+                logger.warning("Sync per-sentence TTS failed: %s", exc)
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
         def _align_int16_chunks(chunks, stop_evt):
             """Yield int16-aligned byte chunks from an iterable."""
             leftover = b""
@@ -3836,14 +3859,6 @@ def stream_tts_to_speaker(
     except Exception as exc:
         logger.warning("Streaming TTS pipeline error: %s", exc)
     finally:
-        # Flush the sync pipeline first: queued sentences finish playing (or
-        # are skipped when stop_event is set) BEFORE tts_done_event fires, so
-        # continuous voice mode never reopens the mic over its own voice.
-        if sync_pipeline is not None:
-            try:
-                sync_pipeline.close()
-            except Exception:
-                pass
         # Signal the playback worker that no more audio is coming.  This lives
         # in finally: so an exception in the text pump still sends the sentinel.
         if streamer is not None and _worker_thread is not None:

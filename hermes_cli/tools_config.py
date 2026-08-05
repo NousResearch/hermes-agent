@@ -206,6 +206,16 @@ def _homeassistant_credentials_present() -> bool:
     except Exception:
         return False
 
+
+def _homeassistant_credentials_present() -> bool:
+    """Return whether the active profile has a Home Assistant token."""
+    try:
+        from agent.secret_scope import get_secret
+
+        return bool((get_secret("HASS_TOKEN", "") or "").strip())
+    except Exception:
+        return False
+
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
 # absent from this map is available on every platform (current behaviour).

@@ -668,19 +668,14 @@ class BaseEnvironment(ABC):
         # calls run) ``$$`` stays the *parent* shell's PID — so two concurrent
         # writers would pick the SAME temp name, clobber each other's temp
         # mid-write, and mv would then publish a torn file (the corruption is
-        # only narrowed, not closed).  ``$BASHPID`` would be unique per writer,
-        # but macOS ships bash 3.2 which does NOT provide it — the name expands
-        # empty there, so every writer shares one temp path and the race is
-        # back.  ``mktemp`` allocates a per-writer unique path portably across
-        # bash versions.  The template is shell-quoted (Windows/Git-Bash drive
-        # letters, spaces) and the resulting path lives in a shell variable so
-        # every later expansion is consistent.
-        _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
-        _snap_tmp = '"$__hermes_snap_tmp"'
+        # only narrowed, not closed).  ``$BASHPID`` is the actual subshell PID
+        # and is genuinely unique per writer, which closes the race.  The
+        # static path is shell-quoted (Windows/Git-Bash drive letters, spaces)
+        # with ``$BASHPID`` left outside the quotes so it still expands.
+        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
         snapshot_excluded = self._snapshot_excluded_passthrough_names()
         bootstrap = (
             f"umask 077\n"
-            f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) || exit 1\n"
             f"{_export_dump_excluding_session_vars(_snap_tmp, snapshot_excluded)}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
@@ -855,7 +850,6 @@ class BaseEnvironment(ABC):
         # that later expands the ``mv`` operand, keeping both consistent.
         if self._snapshot_ready:
             parts.append(
-                f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) && "
                 f"{{ {_export_dump_excluding_session_vars(_snap_tmp, passthrough_names)} "
                 f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"

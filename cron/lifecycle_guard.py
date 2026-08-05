@@ -253,12 +253,44 @@ def _resolve_script_directory(script_path: str) -> Optional[str]:
     return None
 
 
+def _looks_like_shell_script(path: Path) -> bool:
+    """Return True when *path* plausibly holds a shell script, not a binary.
+
+    ``_iter_referenced_shell_scripts`` treats any executable containing ``/``
+    as a referenced script so relative/absolute script paths (``./deploy.sh``,
+    ``/opt/tools/run``) get scanned. That heuristic also sweeps in absolute
+    paths to *binaries* (``/usr/bin/python3``, ``/usr/bin/git``). Scanning a
+    binary's contents is pointless and can fail closed: oversized binaries
+    (> 1 MiB) are flagged unsafe by ``_read_referenced_script`` and block the
+    whole command (#76762). A local file whose header is text (shebang line
+    or no NUL byte) is a script candidate; a header containing NUL bytes is a
+    binary. Missing/unreadable paths stay candidates so remote backends can
+    still be consulted.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except (OSError, ValueError):
+        return True
+    try:
+        header = os.read(descriptor, 4096)
+    except OSError:
+        return True
+    finally:
+        os.close(descriptor)
+    if not header:
+        return True
+    if header.startswith(b"#!"):
+        return True
+    return b"\x00" not in header
+
+
 def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     """Return ``(text, unsafe)`` using bounded, regular-file-only reads."""
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
-    except OSError:
+    except (OSError, ValueError):
         return None, False
     try:
         metadata = os.fstat(descriptor)
@@ -311,12 +343,16 @@ def _contains_unsafe_gateway_action(
             return True
 
     for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
+        # Absolute-path executables (``/usr/bin/python3``) are yielded by the
+        # ``/`` heuristic but are usually binaries, not shell scripts. Skip
+        # them before resolving/reading so they neither crash on null-byte
+        # paths (``ValueError`` from ``Path.resolve``) nor fail closed as
+        # oversized "unsafe" reads (#76762).
+        if not _looks_like_shell_script(script_path):
+            continue
         try:
             resolved = script_path.resolve(strict=False)
         except (OSError, ValueError):
-            # OSError: unreadable/long paths. ValueError: embedded NUL byte
-            # from a binary's decoded contents tokenized as a path — a
-            # guarded path must never crash the guard (#76762).
             resolved = script_path
         if resolved in visited:
             continue

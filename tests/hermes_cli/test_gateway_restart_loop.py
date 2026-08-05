@@ -9,6 +9,7 @@ Covers:
 import json
 import os
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
@@ -704,6 +705,56 @@ class TestLifecycleGuardModule:
         (tmp_path / "deploy.sh").write_text("#!/bin/bash\nhermes gateway stop\n")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily ops", str(script))
+
+
+class TestLifecycleGuardAbsolutePathExecutables:
+    """#76762: absolute-path executables must neither crash the guard
+    (ValueError: embedded null byte from Path.resolve on null-byte paths)
+    nor be treated as referenced shell scripts when they are binaries."""
+
+    def _check(self, command, cwd=None):
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command_or_referenced_script
+        return contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=cwd or str(Path.cwd())
+        )
+
+    def test_absolute_path_binary_not_blocked(self, tmp_path):
+        """A binary invoked by absolute path (e.g. /usr/bin/python3) is not a
+        shell script; the guard must not read or fail closed on it."""
+        binary = tmp_path / "tool"
+        binary.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 4096)
+        assert self._check(f"{binary} --version", cwd=str(tmp_path)) is False
+
+    def test_absolute_path_oversized_binary_not_blocked(self, tmp_path):
+        """Oversized (>1 MiB) binaries used to fail closed as 'unsafe' reads
+        and block the whole command; they are not scripts, so skip them."""
+        binary = tmp_path / "bigtool"
+        binary.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * (1024 * 1024 + 64))
+        assert self._check(f"{binary} --version", cwd=str(tmp_path)) is False
+
+    def test_null_byte_executable_does_not_crash(self):
+        """A NUL byte in an absolute-path executable used to raise
+        ValueError: embedded null byte from Path.resolve(strict=False) and
+        block every such command (#76762)."""
+        assert self._check("/usr/bin/python3\x00-c \"print(1)\"") is False
+
+    def test_absolute_path_shebang_script_still_scanned(self, tmp_path):
+        """A real script with a shebang invoked by absolute path must still
+        be scanned for lifecycle commands."""
+        script = tmp_path / "deploy.sh"
+        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        assert self._check(str(script), cwd=str(tmp_path)) is True
+
+    def test_absolute_path_benign_script_allowed(self, tmp_path):
+        script = tmp_path / "ok.sh"
+        script.write_text("#!/bin/bash\necho hello\n")
+        assert self._check(str(script), cwd=str(tmp_path)) is False
+
+    def test_shell_argument_script_still_scanned(self, tmp_path):
+        """Scripts passed to a shell (bash /path/script) still get scanned."""
+        script = tmp_path / "via-shell.sh"
+        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        assert self._check(f"bash {script}", cwd=str(tmp_path)) is True
 
 
 # ---------------------------------------------------------------------------

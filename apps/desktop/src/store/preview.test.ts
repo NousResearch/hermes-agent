@@ -133,4 +133,24 @@ describe('preview store', () => {
 
     expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2') ?? '').not.toContain('base64')
   })
+
+  it('does not persist remote HTML without its in-memory document', () => {
+    openPreview({ ...fileTarget('/remote/report.html'), dataUrl: 'data:text/html;base64,PGgxPnJlbW90ZTwvaDE+' })
+
+    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBe('[]')
+  })
+
+  it('preserves an explicit HTML source fallback', () => {
+    openPreview({ ...fileTarget('/remote/report.html'), renderMode: 'source' }, 'tool-result')
+
+    expect($previewTarget.get()?.renderMode).toBe('source')
+  })
+
+  it('does not persist transient remote HTML source fallbacks', () => {
+    const target = { ...fileTarget('/remote/report.html'), renderMode: 'source' as const, transient: true }
+
+    openPreview(target, 'tool-result')
+
+    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBe('[]')
+  })
 })

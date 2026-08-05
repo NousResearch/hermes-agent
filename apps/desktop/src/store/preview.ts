@@ -39,6 +39,8 @@ export interface PreviewTarget {
   previewKind?: 'binary' | 'html' | 'image' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
+  /** Runtime-only target that cannot be restored from persisted state. */
+  transient?: boolean
   url: string
 }
 
@@ -97,11 +99,16 @@ export const $previewTabs = persistentAtom<PreviewTab[]>(TABS_STORAGE_KEY, [], {
 
     return Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []
   },
-  // Inline image bytes (megabytes) are stripped, and artifact tabs are skipped
-  // entirely — the registry behind them doesn't survive a reload either.
+  // Inline bytes are not restorable. Strip them from images, and skip remote
+  // HTML and artifact tabs that cannot render without their in-memory payload.
   encode: tabs =>
     JSON.stringify(
-      tabs.filter(tab => tab.target.kind !== 'artifact'),
+      tabs.filter(
+        tab =>
+          tab.target.kind !== 'artifact' &&
+          !tab.target.transient &&
+          !(tab.target.previewKind === 'html' && tab.target.dataUrl)
+      ),
       (key, value) => (key === 'dataUrl' ? undefined : value)
     )
 })
@@ -157,7 +164,7 @@ function isFilePreviewSource(source: PreviewRecordSource): boolean {
 }
 
 function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSource): PreviewTarget {
-  if (target.kind !== 'file' || target.previewKind !== 'html') {
+  if (target.kind !== 'file' || target.previewKind !== 'html' || target.renderMode === 'source') {
     return target
   }
 

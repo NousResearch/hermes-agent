@@ -1,12 +1,13 @@
 import { useStore } from '@nanostores/react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-controls'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Bug } from '@/lib/icons'
+import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -153,6 +154,16 @@ export function PreviewPane({
   const isWebPreview =
     target.kind !== 'artifact' &&
     (target.kind === 'url' || (target.previewKind === 'html' && target.renderMode !== 'source'))
+
+  const isRemoteHtmlTarget =
+    target.kind === 'file' && target.previewKind === 'html' && Boolean(target.dataUrl || target.transient)
+
+  const isRemoteHtml = isRemoteHtmlTarget && target.renderMode !== 'source' && Boolean(target.dataUrl)
+
+  const remoteHtmlDocument = useMemo(
+    () => (isRemoteHtml ? remoteHtmlPreviewDocument(target.dataUrl!) : null),
+    [isRemoteHtml, target.dataUrl]
+  )
 
   const currentLabel = compactUrl(currentUrl)
 
@@ -301,7 +312,7 @@ export function PreviewPane({
     }
 
     const tools: TitlebarTool[] = [
-      ...(isWebPreview
+      ...(isWebPreview && !isRemoteHtml
         ? [
             {
               active: consoleOpen,
@@ -324,7 +335,7 @@ export function PreviewPane({
     setTitlebarToolGroup(TITLEBAR_GROUP_ID, tools)
 
     return () => setTitlebarToolGroup(TITLEBAR_GROUP_ID, [])
-  }, [consoleOpen, consoleState, copy, devtoolsOpen, isWebPreview, setTitlebarToolGroup, toggleDevTools])
+  }, [consoleOpen, consoleState, copy, devtoolsOpen, isRemoteHtml, isWebPreview, setTitlebarToolGroup, toggleDevTools])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -524,7 +535,7 @@ export function PreviewPane({
     consoleState.reset()
     setLoading(true)
 
-    if (!isWebPreview) {
+    if (!isWebPreview || isRemoteHtml) {
       setLoading(false)
 
       return
@@ -617,7 +628,7 @@ export function PreviewPane({
       webview.removeEventListener('did-stop-loading', onStop)
       webview.remove()
     }
-  }, [appendConsoleEntry, consoleState, copy, isWebPreview, target.url])
+  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, target.url])
 
   return (
     <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground">
@@ -628,9 +639,15 @@ export function PreviewPane({
               <Tip label={copy.openTarget(currentUrl)}>
                 <a
                   className="pointer-events-auto inline max-w-full truncate text-left text-xs font-medium text-foreground underline-offset-4 decoration-current/20 transition-colors hover:text-primary hover:underline"
-                  href={currentUrl}
+                  href={isRemoteHtmlTarget ? undefined : currentUrl}
+                  onClick={event => {
+                    if (isRemoteHtmlTarget) {
+                      event.preventDefault()
+                      void openPreviewTargetInBrowser(target).catch(error => notifyError(error, t.preview.unavailable))
+                    }
+                  }}
                   rel="noreferrer"
-                  target="_blank"
+                  target={isRemoteHtmlTarget ? undefined : '_blank'}
                 >
                   {previewLabel || copy.fallbackTitle}
                 </a>
@@ -646,10 +663,19 @@ export function PreviewPane({
           <div
             className={cn(
               'absolute inset-0 flex bg-transparent',
-              (!isWebPreview || loadError) && 'pointer-events-none opacity-0'
+              (isRemoteHtml || !isWebPreview || loadError) && 'pointer-events-none opacity-0'
             )}
             ref={hostRef}
           />
+          {isRemoteHtml && (
+            <iframe
+              className="absolute inset-0 size-full border-0 bg-white"
+              referrerPolicy="no-referrer"
+              sandbox=""
+              srcDoc={remoteHtmlDocument || ''}
+              title={target.label || copy.fallbackTitle}
+            />
+          )}
           {!isWebPreview &&
             (target.kind === 'artifact' ? (
               <ArtifactPreview target={target} />
@@ -666,7 +692,7 @@ export function PreviewPane({
             />
           )}
 
-          {isWebPreview && consoleOpen && (
+          {isWebPreview && !isRemoteHtml && consoleOpen && (
             <PreviewConsolePanel
               consoleBodyRef={consoleBodyRef}
               consoleShouldStickRef={consoleShouldStickRef}

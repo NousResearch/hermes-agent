@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { normalizeOrLocalPreviewTarget, openPreviewTargetInBrowser } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { PREVIEW_PANE_ID } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
@@ -61,13 +61,7 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
 
   const openInBrowser = async () => {
     try {
-      const bridge = window.hermesDesktop?.openPreviewInBrowser
-
-      if (!bridge) {
-        throw new Error('Desktop preview browser bridge is unavailable')
-      }
-
-      await bridge((await resolveTarget()).url)
+      await openPreviewTargetInBrowser(await resolveTarget())
     } catch (error) {
       notifyError(error, t.preview.unavailable)
     }

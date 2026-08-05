@@ -65,6 +65,18 @@ def _configured_nofile_soft_limit(
     return raw_value
 
 
+def configured_nofile_soft_limit(
+    config: Mapping[str, Any] | None = None,
+) -> int | None:
+    """Public accessor for the resolved ``runtime.nofile_soft_limit`` target.
+
+    Used by service-definition generators (e.g. the launchd plist) so the
+    persisted service limits and the in-process floor share one config knob.
+    Returns ``None`` when the adjustment is disabled or unresolvable.
+    """
+    return _configured_nofile_soft_limit(config)
+
+
 def apply_nofile_soft_limit(
     config: Mapping[str, Any] | None = None,
 ) -> bool:
@@ -116,4 +128,5 @@ def apply_nofile_soft_limit(
 __all__ = [
     "DEFAULT_NOFILE_SOFT_LIMIT",
     "apply_nofile_soft_limit",
+    "configured_nofile_soft_limit",
 ]

@@ -100,8 +100,8 @@ def _listener_pids_on_port(port: int) -> list:
     return pids
 
 
-def _kill_port_process(port: int) -> None:
-    """Kill any process *listening* on the given TCP port (a stale bridge)."""
+def _kill_port_process(port: int, session_path: Path) -> None:
+    """Kill this session's bridge when it is listening on the given port."""
     try:
         if _IS_WINDOWS:
             from hermes_cli._subprocess_compat import windows_hide_flags
@@ -118,8 +118,21 @@ def _kill_port_process(port: int) -> None:
                     local_addr = parts[1]
                     if local_addr.endswith(f":{port}"):
                         try:
+                            pid = int(parts[4])
+                        except ValueError:
+                            continue
+                        if not _bridge_pid_is_ours(pid, session_path, None):
+                            logger.warning(
+                                "[whatsapp] Port %d is held by PID %d, which is not "
+                                "this session's bridge; leaving it running. Set "
+                                "platforms.whatsapp.extra.bridge_port to a free port.",
+                                port,
+                                pid,
+                            )
+                            continue
+                        try:
                             subprocess.run(
-                                ["taskkill", "/PID", parts[4], "/F"],
+                                ["taskkill", "/PID", str(pid), "/F"],
                                 capture_output=True, timeout=5,
                                 creationflags=windows_hide_flags(),
                             )
@@ -130,6 +143,15 @@ def _kill_port_process(port: int) -> None:
             # whose connection happens to involve this port number (a browser
             # tab on a local dev server, etc.) must never be killed.
             for pid in _listener_pids_on_port(port):
+                if not _bridge_pid_is_ours(pid, session_path, None):
+                    logger.warning(
+                        "[whatsapp] Port %d is held by PID %d, which is not "
+                        "this session's bridge; leaving it running. Set "
+                        "platforms.whatsapp.extra.bridge_port to a free port.",
+                        port,
+                        pid,
+                    )
+                    continue
                 try:
                     os.kill(pid, signal.SIGTERM)
                 except (ProcessLookupError, PermissionError, OSError):
@@ -674,7 +696,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             
             # Kill any orphaned bridge from a previous gateway run
             _kill_stale_bridge_by_pidfile(self._session_path)
-            _kill_port_process(self._bridge_port)
+            _kill_port_process(self._bridge_port, self._session_path)
             await asyncio.sleep(1)
             
             # Start the bridge process in its own process group.

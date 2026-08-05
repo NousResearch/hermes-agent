@@ -1052,6 +1052,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `doctor.live_probe_timeout` is the only schema-surfaced doctor field —
     # fold it into general rather than spawning a one-field orphan category.
     "doctor": "general",
+    # `runtime.nofile_soft_limit` (#78873) is the only schema-surfaced runtime
+    # field — fold it into the agent tab rather than spawning a one-field
+    # orphan category.
+    "runtime": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.

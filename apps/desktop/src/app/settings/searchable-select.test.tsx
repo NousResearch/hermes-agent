@@ -88,6 +88,44 @@ describe('SearchableSelect', () => {
 
     expect(screen.getByRole('combobox').textContent).toContain('Search…')
   })
+
+  it('renders labels while preserving distinct submitted values', () => {
+    const onChange = vi.fn()
+
+    render(
+      <SearchableSelect
+        onChange={onChange}
+        options={[{ label: 'hermesOV', value: '/tmp/ovcli.conf.hermesOV' }]}
+        placeholder="Search profiles..."
+        value="/tmp/ovcli.conf.hermesOV"
+      />
+    )
+
+    expect(screen.getByRole('combobox').textContent).toContain('hermesOV')
+    fireEvent.click(screen.getByRole('combobox'))
+    fireEvent.change(screen.getByPlaceholderText('Search profiles...'), { target: { value: 'hermes' } })
+    fireEvent.click(screen.getByRole('option', { name: 'hermesOV' }))
+
+    expect(onChange).toHaveBeenCalledWith('/tmp/ovcli.conf.hermesOV')
+  })
+
+  it('forwards form accessibility state to the trigger', () => {
+    render(
+      <SearchableSelect
+        id="profile-path"
+        invalid
+        onChange={vi.fn()}
+        options={options}
+        required
+        value="UTC"
+      />
+    )
+
+    const trigger = screen.getByRole('combobox')
+    expect(trigger.id).toBe('profile-path')
+    expect(trigger.getAttribute('aria-invalid')).toBe('true')
+    expect(trigger.getAttribute('aria-required')).toBe('true')
+  })
 })
 
 describe('ConfigField searchable routing', () => {

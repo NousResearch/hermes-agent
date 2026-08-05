@@ -67,6 +67,20 @@ export function saveMemoryProviderConfig(
   })
 }
 
+export function runMemoryProviderAction<T>(
+  provider: string,
+  action: string,
+  payload: Record<string, unknown>,
+  profile?: null | string
+): Promise<T> {
+  return hermesApi<T>({
+    ...profileScoped(profile),
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/actions/${encodeURIComponent(action)}`,
+    method: 'POST',
+    body: { payload }
+  })
+}
+
 // Memory-provider OAuth connect (provider-keyed; 404s for providers without an
 // OAuth flow). Profile-scoped: the grant lands in the active profile's config.
 export function startMemoryProviderOAuth(

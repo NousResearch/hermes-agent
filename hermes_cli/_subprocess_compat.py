@@ -350,13 +350,21 @@ def noninteractive_git_env(
 
 
 def _kill_git_process_tree(proc: "subprocess.Popen") -> None:
-    """Best-effort terminate *proc* and, on Windows, its descendants.
+    """Best-effort terminate *proc* and its descendants on both platforms.
 
-    ``proc.kill()`` alone only terminates the PATH-resolved ``git`` launcher; a
+    ``proc.kill()`` alone only terminates the direct child. On Windows a
     suspended descendant ``git.exe`` can survive holding duplicates of the
     captured pipe handles, which keeps the pipes from reaching EOF and leaks two
-    reader threads + the process per fired timeout. ``taskkill /T /F`` takes the
+    reader threads + the process per fired timeout — ``taskkill /T /F`` takes the
     whole tree down so the bounded drain that follows can actually reach EOF.
+    On POSIX the same class exists: killing the launcher leaves descendants
+    (credential helpers, ``git-remote-https``, hook children) running and
+    holding the pipe write ends. The probe is spawned in its own process group
+    (``process_group=0`` in :func:`bounded_git_probe`), so when — and only
+    when — the child leads its own group (``pgid == pid``), the entire group is
+    signalled with ``os.killpg``. The ownership check means a fallback spawn
+    that shares our group can never cause us to kill unrelated processes.
+    Ported from openai/codex#36793 ("Terminate timed-out Git process trees").
 
     All failures are swallowed — this is cleanup on an already-failing path, and
     the caller's contract is to fail open. ``kill()`` can raise (access denied,
@@ -365,6 +373,17 @@ def _kill_git_process_tree(proc: "subprocess.Popen") -> None:
     re-enter the deadlock class it fixes: it captures no pipes (DEVNULL), so its
     own timeout cleanup has no reader threads to join.
     """
+    if not IS_WINDOWS:
+        # Group-kill first: verify the child actually leads its own process
+        # group before signalling it, so we never blast a shared group.
+        try:
+            import signal as _signal
+
+            pgid = os.getpgid(proc.pid)
+            if pgid == proc.pid:
+                os.killpg(pgid, _signal.SIGKILL)
+        except Exception:
+            pass
     try:
         proc.kill()
     except OSError:
@@ -408,9 +427,15 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
 
     The normal-path spawn contract mirrors the previous ``run`` call byte-for-byte:
     PIPE/PIPE/DEVNULL, ``text`` with UTF-8 ``errors="replace"`` decoding, and the
-    hidden-window ``creationflags`` on Windows only.
+    hidden-window ``creationflags`` on Windows only. On POSIX the probe is
+    additionally placed in its own process group (``process_group=0``,
+    Python ≥3.11) so timeout cleanup can take down descendants — credential
+    helpers, ``git-remote-https``, hook children — with the launcher instead of
+    orphaning them (see :func:`_kill_git_process_tree`; port of
+    openai/codex#36793). ``process_group`` only changes which group the child
+    belongs to; it does not detach the terminal or alter the fast path.
     """
-    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
+    _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     try:
         proc = subprocess.Popen(
             list(argv),

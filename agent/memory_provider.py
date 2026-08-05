@@ -64,6 +64,10 @@ class RecallStatus:
     glyph: str = INDICATOR_GLYPH
 
 
+class MemoryProviderConfigConflictError(ValueError):
+    """A provider-owned config save requires explicit overwrite approval."""
+
+
 # Prompts that carry no semantic signal — trivial acknowledgements, greetings,
 # slash commands, empty input. Single source of truth shared by the core
 # per-turn prefetch gate (agent/turn_context.py, run_agent.py) and provider-
@@ -365,6 +369,31 @@ class MemoryProvider(ABC):
         - use only env vars (in which case get_config_schema() fields
           should all have ``env_var`` set and this method stays no-op).
         """
+
+    def get_desktop_config(self, *, hermes_home: str) -> Dict[str, Any]:
+        """Return provider-owned values for a declarative Desktop form.
+
+        The default is empty so ordinary declared providers remain backed by
+        the shared JSON/env storage path. Implementations must not perform
+        network I/O here because this runs while the settings page loads.
+        """
+        return {}
+
+    def handle_desktop_config_action(
+        self,
+        action: str,
+        payload: Dict[str, Any],
+        *,
+        hermes_home: str,
+    ) -> Dict[str, Any]:
+        """Run a provider-owned Desktop config operation.
+
+        Providers use this for atomic workflows that cannot be represented by
+        independent field writes, such as validate-then-link transactions.
+        """
+        raise NotImplementedError(
+            f"Provider {self.name} does not handle config action {action}"
+        )
 
     def on_memory_write(
         self,

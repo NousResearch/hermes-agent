@@ -3,10 +3,10 @@
 Each memory provider plugin *declares* its configurable surface in a
 ``config_schema.py`` next to its ``__init__.py`` — the fields, their types,
 which values are secrets, and (for selects) the allowed options. A single
-generic renderer in the desktop UI and a single generic ``GET/PUT
-/api/memory/providers/{name}/config`` endpoint pair drive the whole
-experience, so adding a provider config surface is pure declaration with no
-bespoke UI components.
+generic renderer in the desktop UI drives every declared surface. Simple
+providers use the shared ``GET/PUT`` storage path; providers with atomic setup
+workflows may register actions handled by their plugin without adding bespoke
+UI components.
 
 Schema files are loaded by path (like the provider plugins themselves), never
 via package import: plugin ``__init__.py`` files pull in the agent runtime,
@@ -34,6 +34,7 @@ KIND_SECRET = "secret"
 KIND_BOOL = "bool"
 KIND_NUMBER = "number"
 KIND_JSON = "json"
+KIND_SEGMENTED = "segmented"
 
 # Storage backends understood by web_server (see its read/write dispatch).
 STORAGE_FLAT_JSON = "flat_json"
@@ -50,10 +51,39 @@ class ProviderFieldOption:
 
 
 @dataclass(frozen=True)
+class ProviderFieldCondition:
+    """A declarative condition controlling whether a field or action is shown.
+
+    Conditions are ANDed. ``values`` performs an exact match and ``pattern``
+    applies a regular expression to the current string value. Most schemas only
+    need ``values``; ``pattern`` covers value shapes such as loopback URLs
+    without teaching the shared renderer provider-specific rules.
+    """
+
+    key: str
+    values: tuple[str, ...] = ()
+    pattern: str = ""
+
+
+@dataclass(frozen=True)
+class ProviderConfigAction:
+    """A provider-owned operation rendered by the shared Desktop form."""
+
+    name: str
+    label: str
+    description: str = ""
+    after_field: str = ""
+    payload_fields: tuple[str, ...] = ()
+    visible_when: tuple[ProviderFieldCondition, ...] = ()
+    refresh_after: bool = False
+
+
+@dataclass(frozen=True)
 class ProviderField:
     """One configurable field on a memory provider.
 
-    A field is stored in exactly one place, decided by ``kind``:
+    For storage-backed providers, a field is stored in exactly one place,
+    decided by ``kind``:
 
     * non-secret kinds — persisted to the provider's config via its storage
       backend under ``key``.
@@ -64,6 +94,8 @@ class ProviderField:
     earlier CLI/env setup without re-introducing per-provider code. ``inline``
     marks the curated subset shown in the compact panel; the rest surface only
     in the full-config modal. ``group`` buckets fields within that modal.
+    Provider-managed forms instead submit the visible field values together to
+    their registered action.
     """
 
     key: str
@@ -72,6 +104,7 @@ class ProviderField:
     default: str = ""
     description: str = ""
     placeholder: str = ""
+    search_placeholder: str = ""
     options: tuple[ProviderFieldOption, ...] = ()
     env_key: str | None = None
     aliases: tuple[str, ...] = ()
@@ -80,6 +113,15 @@ class ProviderField:
     group: str = ""
     # Longer help text surfaced as an info tooltip next to the field label.
     info: str = ""
+    help_url: str = ""
+    help_label: str = ""
+    required: bool = False
+    read_only: bool = False
+    visible_when: tuple[ProviderFieldCondition, ...] = ()
+    # Provider-managed selects receive their options from get_desktop_config().
+    dynamic_options: bool = False
+    # Large closed-world option lists render as a searchable picker in Desktop.
+    searchable: bool = False
     # Host-block placement: "host" (per-profile) or "root"; flat-json ignores it.
     scope: str = "host"
 
@@ -100,6 +142,13 @@ class ProviderConfigSchema:
     storage: str = STORAGE_FLAT_JSON
     # Optional link to the provider's config docs, shown in the full-config modal.
     docs_url: str = ""
+    description: str = ""
+    # Provider-managed forms keep persistence and validation in the plugin.
+    # Simple providers continue using the storage backend above unchanged.
+    submit_action: str = ""
+    submit_label: str = "Save changes"
+    status_action: str = ""
+    actions: tuple[ProviderConfigAction, ...] = dataclass_field(default_factory=tuple)
     fields: tuple[ProviderField, ...] = dataclass_field(default_factory=tuple)
 
     def inline_fields(self) -> tuple[ProviderField, ...]:
@@ -130,7 +179,9 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
         return _SCHEMA_CACHE[key]
 
     try:
-        spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{name}", path)
+        spec = importlib.util.spec_from_file_location(
+            f"_hermes_memory_config_schema.{name}", path
+        )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         schema = getattr(module, "CONFIG_SCHEMA", None)

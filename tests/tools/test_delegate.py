@@ -1112,6 +1112,69 @@ class TestDelegateHeartbeat(unittest.TestCase):
             f"got {len(touch_calls)} touches",
         )
 
+    def test_heartbeat_does_not_trip_idle_stale_while_waiting_on_model(self):
+        """A slow in-flight model wait (api_call_count frozen, no tool) must
+        stay alive when last_activity_ts keeps advancing.
+
+        Top-level delegate_task runs in the background; the async stall
+        monitor already treats ticking last_activity_ts as progress. The sync
+        heartbeat path must use the same signal so slow local / long-prefill
+        completions are not mistaken for a wedged idle child.
+        """
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        touch_calls = []
+        kept_going = threading.Event()
+
+        def record(desc):
+            touch_calls.append(desc)
+            if len(touch_calls) > 2:
+                kept_going.set()
+
+        parent._touch_activity = record
+
+        child = MagicMock()
+        activity = {"ts": 1000.0}
+
+        def _summary():
+            # Frozen iteration / no tool — only the activity clock moves,
+            # matching direct_api_call's mid-wait heartbeats.
+            activity["ts"] += 1.0
+            return {
+                "current_tool": None,
+                "api_call_count": 1,
+                "max_iterations": 50,
+                "last_activity_desc": "waiting for non-streaming API response",
+                "last_activity_ts": activity["ts"],
+            }
+
+        child.get_activity_summary.side_effect = _summary
+
+        def slow_run(**kwargs):
+            kept_going.wait(5)
+            return {"final_response": "done", "completed": True, "api_calls": 1}
+
+        child.run_conversation.side_effect = slow_run
+
+        with (
+            patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.01),
+            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 2),
+            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IN_TOOL", 40),
+        ):
+            _run_single_child(
+                task_index=0,
+                goal="Test slow model wait",
+                child=child,
+                parent_agent=parent,
+            )
+
+        self.assertGreater(
+            len(touch_calls), 2,
+            f"Heartbeat stopped too early while child was waiting on the model; "
+            f"got {len(touch_calls)} touches",
+        )
+
 
 class TestDelegationReasoningEffort(unittest.TestCase):
     """Tests for delegation.reasoning_effort config override."""

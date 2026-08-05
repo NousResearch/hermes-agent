@@ -9,8 +9,10 @@ import pytest
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
+    _get_provider_models,
     fetch_models_dev,
     get_model_capabilities,
+    get_model_info,
     get_provider_info,
     lookup_models_dev_context,
 )
@@ -138,6 +140,38 @@ class TestLookupModelsDevContext:
         # audio-only is not a mapped provider, but test the filtering directly
         data = SAMPLE_REGISTRY["audio-only"]["models"]["tts-model"]
         assert _extract_context(data) is None
+
+
+class TestCustomProviderNormalization:
+    """#79225: ``custom:<name>`` providers must resolve through the bare
+    catalog id even when ``<name>`` is not a key in PROVIDER_TO_MODELS_DEV.
+    A double lookup (normalize, then map again) silently drops the
+    normalized id: ``PROVIDER_TO_MODELS_DEV.get("audio-only")`` is None."""
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_lookup_models_dev_context_resolves_custom_catalog_id(
+        self, mock_fetch
+    ):
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        # "audio-only" is NOT in PROVIDER_TO_MODELS_DEV but IS a catalog id.
+        assert "audio-only" not in PROVIDER_TO_MODELS_DEV
+        # tts-model has context 0 → filtered → None (resolution itself works,
+        # proving the normalized id reached the registry lookup).
+        assert lookup_models_dev_context("custom:audio-only", "tts-model") is None
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_get_provider_models_resolves_custom_catalog_id(self, mock_fetch):
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        models = _get_provider_models("custom:audio-only")
+        assert models is not None
+        assert "tts-model" in models
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_get_model_info_resolves_custom_catalog_id(self, mock_fetch):
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        info = get_model_info("custom:anthropic", "claude-opus-4-6")
+        assert info is not None
+        assert info.context_window == 1000000
 
 
 

@@ -501,7 +501,7 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     Returns the context window in tokens, or None if not found.
     Handles case-insensitive matching and filters out context=0 entries.
     """
-    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(_mdev_provider_id(provider))
+    mdev_provider_id = _mdev_provider_id(provider)
     if not mdev_provider_id:
         return None
 
@@ -592,7 +592,7 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
 
     Returns the models dict or None if the provider is unknown or has no data.
     """
-    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(_mdev_provider_id(provider))
+    mdev_provider_id = _mdev_provider_id(provider)
     if not mdev_provider_id:
         return None
 

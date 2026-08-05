@@ -4435,6 +4435,31 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         _invalidate_update_cache()
 
+        # Verify HEAD actually moved (issue #79678). ``merge --ff-only``
+        # succeeding only means the merge completed, not that the update
+        # applied: a checkout that is pinned to a raw SHA (detached HEAD) can
+        # report "N new commit(s)" against origin yet still sit on the old
+        # commit afterward (the branch-switch step re-detaches to the SHA).
+        # Before this guard, ``hermes update`` printed "✓ Code updated!" and
+        # reinstalled deps + rebuilt the desktop app against the stale tree —
+        # no error, no warning, ``hermes doctor`` healthy. Compare pre-pull
+        # and post-pull HEAD; if they match, surface the no-op instead of
+        # claiming success.
+        post_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+        if pre_pull_sha and post_pull_sha == pre_pull_sha:
+            print()
+            print("✗ Code did not move — update was a no-op.")
+            print(
+                f"  HEAD is pinned to {pre_pull_sha[:10]} (detached checkout); "
+                f"origin/{branch} advanced but the working tree stayed put."
+            )
+            print(
+                "  Reattach to the branch and retry: "
+                f"git -C {_m().PROJECT_ROOT} checkout {branch} && hermes update"
+            )
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(1)
+
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway
         # restart when updated source references names that didn't exist in
         # the old bytecode (e.g. get_hermes_home added to hermes_constants).

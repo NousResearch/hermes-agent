@@ -42,7 +42,17 @@ LEGACY_BOARD_MAP: dict[str, str] = {
 def _kanban_db():
     """Import kanban_db lazily so the module is import-safe without the repo
     on ``sys.path`` (unit tests stub it; scripts that ``sys.path.insert`` the
-    repo root get the real one)."""
+    repo root get the real one).
+
+    The module may be loaded from a repo checkout or a staged runtime bundle;
+    resolve the repository root relative to this file and make it importable
+    so ``hermes_cli`` is found in both layouts.
+    """
+    import sys
+
+    repo_root = str(Path(__file__).resolve().parents[1])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
     from hermes_cli import kanban_db as kb
     return kb
 

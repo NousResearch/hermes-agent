@@ -22,6 +22,7 @@ import {
   setFedEnabled,
   setFedHealth,
   setFedMode,
+  type TrustLevel,
 } from '@/store/federation-store'
 
 /**
@@ -92,6 +93,7 @@ export async function refreshFederationPeers(): Promise<void> {
       grid_x: 0,
       grid_y: 0,
       role: (p.is_leader ? 'leader' : 'worker') as DeviceRole,
+      trust: ('trust' in p ? p.trust : 'unknown') as TrustLevel,
     }))
 
     setFedDevices(devices)

@@ -38,11 +38,16 @@ import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import {
+  $fedApprovalMode,
   $fedDevices,
   $fedEnabled,
   $fedHealth,
   $fedMode,
+  $fedPendingDecisions,
   $onlineCount,
+  $pendingDecisionCount,
+  type ApprovalMode,
+  denyPendingDecision,
   type FederationDevice,
   setFedEnabled,
   setFedMode,
@@ -286,6 +291,69 @@ function AddDeviceDialog({
 
 // ── Main Overlay ─────────────────────────────────────────────────────
 
+// ── Pending Decisions Panel (Phase 17 relay approval UI) ──────────────
+function PendingDecisionsPanel({
+  decisions,
+  approvalMode,
+}: {
+  decisions: ReturnType<typeof useStore<typeof $fedPendingDecisions>>
+  approvalMode: ApprovalMode
+}) {
+  if (decisions.length === 0) {return null}
+
+  return (
+    <div className="border-b border-(--ui-border) bg-amber-500/5 px-6 py-3">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Shield className="size-4 text-amber-600" />
+          <span className="text-sm font-medium text-amber-700 dark:text-amber-400">
+            {decisions.length} relay decision{decisions.length > 1 ? 's' : ''} awaiting approval
+          </span>
+        </div>
+        <span className="text-xs text-muted-foreground">
+          mode: <span className="font-mono uppercase">{approvalMode}</span>
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {decisions.map((d) => (
+          <div
+            className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50/50 px-3 py-1.5 text-xs dark:border-amber-800 dark:bg-amber-950/30"
+            key={d.task_id}
+          >
+            <span className="max-w-[160px] truncate font-mono text-amber-900 dark:text-amber-200">
+              {d.task_description}
+            </span>
+            <span className="text-muted-foreground">→</span>
+            <span className="font-mono text-muted-foreground">{d.to_device.slice(0, 8)}</span>
+            <span className={cn(
+              'rounded px-1 py-0.5 text-[10px] font-semibold uppercase',
+              d.sensitivity === 'critical' ? 'bg-red-100 text-red-700' :
+              d.sensitivity === 'high' ? 'bg-orange-100 text-orange-700' :
+              'bg-stone-100 text-stone-600',
+            )}>
+              {d.sensitivity}
+            </span>
+            <div className="flex gap-1">
+              <button
+                className="rounded bg-stone-200 px-1.5 py-0.5 hover:bg-stone-300 dark:bg-stone-700 dark:hover:bg-stone-600"
+                onClick={() => denyPendingDecision(d.task_id)}
+              >
+                Deny
+              </button>
+              <button
+                className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 hover:bg-emerald-200"
+                onClick={() => {/* approve → bridge IPC */}}
+              >
+                Approve
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function FederationDevicesOverlay() {
   const devices = useStore($fedDevices)
   const enabled = useStore($fedEnabled)
@@ -296,6 +364,24 @@ export function FederationDevicesOverlay() {
   const [selectedDevice, setSelectedDevice] = useState<FederationDevice | null>(null)
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [dragId, setDragId] = useState<string | null>(null)
+
+  // Phase 17: approval mode + pending decisions
+  const approvalMode = useStore($fedApprovalMode)
+  const pendingDecisions = useStore($fedPendingDecisions)
+  const pendingCount = useStore($pendingDecisionCount)
+
+  // Trust badge colors
+  const trustColor = (trust: string) =>
+    trust === 'admin' ? 'bg-red-500' :
+    trust === 'trusted' ? 'bg-emerald-500' :
+    trust === 'verified' ? 'bg-blue-500' :
+    'bg-stone-400'
+
+  const trustLabel = (trust: string) =>
+    trust === 'admin' ? 'Admin' :
+    trust === 'trusted' ? 'Trusted' :
+    trust === 'verified' ? 'Verified' :
+    'Unknown'
 
   // Sorted: local first, then online, then offline
   const sortedDevices = useMemo(() => {
@@ -395,6 +481,9 @@ export function FederationDevicesOverlay() {
           <span className="text-sm font-medium tabular-nums">{health}%</span>
         </div>
       </div>
+
+      {/* Phase 17: Pending relay decisions */}
+      <PendingDecisionsPanel approvalMode={approvalMode} decisions={pendingDecisions} />
 
       {/* Device grid — macOS Display arrangement style */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">

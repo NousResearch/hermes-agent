@@ -9,6 +9,11 @@ import { atom, computed } from 'nanostores'
 export type DeviceStatus = 'online' | 'offline' | 'connecting' | 'error'
 export type DeviceRole = 'leader' | 'worker' | 'idle'
 export type FedMode = 'shared_db' | 'lan' | 'auto'
+/** Federation approval mode — controls when the user is asked. */
+export type ApprovalMode = 'ask' | 'auto' | 'review'
+
+/** Trust level of a peer device. */
+export type TrustLevel = 'unknown' | 'verified' | 'trusted' | 'admin'
 
 export interface FederationDevice {
   device_id: string
@@ -29,6 +34,8 @@ export interface FederationDevice {
   grid_x: number
   grid_y: number
   role: DeviceRole
+  /** Trust level — from the trust system (Phase 17/CRITICAL-2). */
+  trust: TrustLevel
 }
 
 // ── Atoms ────────────────────────────────────────────────────────────
@@ -39,6 +46,20 @@ export const $fedMode = atom<FedMode>('auto')
 export const $fedDiscovering = atom(false)
 export const $fedHealth = atom(0)
 export const $fedAuthToken = atom<string | null>(null)
+
+/** Pending relay decisions awaiting user approval (Phase 17). */
+export interface FederationPendingDecision {
+  task_id: string
+  task_description: string
+  from_device: string
+  to_device: string
+  confidence: number
+  sensitivity: 'low' | 'medium' | 'high' | 'critical'
+  created_at: number
+}
+
+export const $fedApprovalMode = atom<ApprovalMode>('auto')
+export const $fedPendingDecisions = atom<FederationPendingDecision[]>([])
 
 // ── Derived ──────────────────────────────────────────────────────────
 
@@ -52,6 +73,18 @@ export const $localDevice = computed($fedDevices, (devices) =>
 
 export const $deviceCount = computed($fedDevices, (devices) => devices.length)
 export const $onlineCount = computed($onlineDevices, (devices) => devices.length)
+
+export const $pendingDecisionCount = computed($fedPendingDecisions, (d) => d.length)
+
+/** Devices with known trust levels. */
+export const $trustedDevices = computed($fedDevices, (devices) =>
+  devices.filter((d) => d.trust === 'admin' || d.trust === 'trusted'),
+)
+
+/** Devices pending approval of their relay request. */
+export const $devicesAwaitingApproval = computed($fedPendingDecisions, (decisions) =>
+  decisions.map((d) => d.to_device),
+)
 
 // ── Updaters ─────────────────────────────────────────────────────────
 
@@ -89,3 +122,30 @@ export const setFedMode = (v: FedMode) => $fedMode.set(v)
 export const setFedDiscovering = (v: boolean) => $fedDiscovering.set(v)
 export const setFedHealth = (v: number) => $fedHealth.set(v)
 export const setFedAuthToken = (v: string | null) => $fedAuthToken.set(v)
+export const setFedApprovalMode = (v: ApprovalMode) => $fedApprovalMode.set(v)
+
+export const addPendingDecision = (decision: FederationPendingDecision) => {
+  const prev = $fedPendingDecisions.get()
+  $fedPendingDecisions.set([...prev, decision])
+}
+
+export const removePendingDecision = (task_id: string) => {
+  const prev = $fedPendingDecisions.get()
+  $fedPendingDecisions.set(prev.filter((d) => d.task_id !== task_id))
+}
+
+export const approvePendingDecision = (task_id: string): FederationPendingDecision | null => {
+  const current = $fedPendingDecisions.get()
+  const found = current.find((d) => d.task_id === task_id)
+
+  if (found) {
+    const prev = $fedPendingDecisions.get()
+    $fedPendingDecisions.set(prev.filter((d) => d.task_id !== task_id))
+  }
+
+  return found ?? null
+}
+
+export const denyPendingDecision = (task_id: string) => {
+  removePendingDecision(task_id)
+}

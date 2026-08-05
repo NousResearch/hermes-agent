@@ -2182,6 +2182,11 @@ def _get_pre_tool_call_directive_details(
             _agent_id = _p.id
     except Exception:
         pass
+    # Only add agent_id when an agent profile is actually bound. A
+    # single-agent install has no routed profile, and observers there keep
+    # receiving the exact payload they always have — no `agent_id: None`
+    # appearing in every hook kwarg set.
+    _agent_kwargs = {"agent_id": _agent_id} if _agent_id else {}
     hook_results = invoke_lifecycle_hook(
         "pre_tool_call",
         tool_name=tool_name,
@@ -2192,7 +2197,7 @@ def _get_pre_tool_call_directive_details(
         turn_id=turn_id,
         api_request_id=api_request_id,
         middleware_trace=list(middleware_trace or []),
-        agent_id=_agent_id,
+        **_agent_kwargs,
     )
 
     for result in hook_results:

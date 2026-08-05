@@ -2690,6 +2690,9 @@ def _finalize_child_results(
                 agent_id = _p.id
         except Exception:
             pass
+        # Only tag the hook payload when a routed agent profile is bound, so
+        # single-agent installs keep the exact subagent_stop kwargs they had.
+        agent_kwargs = {"agent_id": agent_id} if agent_id else {}
 
         children_cost_total = 0.0
         for entry in results:
@@ -2717,7 +2720,7 @@ def _finalize_child_results(
                         entry.get("tool_trace")
                     ),
                     duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
-                    agent_id=agent_id,
+                    **agent_kwargs,
                 )
             except Exception:
                 logger.debug("subagent_stop hook invocation failed", exc_info=True)

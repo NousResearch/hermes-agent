@@ -167,6 +167,9 @@ Existing single-agent installs require **zero changes**:
 - Session keys default to `agent:main:...` — existing sessions continue uninterrupted
 - SQLite databases are migrated automatically with `agent_id` column defaulting to `"main"`
 - Cron jobs without `agent_id` default to `"main"`
+- Lifecycle hooks (`pre_tool_call`, `subagent_stop`) gain an `agent_id` kwarg **only** when a routed
+  agent profile is bound. With no profile bound, observers and plugins receive exactly the payload
+  they always have
 
 ## Limitations (MVP)
 

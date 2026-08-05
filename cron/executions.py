@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
@@ -85,6 +86,71 @@ def _transaction() -> Iterator[sqlite3.Connection]:
                 yield conn
         finally:
             conn.close()
+
+
+def active_execution_start_times() -> Dict[str, str]:
+    """job_id → started_at of its genuinely-live in-flight execution.
+
+    Cross-process authoritative: the executions ledger is the shared, on-disk
+    record, so any process sees the same in-flight rows even when a sibling
+    process (messaging gateway vs. desktop dashboard backend) fired the job —
+    unlike ``cron.scheduler._running_job_ids``, which lives only in the process
+    that won ``cron/.tick.lock`` for a tick.
+
+    "Genuinely live" excludes two zombie shapes so the running indicator can
+    never be stuck on:
+      - owner provably dead (the scheduler's own recovery definition, see
+        ``recover_interrupted_executions`` / ``_owner_is_live``); and
+      - claim older than the cron claim-TTL (``_oneshot_run_claim_ttl_seconds``,
+        default 30 min = 3× the 600 s inactivity hard-interrupt). A healthy run
+        clears its claim long before that bound, so an execution still marked
+        running past it is a wedged run — the dot must not stay lit on it.
+    """
+    result: Dict[str, str] = {}
+    try:
+        with _transaction() as conn:
+            rows = conn.execute(
+                "SELECT id, job_id, status, claimed_at, started_at, pid, "
+                "process_started_at FROM executions "
+                "WHERE status IN ('claimed','running') AND finished_at IS NULL"
+            ).fetchall()
+    except Exception:
+        return result
+
+    try:
+        from cron.jobs import _oneshot_run_claim_ttl_seconds
+        ttl = _oneshot_run_claim_ttl_seconds()
+    except Exception:
+        ttl = 1800.0
+
+    now = _hermes_now()
+    for row in rows:
+        try:
+            if row["process_id"] != _PROCESS_ID and not _owner_is_live(
+                int(row["pid"]), row["process_started_at"]
+            ):
+                continue
+        except Exception:
+            pass
+        start_raw = row["started_at"] or row["claimed_at"]
+        if not start_raw:
+            continue
+        # A wedged run must not keep the dot lit past the claim TTL. Use the
+        # claim time when the run never officially started (still claimed).
+        age_ref = row["started_at"] or row["claimed_at"]
+        try:
+            ref = datetime.fromisoformat(age_ref)
+        except Exception:
+            continue
+        if (now - ref).total_seconds() > ttl:
+            continue
+        result[str(row["job_id"])] = start_raw
+    return result
+
+
+def active_execution_job_ids() -> frozenset:
+    """Job ids with a genuinely-live in-flight execution (cross-process)."""
+    return frozenset(active_execution_start_times().keys())
 
 
 def _record(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:

@@ -1382,3 +1382,84 @@ class TestCompletedOneshotRetentionSweep:
         assert updated["enabled"] is True
         assert updated["state"] == "scheduled"
         assert updated["next_run_at"] is not None
+
+
+# =========================================================================
+# _stamp_running_job_ids — sidebar display contract
+# =========================================================================
+
+class TestStampRunningJobIds:
+    """Display contract for the desktop sidebar: never surface a past
+    ``next_run_at`` for a scheduled-but-idle job.
+
+    trigger_job() persists ``next_run_at = now`` as the scheduler's "fire
+    now" contract. If the API served that transient value, the sidebar's
+    sort-by-next-run would bounce the triggered job to the top until the
+    scheduler advances it to the real slot. The stamp pass recomputes the
+    slot for idle scheduled jobs instead — sort key stays stable.
+    """
+
+    def _stamp(self, jobs):
+        from unittest.mock import patch
+
+        with patch("cron.executions.active_execution_start_times", return_value={}):
+            from cron.jobs import _stamp_running_job_ids
+
+            _stamp_running_job_ids(jobs)
+
+    def test_transient_trigger_never_serves_past_slot(self):
+        now = datetime.now(timezone.utc)
+        job = {
+            "id": "j1",
+            "state": "scheduled",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "next_run_at": now.isoformat(),  # trigger_job's transient "now"
+        }
+        self._stamp([job])
+        assert job["is_running"] is False
+        served = datetime.fromisoformat(job["next_run_at"])
+        assert served > now  # recomputed to the real future slot
+
+    def test_future_slot_untouched(self):
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        job = {
+            "id": "j2",
+            "state": "scheduled",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "next_run_at": future,
+        }
+        self._stamp([job])
+        assert job["next_run_at"] == future
+
+    def test_stale_oneshot_untouched(self):
+        """A one-shot past its grace window stays put — the guard only
+        substitutes genuinely future slots."""
+        past = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        job = {
+            "id": "j3",
+            "state": "scheduled",
+            "schedule": {"kind": "once", "run_at": past},
+            "next_run_at": past,
+        }
+        self._stamp([job])
+        assert job["next_run_at"] == past
+
+    def test_running_job_untouched_and_stamped(self):
+        from unittest.mock import patch
+
+        now = datetime.now(timezone.utc).isoformat()
+        job = {
+            "id": "j4",
+            "state": "scheduled",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "next_run_at": now,
+        }
+        with patch(
+            "cron.executions.active_execution_start_times", return_value={"j4": now}
+        ):
+            from cron.jobs import _stamp_running_job_ids
+
+            _stamp_running_job_ids([job])
+        assert job["is_running"] is True
+        assert job["active_run_started_at"] == now
+        assert job["next_run_at"] == now  # running jobs keep their slot

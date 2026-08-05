@@ -3824,12 +3824,36 @@ def _pet_changed_payload() -> dict:
 
 
 def _cron_sig():
-    """mtime of the profile's cron/jobs.json — moves on create/edit/pause/
-    remove AND on scheduler tick bookkeeping (last_run/next_run)."""
+    """Signature for the desktop cron watcher.
+
+    Combines the profile's cron/jobs.json mtime — moves on create/edit/pause/
+    remove AND on scheduler tick bookkeeping (last_run/next_run) — with the
+    scheduler's authoritative in-flight running set. The running set is why we
+    also snapshot it here: run-start/finish happen on executions.db, never
+    jobs.json, so without it the desktop would never learn a job went live and
+    the sidebar's running dot would stay stale (it has no other trigger).
+    Reading it is cheap (single frozenset) and one-way — cron.scheduler never
+    imports tui_gateway, so there is no cycle.
+    """
+    jobs_mtime = None
     try:
-        return (_watcher_home() / "cron" / "jobs.json").stat().st_mtime_ns
+        jobs_mtime = (_watcher_home() / "cron" / "jobs.json").stat().st_mtime_ns
     except OSError:
-        return None
+        pass
+
+    running = frozenset()
+    try:
+        from cron.scheduler import get_running_job_ids
+        running = get_running_job_ids()
+    except Exception:
+        pass
+    try:
+        from cron.executions import active_execution_job_ids
+        running = running | active_execution_job_ids()
+    except Exception:
+        pass
+
+    return (jobs_mtime, tuple(sorted(running)))
 
 
 def _sessions_sig():

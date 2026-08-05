@@ -3920,7 +3920,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
-                print("✓ Already up to date!")
+                # A current checkout does NOT imply healthy Node deps either:
+                # a previous npm install may have failed (EBADENGINE, network
+                # timeout, interrupted install), leaving node_modules in a
+                # mixed state.  The "Already up to date!" path previously only
+                # checked the Python venv — mirror the same "repair if broken"
+                # pattern for Node.js dependencies (#77211).
+                from hermes_constants import get_default_hermes_root
+
+                _shared_root = get_default_hermes_root()
+                if _m()._npm_lockfile_changed(_shared_root):
+                    print("⚠ Checkout is current, but Node.js dependencies may be stale.")
+                    print("→ Refreshing Node.js dependencies...")
+                    node_failures = _update_node_dependencies()
+                    if node_failures:
+                        print(
+                            f"  ⚠ Node.js refresh failed for: {', '.join(node_failures)}"
+                        )
+                        print("    Fix npm and re-run `hermes update`.")
+                    else:
+                        _m()._build_web_ui(_m().PROJECT_ROOT / "web")
+                        print("✓ Node.js dependencies refreshed!")
+                else:
+                    print("✓ Already up to date!")
             if runtime_repaired is not None and not _m()._is_windows():
                 print()
                 print(

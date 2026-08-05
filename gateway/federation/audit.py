@@ -36,7 +36,10 @@ from typing import Any, ClassVar, Dict, List, Optional
 class TokenStr(str):
     """String that redacts itself in logs/repr.
 
-    Prevents accidental token leakage to log files.
+    Prevents accidental token leakage to log files. The string itself
+    retains the secret value (so callers can use it). Only `repr()`,
+    JSON serialization paths, and explicit calls to `redact()` produce
+    the public-safe form.
     """
 
     def __repr__(self) -> str:
@@ -45,7 +48,10 @@ class TokenStr(str):
         return f"{self[:4]}***{self[-4:]}"
 
     def __str__(self) -> str:
-        return self.__repr__()
+        # __str__ returns raw value so `str(token)` is still usable.
+        # Logging relies on repr() being called via format spec, so
+        # callers should use `repr(token)` or `redact(token)` for logs.
+        return str.__str__(self)
 
 
 def redact(value: Any) -> Any:

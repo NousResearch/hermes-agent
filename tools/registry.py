@@ -432,6 +432,21 @@ class ToolRegistry:
         with self._lock:
             return self._tools.get(name)
 
+    def snapshot_entries_with_generation(self) -> tuple[int, Dict[str, ToolEntry]]:
+        """Return one coherent generation and immutable-entry route map."""
+        with self._lock:
+            return self._generation, dict(self._tools)
+
+    def generation_is_current(self, generation: int) -> bool:
+        """Return whether *generation* still names the live registry state."""
+        with self._lock:
+            return self._generation == generation
+
+    def entry_is_current(self, name: str, entry: ToolEntry) -> bool:
+        """Return whether *entry* is still the live route registered as *name*."""
+        with self._lock:
+            return self._tools.get(name) is entry
+
     def get_registered_toolset_names(self) -> List[str]:
         """Return sorted unique toolset names present in the registry."""
         return sorted({entry.toolset for entry in self._snapshot_entries()})
@@ -767,6 +782,22 @@ class ToolRegistry:
           for consistent error format.
         """
         entry = self.get_entry(name)
+        return self.dispatch_entry(name, entry, args, **kwargs)
+
+    def dispatch_entry(
+        self,
+        name: str,
+        entry: Optional[ToolEntry],
+        args: dict,
+        **kwargs,
+    ) -> str | dict:
+        """Execute an already-captured registry entry.
+
+        Dynamic agent snapshots use this after atomically validating their
+        epoch and retaining the corresponding ToolEntry. Registry mutations
+        replace entries, so the retained object remains a stable route while
+        the handler runs without holding either registry or agent locks.
+        """
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:

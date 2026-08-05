@@ -473,6 +473,33 @@ hermes kanban set-model t_abcd none    # clear the override
 
 The dispatcher spawns the worker with the pinned model (`--provider <name>` is passed when set; `--provider` requires a model). The dashboard's per-task model dropdown drives the same `model_override` field. With no override, the worker uses its profile's configured model.
 
+### Per-task reasoning effort
+
+Pin the worker's reasoning depth independently of its model. From an orchestrator agent, pass `reasoning_effort` to `kanban_create`:
+
+```
+kanban_create(
+    title="review migration safety",
+    assignee="reviewer",
+    reasoning_effort="high",
+)
+```
+
+From the CLI, use `--reasoning`:
+
+```bash
+hermes kanban create "review migration safety" \
+    --assignee reviewer \
+    --reasoning high
+
+# Disable reasoning for a mechanical task.
+hermes kanban create "format generated files" \
+    --assignee formatter \
+    --reasoning none
+```
+
+Accepted levels are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`. `none` is a stored override that disables reasoning; it does not mean “clear.” Omit the option or tool argument (or pass an empty tool value) to store `null` and inherit the assignee profile's default. Invalid values fail task creation instead of silently inheriting. `hermes kanban show <task-id>` and the JSON forms of `create`, `list`, and `show` expose the stored `reasoning_effort`; text output displays `inherit` for `null`.
+
 ### Lifecycle plugin hooks
 
 Board transitions fire [plugin hooks](/user-guide/features/hooks#plugin-hooks): `kanban_task_claimed`, `kanban_task_completed`, and `kanban_task_blocked`, each carrying `task_id` and `profile_name`. Hooks fire **after** the board DB change commits, so callbacks always see durable state. Note the process split: `kanban_task_claimed` fires in the **dispatcher** process, while `kanban_task_completed`/`kanban_task_blocked` fire in the **worker** process — register the hook in the dispatcher profile to observe every transition centrally.

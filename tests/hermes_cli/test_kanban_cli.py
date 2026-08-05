@@ -40,6 +40,61 @@ def kanban_home(tmp_path, monkeypatch):
 
 
 
+def test_kanban_create_forwards_reasoning_effort(kanban_home):
+    created = json.loads(
+        kc.run_slash("create 'deep task' --assignee alice --reasoning high --json")
+    )
+
+    assert created["reasoning_effort"] == "high"
+    with kb.connect() as conn:
+        task = kb.get_task(conn, created["id"])
+    assert task is not None
+    assert task.reasoning_effort == "high"
+
+
+def test_kanban_create_without_reasoning_inherits(kanban_home):
+    created = json.loads(
+        kc.run_slash("create 'inheriting task' --assignee alice --json")
+    )
+
+    assert created["reasoning_effort"] is None
+
+
+def test_kanban_create_invalid_reasoning_errors(kanban_home):
+    output = kc.run_slash(
+        "create 'invalid task' --assignee alice --reasoning extremely-hard"
+    )
+
+    assert "reasoning_effort must be one of" in output
+
+
+def test_kanban_show_json_surfaces_reasoning_effort(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="non-reasoning task",
+            assignee="alice",
+            reasoning_effort="none",
+        )
+
+    shown = json.loads(kc.run_slash(f"show {task_id} --json"))
+
+    assert shown["task"]["reasoning_effort"] == "none"
+
+
+def test_kanban_show_text_surfaces_inherited_reasoning(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="inheriting task",
+            assignee="alice",
+        )
+
+    shown = kc.run_slash(f"show {task_id}")
+
+    assert "reasoning: inherit" in shown
+
+
 def test_kanban_list_json_includes_session_id(kanban_home):
     """JSON output exposes `session_id` so external clients (Scarf, web
     dashboards) don't need a side query to filter by chat session."""

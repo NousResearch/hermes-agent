@@ -416,6 +416,105 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_forwards_reasoning_effort(worker_env):
+    from tools import kanban_tools as kt
+
+    created = json.loads(
+        kt._handle_create({
+            "title": "deep child task",
+            "assignee": "peer",
+            "reasoning_effort": "high",
+        })
+    )
+    assert created["reasoning_effort"] == "high"
+
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, created["task_id"])
+
+    assert task is not None
+    assert task.reasoning_effort == "high"
+
+
+def test_create_preserves_none_reasoning_effort(worker_env):
+    from tools import kanban_tools as kt
+
+    created = json.loads(
+        kt._handle_create({
+            "title": "non-reasoning child task",
+            "assignee": "peer",
+            "reasoning_effort": "none",
+        })
+    )
+
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, created["task_id"])
+
+    assert task is not None
+    assert task.reasoning_effort == "none"
+
+
+def test_create_omitted_reasoning_effort_inherits(worker_env):
+    from tools import kanban_tools as kt
+
+    created = json.loads(
+        kt._handle_create({
+            "title": "inheriting child task",
+            "assignee": "peer",
+        })
+    )
+
+    assert created["reasoning_effort"] is None
+
+
+def test_create_rejects_invalid_reasoning_effort(worker_env):
+    from tools import kanban_tools as kt
+
+    result = json.loads(
+        kt._handle_create({
+            "title": "invalid child task",
+            "assignee": "peer",
+            "reasoning_effort": "extremely-hard",
+        })
+    )
+
+    assert "reasoning_effort must be one of" in result["error"]
+
+
+def test_show_surfaces_reasoning_effort(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="non-reasoning task",
+            assignee="peer",
+            reasoning_effort="none",
+        )
+
+    shown = json.loads(kt._handle_show({"task_id": task_id}))
+
+    assert shown["task"]["reasoning_effort"] == "none"
+
+
+def test_create_schema_exposes_optional_reasoning_effort():
+    from hermes_constants import VALID_REASONING_EFFORTS
+    from tools import kanban_tools as kt
+
+    properties = kt.KANBAN_CREATE_SCHEMA["parameters"]["properties"]
+
+    assert properties["reasoning_effort"]["enum"] == [
+        "",
+        "none",
+        *VALID_REASONING_EFFORTS,
+    ]
+    assert "reasoning_effort" not in kt.KANBAN_CREATE_SCHEMA["parameters"]["required"]
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

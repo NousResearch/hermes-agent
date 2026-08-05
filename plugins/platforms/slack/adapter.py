@@ -6546,11 +6546,13 @@ class SlackAdapter(BasePlatformAdapter):
         Multi-choice mode (``choices`` non-empty): one button per option
         (unique ``hermes_clarify_choice_<idx>`` action ID; ``value`` packs
         ``clarify_id|idx``) plus a final "✏️ Other…" button with action ID
-        ``hermes_clarify_other``. Slack caps button labels at 75 characters, so
-        prompts containing a longer option render each full option in a numbered
-        section with a short ``Select N`` accessory button instead of silently
-        truncating the answer text. A choice click resolves the clarify
-        primitive directly; the "Other" button flips the entry into
+        ``hermes_clarify_other``. Slack caps button labels at 75 characters and
+        can visually clip wide labels below that API limit. Prompts containing
+        an option wider than 48 display columns (CJK characters count as two)
+        render each full option in a numbered section with a short ``Select N``
+        accessory button instead of silently truncating the answer text. A
+        choice click resolves the clarify primitive directly; the "Other"
+        button flips the entry into
         text-capture mode so the gateway's platform-agnostic text-intercept
         (:meth:`GatewayRunner._handle_message`) picks up the next typed
         message and resolves the clarify — no Slack-specific text machinery.
@@ -6591,12 +6593,15 @@ class SlackAdapter(BasePlatformAdapter):
             if len(body) > budget:
                 body = body[:budget] + "..."
 
-            # One button per choice + a free-text "Other" button.  Slack caps
-            # button labels at 75 chars.  If any option exceeds that, preserve
-            # the complete option in section text and use a compact accessory
-            # button.  This is especially important for PM/PRD interviews,
-            # whose suggested answers can be several sentences long.
-            long_choice_layout = any(len(str(choice).strip()) > 75 for choice in choices)
+            # One button per choice + a free-text "Other" button. Slack's API
+            # permits 75-character labels, but the client visually clips wide
+            # labels sooner (especially Korean/CJK). Switch conservatively at
+            # 48 display columns, counting East-Asian wide/full-width characters
+            # as two columns. The raw 75-character API cap remains an absolute
+            # fallback through the same display-width check.
+            long_choice_layout = any(
+                _disp_width(str(choice).strip()) > 48 for choice in choices
+            )
             elements = []
             for idx, choice in enumerate(choices):
                 label = str(choice).strip() or f"Option {idx + 1}"

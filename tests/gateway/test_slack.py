@@ -4225,7 +4225,7 @@ class TestEnsureDmConversation:
 
     @pytest.mark.asyncio
     async def test_send_clarify_renders_long_choices_in_full(self, adapter):
-        """Slack's 75-char button cap must not hide most of a PM option."""
+        """A long PM option must render in full outside the button label."""
         adapter._app.client.chat_postMessage = AsyncMock(
             return_value={"ok": True, "ts": "111.222"}
         )
@@ -4254,6 +4254,30 @@ class TestEnsureDmConversation:
         assert select_button["value"] == "cl-long|0"
         assert select_button["text"]["text"] == "Select 1"
         assert len(select_button["text"]["text"]) <= 75
+
+    @pytest.mark.asyncio
+    async def test_send_clarify_uses_full_layout_for_wide_cjk_under_75_chars(
+        self, adapter
+    ):
+        """Wide CJK text can clip visually even below Slack's 75-char API cap."""
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "111.222"}
+        )
+        wide_choice = "가" * 25  # 25 chars, but 50 display columns.
+        assert len(wide_choice) < 75
+
+        result = await adapter.send_clarify(
+            chat_id="C123",
+            question="어떤 정책을 선택할까요?",
+            choices=[wide_choice, "직접 입력"],
+            clarify_id="cl-wide-cjk",
+            session_key="sk-wide-cjk",
+        )
+
+        assert result.success is True
+        blocks = adapter._app.client.chat_postMessage.await_args.kwargs["blocks"]
+        assert blocks[1]["text"]["text"] == f"*1.* {wide_choice}"
+        assert blocks[1]["accessory"]["text"]["text"] == "Select 1"
 
     @pytest.mark.asyncio
     async def test_send_clarify_splits_choice_over_section_limit(self, adapter):

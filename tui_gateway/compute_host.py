@@ -568,6 +568,7 @@ class ComputeHost:
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
                 session_db=session_db,
+                pty_user_id=frame.get("pty_user_id"),
             )
             if server._transfer_db_to_agent(agent, session_db):
                 owns_db = False
@@ -596,8 +597,10 @@ class ComputeHost:
                     list(history),
                     cols=int(frame.get("cols") or 80),
                     cwd=str(frame.get("cwd") or "") or None,
-                    session_db=session_db,
-                    source=frame.get("source"),
+                session_db=session_db,
+                source=frame.get("source"),
+                pty_user_id=frame.get("pty_user_id"),
+                pty_provider=frame.get("pty_provider"),
                 )
             finally:
                 reset_transport(token)
@@ -626,6 +629,8 @@ class ComputeHost:
                 "tool_started_at": {},
                 "model_override": frame.get("model_override"),
                 "source": server._sanitize_client_source(frame.get("source")),
+                "pty_user_id": frame.get("pty_user_id"),
+                "pty_provider": frame.get("pty_provider"),
                 "transport": self._transport,
             }
         session = server._sessions[sid]

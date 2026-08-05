@@ -1892,6 +1892,29 @@ def _extra_headers_from_config(entry: Any) -> dict[str, str]:
     return normalize_extra_headers(entry.get("extra_headers"))
 
 
+def _extra_body_identity(entry: Any) -> str:
+    """Stable, hashable identity for an entry's ``extra_body``.
+
+    Two entries can share (api_url, credential, api_mode) yet send different
+    request bodies — e.g. a vLLM endpoint listed twice with only
+    ``extra_body.chat_template_kwargs.enable_thinking`` differing between the
+    "think" and "no-think" variants. Without this in the group identity the
+    picker silently collapses them into one row and one of the two configured
+    ``providers:``/``custom_providers:`` entries becomes unreachable.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    extra_body = entry.get("extra_body")
+    if not isinstance(extra_body, dict) or not extra_body:
+        return ""
+    import json
+
+    try:
+        return json.dumps(extra_body, sort_keys=True, default=str)
+    except TypeError:
+        return repr(sorted(extra_body.items(), key=lambda kv: str(kv[0])))
+
+
 def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     """Warm the provider-models disk cache in a background daemon thread.
 
@@ -2599,7 +2622,13 @@ def list_authenticated_providers(
             # URL, routed by header) and must keep distinct picker rows.
             entry_extra_headers = _extra_headers_from_config(ep_cfg)
             headers_identity = tuple(sorted(entry_extra_headers.items()))
-            group_key = (api_url_norm, credential_identity, api_mode, headers_identity)
+            # Per-provider extra_body participates in the group identity for
+            # the same reason as headers: two entries sharing
+            # (api_url, credential, api_mode, headers) but declaring different
+            # extra_body (e.g. chat_template_kwargs.enable_thinking) send
+            # different requests and must stay distinct picker rows.
+            body_identity = _extra_body_identity(ep_cfg)
+            group_key = (api_url_norm, credential_identity, api_mode, headers_identity, body_identity)
 
             # ``default_model`` is the legacy key; ``model`` matches what
             # custom_providers entries use, so accept either.
@@ -2887,6 +2916,15 @@ def list_authenticated_providers(
             entry_extra_headers = _extra_headers_from_config(entry)
             headers_identity = tuple(sorted(entry_extra_headers.items()))
 
+            # Per-provider extra_body participates in the group identity for
+            # the same reason as headers: two entries sharing
+            # (api_url, credential, api_mode, headers) but declaring different
+            # extra_body (e.g. a vLLM endpoint listed twice with only
+            # extra_body.chat_template_kwargs.enable_thinking differing) send
+            # different requests and must stay distinct picker rows rather
+            # than collapsing with only one of the two ``models:`` surviving.
+            body_identity = _extra_body_identity(entry)
+
             # Display-name prefix (text before " — " / " - "), used both
             # as a grouping dimension and to derive the row's display name.
             _display_prefix = raw_name
@@ -2895,7 +2933,14 @@ def list_authenticated_providers(
                     _display_prefix = _display_prefix.split(sep)[0].strip()
                     break
 
-            group_key = (api_url, credential_identity, api_mode, headers_identity, _display_prefix.lower())
+            group_key = (
+                api_url,
+                credential_identity,
+                api_mode,
+                headers_identity,
+                body_identity,
+                _display_prefix.lower(),
+            )
             if group_key not in groups:
                 # Reuse the prefix computed above as the row display name;
                 # fall back to the raw name if stripping left it empty.

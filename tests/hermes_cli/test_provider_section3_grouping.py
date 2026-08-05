@@ -80,6 +80,35 @@ def test_different_extra_headers_keep_distinct_rows(monkeypatch):
     assert len(rows) == 2
 
 
+def test_different_extra_body_keeps_distinct_rows(monkeypatch):
+    """Two providers: entries sharing (api_url, credential, api_mode, headers)
+    but declaring different extra_body must NOT collapse — e.g. a vLLM
+    endpoint listed twice where only extra_body.chat_template_kwargs
+    .enable_thinking differs between the "think" and "no-think" variants.
+    Regression test: previously these merged into one row and one of the two
+    ``models:`` entries silently disappeared from the picker."""
+    rows = _user_rows(_providers(monkeypatch, {
+        "vllm": {
+            "name": "vLLM",
+            "base_url": "http://192.168.15.115:8000/v1",
+            "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+            "discover_models": False,
+            "models": {"unsloth/Qwen3.6-35B-A3B-NVFP4": {}},
+        },
+        "vllm-no-think": {
+            "name": "vLLM No-Think",
+            "base_url": "http://192.168.15.115:8000/v1",
+            "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+            "discover_models": False,
+            "models": {"unsloth/Qwen3.6-35B-A3B-NVFP4": {}},
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        },
+    }))
+    assert len(rows) == 2, f"expected 2 rows, got {len(rows)}: {rows}"
+    slugs = {row["slug"] for row in rows}
+    assert slugs == {"vllm", "vllm-no-think"}
+
+
 class TestFormatModelForDisplay:
     def test_palantir_rid_stripped_to_trailing_slug(self):
         rid = "ri.language-model-service..language-model.anthropic-claude-4-7-opus"

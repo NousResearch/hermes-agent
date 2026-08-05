@@ -173,7 +173,7 @@ def run_oneshot(
     provider: Optional[str] = None,
     toolsets: object = None,
     usage_file: Optional[str] = None,
-) -> int:
+) -> tuple[int, str | None]:
     """Execute a single prompt and print only the final content block.
 
     Args:
@@ -190,6 +190,7 @@ def run_oneshot(
 
     Returns the exit code.  The caller owns process termination.
     """
+    session_id: str | None = None
     # Silence every stdlib logger for the duration.  AIAgent, tools, and
     # provider adapters all log to stderr through the root logger; file
     # handlers added by setup_logging() keep working (they're attached to
@@ -208,12 +209,12 @@ def run_oneshot(
             "hermes -z: --provider requires --model (or HERMES_INFERENCE_MODEL). "
             "Pass both explicitly, or neither to use your configured defaults.\n"
         )
-        return 2
+        return 2, None
 
     explicit_toolsets, toolsets_error = _validate_explicit_toolsets(toolsets)
     if toolsets_error:
         sys.stderr.write(toolsets_error)
-        return 2
+        return 2, None
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
     # Auto-approve any shell / tool approvals.  Non-interactive by
@@ -273,9 +274,10 @@ def run_oneshot(
         _write_usage_file(usage_file, result, failure=str(failure))
         real_stderr.write(f"hermes -z: agent failed: {failure}\n")
         real_stderr.flush()
-        return 1
+        return 1, None
 
     _write_usage_file(usage_file, result)
+    session_id = result.get("session_id") or None
 
     if response:
         real_stdout.write(response)
@@ -284,14 +286,14 @@ def run_oneshot(
         real_stdout.flush()
 
     if (result.get("failed") or result.get("partial")) and not (response or "").strip():
-        return 2
+        return 2, session_id
 
     if not (response or "").strip():
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
-        return 1
+        return 1, session_id
 
-    return 0
+    return 0, session_id
 
 
 def _create_session_db_for_oneshot():

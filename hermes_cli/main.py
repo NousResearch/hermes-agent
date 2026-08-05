@@ -134,7 +134,7 @@ def _exit_after_oneshot(rc: object) -> None:
 _oneshot_cleanup_done = False
 
 
-def _cleanup_oneshot_runtime() -> None:
+def _cleanup_oneshot_runtime(session_id: str | None = None) -> None:
     """Best-effort process-global cleanup before one-shot hard exit.
 
     ``run_oneshot`` owns the agent-local cleanup (memory provider, agent.close,
@@ -171,6 +171,22 @@ def _cleanup_oneshot_runtime() -> None:
         shutdown_cached_clients()
     except Exception:
         pass
+    # Finalize the Relay conversation so one-shot runs emit a balanced
+    # session-end event instead of leaving the root session open in exported
+    # telemetry (#79471). Best-effort and late in the sequence: the hard
+    # exit below is the safety boundary, so a failure here must not fall
+    # through to interpreter finalization.
+    if session_id:
+        try:
+            from hermes_cli.lifecycle import finalize_session
+
+            finalize_session(
+                session_id=session_id,
+                platform="cli",
+                reason="oneshot_complete",
+            )
+        except Exception:
+            pass
 
 
 def _run_and_exit_oneshot(
@@ -181,10 +197,11 @@ def _run_and_exit_oneshot(
     toolsets: object = None,
     usage_file: object = None,
 ) -> None:
+    session_id: str | None = None
     try:
         from hermes_cli.oneshot import run_oneshot
 
-        rc = run_oneshot(
+        rc, session_id = run_oneshot(
             prompt,
             model=model,
             provider=provider,
@@ -213,7 +230,7 @@ def _run_and_exit_oneshot(
             pass
         rc = 1
     try:
-        _cleanup_oneshot_runtime()
+        _cleanup_oneshot_runtime(session_id)
     finally:
         # The hard exit is the safety boundary for #43055. Even an interrupt
         # during best-effort cleanup must not fall back into interpreter

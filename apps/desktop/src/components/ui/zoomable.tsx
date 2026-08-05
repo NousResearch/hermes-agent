@@ -80,7 +80,8 @@ function ZoomPanViewer({
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
-        bodyClassName="flex min-h-0 flex-col gap-0 overflow-hidden p-0" className="h-[85vh] w-[90vw] max-w-[90vw]"
+        bodyClassName="flex min-h-0 flex-col gap-0 overflow-hidden p-0"
+        className="h-[85vh] w-[90vw] max-w-[90vw]"
         showCloseButton={false}
       >
         <div

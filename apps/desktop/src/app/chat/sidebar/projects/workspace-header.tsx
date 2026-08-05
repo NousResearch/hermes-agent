@@ -11,7 +11,6 @@ import { copyPath, revealPath } from '@/store/projects'
 
 import { SidebarRowLead } from '../chrome'
 
-
 // Branch/worktree labels routinely share a long prefix (`bb/coding-context-…`),
 // so plain end-truncation (`truncate`) hides exactly the suffix that tells two
 // lanes apart — both render as "bb/coding-context…". Keep the tail pinned and

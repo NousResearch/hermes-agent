@@ -79,7 +79,8 @@ export function ImageLightbox({
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
-        bodyClassName="block overflow-visible p-0" className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"
+        bodyClassName="block overflow-visible p-0"
+        className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"
         showCloseButton={false}
       >
         <div className="group/lightbox relative inline-block">

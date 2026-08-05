@@ -242,9 +242,7 @@ export function WorktreeDialog() {
               </Button>
             </PopoverTrigger>
             <PopoverContent align="start" className="z-(--z-modal-popover) min-w-(--radix-popover-trigger-width) p-0">
-              <Command
-                filter={(value, search) => (value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}
-              >
+              <Command filter={(value, search) => (value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}>
                 <CommandInput autoFocus placeholder={p.worktreeProjectPlaceholder} />
                 <CommandList className="max-h-64">
                   <CommandEmpty>{p.worktreeProjectNone}</CommandEmpty>

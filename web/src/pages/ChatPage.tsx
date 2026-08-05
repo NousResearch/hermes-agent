@@ -223,6 +223,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const forceFreshPtyRef = useRef(false);
   const blockedInputNoticeRef = useRef(false);
   const lastResumeReconnectAtRef = useRef(0);
+  // True when WE closed the socket as a lifecycle suspend (tab hidden).
+  // onclose must not treat that as a session end — the PTY is still alive
+  // on the server and we reconnect on visible.
+  const suspendedByUsRef = useRef(false);
   // True from the moment the connect effect begins until the socket resolves
   // (open or close). Guards the page-resume reconnect against firing during
   // the async ticket/URL await gap where wsRef.current is not yet assigned.
@@ -889,8 +893,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const useWebgl = terminalTierWidthPx(host) >= 768;
     if (useWebgl) {
       try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
+        let webgl = new WebglAddon();
+        // Chrome background tabs can reclaim the GPU context
+        // (webglcontextlost), leaving the canvas dead — term.refresh() is a
+        // silent no-op on a lost context, so the viewport stays black even
+        // though the buffer has content. Rebuild the renderer on context
+        // loss so the next frame paints on a live context.
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          try {
+            webgl = new WebglAddon();
+            term.loadAddon(webgl);
+            term.refresh(0, term.rows - 1);
+          } catch {
+            // WebGL unrecoverable (e.g. GPU process crashed) — xterm falls
+            // back to the canvas renderer on the next write automatically.
+          }
+        });
         term.loadAddon(webgl);
       } catch (err) {
         console.warn(
@@ -1371,6 +1390,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         setPtyState("closed");
         return;
       }
+      // Lifecycle suspend: WE closed the socket on tab-hidden. The PTY is
+      // still alive on the server; do NOT show "session ended" — just mark
+      // closed and let the visible→resume path reconnect with the offset.
+      if (suspendedByUsRef.current) {
+        suspendedByUsRef.current = false;
+        setPtyState("closed");
+        return;
+      }
       if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
         // Transient transport drop (refresh, sleep/wake, signal loss).
         // Reconnect with backoff; the same ?attach= token reattaches to
@@ -1631,15 +1658,45 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return;
     }
 
+    // ── Connection lifecycle: suspend on hide, resume on show ──────────────
+    // Chrome background tabs freeze JS but keep the TCP half-open — the
+    // socket "looks OPEN" but is dead, and no close event fires until the
+    // server's 30s ping timeout. Rather than patching around the freeze
+    // (watchdog / stale-socket detection / per-frame batching), we treat the
+    // tab switch as an explicit lifecycle event:
+    //
+    //   hidden → proactively close the WS (graceful suspend; the server
+    //            detaches and stops sending, so no background backlog accrues)
+    //   visible → reconnect with the last byte offset (incremental replay)
+    //
+    // This eliminates the entire class of "tab-return" bugs at the source:
+    // no freeze means no backlog, no half-open socket, no stale state.
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        // Suspend: close the socket so the server detaches immediately.
+        // Mark suspendedByUs BEFORE close so onclose knows this is a
+        // lifecycle suspend, not a session end — the PTY stays alive on
+        // the server and we reconnect on visible with the byte offset.
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          suspendedByUsRef.current = true;
+          ws.close(1000, "tab hidden");
+        }
+        return;
+      }
+      // visible → fall through to resume (below)
+      maybeReconnectOnPageResume();
+    };
+
     const onResume = () => maybeReconnectOnPageResume();
 
-    document.addEventListener("visibilitychange", onResume);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("pageshow", onResume);
     window.addEventListener("focus", onResume);
     window.addEventListener("online", onResume);
 
     return () => {
-      document.removeEventListener("visibilitychange", onResume);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("pageshow", onResume);
       window.removeEventListener("focus", onResume);
       window.removeEventListener("online", onResume);

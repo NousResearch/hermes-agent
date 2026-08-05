@@ -18,15 +18,22 @@ TUI_FORCE_REDRAW = b"\x0c"
 
 
 class RingBuffer:
-    """Keeps only the most recent ``capacity`` bytes appended to it."""
+    """Keeps only the most recent ``capacity`` bytes appended to it.
+
+    Tracks ``total_appended`` — the total number of bytes ever appended — so a
+    reconnecting client can request an incremental replay starting from its
+    last-known byte offset instead of re-receiving the entire buffer.
+    """
 
     def __init__(self, capacity: int) -> None:
         self._cap = capacity
         self._buf = bytearray()
         self._truncated = False
+        self._total_appended = 0
 
     def append(self, data: bytes) -> None:
         self._buf.extend(data)
+        self._total_appended += len(data)
         overflow = len(self._buf) - self._cap
         if overflow > 0:
             del self._buf[:overflow]
@@ -34,6 +41,28 @@ class RingBuffer:
 
     def snapshot(self) -> bytes:
         return bytes(self._buf)
+
+    def snapshot_from(self, offset: int) -> bytes | None:
+        """Return bytes appended after ``offset``, or ``None`` if ``offset``
+        has been evicted (rolled out of the ring).
+
+        ``offset`` is a value of ``total_appended`` the client saved before
+        disconnecting. If ``offset`` is still within the window we still hold
+        (i.e. ``total_appended - len(buffer) <= offset``), we can send just
+        the tail. Otherwise the client's offset is stale and must fall back
+        to a full ``snapshot()``.
+        """
+        if offset < 0:
+            return None
+        earliest = self._total_appended - len(self._buf)
+        if offset < earliest:
+            return None  # rolled out — caller should full-replay
+        skip = offset - earliest  # bytes in buffer that precede the offset
+        return bytes(self._buf[skip:])
+
+    @property
+    def total_appended(self) -> int:
+        return self._total_appended
 
     @property
     def truncated(self) -> bool:
@@ -79,7 +108,7 @@ class PtySession:
                 except Exception:
                     pass                             # detached mid-send; keep buffering
 
-    async def attach(self, ws, *, force_redraw: bool = False) -> None:
+    async def attach(self, ws, client_offset: Optional[int] = None, *, force_redraw: bool = False) -> None:
         """Attach a browser terminal and replay buffered PTY output.
 
         The TUI uses an alternate screen and differential rendering, so a
@@ -96,11 +125,60 @@ class PtySession:
         self._ws = ws
         self.attached = True
         self.last_detached_at = None
+        # Incremental replay: if the client sends its last-known byte offset
+        # and that offset is still within our RingBuffer window, send only the
+        # tail. This avoids re-replaying up to 1 MB of history the xterm.js
+        # terminal already has painted (the dashboard keeps ChatPage mounted
+        # persistently, so the terminal buffer survives tab switches — the
+        # bytes are never lost on the client side).
+        if client_offset is not None:
+            incremental = self.buffer.snapshot_from(client_offset)
+            if incremental is not None:
+                # Offset still in window — send only the delta (if any).
+                if incremental:
+                    await self._send_chunked(ws, incremental)
+                # Zero delta: the client's offset already sits at the tail.
+                # Under the connection-lifecycle architecture (suspend on
+                # hide / resume on show), a reconnect always carries a prior
+                # offset and the client does NOT arm the hydration overlay
+                # for incremental replays — so no sentinel frame is needed
+                # here. Just return; live output resumes on the next frame.
+                return
+        # Full replay (first connect, or offset rolled out of the ring).
+        # NOTE: for a reconnecting client whose offset rolled out of the
+        # window, we deliberately do NOT fall back to a full 1MB replay: the
+        # dashboard keeps ChatPage mounted, so xterm.js still holds the full
+        # history the client painted before — a full replay would re-send
+        # megabytes of bytes the client already has and stall rendering
+        # ("tab-return black screen" on long-running sessions that exceed
+        # the ring window while backgrounded). Emit the no-op SGR-reset
+        # frame to clear the hydration gate and let live output resume.
         snap = self.buffer.snapshot()
-        if snap:
-            await ws.send_bytes(snap)
-        if force_redraw:
-            self.bridge.write(TUI_FORCE_REDRAW)
+        if client_offset is None and snap:
+            await self._send_chunked(ws, snap)
+            if force_redraw:
+                self.bridge.write(TUI_FORCE_REDRAW)
+        else:
+            # First attach to an empty buffer, or reconnect with a
+            # rolled-out offset: the client's resume-hydration gate is
+            # edge-triggered on the first payload, so emit one no-op frame
+            # or the "loading…" overlay stays up (black screen). SGR reset
+            # is invisible on xterm.
+            try:
+                await ws.send_bytes(b"\x1b[0m")
+            except Exception:
+                pass
+
+    async def _send_chunked(self, ws, data: bytes, chunk_size: int = 16384) -> None:
+        """Send ``data`` in ``chunk_size`` frames, yielding between frames so a
+        large replay (up to 1 MB) doesn't block the event loop."""
+        for i in range(0, len(data), chunk_size):
+            try:
+                await ws.send_bytes(data[i:i + chunk_size])
+            except Exception:
+                return
+            if i + chunk_size < len(data):
+                await asyncio.sleep(0)
 
     def detach(self, ws) -> None:
         # Only the currently-attached socket may mark the session detached.

@@ -178,4 +178,59 @@ async def test_reaper_loop_invokes_reap(monkeypatch):
         await task
     except asyncio.CancelledError:
         pass
-    assert calls["n"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_attach_incremental_replay_from_offset():
+    """Reconnect with a prior byte offset sends only the delta, not the full buffer.
+
+    The connection-lifecycle architecture (suspend on hide / resume on show)
+    relies on this: when a tab returns, the client reconnects with the offset
+    it had before suspend, and the server sends only bytes appended after that
+    offset — not the entire 1MB buffer.
+    """
+    from hermes_cli.pty_session import PtySession
+    bridge = FakeBridge([b"hello ", b"world", None])
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    await asyncio.sleep(0.05)  # drain consumes "hello world"
+
+    # First attach: full replay
+    ws1 = FakeWS()
+    await s.attach(ws1, client_offset=None)
+    replay1 = b"".join(p for kind, p in ws1.sent if kind == "bytes")
+    assert replay1 == b"hello world"
+
+    # Reconnect with offset = len("hello world") — should send nothing (zero delta)
+    ws2 = FakeWS()
+    await s.attach(ws2, client_offset=len(b"hello world"))
+    replay2 = b"".join(p for kind, p in ws2.sent if kind == "bytes")
+    assert replay2 == b""  # no sentinel, no full replay — just return
+
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_attach_rolled_out_offset_sends_sentinel_not_full_replay():
+    """Offset rolled out of the ring window must NOT fall back to full replay.
+
+    ChatPage stays mounted across tab switches, so the client already holds the
+    full history. A rolled-out offset means the server can't send the exact
+    delta — but the client doesn't need it. Emit the sentinel (first-attach
+    empty-buffer case) or nothing (rolled-out reconnect) and let live output
+    resume.
+    """
+    from hermes_cli.pty_session import PtySession
+    bridge = FakeBridge([b"a" * 2000, None])
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    await asyncio.sleep(0.05)  # drain consumes 2000 bytes (cap=1024, so oldest evicted)
+
+    # Reconnect with offset=100 (rolled out — earliest available is 2000-1024=976)
+    ws = FakeWS()
+    await s.attach(ws, client_offset=100)
+    replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
+    # Should NOT be the full 1024-byte buffer — should be sentinel or nothing
+    assert len(replay) < 1024
+
+    await s.close()

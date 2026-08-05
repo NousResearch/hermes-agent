@@ -90,6 +90,10 @@ async def test_notifier_wakes_origin_for_review_and_keeps_subscription(kanban_ho
     runner = object.__new__(GatewayRunner)
     runner._running = True
     runner._kanban_sub_fail_counts = {}
+    # This legacy subscription has no notifier-profile stamp. Current gateway
+    # ownership rules intentionally expose such rows only to the singleton
+    # dispatcher owner, which this focused watcher harness represents.
+    runner._kanban_dispatcher_lock_handle = object()
     delivered: list[str] = []
 
     async def _send(chat_id, message, metadata=None):

@@ -194,7 +194,7 @@ def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     # Escape the needle and pair it with ESCAPE; the literal separator
     # backslash in the Windows pattern needs escaping for the same reason. The
     # ``=`` arm is an exact compare and keeps the raw prefix.
-    esc = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    esc = _escape_like(prefix)
     return (
         "(s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\' OR s.cwd LIKE ? ESCAPE '\\')",
         [prefix, f"{esc}/%", f"{esc}\\\\%"],

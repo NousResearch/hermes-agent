@@ -6693,6 +6693,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     effective_task_id = session_id or run_id
                     approval_token = None
                     session_tokens = []
+                    agent = None
                     with self._profile_scope(request_profile):
                         try:
                             # Bind approval/session identity for this API run via
@@ -6746,7 +6747,13 @@ class APIServerAdapter(BasePlatformAdapter):
                             # stop/cancel can't reap background work this
                             # run deliberately left running (same race-window
                             # guard as gateway/run.py and _run_agent above).
-                            _clear_turn_process_ownership(agent)
+                            # _create_agent() now runs inside this thread (it
+                            # needs the routed profile's ContextVars) and can
+                            # raise before `agent` is bound — guard it so the
+                            # cleanup can't mask a provider auth failure with
+                            # an UnboundLocalError.
+                            if agent is not None:
+                                _clear_turn_process_ownership(agent)
                             try:
                                 unregister_gateway_notify(approval_session_key)
                             finally:

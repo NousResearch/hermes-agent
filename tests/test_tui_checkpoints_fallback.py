@@ -68,3 +68,78 @@ class TestResolveCheckpointsEnabled:
         assert server._resolve_checkpoints_enabled(
             {"checkpoints": {"enabled": True}}
         ) is False
+
+
+class TestMakeAgentCheckpointsFallback:
+    """The env-var → config fallback inside ``_make_agent`` (the wiring).
+
+    Addresses review: unit tests of the helper alone could false-pass if
+    ``_make_agent`` never actually passed the value through. These drive
+    ``_make_agent`` end-to-end with a fake ``AIAgent`` that captures
+    kwargs, proving the config-derived value reaches the agent.
+    """
+
+    def _make_agent_with_checkpoints(self, monkeypatch, cfg, env_val="__unset__"):
+        import types
+
+        captured = {}
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(model=kwargs.get("model"))
+
+        if env_val == "__unset__":
+            monkeypatch.delenv("HERMES_TUI_CHECKPOINTS", raising=False)
+        else:
+            monkeypatch.setenv("HERMES_TUI_CHECKPOINTS", env_val)
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+        monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+        monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+        monkeypatch.setattr(
+            server, "_load_cfg",
+            lambda: {**cfg, "model": {"default": "gpt-5.5", "provider": "openai-codex"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None, target_model=None: {
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "token",
+                "api_mode": "codex_responses",
+                "credential_pool": None,
+            },
+        )
+        monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+        monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+        server._make_agent("sid", "session-key")
+        return captured
+
+    def test_desktop_config_enabled_reaches_agent(self, monkeypatch):
+        """Issue #79625: config ``enabled: true`` (env unset) → agent has
+        checkpoints_enabled=True. On the old code this was always False."""
+        captured = self._make_agent_with_checkpoints(
+            monkeypatch, {"checkpoints": {"enabled": True}}
+        )
+        assert captured.get("checkpoints_enabled") is True
+
+    def test_desktop_config_disabled_reaches_agent(self, monkeypatch):
+        captured = self._make_agent_with_checkpoints(
+            monkeypatch, {"checkpoints": {"enabled": False}}
+        )
+        assert captured.get("checkpoints_enabled") is False
+
+    def test_cli_env_override_still_wins(self, monkeypatch):
+        """Legacy ``--tui --checkpoints`` (env '1') overrides config False."""
+        captured = self._make_agent_with_checkpoints(
+            monkeypatch, {"checkpoints": {"enabled": False}}, env_val="1"
+        )
+        assert captured.get("checkpoints_enabled") is True
+
+    def test_cli_env_off_still_wins(self, monkeypatch):
+        captured = self._make_agent_with_checkpoints(
+            monkeypatch, {"checkpoints": {"enabled": True}}, env_val="0"
+        )
+        assert captured.get("checkpoints_enabled") is False

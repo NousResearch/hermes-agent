@@ -3037,6 +3037,120 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
+    def test_fts_teardown_single_key_high_water_drains_and_drops(self, tmp_path):
+        """#79324: single-column-key trash tables drain via a high-water
+        marker so each chunk only scans rows after the previous chunk.
+
+        Builds a large trash table with a rowid-like integer PK, then drives
+        ``_fts_teardown_trash_step`` to completion. Verifies every row is
+        removed, the marker advances monotonically, the marker is cleared,
+        and the table is dropped at the end.
+        """
+        db = SessionDB(db_path=tmp_path / "trash.db")
+        try:
+            conn = db._conn
+            # A plain trash table shaped like a demoted FTS shadow table
+            # (single integer PK — the common, large-table shape).
+            conn.execute(
+                "CREATE TABLE fts_v22_trash_messages_fts_data "
+                "(docid INTEGER PRIMARY KEY, block BLOB)"
+            )
+            conn.executemany(
+                "INSERT INTO fts_v22_trash_messages_fts_data "
+                "(docid, block) VALUES (?, ?)",
+                [(i, b"x" * 64) for i in range(1, 2501)],
+            )
+            conn.commit()
+
+            assert db._has_fts_trash(conn) is True
+
+            steps = 0
+            while db._fts_teardown_trash_step():
+                steps += 1
+                assert steps < 100, "teardown never finished"
+
+            # All rows gone, table dropped, marker cleaned up.
+            assert db._has_fts_trash(conn) is False
+            assert conn.execute(
+                "SELECT name FROM sqlite_master WHERE name = "
+                "'fts_v22_trash_messages_fts_data'"
+            ).fetchone() is None
+            assert db.get_meta("fts_teardown_fts_v22_trash_messages_fts_data_progress") is None
+            # Multiple chunks were needed (2500 rows / 500 chunk).
+            assert steps >= 5
+        finally:
+            db.close()
+
+    def test_fts_teardown_high_water_resumes_after_interruption(self, tmp_path):
+        """#79324: the high-water marker survives an interrupted teardown,
+        so the next call resumes from the marker instead of the table start."""
+        db = SessionDB(db_path=tmp_path / "trash.db")
+        try:
+            conn = db._conn
+            conn.execute(
+                "CREATE TABLE fts_v22_trash_messages_fts_data "
+                "(docid INTEGER PRIMARY KEY, block BLOB)"
+            )
+            conn.executemany(
+                "INSERT INTO fts_v22_trash_messages_fts_data "
+                "(docid, block) VALUES (?, ?)",
+                [(i, b"x" * 64) for i in range(1, 1201)],
+            )
+            conn.commit()
+
+            # Drain two chunks, then simulate a crash: the marker stays at
+            # the last drained key and the remaining rows are intact.
+            assert db._fts_teardown_trash_step() is True
+            assert db._fts_teardown_trash_step() is True
+            marker = db.get_meta("fts_teardown_fts_v22_trash_messages_fts_data_progress")
+            assert marker is not None
+            assert int(marker) == 1000  # 2 chunks x 500 rows
+
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM fts_v22_trash_messages_fts_data"
+            ).fetchone()[0]
+            assert remaining == 200
+
+            # Resume: drains the rest, drops the table.
+            while db._fts_teardown_trash_step():
+                pass
+            assert db._has_fts_trash(conn) is False
+            assert db.get_meta("fts_teardown_fts_v22_trash_messages_fts_data_progress") is None
+        finally:
+            db.close()
+
+    def test_fts_teardown_compound_key_keeps_legacy_path(self, tmp_path):
+        """#79324: multi-column-PK trash tables (small by construction) keep
+        the legacy chunked delete — the high-water path only applies to
+        single-column keys."""
+        db = SessionDB(db_path=tmp_path / "trash.db")
+        try:
+            conn = db._conn
+            conn.execute(
+                "CREATE TABLE fts_v22_trash_messages_fts_idx "
+                "(segid INTEGER, term TEXT, pgno INTEGER, "
+                "PRIMARY KEY (segid, term, pgno)) WITHOUT ROWID"
+            )
+            conn.executemany(
+                "INSERT INTO fts_v22_trash_messages_fts_idx "
+                "(segid, term, pgno) VALUES (?, ?, ?)",
+                [(i % 3, f"term-{i}", i) for i in range(20)],
+            )
+            conn.commit()
+
+            steps = 0
+            while db._fts_teardown_trash_step():
+                steps += 1
+                assert steps < 10
+
+            assert db._has_fts_trash(conn) is False
+            assert conn.execute(
+                "SELECT name FROM sqlite_master WHERE name = "
+                "'fts_v22_trash_messages_fts_idx'"
+            ).fetchone() is None
+        finally:
+            db.close()
+
 
 
 # ---------------------------------------------------------------------------

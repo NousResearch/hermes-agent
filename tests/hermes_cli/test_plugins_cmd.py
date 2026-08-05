@@ -616,3 +616,113 @@ class TestSubdirInstallE2E:
         identifier = f"file://{repo_root}#does-not-exist"
         with pytest.raises(PluginOperationError, match="does not exist"):
             pc._install_plugin_core(identifier, force=False)
+
+
+# ── Model-provider install path ──────────────────────────────────────
+
+
+class TestModelProviderInstallPath:
+    """model-provider plugins must land under model-providers/ so the
+    Provider Registry (providers/__init__.py) can discover them."""
+
+    @staticmethod
+    def _make_model_provider_repo(repo_root: Path) -> None:
+        import subprocess as sp
+
+        repo_root.mkdir(parents=True, exist_ok=True)
+        (repo_root / "plugin.yaml").write_text(
+            "name: test-provider\n"
+            "kind: model-provider\n"
+            "version: 1.0.0\n"
+            "description: Test model provider\n"
+        )
+        (repo_root / "__init__.py").write_text(
+            "from providers import register_provider, ProviderProfile\n"
+            "register_provider(ProviderProfile(name='test-provider'))\n"
+        )
+
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "commit", "-q", "-m", "init"], cwd=repo_root, check=True, env=env)
+
+    def test_model_provider_installed_under_model_providers(self, tmp_path, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "repo"
+        self._make_model_provider_repo(repo_root)
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        target, manifest, name = pc._install_plugin_core(
+            f"file://{repo_root}", force=False
+        )
+
+        # Must land under model-providers/, not the top-level plugins dir.
+        assert target == (plugins_dir / "model-providers" / "test-provider").resolve()
+        assert target.is_dir()
+        assert (target / "plugin.yaml").exists()
+        assert (target / "__init__.py").exists()
+        assert manifest.get("kind") == "model-provider"
+        assert name == "test-provider"
+
+    def test_non_model_provider_installed_top_level(self, tmp_path, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir(parents=True, exist_ok=True)
+        (repo_root / "plugin.yaml").write_text(
+            "name: my-backend\nkind: backend\nversion: 1.0.0\n"
+        )
+        (repo_root / "__init__.py").write_text("# backend plugin\n")
+
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        import subprocess as sp
+        sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "commit", "-q", "-m", "init"], cwd=repo_root, check=True, env=env)
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        target, manifest, name = pc._install_plugin_core(
+            f"file://{repo_root}", force=False
+        )
+
+        # Non-model-provider plugins still go to the top level.
+        assert target == (plugins_dir / "my-backend").resolve()
+        assert not (plugins_dir / "model-providers").exists()
+
+    def test_require_installed_plugin_finds_model_provider(self, tmp_path):
+        from hermes_cli import plugins_cmd as pc
+        from rich.console import Console
+
+        plugins_dir = tmp_path / "plugins"
+        mp_dir = plugins_dir / "model-providers" / "test-provider"
+        mp_dir.mkdir(parents=True)
+        (mp_dir / "plugin.yaml").write_text("name: test-provider\nkind: model-provider\n")
+
+        console = Console()
+        result = pc._require_installed_plugin("test-provider", plugins_dir, console)
+        assert result == mp_dir.resolve()

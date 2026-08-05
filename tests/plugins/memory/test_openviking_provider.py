@@ -18,7 +18,12 @@ _EXPECTED_USER_AGENT = f"openviking-memory-hermes/{_HERMES_VERSION}"
 
 
 def _clear_openviking_tenant_env(monkeypatch):
-    for name in ("OPENVIKING_ACCOUNT", "OPENVIKING_USER", "OPENVIKING_AGENT"):
+    for name in (
+        "OPENVIKING_ACCOUNT",
+        "OPENVIKING_USER",
+        "OPENVIKING_ACTOR_PEER_ID",
+        "OPENVIKING_AGENT",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -31,10 +36,12 @@ def _isolate_openviking_home(tmp_path, monkeypatch):
 def _clear_openviking_env(monkeypatch):
     for key in (
         "OPENVIKING_ENDPOINT",
+        "OPENVIKING_URL",
         "OPENVIKING_API_KEY",
         "OPENVIKING_ACCOUNT",
         "OPENVIKING_USER",
         "OPENVIKING_AGENT",
+        "OPENVIKING_ACTOR_PEER_ID",
         "OPENVIKING_CLI_CONFIG_FILE",
         "OPENVIKING_PROFILE_TOKEN_BUDGET",
     ):
@@ -153,8 +160,8 @@ def test_linked_ovcli_config_is_read_at_runtime(tmp_path, monkeypatch):
     assert settings == {
         "endpoint": "http://openviking-one.test",
         "api_key": "key-one",
-        "account": "",
-        "user": "",
+        "account": "acct-one",
+        "user": "alice",
         "agent": "agent-one",
     }
 
@@ -214,23 +221,72 @@ def test_profile_discovery_warns_when_skipping_unsafe_ovcli_endpoint(tmp_path, c
     assert str(profile_path) in caplog.text
 
 
-def test_connection_values_omit_stale_identity_for_user_key_with_root_key():
+def test_connection_values_preserve_explicit_identity_with_user_and_root_keys():
     values = openviking_module._connection_values_from_ovcli({
         "url": "https://openviking.example",
         "api_key": "user-key",
         "root_api_key": "root-key",
-        "account": "stale-account",
-        "user": "stale-user",
+        "account": "acct",
+        "user": "alice",
     })
 
     assert values["api_key"] == "user-key"
-    assert values["account"] == ""
-    assert values["user"] == ""
+    assert values["account"] == "acct"
+    assert values["user"] == "alice"
+
+
+def test_connection_settings_prefer_canonical_env_and_fall_back_to_legacy(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://legacy.example")
+    monkeypatch.setenv("OPENVIKING_AGENT", "legacy-agent")
+
+    legacy = openviking_module._resolve_connection_settings({})
+
+    assert legacy["endpoint"] == "https://legacy.example"
+    assert legacy["agent"] == "legacy-agent"
+
+    monkeypatch.setenv("OPENVIKING_URL", "https://canonical.example")
+    monkeypatch.setenv("OPENVIKING_ACTOR_PEER_ID", "canonical-agent")
+
+    canonical = openviking_module._resolve_connection_settings({})
+
+    assert canonical["endpoint"] == "https://canonical.example"
+    assert canonical["agent"] == "canonical-agent"
+
+
+def test_current_ovcli_root_profile_preserves_account_and_user():
+    values = openviking_module._connection_values_from_ovcli({
+        "url": "https://openviking.example",
+        "api_key": "root-key",
+        "root_api_key": "root-key",
+        "account": "acct",
+        "user": "alice",
+        "actor_peer_id": "hermes",
+    })
+
+    assert values["api_key"] == "root-key"
+    assert values["account"] == "acct"
+    assert values["user"] == "alice"
+
+
+def test_ovcli_profile_rejects_mixed_actor_and_legacy_agent_ids():
+    with pytest.raises(ValueError, match="actor_peer_id cannot be used with agent_id"):
+        openviking_module._connection_values_from_ovcli({
+            "url": "https://openviking.example",
+            "actor_peer_id": "hermes",
+            "agent_id": "legacy-hermes",
+        })
 
 
 def test_link_ovcli_profile_removes_stale_inline_config(tmp_path):
     env_path = tmp_path / ".env"
-    env_path.write_text("OPENVIKING_ENDPOINT=http://old.test\nOTHER_KEY=keep\n", encoding="utf-8")
+    env_path.write_text(
+        "export OPENVIKING_ENDPOINT=http://old.test\n"
+        "OPENVIKING_CLI_CONFIG_FILE=/tmp/stale.conf\n"
+        "OTHER_KEY=keep\n",
+        encoding="utf-8",
+    )
+    env_path.chmod(0o600)
     config = {"memory": {}}
     provider_config = {
         "use_ovcli_config": False,
@@ -255,7 +311,25 @@ def test_link_ovcli_profile_removes_stale_inline_config(tmp_path):
         "ovcli_config_path": str(ovcli_path),
     }
     assert "OPENVIKING_ENDPOINT" not in env_path.read_text(encoding="utf-8")
+    assert "OPENVIKING_CLI_CONFIG_FILE" not in env_path.read_text(encoding="utf-8")
     assert "OTHER_KEY=keep" in env_path.read_text(encoding="utf-8")
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+
+
+def test_link_ovcli_profile_does_not_create_empty_env_file(tmp_path):
+    env_path = tmp_path / ".env"
+    config = {"memory": {}}
+    provider_config = {}
+
+    openviking_module._link_ovcli_profile(
+        config=config,
+        provider_config=provider_config,
+        env_path=env_path,
+        ovcli_path=tmp_path / "ovcli.conf.local",
+        update_process_env=False,
+    )
+
+    assert not env_path.exists()
 
 
 @pytest.mark.parametrize("peer_key", [None, "actor_peer_id", "agent_id"])
@@ -318,6 +392,310 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(
     settings = openviking_module._resolve_connection_settings(config["memory"]["openviking"])
     assert settings["agent"] == ("existing-peer" if peer_key else "")
     assert json.loads(saved_path.read_text(encoding="utf-8")) == saved_values
+
+
+def test_desktop_snapshot_is_redacted_and_does_not_probe_network(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    from hermes_constants import get_hermes_home
+    from hermes_cli.config import save_config
+
+    openviking_home = openviking_module.Path.home() / ".openviking"
+    openviking_home.mkdir(parents=True)
+    profile_path = openviking_home / "ovcli.conf.work"
+    profile_path.write_text(
+        json.dumps({
+            "url": "https://openviking.example",
+            "api_key": "profile-secret",
+            "actor_peer_id": "hermes",
+        }),
+        encoding="utf-8",
+    )
+    save_config({
+        "memory": {
+            "provider": "openviking",
+            "openviking": {
+                "use_ovcli_config": True,
+                "ovcli_config_path": str(profile_path),
+            },
+        }
+    })
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_setup_values",
+        lambda *_args, **_kwargs: pytest.fail("read-only snapshot must not probe the server"),
+    )
+
+    snapshot = openviking_module._desktop_openviking_snapshot(
+        hermes_home=get_hermes_home(),
+        probe_health=False,
+    )
+
+    assert snapshot["values"]["profile_path"] == str(profile_path)
+    assert snapshot["values"]["api_key"] == ""
+    assert snapshot["values"]["api_key_service"] == ""
+    assert snapshot["summary"]["status"]["state"] == "checking"
+    assert snapshot["options"]["profile_path"][0]["label"] == "work (Active)"
+    assert "profile-secret" not in json.dumps(snapshot)
+
+
+def test_desktop_snapshot_reports_missing_linked_profile(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    from hermes_constants import get_hermes_home
+    from hermes_cli.config import save_config
+
+    missing_path = openviking_module.Path.home() / ".openviking" / "ovcli.conf.deleted"
+    save_config({
+        "memory": {
+            "provider": "openviking",
+            "openviking": {
+                "use_ovcli_config": True,
+                "ovcli_config_path": str(missing_path),
+            },
+        }
+    })
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_setup_values",
+        lambda *_args, **_kwargs: pytest.fail("missing profile must not be probed"),
+    )
+
+    snapshot = openviking_module._desktop_openviking_snapshot(
+        hermes_home=get_hermes_home(),
+        probe_health=True,
+    )
+
+    assert snapshot["summary"]["items"][0]["value"] == "Missing profile"
+    assert snapshot["summary"]["status"] == {
+        "state": "unreachable",
+        "label": "Profile missing",
+        "message": "The linked OpenViking profile no longer exists. Choose another profile or recreate it.",
+    }
+
+
+def test_env_selected_profile_uses_readable_profile_name(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    profile_path = openviking_module.Path.home() / ".openviking" / "ovcli.conf.team_memory"
+    profile_path.parent.mkdir(parents=True)
+    profile_path.write_text(
+        json.dumps({"url": "https://openviking.example", "actor_peer_id": "hermes"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(profile_path))
+
+    profiles = openviking_module._discover_ovcli_profiles()
+
+    assert len(profiles) == 1
+    assert openviking_module._profile_display_name(profiles[0]) == "team_memory"
+
+
+def test_desktop_existing_profile_save_validates_then_links(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    from hermes_constants import get_hermes_home
+    from hermes_cli.config import load_config
+
+    hermes_home = get_hermes_home()
+    env_path = hermes_home / ".env"
+    env_path.write_text(
+        "OPENVIKING_URL=https://stale.example\n"
+        "OPENVIKING_AGENT=stale-agent\n"
+        "OTHER_KEY=keep\n",
+        encoding="utf-8",
+    )
+    profile_path = openviking_module.Path.home() / ".openviking" / "ovcli.conf.work"
+    profile_path.parent.mkdir(parents=True)
+    profile_path.write_text(
+        json.dumps({
+            "url": "https://openviking.example",
+            "api_key": "user-key",
+            "actor_peer_id": "hermes",
+        }),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def validate(values, *, require_api_key=False):
+        captured["values"] = values
+        captured["require_api_key"] = require_api_key
+        return True, "", "user"
+
+    monkeypatch.setattr(openviking_module, "_validate_openviking_setup_values", validate)
+
+    result = openviking_module._save_desktop_openviking_setup(
+        values={"setup_type": "profile", "profile_path": str(profile_path)},
+        hermes_home=hermes_home,
+        overwrite=False,
+    )
+
+    assert result == {"ok": True, "profile_path": str(profile_path)}
+    assert captured["values"]["api_key"] == "user-key"
+    assert captured["require_api_key"] is True
+    memory_config = load_config()["memory"]
+    assert memory_config["provider"] == "openviking"
+    assert memory_config["openviking"] == {
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(profile_path),
+    }
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "OPENVIKING_" not in env_text
+    assert "OTHER_KEY=keep" in env_text
+
+
+def test_desktop_root_profile_uses_current_ovcli_schema(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_setup_values",
+        lambda _values, *, require_api_key=False: (True, "", "root"),
+    )
+
+    result = openviking_module._save_desktop_openviking_setup(
+        values={
+            "setup_type": "custom",
+            "profile_name": "root_profile",
+            "url": "https://openviking.example",
+            "credential": "root",
+            "api_key": "root-key",
+            "account": "acct",
+            "user": "alice",
+            "actor_peer_id": "hermes",
+        },
+        hermes_home=get_hermes_home(),
+        overwrite=False,
+    )
+
+    profile = json.loads(openviking_module.Path(result["profile_path"]).read_text(encoding="utf-8"))
+    assert profile == {
+        "url": "https://openviking.example",
+        "api_key": "root-key",
+        "root_api_key": "root-key",
+        "account": "acct",
+        "user": "alice",
+        "actor_peer_id": "hermes",
+    }
+
+
+@pytest.mark.parametrize(
+    ("credential", "detected_role", "message"),
+    [
+        ("user", "root", "This key has root access"),
+        ("root", "user", "This is a User API key"),
+    ],
+)
+def test_desktop_save_rejects_credential_role_mismatch(
+    monkeypatch,
+    credential,
+    detected_role,
+    message,
+):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_setup_values",
+        lambda _values, *, require_api_key=False: (True, "", detected_role),
+    )
+    values = {
+        "setup_type": "custom",
+        "url": "https://openviking.example",
+        "credential": credential,
+        "api_key": "key",
+        "account": "acct",
+        "user": "alice",
+        "actor_peer_id": "hermes",
+    }
+
+    with pytest.raises(ValueError, match=message):
+        openviking_module._validate_desktop_openviking_values(values)
+
+
+def test_desktop_root_credential_requires_account_and_user(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+
+    with pytest.raises(ValueError, match="Account and User are required"):
+        openviking_module._desktop_connection_values({
+            "setup_type": "custom",
+            "url": "https://openviking.example",
+            "credential": "root",
+            "api_key": "root-key",
+            "account": "acct",
+            "user": "",
+        })
+
+
+def test_desktop_profile_collision_is_idempotent_or_explicit(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    from agent.memory_provider import MemoryProviderConfigConflictError
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_setup_values",
+        lambda _values, *, require_api_key=False: (True, "", "user"),
+    )
+    values = {
+        "setup_type": "custom",
+        "profile_name": "shared",
+        "url": "https://one.example",
+        "credential": "user",
+        "api_key": "one-key",
+        "actor_peer_id": "hermes",
+    }
+
+    first = openviking_module._save_desktop_openviking_setup(
+        values=values,
+        hermes_home=get_hermes_home(),
+        overwrite=False,
+    )
+    same = openviking_module._save_desktop_openviking_setup(
+        values=values,
+        hermes_home=get_hermes_home(),
+        overwrite=False,
+    )
+
+    assert same == first
+
+    different = {**values, "url": "https://two.example", "api_key": "two-key"}
+    with pytest.raises(MemoryProviderConfigConflictError):
+        openviking_module._save_desktop_openviking_setup(
+            values=different,
+            hermes_home=get_hermes_home(),
+            overwrite=False,
+        )
+
+    replaced = openviking_module._save_desktop_openviking_setup(
+        values=different,
+        hermes_home=get_hermes_home(),
+        overwrite=True,
+    )
+    profile = json.loads(openviking_module.Path(replaced["profile_path"]).read_text(encoding="utf-8"))
+    assert profile["url"] == "https://two.example"
+    assert profile["api_key"] == "two-key"
+
+
+def test_desktop_local_start_reuses_hardened_server_helpers(monkeypatch):
+    start = MagicMock(return_value=(openviking_module._LOCAL_SERVER_STARTED, "started"))
+    wait = MagicMock(return_value=True)
+    monkeypatch.setattr(openviking_module, "_validate_openviking_reachability", lambda _url: (False, "down"))
+    monkeypatch.setattr(openviking_module, "_start_local_openviking_server", start)
+    monkeypatch.setattr(openviking_module, "_wait_for_openviking_health", wait)
+
+    result = openviking_module._start_desktop_openviking_local("http://127.0.0.1:1934")
+
+    assert result == {"ok": True, "message": "OpenViking started and is ready to use."}
+    start.assert_called_once_with("http://127.0.0.1:1934")
+    wait.assert_called_once_with("http://127.0.0.1:1934", timeout_seconds=15.0)
+
+
+def test_desktop_local_start_rejects_remote_url_without_probing(monkeypatch):
+    probe = MagicMock()
+    monkeypatch.setattr(openviking_module, "_validate_openviking_reachability", probe)
+
+    result = openviking_module._start_desktop_openviking_local("https://openviking.example")
+
+    assert result["ok"] is False
+    assert "Only a local OpenViking URL" in result["message"]
+    probe.assert_not_called()
 
 
 def test_local_setup_recommends_user_api_key_before_unauthenticated_mode(monkeypatch):
@@ -843,6 +1221,75 @@ def test_openviking_identity_probes_are_anonymous_before_authenticated_requests(
         assert headers["Authorization"] == "Bearer secret-key"
 
 
+def test_managed_service_uses_authenticated_health_probe(monkeypatch):
+    calls = []
+
+    def response(payload, status_code=200):
+        return SimpleNamespace(
+            status_code=status_code,
+            text=json.dumps(payload),
+            json=lambda: payload,
+        )
+
+    def fake_get(url, **kwargs):
+        headers = kwargs["headers"]
+        calls.append((url, headers))
+        assert headers["X-API-Key"] == "service-key"
+        assert headers["Authorization"] == "Bearer service-key"
+        if url.endswith("/health"):
+            return response({
+                "status": "ok",
+                "healthy": True,
+                "version": "0.4.11",
+                "auth_mode": "api_key",
+            })
+        if url.endswith("/api/v1/system/status"):
+            return response({"status": "ok", "result": {"initialized": True}})
+        if url.endswith("/api/v1/admin/accounts"):
+            return response(
+                {"error": {"code": "PermissionDeniedError", "message": "admin only"}},
+                status_code=403,
+            )
+        raise AssertionError(f"unexpected request: {url}")
+
+    monkeypatch.setattr(
+        openviking_module,
+        "_get_httpx",
+        lambda: SimpleNamespace(get=fake_get),
+    )
+
+    valid, message, role = openviking_module._validate_openviking_setup_values({
+        "endpoint": openviking_module._OPENVIKING_SERVICE_ENDPOINT,
+        "api_key": "service-key",
+        "agent": "hermes",
+    })
+
+    assert (valid, message, role) == (True, "", "user")
+    assert [url.removeprefix(openviking_module._OPENVIKING_SERVICE_ENDPOINT) for url, _ in calls] == [
+        "/health",
+        "/api/v1/system/status",
+        "/api/v1/admin/accounts",
+    ]
+
+
+def test_managed_service_runtime_health_uses_authenticated_probe():
+    client = MagicMock()
+    client.authenticated_health_payload.return_value = {
+        "status": "ok",
+        "healthy": True,
+        "version": "0.4.11",
+    }
+
+    state, message = openviking_module._classify_runtime_openviking_health(
+        client,
+        openviking_module._OPENVIKING_SERVICE_ENDPOINT,
+    )
+
+    assert (state, message) == ("healthy", "")
+    client.authenticated_health_payload.assert_called_once_with()
+    client.health_payload.assert_not_called()
+
+
 def test_repeated_openviking_health_probes_never_send_credentials_or_tenant_headers(
     monkeypatch,
 ):
@@ -1011,6 +1458,37 @@ def test_legacy_health_requires_openviking_openapi_identity_before_auth(monkeypa
     assert "0.2.6 or earlier" in message
     assert "0.2.10 or newer" in message
     assert events == ["health", "openapi"]
+
+
+def test_desktop_validation_simplifies_rejected_api_key(monkeypatch):
+    class RejectedKeyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health_payload(self):
+            return {"status": "ok", "healthy": True, "version": "0.2.10"}
+
+        def validate_auth(self):
+            raise openviking_module._OpenVikingHTTPError(
+                "AuthenticationError: The API key in the request is missing or invalid. "
+                "Request ID: secret-request-id",
+                401,
+            )
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", RejectedKeyClient)
+
+    valid, message, role = openviking_module._validate_openviking_setup_values({
+        "endpoint": "https://openviking.example",
+        "api_key": "invalid-key",
+    })
+
+    assert valid is False
+    assert role is None
+    assert message == (
+        "OpenViking rejected the API key. Check the selected profile or "
+        "entered key and try again."
+    )
+    assert "secret-request-id" not in message
 
 
 def test_verified_legacy_openviking_is_healthy_for_reachability_and_runtime(monkeypatch):

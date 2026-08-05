@@ -10,8 +10,11 @@ After a crash (no marker), suspension still fires as a safety net for stuck sess
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 
 from gateway.config import GatewayConfig, Platform
+from gateway.run import start_gateway
 from gateway.session import SessionSource, SessionStore
 
 
@@ -102,6 +105,159 @@ class TestCleanShutdownMarker:
         assert marker.exists(), ".clean_shutdown marker should exist after graceful stop"
 
 
+    def test_marker_consumption_is_one_shot_even_if_cleanup_fails(
+        self, tmp_path, monkeypatch
+    ):
+        """A consumed marker must never survive under the recognized name."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        marker.write_bytes(b"clean\n")
+
+        from gateway.run import _consume_clean_shutdown_marker
+
+        with patch("pathlib.Path.unlink", side_effect=OSError("cleanup blocked")):
+            assert _consume_clean_shutdown_marker() is True
+
+        assert not marker.exists()
+        assert (tmp_path / ".clean_shutdown.consumed").exists()
+        assert _consume_clean_shutdown_marker() is False
+
+    def test_post_rename_inspection_failure_is_still_one_shot(
+        self, tmp_path, monkeypatch
+    ):
+        """Inspection failure after consume cannot preserve predecessor proof."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        marker.write_bytes(b"clean\n")
+
+        from gateway.run import _consume_clean_shutdown_marker
+
+        with patch("pathlib.Path.read_bytes", side_effect=OSError("read blocked")):
+            assert _consume_clean_shutdown_marker() is False
+
+        assert not marker.exists()
+        assert not (tmp_path / ".clean_shutdown.consumed").exists()
+        assert _consume_clean_shutdown_marker() is False
+
+    def test_failed_atomic_consume_invalidates_marker_for_next_boot(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        marker.write_bytes(b"clean\n")
+
+        from gateway.run import _consume_clean_shutdown_marker
+
+        with patch("gateway.run.os.replace", side_effect=OSError("rename blocked")), patch(
+            "pathlib.Path.unlink", side_effect=OSError("unlink blocked")
+        ):
+            assert _consume_clean_shutdown_marker() is False
+
+        assert marker.read_text(encoding="utf-8") == "invalid\n"
+        assert _consume_clean_shutdown_marker() is False
+        assert not marker.exists()
+
+    def test_failed_consume_and_invalidation_aborts_startup(
+        self, tmp_path, monkeypatch
+    ):
+        """Startup must fail closed if stale clean proof cannot be invalidated."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        marker.write_bytes(b"clean\n")
+
+        from gateway.run import _consume_clean_shutdown_marker
+
+        with patch("gateway.run.os.replace", side_effect=OSError("rename blocked")), patch(
+            "pathlib.Path.unlink", side_effect=OSError("unlink blocked")
+        ), patch("pathlib.Path.write_text", side_effect=OSError("write blocked")):
+            with pytest.raises(RuntimeError, match="Cannot safely invalidate"):
+                _consume_clean_shutdown_marker()
+
+        assert marker.exists(), "the fatal path must not pretend invalidation succeeded"
+
+    def test_failed_tombstone_write_cannot_become_clean_proof(
+        self, tmp_path, monkeypatch
+    ):
+        """A truncate-then-fail invalidation leaves an invalid payload."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        marker.write_bytes(b"clean\n")
+
+        from gateway.run import _consume_clean_shutdown_marker
+
+        def truncate_then_fail(*_args, **_kwargs):
+            marker.write_bytes(b"")
+            raise OSError("write blocked after truncate")
+
+        with patch("gateway.run.os.replace", side_effect=OSError("rename blocked")), patch(
+            "pathlib.Path.unlink", side_effect=OSError("unlink blocked")
+        ), patch("pathlib.Path.write_text", side_effect=truncate_then_fail):
+            with pytest.raises(RuntimeError, match="Cannot safely invalidate"):
+                _consume_clean_shutdown_marker()
+
+        assert marker.read_bytes() == b""
+        assert _consume_clean_shutdown_marker() is False
+        assert not marker.exists()
+
+    def test_later_clean_drain_replaces_invalid_tombstone(self, tmp_path, monkeypatch):
+        """A stale consume tombstone must not suppress new clean-shutdown proof."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        marker.write_text("invalid\n", encoding="utf-8")
+
+        from gateway.run import _consume_clean_shutdown_marker, _write_clean_shutdown_marker
+
+        _write_clean_shutdown_marker()
+
+        assert marker.read_bytes() == b"clean\n"
+        assert _consume_clean_shutdown_marker() is True
+        assert not marker.exists()
+
+    @pytest.mark.asyncio
+    async def test_startup_consumes_marker_before_fallible_post_lock_work(
+        self, tmp_path, monkeypatch
+    ):
+        """A startup crash cannot leave its predecessor's proof reusable."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        marker.write_bytes(b"clean\n")
+        runner = MagicMock()
+
+        with patch("gateway.code_skew.record_boot_fingerprint"), patch(
+            "gateway.status.get_running_pid", return_value=None
+        ), patch(
+            "gateway.status.acquire_gateway_runtime_lock", return_value=True
+        ), patch(
+            "gateway.status.write_pid_file"
+        ), patch(
+            "gateway.status.release_gateway_runtime_lock"
+        ), patch(
+            "gateway.status.remove_pid_file"
+        ), patch(
+            "tools.skills_sync.sync_skills"
+        ), patch(
+            "hermes_logging.setup_logging"
+        ), patch(
+            "hermes_cli.security_audit_startup.log_startup_security_warnings"
+        ), patch(
+            "gateway.run.GatewayRunner", return_value=runner
+        ), patch(
+            "gateway.run.threading.current_thread", return_value=object()
+        ), patch(
+            "gateway.run.threading.Thread"
+        ), patch(
+            "gateway.run._ensure_windows_gateway_venv_imports",
+            side_effect=RuntimeError("post-lock startup crash"),
+        ):
+            with pytest.raises(RuntimeError, match="post-lock startup crash"):
+                await start_gateway(config=GatewayConfig(), verbosity=None)
+
+        assert runner._previous_shutdown_clean is True
+        assert not marker.exists()
+        from gateway.run import _consume_clean_shutdown_marker
+
+        assert _consume_clean_shutdown_marker() is False
+
     def test_no_marker_triggers_suspension(self, tmp_path, monkeypatch):
         """Without .clean_shutdown marker (crash), suspension should fire."""
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
@@ -126,6 +282,252 @@ class TestCleanShutdownMarker:
             store._ensure_loaded_locked()
             resume_count = sum(1 for e in store._entries.values() if e.resume_pending)
         assert resume_count == 1, "Session should be resume_pending after crash (no marker)"
+
+
+    def test_marker_written_before_post_drain_cleanup(self, tmp_path, monkeypatch):
+        """A clean drain must survive teardown being cut short by host shutdown."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        runner._restart_requested = False
+        runner._restart_detached = False
+        runner._restart_via_service = False
+        runner._restart_task_started = False
+        runner._running = True
+        runner._draining = False
+        runner._stop_task = None
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._background_tasks = set()
+        runner._shutdown_event = MagicMock()
+        runner._restart_drain_timeout = 5
+        runner._exit_code = None
+        runner._exit_reason = None
+        runner.adapters = {}
+        runner.config = GatewayConfig()
+
+        with patch(
+            "gateway.run.GatewayRunner._drain_active_agents",
+            new_callable=AsyncMock,
+            return_value=([], False),
+        ), patch(
+            "gateway.run.GatewayRunner._finalize_shutdown_agents",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("host teardown interrupted cleanup"),
+        ):
+            import asyncio
+
+            with pytest.raises(RuntimeError, match="host teardown interrupted cleanup"):
+                asyncio.get_event_loop().run_until_complete(runner.stop())
+
+        assert marker.exists(), (
+            "a successful drain must be recorded before slower teardown begins"
+        )
+
+    def test_blocked_clean_proof_survives_graceful_stop(self, tmp_path, monkeypatch):
+        """A failed persistent downgrade must taint the whole lifecycle."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._restart_requested = False
+        runner._restart_detached = False
+        runner._restart_via_service = False
+        runner._restart_task_started = False
+        runner._running = True
+        runner._draining = False
+        runner._stop_task = None
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._background_tasks = set()
+        runner._shutdown_event = MagicMock()
+        runner._restart_drain_timeout = 5
+        runner._exit_code = None
+        runner._exit_reason = None
+        runner._clean_shutdown_marker_blocked = True
+        runner.adapters = {}
+        runner.config = GatewayConfig()
+
+        with patch(
+            "gateway.run.GatewayRunner._drain_active_agents",
+            new_callable=AsyncMock,
+            return_value=([], False),
+        ), patch(
+            "gateway.run.GatewayRunner._finalize_shutdown_agents",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("host teardown interrupted cleanup"),
+        ):
+            import asyncio
+
+            with pytest.raises(RuntimeError, match="host teardown interrupted cleanup"):
+                asyncio.get_event_loop().run_until_complete(runner.stop())
+
+        assert not marker.exists()
+
+    def test_non_chat_timeout_does_not_trigger_broad_chat_recovery(
+        self, tmp_path, monkeypatch
+    ):
+        """Cron/API-only timeout must not make recent idle chats resumable."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        runner._restart_requested = False
+        runner._restart_detached = False
+        runner._restart_via_service = False
+        runner._restart_task_started = False
+        runner._running = True
+        runner._draining = False
+        runner._stop_task = None
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._background_tasks = set()
+        runner._shutdown_event = MagicMock()
+        runner._restart_drain_timeout = 5
+        runner._exit_code = None
+        runner._exit_reason = None
+        runner.adapters = {}
+        runner.config = GatewayConfig()
+
+        with patch(
+            "gateway.run.GatewayRunner._drain_active_agents",
+            new_callable=AsyncMock,
+            return_value=([], True),
+        ), patch(
+            "gateway.run.GatewayRunner._active_cron_job_count", return_value=1
+        ), patch(
+            "gateway.run.GatewayRunner._active_api_run_count", return_value=0
+        ), patch(
+            "gateway.run.GatewayRunner._finalize_shutdown_agents",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("host teardown interrupted cleanup"),
+        ):
+            import asyncio
+
+            with pytest.raises(RuntimeError, match="host teardown interrupted cleanup"):
+                asyncio.get_event_loop().run_until_complete(runner.stop())
+
+        assert marker.exists(), (
+            "a non-chat timeout must suppress broad recent-session inference"
+        )
+
+    def test_chat_finished_before_non_chat_timeout_clears_pre_drain_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """A completed chat must not retain recovery state from a cron/API timeout."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._restart_requested = False
+        runner._restart_detached = False
+        runner._restart_via_service = False
+        runner._restart_task_started = False
+        runner._running = True
+        runner._draining = False
+        runner._stop_task = None
+        runner._running_agents = {"session-key": MagicMock()}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._background_tasks = set()
+        runner._shutdown_event = MagicMock()
+        runner._restart_drain_timeout = 5
+        runner._exit_code = None
+        runner._exit_reason = None
+        runner.adapters = {}
+        runner.config = GatewayConfig()
+        runner.session_store = MagicMock()
+        runner._async_session_store = MagicMock()
+        runner._async_session_store._store = runner.session_store
+        runner._async_session_store.mark_resume_pending = AsyncMock(return_value=True)
+        runner._async_session_store.clear_resume_pending = AsyncMock(return_value=True)
+
+        async def _finish_chat_then_timeout(_timeout):
+            runner._running_agents.clear()
+            return [], True
+
+        with patch(
+            "gateway.run.GatewayRunner._notify_active_sessions_of_shutdown",
+            new_callable=AsyncMock,
+        ), patch(
+            "gateway.run.GatewayRunner._drain_active_agents",
+            new_callable=AsyncMock,
+            side_effect=_finish_chat_then_timeout,
+        ), patch(
+            "gateway.run.GatewayRunner._active_cron_job_count", return_value=1
+        ), patch(
+            "gateway.run.GatewayRunner._active_api_run_count", return_value=0
+        ), patch(
+            "gateway.run.GatewayRunner._finalize_shutdown_agents",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("host teardown interrupted cleanup"),
+        ):
+            import asyncio
+
+            with pytest.raises(RuntimeError, match="host teardown interrupted cleanup"):
+                asyncio.get_event_loop().run_until_complete(runner.stop())
+
+        runner._async_session_store.mark_resume_pending.assert_awaited_once_with(
+            "session-key", "shutdown_timeout"
+        )
+        runner._async_session_store.clear_resume_pending.assert_awaited_once_with(
+            "session-key"
+        )
+        assert marker.exists()
+
+    def test_marker_write_failure_is_visible(self, tmp_path, monkeypatch, caplog):
+        """A filesystem failure must be logged, not silently swallowed."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        runner._restart_requested = False
+        runner._restart_detached = False
+        runner._restart_via_service = False
+        runner._restart_task_started = False
+        runner._running = True
+        runner._draining = False
+        runner._stop_task = None
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._background_tasks = set()
+        runner._shutdown_event = MagicMock()
+        runner._restart_drain_timeout = 5
+        runner._exit_code = None
+        runner._exit_reason = None
+        runner.adapters = {}
+        runner.config = GatewayConfig()
+
+        with patch(
+            "gateway.run.GatewayRunner._drain_active_agents",
+            new_callable=AsyncMock,
+            return_value=([], True),
+        ), patch(
+            "gateway.run.GatewayRunner._active_cron_job_count", return_value=1
+        ), patch(
+            "gateway.run.GatewayRunner._active_api_run_count", return_value=0
+        ), patch("pathlib.Path.write_bytes", side_effect=OSError("read-only filesystem")), patch(
+            "gateway.run.GatewayRunner._finalize_shutdown_agents",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("host teardown interrupted cleanup"),
+        ):
+            import asyncio
+
+            with pytest.raises(RuntimeError, match="host teardown interrupted cleanup"):
+                asyncio.get_event_loop().run_until_complete(runner.stop())
+
+        assert "Failed to write .clean_shutdown marker: read-only filesystem" in caplog.text
 
 
 # ---------------------------------------------------------------------------

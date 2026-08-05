@@ -721,15 +721,17 @@ Set `typing_indicator: false` on any platform where the indicator is unwanted. S
 
 ### Session resume across gateway restarts
 
-When the gateway shuts down with an in-flight tool call or generation, the affected sessions are flagged as `restart_interrupted`. On the next startup, the gateway schedules an auto-resume for each one — the user gets a short heads-up in the chat ("Send any message after restart and I'll try to resume where you left off.") and the session picks up from the last committed turn when they reply.
+Before a planned gateway shutdown drains in-flight tool calls or generations, the gateway attempts to give each affected session an exact `restart_timeout` or `shutdown_timeout` marker. Markers for turns that finish during the drain are cleared, while markers for turns that are still interrupted remain. When that exact state and the predecessor's clean proof are both durable, the next startup schedules a synthetic recovery turn for each remaining exact marker. If clean proof is absent, exact markers are persistently downgraded and recovery conservatively waits for the user's next real inbound message; a later clean restart cannot re-enable synthetic dispatch for them.
 
-This behaviour is on by default and is logged at gateway start:
+After an unexpected exit, the gateway may instead apply the heuristic `restart_interrupted` marker to recently active sessions. Those sessions are not auto-dispatched at startup; recovery waits for the user's next real inbound message. This avoids sending blank recovery turns to unrelated idle chats while still preserving the interrupted conversation.
+
+Exact-marker auto-resume is on by default and is logged at gateway start:
 
 ```
-Scheduled auto-resume for N restart-interrupted session(s)
+Scheduled auto-resume for N exactly marked session(s)
 ```
 
-No configuration is required. If you don't want the heads-up, set `gateway_restart_notification: false` on the platform.
+No configuration is required.
 
 ### Mobile-friendly progress defaults
 

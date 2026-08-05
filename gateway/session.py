@@ -1471,10 +1471,15 @@ class SessionStore:
         if stale_keys or recovered_keys:
             self._save()
 
-    def _save(self) -> None:
+    def _save(self, *, require_authoritative: bool = False) -> None:
         """Persist the routing index while the caller holds ``_lock``."""
         data, generation = self._snapshot_routing_locked()
-        self._persist_routing_data(data, generation)
+        if require_authoritative:
+            self._persist_routing_data(
+                data, generation, require_authoritative=True
+            )
+        else:
+            self._persist_routing_data(data, generation)
 
     def _next_routing_generation_locked(self) -> int:
         """Bump and return the shared routing counter. Caller holds ``_lock``.
@@ -1495,7 +1500,13 @@ class SessionStore:
             self._next_routing_generation_locked(),
         )
 
-    def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
+    def _persist_routing_data(
+        self,
+        data: Dict[str, Any],
+        generation: int,
+        *,
+        require_authoritative: bool = False,
+    ) -> None:
         """Serialize all whole-index writers through one durable write lock."""
         save_lock = getattr(self, "_save_lock", None)
         if save_lock is None:
@@ -1515,6 +1526,7 @@ class SessionStore:
                     if revision > generation:
                         data[key] = json.loads(entry_json)
             db_saved = False
+            db_error: Optional[Exception] = None
             _db = getattr(self, "_db", None)
             if _db:
                 replacer = getattr(_db, "replace_gateway_routing_entries", None)
@@ -1526,11 +1538,16 @@ class SessionStore:
                         )
                         db_saved = True
                     except Exception as exc:
+                        db_error = exc
                         logger.warning(
                             "gateway.session: state.db routing save failed: %s", exc
                         )
             if getattr(self, "_write_sessions_json", True) or not db_saved:
                 self._save_sessions_json(data)
+            if require_authoritative and not db_saved:
+                raise RuntimeError(
+                    "authoritative state.db routing save failed"
+                ) from db_error
             self._persisted_routing_generation = generation
             # This rewrite supersedes fast records at or below its
             # generation; newer ones stay for the next delayed full writer.
@@ -2773,7 +2790,10 @@ class SessionStore:
                 entry.resume_pending = True
                 entry.resume_reason = reason
                 entry.last_resume_marked_at = _now()
-                self._save()
+                self._save(
+                    require_authoritative=reason
+                    in {"restart_timeout", "shutdown_timeout"}
+                )
                 return True
         return False
 
@@ -2791,11 +2811,39 @@ class SessionStore:
             entry = self._entries.get(session_key)
             if entry is None or not entry.resume_pending:
                 return False
+            require_authoritative = entry.resume_reason in {
+                "restart_timeout",
+                "shutdown_timeout",
+            }
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
-            self._save()
+            self._save(require_authoritative=require_authoritative)
             return True
+
+    def downgrade_untrusted_exact_resume_pending(self) -> int:
+        """Make exact timeout markers inbound-only after an unclean boot.
+
+        A missing clean-shutdown proof means an exact marker could be residue
+        from a completed turn whose shutdown-time clear failed. Persistently
+        downgrade such markers so a later unrelated clean boot cannot make
+        them eligible for synthetic startup dispatch.
+        """
+        exact_reasons = {"restart_timeout", "shutdown_timeout"}
+        count = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if (
+                    entry.resume_pending
+                    and entry.resume_reason in exact_reasons
+                    and not entry.suspended
+                ):
+                    entry.resume_reason = "restart_interrupted"
+                    count += 1
+            if count:
+                self._save(require_authoritative=True)
+        return count
 
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.

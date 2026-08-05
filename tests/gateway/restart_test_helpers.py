@@ -73,6 +73,8 @@ def make_restart_runner(
     runner._restart_task_started = False
     runner._restart_detached = False
     runner._restart_via_service = False
+    runner._previous_shutdown_clean = True
+    runner._clean_shutdown_marker_blocked = False
     runner._detached_restart_helper_started = False
     runner._restart_command_source = None
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT

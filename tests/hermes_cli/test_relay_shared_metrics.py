@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import multiprocessing as mp
 import os
+import shutil
 import sqlite3
 import stat
 import threading
@@ -12,7 +13,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +23,7 @@ from agent import relay_runtime
 from hermes_cli.observability import shared_metrics as shared_metrics_module
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_contract import (
+    CLIENT_ACTIVE_METRIC,
     CLIENT_ARCHITECTURES,
     CLIENT_INSTALL_METHODS,
     CLIENT_OS_FAMILIES,
@@ -49,6 +51,7 @@ from hermes_cli.observability.shared_metrics_contract import (
     TOOL_LATENCY_BUCKETS,
     TOOL_OUTCOMES,
     TOOL_RETRY_BUCKETS,
+    client_active_counter,
     client_architecture,
     client_install_method,
     client_os_family,
@@ -153,6 +156,16 @@ def _record_model_calls_in_process(
     store = SharedMetricsStore(Path(database_path), Path(outbox_directory))
     for _ in range(count):
         store.record_model_call(_dimensions(), _resource())
+
+
+def _record_client_active_in_process(
+    database_path: str,
+    outbox_directory: str,
+    start_barrier: Any,
+) -> None:
+    store = SharedMetricsStore(Path(database_path), Path(outbox_directory))
+    start_barrier.wait()
+    store.record_client_active(_resource())
 
 
 def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_path):
@@ -363,6 +376,132 @@ def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
     assert len(list((tmp_path / "outbox").glob("*.json"))) == 3
 
 
+def test_client_active_uses_a_transactional_rolling_24_hour_latch(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
+
+    assert store.record_client_active(_resource())
+    assert not store.record_client_active(_resource())
+
+    now += timedelta(hours=23, minutes=59, seconds=59)
+    assert not store.record_client_active(_resource())
+
+    now += timedelta(seconds=1)
+    assert store.record_client_active(_resource())
+
+    active = [
+        counter
+        for counter in store.counter_snapshot()
+        if counter["metric_name"] == CLIENT_ACTIVE_METRIC
+    ]
+    assert [counter["dimensions"] for counter in active] == [{}, {}]
+    assert [counter["period_start"] for counter in active] == [
+        "2026-07-22",
+        "2026-07-23",
+    ]
+    assert [counter["value"] for counter in active] == [1, 1]
+
+
+def test_client_active_recovers_from_an_invalid_latch_and_creates_identity(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "metrics.sqlite3"
+    store = SharedMetricsStore(database_path, tmp_path / "outbox")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO telemetry_state(key, value) VALUES (?, ?)",
+            ("client_active_recorded_at", "invalid-timestamp"),
+        )
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
+
+    assert store.record_client_active(_resource())
+
+    with sqlite3.connect(database_path) as connection:
+        state = dict(
+            connection.execute(
+                "SELECT key, value FROM telemetry_state WHERE key != 'schema_version'"
+            ).fetchall()
+        )
+    uuid.UUID(state["install_id"])
+    assert state["client_active_recorded_at"] == "2026-07-22T10:00:00Z"
+
+
+def test_client_active_rebases_a_future_latch_without_double_counting(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "metrics.sqlite3"
+    store = SharedMetricsStore(database_path, tmp_path / "outbox")
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: now)
+
+    assert store.record_client_active(_resource())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE telemetry_state SET value = ? WHERE key = ?",
+            ("2026-07-24T10:00:00Z", "client_active_recorded_at"),
+        )
+
+    assert not store.record_client_active(_resource())
+    with sqlite3.connect(database_path) as connection:
+        latch = connection.execute(
+            "SELECT value FROM telemetry_state WHERE key = ?",
+            ("client_active_recorded_at",),
+        ).fetchone()[0]
+
+    assert latch == "2026-07-22T10:00:00Z"
+    [counter] = store.counter_snapshot()
+    assert counter["metric_name"] == CLIENT_ACTIVE_METRIC
+    assert counter["value"] == 1
+
+
+def test_client_active_package_uses_empty_dimensions_and_stable_install_id(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+
+    assert store.record_client_active(_resource())
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+
+    _schema_validator().validate(package)
+    uuid.UUID(package["install_id"])
+    assert package["metrics"] == [
+        {
+            "name": CLIENT_ACTIVE_METRIC,
+            "type": "counter",
+            "dimensions": {},
+            "value": 1,
+        }
+    ]
+
+
+def test_deleting_local_metrics_state_resets_install_identity(tmp_path):
+    root = tmp_path / "shared-metrics"
+    database_path = root / "metrics.sqlite3"
+    outbox_directory = root / "outbox"
+    first = SharedMetricsStore(database_path, outbox_directory)
+    assert first.record_client_active(_resource())
+    [first_package_path] = first.create_and_export_package()
+    first_package = json.loads(first_package_path.read_text(encoding="utf-8"))
+
+    shutil.rmtree(root)
+
+    reset = SharedMetricsStore(database_path, outbox_directory)
+    assert reset.record_client_active(_resource())
+    [reset_package_path] = reset.create_and_export_package()
+    reset_package = json.loads(reset_package_path.read_text(encoding="utf-8"))
+
+    assert reset_package["install_id"] != first_package["install_id"]
+    assert reset_package["metrics"][0]["name"] == CLIENT_ACTIVE_METRIC
+
+
 def test_package_schema_matches_the_model_call_contract():
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     properties = _package_dimension_schema()["properties"]
@@ -418,6 +557,31 @@ def test_package_schema_matches_the_client_resource_contract():
     assert set(resource["properties"]["install_method"]["enum"]) == (
         CLIENT_INSTALL_METHODS
     )
+
+
+def test_client_active_mark_accepts_only_an_empty_allowlisted_payload():
+    event = SimpleNamespace(
+        kind="mark",
+        category=None,
+        category_profile=None,
+        name="hermes.client.active",
+        scope_category=None,
+        metadata={
+            "hermes.metrics.schema_version": "hermes.metrics.event.v2",
+        },
+        data={},
+    )
+
+    assert client_active_counter(event) == (CLIENT_ACTIVE_METRIC, {})
+
+    with_payload = deepcopy(event)
+    with_payload.data = {"session_id": "privacy-canary"}
+    assert client_active_counter(with_payload) is None
+
+    wrong_schema = deepcopy(event)
+    wrong_schema.metadata["hermes.metrics.schema_version"] = "unknown"
+    assert client_active_counter(wrong_schema) is None
+
 
 def test_package_schema_matches_the_task_contract():
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -1298,6 +1462,55 @@ def test_cross_process_model_call_updates_are_transactional(tmp_path):
     assert restarted.counter_snapshot()[0]["value"] == 20
 
 
+def test_cross_process_client_active_attempts_record_one_install(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    context = mp.get_context("spawn")
+    start_barrier = context.Barrier(2)
+    processes = [
+        context.Process(
+            target=_record_client_active_in_process,
+            args=(str(database_path), str(outbox_directory), start_barrier),
+        )
+        for _ in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=15)
+        assert not process.is_alive()
+        assert process.exitcode == 0
+
+    store = SharedMetricsStore(database_path, outbox_directory)
+    [active] = store.counter_snapshot()
+    assert active["metric_name"] == CLIENT_ACTIVE_METRIC
+    assert active["dimensions"] == {}
+    assert active["value"] == 1
+
+
+def test_schema_initialization_waits_for_an_existing_writer(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    database_path.touch()
+    blocker = sqlite3.connect(database_path)
+    blocker.execute("BEGIN IMMEDIATE")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            SharedMetricsStore,
+            database_path,
+            outbox_directory,
+        )
+        try:
+            time.sleep(0.4)
+            assert not future.done()
+        finally:
+            blocker.rollback()
+            blocker.close()
+        store = future.result(timeout=2)
+
+    assert store.counter_snapshot() == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission modes are unavailable")

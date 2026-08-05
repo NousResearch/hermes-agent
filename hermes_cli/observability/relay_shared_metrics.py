@@ -16,6 +16,7 @@ from hermes_cli import __version__
 
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import (
+    CLIENT_ACTIVE_MARK,
     MODEL_CALL_PROFILE_MODEL,
     MODEL_CALL_SCOPE,
     SCHEMA_KEY,
@@ -166,6 +167,26 @@ class _Runtime:
                 return None
         return session
 
+    def record_client_active(self, event: dict[str, Any]) -> None:
+        """Emit one payload-free activation attempt under the session scope."""
+        session = self.ensure_session(event)
+        if session is None:
+            return
+        self._emit_client_active(session)
+
+    def _emit_client_active(self, session: _MetricsSession) -> None:
+        with session.lock:
+            if session.closing:
+                return
+            self._run_in_session(
+                session,
+                self.relay.scope.event,
+                CLIENT_ACTIVE_MARK,
+                handle=session.relay_session.handle,
+                data={},
+                metadata=self._event_metadata(),
+            )
+
     def _run_in_session(
         self,
         session: _MetricsSession,
@@ -210,6 +231,7 @@ class _Runtime:
                     or session.relay_session.context is None
                 ):
                     return None
+                self._emit_client_active(session)
                 task_context = session.relay_session.context.copy()
                 start_fields = task_start_fields(event)
                 active_turn = relay_runtime.active_turn(session.session_id)
@@ -1089,7 +1111,7 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
         return
     try:
         if hook_name == "on_session_start":
-            runtime.ensure_session(kwargs)
+            runtime.record_client_active(kwargs)
         elif hook_name == "pre_llm_call":
             runtime.start_task(kwargs)
         elif hook_name == "pre_api_request":

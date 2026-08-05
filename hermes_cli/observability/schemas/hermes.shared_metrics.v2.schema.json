@@ -72,6 +72,9 @@
       "items": {
         "oneOf": [
           {
+            "$ref": "#/$defs/client_active_counter"
+          },
+          {
             "$ref": "#/$defs/model_call_counter"
           },
           {
@@ -100,6 +103,32 @@
     }
   },
   "$defs": {
+    "client_active_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.client.active"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "maxProperties": 0
+        },
+        "value": {
+          "const": 1
+        }
+      }
+    },
     "uuid": {
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"

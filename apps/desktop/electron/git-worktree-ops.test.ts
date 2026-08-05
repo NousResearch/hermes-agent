@@ -328,6 +328,7 @@ test('addWorktree: base origin/main does not set up upstream tracking', async ()
 function seedRemoteAndClone(label, branches) {
   const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-remote-`))
   const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-clone-`))
+
   const remoteGit = (...args) =>
     execFileSync('git', ['-C', remoteDir, ...args])
       .toString()
@@ -385,6 +386,7 @@ test('addWorktree: a remote branch becomes a local branch tracking it', async ()
 
   try {
     const result = await addWorktree(cloneDir, { existingBranch: 'origin/teammate-work' }, 'git')
+
     const inTree = (...args) =>
       execFileSync('git', ['-C', result.path, ...args])
         .toString()
@@ -408,6 +410,7 @@ test('addWorktree: a remote branch becomes a local branch tracking it', async ()
 
 test('addWorktree: a remote default branch gets its own worktree, not a home switch', async () => {
   const { cloneDir, remoteDir } = seedRemoteAndClone('convert-remote-default', [])
+
   const git = (...args) =>
     execFileSync('git', ['-C', cloneDir, ...args])
       .toString()

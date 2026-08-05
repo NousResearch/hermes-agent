@@ -1618,9 +1618,17 @@ class GatewayStreamConsumer:
         self._final_response_sent = True
         self._final_content_delivered = True
         # Fresh commit of the complete answer after a failed finalize (#71643).
-        # Recorder-routed so a split turn records the unsplit ledger instead of
-        # a tail-only payload the gateway would read as stale (#78541).
-        self._record_turn_final_payload(final_text)
+        #
+        # Record ``final_text`` VERBATIM -- do not route through
+        # _record_turn_final_payload here.  This recovery deleted the sealed
+        # segment previews just above, so the only thing left on screen is the
+        # message we just sent.  On a split turn the ledger holds the sealed
+        # heads too, and recording it would claim delivery for text this path
+        # just removed -- the gateway would then suppress and the user would be
+        # left with a fraction of the answer (the #78541 swallow, reintroduced).
+        self._delivered_final_text = ensure_closed_code_fences(
+            self._clean_for_display(final_text or "")
+        ).strip()
         self._last_sent_text = final_text
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False

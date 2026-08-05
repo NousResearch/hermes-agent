@@ -567,3 +567,43 @@ async def test_failed_final_edit_after_split_records_visible_payload():
     assert await consumer._send_or_edit(full, finalize=True) is False
     assert consumer._final_content_delivered is True
     assert consumer.delivered_final_matches(full) is True
+
+
+@pytest.mark.asyncio
+async def test_empty_fallback_final_after_split_records_only_what_survives():
+    """A recovery that DELETES the sealed heads must not claim them as delivered.
+
+    ``_send_empty_fallback_final`` replaces the active segment: it sends the
+    completed text as a fresh message and deletes every tracked segment
+    preview -- including the sealed head chunks of an overflow split.  Only the
+    new message is left on screen, so the recorded payload must be that message
+    verbatim, NOT the stream ledger.  Recording the ledger would claim delivery
+    for text this path just removed, and the gateway would suppress its own
+    send and leave the user with a fraction of the answer (#78541).
+    """
+    adapter = _SplittingAdapter()
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "chat-split",
+        StreamConsumerConfig(
+            edit_interval=0.0, buffer_threshold=1, cursor="",
+            fresh_final_after_seconds=0.0,
+        ),
+    )
+    head = "HEAD text. " * 40
+    tail = "TAIL text. " * 6
+    complete = head + tail
+
+    # Sealed head chunk is on screen and tracked as a segment preview.
+    head_id = await consumer._send_new_chunk(head, None, final=False)
+    consumer._turn_split_delivery = True
+    consumer._stream_ledger = complete
+    assert head_id in consumer._segment_preview_message_ids
+
+    # The recovery commits only ``tail`` and deletes the sealed head.
+    assert await consumer._send_empty_fallback_final(tail) == "delivered"
+    assert head_id in adapter.deleted, "expected the recovery to delete the head"
+
+    # The head is gone from the chat, so the complete answer was NOT delivered:
+    # the gateway must be told this is a mismatch and send it.
+    assert consumer.delivered_final_matches(complete) is False

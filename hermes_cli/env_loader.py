@@ -410,6 +410,13 @@ def load_hermes_dotenv(
     project_env_path = Path(project_env) if project_env else None
     load_pass = next(_DOTENV_PASSES)  # one pass: later layers below see the earlier layers' output
 
+    # Snapshot the values an external secret source (Bitwarden, 1Password, ...) already resolved for THIS
+    # home on an earlier load. load_dotenv(override=True) below would write the raw .env placeholder
+    # (``__BITWARDEN_MANAGED__``) or a stale token back over them, and _apply_external_secret_sources() is a
+    # once-per-home no-op (``_APPLIED_HOMES``), so the clobber would stick for the life of the process
+    # (#74265). Per-home on purpose: a process-global snapshot would leak profile A's secrets into B.
+    protected_secret_values = get_secret_source_values(home_path)
+
     if user_env.exists():  # normalize formatting / strip NULs before parsing
         _sanitize_env_file_if_needed(user_env)
     if project_env_path and project_env_path.exists():
@@ -430,6 +437,12 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded, load_pass=load_pass)
         loaded.append(project_env_path)
+
+    # Undo the dotenv clobber of external-source secrets before the (no-op on reload) source pass. Managed
+    # scope, applied last with override=True, still beats a source value on purpose.
+    for name, value in protected_secret_values.items():
+        if os.environ.get(name) != value:
+            os.environ[name] = value
 
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing

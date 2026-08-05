@@ -80,8 +80,7 @@ export async function exportProfileBundle(profile: string, output?: string): Pro
   return archive
 }
 
-const isThemeMode = (value: unknown): value is ThemeMode =>
-  value === 'light' || value === 'dark' || value === 'system'
+const isThemeMode = (value: unknown): value is ThemeMode => value === 'light' || value === 'dark' || value === 'system'
 
 /**
  * Apply an imported overlay: install bundled themes, assign the new profile's

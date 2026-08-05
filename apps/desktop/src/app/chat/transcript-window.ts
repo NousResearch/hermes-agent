@@ -77,10 +77,7 @@ export function alignToBranchGroup(messages: readonly ChatMessage[], start: numb
  * Walks newest-first accumulating weight until the budget is met, keeps at
  * least MIN messages, then aligns the cut off a branch-group boundary.
  */
-export function selectTranscriptWindow(
-  messages: readonly ChatMessage[],
-  pages = 1
-): TranscriptWindow {
+export function selectTranscriptWindow(messages: readonly ChatMessage[], pages = 1): TranscriptWindow {
   const budget = TRANSCRIPT_WINDOW_BUDGET * Math.max(1, Math.floor(pages))
 
   if (messages.length === 0) {

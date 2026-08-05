@@ -27,6 +27,9 @@ from agent.surface_switch import _SURFACE_NAME_END, _SURFACE_SWITCH_NOTE_PREFIX,
 def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     """Construct the minimal agent fake the helper needs."""
     agent = MagicMock()
+    # Real sessions persist; a bare MagicMock attribute would read as a truthy
+    # persistence-disabled fork and suppress on_session_start on main.
+    agent._persist_disabled = False
     agent._cached_system_prompt = None
     agent.session_id = "test-session-id"
     agent.model = "test-model"
@@ -357,6 +360,134 @@ class TestSilentFailureWarnings:
         # No "rebuilding from scratch" warning because history is empty
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert not any("rebuilding" in m for m in warnings)
+
+
+# ---------------------------------------------------------------------------
+# on_session_start hook firing (follow-up A to #72253)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionStartHookGuard:
+    """``on_session_start`` is documented as firing "once when a brand-new
+    session is created (not on continuation)". The stale-runtime and
+    empty fallthroughs below are CONTINUING sessions whose stored prompt
+    just needs a rebuild — the hook must not re-fire there (it
+    would duplicate session-scoped plugin work, e.g. re-warming a memory
+    cache mid-conversation). Only a true first-turn build should fire it.
+    """
+
+    def test_stale_runtime_fallthrough_does_not_fire_hook(self, monkeypatch):
+        stored = (
+            "You are Hermes Agent.\n\n"
+            "Model: anthropic/claude-opus-4.8-fast\n"
+            "Provider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(
+            session_db=db,
+            prebuilt_prompt=(
+                "You are Hermes Agent.\n\nModel: openai/gpt-5.5\nProvider: openrouter"
+            ),
+        )
+        agent.model = "openai/gpt-5.5"
+        hook = MagicMock()
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        agent._build_system_prompt.assert_called_once()
+        hook.assert_not_called()
+
+    def test_null_row_prepersisted_first_turn_fires_hook(self, monkeypatch):
+        """A row with a NULL prompt is what the Group Chat bridge pre-creates before
+        the first turn (see TestPerResponseSessionWritePath): that is a genuinely new session, so
+        the hook fires exactly once."""
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": None}
+        agent = _make_agent(session_db=db)
+        hook = MagicMock()
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        agent._build_system_prompt.assert_called_once()
+        hook.assert_called_once()
+
+    def test_empty_row_fallthrough_does_not_fire_hook(self, monkeypatch):
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": ""}
+        agent = _make_agent(session_db=db)
+        hook = MagicMock()
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        agent._build_system_prompt.assert_called_once()
+        hook.assert_not_called()
+
+    def test_db_read_error_fallthrough_does_not_fire_hook(self, monkeypatch):
+        """``get_session`` raising leaves the session's newness UNKNOWN —
+        the continuing-session case is indistinguishable there, so the
+        hook must stay quiet (same double-fire class as the three
+        fallthrough states above).
+        """
+        db = MagicMock()
+        db.get_session.side_effect = RuntimeError("db locked")
+        agent = _make_agent(session_db=db)
+        hook = MagicMock()
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        agent._build_system_prompt.assert_called_once()
+        hook.assert_not_called()
+
+    def test_no_row_with_history_still_fires_hook(self, monkeypatch):
+        """History plus an attached DB but NO session row is a brand-new
+        session that was handed parent history (the DB-attached sibling of
+        the preview-restart shape) — its start hook is legitimate. This
+        pins that intent so the choice is explicit, not accidental.
+        """
+        db = MagicMock()
+        db.get_session.return_value = None
+        agent = _make_agent(session_db=db)
+        hook = MagicMock()
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        agent._build_system_prompt.assert_called_once()
+        hook.assert_called_once()
+
+    def test_fresh_build_still_fires_hook(self, monkeypatch):
+        """True first turn (no history, no DB row) legitimately fires the hook."""
+        agent = _make_agent(session_db=None)
+        hook = MagicMock()
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
+
+        _restore_or_build_system_prompt(agent, None, [])
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        hook.assert_called_once()
+        assert hook.call_args.args[0] == "on_session_start"
+
+    def test_preview_restart_with_parent_history_still_fires_hook(self, monkeypatch):
+        """The preview-restart shape: a brand-new session that deliberately
+        receives nonempty PARENT history but has no session DB. Its start
+        hook is legitimate — a guard keyed on history truthiness (instead of
+        the stale-runtime/null/empty states) would wrongly suppress it.
+        """
+        agent = _make_agent(session_db=None)
+        hook = MagicMock()
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "from parent session"}]
+        )
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        hook.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -678,6 +678,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 "Falling back to fresh build — prefix cache will miss for this turn.",
                 agent.session_id, exc,
             )
+            stored_state = "read_error"
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
         if _bot_chat_prompt_stale(agent, stored_prompt):
@@ -767,7 +768,12 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
 
     # Persistence-disabled forks share their parent's session ID and are not real sessions.
-    if not getattr(agent, "_persist_disabled", False):
+    # on_session_start fires only for a genuinely new session: no stored row, or a row the
+    # bridge pre-created with a NULL prompt before the first turn (Group Chat lifecycle). A
+    # continuing session whose stored prompt merely needed a rebuild ("stale_runtime",
+    # "empty") or an indeterminate DB lookup ("read_error") must not re-run session-scoped
+    # plugin work mid-conversation.
+    if not getattr(agent, "_persist_disabled", False) and stored_state in ("missing", "null"):
         try:
             from hermes_cli.lifecycle import invoke_hook as _invoke_hook
             _invoke_hook(

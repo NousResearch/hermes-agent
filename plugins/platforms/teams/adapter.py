@@ -61,7 +61,7 @@ from gateway.platforms.base_exec_approval import (
     EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
-    coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    coerce_port, decode_json_list_literal, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     seed_extra_from_env as _seed_extra_from_env, send_error
 )
 
@@ -336,6 +336,24 @@ def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
     return body
 
 
+def _channel_data_ids(activity: Any) -> set[str]:
+    """SDK models and raw channelData dictionaries both occur on inbound activities."""
+    data = getattr(activity, "channel_data", None)
+    ids = set()
+    for key in ("channel", "team"):
+        node = data.get(key) if isinstance(data, dict) else getattr(data, key, None)
+        node_id = node.get("id") if isinstance(node, dict) else getattr(node, "id", None)
+        if isinstance(node_id, str) and node_id.strip():
+            ids.add(node_id.strip())
+    return ids
+
+
+def _apply_yaml_config(yaml_cfg: dict, teams_cfg: dict) -> dict | None:
+    """Seed the owning profile's extra directly; never bridge authorization into process env."""
+    allowed = teams_cfg.get("allowed_channels")
+    return {"allowed_channels": allowed} if allowed is not None else None
+
+
 class TeamsAdapter(BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
@@ -375,6 +393,25 @@ class TeamsAdapter(BasePlatformAdapter):
         if isinstance(configured, bool):
             return configured
         return str(configured).strip().lower() not in {"false", "0", "no", "off"}
+
+    def _channel_access(self, activity: Any, chat_type: str, channel_ids: set[str]) -> tuple[bool, bool]:
+        """Return (admit, channel grant); an empty list retains normal user authorization."""
+        raw = decode_json_list_literal(self._extra.get("allowed_channels"))
+        if chat_type != "channel" or raw is None:
+            return True, False
+        if isinstance(raw, str):
+            raw = raw.split(",")
+        # Invalid configuration must not silently turn a restriction into open access.
+        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+            logger.warning("[teams] allowed_channels must be a list of channel/team IDs or a comma-separated string")
+            return False, False
+        allowed = {item.strip() for item in raw if item.strip()}
+        if not allowed:
+            return True, False
+        # Thread replies append ;messageid=<root-id> to the channel conversation ID.
+        conv_id = str(getattr(activity.conversation, "id", "") or "").split(";", 1)[0].strip()
+        authorized = "*" in allowed or bool(allowed & (channel_ids | {conv_id}))
+        return authorized, authorized
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Reconnect paths reach here without create_adapter()'s installer — re-run to bind SDK globals.
@@ -495,6 +532,14 @@ class TeamsAdapter(BasePlatformAdapter):
             return
         conv = activity.conversation
         conv_id = getattr(conv, "id", None)
+        channel_ids = _channel_data_ids(activity)
+        chat_type = _CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "")
+        if chat_type is None:
+            chat_type = "channel" if channel_ids else "dm"
+        process, channel_authorized = self._channel_access(activity, chat_type, channel_ids)
+        if not process:
+            logger.debug("[teams] Dropping message outside allowed_channels (chat=%s)", conv_id)
+            return
         if conv_id:  # cache the conversation reference for proactive sends (approval cards, etc.)
             self._conv_refs[conv_id] = ctx.conversation_ref
         text = activity.text if hasattr(activity, "text") and activity.text else ""
@@ -512,11 +557,11 @@ class TeamsAdapter(BasePlatformAdapter):
         source = self.build_source(
             chat_id=conv.id,
             chat_name=getattr(conv, "name", None) or "",
-            chat_type=_CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "dm"),
+            chat_type=chat_type,
             user_id=str(user_id),
             user_name=getattr(from_account, "name", None) or "",
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
-            message_id=msg_id)
+            message_id=msg_id, role_authorized=channel_authorized)
         media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)
@@ -842,6 +887,7 @@ def register(ctx) -> None:
         required_env=["TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"],
         install_hint=_install_hint(), setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,  # env-only setups show up in gateway status
+        apply_yaml_config_fn=_apply_yaml_config,
         cron_deliver_env_var="TEAMS_HOME_CHANNEL",  # deliver=teams cron home-channel routing
         standalone_sender_fn=_standalone_send,  # out-of-process cron delivery via Bot Framework REST
         allowed_users_env="TEAMS_ALLOWED_USERS", allow_all_env="TEAMS_ALLOW_ALL_USERS",

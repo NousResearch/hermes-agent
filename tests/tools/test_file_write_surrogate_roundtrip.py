@@ -119,6 +119,10 @@ class TestWriteFileSurrogates:
         assert res.error and "surrogate" in res.error
         assert "NOT created or modified" in res.error
         assert "timed out" not in res.error
+        # Pins the EARLY rejection (char repr in the message) rather than the
+        # post-BOM backstop (whose message contains the codec traceback) —
+        # the early rejection is what guarantees no child ever spawns.
+        assert "codec can't encode" not in res.error
         assert not p.exists()
 
     def test_rejected_write_leaves_existing_target_unchanged(self, ops, tmp_path):

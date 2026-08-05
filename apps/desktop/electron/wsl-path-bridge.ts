@@ -17,6 +17,28 @@ let cachedDistro: null | string = null
 let cachedUncBase: null | string = null
 
 /**
+ * Whether WSL path bridging is active. The bridge only makes sense when the
+ * desktop runs on Windows AND the gateway is a *local* backend (e.g. running
+ * inside WSL on the same machine). When the gateway is a remote host, the
+ * POSIX paths it reports belong to a machine the Windows host cannot open via
+ * `wsl.exe` — bridging them only spawns `wsl.exe` (and on WSL-less machines,
+ * the interactive "Install WSL" console prompt) for paths that can never be
+ * resolved locally. main.ts toggles this off once it resolves a remote
+ * backend. Defaults to active so a local Windows+WSL boot is unaffected.
+ */
+let wslBridgeActive = true
+
+/** Enable/disable WSL path bridging at runtime (called by main.ts). */
+export function setWslBridgeActive(active: boolean): void {
+  wslBridgeActive = active
+}
+
+/** Test seam: is the bridge currently active? */
+export function isWslBridgeActive(): boolean {
+  return wslBridgeActive
+}
+
+/**
  * Pick the default distro from `wsl.exe -l -q` output.
  *
  * `wsl.exe` emits UTF-16LE without a BOM unless `WSL_UTF8=1` (WSL >= 0.64), so
@@ -116,22 +138,39 @@ export function wslPosixToWindowsAccessible(posixPath: string, distro: string = 
 /** Native folder dialog `defaultPath`: open a WSL cwd in the Windows picker. */
 export function resolvePickerDefaultPath(
   defaultPath: string | undefined,
-  distro: string = resolveDefaultWslDistro()
+  distro?: string
 ): string | undefined {
   if (!defaultPath) {
     return undefined
   }
 
+  // Remote-gateway POSIX paths can't be opened via wsl.exe — no-op the bridge
+  // so the native dialog gets the raw path (it falls back gracefully) instead
+  // of triggering a wsl.exe spawn / install prompt. (#66433)
+  if (!wslBridgeActive) {
+    return defaultPath
+  }
+
   const value = String(defaultPath).trim()
 
-  return value.startsWith('/') && !WIN_DRIVE_RE.test(value) ? wslPosixToWindowsAccessible(value, distro) : defaultPath
+  return value.startsWith('/') && !WIN_DRIVE_RE.test(value)
+    ? wslPosixToWindowsAccessible(value, distro ?? resolveDefaultWslDistro())
+    : defaultPath
 }
 
 /** fs read path: on Windows, make a WSL cwd readable via its UNC / drive form. */
-export function resolveLocalReadPath(dirPath: string, distro: string = resolveDefaultWslDistro()): string {
+export function resolveLocalReadPath(dirPath: string, distro?: string): string {
   const value = String(dirPath || '').trim()
 
+  // In remote-gateway mode the POSIX paths belong to a host the Windows
+  // desktop cannot open locally — skip the WSL bridge entirely (no distro
+  // probe, no wsl.exe) so the file panel never spawns the install prompt on
+  // WSL-less machines. (#66433)
+  if (!wslBridgeActive) {
+    return value
+  }
+
   return IS_WINDOWS && value.startsWith('/') && !WIN_DRIVE_RE.test(value)
-    ? wslPosixToWindowsAccessible(value, distro)
+    ? wslPosixToWindowsAccessible(value, distro ?? resolveDefaultWslDistro())
     : value
 }

@@ -173,7 +173,7 @@ def test_never_lowers_an_unlimited_soft_limit(monkeypatch):
     assert fake_resource.limits == (-1, -1)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_gateway_startup_applies_limit_before_gateway_initialization(monkeypatch):
     import gateway.code_skew
     import gateway.run as gateway_run

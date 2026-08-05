@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import stat
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -50,6 +51,20 @@ def _post(url: str, api_key: str, payload: dict, *, authorization: str | None = 
         headers={
             "Content-Type": "application/json",
             "Authorization": authorization or f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=5) as response:  # noqa: S310
+        return response.status, json.loads(response.read())
+
+
+def _post_raw(url: str, api_key: str, body: bytes):
+    request = Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
         },
         method="POST",
     )
@@ -170,6 +185,23 @@ def test_bridge_rejects_wrong_token_and_streaming():
         bridge.close()
 
 
+def test_bridge_rejects_malformed_json_as_bad_request():
+    bridge = HermesLlmBridge(_FakeLlm())
+    bridge.start()
+    try:
+        with pytest.raises(HTTPError) as malformed:
+            _post_raw(
+                f"{bridge.base_url}/chat/completions",
+                bridge.api_key,
+                b"{not-json",
+            )
+        assert malformed.value.code == 400
+        body = json.loads(malformed.value.read())
+        assert body["error"]["type"] == "invalid_request_error"
+    finally:
+        bridge.close()
+
+
 def test_hindsight_provider_wires_hermes_mode_to_loopback_bridge(monkeypatch):
     class FakeEmbedded:
         def __init__(self, **kwargs):
@@ -221,12 +253,68 @@ def test_hindsight_provider_wires_hermes_mode_to_loopback_bridge(monkeypatch):
         provider.shutdown()
 
 
+def test_hermes_provider_instances_use_isolated_embedded_profiles(monkeypatch):
+    class FakeEmbedded:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeEmbedded))
+    monkeypatch.setattr(hindsight, "_check_local_runtime", lambda: (True, None))
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+
+    config = {
+        "mode": "local_embedded",
+        "llm_provider": "hermes",
+        "profile": "hermes",
+    }
+    first = HindsightMemoryProvider(SimpleNamespace(llm=_FakeLlm()))
+    second = HindsightMemoryProvider(SimpleNamespace(llm=_FakeLlm()))
+    first._mode = second._mode = "local_embedded"
+    first._config = dict(config)
+    second._config = dict(config)
+
+    try:
+        first_client = first._get_client()
+        second_client = second._get_client()
+        assert first_client.kwargs["profile"] != second_client.kwargs["profile"]
+        assert first_client.kwargs["profile"].startswith("hermes-hermes-")
+        assert first_client.kwargs["llm_base_url"] != second_client.kwargs["llm_base_url"]
+    finally:
+        first.shutdown()
+        second.shutdown()
+
+
 def test_register_passes_plugin_context_to_provider():
     context = SimpleNamespace(llm=MagicMock(), register_memory_provider=MagicMock())
     hindsight.register(context)
     provider = context.register_memory_provider.call_args.args[0]
     assert isinstance(provider, HindsightMemoryProvider)
     assert provider._host_context is context
+
+
+def test_memory_loader_provides_host_owned_llm_to_hindsight(monkeypatch):
+    import plugins.memory as memory_loader
+    from agent.plugin_llm import PluginLlm
+
+    provider_dir = Path(hindsight.__file__).parent
+    monkeypatch.setattr(memory_loader, "find_provider_dir", lambda name: provider_dir)
+    host_llm = MagicMock()
+
+    provider = memory_loader.load_memory_provider(
+        "hindsight",
+        host_context=SimpleNamespace(llm=host_llm),
+    )
+
+    assert isinstance(provider, HindsightMemoryProvider)
+    assert provider is not None
+    assert provider._host_context is not None
+    assert getattr(provider._host_context, "llm") is host_llm
+
+    default_provider = memory_loader.load_memory_provider("hindsight")
+    assert isinstance(default_provider, HindsightMemoryProvider)
+    assert default_provider is not None
+    assert default_provider._host_context is not None
+    assert isinstance(getattr(default_provider._host_context, "llm"), PluginLlm)
 
 
 def test_profile_env_materializes_loopback_bridge_without_provider_secret(monkeypatch, tmp_path):

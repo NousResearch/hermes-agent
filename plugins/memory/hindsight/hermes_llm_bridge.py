@@ -159,6 +159,19 @@ class _BridgeRequestHandler(BaseHTTPRequestHandler):
 
         try:
             payload = json.loads(self.rfile.read(content_length))
+        except json.JSONDecodeError:
+            self._write_json(
+                400,
+                {
+                    "error": {
+                        "message": "Request body must contain valid JSON",
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+            return
+
+        try:
             response = self._bridge.complete(payload)
         except HermesLlmBridgeError as exc:
             self._write_json(exc.status_code, {"error": {"message": str(exc), "type": "invalid_request_error"}})

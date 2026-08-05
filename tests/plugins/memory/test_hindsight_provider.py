@@ -1147,6 +1147,27 @@ class TestAvailability:
         p = HindsightMemoryProvider()
         assert not p.is_available()
 
+    def test_missing_local_runtime_emits_actionable_warning(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home",
+            lambda: tmp_path / "nonexistent",
+        )
+        monkeypatch.setenv("HINDSIGHT_MODE", "local_embedded")
+
+        def _raise(_name):
+            raise ModuleNotFoundError("No module named 'hindsight'")
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module",
+            _raise,
+        )
+
+        with caplog.at_level("WARNING", logger="plugins.memory.hindsight"):
+            assert not HindsightMemoryProvider().is_available()
+
+        assert "hindsight-all" in caplog.text
+        assert "hermes memory setup" in caplog.text
+
     def test_initialize_disables_local_mode_when_runtime_import_fails(self, tmp_path, monkeypatch):
         config = {"mode": "local_embedded"}
         config_path = tmp_path / "hindsight" / "config.json"

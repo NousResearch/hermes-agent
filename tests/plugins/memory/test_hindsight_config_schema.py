@@ -17,6 +17,8 @@ def test_hindsight_is_declared():
         "api_key",
         "api_url",
         "llm_provider",
+        "llm_base_url",
+        "llm_api_key",
         "llm_model",
         "bank_id",
         "recall_budget",
@@ -47,7 +49,34 @@ def test_hermes_is_an_embedded_llm_option():
 
     llm_provider = next(field for field in provider.fields if field.key == "llm_provider")
     assert llm_provider.kind == KIND_SELECT
-    assert llm_provider.allowed_values() == {"openai", "hermes"}
+    assert llm_provider.allowed_values() == {
+        "openai",
+        "anthropic",
+        "gemini",
+        "groq",
+        "openrouter",
+        "minimax",
+        "ollama",
+        "lmstudio",
+        "openai_compatible",
+        "hermes",
+    }
+
+
+def test_mode_specific_fields_declare_visibility_conditions():
+    provider = get_provider_config_schema("hindsight")
+    assert provider is not None
+
+    fields = {field.key: field for field in provider.fields}
+    assert dict(fields["api_key"].when) == {"mode": "cloud|local_external"}
+    assert dict(fields["llm_base_url"].when) == {
+        "mode": "local_embedded",
+        "llm_provider": "openai_compatible|openrouter",
+    }
+    assert dict(fields["llm_api_key"].when) == {
+        "mode": "local_embedded",
+        "llm_provider": "openai|anthropic|gemini|groq|openrouter|minimax|ollama|lmstudio|openai_compatible",
+    }
 
 
 def test_api_key_is_a_secret_bound_to_env():

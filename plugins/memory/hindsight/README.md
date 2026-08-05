@@ -14,7 +14,10 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 hermes memory setup    # select "hindsight"
 ```
 
-The setup wizard will install dependencies automatically via `uv` and walk you through configuration.
+The setup wizard installs the selected Hindsight client/embedded dependencies via
+`uv` and walks you through configuration. If the embedded dependency install is
+blocked by the host resolver, setup prints the exact install error and local mode
+is disabled at initialization rather than starting a partially configured daemon.
 
 Or manually (cloud mode with defaults):
 ```bash
@@ -37,12 +40,14 @@ To use the active Hermes model/provider/auth instead, set `llm_provider` to
 Hindsight daemon. The bridge forwards extraction/consolidation/reflect calls
 through the host-owned `ctx.llm` facade; it does not read or copy provider
 credentials and ignores Hindsight's requested model name in favor of Hermes'
-active model. The bridge is stopped with the memory provider.
+active model. Each provider instance receives an isolated Hindsight profile and
+bridge, and both are stopped/cleaned up with the memory provider.
 
 Daemon startup logs: `~/.hermes/logs/hindsight-embed.log`
 Daemon runtime logs: `~/.hindsight/profiles/<profile>.log`
 
-To open the Hindsight web UI (local embedded mode only):
+To open the Hindsight web UI for a manually managed profile (local embedded mode
+only):
 ```bash
 hindsight-embed -p hermes ui start
 ```
@@ -123,12 +128,13 @@ Config file: `~/.hermes/hindsight/config.json`
 |-----|---------|-------------|
 | `llm_provider` | `openai` | `openai`, `anthropic`, `gemini`, `groq`, `openrouter`, `minimax`, `ollama`, `lmstudio`, `openai_compatible`, `hermes` |
 | `llm_model` | per-provider | Model name (ignored for `hermes`, which uses the active Hermes model) |
-| `llm_base_url` | — | Endpoint URL for `openai_compatible` (e.g. `http://192.168.1.10:8080/v1`) |
+| `llm_base_url` | — | Endpoint URL for `openai_compatible` or `openrouter` (e.g. `http://192.168.1.10:8080/v1`) |
 
 For direct Hindsight providers, the LLM API key is stored in `~/.hermes/.env`
 as `HINDSIGHT_LLM_API_KEY`. It is not needed when `llm_provider` is `hermes`;
 that mode uses the host-owned Hermes LLM facade and an ephemeral loopback
-bridge token.
+bridge token. The dashboard hides cloud-only and embedded-only fields when the
+selected mode/provider makes them irrelevant.
 
 ## Tools
 

@@ -1180,6 +1180,30 @@ class TestStandaloneSendUserDmResolution:
         assert session.post.call_count == 1
         assert "chat.postMessage" in session.post.call_args.args[0]
 
+    @pytest.mark.asyncio
+    async def test_channel_delivery_honors_unfurl_config(self):
+        _slack_mod._slack_dm_cache.clear()
+        post_resp = self._mock_resp({"ok": True, "ts": "123.456"})
+        session = self._mock_session(post_resp)
+        config = PlatformConfig(
+            enabled=True,
+            token="«redacted:xox…»",
+            extra={"unfurl_links": False, "unfurl_media": False},
+        )
+
+        with patch.object(_slack_mod.aiohttp, "ClientSession", return_value=session):
+            result = await _slack_mod._standalone_send(
+                config,
+                "C123",
+                "[Hermes](https://example.com/hermes)",
+            )
+
+        assert result["success"] is True
+        payload = session.post.call_args.kwargs["json"]
+        assert payload["text"] == "<https://example.com/hermes|Hermes>"
+        assert payload["unfurl_links"] is False
+        assert payload["unfurl_media"] is False
+
 
     @pytest.mark.asyncio
     async def test_user_id_media_delivery_resolves_dm_before_upload(self, tmp_path):

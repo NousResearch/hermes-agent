@@ -363,6 +363,18 @@ def request_digest(request: dict[str, Any]) -> str:
     })
 
 
+def result_digest(result: dict[str, Any]) -> str:
+    """Server formula for orch_result artifact identity."""
+    return digest({
+        "schema_version": 4,
+        "kind": "orch_result",
+        "request_digest": result["request_digest"],
+        "plan_digest": result["plan_digest"],
+        "accepted_lane_set": result["accepted_lane_set"],
+        "synthesis": result["synthesis"],
+    })
+
+
 def requirement_id(a: dict[str, Any]) -> str:
     return digest({
         "schema_version": 4,

@@ -209,13 +209,34 @@ def _kill_stale_dashboard_processes(
     # stay a stop, not a restart.
     pid_cgroup: dict[int, str | None] = {}
     pid_service: dict[int, str | None] = {}
+    pid_service_snapshot: dict[int, dict] = {}
     pid_cmdline: dict[int, list[str]] = {}
     if restart_managed and sys.platform != "win32":
         for pid in pids:
             cg_path = _m()._get_pid_cgroup_path(pid)
             pid_cgroup[pid] = cg_path
             pid_service[pid] = _m()._get_systemd_service_for_pid(pid)
-            if not pid_service[pid]:
+            if pid_service[pid]:
+                scope_name = _m()._extract_scope_from_cgroup(cg_path)
+                if scope_name in {"user", "system"}:
+                    scope = ("--user",) if scope_name == "user" else ()
+                    state = _m()._read_managed_dashboard_service_state(
+                        scope, pid_service[pid]
+                    )
+                    # The PID-to-cgroup proof is stronger than a transient
+                    # is-active read failure.  Preserve the killed PID as the
+                    # old generation so post-restart verification cannot pass
+                    # on an unchanged service process.
+                    state["active"] = True
+                    if int(state.get("main_pid") or 0) <= 0:
+                        state["main_pid"] = pid
+                    state.update(
+                        scope=scope,
+                        unit=pid_service[pid],
+                        runtime=None,
+                    )
+                    pid_service_snapshot[pid] = state
+            else:
                 # Manually-started process: preserve its exact argv so we
                 # can respawn it after the update (#40449, #68934).
                 cmdline = _m()._dashboard_cmdline_for_pid(pid)
@@ -295,6 +316,8 @@ def _kill_stale_dashboard_processes(
     #  - manually-started PIDs: respawn the argv captured before the kill
     #    (#40449) — detached, headless, logged to logs/dashboard-restart.log.
     restarted_services: list[str] = []
+    restarted_service_snapshots: list[dict] = []
+    unverified_services: list[str] = []
     unrecovered: list[int] = []
     if killed and restart_managed:
         failed_restarts: list[tuple[str, str]] = []
@@ -308,6 +331,11 @@ def _kill_stale_dashboard_processes(
                 seen_services.add(svc_name)
                 if _m()._try_restart_systemd_service(svc_name, pid_cgroup.get(pid)):
                     restarted_services.append(svc_name)
+                    snapshot = pid_service_snapshot.get(pid)
+                    if snapshot is not None:
+                        restarted_service_snapshots.append(snapshot)
+                    else:
+                        unverified_services.append(svc_name)
                 else:
                     failed_restarts.append((svc_name, "systemctl restart returned non-zero"))
                     unrecovered.append(pid)
@@ -339,6 +367,8 @@ def _kill_stale_dashboard_processes(
         "killed": list(killed),
         "failed": list(failed),
         "unrecovered": list(unrecovered),
+        "restarted_service_snapshots": list(restarted_service_snapshots),
+        "unverified_services": list(unverified_services),
     }
 
 def _detect_concurrent_hermes_instances(

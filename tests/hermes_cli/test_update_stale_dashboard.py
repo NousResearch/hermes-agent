@@ -238,10 +238,215 @@ class TestDashboardUpdateCleanup:
             "hermes_cli.main._kill_stale_dashboard_processes",
             return_value={"matched": [12345], "killed": [], "failed": [(12345, "denied")],
                           "unrecovered": []},
-        ):
-            _finish_dashboard_update_cleanup([])
+        ), patch("hermes_cli.main._snapshot_managed_dashboard_service", return_value=None):
+            assert _finish_dashboard_update_cleanup([]) is False
 
         assert "stopped during update" not in capsys.readouterr().out
+
+    def test_managed_restart_is_verified_after_cleanup(self):
+        before = {
+            "scope": ("--user",),
+            "unit": "hermes-dashboard.service",
+            "active": True,
+            "main_pid": 12345,
+            "started": 10,
+            "runtime": ("dashboard", "127.0.0.1", 9119),
+        }
+        with patch(
+            "hermes_cli.main._snapshot_managed_dashboard_service",
+            return_value=before,
+        ), patch(
+            "hermes_cli.main._kill_stale_dashboard_processes",
+            return_value={"matched": [], "killed": [], "failed": [], "unrecovered": []},
+        ), patch(
+            "hermes_cli.main._verify_managed_dashboard_restart",
+            return_value=True,
+        ) as verify:
+            assert _finish_dashboard_update_cleanup([]) is True
+
+        verify.assert_called_once_with(before)
+
+    def test_managed_restart_verification_failure_is_non_success(self, capsys):
+        before = {
+            "scope": ("--user",),
+            "unit": "hermes-dashboard.service",
+            "active": True,
+            "main_pid": 12345,
+            "started": 10,
+            "runtime": ("dashboard", "127.0.0.1", 9119),
+        }
+        with patch(
+            "hermes_cli.main._snapshot_managed_dashboard_service",
+            return_value=before,
+        ), patch(
+            "hermes_cli.main._kill_stale_dashboard_processes",
+            return_value={"matched": [], "killed": [], "failed": [], "unrecovered": []},
+        ), patch(
+            "hermes_cli.main._verify_managed_dashboard_restart",
+            return_value=False,
+        ):
+            assert _finish_dashboard_update_cleanup([]) is False
+
+        assert "could not be verified" in capsys.readouterr().out
+
+    def test_custom_systemd_backend_restart_is_also_verified(self):
+        before = {
+            "scope": (),
+            "unit": "hermes-serve.service",
+            "active": True,
+            "main_pid": 4444,
+            "started": 10,
+            "runtime": None,
+        }
+        stop_result = {
+            "matched": [4444],
+            "killed": [4444],
+            "failed": [],
+            "unrecovered": [],
+            "restarted_service_snapshots": [before],
+            "unverified_services": [],
+        }
+        with patch(
+            "hermes_cli.main._snapshot_managed_dashboard_service",
+            return_value=None,
+        ), patch(
+            "hermes_cli.main._kill_stale_dashboard_processes",
+            return_value=stop_result,
+        ), patch(
+            "hermes_cli.main._verify_managed_dashboard_restart",
+            return_value=False,
+        ) as verify:
+            assert _finish_dashboard_update_cleanup([]) is False
+
+        verify.assert_called_once_with(before)
+
+    def test_unverified_custom_systemd_backend_is_non_success(self, capsys):
+        stop_result = {
+            "matched": [4444],
+            "killed": [4444],
+            "failed": [],
+            "unrecovered": [],
+            "restarted_service_snapshots": [],
+            "unverified_services": ["hermes-serve.service"],
+        }
+        with patch(
+            "hermes_cli.main._snapshot_managed_dashboard_service",
+            return_value=None,
+        ), patch(
+            "hermes_cli.main._kill_stale_dashboard_processes",
+            return_value=stop_result,
+        ):
+            assert _finish_dashboard_update_cleanup([]) is False
+
+        assert "could not be verified" in capsys.readouterr().out
+
+
+class TestManagedDashboardRestartVerification:
+    def _before(self):
+        return {
+            "scope": ("--user",),
+            "unit": "hermes-dashboard.service",
+            "active": True,
+            "main_pid": 12345,
+            "started": 10,
+            "runtime": ("dashboard", "127.0.0.1", 9119),
+        }
+
+    def test_active_new_process_and_healthy_endpoint_are_required(self):
+        live = sys.modules["hermes_cli.main"]
+        after = {"active": True, "main_pid": 23456, "started": 20}
+        with patch.object(
+            live, "_read_managed_dashboard_service_state", return_value=after
+        ), patch.object(live, "_dashboard_healthcheck", return_value=True) as health:
+            assert live._verify_managed_dashboard_restart(
+                self._before(), timeout=0
+            ) is True
+
+        health.assert_called_once_with(("dashboard", "127.0.0.1", 9119))
+
+    def test_same_pid_and_start_time_are_not_a_verified_restart(self):
+        live = sys.modules["hermes_cli.main"]
+        unchanged = {"active": True, "main_pid": 12345, "started": 10}
+        with patch.object(
+            live, "_read_managed_dashboard_service_state", return_value=unchanged
+        ), patch.object(live, "_dashboard_healthcheck") as health:
+            assert live._verify_managed_dashboard_restart(
+                self._before(), timeout=0
+            ) is False
+
+        health.assert_not_called()
+
+    def test_unhealthy_new_process_is_not_success(self):
+        live = sys.modules["hermes_cli.main"]
+        after = {"active": True, "main_pid": 23456, "started": 20}
+        with patch.object(
+            live, "_read_managed_dashboard_service_state", return_value=after
+        ), patch.object(live, "_dashboard_healthcheck", return_value=False):
+            assert live._verify_managed_dashboard_restart(
+                self._before(), timeout=0
+            ) is False
+
+    def test_enabled_but_inactive_unit_is_not_scheduled_for_restart(self):
+        live = sys.modules["hermes_cli.main"]
+
+        def fake_run(args, *unused_args, **unused_kwargs):
+            if args == [
+                "systemctl", "--user", "list-unit-files",
+                "hermes-dashboard.service", "--no-legend", "--no-pager",
+            ]:
+                return MagicMock(
+                    returncode=0,
+                    stdout="hermes-dashboard.service enabled enabled\n",
+                    stderr="",
+                )
+            if args == [
+                "systemctl", "--user", "is-enabled", "hermes-dashboard.service",
+            ]:
+                return MagicMock(returncode=0, stdout="enabled\n", stderr="")
+            if args == [
+                "systemctl", "list-unit-files", "hermes-dashboard.service",
+                "--no-legend", "--no-pager",
+            ]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"unexpected subprocess.run call: {args}")
+
+        with patch.object(live.subprocess, "run", side_effect=fake_run), patch.object(
+            live,
+            "_read_managed_dashboard_service_state",
+            return_value={"active": False, "main_pid": 0, "started": 0},
+        ):
+            assert live._snapshot_managed_dashboard_service() is None
+
+    def test_disabled_inactive_unit_is_not_scheduled_for_restart(self):
+        live = sys.modules["hermes_cli.main"]
+
+        def fake_run(args, *unused_args, **unused_kwargs):
+            if args == [
+                "systemctl", "--user", "list-unit-files",
+                "hermes-dashboard.service", "--no-legend", "--no-pager",
+            ]:
+                return MagicMock(
+                    returncode=0,
+                    stdout="hermes-dashboard.service disabled disabled\n",
+                    stderr="",
+                )
+            if args == [
+                "systemctl", "--user", "is-enabled", "hermes-dashboard.service",
+            ]:
+                return MagicMock(returncode=1, stdout="disabled\n", stderr="")
+            if args == [
+                "systemctl", "list-unit-files", "hermes-dashboard.service",
+                "--no-legend", "--no-pager",
+            ]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"unexpected subprocess.run call: {args}")
+
+        with patch.object(live.subprocess, "run", side_effect=fake_run), patch.object(
+            live,
+            "_read_managed_dashboard_service_state",
+            return_value={"active": False, "main_pid": 0, "started": 0},
+        ):
+            assert live._snapshot_managed_dashboard_service() is None
 
 
 class TestWindowsWmicEncoding:

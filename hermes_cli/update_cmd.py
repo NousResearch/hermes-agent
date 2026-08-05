@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -567,25 +568,58 @@ def _format_time_ago(iso_ts: str) -> str:
     except Exception:
         return "recently"
 
-def _finish_dashboard_update_cleanup(node_failures: list[str]) -> None:
-    """Refresh managed dashboards or stop stale manual ones after an update."""
+def _finish_dashboard_update_cleanup(node_failures: list[str]) -> bool:
+    """Refresh dashboards after an update and verify managed restarts.
+
+    Returns ``True`` only when cleanup was intentionally skipped after a Node
+    refresh failure, no stale process needed recovery, or every required
+    restart was verified.  Callers use the result for the durable update exit
+    marker instead of reporting success while an old backend is still live.
+    """
     if node_failures:
         print()
         print("  ℹ Leaving running dashboard process(es) untouched because the")
         print("    Node.js dependency refresh did not complete.")
-        return
+        return True
 
+    managed_before = _m()._snapshot_managed_dashboard_service()
     stop_result = _m()._kill_stale_dashboard_processes(restart_managed=True)
-    if not stop_result.get("unrecovered"):
-        return
 
-    print()
-    print(
-        "⚠ A web dashboard/serve process was stopped during update and could "
-        "not be auto-restarted."
-    )
-    print("  Re-launch it when you want the web UI back:")
-    print("    hermes dashboard --port <port>")
+    restart_snapshots: list[dict] = []
+    if managed_before is not None:
+        restart_snapshots.append(managed_before)
+    restart_snapshots.extend(stop_result.get("restarted_service_snapshots") or [])
+
+    unverified_services = list(stop_result.get("unverified_services") or [])
+    failed_verification: list[str] = []
+    for snapshot in restart_snapshots:
+        if not _m()._verify_managed_dashboard_restart(snapshot):
+            failed_verification.append(str(snapshot.get("unit") or "dashboard service"))
+    failed_verification.extend(unverified_services)
+    if failed_verification:
+        print()
+        print(
+            "⚠ Managed dashboard restart could not be verified; a service may "
+            "still be running pre-update code."
+        )
+        for unit in sorted(set(failed_verification)):
+            print(f"  Check it with: systemctl status {unit}")
+        return False
+
+    failed = bool(stop_result.get("failed"))
+    unrecovered = bool(stop_result.get("unrecovered"))
+    if not failed and not unrecovered:
+        return True
+
+    if unrecovered:
+        print()
+        print(
+            "⚠ A web dashboard/serve process was stopped during update and could "
+            "not be auto-restarted."
+        )
+        print("  Re-launch it when you want the web UI back:")
+        print("    hermes dashboard --port <port>")
+    return False
 
 def _atomic_replace_dir(src: str, dst: str) -> None:
     """Replace directory *dst* with *src* without leaving *dst* half-deleted.
@@ -3253,13 +3287,17 @@ def _for_each_systemd_gateway_unit(
     *,
     process_unit,
     on_unit_timeout,
-) -> None:
+    defer_unit: str | None = None,
+) -> list[str]:
     """Process each ``hermes-gateway*.service`` from ``systemctl list-units``.
 
     ``subprocess.TimeoutExpired`` raised by ``process_unit`` is isolated to
     that unit via ``on_unit_timeout`` so one wedged systemctl call cannot
-    abort the rest of the fleet (#68523).
+    abort the rest of the fleet (#68523).  ``defer_unit`` names the gateway
+    whose cgroup owns the updater; it is returned without being restarted so
+    the caller can make it the terminal action after all other finalization.
     """
+    deferred: list[str] = []
     for line in (list_units_stdout or "").strip().splitlines():
         parts = line.split()
         if not parts:
@@ -3272,10 +3310,339 @@ def _for_each_systemd_gateway_unit(
         if not unit.startswith("hermes-gateway"):
             continue
         svc_name = unit.removesuffix(".service")
+        if defer_unit is not None and svc_name == defer_unit:
+            deferred.append(svc_name)
+            continue
         try:
             process_unit(svc_name)
         except subprocess.TimeoutExpired as exc:
             on_unit_timeout(svc_name, exc)
+    return deferred
+
+
+def _detect_updater_systemd_gateway_owner(
+) -> tuple[tuple[str, list[str], str] | None, bool]:
+    """Return the systemd gateway unit whose cgroup contains this updater.
+
+    The boolean reports a malformed gateway-looking cgroup that could not be
+    resolved safely.  A missing/non-systemd cgroup is normal on macOS,
+    Windows, containers, and manually launched gateways, so it is not treated
+    as a discovery failure.
+    """
+    cgroup_path = _m()._get_pid_cgroup_path(os.getpid())
+    if not cgroup_path:
+        return None, False
+    cgroup_parts = [part for part in cgroup_path.split("/") if part]
+    gateway_units = [
+        part
+        for part in cgroup_parts
+        if part.startswith("hermes-gateway") and part.endswith(".service")
+    ]
+    gateway_cgroup = bool(gateway_units) or (
+        "hermes-gateway" in cgroup_path and ".service" in cgroup_path
+    )
+    svc_name = _m()._get_systemd_service_for_pid(os.getpid())
+    if not svc_name and gateway_units:
+        # ``_get_systemd_service_for_pid`` historically recognized only a
+        # cgroup path ending at the service.  Delegated workers may live in a
+        # nested child scope below that service, so recover the exact owning
+        # unit component without weakening the hermes-gateway name gate.
+        svc_name = gateway_units[-1]
+    if not svc_name:
+        return None, gateway_cgroup
+    if not svc_name.startswith("hermes-gateway"):
+        return None, False
+    scope = _m()._extract_scope_from_cgroup(cgroup_path)
+    if scope not in {"user", "system"}:
+        return None, True
+    scope_cmd = ["systemctl", "--user"] if scope == "user" else ["systemctl"]
+    return (scope, scope_cmd, svc_name.removesuffix(".service")), False
+
+
+def _write_gateway_update_exit_code(required: bool, code: int) -> bool:
+    """Atomically persist a terminal updater result when a consumer needs it."""
+    if not required:
+        return True
+    try:
+        from utils import atomic_write_text
+
+        atomic_write_text(
+            get_hermes_home() / ".update_exit_code",
+            str(int(code)),
+        )
+    except OSError:
+        return False
+    return True
+
+
+def _owner_restart_verification_timeout(
+    owner: tuple[str, list[str], str],
+) -> float:
+    """Bound owner drain, restart backoff, and new-gateway startup verification."""
+    scope, scope_cmd, svc_name = owner
+    try:
+        from hermes_cli.gateway import _get_restart_exit_wait_budget
+
+        exit_wait_budget = max(0.0, float(_get_restart_exit_wait_budget()))
+    except Exception:
+        exit_wait_budget = 105.0
+    prompt_free_scope_cmd = list(scope_cmd)
+    if "--no-ask-password" not in prompt_free_scope_cmd:
+        prompt_free_scope_cmd.append("--no-ask-password")
+    restart_probe = prompt_free_scope_cmd + [
+        "show",
+        svc_name,
+        "--property=RestartUSec",
+        "--value",
+    ]
+    prompt_free_scope_cmd = _resolve_noninteractive_systemd_command(
+        scope,
+        prompt_free_scope_cmd,
+        targeted_probe=restart_probe,
+    )
+    if prompt_free_scope_cmd is None:
+        raise PermissionError("no prompt-free systemctl capability for owner verifier")
+    restart_timeout = _service_restart_sec(
+        prompt_free_scope_cmd, svc_name, default=0.0
+    )
+    # SIGUSR1 may first wait for the active turn and only then enter stop/drain.
+    # Cover the same full wait budget used by gateway restart callers, plus
+    # service backoff and two minutes for replacement startup/readiness.  Keep
+    # the verifier within the gateway update watcher's bounded 30-minute window.
+    return min(1800.0, max(180.0, exit_wait_budget + restart_timeout + 120.0))
+
+
+def _clear_owner_restart_request_files() -> None:
+    from hermes_cli.update_owner_restart import (
+        OWNER_RESTART_ACK_FILE,
+        OWNER_RESTART_PENDING_FILE,
+    )
+
+    home = get_hermes_home()
+    for name in (OWNER_RESTART_PENDING_FILE, OWNER_RESTART_ACK_FILE):
+        try:
+            (home / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _resolve_noninteractive_systemd_command(
+    scope: str,
+    command: list[str],
+    *,
+    targeted_probe: list[str] | None = None,
+) -> list[str] | None:
+    """Resolve a prompt-free user/system systemd command prefix.
+
+    User-scope commands run directly. System-scope commands run directly as
+    root; otherwise they use ``sudo -n`` only after the same blanket/targeted
+    capability probes used by gateway manage-unit operations.
+    """
+    if scope == "user":
+        return command
+    if scope != "system" or not hasattr(os, "geteuid"):
+        return None
+    if os.geteuid() == 0:
+        return command
+
+    sudo_command = ["sudo", "-n"] + command
+    try:
+        probe = subprocess.run(
+            ["sudo", "-n", "true"],
+            capture_output=True,
+            timeout=5,
+        )
+        if probe.returncode == 0:
+            return sudo_command
+        if targeted_probe is None:
+            return None
+        probe = subprocess.run(
+            ["sudo", "-n"] + targeted_probe,
+            capture_output=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    return sudo_command if probe.returncode == 0 else None
+
+
+def _launch_updater_owner_restart_verifier(
+    owner: tuple[str, list[str], str],
+    *,
+    final_exit_code: int,
+    persist_result: bool,
+) -> bool:
+    """Launch the terminal owner restart in a separate transient systemd cgroup.
+
+    The transient verifier, not this updater-owned cgroup, sends SIGUSR1.  It
+    then boundedly proves ActiveState, changed MainPID/start generation, and a
+    readiness acknowledgement from the new gateway before atomically exposing
+    the terminal update result.  If the transient unit cannot be launched, the
+    owner remains untouched and the caller records an immediate failure.
+    """
+    if not persist_result:
+        return False
+    systemd_run = shutil.which("systemd-run")
+    if not systemd_run:
+        return False
+
+    scope, _scope_cmd, svc_name = owner
+    command = [systemd_run]
+    if scope == "user":
+        command.extend(["--user", "--no-ask-password"])
+    else:
+        command.append("--no-ask-password")
+    command = _resolve_noninteractive_systemd_command(
+        scope,
+        command,
+        targeted_probe=command + ["--version"],
+    )
+    if command is None:
+        return False
+
+    from hermes_cli import update_owner_restart
+
+    try:
+        old_state = update_owner_restart.read_systemd_service_state(scope, svc_name)
+        timeout_seconds = _owner_restart_verification_timeout(owner)
+        nonce = secrets.token_hex(16)
+        home = get_hermes_home()
+        update_owner_restart.prepare_owner_restart_request(
+            home,
+            scope=scope,
+            service=svc_name,
+            old_state=old_state,
+            final_exit_code=int(final_exit_code),
+            timeout_seconds=timeout_seconds,
+            nonce=nonce,
+        )
+    except (FileNotFoundError, OSError, TypeError, ValueError, subprocess.TimeoutExpired):
+        return False
+
+    unit_name = (
+        f"hermes-update-owner-verify-{os.getpid()}-{nonce[:8]}".replace(".", "-")
+    )
+    project_root = Path(__file__).resolve().parent.parent
+    command.extend(
+        [
+            "--collect",
+            f"--unit={unit_name}",
+            "--property=Type=exec",
+            f"--property=RuntimeMaxSec={int(timeout_seconds + 30)}",
+            f"--property=WorkingDirectory={project_root}",
+            f"--setenv=HERMES_HOME={home}",
+            "--setenv=PYTHONUNBUFFERED=1",
+        ]
+    )
+    if scope == "system":
+        command.extend(
+            [
+                f"--property=User={os.geteuid()}",
+                f"--property=Group={os.getegid()}",
+            ]
+        )
+    command.extend(
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.update_owner_restart",
+            "--home",
+            str(home),
+            f"--nonce={nonce}",
+        ]
+    )
+
+    try:
+        launched = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+    if launched.returncode != 0:
+        _clear_owner_restart_request_files()
+        return False
+    return True
+
+
+def _finish_update_service_finalization(
+    node_failures: list[str],
+    *,
+    gateway_mode: bool,
+    gateway_fleet_restart_incomplete: bool,
+    updater_owner_discovery_failed: bool,
+    deferred_owner: tuple[str, list[str], str] | None,
+) -> bool:
+    """Finalize dashboard/result state, then restart the owner exactly last."""
+    dashboard_ok = _finish_dashboard_update_cleanup(node_failures)
+    final_ok = (
+        dashboard_ok
+        and not node_failures
+        and not gateway_fleet_restart_incomplete
+        and not updater_owner_discovery_failed
+    )
+    result_required = gateway_mode or deferred_owner is not None
+    marker_ok = True
+    verifier_launched = False
+    if deferred_owner is not None:
+        print()
+        print(
+            f"  → Handing final updater-owner restart for {deferred_owner[2]} "
+            "to an external verifier..."
+        )
+        verifier_launched = _launch_updater_owner_restart_verifier(
+            deferred_owner,
+            final_exit_code=0 if final_ok else 1,
+            persist_result=result_required,
+        )
+        if verifier_launched:
+            print(
+                "  → Owner restart verification is pending outside the service "
+                "cgroup; completion will be published only after readiness proof."
+            )
+        else:
+            final_ok = False
+            marker_ok = _write_gateway_update_exit_code(result_required, 1)
+            print(
+                f"  ✗ Could not launch the external restart verifier for "
+                f"{deferred_owner[2]}."
+            )
+    else:
+        marker_ok = _write_gateway_update_exit_code(
+            result_required, 0 if final_ok else 1
+        )
+
+    if not marker_ok:
+        final_ok = False
+        print()
+        print(
+            "  ✗ Could not persist the durable update result; leaving the "
+            "updater-owning service running."
+        )
+
+    if deferred_owner is not None and verifier_launched:
+        # This process belongs to the owner cgroup that the verifier will tear
+        # down.  Only the external verifier can truthfully publish completion
+        # after observing the replacement process and its readiness ack.
+        return False
+
+    print()
+    if node_failures:
+        print(
+            "⚠ Update partially complete — Node.js dependencies for "
+            f"{', '.join(node_failures)} did not refresh."
+        )
+        print("  Code and Python deps are updated, but the dashboard/TUI may")
+        print("  be in a mixed state until the Node deps are rebuilt.")
+    elif final_ok:
+        print("✓ Update complete!")
+    else:
+        print("⚠ Update finalization incomplete — see the warnings above.")
+    return final_ok
 
 def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
     """Print an explicit incomplete-update warning for unrestarted units."""
@@ -4582,16 +4949,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Never let the cron safety net break an otherwise-good update.
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
-        print()
-        if node_failures:
-            print(
-                "⚠ Update partially complete — Node.js dependencies for "
-                f"{', '.join(node_failures)} did not refresh."
-            )
-            print("  Code and Python deps are updated, but the dashboard/TUI may")
-            print("  be in a mixed state until the Node deps are rebuilt.")
-        else:
-            print("✓ Update complete!")
+        # The final success/partial status is emitted only after gateway and
+        # dashboard finalization.  Printing it here used to produce false
+        # success when a later restart failed or killed this updater.
 
         # Search-index optimization notice (v23). Existing installs keep their
         # working search index untouched on update; the compact v23 layout —
@@ -4681,30 +5041,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("cua-driver refresh failed: %s", e)
 
-        # Write exit code *before* the gateway restart attempt.
-        # When running as ``hermes update --gateway`` (spawned by the gateway's
-        # /update command), this process lives inside the gateway's systemd
-        # cgroup.  A graceful SIGUSR1 restart keeps the drain loop alive long
-        # enough for the exit-code marker to be written below, but the
-        # fallback ``systemctl restart`` path (see below) kills everything in
-        # the cgroup (KillMode=mixed → SIGKILL to remaining processes),
-        # including us and the wrapping bash shell.  The shell never reaches
-        # its ``printf $status > .update_exit_code`` epilogue, so the
-        # exit-code marker file would never be created.  The new gateway's
-        # update watcher would then poll for 30 minutes and send a spurious
-        # timeout message.
-        #
-        # Writing the marker here — after git pull + pip install succeed but
-        # before we attempt the restart — ensures the new gateway sees it
-        # regardless of how we die.
-        if gateway_mode:
-            _exit_code_path = get_hermes_home() / ".update_exit_code"
-            try:
-                _exit_code_path.write_text("0", encoding="utf-8")
-            except OSError:
-                pass
+        # Do not publish an exit marker yet.  The gateway watcher treats the
+        # marker's mere presence as terminal, so even an optimistic ``0`` can
+        # be consumed before gateway/dashboard finalization discovers a later
+        # failure.  Ownership-aware finalization below writes the sole result
+        # immediately before the terminal owner restart.
 
         gateway_fleet_restart_incomplete = False
+        updater_owner, updater_owner_discovery_failed = (
+            _detect_updater_systemd_gateway_owner()
+        )
+        deferred_owner: tuple[str, list[str], str] | None = None
 
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
@@ -4833,33 +5180,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if scope_ in _manage_cmd_cache:
                     return _manage_cmd_cache[scope_]
                 cmd = scope_cmd_ + ["--no-ask-password"]
-                if (
-                    scope_ == "system"
-                    and hasattr(os, "geteuid")
-                    and os.geteuid() != 0  # windows-footgun: ok — systemd path, Linux-only
-                ):
-                    sudo_cmd = ["sudo", "-n"] + scope_cmd_ + ["--no-ask-password"]
-                    sudo_ok = False
-                    try:
-                        _probe = subprocess.run(
-                            ["sudo", "-n", "true"],
-                            capture_output=True,
-                            timeout=5,
-                        )
-                        sudo_ok = _probe.returncode == 0
-                        if not sudo_ok:
-                            # Blanket sudo refused — a targeted sudoers entry
-                            # (NOPASSWD for systemctl ... hermes-gateway*)
-                            # may still allow the exact commands we need.
-                            _probe = subprocess.run(
-                                sudo_cmd + ["reset-failed", svc_name_],
-                                capture_output=True,
-                                timeout=5,
-                            )
-                            sudo_ok = _probe.returncode == 0
-                    except (FileNotFoundError, subprocess.TimeoutExpired):
-                        sudo_ok = False
-                    cmd = sudo_cmd if sudo_ok else None
+                cmd = _resolve_noninteractive_systemd_command(
+                    scope_,
+                    cmd,
+                    targeted_probe=cmd + ["reset-failed", svc_name_],
+                )
                 _manage_cmd_cache[scope_] = cmd
                 return cmd
 
@@ -4885,8 +5210,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
             externally_supervised_profiles = []
 
             # --- Systemd services (Linux) ---
-            # Discover all hermes-gateway* units (default + profiles)
-            if supports_systemd_services():
+            # Discover all hermes-gateway* units (default + profiles).  A
+            # gateway-looking updater cgroup with no safely resolved owner is
+            # fail-closed: restarting any candidate could kill this updater
+            # before dashboard cleanup and the durable failure marker.
+            if supports_systemd_services() and updater_owner_discovery_failed:
+                gateway_fleet_restart_incomplete = True
+                print()
+                print(
+                    "  ⚠ Could not safely resolve the updater's systemd gateway "
+                    "owner; leaving systemd gateway units running."
+                )
+            if supports_systemd_services() and not updater_owner_discovery_failed:
                 try:
                     _ensure_user_systemd_env()
                 except Exception:
@@ -5178,10 +5513,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             f"continuing with remaining gateways"
                         )
 
-                    _for_each_systemd_gateway_unit(
+                    _defer_unit = None
+                    if updater_owner is not None and updater_owner[0] == scope:
+                        _defer_unit = updater_owner[2]
+                    _deferred_units = _for_each_systemd_gateway_unit(
                         result.stdout,
                         process_unit=_restart_one_systemd_gateway_unit,
                         on_unit_timeout=_on_unit_timeout,
+                        defer_unit=_defer_unit,
+                    )
+                    if _deferred_units:
+                        deferred_owner = (
+                            scope,
+                            list(scope_cmd),
+                            _deferred_units[0],
+                        )
+
+                if updater_owner is not None and deferred_owner is None:
+                    updater_owner_discovery_failed = True
+                    print()
+                    print(
+                        "  ⚠ The updater's systemd gateway owner was detected "
+                        "but not present in the restart inventory."
                     )
 
             # --- Launchd services (macOS) ---
@@ -5310,12 +5663,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             if failed_or_stale_units:
                 gateway_fleet_restart_incomplete = True
-                if gateway_mode:
-                    _exit_code_path = get_hermes_home() / ".update_exit_code"
-                    try:
-                        _exit_code_path.write_text("1", encoding="utf-8")
-                    except OSError:
-                        pass
             _warn_incomplete_gateway_fleet_restart(failed_or_stale_units)
 
             if not restarted_services and not killed_pids:
@@ -5365,7 +5712,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 logger.debug("Post-restart survivor sweep failed: %s", _sweep_exc)
 
         except Exception as e:
+            gateway_fleet_restart_incomplete = True
             logger.debug("Gateway restart during update failed: %s", e)
+            print()
+            print(f"  ⚠ Gateway restart finalization failed: {e}")
+
+        if updater_owner is not None and deferred_owner is None:
+            updater_owner_discovery_failed = True
 
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
 
@@ -5398,21 +5751,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
 
-        # Restart a managed dashboard through systemd, or stop stale manual
-        # dashboard processes. Raw-killing a systemd-owned dashboard PID makes
-        # systemd treat it as a clean stop, leaving the Cloudflare origin dead.
-        # Preserve the safety rule above: a failed Node refresh leaves the
-        # currently running dashboard untouched.
-        _finish_dashboard_update_cleanup(node_failures)
-
         print()
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")
 
-        if gateway_fleet_restart_incomplete:
-            # Code update itself succeeded, but at least one gateway still
-            # runs pre-update modules — surface that as a failed update so
-            # automation / operators do not treat the fleet as healthy.
+        # Dashboard cleanup and the durable result marker must precede the
+        # updater-owning service restart.  Signalling that service is the
+        # terminal side effect because systemd may reap this updater's cgroup.
+        finalization_ok = _finish_update_service_finalization(
+            node_failures,
+            gateway_mode=gateway_mode,
+            gateway_fleet_restart_incomplete=gateway_fleet_restart_incomplete,
+            updater_owner_discovery_failed=updater_owner_discovery_failed,
+            deferred_owner=deferred_owner,
+        )
+        if not finalization_ok:
             sys.exit(1)
 
     except subprocess.CalledProcessError as e:

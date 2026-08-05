@@ -12,6 +12,8 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.main import cmd_update
 
 
@@ -45,6 +47,19 @@ def _make_run_side_effect(
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     return side_effect
+
+
+@pytest.fixture(autouse=True)
+def _isolate_update_process_discovery():
+    """Keep unit tests from discovering the real worker/gateway cgroup."""
+    with patch("hermes_cli.main._get_pid_cgroup_path", return_value=None), patch(
+        "hermes_cli.main._get_systemd_service_for_pid", return_value=None
+    ), patch("hermes_cli.gateway._get_service_pids", return_value=set()), patch(
+        "hermes_cli.gateway.find_gateway_pids", return_value=[]
+    ), patch(
+        "hermes_cli.gateway.find_profile_gateway_processes", return_value=[]
+    ):
+        yield
 
 
 class TestUpdateYesConfigMigration:

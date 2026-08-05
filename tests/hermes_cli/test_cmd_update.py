@@ -67,8 +67,80 @@ def _patch_managed_uv(request):
 
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
+         patch("hermes_cli.main._get_pid_cgroup_path", return_value=None), \
+         patch("hermes_cli.main._get_systemd_service_for_pid", return_value=None), \
+         patch("hermes_cli.gateway._get_service_pids", return_value=set()), \
+         patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
         yield
+
+
+class TestCmdUpdateOwnerFinalizationOrdering:
+    def test_full_update_defers_owner_until_dashboard_and_external_verifier(
+        self, monkeypatch
+    ):
+        """Drive the full update path, not only finalization helper calls."""
+        from hermes_cli import gateway as gateway_cli
+        from hermes_cli import update_cmd
+
+        owner = (
+            "user",
+            ["systemctl", "--user"],
+            "hermes-gateway-coding_lead",
+        )
+        events: list[str] = []
+
+        def detect_owner():
+            events.append("detect-owner")
+            return owner, False
+
+        def inventory(_text, *, process_unit, on_unit_timeout, defer_unit):
+            events.append(f"inventory:{defer_unit}")
+            return [defer_unit] if defer_unit else []
+
+        def dashboard(_failures):
+            events.append("dashboard")
+            return True
+
+        def launch(deferred_owner, *, final_exit_code, persist_result):
+            events.append(
+                f"verifier:{deferred_owner[2]}:{final_exit_code}:{persist_result}"
+            )
+            return True
+
+        monkeypatch.setattr(update_cmd, "_detect_updater_systemd_gateway_owner", detect_owner)
+        monkeypatch.setattr(update_cmd, "_for_each_systemd_gateway_unit", inventory)
+        monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", dashboard)
+        monkeypatch.setattr(
+            update_cmd, "_launch_updater_owner_restart_verifier", launch
+        )
+        monkeypatch.setattr(update_cmd._time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as mock_run, patch(
+            "hermes_cli.config.get_missing_env_vars", return_value=[]
+        ), patch(
+            "hermes_cli.config.get_missing_config_fields", return_value=[]
+        ), patch(
+            "hermes_cli.config.check_config_version", return_value=(24, 24)
+        ):
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_update(SimpleNamespace(yes=True))
+
+        assert exc_info.value.code == 1
+        assert events.index("detect-owner") < events.index(
+            "inventory:hermes-gateway-coding_lead"
+        )
+        assert events.index("dashboard") < events.index(
+            "verifier:hermes-gateway-coding_lead:0:True"
+        )
 
 
 class TestCmdUpdateNpmLockfileCache:

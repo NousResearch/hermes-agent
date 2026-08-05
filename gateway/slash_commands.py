@@ -5434,6 +5434,12 @@ class GatewaySlashCommandsMixin:
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
+        owner_restart_pending_path = (
+            _hermes_home / ".update_owner_restart_pending.json"
+        )
+        owner_restart_result_path = (
+            _hermes_home / ".update_owner_restart_result.json"
+        )
         session_key = self._session_key_for_source(event.source)
         pending = {
             "platform": event.source.platform.value,
@@ -5451,6 +5457,8 @@ class GatewaySlashCommandsMixin:
         _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
         _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
+        owner_restart_pending_path.unlink(missing_ok=True)
+        owner_restart_result_path.unlink(missing_ok=True)
 
         # Spawn `hermes update --gateway` detached so it survives gateway restart.
         # --gateway enables file-based IPC for interactive prompts (stash
@@ -5517,7 +5525,13 @@ class GatewaySlashCommandsMixin:
                     # in zsh, and this command string is copied/reused in macOS/zsh
                     # operator wrappers. Keep the template zsh-safe even though this
                     # specific subprocess currently runs under bash.
-                    f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}"
+                    #
+                    # A same-cgroup updater delegates the terminal restart and
+                    # result marker to an external verifier.  Never publish the
+                    # updater shell's return code while that proof is pending.
+                    f"rc=$?; if [ ! -e {shlex.quote(str(owner_restart_pending_path))} ] "
+                    f"&& [ ! -e {shlex.quote(str(owner_restart_result_path))} ]; "
+                    f"then printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}; fi"
                 )
                 setsid_bin = shutil.which("setsid")
                 if setsid_bin:

@@ -7293,6 +7293,168 @@ def _dashboard_probe_host(host: str | None) -> str:
 _DASHBOARD_SYSTEMD_UNIT = "hermes-dashboard.service"
 
 
+def _read_managed_dashboard_service_state(
+    scope: tuple[str, ...],
+    unit: str = _DASHBOARD_SYSTEMD_UNIT,
+) -> dict:
+    """Read the managed dashboard's active/PID/start state from one scope."""
+    active = subprocess.run(
+        ["systemctl", *scope, "is-active", unit],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=5,
+    )
+    shown = subprocess.run(
+        [
+            "systemctl",
+            *scope,
+            "show",
+            unit,
+            "--property=MainPID",
+            "--property=ActiveEnterTimestampMonotonic",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=5,
+    )
+    props: dict[str, str] = {}
+    for line in (shown.stdout or "").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            props[key.strip()] = value.strip()
+    try:
+        main_pid = int(props.get("MainPID", "0") or 0)
+    except ValueError:
+        main_pid = 0
+    try:
+        started = int(props.get("ActiveEnterTimestampMonotonic", "0") or 0)
+    except ValueError:
+        started = 0
+    return {
+        "active": active.returncode == 0 and (active.stdout or "").strip() == "active",
+        "main_pid": main_pid,
+        "started": started,
+    }
+
+
+def _snapshot_managed_dashboard_service(
+    unit: str = _DASHBOARD_SYSTEMD_UNIT,
+) -> dict | None:
+    """Capture the managed dashboard state before updater cleanup.
+
+    Returns ``None`` when the canonical unit is not installed or is inactive.
+    Runtime host and port are captured from the old PID when possible so
+    post-restart verification can include the public local ``/api/health``
+    endpoint without starting a dashboard the operator had left stopped.
+    """
+    if sys.platform == "win32":
+        return None
+    for scope in (("--user",), ()):
+        try:
+            listed = subprocess.run(
+                [
+                    "systemctl",
+                    *scope,
+                    "list-unit-files",
+                    unit,
+                    "--no-legend",
+                    "--no-pager",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        rows = (listed.stdout or "").splitlines()
+        if listed.returncode != 0 or not any(
+            row.split()[0:1] == [unit] for row in rows if row.split()
+        ):
+            continue
+        try:
+            state = _read_managed_dashboard_service_state(scope, unit)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            state = {"active": False, "main_pid": 0, "started": 0}
+        if not state["active"]:
+            # An installed/enabled unit can be intentionally stopped.  The
+            # updater must not start a no-dashboard deployment merely because
+            # the unit file exists; keep looking in case the other scope owns
+            # the active canonical service.
+            continue
+        runtime = None
+        if state["main_pid"] > 0:
+            argv = _dashboard_cmdline_for_pid(state["main_pid"])
+            if argv:
+                runtime = _parse_dashboard_runtime(shlex.join(argv))
+        return {"scope": scope, "unit": unit, "runtime": runtime, **state}
+    return None
+
+
+def _dashboard_healthcheck(runtime: tuple[str, str, int]) -> bool | None:
+    """Probe local dashboard health; return ``None`` when not safely supported."""
+    import urllib.error
+    import urllib.request
+
+    _mode, host, port = runtime
+    probe_host = _dashboard_probe_host(host)
+    if probe_host not in {"127.0.0.1", "localhost", "::1"}:
+        return None
+    url_host = f"[{probe_host}]" if ":" in probe_host else probe_host
+    try:
+        with urllib.request.urlopen(
+            f"http://{url_host}:{port}/api/health", timeout=2
+        ) as response:
+            return 200 <= getattr(response, "status", 200) < 300
+    except (OSError, TimeoutError, urllib.error.URLError):
+        return False
+
+
+def _verify_managed_dashboard_restart(
+    before: dict,
+    *,
+    timeout: float = 20.0,
+) -> bool:
+    """Boundedly verify active state, process generation, and local health."""
+    deadline = _time.monotonic() + max(timeout, 0.0)
+    while True:
+        try:
+            after = _read_managed_dashboard_service_state(
+                tuple(before["scope"]), before["unit"]
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError, KeyError):
+            after = {"active": False, "main_pid": 0, "started": 0}
+
+        old_pid = int(before.get("main_pid") or 0)
+        old_started = int(before.get("started") or 0)
+        transitioned = bool(
+            after["active"]
+            and after["main_pid"] > 0
+            and (
+                old_pid <= 0
+                or after["main_pid"] != old_pid
+                or (
+                    after["started"] > 0
+                    and after["started"] > old_started
+                )
+            )
+        )
+        if transitioned:
+            health = None
+            if before.get("runtime") is not None:
+                health = _dashboard_healthcheck(before["runtime"])
+            if health is not False:
+                return True
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(0.5)
+
+
 def _restart_managed_dashboard_service(
     reason: str,
     unit: str = _DASHBOARD_SYSTEMD_UNIT,

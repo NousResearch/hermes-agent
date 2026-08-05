@@ -24,6 +24,27 @@ def _list_units_stdout(names: list[str]) -> str:
 
 
 class TestFleetRestartTimeoutIsolation:
+    def test_updater_owning_unit_is_deferred_until_explicit_final_restart(self):
+        units = [
+            "hermes-gateway-default",
+            "hermes-gateway-coding_lead",
+            "hermes-gateway-researcher",
+        ]
+        restarted: list[str] = []
+
+        deferred = _for_each_systemd_gateway_unit(
+            _list_units_stdout(units),
+            process_unit=restarted.append,
+            on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
+            defer_unit="hermes-gateway-coding_lead",
+        )
+
+        assert restarted == [
+            "hermes-gateway-default",
+            "hermes-gateway-researcher",
+        ]
+        assert deferred == ["hermes-gateway-coding_lead"]
+
     def test_timeout_on_middle_unit_continues_remaining_units(self):
         units = [
             "hermes-gateway-xiaomo1",

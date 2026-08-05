@@ -86,6 +86,7 @@ export function SearchableSelect({
   const normalizedOptions = options.map(option =>
     typeof option === 'string' ? { label: option, value: option } : option
   )
+
   const selectedOption = normalizedOptions.find(option => option.value === value)
   const displayValue = value !== '' && value !== undefined ? (selectedOption?.label ?? value) : placeholder
 

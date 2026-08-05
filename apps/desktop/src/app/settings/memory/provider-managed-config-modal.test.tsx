@@ -122,7 +122,7 @@ async function renderModal(config = schema(), profile: null | string = null) {
   const onOpenChange = vi.fn()
   const onSaved = vi.fn().mockResolvedValue(undefined)
 
-  render(
+  const { baseElement } = render(
     <ProviderManagedConfigModal
       config={config}
       onOpenChange={onOpenChange}
@@ -133,7 +133,7 @@ async function renderModal(config = schema(), profile: null | string = null) {
     />
   )
 
-  return { onOpenChange, onSaved }
+  return { baseElement, onOpenChange, onSaved }
 }
 
 beforeEach(() => {
@@ -170,16 +170,16 @@ describe('ProviderManagedConfigModal', () => {
   })
 
   it('shows which dynamic profile configuration is selected', async () => {
-    await renderModal()
+    const { baseElement } = await renderModal()
 
     fireEvent.click(screen.getByRole('button', { name: 'Existing Profiles' }))
 
     expect(await screen.findByText('https://memory.example (/tmp/provider.conf)')).toBeTruthy()
-    expect(document.querySelector('[data-slot="searchable-select-trigger"]')).not.toBeNull()
+    expect(baseElement.querySelector('[data-slot="searchable-select-trigger"]')).not.toBeNull()
     fireEvent.click(screen.getByRole('combobox'))
     expect(screen.getByPlaceholderText('Search profiles...')).toBeTruthy()
-    expect(document.querySelector('[data-slot="dialog-content"]')?.className).toContain('overflow-visible')
-    expect(document.querySelector('[data-slot="provider-managed-config-scroll"]')?.className).toContain(
+    expect(baseElement.querySelector('[data-slot="dialog-content"]')?.className).not.toContain('overflow-hidden')
+    expect(baseElement.querySelector('[data-slot="provider-managed-config-scroll"]')?.className).toContain(
       'overflow-y-auto'
     )
   })

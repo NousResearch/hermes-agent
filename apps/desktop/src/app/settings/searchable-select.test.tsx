@@ -110,16 +110,7 @@ describe('SearchableSelect', () => {
   })
 
   it('forwards form accessibility state to the trigger', () => {
-    render(
-      <SearchableSelect
-        id="profile-path"
-        invalid
-        onChange={vi.fn()}
-        options={options}
-        required
-        value="UTC"
-      />
-    )
+    render(<SearchableSelect id="profile-path" invalid onChange={vi.fn()} options={options} required value="UTC" />)
 
     const trigger = screen.getByRole('combobox')
     expect(trigger.id).toBe('profile-path')

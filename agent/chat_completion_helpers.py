@@ -647,6 +647,7 @@ def direct_api_call(agent, api_kwargs: dict):
         return response
     finally:
         activity_hb_stop.set()
+        activity_hb.join(timeout=2.0)
         if getattr(agent, "_active_request_abort", None) is _abort_active_request:
             agent._active_request_abort = None
         with request_client_lock:

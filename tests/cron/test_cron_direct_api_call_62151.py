@@ -128,3 +128,42 @@ def test_direct_api_call_keeps_activity_alive_during_slow_wait(monkeypatch):
         call.args[0] == "waiting for non-streaming API response"
         for call in agent._touch_activity.call_args_list
     )
+
+
+def test_direct_api_call_heartbeat_stops_on_exception(monkeypatch):
+    """The activity heartbeat thread must be joined on error paths so no
+    stray _touch_activity fires after the call has failed.
+    """
+    import threading
+    import time
+
+    from agent import chat_completion_helpers as helpers
+
+    monkeypatch.setattr(helpers, "_DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS", 0.05)
+
+    agent = _make_agent(platform="subagent")
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.side_effect = RuntimeError("provider down")
+    agent._create_request_openai_client.return_value = fake_client
+
+    raised = threading.Event()
+
+    def _runner():
+        try:
+            direct_api_call(agent, {"model": "m", "messages": []})
+        except RuntimeError:
+            raised.set()
+
+    worker = threading.Thread(target=_runner, daemon=True)
+    worker.start()
+    worker.join(timeout=3.0)
+
+    assert raised.is_set(), "expected RuntimeError from direct_api_call"
+    # Give any stray heartbeat a chance to fire after the call returned.
+    time.sleep(0.2)
+    touches_before = agent._touch_activity.call_count
+    time.sleep(0.2)
+    touches_after = agent._touch_activity.call_count
+    assert touches_after == touches_before, (
+        "heartbeat thread still firing after direct_api_call raised"
+    )

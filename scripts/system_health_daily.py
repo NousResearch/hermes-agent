@@ -410,12 +410,16 @@ def check_kanban() -> dict | None:
     if _DRY_RUN:
         return None  # dry-run: skip _board_compat (hermes_cli import chain)
     # W1-G (Batch 1): board DB identities resolved via _board_compat.
-    import _board_compat
-    # Normalise the compatibility boundary so Path methods remain safe even if
-    # an older/custom resolver supplies string paths.
-    raw_boards = _board_compat.build_board_db_map([
-        "ops", "research", "apps", "content-lead", "default",
-    ])
+    # Graceful degradation: in a bare no-agent bundle without the repo on
+    # sys.path, hermes_cli is unavailable inside _board_compat — skip the
+    # board checks rather than crash (ModuleNotFoundError is an ImportError).
+    try:
+        import _board_compat
+        raw_boards = _board_compat.build_board_db_map([
+            "ops", "research", "apps", "content-lead", "default",
+        ])
+    except ImportError:
+        return None
     boards: dict[str, Path] = {}
     for slug, configured_path in raw_boards.items():
         if configured_path is None or (
@@ -480,9 +484,15 @@ def check_wfa_live() -> dict | None:
     if _DRY_RUN:
         return None  # dry-run: skip _board_compat (hermes_cli import chain)
     # W1-G (Batch 1): board DB identities resolved via _board_compat.
-    import _board_compat
-    _wfa_slugs = ["default", "ops", "research", "apps", "content-lead"]
-    dbs = [(s, _board_compat.resolve_board_db(s)) for s in _wfa_slugs]
+    # Graceful degradation: in a bare no-agent bundle without the repo on
+    # sys.path, hermes_cli is unavailable inside _board_compat — skip the
+    # WFA checks rather than crash (ModuleNotFoundError is an ImportError).
+    try:
+        import _board_compat
+        _wfa_slugs = ["default", "ops", "research", "apps", "content-lead"]
+        dbs = [(s, _board_compat.resolve_board_db(s)) for s in _wfa_slugs]
+    except ImportError:
+        return None
 
     live_findings = []
     for board, db_path in dbs:

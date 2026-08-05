@@ -3287,6 +3287,16 @@ async def get_health():
     }
 
 
+_PROFILE_PLATFORM_STATUS_KEY_RE = re.compile(
+    r"^[a-z0-9][a-z0-9_-]{0,63}:[a-z][a-z0-9_]{0,63}$"
+)
+
+
+def _is_profile_platform_status_key(key: object) -> bool:
+    """Accept only the runner's public ``<profile>:<platform>`` key grammar."""
+    return isinstance(key, str) and bool(_PROFILE_PLATFORM_STATUS_KEY_RE.fullmatch(key))
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -3389,7 +3399,14 @@ async def get_status(profile: Optional[str] = None):
                 gateway_platforms = {
                     key: value
                     for key, value in gateway_platforms.items()
+                    # Namespaced entries are emitted by configured secondary-
+                    # profile adapters. The config set here belongs to the
+                    # active/default profile, so suffix-checking against it
+                    # would incorrectly hide secondary-only platforms. Keep
+                    # the accepted grammar narrow because this public endpoint
+                    # is projecting a process-local JSON file.
                     if key in configured_gateway_platforms
+                    or _is_profile_platform_status_key(key)
                 }
             gateway_exit_reason = runtime.get("exit_reason")
             # Contract: gateway_updated_at is RFC3339 string | null, never a

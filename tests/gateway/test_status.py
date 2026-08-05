@@ -171,6 +171,69 @@ class TestGatewayPidState:
 
 
 class TestGatewayRuntimeStatus:
+    def test_clear_profile_platforms_preserves_primary_entries(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({
+                "platforms": {
+                    "telegram": {"state": "connected"},
+                    "reviewer:discord": {
+                        "state": "fatal",
+                        "error_code": "duplicate_credential",
+                    },
+                }
+            }),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(clear_profile_platforms=True)
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"] == {"telegram": {"state": "connected"}}
+
+    def test_clear_profile_platforms_and_write_are_one_atomic_update(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({
+                "platforms": {
+                    "old:discord": {"state": "fatal"},
+                    "telegram": {"state": "connected"},
+                }
+            }),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(
+            platform="reviewer:slack",
+            platform_state="connected",
+            clear_profile_platforms=True,
+        )
+
+        assert status.read_runtime_status()["platforms"] == {
+            "telegram": {"state": "connected"},
+            "reviewer:slack": {
+                "state": "connected",
+                "updated_at": status.read_runtime_status()["platforms"][
+                    "reviewer:slack"
+                ]["updated_at"],
+            },
+        }
+
+    def test_clear_profile_platforms_repairs_malformed_platforms(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps({"platforms": ["not", "a", "mapping"]}),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(clear_profile_platforms=True)
+
+        assert status.read_runtime_status()["platforms"] == {}
+
 
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):
         """Regression: setdefault() preserved stale PID from previous process (#1631)."""

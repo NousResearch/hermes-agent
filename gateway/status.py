@@ -1048,6 +1048,7 @@ def write_runtime_status(
     needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET,
     served_profiles: Any = _UNSET,
+    clear_profile_platforms: bool = False,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
@@ -1055,6 +1056,20 @@ def write_runtime_status(
     previous_payload = copy.deepcopy(payload)
     current_record = _build_pid_record()
     payload.setdefault("platforms", {})
+    if clear_profile_platforms:
+        # Secondary-profile adapter health is stored in the process-level
+        # status file as ``<profile>:<platform>``.  A fresh gateway process
+        # must not inherit those entries from the prior process: they would
+        # otherwise keep /api/status degraded until every old adapter emitted
+        # a new state (and removed profiles would remain degraded forever).
+        platforms = payload["platforms"]
+        if not isinstance(platforms, dict):
+            platforms = {}
+        payload["platforms"] = {
+            key: value
+            for key, value in platforms.items()
+            if not isinstance(key, str) or ":" not in key
+        }
     payload["kind"] = current_record["kind"]
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]

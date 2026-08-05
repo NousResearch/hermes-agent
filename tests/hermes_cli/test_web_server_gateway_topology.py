@@ -131,6 +131,59 @@ class TestStatusEndpointTopology:
         # The per-gateway detail (host ports) is loopback-only recon.
         assert data["gateways"] == [{"profile": "default", "ports": {}}]
 
+    def test_status_preserves_secondary_profile_platform_errors(self, monkeypatch):
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 123)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda path=None: {
+                "gateway_state": "running",
+                "platforms": {
+                    "telegram": {"state": "connected"},
+                    "reviewer:discord": {
+                        "state": "fatal",
+                        "error_code": "duplicate_credential",
+                        "error_message": "Profiles configure the same credential",
+                    },
+                },
+            },
+        )
+        monkeypatch.setattr(
+            web_server,
+            "_load_configured_gateway_platforms",
+            lambda: {"telegram"},
+        )
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        platforms = resp.json()["gateway_platforms"]
+        assert platforms["telegram"]["state"] == "connected"
+        assert platforms["reviewer:discord"]["error_code"] == "duplicate_credential"
+
+    def test_status_rejects_malformed_namespaced_platform_key(self, monkeypatch):
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 123)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda path=None: {
+                "gateway_state": "running",
+                "platforms": {
+                    "reviewer:discord:../../secret": {"state": "fatal"},
+                },
+            },
+        )
+        monkeypatch.setattr(
+            web_server,
+            "_load_configured_gateway_platforms",
+            lambda: {"telegram"},
+        )
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert "reviewer:discord:../../secret" not in resp.json()["gateway_platforms"]
+
     def test_profile_names_and_mode_public_when_auth_gated(self, monkeypatch):
         # Profile NAMES + gateway_mode are low-sensitivity product surface: the
         # Hermes Cloud Portal reads /api/status over the network (a gated bind)

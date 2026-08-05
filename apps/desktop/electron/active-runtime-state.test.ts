@@ -20,7 +20,7 @@ test('hasValidBootstrapMarker rejects missing, wrong-schema, and too-short marke
 })
 
 test('classifyActiveRuntime uses a healthy active runtime even when the bootstrap marker is missing', () => {
-  assert.deepEqual(classifyActiveRuntime(null, 1, true), {
+  assert.deepEqual(classifyActiveRuntime(null, 1, 'usable'), {
     hasValidMarker: false,
     shouldUseActiveRuntime: true,
     usabilityReason: 'usable'
@@ -28,7 +28,7 @@ test('classifyActiveRuntime uses a healthy active runtime even when the bootstra
 })
 
 test('classifyActiveRuntime uses a healthy active runtime even when the marker is stale or malformed', () => {
-  assert.deepEqual(classifyActiveRuntime({ schemaVersion: 999, pinnedCommit: 'abc1234' }, 1, true), {
+  assert.deepEqual(classifyActiveRuntime({ schemaVersion: 999, pinnedCommit: 'abc1234' }, 1, 'usable'), {
     hasValidMarker: false,
     shouldUseActiveRuntime: true,
     usabilityReason: 'usable'
@@ -36,10 +36,18 @@ test('classifyActiveRuntime uses a healthy active runtime even when the marker i
 })
 
 test('classifyActiveRuntime refuses an unusable runtime even if a valid marker exists', () => {
-  assert.deepEqual(classifyActiveRuntime(VALID_MARKER, 1, false), {
+  assert.deepEqual(classifyActiveRuntime(VALID_MARKER, 1, 'unusable'), {
     hasValidMarker: true,
     shouldUseActiveRuntime: false,
     usabilityReason: 'unusable'
+  })
+})
+
+test('classifyActiveRuntime keeps an existing install on the local-runtime path when the probe only times out', () => {
+  assert.deepEqual(classifyActiveRuntime(VALID_MARKER, 1, 'probe-timeout'), {
+    hasValidMarker: true,
+    shouldUseActiveRuntime: true,
+    usabilityReason: 'probe-timeout'
   })
 })
 
@@ -47,7 +55,7 @@ test('a CLI-installed runtime with no marker launches instead of re-running boot
   // The reported symptom (#60721): install.sh / install.ps1 produced a healthy
   // repo+venv, no desktop-managed marker was ever written, and every launch
   // dropped the user back into the first-run installer.
-  const state = classifyActiveRuntime(null, 1, true)
+  const state = classifyActiveRuntime(null, 1, 'usable')
 
   assert.equal(state.shouldUseActiveRuntime, true, 'a usable runtime must launch')
   assert.equal(state.hasValidMarker, false, 'marker provenance stays honest')
@@ -56,5 +64,5 @@ test('a CLI-installed runtime with no marker launches instead of re-running boot
 test('a repair that deleted the marker does not strand a healthy install', () => {
   // #72166: the repair handler clears the marker unconditionally. Runtime
   // usability, not marker presence, must decide the next boot.
-  assert.equal(classifyActiveRuntime(null, 1, true).shouldUseActiveRuntime, true)
+  assert.equal(classifyActiveRuntime(null, 1, 'usable').shouldUseActiveRuntime, true)
 })

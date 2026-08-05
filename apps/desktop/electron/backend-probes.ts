@@ -35,6 +35,8 @@
 
 import { execFileSync } from 'node:child_process'
 
+type ProbeStatus = 'success' | 'timeout' | 'failure'
+
 /** Default probe budget. 5s false-negativeed healthy Windows cold starts (#61764). */
 const DEFAULT_PROBE_TIMEOUT_MS = 15_000
 
@@ -84,6 +86,38 @@ function isTimeoutError(err: unknown): boolean {
   return false
 }
 
+function execProbeStatus(
+  command: string,
+  args: string[],
+  options: {
+    cwd?: string
+    env?: NodeJS.ProcessEnv
+    stdio: 'ignore'
+    timeout: number
+    shell?: boolean
+    windowsHide?: boolean
+  }
+): ProbeStatus {
+  try {
+    execFileSync(command, args, options)
+
+    return 'success'
+  } catch (err) {
+    if (!isTimeoutError(err)) {
+      return 'failure'
+    }
+  }
+
+  // One cold-cache / AV miss should not force hermes-setup --update (#61764).
+  try {
+    execFileSync(command, args, options)
+
+    return 'success'
+  } catch (err) {
+    return isTimeoutError(err) ? 'timeout' : 'failure'
+  }
+}
+
 /**
  * Run execFileSync; on timeout only, retry once before failing.
  * Non-timeout failures (ENOENT, non-zero exit) fail immediately.
@@ -102,14 +136,16 @@ function execProbeSync(
 ): void {
   try {
     execFileSync(command, args, options)
+
+    return
   } catch (err) {
     if (!isTimeoutError(err)) {
       throw err
     }
-
-    // One cold-cache / AV miss should not force hermes-setup --update (#61764).
-    execFileSync(command, args, options)
   }
+
+  // One cold-cache / AV miss should not force hermes-setup --update (#61764).
+  execFileSync(command, args, options)
 }
 
 /**
@@ -121,6 +157,19 @@ function execProbeSync(
  */
 function hermesRuntimeImportProbe() {
   return 'import yaml; import dotenv; import hermes_cli.config'
+}
+
+function probeHermesCliImportStatus(pythonPath: string, opts: { env?: Record<string, string> } = {}): ProbeStatus {
+  if (!pythonPath) {
+    return 'failure'
+  }
+
+  return execProbeStatus(pythonPath, ['-c', hermesRuntimeImportProbe()], {
+    env: { ...process.env, ...(opts.env || {}) },
+    stdio: 'ignore',
+    timeout: PROBE_TIMEOUT_MS,
+    windowsHide: true
+  })
 }
 
 /**
@@ -142,19 +191,8 @@ function hermesRuntimeImportProbe() {
  * @returns {boolean}
  */
 function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, string> } = {}) {
-  if (!pythonPath) {
-    return false
-  }
-
   try {
-    execProbeSync(pythonPath, ['-c', hermesRuntimeImportProbe()], {
-      env: { ...process.env, ...(opts.env || {}) },
-      stdio: 'ignore',
-      timeout: PROBE_TIMEOUT_MS,
-      windowsHide: true
-    })
-
-    return true
+    return probeHermesCliImportStatus(pythonPath, opts) === 'success'
   } catch {
     return false
   }
@@ -190,20 +228,22 @@ function shouldTrustHermesOverride(hermesOverride?: string) {
   return typeof hermesOverride === 'string' && hermesOverride.trim().length > 0
 }
 
-function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
+function probeHermesCliStatus(hermesCommand: string, opts?: { shell?: boolean }): ProbeStatus {
   if (!hermesCommand) {
-    return false
+    return 'failure'
   }
 
-  try {
-    execProbeSync(hermesCommand, ['--version'], {
-      stdio: 'ignore',
-      timeout: PROBE_TIMEOUT_MS,
-      shell: Boolean(opts?.shell),
-      windowsHide: true
-    })
+  return execProbeStatus(hermesCommand, ['--version'], {
+    stdio: 'ignore',
+    timeout: PROBE_TIMEOUT_MS,
+    shell: Boolean(opts?.shell),
+    windowsHide: true
+  })
+}
 
-    return true
+function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
+  try {
+    return probeHermesCliStatus(hermesCommand, opts) === 'success'
   } catch {
     return false
   }
@@ -212,9 +252,12 @@ function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
 export {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
+  execProbeStatus,
   execProbeSync,
   hermesRuntimeImportProbe,
   PROBE_TIMEOUT_MS,
+  probeHermesCliImportStatus,
+  probeHermesCliStatus,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,
   verifyHermesCli

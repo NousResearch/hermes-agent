@@ -8243,8 +8243,29 @@ def _refresh_nous_auxiliary_client(
     api_mode: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    lookup_model: Optional[str] = None,
+    lookup_task: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
-    """Refresh Nous runtime creds, rebuild the client, and replace the cache entry."""
+    """Refresh Nous runtime creds, rebuild the client, and replace the cache entry.
+
+    ``model`` is the resolved model actually sent on the wire (e.g. the provider
+    default ``"Hermes-4-405B"``); it is stored as the entry's usable model and
+    returned to the caller. ``lookup_model`` is the model as it was passed to
+    ``_get_cached_client`` when the (now stale) client was acquired -- ``None``
+    on the default Nous config, where ``call_llm`` looks up with
+    ``resolved_model=None``. The cache KEY MUST be built from ``lookup_model`` so
+    the fresh client overwrites the exact entry the stale client is served from.
+    Keying on the resolved ``model`` instead stored under a different key (model
+    element ``"Hermes-4-405B"`` vs the lookup's ``""``), leaving the expired
+    client immortal so every auxiliary call 401s forever (#56889).
+
+    ``lookup_task`` is the task the stale client was acquired under. For
+    ``provider == "auto"`` the task participates in the cache key (task-specific
+    fallback policy), so it MUST be carried into the key here for the same
+    reason as ``lookup_model``; otherwise an auto-provider client refreshed on a
+    401 lands under the ``task=""`` key while the stale entry survives under the
+    task-scoped key (#58894).
+    """
     runtime = _resolve_nous_runtime_api(force_refresh=True)
     if runtime is None:
         return None, model
@@ -8272,7 +8293,8 @@ def _refresh_nous_auxiliary_client(
         api_mode=api_mode,
         main_runtime=main_runtime,
         is_vision=is_vision,
-        model=final_model,
+        task=lookup_task,
+        model=lookup_model,
     )
     _store_cached_client(cache_key, client, final_model, bound_loop=current_loop)
     return client, final_model
@@ -10800,6 +10822,8 @@ def _call_llm_impl(
             refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
                 cache_provider=resolved_provider or "nous",
                 model=final_model,
+                lookup_model=resolved_model,
+                lookup_task=task,
                 async_mode=False,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
@@ -10836,6 +10860,8 @@ def _call_llm_impl(
             refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
                 cache_provider=resolved_provider or "nous",
                 model=final_model,
+                lookup_model=resolved_model,
+                lookup_task=task,
                 async_mode=False,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
@@ -11596,10 +11622,13 @@ async def _async_call_llm_impl(
             refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
                 cache_provider=resolved_provider or "nous",
                 model=final_model,
+                lookup_model=resolved_model,
+                lookup_task=task,
                 async_mode=True,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
                 api_mode=resolved_api_mode,
+                main_runtime=main_runtime,
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
@@ -11631,10 +11660,13 @@ async def _async_call_llm_impl(
             refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
                 cache_provider=resolved_provider or "nous",
                 model=final_model,
+                lookup_model=resolved_model,
+                lookup_task=task,
                 async_mode=True,
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
                 api_mode=resolved_api_mode,
+                main_runtime=main_runtime,
                 is_vision=(task == "vision"),
             )
             if refreshed_client is not None:

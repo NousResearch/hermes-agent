@@ -261,7 +261,7 @@ export function ProviderManagedConfigModal({
   return (
     <>
       <Dialog onOpenChange={value => !busy && onOpenChange(value)} open={open}>
-        <DialogContent className="max-w-2xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-visible">
+        <DialogContent bodyClassName="grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden" className="max-w-2xl">
           <DialogHeader>
             <DialogTitle icon={SlidersHorizontal}>Configure {config.label}</DialogTitle>
           </DialogHeader>

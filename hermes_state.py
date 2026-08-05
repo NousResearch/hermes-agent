@@ -6863,7 +6863,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return cursor.fetchone() is not None
 
     def archive_and_compact(
-        self, session_id: str, compacted_messages: List[Dict[str, Any]]
+        self,
+        session_id: str,
+        compacted_messages: List[Dict[str, Any]],
+        model_config_patch: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Non-destructive in-place compaction for a single durable session id.
 
@@ -6886,10 +6889,38 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         This is the durability-preserving alternative to :meth:`replace_messages`
         for compaction. ``message_count`` is set to the ACTIVE (compacted) count,
-        matching what the live load returns. Returns the new active count.
+        matching what the live load returns. ``model_config_patch`` is merged
+        into the session's JSON config in the same transaction; a ``None``
+        value removes that key. Returns the new active count.
         """
 
         def _do(conn):
+            patched_model_config = None
+            if model_config_patch is not None:
+                row = conn.execute(
+                    "SELECT model_config FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"Session not found: {session_id}")
+                raw = row["model_config"] if isinstance(row, sqlite3.Row) else row[0]
+                config: Dict[str, Any] = {}
+                if isinstance(raw, str) and raw.strip():
+                    try:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, dict):
+                            config = parsed
+                    except (json.JSONDecodeError, TypeError):
+                        config = {}
+                elif isinstance(raw, dict):
+                    config = dict(raw)
+                for key, value in model_config_patch.items():
+                    if value is None:
+                        config.pop(key, None)
+                    else:
+                        config[key] = value
+                patched_model_config = json.dumps(config) if config else None
+
             # Soft-archive the live turns: active=0 hides them from the live
             # context load, compacted=1 marks them as "summarized away" (vs
             # rewind/undo's active=0+compacted=0, which means "user took it
@@ -6906,10 +6937,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             # message_count / tool_call_count reflect the LIVE (active) set —
             # the archived rows are still on disk but not part of the live count.
-            conn.execute(
-                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
-                (inserted, tool_calls_total, session_id),
-            )
+            if model_config_patch is None:
+                conn.execute(
+                    "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                    (inserted, tool_calls_total, session_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE sessions SET message_count = ?, tool_call_count = ?, "
+                    "model_config = ? WHERE id = ?",
+                    (inserted, tool_calls_total, patched_model_config, session_id),
+                )
             return inserted
 
         return self._execute_write(_do)

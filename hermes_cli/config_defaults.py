@@ -610,10 +610,10 @@ DEFAULT_CONFIG = {
                                       # itself be re-summarized.
         "proactive_prune_min_reclaim_tokens": 4096,  # a proactive prune only commits
                                       # when it reclaims at least this many tokens
-                                      # (measured on the pruned output). Keeps
-                                      # prompt-cache invalidation amortized: one big
-                                      # episodic break instead of a tiny break every
-                                      # tool iteration. 0 = commit any non-zero prune.
+                                      # (measured on the pruned output), then waits
+                                      # for a full trigger-sized token runway to
+                                      # regrow before rearming. Keeps prompt-cache
+                                      # breaks episodic. 0 = no minimum-savings gate.
         "micro_compact": False,       # opt-in: after each completed turn, fold the
                                       # oldest un-absorbed exchange into a rolling
                                       # summary, amortizing compression cost instead

@@ -96,27 +96,53 @@ APPROVAL_PROMPT_TTL_FALLBACK_SECONDS = 300.0
 # headroom and a slow daemon double-posts the approval.
 ANCHORED_SEND_TIMEOUT_SECONDS = 10.0
 
-# Reaction vocabulary for dangerous-command approvals: (emoji, choice, label).
-# Legend text and the pre-seeded emoji are both generated from this tuple so
-# the bot can never advertise a reaction it does not seed.
+# Tap targets the bot places on its own approval prompt, in seeding order:
+# (emoji, choice, label).
+#
+# Exactly three, because simplex-chat holds at most three reactions per
+# sender per item — measured against v7.0.0.11, where seeding a fourth comes
+# back as ``commandError: "too many reactions"``. It is a count cap, not an
+# emoji filter (removing one frees a slot), and it is per *sender*, so a user
+# can always still add their own reaction to an item the bot has filled.
+#
+# Deny is first on purpose: whichever target is seeded last is the one a cap
+# drops, and "I refuse" is the choice a security prompt must never lose.
 #
 # The emoji are NOT the Matrix adapter's ✅/🌀/♾️/❌ set. The simplex-chat
 # daemon validates reaction emoji against a fixed list (``mrEmojiChar`` in
 # ``src/Simplex/Chat/Protocol.hs`` accepts only 👍👎😀😂😢❤🚀✅ and rejects
 # everything else), so 🌀/♾️/❌ would come back as command errors.
 _APPROVAL_CHOICES: Tuple[Tuple[str, str, str], ...] = (
+    ("👎", "deny", "deny"),
     ("✅", "once", "approve once"),
     ("🚀", "session", "approve for this session"),
-    ("❤", "always", "approve always"),
-    ("👎", "deny", "deny"),
 )
 
 _APPROVAL_REACTION_MAP: Dict[str, str] = {
     emoji: choice for emoji, choice, _label in _APPROVAL_CHOICES
 }
-# 👍 is not seeded (it would crowd the legend) but it is what people reach for
-# first, and the gateway already reads a typed 👍 as approval.
+# 👍 is not seeded but it is what people reach for first, and the gateway
+# already reads a typed 👍 as approval.
 _APPROVAL_REACTION_MAP["👍"] = "once"
+# ❤ is approve-*always*, and it is deliberately typed-only: it writes a
+# permanent, global, on-disk allowlist entry, which is the most consequential
+# thing this prompt can do. A deliberate ``/approve always`` is the right cost
+# for that tier, and it keeps the three tap slots for the tiers that are
+# scoped to the moment. Still honoured inbound, so a user who places ❤ by hand
+# gets what they asked for.
+_APPROVAL_REACTION_MAP["❤"] = "always"
+
+# Outcomes of asking the daemon to place or remove one of our reactions.
+_REACTION_ACCEPTED = "accepted"
+_REACTION_REJECTED = "rejected"
+_REACTION_CAPPED = "capped"
+_REACTION_NO_ANSWER = "no-answer"
+
+# What the daemon says when a sender already holds its maximum reactions on
+# an item. Matched on the message text rather than a decoded error shape
+# because the error envelope varies between daemon versions, and mistaking a
+# cap for a refusal would drop the whole reaction lane.
+_REACTION_CAP_MARKER = "too many reactions"
 
 _APPROVAL_ACK: Dict[str, str] = {
     "once": "✅ Approved — running this once.",
@@ -142,6 +168,21 @@ def _normalize_reaction_emoji(emoji: str) -> str:
     for selector in _VARIATION_SELECTORS:
         out = out.replace(selector, "")
     return out
+
+
+def _is_reaction_cap_error(resp: dict) -> bool:
+    """True when a ``chatCmdError`` is the daemon's per-sender reaction cap.
+
+    "You already hold three reactions here" and "this daemon refuses your
+    reactions" arrive as the same response type and mean opposite things —
+    one is a full slot, the other is the feature being unavailable — so they
+    must not share an outcome.
+    """
+    try:
+        blob = json.dumps(resp.get("chatError") or resp, ensure_ascii=False)
+    except (TypeError, ValueError):
+        blob = str(resp)
+    return _REACTION_CAP_MARKER in blob.lower()
 
 
 def _approval_prompt_ttl() -> float:
@@ -1186,13 +1227,15 @@ class SimplexAdapter(BasePlatformAdapter):
         emoji: str,
         *,
         add: bool = True,
-    ) -> Optional[bool]:
+    ) -> str:
         """Add or remove one of the bot's own reactions on a chat item.
 
-        Returns True when the daemon accepted the reaction, False when it
-        answered with an explicit command error (the feature-detection
-        signal), and None when nothing came back — inconclusive, and
-        deliberately not treated as "reactions unsupported".
+        Returns one of :data:`_REACTION_ACCEPTED`, :data:`_REACTION_CAPPED`
+        (the sender already holds the daemon's maximum on this item),
+        :data:`_REACTION_REJECTED` (an explicit command error — the
+        feature-detection signal) or :data:`_REACTION_NO_ANSWER` (nothing
+        came back: inconclusive, and deliberately not read as "reactions
+        unsupported").
         """
         reaction = json.dumps({"type": "emoji", "emoji": emoji}, ensure_ascii=False)
         toggle = "on" if add else "off"
@@ -1200,71 +1243,81 @@ class SimplexAdapter(BasePlatformAdapter):
             f"/_reaction {chat_ref} {item_id} {toggle} {reaction}", timeout=10.0
         )
         if resp is None:
-            return None
+            return _REACTION_NO_ANSWER
         if resp.get("type") == "chatCmdError":
+            if _is_reaction_cap_error(resp):
+                return _REACTION_CAPPED
             logger.info(
                 "SimpleX: daemon rejected reaction %s on item %s", emoji, item_id
             )
-            return False
-        return True
+            return _REACTION_REJECTED
+        return _REACTION_ACCEPTED
 
     @staticmethod
-    def _approval_choices(
+    def _approval_tiers(
         allow_permanent: bool,
         allow_session: bool,
         smart_denied: bool,
-    ) -> Tuple[Tuple[str, str, str], ...]:
-        """Select the reaction tiers this particular approval actually offers.
+    ) -> frozenset:
+        """The approval tiers this particular request actually offers.
 
         A smart-DENY owner override is one operation only — ``tools/approval``
         collapses any wider choice back to a single run — so the prompt must
         not offer session or permanent scope for it.
         """
         if smart_denied or not allow_session:
-            offered = {"once", "deny"}
-        elif not allow_permanent:
-            offered = {"once", "session", "deny"}
-        else:
-            offered = {"once", "session", "always", "deny"}
-        return tuple(c for c in _APPROVAL_CHOICES if c[1] in offered)
+            return frozenset({"once", "deny"})
+        if not allow_permanent:
+            return frozenset({"once", "session", "deny"})
+        return frozenset({"once", "session", "always", "deny"})
+
+    @staticmethod
+    def _seed_plan(tiers: frozenset) -> Tuple[Tuple[str, str, str], ...]:
+        """Tap targets to place, in order, for an approval offering *tiers*.
+
+        Always a subset of the three seedable choices: ``always`` has no tap
+        target at all, so an approval that offers it still seeds three.
+        """
+        return tuple(c for c in _APPROVAL_CHOICES if c[1] in tiers)
 
     def _format_simplex_exec_approval(
         self,
         command: str,
         description: str,
         smart_denied: bool,
-        choices: Tuple[Tuple[str, str, str], ...],
-        *,
-        show_legend: bool,
+        tiers: frozenset,
     ) -> str:
-        """Compose the approval prompt: shared core, typed commands, legend.
+        """Compose the approval prompt: shared core plus the typed commands.
 
-        *choices* is always the full set of tiers this approval offers — the
-        typed instructions must list them whether or not a tap lane exists.
-        *show_legend* is what adds the reaction legend on top.
+        *tiers* is the full set this approval offers; the typed instructions
+        list every one of them on every path, because typing is the lane that
+        always works. The reaction legend is not here — it is sent afterwards
+        from the taps that were actually placed (see
+        :meth:`_seed_approval_reactions`), so the prompt cannot advertise a
+        tap the user never received.
         """
         prefix = self.typed_command_prefix
-        offered = {choice for _emoji, choice, _label in choices}
         scope = ""
         if not smart_denied:
-            if "session" in offered:
+            if "session" in tiers:
                 scope += (
                     f"Reply `{prefix}approve session` to approve this pattern "
                     "for the session, "
                 )
-            if "always" in offered:
+            if "always" in tiers:
                 scope += f"`{prefix}approve always` to approve permanently, "
-        text = (
+        return (
             f"{self._format_exec_approval(command, description, smart_denied)}\n\n"
             f"{scope}Reply `{prefix}approve` to execute once, or "
             f"`{prefix}deny` to cancel."
         )
-        if show_legend and choices:
-            legend = "\n".join(
-                f"{emoji} = {label}" for emoji, _choice, label in choices
-            )
-            text += "\n\nOr tap a reaction on this message:\n" + legend
-        return text
+
+    @staticmethod
+    def _format_tap_legend(landed: List[str]) -> str:
+        """Explain the taps that are actually on the message, and only those."""
+        labels = {emoji: label for emoji, _choice, label in _APPROVAL_CHOICES}
+        legend = "\n".join(f"{emoji} = {labels[emoji]}" for emoji in landed)
+        return "Or tap a reaction on the message above:\n" + legend
 
     async def send_exec_approval(
         self,
@@ -1298,7 +1351,7 @@ class SimplexAdapter(BasePlatformAdapter):
         *command* arrives already credential-redacted from ``gateway/run.py``
         — do not re-redact it and do not log it.
         """
-        choices = self._approval_choices(allow_permanent, allow_session, smart_denied)
+        tiers = self._approval_tiers(allow_permanent, allow_session, smart_denied)
 
         # Housekeeping first, and before any early return: prompts nobody
         # ever answered would otherwise accumulate for the life of the
@@ -1346,10 +1399,12 @@ class SimplexAdapter(BasePlatformAdapter):
             seed = reaction_lane and self._reactions_supported is not False
 
             text = self._format_simplex_exec_approval(
-                command, description, smart_denied, choices, show_legend=seed
+                command, description, smart_denied, tiers
             )
             if not reaction_lane:
-                return await self.send(chat_id, text, metadata=metadata)
+                return await self._send_approval_message(
+                    chat_id, text, metadata=metadata
+                )
 
             item_id, delivered = await self._send_anchored_text(str(chat_ref), text)
             if not delivered:
@@ -1369,7 +1424,7 @@ class SimplexAdapter(BasePlatformAdapter):
                 chat_id=chat_id,
                 chat_ref=str(chat_ref),
                 item_id=item_id,
-                choices=frozenset(choice for _emoji, choice, _label in choices),
+                choices=tiers,
                 expires_at=time.monotonic() + _approval_prompt_ttl(),
             )
             self._approval_prompts_by_item[item_id] = prompt
@@ -1381,14 +1436,50 @@ class SimplexAdapter(BasePlatformAdapter):
                 # reply, and gateway/run.py only allows send_exec_approval 15
                 # seconds before it abandons the button lane. Prompt state is
                 # already registered, so a reaction that beats the seeding
-                # still correlates.
+                # still correlates. The legend follows from the same task,
+                # once there is a placed-taps list to describe.
                 self._spawn_background(
-                    self._seed_approval_reactions(prompt, choices)
+                    self._seed_approval_reactions(prompt, self._seed_plan(tiers))
                 )
             return SendResult(success=True, message_id=item_id)
         finally:
             if not registered:
                 self._mark_session_typed_only(session_key)
+
+    async def _send_approval_message(
+        self,
+        chat_id: str,
+        text: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an approval-flow message via the structured ``/_send`` form.
+
+        Every notice this feature emits — the prompt itself on the typed
+        path, the tap legend, the acknowledgement, superseded, expired,
+        no-longer-pending and unusable-reaction replies — goes out through
+        here rather than through :meth:`send`.
+
+        :meth:`send` composes a DM as ``@<chat_id> <text>``, and the daemon
+        parses ``@x`` as a *display-name* lookup: on any contact whose
+        display name is not literally its numeric id it answers
+        ``contactNotFound`` and nothing reaches the chat, while the send
+        still reports success. (Verified against simplex-chat v7.0.0.11:
+        ``@3 hi`` → ``chatCmdError/contactNotFound``, the structured form →
+        ``newChatItems``. The media paths already use the structured form;
+        only DM text is affected. That is a separate bug in ``send`` and is
+        not fixed here.) A user who taps ✅ and sees no reply reads the tap
+        as broken, so the approval flow must not depend on that branch.
+
+        Chats with no numeric ``ChatRef`` — DMs addressed by display name —
+        fall back to :meth:`send`, which is the form that addresses them
+        correctly.
+        """
+        chat_ref = self._chat_ref(chat_id)
+        if not chat_ref:
+            return await self.send(chat_id, text, metadata=metadata)
+        composed = json.dumps([{"msgContent": {"type": "text", "text": text}}])
+        await self._send_fire_and_forget(f"/_send {chat_ref} json {composed}")
+        return SendResult(success=True)
 
     def _mark_session_typed_only(self, session_key: str) -> None:
         """Refuse the tap lane for *session_key* for one approval window.
@@ -1443,16 +1534,22 @@ class SimplexAdapter(BasePlatformAdapter):
     async def _seed_approval_reactions(
         self,
         prompt: _SimplexApprovalPrompt,
-        choices: Tuple[Tuple[str, str, str], ...],
+        plan: Tuple[Tuple[str, str, str], ...],
     ) -> None:
-        """Pre-seed the decision emoji so the user taps instead of types."""
-        for index, (emoji, _choice, _label) in enumerate(choices):
+        """Place the tap targets, then explain the ones that landed.
+
+        The legend is written from *landed* rather than from *plan*, so the
+        message can never advertise a tap that is not on it. That is why the
+        prompt goes out without a legend and this task sends one.
+        """
+        landed: List[str] = []
+        for index, (emoji, _choice, _label) in enumerate(plan):
             if prompt.resolved:
                 return
-            accepted = await self._set_reaction(
+            outcome = await self._set_reaction(
                 prompt.chat_ref, prompt.item_id, emoji, add=True
             )
-            if accepted:
+            if outcome == _REACTION_ACCEPTED:
                 self._reactions_supported = True
                 if prompt.resolved:
                     # Cleanup ran while this seed was in flight: take our own
@@ -1463,19 +1560,41 @@ class SimplexAdapter(BasePlatformAdapter):
                     )
                     return
                 prompt.seeded_emoji.append(emoji)
-            elif accepted is False and index == 0:
-                # The first emoji is ✅, which the daemon's own validator
+                landed.append(emoji)
+            elif outcome == _REACTION_CAPPED:
+                # Not a refusal: the daemon takes our reactions, we have just
+                # run out of slots on this item (three per sender). Stop here
+                # — every later target would hit the same wall — and let the
+                # legend describe what is really on the message. Deny is
+                # seeded first precisely so it is never the casualty.
+                logger.warning(
+                    "SimpleX: reaction slots full on item %s after %d of %d "
+                    "tap targets — %s and anything after it were not placed; "
+                    "the legend will list only %s",
+                    prompt.item_id,
+                    len(landed),
+                    len(plan),
+                    emoji,
+                    "".join(landed) or "nothing",
+                )
+                break
+            elif outcome == _REACTION_REJECTED and index == 0:
+                # The first emoji is 👎, which the daemon's own validator
                 # allows, so rejecting it means reactions are refused
                 # wholesale. A rejection further down the list is about that
                 # one emoji and must not disable the whole lane.
                 await self._downgrade_to_typed_approvals(prompt)
                 return
-            elif accepted is False:
+            elif outcome == _REACTION_REJECTED:
                 logger.info(
                     "SimpleX: daemon refused approval emoji %s — "
                     "the remaining tap targets still stand",
                     emoji,
                 )
+        if landed and not prompt.resolved:
+            await self._send_approval_message(
+                prompt.chat_id, self._format_tap_legend(landed)
+            )
 
     async def _downgrade_to_typed_approvals(
         self, prompt: _SimplexApprovalPrompt
@@ -1495,7 +1614,7 @@ class SimplexAdapter(BasePlatformAdapter):
             self.typed_command_prefix,
         )
         prefix = self.typed_command_prefix
-        await self.send(
+        await self._send_approval_message(
             prompt.chat_id,
             "This SimpleX daemon does not let me place the approval "
             f"reactions. Reply `{prefix}approve` or `{prefix}deny` instead.",
@@ -1594,12 +1713,12 @@ class SimplexAdapter(BasePlatformAdapter):
         if prompt.feedback_sent:
             return
         prompt.feedback_sent = True
-        await self.send(prompt.chat_id, text)
+        await self._send_approval_message(prompt.chat_id, text)
 
     async def _expire_approval_prompt(self, prompt: _SimplexApprovalPrompt) -> None:
         """Retire a prompt whose tap window closed."""
         self._retire_prompt(prompt)
-        await self.send(
+        await self._send_approval_message(
             prompt.chat_id,
             "This approval prompt has expired. Run the command again if you "
             "still want to approve it.",
@@ -1623,7 +1742,9 @@ class SimplexAdapter(BasePlatformAdapter):
         if prompt.seeded_emoji:
             self._spawn_background(self._clear_seeded_reactions(prompt))
         if notice:
-            self._spawn_background(self.send(prompt.chat_id, notice))
+            self._spawn_background(
+                self._send_approval_message(prompt.chat_id, notice)
+            )
 
     async def _handle_reaction_event(self, resp: dict) -> None:
         """Resolve a pending exec approval from a ``chatItemReaction`` event.
@@ -1667,7 +1788,7 @@ class SimplexAdapter(BasePlatformAdapter):
         # whole design rests on, and it costs one dict lookup.
         if self._approval_prompt_by_session.get(prompt.session_key) != prompt.item_id:
             self._retire_prompt(prompt)
-            await self.send(
+            await self._send_approval_message(
                 prompt.chat_id,
                 "That approval is no longer pending — a newer request "
                 "replaced it. The command did not run.",
@@ -1726,7 +1847,7 @@ class SimplexAdapter(BasePlatformAdapter):
             # Nothing was pending: a typed /approve, an interrupt, or the
             # agent-side timeout already drained the queue. Say so — silently
             # doing nothing reads as a broken tap.
-            await self.send(
+            await self._send_approval_message(
                 prompt.chat_id,
                 "That approval is no longer pending — it was already answered "
                 "or it timed out. The command did not run.",
@@ -1739,7 +1860,7 @@ class SimplexAdapter(BasePlatformAdapter):
             prompt.session_key,
             choice,
         )
-        await self.send(prompt.chat_id, _APPROVAL_ACK[choice])
+        await self._send_approval_message(prompt.chat_id, _APPROVAL_ACK[choice])
 
     # ------------------------------------------------------------------
     # Outbound — media

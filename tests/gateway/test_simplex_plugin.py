@@ -311,17 +311,24 @@ def _choice_table():
     return _simplex._APPROVAL_CHOICES
 
 
-def _approval_adapter(reaction_response=None, item_id=501, reject_emoji=None):
+def _approval_adapter(
+    reaction_response=None, item_id=501, reject_emoji=None, reaction_cap=None
+):
     """Adapter plus a fake daemon that records every command it is sent.
 
     ``/_send`` answers with a ``newChatItems`` reply carrying *item_id* so
     the approval prompt has an anchor; ``/_reaction`` answers with
     *reaction_response* (default: accepted), or with a command error for the
     single emoji named in *reject_emoji*.
+
+    *reaction_cap* models the real daemon's per-sender reaction limit
+    (three on simplex-chat v7.0.0.11): once that many reactions are held on
+    an item, the next ``on`` answers ``commandError: "too many reactions"``.
     """
     adapter = _adapter_with_ws()
     sent = []
     timeouts = {}
+    held = {}
 
     async def fake_send_command(command, timeout=30.0, **_kwargs):
         sent.append(command)
@@ -339,6 +346,21 @@ def _approval_adapter(reaction_response=None, item_id=501, reject_emoji=None):
         if command.startswith("/_reaction "):
             if reject_emoji is not None and f'"{reject_emoji}"' in command:
                 return {"type": "chatCmdError", "chatError": {}}
+            if reaction_cap is not None:
+                item = command.split(" ")[2]
+                on = " on " in command
+                if on and held.get(item, 0) >= reaction_cap:
+                    return {
+                        "type": "chatCmdError",
+                        "chatError": {
+                            "type": "error",
+                            "errorType": {
+                                "type": "commandError",
+                                "message": "too many reactions",
+                            },
+                        },
+                    }
+                held[item] = held.get(item, 0) + (1 if on else -1)
             if reaction_response is not None:
                 return reaction_response
             return {"type": "chatItemReaction", "added": True}
@@ -369,12 +391,31 @@ def _prompt_text(sent):
     return composed[0]["msgContent"]["text"]
 
 
-def _ws_texts(adapter):
-    """Every plain (non-anchored) message the adapter pushed at the socket."""
+def _ws_frames(adapter):
+    """Every raw command the adapter pushed straight at the socket."""
     return [
         json.loads(call[0][0])["cmd"]
         for call in adapter._ws.send.call_args_list
     ]
+
+
+def _ws_texts(adapter):
+    """Message bodies the adapter pushed at the socket, decoded.
+
+    Both outbound forms are unwrapped: the structured ``/_send <ref> json``
+    payload the approval flow uses, and the bare ``@<name> <text>`` form
+    ``send()`` still uses when a chat has no numeric ChatRef.
+    """
+    texts = []
+    for cmd in _ws_frames(adapter):
+        if cmd.startswith("/_send ") and " json " in cmd:
+            composed = json.loads(cmd.split(" json ", 1)[1])
+            texts.append(composed[0]["msgContent"]["text"])
+        elif cmd[:1] in ("@", "#"):
+            texts.append(cmd.split(" ", 1)[1] if " " in cmd else "")
+        else:
+            texts.append(cmd)
+    return texts
 
 
 def _reaction_commands(sent, toggle="on"):
@@ -476,10 +517,10 @@ async def test_exec_approval_anchors_prompt_and_seeds_reactions():
 
 @pytest.mark.asyncio
 async def test_exec_approval_legend_matches_seeded_emoji():
-    """Every advertised reaction is one the bot tried to place.
+    """Every advertised reaction is one that is actually on the message.
 
-    Generating the legend text and the seed set from one table is what keeps
-    them from drifting apart.
+    The legend is written from the taps that landed, not from the table the
+    seeder worked off, so the two cannot drift apart.
     """
     adapter, sent = _approval_adapter()
     await adapter.send_exec_approval(
@@ -487,8 +528,12 @@ async def test_exec_approval_legend_matches_seeded_emoji():
     )
     await _drain(adapter)
 
-    text = _prompt_text(sent)
-    advertised = {emoji for emoji, _c, _l in _choice_table() if f"{emoji} = " in text}
+    # The prompt itself never carries a legend — it goes out before the
+    # daemon has said which reactions it accepted.
+    assert "tap a reaction" not in _prompt_text(sent)
+
+    legend = [t for t in _ws_texts(adapter) if "tap a reaction" in t][0]
+    advertised = {emoji for emoji, _c, _l in _choice_table() if f"{emoji} = " in legend}
     seeded = {_reaction_emoji(c) for c in _reaction_commands(sent)}
     assert advertised == seeded
     assert advertised
@@ -1319,9 +1364,11 @@ async def test_one_refused_emoji_does_not_kill_the_whole_lane():
     await _drain(adapter)
 
     assert adapter._reactions_supported is True
-    seeded = {_reaction_emoji(c) for c in _reaction_commands(sent)}
-    assert seeded == {"✅", "🚀", "❤", "👎"}
-    assert adapter._approval_prompts_by_item["501"].seeded_emoji == ["✅", "❤", "👎"]
+    attempted = {_reaction_emoji(c) for c in _reaction_commands(sent)}
+    assert attempted == {"👎", "✅", "🚀"}
+    assert adapter._approval_prompts_by_item["501"].seeded_emoji == ["👎", "✅"]
+    legend = [t for t in _ws_texts(adapter) if "tap a reaction" in t][0]
+    assert "🚀" not in legend
 
 
 @pytest.mark.asyncio
@@ -1347,7 +1394,7 @@ async def test_a_seed_that_lands_after_resolution_is_taken_back_off():
         calls.append((emoji, add))
         if add:
             await gate.wait()
-        return True
+        return _simplex._REACTION_ACCEPTED
 
     adapter._set_reaction = fake_set_reaction
     task = asyncio.create_task(
@@ -1360,5 +1407,204 @@ async def test_a_seed_that_lands_after_resolution_is_taken_back_off():
     await task
     await _drain(adapter)
 
-    assert ("✅", False) in calls
+    assert (_choice_table()[0][0], False) in calls
     assert prompt.seeded_emoji == []
+
+
+# ---------------------------------------------------------------------------
+# 11e. The daemon's three-reaction cap
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_only_three_tap_targets_are_seeded_and_deny_goes_first():
+    """The daemon holds three reactions per sender, so we ask for three.
+
+    Measured against simplex-chat v7.0.0.11: seeding a fourth emoji comes
+    back ``commandError: "too many reactions"``. Seeding four meant the
+    fourth silently vanished — and it was 👎, the one choice a user must
+    never lose.
+    """
+    adapter, sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+
+    seeded = [_reaction_emoji(c) for c in _reaction_commands(sent)]
+    assert len(seeded) == 3
+    assert seeded[0] == "👎"
+    assert set(seeded) == {"👎", "✅", "🚀"}
+    assert "❤" not in seeded
+
+
+@pytest.mark.asyncio
+async def test_approve_always_is_typed_only_but_still_read_inbound(
+    resolved_approvals,
+):
+    """❤ is never seeded and never advertised, and still works by hand.
+
+    "Always" writes a permanent, global, on-disk allowlist entry — the most
+    consequential tier on the prompt — so it costs a typed command rather
+    than one tap.
+    """
+    calls, _state = resolved_approvals
+    adapter, sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+
+    assert "❤" not in {_reaction_emoji(c) for c in _reaction_commands(sent)}
+    everything = _prompt_text(sent) + "\n".join(_ws_texts(adapter))
+    assert "❤" not in everything
+    # The typed route to the same tier is still spelled out.
+    assert "approve always" in _prompt_text(sent)
+
+    await adapter._handle_event(_reaction_event("❤️"))
+    assert calls == [("s", "always")]
+
+
+@pytest.mark.asyncio
+async def test_a_reaction_cap_never_costs_the_deny_target():
+    """A cap hit while seeding must not be the thing that removes 👎."""
+    adapter, sent = _approval_adapter(reaction_cap=2)
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+
+    prompt = adapter._approval_prompts_by_item["501"]
+    assert "👎" in prompt.seeded_emoji
+    assert len(prompt.seeded_emoji) == 2
+    # A cap is not a refusal: the daemon still takes reactions from us.
+    assert adapter._reactions_supported is True
+    # Seeding stops at the cap instead of hammering the daemon.
+    assert len(_reaction_commands(sent)) == 3
+
+
+@pytest.mark.asyncio
+async def test_the_legend_lists_only_the_reactions_that_landed():
+    """The bot may never advertise a tap the user cannot see."""
+    adapter, sent = _approval_adapter(reaction_cap=2)
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+
+    landed = adapter._approval_prompts_by_item["501"].seeded_emoji
+    legend = [t for t in _ws_texts(adapter) if "tap a reaction" in t]
+    assert len(legend) == 1
+    advertised = [e for e in ("👎", "✅", "🚀", "❤") if f"{e} = " in legend[0]]
+    assert advertised == landed
+
+
+@pytest.mark.asyncio
+async def test_no_legend_when_nothing_could_be_seeded():
+    """A daemon that placed no reaction gets no "tap a reaction" line."""
+    adapter, _sent = _approval_adapter(reaction_cap=0)
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+
+    assert [t for t in _ws_texts(adapter) if "tap a reaction" in t] == []
+    assert adapter._approval_prompts_by_item["501"].seeded_emoji == []
+
+
+# ---------------------------------------------------------------------------
+# 11f. Our own sends do not ride the broken DM text path
+# ---------------------------------------------------------------------------
+
+
+def _bare_dm_frames(adapter):
+    """Frames sent as ``@<numeric id> <text>`` — the path that drops silently.
+
+    The daemon reads ``@x`` as a display-name lookup and answers
+    ``contactNotFound`` for any contact whose display name is not literally
+    its numeric id, while the send still reports success. Nothing in the
+    approval flow may depend on it.
+    """
+    return [
+        cmd for cmd in _ws_frames(adapter)
+        if cmd.startswith("@") and cmd.split(" ", 1)[0][1:].isdigit()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_tap_acknowledgement_uses_the_structured_send_form(
+    resolved_approvals,
+):
+    """A tap that resolves must produce a message the user actually sees."""
+    _calls, _state = resolved_approvals
+    adapter, _sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+    adapter._ws.send.reset_mock()
+
+    await adapter._handle_event(_reaction_event("✅"))
+    await _drain(adapter)
+
+    acks = [t for t in _ws_texts(adapter) if "Approved" in t]
+    assert acks == ["✅ Approved — running this once."]
+    assert _bare_dm_frames(adapter) == []
+    assert all(
+        cmd.startswith("/_send @42 json ") for cmd in _ws_frames(adapter)
+    )
+
+
+@pytest.mark.asyncio
+async def test_every_approval_notice_uses_the_structured_send_form(
+    resolved_approvals,
+):
+    """Supersede, expiry, stale tap and bad-reaction replies, all of them."""
+    _calls, state = resolved_approvals
+    adapter, sent = _approval_adapter()
+
+    # Supersede notice + the typed prompt that replaces the tap lane.
+    await _two_prompts_one_session(adapter, sent)
+    # Bad-reaction feedback on the second (typed) prompt's predecessor.
+    adapter._next_item_id = 888
+    adapter._typed_only_sessions.clear()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/y", session_key="s2", description="delete"
+    )
+    await _drain(adapter)
+    await adapter._handle_event(_reaction_event("😂", item_id=888))
+    # Expiry notice.
+    adapter._approval_prompts_by_item["888"].expires_at = time.monotonic() - 1
+    await adapter._handle_event(_reaction_event("✅", item_id=888))
+    # Stale tap: nothing left pending.
+    adapter._next_item_id = 999
+    adapter._typed_only_sessions.clear()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/z", session_key="s3", description="delete"
+    )
+    await _drain(adapter)
+    state["count"] = 0
+    await adapter._handle_event(_reaction_event("✅", item_id=999))
+    await _drain(adapter)
+
+    joined = "\n".join(_ws_texts(adapter))
+    assert "superseded" in joined
+    assert "not one of the approval options" in joined
+    assert "expired" in joined
+    assert "no longer pending" in joined
+    assert _bare_dm_frames(adapter) == []
+
+
+@pytest.mark.asyncio
+async def test_the_daemon_refusal_notice_uses_the_structured_send_form():
+    """Even the "this daemon will not let me react" line has to arrive."""
+    adapter, _sent = _approval_adapter(
+        reaction_response={"type": "chatCmdError", "chatError": {}}
+    )
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+
+    assert "does not let me place" in "\n".join(_ws_texts(adapter))
+    assert _bare_dm_frames(adapter) == []

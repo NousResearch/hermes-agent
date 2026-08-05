@@ -126,16 +126,28 @@ The prompt always shows the command, the reason, and the typed commands
 that answer it: `/approve`, `/approve session`, `/approve always`, `/deny`.
 
 **In a direct chat**, when exactly one approval is waiting, the bot also
-pre-places the decision emoji on its own message so you can answer with a
-long-press and a tap instead of typing:
+pre-places three decision emoji on its own message so you can answer with a
+long-press and a tap instead of typing, then follows the prompt with a short
+line naming the taps it managed to place:
+
+| tap | means |
+|---|---|
+| 👎 | deny |
+| ✅ | approve once |
+| 🚀 | approve for this session |
+
+Three, not four, because the simplex-chat daemon holds at most **three
+reactions per sender per item** — a fourth comes back as "too many
+reactions". The limit is per sender, so it never stops you from adding your
+own reaction to a message the bot has already filled. 👎 is placed first, so
+if a slot is ever short it is never the refusal that goes missing.
+
+Two more reactions are read but never pre-placed:
 
 | reaction | means |
 |---|---|
-| ✅ | approve once |
-| 🚀 | approve for this session |
+| 👍 | approve once |
 | ❤️ | approve always |
-| 👎 | deny |
-| 👍 | approve once (accepted, but not pre-placed) |
 
 Nothing else is recognised, and a reaction is only accepted for a tier the
 prompt actually offered — reacting ❤️ to a prompt that did not offer the
@@ -143,10 +155,23 @@ permanent tier gets you a short reply, not a permanent approval. The emoji
 are not the ones other Hermes platforms use: the simplex-chat daemon
 validates reactions against a fixed set, so these are what SimpleX allows.
 
-❤️ **approve always** writes the command pattern into your permanent
-allowlist on disk. It applies to that pattern everywhere Hermes runs it —
-not just this chat and not just this platform. Use 🚀 if you only mean "for
-now".
+### "Approve always" is typed-only, on purpose
+
+**approve always** writes the command pattern into your permanent allowlist
+on disk. It applies to that pattern everywhere Hermes runs it — not just this
+chat, not just this platform, and not just today. That is the most
+consequential thing an approval prompt can do, so it costs a deliberate
+`/approve always` rather than one tap on an emoji sitting next to "deny".
+Taps are for the two decisions that expire on their own: this once, or this
+session.
+
+If you do want it as a reaction, ❤️ still resolves to approve-always when you
+place it yourself. It is simply never offered.
+
+The legend the bot posts under a prompt lists only the taps that are really
+on the message. If the daemon refused one, or the slots were full, the
+missing one is not advertised — you will never be told to tap something that
+is not there.
 
 ### When you get a typed prompt instead
 

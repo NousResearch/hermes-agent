@@ -246,3 +246,30 @@ def test_deferred_session_record_preserves_provider():
     )
     assert record["pty_user_id"] == "alice"
     assert record["pty_provider"] == "oauth"
+
+
+def test_lazy_session_creation_persists_agent_identity(monkeypatch):
+    import run_agent
+
+    captured = {}
+
+    class FakeDB:
+        def create_session(self, **kwargs):
+            captured.update(kwargs)
+
+    agent = run_agent.AIAgent.__new__(run_agent.AIAgent)
+    agent._persist_disabled = False
+    agent._session_db_created = False
+    agent._session_db = FakeDB()
+    agent.platform = "tui"
+    agent._session_init_model_config = {}
+    agent.session_id = "sid"
+    agent.model = "model"
+    agent._cached_system_prompt = "system"
+    agent._parent_session_id = None
+    agent._user_id = "alice"
+    monkeypatch.setattr(run_agent, "_session_source_for_agent", lambda _platform: "tui")
+    monkeypatch.setattr(run_agent, "_launch_cwd_for_session", lambda _source: None)
+
+    agent._ensure_db_session()
+    assert captured["user_id"] == "alice"

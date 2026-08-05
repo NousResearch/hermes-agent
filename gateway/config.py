@@ -744,12 +744,42 @@ class FederationConfig:
     ip_whitelist: List[str] = field(default_factory=list)
     # For 'lan' mode: manually configured peer WebSocket URLs
     peers: List[str] = field(default_factory=list)
+    # CRITICAL-1: TLS mandatory by default. Override only for local testing.
+    # Allow insecure (plaintext) only if explicitly opted in.
+    require_tls: bool = True
+    allow_insecure: bool = False
+    # Insecure mode warning flag (one-shot log when enabled)
+    _insecure_warned: bool = field(default=False, repr=False)
     # Shared SQLite database path (shared_db mode, iCloud Drive default on macOS).
     db_path: Optional[str] = None
     # Seconds without heartbeat before peer is considered offline.
     offline_threshold_s: int = 30
     # Seconds between heartbeat cycles.
     heartbeat_interval_s: int = 60
+
+    def validate_security(self) -> List[str]:
+        """Audit security posture. Returns list of warnings.
+
+        Call on federation startup; raise FederationSecurityError if
+        critical issues are found.
+        """
+        issues: List[str] = []
+        if self.enabled and self.require_tls and not self.allow_insecure:
+            if not self.tls_cert and not self.tls_key:
+                if self.mode in ("lan", "auto"):
+                    issues.append(
+                        "CRITICAL: Federation in lan/auto mode requires TLS. "
+                        "Set tls_cert/tls_key or enable allow_insecure=True "
+                        "for local testing only."
+                    )
+        if self.allow_insecure and not self._insecure_warned:
+            import logging
+            logging.warning(
+                "CRITICAL SECURITY: Federation allow_insecure=True. "
+                "Network traffic is plaintext. Use ONLY for local testing."
+            )
+            self._insecure_warned = True
+        return issues
 
     def resolve_db_path(self) -> Optional["Path"]:
         """Resolve the database path, expanding ~ and env vars."""

@@ -7,8 +7,8 @@ down. The reply then leaks as literal text (``^[[19;1R``) and the VT100 parser
 can stall, accepting no further keystrokes — the terminal appears frozen.
 
 The recovery path lives in ``HermesCLI._recover_terminal_after_interrupt()``,
-which is invoked from ``process_loop``'s ``finally`` block only when
-``self._last_turn_interrupted`` is set. It must:
+which is invoked from ``chat()`` only when ``self._last_turn_interrupted`` is
+set. It must:
   1. Drain stray escape bytes from the OS input buffer (``flush_stdin``).
   2. Force a clean prompt_toolkit renderer redraw (``_force_full_redraw``).
 
@@ -84,16 +84,16 @@ class TestRecoverTerminalAfterInterrupt:
         flush_stdin()  # must not raise in a non-TTY test environment
 
 
-class TestFinallyBlockWiring:
-    """The recovery helper is only useful if process_loop actually calls it.
+class TestChatWiring:
+    """The recovery helper is only useful if chat actually calls it.
 
-    These guard against the helper silently becoming dead code (the fix being
-    present but never invoked), which a unit test of the helper alone can't
-    catch.
+    Recovery must run before the final response panel is queued. Otherwise
+    ``_replay_output_history`` can paint the interruption panel while its
+    original cross-thread ``run_in_terminal`` print is still pending.
     """
 
-    def test_recovery_is_invoked_behind_interrupt_guard(self):
-        src = inspect.getsource(HermesCLI.run)
+    def test_recovery_is_invoked_before_response_display(self):
+        src = inspect.getsource(HermesCLI.chat)
         # The recovery call must be gated on _last_turn_interrupted so it only
         # fires after an actual interrupt, not on every normal turn.
         guard = re.search(
@@ -102,10 +102,13 @@ class TestFinallyBlockWiring:
             src,
         )
         assert guard, (
-            "process_loop's finally block must call "
+            "chat() must call "
             "_recover_terminal_after_interrupt() guarded by "
             "self._last_turn_interrupted"
         )
+        assert src.index("self._recover_terminal_after_interrupt()") < src.index(
+            "if response and not response_previewed:"
+        ), "terminal recovery must precede final response rendering"
 
     def test_recovery_helper_exists(self):
         assert hasattr(HermesCLI, "_recover_terminal_after_interrupt")

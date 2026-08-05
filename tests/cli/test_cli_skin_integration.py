@@ -57,6 +57,18 @@ class TestCliSkinPromptIntegration:
         assert frags[0][1].startswith("●")
         assert "❯" not in frags[0][1]
 
+    def test_idle_voice_prompt_uses_a_single_cell_icon(self):
+        from prompt_toolkit.formatted_text.utils import fragment_list_width
+
+        cli = _make_cli_stub()
+        cli._voice_mode = True
+
+        with patch.object(HermesCLI, "_get_tui_terminal_width", return_value=80):
+            frags = cli._get_tui_prompt_fragments()
+
+        assert frags[0][0] == "class:voice-prompt"
+        assert fragment_list_width(frags) == len(frags[0][1])
+
 
 
     def test_apply_tui_skin_style_updates_running_app(self):

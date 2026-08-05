@@ -1530,7 +1530,10 @@ DEFAULT_CONFIG = {
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "openai": {
+            "base_url": "",
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
+            "streaming": True,
+            "streaming_model_id": "gpt-4o-mini-transcribe",
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "mistral": {
@@ -1538,10 +1541,16 @@ DEFAULT_CONFIG = {
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "xai": {
+            "base_url": "",
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+            "diarize": False,
         },
         "elevenlabs": {
+            "base_url": "",
+            "wss_url": "",
             "model_id": "scribe_v2",  # scribe_v2, scribe_v1
+            "streaming": True,
+            "streaming_model_id": "scribe_v2_realtime",
             "language_code": "",  # auto-detect by default; set to "eng", "spa", "fra", etc. to force
             "tag_audio_events": False,
             "diarize": False,

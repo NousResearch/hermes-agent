@@ -1,11 +1,29 @@
 """Tests for acp_adapter.entry startup wiring."""
 
+import os
 import sys
+from pathlib import Path
 
 import acp
 import pytest
 
 from acp_adapter import entry
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _env_with_repo_first():
+    """Environment for probe children with this tree first on the import path.
+
+    Without it a child resolves ``acp_adapter`` against whatever the venv has
+    installed — a worktree run against an install venv silently probes the
+    wrong code and dies with ``AttributeError`` on the new symbols.
+    """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(_REPO_ROOT), env.get("PYTHONPATH")) if p
+    )
+    return env
 
 
 def test_main_enables_unstable_protocol(monkeypatch):
@@ -119,6 +137,7 @@ def test_shield_stdin_redirects_fd0_to_devnull(tmp_path):
         input=b"protocol-line\n",
         capture_output=True,
         timeout=60,
+        env=_env_with_repo_first(),
     )
 
     out = result.stdout.decode("utf-8", "replace")
@@ -167,6 +186,7 @@ def test_shield_stdin_denies_the_pipe_to_a_real_descendant(tmp_path):
         input=b"protocol-line\n",
         capture_output=True,
         timeout=60,
+        env=_env_with_repo_first(),
     )
 
     out = result.stdout.decode("utf-8", "replace")
@@ -204,6 +224,7 @@ def test_shield_stdin_rolls_back_when_the_win32_handle_redirect_fails(tmp_path):
         input=b"protocol-line\n",
         capture_output=True,
         timeout=60,
+        env=_env_with_repo_first(),
     )
 
     out = result.stdout.decode("utf-8", "replace")

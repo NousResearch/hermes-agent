@@ -110,29 +110,33 @@ The stub contract is:
   corruption is tested. Future phases can replace the stubs without
   touching working code.
 
-### Phase 2 — Signal producer
+### Phase 2 — Signal producer ✅ (this PR)
 
-Goal: every skill invocation produces a ``SkillEval`` entry.
-
-Tasks:
-- New module ``agent/skill_eval_producer.py`` with a single public API:
-  ``record_skill_invocation(skill_id, public_signal, private_signals)``.
-- Hook from Hermes' turn-completion path (likely
-  ``run_agent.py`` turn-finalizer or ``gateway/run.py`` tool-call
-  return) to call the producer.
-- Public signal source: agent's own self-assessment.
-- Private signal sources (in priority order):
-  1. **User correction detection**: regex / heuristic on the user's
-     next message ("不对", "wrong", "重新", "redo", etc.) within a
-     short window after the skill ran.
-  2. **Rework count**: same task re-issued within N minutes.
-  3. **Reuse success**: next invocation of the same skill succeeded.
-- Backpressure: producer must not block turn completion — write to
-  ledger async or batch.
-
-Risk: where to hook. Hermes' turn loop is the natural seam but
-requires careful study of `run_agent.py` to find the right insertion
-point without invalidating the prompt cache.
+- New module `agent/skill_eval_producer.py` with public API
+  `SkillEvalProducer.record_turn(TurnSignals)` + `record_batch`.
+- New package `agent/signal_sources/`:
+  - `user_correction_detector.py` — multi-language regex pre-filter
+    (EN/CN/ES/FR/DE), pluggable via `reset_patterns`.
+  - `rework_detector.py` — sliding-window retry counter
+    (`count_recent`, `count_rework_retries`, `filter_window`).
+  - `reuse_tracker.py` — per-skill reuse history with
+    `mark_invocation` / `lookup_reuse_outcome` (immediate-only or
+    majority-outcome).
+- New `agent/hermes_eval_hook.py` — `wrap_turn(...)` reference
+  integration showing how a turn-finalizer should call the producer.
+  Never raises on producer-side errors — failures are logged at
+  WARNING so a broken ledger never breaks a turn.
+- Private-score heuristic: `public_signal − 0.4 (corrected)
+  − 0.15 × rework_count − 0.2 (reuse_failed)`, clamped to [0, 1].
+  Documented as a placeholder for the LLM judge that Phase 3 will
+  plug in.
+- 49 new tests across `tests/agent/test_skill_eval_producer.py`,
+  `tests/agent/test_hermes_eval_hook.py`, and
+  `tests/agent/test_signal_sources/`.
+- **Why this is enough to merge today**: the producer is fully
+  testable in isolation; the runtime hook (one `wrap_turn(...)`
+  call inside the turn finalizer) is left to the maintainer to
+  avoid risking the prompt cache contract.
 
 ### Phase 3 — Real eval runner
 

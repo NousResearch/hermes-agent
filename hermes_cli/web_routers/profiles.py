@@ -625,8 +625,16 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
         # persists that empty document over it.
         try:
             prior_mode = stat.S_IMODE(soul_path.stat().st_mode)
+        except FileNotFoundError:
+            # First save for this profile -- there is no prior file to match,
+            # so fall back to the mode profile creation itself produces:
+            # hermes_cli.profiles seeds SOUL.md with a bare write_text() and
+            # deliberately chmods only .env to 0600. Without this the create
+            # path keeps mkstemp's 0600 and the atomicity fix would silently
+            # tighten the persona document.
+            prior_mode = 0o644
         except OSError:
-            # First save for this profile -- there is no prior file to match.
+            # stat() failed for some other reason -- do not guess a mode.
             prior_mode = None
 
         atomic_write_text(soul_path, body.content)

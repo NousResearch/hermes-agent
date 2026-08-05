@@ -737,3 +737,25 @@ class TestManifestCrashDurability:
         mode = stat.S_IMODE(mf.stat().st_mode)
         assert mode == 0o644, f"mode changed to {oct(mode)}"
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX permission bits"
+    )
+    def test_created_file_mode_is_not_tightened(self, tmp_path):
+        """A manifest this function *creates* must not land owner-only.
+
+        ``atomic_yaml_write`` only re-applies a mode it captured from an
+        existing file, so a fresh distribution.yaml would otherwise keep
+        ``tempfile.mkstemp``'s 0600. ``_materialize`` hits that path whenever a
+        distribution's explicit ``distribution_owned`` allowlist omits
+        distribution.yaml, so the staged copy never lands in the profile.
+        """
+        import stat
+
+        mf = tmp_path / "distribution.yaml"
+        assert not mf.exists()
+
+        write_manifest(tmp_path, DistributionManifest(name="fresh", version="1.0.0"))
+
+        mode = stat.S_IMODE(mf.stat().st_mode)
+        assert mode == 0o644, f"new manifest created as {oct(mode)}"
+

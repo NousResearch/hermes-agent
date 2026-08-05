@@ -110,3 +110,22 @@ class TestSoulWriteDurability:
         assert r.status_code == 200, r.text
         mode = stat.S_IMODE(soul.stat().st_mode)
         assert mode == 0o644, f"mode changed to {oct(mode)}"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    def test_created_file_mode_is_not_tightened(self, client, profile_dir: Path):
+        """The first-ever Save must not leave SOUL.md owner-only.
+
+        There is no prior file to copy permissions from, and
+        ``atomic_write_text`` swaps in a ``tempfile.mkstemp`` file (0600).
+        Profile creation seeds SOUL.md with a plain ``write_text()`` and
+        chmods only ``.env`` to 0600, so routing this endpoint through the
+        atomic writer must not tighten the persona document as a side effect.
+        """
+        soul = profile_dir / "SOUL.md"
+        assert not soul.exists()
+
+        r = client.put("/api/profiles/demo/soul", json={"content": SOUL})
+
+        assert r.status_code == 200, r.text
+        mode = stat.S_IMODE(soul.stat().st_mode)
+        assert mode == 0o644, f"first save created SOUL.md as {oct(mode)}"

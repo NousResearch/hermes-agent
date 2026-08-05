@@ -4,7 +4,12 @@ export const asText = (v: unknown): string => (typeof v === 'string' ? v : v == 
 
 export const includesQuery = (v: unknown, q: string) => asText(v).toLowerCase().includes(q)
 
-export const prettyName = (v: string) => v.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+const CANONICAL_NAMES: Record<string, string> = {
+  openviking: 'OpenViking'
+}
+
+export const prettyName = (v: string) =>
+  CANONICAL_NAMES[v.toLowerCase()] ?? v.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
 /** Search-key normalization: the exact `value.trim().toLowerCase()` idiom that
  *  was hand-written at ~30 filter/lookup sites. */

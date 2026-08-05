@@ -81,6 +81,9 @@ def open_orch_db(
         install_test_open_udf(conn)
     else:
         install_fail_closed_udf(conn)
+    from hermes_cli.kanban_orch_digest_udf import install_digest_udfs
+
+    install_digest_udfs(conn)
     return conn
 
 

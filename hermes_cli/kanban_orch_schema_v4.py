@@ -254,6 +254,10 @@ def apply_schema(conn: sqlite3.Connection, *, test_open_capability: bool = False
     else:
         install_fail_closed_udf(conn)
 
+    from hermes_cli.kanban_orch_digest_udf import apply_digest_guards
+
+    apply_digest_guards(conn)
+
 
 def get_table_names(conn: sqlite3.Connection) -> list[str]:
     """Return sorted list of table names in the database."""

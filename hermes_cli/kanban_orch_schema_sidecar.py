@@ -68,6 +68,10 @@ def apply_sidecar_schema(conn: sqlite3.Connection, *, test_open_capability: bool
     else:
         install_fail_closed_udf(conn)
 
+    from hermes_cli.kanban_orch_digest_udf import apply_digest_guards
+
+    apply_digest_guards(conn)
+
 
 def get_sidecar_table_names(conn: sqlite3.Connection) -> list[str]:
     """Return sorted list of table names in the sidecar DB."""

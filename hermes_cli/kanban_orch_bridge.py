@@ -97,6 +97,9 @@ class OrchBridge:
             self._sidecar.close()
             raise BridgeError("sidecar_foreign_keys_off")
         install_fail_closed_udf(self._sidecar)
+        from hermes_cli.kanban_orch_digest_udf import install_digest_udfs
+
+        install_digest_udfs(self._sidecar)
 
         self._native_path = native_path
         self._sidecar_path = sidecar_path

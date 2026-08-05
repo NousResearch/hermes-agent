@@ -91,15 +91,43 @@ class TestSchemaV4:
 
     def test_full_request_plan_binding(self, fresh_db):
         """§13 T06: origin/request/plan full composite scope and header mismatch."""
-        d = "a" * 64
-        d2 = "b" * 64
+        import json
+        from hermes_cli.kanban_orch_canonical import request_digest
+        from hermes_cli.kanban_orch_digest_udf import build_route_json_and_digest
 
+        d2 = "b" * 64
         b = "board_0123456789abcdef"  # 22 chars, satisfies CHECK length 16-128
         sk = "a" * 64  # selector_key must be 64-hex (digest)
+        route_json, route_d = build_route_json_and_digest(
+            origin_kind="board_only",
+            platform="telegram",
+            adapter_instance_id="ad1",
+            account_id="acc1",
+            conversation_id="conv1",
+            required_ack_family="none",
+            required_ack_strength="none",
+            route_revision=1,
+        )
+        req_obj = {
+            "schema_version": 4,
+            "kind": "orch_request",
+            "selector_key": sk,
+            "request_key": sk,
+            "origin_id": "oid1",
+            "lineage_id": "lin1",
+            "generation": 1,
+            "title": "parent",
+            "synthesis_strategy": "parent_owned",
+            "completion_policy": "board_only",
+            "requirements": [],
+        }
+        req_json = json.dumps(req_obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        req_d = request_digest(req_obj)
+
         fresh_db.execute(
             "INSERT INTO kanban_board_identity (singleton, board_instance_id, canonical_board_key, created_at)"
             " VALUES (1, ?, 'board1', 1)",
-            (b,)
+            (b,),
         )
         fresh_db.execute(
             "INSERT INTO orch_replay_selectors"
@@ -107,7 +135,7 @@ class TestSchemaV4:
             "  adapter_instance_id, conversation_id, lineage_id, current_generation,"
             "  ledger_revision, created_at, updated_at)"
             " VALUES (?, ?, '', 'event', 'evt1', 'ad1', 'conv1', 'lin1', 0, 0, 1, 1)",
-            (sk, b)
+            (sk, b),
         )
         fresh_db.execute(
             "INSERT INTO orch_origins"
@@ -117,8 +145,8 @@ class TestSchemaV4:
             "  notifier_profile, route_revision, route_json, route_digest,"
             "  required_ack_family, required_ack_strength, created_at)"
             " VALUES (?, '', 'oid1', 4, ?, 'board_only', 'telegram', 'ad1', 'acc1', 'conv1',"
-            "  'event', 'evt1', '', '', '', '', 1, '{}', ?, 'none', 'none', 1)",
-            (b, sk, d)
+            "  'event', 'evt1', '', '', '', '', 1, ?, ?, 'none', 'none', 1)",
+            (b, sk, route_json, route_d),
         )
         fresh_db.execute(
             "INSERT INTO tasks (id, title, status, created_at) VALUES ('parent1', 'parent', 'pending', 1)"
@@ -131,10 +159,24 @@ class TestSchemaV4:
             "  lifecycle_state, lifecycle_revision, cancel_epoch,"
             "  delivery_epoch_revision, plan_epoch_revision, plan_version,"
             "  synthesis_strategy, max_retries, created_at, updated_at)"
-            " VALUES (?, '', 'orch1', 'lin1', 1, ?, 0, ?, 4, '{}', ?, 'oid1', 'parent1',"
+            " VALUES (?, '', 'orch1', 'lin1', 1, ?, 0, ?, 4, ?, ?, 'oid1', 'parent1',"
             "  'submitted', 0, 0, 0, 0, 0, 'parent_owned', 0, 1, 1)",
-            (b, sk, d, d)
+            (b, sk, sk, req_json, req_d),
         )
+
+        # Forged route_digest must fail at SQL trigger (not just Python).
+        with pytest.raises(sqlite3.IntegrityError, match="route_digest_mismatch"):
+            fresh_db.execute(
+                "INSERT INTO orch_origins"
+                " (board_instance_id, tenant_scope, origin_id, schema_version, selector_key,"
+                "  origin_kind, platform, adapter_instance_id, account_id, conversation_id,"
+                "  selector_kind, selector_value, thread_id, reply_to_id, session_id,"
+                "  notifier_profile, route_revision, route_json, route_digest,"
+                "  required_ack_family, required_ack_strength, created_at)"
+                " VALUES (?, '', 'oid-forged', 4, ?, 'board_only', 'telegram', 'ad1', 'acc1', 'conv1',"
+                "  'event', 'evt1', '', '', '', '', 1, ?, ?, 'none', 'none', 1)",
+                (b, sk, route_json, "c" * 64),
+            )
 
         # Valid plan insert — all FK columns match the request
         fresh_db.execute(
@@ -145,7 +187,7 @@ class TestSchemaV4:
             "  created_by_run_id, created_at)"
             " VALUES (?, '', 'orch1', 1, 4, 'lin1', 1, ?, ?, 'oid1', 'parent1',"
             "  'parent_owned', '{}', ?, 0, 1)",
-            (b, d, d, d)
+            (b, sk, req_d, req_d),
         )
 
         # Mismatched request_key → FK violation
@@ -158,7 +200,7 @@ class TestSchemaV4:
                 "  created_by_run_id, created_at)"
                 " VALUES (?, '', 'orch1', 2, 4, 'lin1', 1, ?, ?, 'oid1', 'parent1',"
                 "  'parent_owned', '{}', ?, 0, 1)",
-                (b, d2, d, d)
+                (b, d2, req_d, req_d),
             )
 
         # Mismatched origin_id → FK violation
@@ -171,7 +213,7 @@ class TestSchemaV4:
                 "  created_by_run_id, created_at)"
                 " VALUES (?, '', 'orch1', 3, 4, 'lin1', 1, ?, ?, 'wrong_origin', 'parent1',"
                 "  'parent_owned', '{}', ?, 0, 1)",
-                (b, d, d, d)
+                (b, sk, req_d, req_d),
             )
 
         # Mismatched request_digest → FK violation
@@ -184,5 +226,5 @@ class TestSchemaV4:
                 "  created_by_run_id, created_at)"
                 " VALUES (?, '', 'orch1', 4, 4, 'lin1', 1, ?, ?, 'oid1', 'parent1',"
                 "  'parent_owned', '{}', ?, 0, 1)",
-                (b, d, d2, d)
+                (b, sk, d2, req_d),
             )

@@ -92,7 +92,22 @@ def bootstrap_board_only_request(
     origin_id = f"origin-{uuid.uuid4().hex[:12]}"
     selector_value = f"bind:{parent_task_id}:{oid}"
     selector_key = _hex64(board_instance_id, tenant, selector_value)
-    route_digest = _hex64("route", board_instance_id, tenant, origin_id)
+    from hermes_cli.kanban_orch_digest_udf import build_route_json_and_digest
+
+    route_json, route_digest = build_route_json_and_digest(
+        origin_kind="board_only",
+        platform="local",
+        adapter_instance_id="bridge",
+        account_id="local",
+        conversation_id="local",
+        thread_id="",
+        reply_to_id="",
+        session_id="",
+        notifier_profile="",
+        required_ack_family="none",
+        required_ack_strength="none",
+        route_revision=1,
+    )
     request_key = _hex64("request", board_instance_id, tenant, oid, parent_task_id)
     request_obj = {
         "schema_version": 4,
@@ -162,8 +177,8 @@ def bootstrap_board_only_request(
             " notifier_profile, route_revision, route_json, route_digest,"
             " required_ack_family, required_ack_strength, created_at"
             ") VALUES (?, ?, ?, 4, ?, 'board_only', 'local', 'bridge', 'local', 'local',"
-            " 'event', ?, '', '', '', '', 1, '{}', ?, 'none', 'none', ?)",
-            (board_instance_id, tenant, origin_id, selector_key, selector_value, route_digest, now),
+            " 'event', ?, '', '', '', '', 1, ?, ?, 'none', 'none', ?)",
+            (board_instance_id, tenant, origin_id, selector_key, selector_value, route_json, route_digest, now),
         )
         conn.execute(
             "INSERT INTO orch_requests ("

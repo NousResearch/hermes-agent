@@ -57,6 +57,12 @@ class TestDetectToolFailureTerminal:
         assert suffix.startswith(" [")
         assert suffix.endswith("]")
 
+    def test_nested_mcp_failure_does_not_override_terminal_exit_rule(self):
+        result = json.dumps({
+            "result": json.dumps({"ok": False, "error": "remote failed"}),
+        })
+        assert _detect_tool_failure("terminal", result) == (False, "")
+
 
 
 
@@ -95,6 +101,32 @@ class TestDetectToolFailureStructured:
     def test_successful_result_not_flagged(self):
         result = json.dumps({"success": True, "data": "hello"})
         assert _detect_tool_failure("web_search", result) == (False, "")
+
+    def test_mcp_result_json_string_failure_is_surfaced(self):
+        result = json.dumps({
+            "result": json.dumps({
+                "ok": False,
+                "error": "upstream timeout",
+            }),
+        })
+        assert _detect_tool_failure(
+            "mcp__example__search",
+            result,
+        ) == (True, " [upstream timeout]")
+
+    def test_mcp_result_dict_failure_is_surfaced(self):
+        result = {"result": {"error": "provider unavailable"}}
+        assert _detect_tool_failure(
+            "mcp__example__search",
+            result,
+        ) == (True, " [provider unavailable]")
+
+    def test_mcp_result_nested_success_is_not_flagged(self):
+        result = {"result": json.dumps({"ok": True, "data": "hello"})}
+        assert _detect_tool_failure(
+            "mcp__example__search",
+            result,
+        ) == (False, "")
 
 
 

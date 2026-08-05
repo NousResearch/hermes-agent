@@ -73,6 +73,12 @@
           },
           {
             "$ref": "#/$defs/tool_approval_counter"
+          },
+          {
+            "$ref": "#/$defs/skill_lifecycle_counter"
+          },
+          {
+            "$ref": "#/$defs/skill_load_counter"
           }
         ]
       }
@@ -539,6 +545,114 @@
           "minimum": 1
         }
       }
+    },
+    "skill_lifecycle_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.skill.lifecycle.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "provenance"
+          ],
+          "properties": {
+            "action": {
+              "enum": [
+                "archived",
+                "created",
+                "edited",
+                "installed",
+                "patched",
+                "restored",
+                "stale"
+              ]
+            },
+            "provenance": {
+              "$ref": "#/$defs/skill_provenance"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "skill_load_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.skill.load.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "post_patch_state",
+            "provenance",
+            "reuse_state",
+            "use_count_bucket"
+          ],
+          "properties": {
+            "post_patch_state": {
+              "enum": [
+                "no_new_patch",
+                "not_applicable",
+                "reused_after_patch"
+              ]
+            },
+            "provenance": {
+              "$ref": "#/$defs/skill_provenance"
+            },
+            "reuse_state": {
+              "enum": [
+                "first_use",
+                "reused"
+              ]
+            },
+            "use_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "skill_provenance": {
+      "enum": [
+        "agent_created",
+        "external",
+        "installed",
+        "local",
+        "unknown"
+      ]
     }
   }
 }

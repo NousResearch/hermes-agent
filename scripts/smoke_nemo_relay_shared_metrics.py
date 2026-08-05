@@ -23,6 +23,8 @@ RESPONSE_CANARY = "relay-smoke-sensitive-response"
 TOOL_CALL_CANARY = "relay-smoke-sensitive-tool-call"
 TOOL_RESULT_CANARY = "relay-smoke-sensitive-tool-result"
 TOOL_FILE = "relay-smoke-input.txt"
+SKILL_CANARY = "relay-smoke-private-agent-skill"
+INSTALLED_SKILL_CANARY = "relay-smoke-private-installed-skill"
 
 
 def _resolve_hermes_executable(hermes_repo: Path) -> Path:
@@ -297,6 +299,8 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         by_name.setdefault(counter["name"], []).append(counter)
     if set(by_name) != {
         "hermes.model_route.count",
+        "hermes.skill.lifecycle.count",
+        "hermes.skill.load.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
         "hermes.tool_call.count",
@@ -364,15 +368,54 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         or tool["packaged_value"] != 1
     ):
         raise AssertionError(f"Unexpected tool counter: {tool}")
+    lifecycle = by_name["hermes.skill.lifecycle.count"]
+    expected_actions = {
+        "archived",
+        "created",
+        "edited",
+        "installed",
+        "patched",
+        "restored",
+        "stale",
+    }
+    if (
+        {counter["dimensions"]["action"] for counter in lifecycle} != expected_actions
+        or any(counter["value"] != 1 for counter in lifecycle)
+        or any(counter["packaged_value"] != 1 for counter in lifecycle)
+    ):
+        raise AssertionError(f"Unexpected skill lifecycle counters: {lifecycle}")
+    loads = by_name["hermes.skill.load.count"]
+    expected_load_states = {
+        ("first_use", "not_applicable", "1"),
+        ("reused", "no_new_patch", "2"),
+        ("reused", "reused_after_patch", "3_to_5"),
+    }
+    observed_load_states = {
+        (
+            counter["dimensions"]["reuse_state"],
+            counter["dimensions"]["post_patch_state"],
+            counter["dimensions"]["use_count_bucket"],
+        )
+        for counter in loads
+    }
+    if (
+        observed_load_states != expected_load_states
+        or any(counter["value"] != 1 for counter in loads)
+        or any(counter["packaged_value"] != 1 for counter in loads)
+    ):
+        raise AssertionError(f"Unexpected skill load counters: {loads}")
     return counters
 
 
-def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, Any]]:
-    packages = sorted(outbox.glob("*.json"))
-    if len(packages) != 1:
-        raise AssertionError(f"Expected one package in {outbox}, found {len(packages)}")
-    package_path = packages[0]
-    package = json.loads(package_path.read_text(encoding="utf-8"))
+def _validate_packages(
+    outbox: Path,
+    schema_path: Path,
+) -> tuple[list[Path], list[dict[str, Any]]]:
+    package_paths = sorted(outbox.glob("*.json"))
+    if len(package_paths) != 2:
+        raise AssertionError(
+            f"Expected two delta packages in {outbox}, found {len(package_paths)}"
+        )
     try:
         import jsonschema
     except ImportError as exc:
@@ -380,30 +423,40 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
             "The Hermes development environment requires jsonschema"
         ) from exc
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    jsonschema.validate(package, schema)
+    packages = [
+        json.loads(package_path.read_text(encoding="utf-8"))
+        for package_path in package_paths
+    ]
+    for package in packages:
+        jsonschema.validate(package, schema)
 
-    serialized = json.dumps(package)
+    serialized = json.dumps(packages)
     for prohibited in (
         PROMPT_CANARY,
         RESPONSE_CANARY,
         TOOL_CALL_CANARY,
         TOOL_RESULT_CANARY,
+        SKILL_CANARY,
+        INSTALLED_SKILL_CANARY,
     ):
         if prohibited in serialized:
             raise AssertionError(
                 f"Exported package leaked prohibited value: {prohibited!r}"
             )
     metrics: dict[str, list[dict[str, Any]]] = {}
-    for metric in package.get("metrics", []):
-        metrics.setdefault(metric["name"], []).append(metric)
+    for package in packages:
+        for metric in package.get("metrics", []):
+            metrics.setdefault(metric["name"], []).append(metric)
     if set(metrics) != {
         "hermes.model_route.count",
+        "hermes.skill.lifecycle.count",
+        "hermes.skill.load.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
         "hermes.tool_call.count",
     }:
         raise AssertionError(
-            f"Unexpected package metrics:\n{json.dumps(package.get('metrics'), indent=2)}"
+            f"Unexpected package metrics:\n{json.dumps(metrics, indent=2)}"
         )
     [model] = metrics["hermes.model_route.count"]
     if model["dimensions"] != {
@@ -439,7 +492,32 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
         or tool["dimensions"]["latency_bucket"] == "unknown"
     ):
         raise AssertionError(f"Unexpected tool metric: {tool}")
-    return package_path, package
+    lifecycle = metrics["hermes.skill.lifecycle.count"]
+    if {metric["dimensions"]["action"] for metric in lifecycle} != {
+        "archived",
+        "created",
+        "edited",
+        "installed",
+        "patched",
+        "restored",
+        "stale",
+    }:
+        raise AssertionError(f"Unexpected skill lifecycle metrics: {lifecycle}")
+    loads = metrics["hermes.skill.load.count"]
+    if {
+        (
+            metric["dimensions"]["reuse_state"],
+            metric["dimensions"]["post_patch_state"],
+            metric["dimensions"]["use_count_bucket"],
+        )
+        for metric in loads
+    } != {
+        ("first_use", "not_applicable", "1"),
+        ("reused", "no_new_patch", "2"),
+        ("reused", "reused_after_patch", "3_to_5"),
+    }:
+        raise AssertionError(f"Unexpected skill load metrics: {loads}")
+    return package_paths, packages
 
 
 def main() -> int:
@@ -468,6 +546,29 @@ def main() -> int:
     (workdir / TOOL_FILE).write_text(TOOL_RESULT_CANARY, encoding="utf-8")
     home.mkdir()
     (home / ".no-bundled-skills").touch()
+    agent_skill = home / "skills" / SKILL_CANARY
+    agent_skill.mkdir(parents=True)
+    (agent_skill / "SKILL.md").write_text(
+        f"---\nname: {SKILL_CANARY}\ndescription: private smoke skill\n---\n",
+        encoding="utf-8",
+    )
+    installed_skill = home / "skills" / INSTALLED_SKILL_CANARY
+    installed_skill.mkdir(parents=True)
+    (installed_skill / "SKILL.md").write_text(
+        f"---\nname: {INSTALLED_SKILL_CANARY}\ndescription: installed smoke skill\n---\n",
+        encoding="utf-8",
+    )
+    hub_state = home / "skills" / ".hub"
+    hub_state.mkdir()
+    (hub_state / "lock.json").write_text(
+        json.dumps({
+            "version": 1,
+            "installed": {
+                INSTALLED_SKILL_CANARY: {"source": "smoke/local"},
+            },
+        }),
+        encoding="utf-8",
+    )
 
     _ModelHandler.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _ModelHandler)
@@ -477,11 +578,11 @@ def main() -> int:
         _write_config(home, server.server_port)
         env = os.environ.copy()
         env["HERMES_HOME"] = str(home)
+        python_paths = [str(hermes_repo)]
         if relay_python is not None:
-            env["PYTHONPATH"] = os.pathsep.join([
-                str(relay_python),
-                env.get("PYTHONPATH", ""),
-            ]).rstrip(os.pathsep)
+            python_paths.append(str(relay_python))
+        python_paths.append(env.get("PYTHONPATH", ""))
+        env["PYTHONPATH"] = os.pathsep.join(python_paths).rstrip(os.pathsep)
         result = subprocess.run(
             [
                 str(hermes),
@@ -532,9 +633,60 @@ def main() -> int:
     if RESPONSE_CANARY not in result.stdout:
         raise AssertionError("Hermes did not print the mock model response")
 
+    skill_result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "\n".join([
+                "from hermes_cli.observability import relay_shared_metrics",
+                "from tools.skill_usage import (",
+                "    STATE_ACTIVE, STATE_ARCHIVED, STATE_STALE, bump_patch,",
+                "    bump_use, record_created, record_installed, set_state,",
+                ")",
+                f"skill = {SKILL_CANARY!r}",
+                f"installed = {INSTALLED_SKILL_CANARY!r}",
+                "record_created(skill, agent_created=True)",
+                "bump_use(skill)",
+                "bump_use(skill)",
+                "bump_patch(skill)",
+                "bump_use(skill)",
+                "bump_patch(skill, action='edit')",
+                "set_state(skill, STATE_STALE)",
+                "set_state(skill, STATE_ACTIVE)",
+                "set_state(skill, STATE_ARCHIVED)",
+                "set_state(skill, STATE_ACTIVE)",
+                "record_installed(installed)",
+                "runtime = relay_shared_metrics._get_runtime()",
+                "assert runtime is not None",
+                "runtime.shutdown()",
+                # Production leaves same-day deltas pending. Force a package so
+                # this smoke can validate them without waiting for the next day.
+                "runtime.subscriber.store.create_and_export_package()",
+            ]),
+        ],
+        cwd=workdir,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    (root / "skills.stdout.txt").write_text(
+        skill_result.stdout,
+        encoding="utf-8",
+    )
+    (root / "skills.stderr.txt").write_text(
+        skill_result.stderr,
+        encoding="utf-8",
+    )
+    if skill_result.returncode != 0:
+        raise AssertionError(
+            f"Skill lifecycle probe exited with {skill_result.returncode}\n"
+            f"stdout:\n{skill_result.stdout}\nstderr:\n{skill_result.stderr}"
+        )
+
     telemetry = home / "telemetry" / "shared_metrics"
     counters = _validate_store(telemetry / "metrics.sqlite3")
-    package_path, package = _validate_package(
+    package_paths, packages = _validate_packages(
         telemetry / "outbox",
         hermes_repo
         / "hermes_cli"
@@ -547,8 +699,8 @@ def main() -> int:
     print(f"Artifact directory: {root}")
     print(f"Model requests: {len(_ModelHandler.requests)}")
     print(f"SQLite counters: {json.dumps(counters, indent=2)}")
-    print(f"Export package: {package_path}")
-    print(json.dumps(package, indent=2, sort_keys=True))
+    print(f"Export packages: {', '.join(str(path) for path in package_paths)}")
+    print(json.dumps(packages, indent=2, sort_keys=True))
     return 0
 
 

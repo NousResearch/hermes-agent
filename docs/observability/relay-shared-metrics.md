@@ -56,7 +56,7 @@ dependency does not change the collection or privacy policy.
 ## Current Slices
 
 The current vertical slices record logical model calls, top-level task runs,
-and tool and approval outcomes:
+tool and approval outcomes, and skill lifecycle and reuse:
 
 ```text
 Hermes turn, API, tool, and approval hooks
@@ -106,6 +106,17 @@ included in shared-metrics events or packages. A started tool that is still
 open when its task terminates is closed as failed, timed out, or cancelled and
 remains in the task's tool-count bucket.
 
+Successful skill mutations emit `hermes.skill.lifecycle` marks with only a
+bounded action and provenance. Successful loads emit `hermes.skill.load`
+marks with bounded provenance, first-use or reuse state, reuse-after-patch
+state, and a use-count bucket. Hermes derives reuse and patch-generation
+continuity transactionally in its existing `skills/.usage.json` state; skill
+names and exact counts or generations never enter Relay metrics events,
+SQLite dimensions, or packages. A use after a new patch is counted once as
+`reused_after_patch`; later uses remain ordinary reuse until another patch.
+Task-outcome attribution after a patch remains deferred until its window and
+multi-skill semantics are defined.
+
 Local state is written under:
 
 ```text
@@ -148,7 +159,9 @@ The script uses the installed `nemo-relay` dependency by default. Pass
 binding.
 
 The smoke has the local model request a real `read_file` tool call before its
-final response. It verifies model, provider, task, and bounded tool counters in
-SQLite, validates the exported package against the closed schema, and checks
-that prompt, response, tool-call ID, and tool-result canaries are absent from
-the package.
+final response, then drives create, load, reuse, patch, edit, stale, archive,
+restore, and install skill transitions through the installed Relay binding. It
+verifies model, provider, task, tool, and skill counters in SQLite, validates
+all exported delta packages against the closed schema, and checks that prompt,
+response, tool-call ID, tool-result, and skill-name canaries are absent from the
+packages.

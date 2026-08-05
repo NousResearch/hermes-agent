@@ -32,6 +32,10 @@ from hermes_cli.observability.shared_metrics_contract import (
     PROVIDER_IDENTIFIER_MAX_LENGTH,
     SCHEMA_KEY,
     SCHEMA_VERSION,
+    SKILL_LIFECYCLE_ACTIONS,
+    SKILL_POST_PATCH_STATES,
+    SKILL_PROVENANCES,
+    SKILL_REUSE_STATES,
     TASK_END_REASONS,
     TASK_ENTRYPOINTS,
     TASK_OUTCOMES,
@@ -47,6 +51,9 @@ from hermes_cli.observability.shared_metrics_contract import (
     execution_surface,
     model_call_dimensions,
     model_call_fields,
+    skill_counter,
+    skill_lifecycle_fields,
+    skill_load_fields,
     task_counter,
     task_start_fields,
     task_terminal_fields,
@@ -368,6 +375,18 @@ def test_package_schema_matches_the_tool_contract():
     )
 
 
+def test_package_schema_matches_the_skill_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    lifecycle = _tool_dimension_schema("skill_lifecycle_counter")["properties"]
+    load = _tool_dimension_schema("skill_load_counter")["properties"]
+
+    assert set(lifecycle["action"]["enum"]) == SKILL_LIFECYCLE_ACTIONS
+    assert set(schema["$defs"]["skill_provenance"]["enum"]) == SKILL_PROVENANCES
+    assert set(load["reuse_state"]["enum"]) == SKILL_REUSE_STATES
+    assert set(load["post_patch_state"]["enum"]) == SKILL_POST_PATCH_STATES
+    assert load["use_count_bucket"] == {"$ref": "#/$defs/count_bucket"}
+
+
 @pytest.mark.parametrize(
     ("toolset", "expected"),
     [
@@ -610,6 +629,80 @@ def test_tool_subscriber_contract_accepts_only_bounded_events():
     approval.data["command"] = "must-not-pass"
     assert tool_approval_counter(approval) is None
 
+
+def test_skill_subscriber_contract_accepts_only_bounded_marks():
+    metadata = {"hermes.metrics.schema_version": "hermes.metrics.event.v2"}
+    lifecycle = SimpleNamespace(
+        kind="mark",
+        category=None,
+        category_profile=None,
+        name="hermes.skill.lifecycle",
+        scope_category=None,
+        metadata=metadata,
+        data={"action": "patched", "provenance": "agent_created"},
+    )
+    assert skill_counter(lifecycle) == (
+        "hermes.skill.lifecycle.count",
+        lifecycle.data,
+    )
+
+    load = SimpleNamespace(**{
+        **lifecycle.__dict__,
+        "name": "hermes.skill.load",
+        "data": {
+            "post_patch_state": "reused_after_patch",
+            "provenance": "agent_created",
+            "reuse_state": "reused",
+            "use_count_bucket": "3_to_5",
+        },
+    })
+    assert skill_counter(load) == ("hermes.skill.load.count", load.data)
+
+    load.data["skill_name"] = "privacy-canary"
+    assert skill_counter(load) is None
+    load.data.pop("skill_name")
+    load.data["provenance"] = "private-repository"
+    assert skill_counter(load) is None
+    lifecycle.metadata["skill_name"] = "privacy-canary"
+    assert skill_counter(lifecycle) is None
+
+def test_skill_event_fields_are_bounded_and_reject_malformed_usage():
+    assert skill_lifecycle_fields({
+        "action": "patched",
+        "provenance": "agent_created",
+        "skill_name": "privacy-canary",
+    }) == {"action": "patched", "provenance": "agent_created"}
+    assert skill_lifecycle_fields({"action": "deleted"}) is None
+    assert skill_load_fields({
+        "provenance": "private-repository",
+        "use_count": 2,
+        "reused": True,
+        "reuse_after_patch": False,
+        "skill_name": "privacy-canary",
+    }) == {
+        "post_patch_state": "no_new_patch",
+        "provenance": "unknown",
+        "reuse_state": "reused",
+        "use_count_bucket": "2",
+    }
+    assert skill_load_fields({
+        "use_count": 1,
+        "reused": False,
+        "reuse_after_patch": False,
+    }) == {
+        "post_patch_state": "not_applicable",
+        "provenance": "unknown",
+        "reuse_state": "first_use",
+        "use_count_bucket": "1",
+    }
+    assert (
+        skill_load_fields({
+            "use_count": 1,
+            "reused": False,
+            "reuse_after_patch": True,
+        })
+        is None
+    )
 
 def test_store_does_not_record_the_retired_model_metric(tmp_path):
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")

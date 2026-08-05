@@ -1469,6 +1469,23 @@ on its own adaptive default. The
 native Anthropic provider already controls effort directly and is unaffected.
 :::
 
+### OpenAI Responses text verbosity
+
+Reasoning effort controls how much the model thinks; output verbosity separately
+controls how detailed its final response is. For GPT-5 models on the canonical
+ChatGPT Codex route or the exact `api.openai.com` host, set
+`agent.text_verbosity` to `low`, `medium`, or `high`:
+
+```yaml
+agent:
+  reasoning_effort: high
+  text_verbosity: low
+```
+
+An empty or omitted value preserves the provider default. Hermes sends this to
+OpenAI's Responses API as `text.verbosity`; it is ignored for xAI, GitHub Models,
+and arbitrary custom Responses endpoints.
+
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```

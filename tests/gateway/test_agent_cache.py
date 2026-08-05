@@ -135,6 +135,47 @@ class TestExtractCacheBustingConfig:
         assert out["compression.codex_app_server_auto"] == "hermes"
 
 
+    def test_reads_agent_text_verbosity(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {"agent": {"text_verbosity": " Low ", "some_other_key": "ignored"}}
+        )
+
+        assert out["agent.text_verbosity"] == "low"
+
+    def test_malformed_text_verbosity_is_safe_for_cache_signature(self):
+        from gateway.run import GatewayRunner
+
+        cache_keys = GatewayRunner._extract_cache_busting_config(
+            {"agent": {"text_verbosity": {1: "low", "fallback": "high"}}}
+        )
+        signature = GatewayRunner._agent_config_signature(
+            "gpt-5.6-sol",
+            {"api_key": "k", "base_url": "u", "provider": "p"},
+            [],
+            "",
+            cache_keys=cache_keys,
+        )
+
+        assert cache_keys["agent.text_verbosity"] is None
+        assert signature
+
+    def test_text_verbosity_change_busts_cache(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig_before = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"agent.text_verbosity": "low"},
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"agent.text_verbosity": "high"},
+        )
+
+        assert sig_before != sig_after
+
     def test_missing_keys_yield_none(self):
         """Absent config keys must produce None values (still contribute to signature)."""
         from gateway.run import GatewayRunner

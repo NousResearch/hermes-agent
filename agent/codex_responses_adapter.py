@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.text_verbosity import parse_text_verbosity
 
 logger = logging.getLogger(__name__)
 
@@ -1028,7 +1029,7 @@ def _preflight_codex_api_kwargs(
 
     allowed_keys = {
         "model", "instructions", "input", "tools", "store",
-        "reasoning", "include", "max_output_tokens", "temperature",
+        "reasoning", "include", "max_output_tokens", "temperature", "text",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key",
         "prompt_cache_retention", "service_tier",
         "extra_headers", "extra_body", "timeout",
@@ -1052,6 +1053,29 @@ def _preflight_codex_api_kwargs(
     service_tier = api_kwargs.get("service_tier")
     if isinstance(service_tier, str) and service_tier.strip():
         normalized["service_tier"] = service_tier.strip()
+
+    text = api_kwargs.get("text")
+    if text is not None:
+        if not isinstance(text, dict):
+            raise ValueError("Codex Responses request 'text' must be an object.")
+        normalized_text: Dict[str, Any] = {}
+        for key, value in text.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError("Codex Responses request 'text' keys must be non-empty strings.")
+            normalized_key = key.strip()
+            if normalized_key == "verbosity":
+                if value is None:
+                    continue
+                verbosity = parse_text_verbosity(value)
+                if verbosity is None:
+                    raise ValueError(
+                        "Codex Responses request 'text.verbosity' must be low, medium, or high."
+                    )
+                normalized_text["verbosity"] = verbosity
+            else:
+                normalized_text[normalized_key] = value
+        if normalized_text:
+            normalized["text"] = normalized_text
 
     # Pass through max_output_tokens and temperature
     max_output_tokens = api_kwargs.get("max_output_tokens")

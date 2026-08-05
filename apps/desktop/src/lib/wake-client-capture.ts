@@ -113,6 +113,9 @@ export async function startClientWakeCapture(
   // frames so the detector still sees contiguous recent PCM rather than gaps
   // from fire-and-forget discard-while-inflight.
   const MAX_QUEUED_FRAMES = 24 // ~1.9s at 80 ms/frame
+  // Coalesce queued frames into one wake.feed call (backend splits them back
+  // into engine frames). 4 × 80 ms ≈ 3 RPCs/s steady-state instead of 12.5.
+  const MAX_FRAMES_PER_FEED = 4
   const queue: Float32Array[] = []
   let draining = false
 
@@ -123,12 +126,14 @@ export async function startClientWakeCapture(
     draining = true
     try {
       while (!stopped && queue.length > 0) {
-        const frame = queue.shift()
-        if (!frame) {
+        const batch = queue.splice(0, MAX_FRAMES_PER_FEED)
+        if (batch.length === 0) {
           break
         }
         try {
-          const pcm = floatToInt16LE(frame)
+          const merged = new Float32Array(batch.length * frameLength)
+          batch.forEach((frame, i) => merged.set(frame, i * frameLength))
+          const pcm = floatToInt16LE(merged)
           await options.request('wake.feed', {
             pcm: bytesToBase64(pcm),
             sample_rate: TARGET_RATE

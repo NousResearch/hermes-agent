@@ -13400,7 +13400,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4001, f"invalid base64 pcm: {e}")
     if not pcm:
         return _ok(rid, {"fed": False, "reason": "empty"})
-    # Soft size cap (~0.5s of 16kHz int16 mono = 16000 bytes)
+    # Soft size cap: 64000 bytes = 2s of 16 kHz int16 mono
     if len(pcm) > 64000:
         return _err(rid, 4001, "pcm frame too large")
     sr = params.get("sample_rate")

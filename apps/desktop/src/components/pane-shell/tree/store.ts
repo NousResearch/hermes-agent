@@ -1280,11 +1280,7 @@ export function moveTreePanes(
  * back to a single-zone move at `fallbackGroupId` when the set can't merge
  * (non-rectangular selection).
  */
-export function mergeTreeZones(
-  groupIds: string[],
-  paneId: string | readonly string[],
-  fallbackGroupId: null | string
-) {
+export function mergeTreeZones(groupIds: string[], paneId: string | readonly string[], fallbackGroupId: null | string) {
   const tree = $layoutTree.get()
 
   if (!tree) {

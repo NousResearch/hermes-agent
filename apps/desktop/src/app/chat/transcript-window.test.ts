@@ -122,12 +122,7 @@ describe('selectTranscriptWindow', () => {
 })
 
 describe('alignToBranchGroup', () => {
-  const messages = [
-    message('u-1', 10),
-    message('a-1', 10, 'g'),
-    message('a-2', 10, 'g'),
-    message('u-2', 10)
-  ]
+  const messages = [message('u-1', 10), message('a-1', 10, 'g'), message('a-2', 10, 'g'), message('u-2', 10)]
 
   it('widens a cut that lands mid-group back to the group start', () => {
     expect(alignToBranchGroup(messages, 2)).toBe(1)

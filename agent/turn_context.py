@@ -393,6 +393,7 @@ def build_turn_context(
             api_key=getattr(agent, "api_key", "") or "",
             api_mode=getattr(agent, "api_mode", "") or "",
             auth_mode=getattr(agent, "auth_mode", "") or "",
+            session_id=getattr(agent, "session_id", "") or "",
         )
     except Exception:
         pass

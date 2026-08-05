@@ -7560,15 +7560,23 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     return True
 
 
-def inject_external_message(text: Any) -> bool:
-    """Deliver an externally-originated message into the most recently active
-    chat session, as if the user had typed it.
+def inject_external_message(text: Any, target_sid: str | None = None) -> bool:
+    """Deliver an externally-originated message into a chat session, as if
+    the user had typed it.
 
     This is the dashboard/desktop counterpart of the CLI's inject queues
     (``hermes_cli.plugins.PluginContext.inject_message``): plugins and watcher
     threads use it to push completion reports and escalations into the
     conversation of a headless serving process, where no interactive CLI
     exists to receive them.
+
+    ``target_sid`` names the session that originated the work. When given,
+    the message is delivered to that session ONLY — if it has been closed
+    (or is unroutable), the message is dropped and False is returned, never
+    rerouted: a report about session A's work must not surface in session
+    B's conversation. Without a target the message goes to the most
+    recently active session (callers that genuinely address "whoever is
+    listening").
 
     Routing mirrors ``prompt.submit``'s busy policy, minus the interrupt: a
     busy session gets the message merged into its queued next-turn prompt
@@ -7582,11 +7590,15 @@ def inject_external_message(text: Any) -> bool:
     """
     if not isinstance(text, str) or not text.strip():
         return False
-    candidates = sorted(
-        list(_sessions.items()),
-        key=lambda kv: kv[1].get("last_active") or 0,
-        reverse=True,
-    )
+    if target_sid is not None:
+        session = _sessions.get(target_sid)
+        candidates = [(target_sid, session)] if session is not None else []
+    else:
+        candidates = sorted(
+            list(_sessions.items()),
+            key=lambda kv: kv[1].get("last_active") or 0,
+            reverse=True,
+        )
     for sid, session in candidates:
         if session.get("lazy"):
             continue

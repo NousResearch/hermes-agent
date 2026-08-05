@@ -98,6 +98,42 @@ def test_most_recently_active_session_wins(monkeypatch):
     assert _wait_until(lambda: fired.get("sid") == "new")
 
 
+def test_target_session_beats_more_recent_activity(monkeypatch):
+    fired = {}
+
+    def fake_run_prompt_submit(rid, sid, session, text, **kwargs):
+        fired["sid"] = sid
+
+    monkeypatch.setattr(server, "_run_prompt_submit", fake_run_prompt_submit)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda s: False)
+    monkeypatch.setattr(server, "_sessions", {
+        "origin": _session(last_active=10.0),
+        "chatty": _session(last_active=200.0),
+    })
+
+    assert server.inject_external_message("report", target_sid="origin") is True
+    assert _wait_until(lambda: fired.get("sid") == "origin")
+
+
+def test_closed_target_session_drops_instead_of_rerouting(monkeypatch):
+    other = _session(last_active=200.0)
+    monkeypatch.setattr(server, "_sessions", {"other": other})
+
+    assert server.inject_external_message("report", target_sid="gone") is False
+    assert other.get("queued_prompt") is None
+
+
+def test_lazy_target_session_drops_instead_of_rerouting(monkeypatch):
+    other = _session(last_active=200.0)
+    monkeypatch.setattr(server, "_sessions", {
+        "watch": _session(lazy=True, last_active=10.0),
+        "other": other,
+    })
+
+    assert server.inject_external_message("report", target_sid="watch") is False
+    assert other.get("queued_prompt") is None
+
+
 def test_lazy_watch_sessions_are_skipped(monkeypatch):
     monkeypatch.setattr(server, "_sessions", {
         "watch": _session(lazy=True, last_active=200.0),
@@ -136,6 +172,26 @@ def test_inject_message_routes_to_gateway_when_no_cli(monkeypatch):
     assert ctx._manager._cli_ref is None
     assert ctx.inject_message("run finished") is True
     assert session["queued_prompt"]["text"] == "run finished"
+
+
+def test_inject_message_session_id_targets_origin_session(monkeypatch):
+    origin = _session(running=True, last_active=10.0)
+    chatty = _session(running=True, last_active=200.0)
+    monkeypatch.setattr(server, "_sessions", {"origin": origin, "chatty": chatty})
+
+    ctx = _plugin_ctx()
+    assert ctx.inject_message("run finished", session_id="origin") is True
+    assert origin["queued_prompt"]["text"] == "run finished"
+    assert chatty.get("queued_prompt") is None
+
+
+def test_inject_message_session_id_gone_drops(monkeypatch):
+    chatty = _session(running=True, last_active=200.0)
+    monkeypatch.setattr(server, "_sessions", {"chatty": chatty})
+
+    ctx = _plugin_ctx()
+    assert ctx.inject_message("run finished", session_id="gone") is False
+    assert chatty.get("queued_prompt") is None
 
 
 def test_inject_message_still_false_without_cli_or_sessions(monkeypatch):

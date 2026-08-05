@@ -138,6 +138,33 @@ class TestCreateMode:
 
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
+    def test_create_mode_never_rewrites_an_existing_file(
+        self, tmp_path: Path
+    ) -> None:
+        """create_mode without preserve_mode must not chmod an existing file."""
+        target = tmp_path / "notes.md"
+        target.write_text("old\n", encoding="utf-8")
+        os.chmod(target, 0o640)
+
+        atomic_write_text(target, "new\n", create_mode=0o644)
+
+        # The write is a plain (non-preserving) atomic rewrite: mkstemp 0600.
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_windows_fallback_branch_applies_mode_after_replace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without os.fchmod (Windows), the mode is applied post-replace."""
+        target = tmp_path / "config.yaml"
+        target.write_text("old\n", encoding="utf-8")
+        os.chmod(target, 0o640)
+
+        monkeypatch.delattr(os, "fchmod")
+        atomic_write_text(target, "new\n", preserve_mode=True)
+
+        assert target.read_text(encoding="utf-8") == "new\n"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o640
+
     def test_atomic_yaml_write_create_mode(self, tmp_path: Path) -> None:
         """write_manifest's create path: new file lands 0644, not 0600."""
         target = tmp_path / "distribution.yaml"

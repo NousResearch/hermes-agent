@@ -61,7 +61,6 @@ Update semantics:
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
@@ -274,26 +273,20 @@ def write_manifest(profile_dir: Path, manifest: DistributionManifest) -> Path:
     # tracking and env_requires with no error surfaced anywhere.
     from utils import atomic_yaml_write
 
-    # atomic_yaml_write preserves an existing file's mode, but a file it
-    # *creates* keeps mkstemp's 0600. _materialize() reaches this line with no
-    # manifest on disk whenever a distribution declares an explicit
-    # `distribution_owned` allowlist that does not list distribution.yaml
-    # itself, so the file is never copied out of the staged tree. The manifest
-    # is a shareable descriptor rather than a secret and used to land at the
-    # umask default, so restore 0644 on the create path only.
-    existed = mf_path.exists()
-
+    # create_mode=0o644: _materialize() reaches this line with no manifest on
+    # disk whenever a distribution declares an explicit `distribution_owned`
+    # allowlist that does not list distribution.yaml itself, so the file is
+    # never copied out of the staged tree. The manifest is a shareable
+    # descriptor rather than a secret and used to land at the umask default,
+    # so don't leave a freshly created one at mkstemp's 0600. An existing
+    # file's mode is preserved as before.
     atomic_yaml_write(
         mf_path,
         manifest.to_dict(),
         sort_keys=False,
         default_flow_style=False,
+        create_mode=0o644,
     )
-    if not existed:
-        try:
-            os.chmod(mf_path, 0o644)
-        except OSError:
-            pass
     return mf_path
 
 

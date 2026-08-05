@@ -142,6 +142,8 @@ def atomic_write_text(
     *,
     encoding: str = "utf-8",
     tmp_prefix: str = ".tmp_",
+    preserve_mode: bool = False,
+    create_mode: "int | None" = None,
 ) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
@@ -151,18 +153,45 @@ def atomic_write_text(
 
     Used by the memory store, skill manager, and agent importer so that
     every destructive file rewrite in the codebase shares one implementation.
+
+    Args:
+        preserve_mode: When True, carry an existing target's permission bits
+            and (POSIX, best-effort) owner across the replace, like
+            ``atomic_yaml_write`` does unconditionally.  ``os.replace`` swaps
+            in mkstemp's 0600 temp file owned by the writing user, so without
+            this a root-run rewrite of a user-owned file flips its owner and
+            tightens its mode.  The mode is applied to the temp fd *before*
+            the replace, so the file never transits through 0600.  Off by
+            default: the historical callers (memory store, skill manager,
+            cron) own their 0600-is-fine files.
+        create_mode: Permission bits to apply when the target does not yet
+            exist (otherwise the new file keeps mkstemp's 0600).  Ignored
+            when ``preserve_mode`` found an existing mode to carry over.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    original_mode = _preserve_file_mode(path) if preserve_mode else None
+    original_owner = _preserve_file_owner(path) if preserve_mode else None
+    effective_mode = original_mode if original_mode is not None else create_mode
+
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent), prefix=tmp_prefix, suffix=".tmp"
     )
     try:
+        if effective_mode is not None and hasattr(os, "fchmod"):
+            # fchmod is Unix-only; on Windows the post-replace chmod below
+            # applies the final mode instead.
+            os.fchmod(fd, effective_mode)
         with os.fdopen(fd, "w", encoding=encoding) as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        atomic_replace(tmp_path, path)
+        real_path = atomic_replace(tmp_path, path)
+        if preserve_mode:
+            _restore_file_owner(Path(real_path), original_owner)
+        if effective_mode is not None and not hasattr(os, "fchmod"):
+            _restore_file_mode(Path(real_path), effective_mode)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -307,6 +336,7 @@ def atomic_yaml_write(
     default_flow_style: bool = False,
     sort_keys: bool = False,
     extra_content: str | None = None,
+    create_mode: "int | None" = None,
 ) -> None:
     """Write YAML data to a file atomically.
 
@@ -321,12 +351,17 @@ def atomic_yaml_write(
         sort_keys: Whether to sort dict keys (default False).
         extra_content: Optional string to append after the YAML dump
             (e.g. commented-out sections for user reference).
+        create_mode: Permission bits to apply when the target does not yet
+            exist (a created file otherwise keeps mkstemp's 0600).  An
+            existing file's mode is always preserved and wins over this.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     original_mode = _preserve_file_mode(path)
     original_owner = _preserve_file_owner(path)
+    if original_mode is None:
+        original_mode = create_mode
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),

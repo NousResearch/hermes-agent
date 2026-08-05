@@ -8,7 +8,6 @@ Provides options for:
 
 import os
 import shutil
-import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -98,16 +97,10 @@ def remove_path_from_shell_configs():
                 # that to a warning, so the next login just starts a bare
                 # shell. atomic_replace also resolves a symlinked rc file, so a
                 # dotfiles-repo setup keeps the symlink instead of having it
-                # replaced by a regular file.
-                prior_mode = stat.S_IMODE(config_path.stat().st_mode)
-                atomic_write_text(config_path, new_content)
-                # atomic_write_text swaps in a fresh 0600 temp file; shell rc
-                # files are normally 0644 and removing Hermes' PATH block must
-                # not quietly change their permissions.
-                try:
-                    os.chmod(config_path, prior_mode)
-                except OSError:
-                    pass
+                # replaced by a regular file. preserve_mode keeps the rc's
+                # permission bits (normally 0644) and owner (sudo-run
+                # uninstalls) instead of mkstemp's 0600/root.
+                atomic_write_text(config_path, new_content, preserve_mode=True)
                 removed_from.append(config_path)
                 
         except Exception as e:

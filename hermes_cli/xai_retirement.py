@@ -138,8 +138,6 @@ def format_issue(issue: RetirementIssue) -> str:
 
 import datetime as _dt
 import io
-import os
-import stat
 from pathlib import Path
 import shutil
 
@@ -262,22 +260,11 @@ def apply_migration(
     buf = io.StringIO()
     yaml.dump(doc, buf)
 
-    # atomic_write_text swaps in a fresh 0600 temp file, so carry the existing
-    # permission bits across: _secure_file deliberately leaves config.yaml
-    # alone under managed (NixOS 0640) and container installs, and a migration
-    # must not silently tighten what those setups widened.
-    try:
-        prior_mode = stat.S_IMODE(config_path.stat().st_mode)
-    except OSError:
-        prior_mode = None
-
-    atomic_write_text(config_path, buf.getvalue())
-
-    if prior_mode is not None:
-        try:
-            os.chmod(config_path, prior_mode)
-        except OSError:
-            pass
+    # preserve_mode carries the existing permission bits AND owner across the
+    # replace: _secure_file deliberately leaves config.yaml alone under managed
+    # (NixOS 0640) and container installs, and a root-run migration on a
+    # user-owned volume must not flip ownership to root.
+    atomic_write_text(config_path, buf.getvalue(), preserve_mode=True)
 
     return ApplyResult(
         file_path=config_path,

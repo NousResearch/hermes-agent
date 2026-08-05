@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from hermes_constants import venv_python_path
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,97 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
                 return False, str(path), str(exc)
             except OSError as exc:
                 return False, str(path), f"could not read: {exc}"
+    return True, None, None
+
+
+# Modules imported on every agent startup. Unlike _UPDATE_CRITICAL_FILES (which
+# is only parsed), these are actually *imported* so that cross-module breakage
+# is caught — a file can be syntactically perfect and still fail to import
+# because a name it pulls from a sibling module no longer exists.
+_UPDATE_CRITICAL_MODULES = (
+    "hermes_cli.main",
+    "run_agent",
+    "model_tools",
+    "toolsets",
+)
+
+
+def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | None]:
+    """Import each module in ``_UPDATE_CRITICAL_MODULES`` in a subprocess.
+
+    ``_validate_critical_files_syntax`` only *parses* files, so it cannot see
+    cross-module breakage: a partially-updated tree where ``agent/`` is new but
+    ``tools/`` is old parses perfectly and still dies at startup with
+    ``ImportError: cannot import name 'TODO_INJECTION_HEADER' from
+    'tools.todo_tool'``. Every file is valid Python; the *combination* is not.
+
+    That skew is reachable on the Windows ZIP-update path, whose copy loop
+    walks top-level entries in ``os.listdir`` order and replaces each one
+    independently — ``agent/`` lands long before ``tools/``, so a failure or
+    interruption between them leaves exactly that mismatch on disk.
+
+    Runs in a subprocess because importing these modules into the running
+    updater would pollute ``sys.modules`` and execute import-time side effects
+    against the half-updated tree. Costs ~0.4s.
+
+    Uses the project venv's interpreter when there is one (matching
+    ``_venv_core_imports_healthy``): ``hermes update`` can be driven by a
+    different Python than the install's own, and probing the wrong
+    interpreter would test a tree the user never runs.
+
+    Returns ``(ok, failing_module, error_message)``.
+    """
+    from hermes_constants import FIRST_PARTY_MODULE_ROOTS
+
+    probe = (
+        "import importlib, sys\n"
+        "for name in %r:\n"
+        "    try:\n"
+        "        importlib.import_module(name)\n"
+        "    except ModuleNotFoundError as exc:\n"
+        # A missing *third-party* module means dependencies aren't installed
+        # yet, not a skewed checkout. Only our own packages count as breakage.
+        # The root set is injected from hermes_constants so this can't drift
+        # from the hint the user is shown (they disagreed once already).
+        "        missing = (getattr(exc, 'name', '') or '').split('.')[0]\n"
+        "        if missing in %r or missing.startswith('hermes_'):\n"
+        "            sys.stdout.write(name + '\\n' + str(exc))\n"
+        "            raise SystemExit(3)\n"
+        "    except ImportError as exc:\n"
+        "        sys.stdout.write(name + '\\n' + str(exc))\n"
+        "        raise SystemExit(3)\n"
+        "    except Exception:\n"
+        "        pass\n"  # non-import errors (config/env) aren't update breakage
+        "raise SystemExit(0)\n"
+        % (_UPDATE_CRITICAL_MODULES, tuple(sorted(FIRST_PARTY_MODULE_ROOTS)))
+    )
+    try:
+        interpreter = sys.executable
+        try:
+            venv_python = venv_python_path(
+                Path(root) / "venv", windows=_m()._is_windows()
+            )
+            if venv_python.exists():
+                interpreter = str(venv_python)
+        except Exception:
+            pass  # fall back to the running interpreter
+        result = subprocess.run(
+            [interpreter, "-c", probe],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # Can't run the probe — don't block the update on our own tooling.
+        return True, None, None
+    if result.returncode == 3:
+        parts = (result.stdout or "").split("\n", 1)
+        module = parts[0].strip() or "unknown"
+        detail = parts[1].strip() if len(parts) > 1 else ""
+        return False, module, detail
     return True, None, None
 
 def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0) -> str:
@@ -504,32 +596,121 @@ def _atomic_replace_dir(src: str, dst: str) -> None:
     is already gone and nothing replaced it — the install is left with a
     deleted tree (issue #49145, where ``ui-tui/`` vanished and broke the TUI).
 
-    Instead, stage the new copy into a sibling temp dir first; only once that
-    fully succeeds do we swap it in. A failure during staging raises with the
-    original *dst* still intact.
+    Now a thin single-entry alias over the two-phase helpers below, which
+    generalise the same stage-then-swap discipline across every entry the ZIP
+    update touches (#76104). Retained because it is part of the mechanical
+    ``hermes_cli.main`` re-export surface and guards the #49145 regression.
+    """
+    _commit_staged_replacements([(_stage_replacement(src, dst), dst)])
+
+
+def _stage_replacement(src: str, dst: str) -> str:
+    """Copy *src* to a sibling staging path for *dst*; return the staging path.
+
+    Phase 1 of the two-phase replace. Handles both directories and plain
+    files. Touches nothing live, so a failure here leaves the whole install
+    untouched.
     """
     staging = f"{dst}.hermes-update-staging"
     backup = f"{dst}.hermes-update-old"
-    # Clear any leftovers from a previously-interrupted update.
+    # A previous run may have died between "move dst aside" and "move staging
+    # in" — leaving dst missing and the backup as the ONLY copy of that entry.
+    # Restore it before clearing leftovers: deleting the backup first and then
+    # failing to stage (disk exhaustion is likely right after writing a full
+    # staging copy) would leave a hole in the install with nothing to roll
+    # back to. The restore is a same-filesystem rename — instant and safe.
+    if not os.path.exists(dst) and os.path.exists(backup):
+        os.rename(backup, dst)
     for leftover in (staging, backup):
-        if os.path.exists(leftover):
+        if os.path.isdir(leftover):
             shutil.rmtree(leftover, ignore_errors=True)
+        elif os.path.exists(leftover):
+            os.remove(leftover)
+    if os.path.isdir(src):
+        shutil.copytree(src, staging)
+    else:
+        shutil.copy2(src, staging)
+    return staging
 
-    # 1. Stage the new copy. If this fails, dst is untouched.
-    shutil.copytree(src, staging)
-    # 2. Swap: move the live dir aside, move staging into place. Both moves are
-    #    same-filesystem renames; if the second fails we restore the backup.
-    if os.path.exists(dst):
-        os.rename(dst, backup)
+
+def _discard_staged(staged) -> None:
+    """Remove staging paths for entries that were never committed.
+
+    Without this a phase-1 failure (typically disk exhaustion) orphans one
+    staging copy per entry already processed — up to a full second copy of
+    the tree. The user then follows the "re-run `hermes update`" advice with
+    *less* free space than before and the retry fails harder than the
+    original attempt.
+    """
+    for staging, _dst in staged:
+        try:
+            if os.path.isdir(staging):
+                shutil.rmtree(staging, ignore_errors=True)
+            elif os.path.exists(staging):
+                os.remove(staging)
+        except OSError as exc:  # best-effort cleanup, never fatal
+            logger.warning("could not remove staging path %s: %s", staging, exc)
+
+
+def _commit_staged_replacements(staged) -> None:
+    """Phase 2: swap every staged entry into place, rolling back all on failure.
+
+    ``_atomic_replace_dir`` makes each *individual* directory swap safe, but
+    the ZIP update replaces ~90 top-level entries in a loop, and nothing made
+    the loop atomic *as a whole*. A failure partway left some entries at the
+    new version and the rest at the old one — every file valid Python, the
+    combination unbootable (issue #76104; the ``ImportError`` in #76091 and
+    the field report in #63717 are both this).
+
+    This covers plain files as well as directories: the repo root holds 20
+    first-party modules (``run_agent.py``, ``cli.py``, ``hermes_constants.py``
+    …), so a files-only failure reproduces exactly the bug class we are
+    closing. Every swap is an ``os.rename`` onto a path that was just moved
+    aside — a same-filesystem rename is atomic on POSIX and NTFS alike, so a
+    file swap can never leave a half-written module the way ``copy2`` onto a
+    live path can.
+
+    Splitting stage-all-then-swap-all shrinks the failure window from "the
+    duration of a full tree copy" to "the duration of N renames", and makes
+    the remaining window recoverable: if a swap fails we restore every entry
+    already swapped, so the tree lands wholly new or wholly old.
+    """
+    swapped: list[tuple[str, str]] = []  # (dst, backup) in swap order; "" = absent
     try:
-        os.rename(staging, dst)
+        for staging, dst in staged:
+            backup = f"{dst}.hermes-update-old"
+            if os.path.exists(dst):
+                os.rename(dst, backup)
+                swapped.append((dst, backup))
+            else:
+                swapped.append((dst, ""))
+            os.rename(staging, dst)
     except OSError:
-        if os.path.exists(backup) and not os.path.exists(dst):
-            os.rename(backup, dst)  # roll back to the original
+        # Undo every swap already made so the install stays self-consistent.
+        for dst, backup in reversed(swapped):
+            try:
+                if os.path.isdir(dst):
+                    shutil.rmtree(dst, ignore_errors=True)
+                elif os.path.exists(dst):
+                    os.remove(dst)
+                if backup and os.path.exists(backup):
+                    os.rename(backup, dst)
+            except OSError as exc:
+                # Keep restoring the rest — a silent failure here is the one
+                # thing that turns a recoverable rollback into a mixed tree,
+                # so say so rather than swallowing it.
+                logger.warning("rollback failed for %s: %s", dst, exc)
         raise
-    # 3. New dir is in place; drop the old one (best-effort — never fatal).
-    if os.path.exists(backup):
-        shutil.rmtree(backup, ignore_errors=True)
+    # All swaps succeeded — drop the backups (best-effort, never fatal).
+    for _dst, backup in swapped:
+        if backup and os.path.isdir(backup):
+            shutil.rmtree(backup, ignore_errors=True)
+        elif backup and os.path.exists(backup):
+            try:
+                os.remove(backup)
+            except OSError:
+                pass
+
 
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
@@ -609,24 +790,84 @@ def _update_via_zip(args):
 
         # Copy updated files over existing installation, preserving venv/node_modules/.git
         preserve = {"venv", "node_modules", ".git", ".env"}
-        update_count = 0
-        for item in os.listdir(extracted):
-            if item in preserve:
-                continue
-            src = os.path.join(extracted, item)
-            dst = os.path.join(str(_m().PROJECT_ROOT), item)
-            if os.path.isdir(src):
-                # Atomic-ish replace: never leave dst half-deleted if the copy
-                # fails partway (the failure mode behind #49145 on Windows).
-                _atomic_replace_dir(src, dst)
-            else:
-                shutil.copy2(src, dst)
-            update_count += 1
+        entries = [i for i in os.listdir(extracted) if i not in preserve]
+
+        # Two-phase replace (#76104). Phase 1 copies every entry — directories
+        # AND top-level files — to a sibling staging path without touching
+        # anything live; phase 2 swaps them all in with same-filesystem
+        # renames and rolls back every swap if any one fails. Replacing
+        # entries one-at-a-time (the previous shape) meant an interruption
+        # partway left `agent/` new and `tools/` stale — all files valid, the
+        # tree unbootable. Files matter as much as directories here: the repo
+        # root holds 20 first-party modules (run_agent.py, cli.py,
+        # hermes_constants.py, ...).
+        #
+        # Staging costs one extra copy of the tree on disk. Check up front so
+        # we fail with a clear message instead of running out mid-copy.
+        need = sum(
+            os.path.getsize(os.path.join(dirpath, f))
+            for entry in entries
+            for dirpath, _dirs, files in os.walk(os.path.join(extracted, entry))
+            for f in files
+        ) + sum(
+            os.path.getsize(os.path.join(extracted, e))
+            for e in entries
+            if os.path.isfile(os.path.join(extracted, e))
+        )
+        # Only the staging copy is new — the live tree already occupies its
+        # space and the swaps are renames, not copies. Ask for the staging
+        # copy plus 20% headroom rather than a full 2x, which would block
+        # updates that would have succeeded on exactly the space-constrained
+        # machines most likely to hit this path.
+        required = int(need * 1.2)
+        free = shutil.disk_usage(str(_m().PROJECT_ROOT)).free
+        if free < required:
+            raise RuntimeError(
+                f"not enough free disk space to stage the update safely "
+                f"(need ~{required // (1024 * 1024)} MB, have "
+                f"{free // (1024 * 1024)} MB)"
+            )
+
+        staged: list[tuple[str, str]] = []
+        try:
+            for item in entries:
+                src = os.path.join(extracted, item)
+                dst = os.path.join(str(_m().PROJECT_ROOT), item)
+                staged.append((_stage_replacement(src, dst), dst))
+        except Exception:
+            # Nothing is live yet; drop the partial staging copies so a retry
+            # starts from the same free space this attempt did.
+            _discard_staged(staged)
+            raise
+
+        try:
+            _commit_staged_replacements(staged)
+        except Exception:
+            # The rollback already restored every swapped entry, but staging
+            # copies for the not-yet-swapped entries (potentially most of a
+            # full tree) are still on disk. Drop them, or the retry's
+            # up-front free-space check — which runs BEFORE the lazy
+            # per-entry leftover cleanup — fails on litter this attempt
+            # left behind: the exact "retry fails harder" failure mode
+            # _discard_staged exists to prevent. Safe post-rollback: swapped
+            # entries' staging paths were renamed away, and _discard_staged
+            # skips paths that no longer exist.
+            _discard_staged(staged)
+            raise
+        update_count = len(staged)
 
         print(f"✓ Updated {update_count} items from ZIP")
 
     except Exception as e:
         print(f"✗ ZIP update failed: {e}")
+        # The two-phase replace either commits every entry or rolls them all
+        # back, so a failure here does not leave a mixed-version tree — don't
+        # scare the user toward a reinstall they don't need.
+        print("  Your existing install was left in place.")
+        print(
+            "  Re-run `hermes update` to retry; if the agent won't start, "
+            "reinstall from https://hermes-agent.nousresearch.com"
+        )
         _m().sys.exit(1)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -684,6 +925,27 @@ def _update_via_zip(args):
     # after the dependency reinstall, same as the git-pull path (#53272,
     # #70636).
     _m()._refresh_active_memory_provider_dependencies()
+
+    # Now that dependencies are installed, verify the tree actually imports.
+    # The copy loop above replaces top-level entries one at a time in
+    # os.listdir order, so an interruption between (say) `agent/` and `tools/`
+    # leaves a tree whose files all parse but cannot be imported together —
+    # the ImportError-on-startup class this guard exists to catch. Deliberately
+    # placed *after* the dependency reinstall so a genuinely-new third-party
+    # requirement isn't misreported as a partial copy. There is no SHA to roll
+    # back to here, so surface it with a concrete recovery step rather than
+    # reporting a successful update over a bricked install.
+    import_ok, failing_module, import_error = _validate_critical_modules_import(
+        _m().PROJECT_ROOT
+    )
+    if not import_ok:
+        print()
+        print("✗ Update left the install in an unimportable state:")
+        print(f"  {failing_module}: {import_error}")
+        print()
+        print("  This usually means the copy was interrupted partway through.")
+        print("  Re-run `hermes update` to complete it.")
+        _m().sys.exit(1)
 
     node_failures = _update_node_dependencies()
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
@@ -1827,7 +2089,7 @@ def _update_node_dependencies() -> list[str]:
         print("    deps). Fix npm and re-run `hermes update`.")
         return list(labels)
 
-    extra_args = ["--no-fund", "--no-audit", "--progress=false"]
+    extra_args = ["--no-fund", "--no-audit", "--prefer-offline", "--progress=false"]
 
     from hermes_constants import with_hermes_node_path
 
@@ -2516,9 +2778,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     healthy so a probe failure can't force needless reinstalls.
     """
     venv_dir = _m().PROJECT_ROOT / "venv"
-    python_name = "python.exe" if _m()._is_windows() else "python"
-    bin_dir = "Scripts" if _m()._is_windows() else "bin"
-    venv_python = venv_dir / bin_dir / python_name
+    venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
     if not venv_python.exists():
         # No venv interpreter at all. In a dev checkout that's normal (the
         # dev may run hermes from any interpreter), so report healthy to
@@ -3214,8 +3474,36 @@ def _normalize_managed_eol(git_cmd, repo_root):
             return None
         return {p for p in out.stdout.split("\0") if p}
 
+    def _real_dirty():
+        # Files with a *content* change once CRLF differences are ignored.
+        # NOTE: ``diff --name-only --ignore-cr-at-eol`` still LISTS CR-only
+        # files (the name list is computed from blob/stat differences before
+        # the CR filter is applied), so it cannot be used to isolate real
+        # edits. ``--numstat`` does honor the filter: a CR-only file produces
+        # no numstat record, while a genuinely-edited file does. Parse the
+        # paths out of numstat instead.
+        out = subprocess.run(
+            probe + ["-c", "core.quotepath=false",
+                     "diff", "--numstat", "--ignore-cr-at-eol"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if out.returncode != 0:
+            return None
+        paths = set()
+        for line in out.stdout.splitlines():
+            if not line.strip():
+                continue
+            # Format: "<added>\t<deleted>\t<path>". Rename detection is off in
+            # plain diff, so there is exactly one path field per record.
+            parts = line.split("\t", 2)
+            if len(parts) == 3 and parts[2]:
+                paths.add(parts[2])
+        return paths
+
     def _eol_only():
-        all_dirty, real_dirty = _dirty(), _dirty("--ignore-cr-at-eol")
+        all_dirty, real_dirty = _dirty(), _real_dirty()
         if all_dirty is None or real_dirty is None:
             return None
         return all_dirty - real_dirty
@@ -3604,10 +3892,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # repair after the old venv was moved aside) needs the venv
                 # recreated before dependencies can be installed into it.
                 venv_python_missing = not (
-                    _m().PROJECT_ROOT
-                    / "venv"
-                    / ("Scripts" if _m()._is_windows() else "bin")
-                    / ("python.exe" if _m()._is_windows() else "python")
+                    venv_python_path(
+                        _m().PROJECT_ROOT / "venv", windows=_m()._is_windows()
+                    )
                 ).exists()
                 if venv_python_missing and repair_uv:
                     print("→ Recreating virtual environment...")
@@ -3883,6 +4170,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # reinstall + lazy refresh above may have stripped or downgraded
         # plugin.yaml-declared deps that aren't in extras (#53272, #70636).
         _m()._refresh_active_memory_provider_dependencies()
+
+        # Everything that can legitimately produce a transient ImportError has
+        # now run (bytecode sweep, dependency reinstall, lazy refresh), so a
+        # module that still won't import is real breakage. Warn only — never
+        # roll back here: `cannot import name X` is also the signature of the
+        # stale-bytecode class (#6207, #60242), and the launch-time sweep in
+        # _sweep_stale_bytecode_if_checkout_changed() self-heals that on the
+        # next run. A destructive reset would undo a good update over a state
+        # that fixes itself.
+        import_ok, failing_module, import_error = _validate_critical_modules_import(
+            _m().PROJECT_ROOT
+        )
+        if not import_ok:
+            print()
+            print(f"  ⚠ {failing_module} still fails to import after updating:")
+            print(f"      {import_error}")
+            print("    Run `hermes update` again — if it persists, reinstall:")
+            print("    https://hermes-agent.nousresearch.com")
 
         node_failures = _update_node_dependencies()
         _m()._build_web_ui(_m().PROJECT_ROOT / "web")
@@ -4558,37 +4863,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _manage_cmd_cache[scope_] = cmd
                 return cmd
 
-            # Drain budget for graceful SIGUSR1 restarts.  The gateway drains
-            # for up to ``agent.restart_drain_timeout`` (default 60s) before
-            # exiting with code 75; we wait slightly longer so the drain
-            # completes before we fall back to a hard restart.  On older
-            # systemd units without SIGUSR1 wiring this wait just times out
-            # and we fall back to ``systemctl restart`` (the old behaviour).
+            # Wait budget for graceful SIGUSR1 restarts.  In-band restart
+            # may defer stop() until active turns finish
+            # (``restart_after_turn_timeout``, #77184) and then spend up to
+            # ``restart_drain_timeout`` inside stop(). Cover both phases so
+            # we don't fall back to a hard kill while the gateway is still
+            # patiently waiting for the requesting turn. On older systemd
+            # units without SIGUSR1 wiring this wait just times out and we
+            # fall back to ``systemctl restart`` (the old behaviour).
             try:
-                from hermes_constants import (
-                    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT as _DEFAULT_DRAIN,
-                )
-            except Exception:
-                _DEFAULT_DRAIN = 60.0
-            _cfg_drain = None
-            try:
-                from hermes_cli.config import load_config
+                from hermes_cli.gateway import _get_restart_exit_wait_budget
 
-                _cfg_agent = load_config().get("agent") or {}
-                _cfg_drain = _cfg_agent.get("restart_drain_timeout")
+                _drain_budget = max(float(_get_restart_exit_wait_budget()), 45.0)
             except Exception:
-                pass
-            try:
-                _drain_budget = (
-                    float(_cfg_drain)
-                    if _cfg_drain is not None
-                    else float(_DEFAULT_DRAIN)
-                )
-            except (TypeError, ValueError):
-                _drain_budget = float(_DEFAULT_DRAIN)
-            # Add a 15s margin so the drain loop + final exit finish before
-            # we escalate to ``systemctl restart`` / SIGTERM.
-            _drain_budget = max(_drain_budget, 30.0) + 15.0
+                _drain_budget = 45.0
 
             restarted_services = []
             failed_or_stale_units = []

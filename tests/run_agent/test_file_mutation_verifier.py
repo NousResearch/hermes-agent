@@ -65,6 +65,13 @@ class TestExtractFileMutationTargets:
         assert paths == ["/tmp/a.md", "/tmp/new.md", "/tmp/old.md"]
 
 
+    def test_patch_v4a_accepts_no_space_after_asterisks(self):
+        """Match patch_parser / file_tools: ``***Update File:`` (no space)."""
+        body = "***Update File: nospace.py\n"
+        assert _extract_file_mutation_targets(
+            "patch", {"mode": "patch", "patch": body}
+        ) == ["nospace.py"]
+
 
 # ---------------------------------------------------------------------------
 # _extract_error_preview

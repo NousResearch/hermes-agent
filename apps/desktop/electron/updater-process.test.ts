@@ -4,7 +4,65 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { resolveStagedUpdaterBinary, spawnUpdaterProcess } from './updater-process'
+import {
+  MARKER_SELF_ADOPT_EPOCH_MS,
+  resolveStagedUpdaterBinary,
+  spawnUpdaterProcess,
+  stagedUpdaterSupportsPrewrittenMarker
+} from './updater-process'
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+test('stagedUpdaterSupportsPrewrittenMarker rejects installers predating the self-adopt fix', () => {
+  // The real-world trap: an installer staged at first install months ago, never
+  // refreshed because copy_self_to_hermes_home no-ops during --update.
+  assert.equal(
+    stagedUpdaterSupportsPrewrittenMarker('C:\\Hermes\\hermes-setup.exe', {
+      stagedMtimeMs: () => MARKER_SELF_ADOPT_EPOCH_MS - 60 * DAY_MS
+    }),
+    false
+  )
+})
+
+test('stagedUpdaterSupportsPrewrittenMarker accepts installers from the fix onward', () => {
+  assert.equal(
+    stagedUpdaterSupportsPrewrittenMarker('C:\\Hermes\\hermes-setup.exe', {
+      stagedMtimeMs: () => MARKER_SELF_ADOPT_EPOCH_MS
+    }),
+    true
+  )
+  assert.equal(
+    stagedUpdaterSupportsPrewrittenMarker('C:\\Hermes\\hermes-setup.exe', {
+      stagedMtimeMs: () => MARKER_SELF_ADOPT_EPOCH_MS + 30 * DAY_MS
+    }),
+    true
+  )
+})
+
+test('stagedUpdaterSupportsPrewrittenMarker treats an unreadable mtime as unsupported', () => {
+  // Bias toward the path that can always make progress: a skipped pre-write
+  // loses anti-respawn hardening, a wedged updater can never update again.
+  assert.equal(
+    stagedUpdaterSupportsPrewrittenMarker('C:\\Hermes\\hermes-setup.exe', {
+      stagedMtimeMs: () => null
+    }),
+    false
+  )
+})
+
+test('resolveStagedUpdaterBinary still returns a stale staged updater on Windows', () => {
+  // Staleness gates only the marker PRE-WRITE, never the hand-off itself:
+  // the stale binary is the only updater these users have, and it works fine
+  // once it is allowed to write its own claim.
+  assert.equal(
+    resolveStagedUpdaterBinary('C:\\Hermes', {
+      fileExists: () => true,
+      isWindows: true,
+      stagedMtimeMs: () => MARKER_SELF_ADOPT_EPOCH_MS - 60 * DAY_MS
+    }),
+    path.join('C:\\Hermes', 'hermes-setup.exe')
+  )
+})
 
 test('spawnUpdaterProcess hides the updater console and detaches the child on Windows', () => {
   const calls: Array<{ args: string[]; command: string; options: SpawnOptions }> = []
@@ -68,7 +126,7 @@ test('resolveStagedUpdaterBinary hands Windows the staged installer it finds', (
   const probed: string[] = []
 
   const resolved = resolveStagedUpdaterBinary(home, {
-    fileExists: (candidate) => {
+    fileExists: candidate => {
       probed.push(candidate)
 
       return candidate === staged

@@ -18,6 +18,7 @@ from hermes_state_common import (
     SCHEMA_SQL,
     _PREVIEW_RAW_SELECT,
     _shape_preview,
+    _sql_session_last_active,
 )
 
 # Moved methods logged under the "hermes_state" logger before the split;
@@ -31,7 +32,7 @@ class SessionPortabilityMixin:
     @classmethod
     def _compact_session_cols(cls) -> str:
         """SELECT list for compact_rows: every ``sessions`` column declared in
-        SCHEMA_SQL except the ``system_prompt`` blob, aliased with the ``s``
+        SCHEMA_SQL except prompt storage internals, aliased with the ``s``
         prefix used by list_sessions_rich/_get_session_rich_row queries."""
         if cls._session_compact_cols_sql is None:
             declared = cls._parse_schema_columns(SCHEMA_SQL)["sessions"]
@@ -101,6 +102,7 @@ class SessionPortabilityMixin:
 
         query = f"""
             SELECT s.*,
+                COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved,
                 COALESCE(
                     (SELECT {_PREVIEW_RAW_SELECT}
                      FROM messages m
@@ -108,11 +110,9 @@ class SessionPortabilityMixin:
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,
-                COALESCE(
-                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                    s.started_at
-                ) AS last_active
+                {_sql_session_last_active("s")} AS last_active
             FROM sessions s
+            LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
             WHERE s.source = 'cron' AND s.id >= ? AND s.id < ?
             ORDER BY s.started_at DESC, s.id DESC
             LIMIT ? OFFSET ?
@@ -123,7 +123,7 @@ class SessionPortabilityMixin:
 
         runs: List[Dict[str, Any]] = []
         for row in rows:
-            s = dict(row)
+            s = self._session_row_dict(row)
             s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
             runs.append(s)
         return runs
@@ -135,12 +135,58 @@ class SessionPortabilityMixin:
 
         Pass ``compact_rows=True`` to omit the ``system_prompt`` blob (see
         ``list_sessions_rich`` for details).
+
+        Thin wrapper over ``_get_session_rich_rows_batch`` so the enriched
+        SELECT lives in exactly one place.
         """
+        return self._get_session_rich_rows_batch(
+            [session_id], compact_rows=compact_rows
+        ).get(session_id)
+
+    def _get_session_rich_rows_batch(
+        self, session_ids, compact_rows: bool = False
+    ) -> Dict[str, Dict[str, Any]]:
+        """Fetch multiple sessions with the same enriched columns as
+        ``_get_session_rich_row``, in a single query.
+
+        Used by ``list_sessions_rich``'s compression-tip projection to resolve
+        every tip row for a page in one round trip instead of one query per
+        compression-root row. Returns a dict keyed by session id; ids that
+        don't exist are simply absent from the result (same as
+        ``_get_session_rich_row`` returning ``None`` for them).
+        """
+        ids = [sid for sid in session_ids if sid]
+        if not ids:
+            return {}
+        # Old SQLite builds cap bound variables at 999
+        # (SQLITE_MAX_VARIABLE_NUMBER); large pages (limit=10000 callers
+        # exist) could exceed it. Chunk the IN list so the helper is safe at
+        # any page size — this is the single choke point for the enriched
+        # multi-row fetch, so the bound lives here, not at call sites.
+        _CHUNK = 900
+        if len(ids) > _CHUNK:
+            result: Dict[str, Dict[str, Any]] = {}
+            for start in range(0, len(ids), _CHUNK):
+                result.update(
+                    self._get_session_rich_rows_batch(
+                        ids[start:start + _CHUNK], compact_rows=compact_rows
+                    )
+                )
+            return result
         # Same read-your-writes guarantee as list_sessions_rich.
         self.flush_token_counts()
         _sel = self._compact_session_cols() if compact_rows else "s.*"
+        placeholders = ",".join("?" for _ in ids)
+        prompt_select = (
+            "" if compact_rows
+            else ", COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved"
+        )
+        prompt_join = (
+            "" if compact_rows
+            else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"
+        )
         query = f"""
-            SELECT {_sel},
+            SELECT {_sel}{prompt_select},
                 COALESCE(
                     (SELECT {_PREVIEW_RAW_SELECT}
                      FROM messages m
@@ -148,21 +194,20 @@ class SessionPortabilityMixin:
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,
-                COALESCE(
-                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                    s.started_at
-                ) AS last_active
+                {_sql_session_last_active("s")} AS last_active
             FROM sessions s
-            WHERE s.id = ?
+            {prompt_join}
+            WHERE s.id IN ({placeholders})
         """
         with self._lock:
-            cursor = self._conn.execute(query, (session_id,))
-            row = cursor.fetchone()
-        if not row:
-            return None
-        s = dict(row)
-        s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
-        return s
+            cursor = self._conn.execute(query, ids)
+            rows = cursor.fetchall()
+        result: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            s = self._session_row_dict(row)
+            s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
+            result[s["id"]] = s
+        return result
 
     def get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """Public wrapper for :meth:`_get_session_rich_row`.
@@ -337,6 +382,15 @@ class SessionPortabilityMixin:
         fail foreign-key validation. Gateway routing, handoff, rewind, and other
         live runtime state are intentionally reset: this restores conversation
         history, not ownership of a live channel or process.
+
+        Activity contract (#76354 review S4): export INCLUDES the live
+        activity fields (``last_activity_at`` / ``last_activity_description``
+        / ``last_activity_provenance``) because they are part of the durable
+        row, but import deliberately RESETS them to NULL. Resurrecting a
+        stale "working ..." label on a machine where no agent is running
+        would fabricate activity the watchdog and session listings act on.
+        This asymmetry is intentional and covered by regression
+        (tests/gateway/test_watchdog_review_76354.py::test_s4_export_includes_activity_import_resets_it).
         """
         if not isinstance(sessions, list):
             raise ValueError("sessions must be a list")
@@ -514,10 +568,14 @@ class SessionPortabilityMixin:
                 if started_at is None:
                     started_at = time.time()
                 archived = 1 if raw.get("archived") else 0
+                system_prompt_hash = self._store_system_prompt(
+                    conn, raw.get("system_prompt")
+                )
 
                 conn.execute(
                     """INSERT INTO sessions (
                            id, source, user_id, model, model_config, system_prompt,
+                           system_prompt_hash,
                            parent_session_id, started_at, ended_at, end_reason,
                            message_count, tool_call_count, input_tokens, output_tokens,
                            cache_read_tokens, cache_write_tokens, reasoning_tokens,
@@ -528,7 +586,7 @@ class SessionPortabilityMixin:
                        )
                        VALUES (
                            :id, :source, :user_id, :model, :model_config,
-                           :system_prompt, NULL, :started_at, :ended_at,
+                           NULL, :system_prompt_hash, NULL, :started_at, :ended_at,
                            :end_reason, 0, 0, :input_tokens, :output_tokens,
                            :cache_read_tokens, :cache_write_tokens,
                            :reasoning_tokens, :cwd, :git_branch, :git_repo_root,
@@ -543,7 +601,7 @@ class SessionPortabilityMixin:
                         "user_id": raw.get("user_id"),
                         "model": raw.get("model"),
                         "model_config": raw.get("model_config"),
-                        "system_prompt": raw.get("system_prompt"),
+                        "system_prompt_hash": system_prompt_hash,
                         "started_at": started_at,
                         "ended_at": self._float_or_none(raw.get("ended_at")),
                         "end_reason": raw.get("end_reason"),

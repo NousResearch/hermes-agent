@@ -30,6 +30,30 @@ from gateway.platforms.base import (
     SendResult,
 )
 
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_scoped_secret(name, default=None):
+    """Scope-aware credential read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which may hold another
+    profile's value). The DEFAULT profile's adapter constructs and sends
+    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
+    profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
 logger = logging.getLogger(__name__)
 
 # Mattermost post size limit (server default is 16383, but 4000 is the
@@ -75,7 +99,7 @@ def check_mattermost_requirements() -> bool:
 def validate_mattermost_config(config: PlatformConfig) -> bool:
     """Return True when Mattermost has enough config to connect."""
     extra = getattr(config, "extra", {}) or {}
-    token = (getattr(config, "token", None) or os.getenv("MATTERMOST_TOKEN", "")).strip()
+    token = (getattr(config, "token", None) or _get_scoped_secret("MATTERMOST_TOKEN", "")).strip()
     url = (extra.get("url", "") or os.getenv("MATTERMOST_URL", "")).strip()
     if not token:
         logger.debug("Mattermost: MATTERMOST_TOKEN not set")
@@ -98,7 +122,7 @@ class MattermostAdapter(BasePlatformAdapter):
             config.extra.get("url", "")
             or os.getenv("MATTERMOST_URL", "")
         ).rstrip("/")
-        self._token: str = config.token or os.getenv("MATTERMOST_TOKEN", "")
+        self._token: str = config.token or _get_scoped_secret("MATTERMOST_TOKEN", "")
 
         self._bot_user_id: str = ""
         self._bot_username: str = ""
@@ -1022,7 +1046,7 @@ async def _standalone_send(
         (getattr(pconfig, "extra", {}) or {}).get("url")
         or os.getenv("MATTERMOST_URL", "")
     ).rstrip("/")
-    token = (getattr(pconfig, "token", None) or os.getenv("MATTERMOST_TOKEN", "")).strip()
+    token = (getattr(pconfig, "token", None) or _get_scoped_secret("MATTERMOST_TOKEN", "")).strip()
     if not base_url or not token:
         return {
             "error": (

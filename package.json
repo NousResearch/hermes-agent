@@ -53,8 +53,8 @@
     "brace-expansion": "5.0.8"
   },
   "engines": {
-    "node": ">=20.0.0",
-    "npm": "<11.10.0 || >=12.0.0"
+    "node": ">=22.22.0",
+    "npm": "<11.10.0 || >=11.17.0"
   },
   "allowScripts": {
     "unicode-animations": false,

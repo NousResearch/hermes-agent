@@ -254,3 +254,59 @@ def test_unregistered_session_never_inherits_another_sessions_record(
     assert not str(resolved).startswith(str(wt_a))
     assert not str(resolved).startswith(str(wt_b))
     assert resolved == (main / "target.py").resolve()
+
+
+def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
+    _isolated_cwd, monkeypatch
+):
+    """V4A patch must edit the path the tool layer resolved, not the shell cwd.
+
+    Regression for the git-worktree cwd bug: ``patch_tool`` resolved header
+    paths against the task workspace for locking/staleness/reporting, but the
+    raw (relative) patch text was handed to ``file_ops.patch_v4a``, which
+    re-resolved it against the backend env's own cwd. A relative header then
+    landed in a different directory than everything the tool reported. The fix
+    rewrites headers to the resolved absolute paths before apply.
+    """
+    import json
+
+    workspace, decoy = _isolated_cwd
+    task_id = "sess-v4a"
+
+    # Tool layer resolves against the workspace (worktree registration path).
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
+    terminal_tool.register_task_env_overrides(task_id, {"cwd": str(workspace)})
+
+    # Backend file_ops lives in the DECOY dir — the divergence the fix closes.
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+
+    env = LocalEnvironment(cwd=str(decoy))
+    monkeypatch.setattr(
+        ft, "_get_file_ops", lambda task_id="default": ShellFileOperations(env)
+    )
+
+    out = json.loads(
+        ft.patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Update File: target.py\n"
+                "@@\n"
+                "-WORKSPACE_ORIGINAL\n"
+                "+WORKSPACE_PATCHED\n"
+                "*** End Patch\n"
+            ),
+            task_id=task_id,
+        )
+    )
+
+    expected = str((workspace / "target.py").resolve())
+    assert not out.get("error"), out
+    assert out.get("resolved_path") == expected
+    assert out.get("files_modified") == [expected]
+    # The workspace file — which the tool locked and reported — was edited.
+    assert (workspace / "target.py").read_text() == "WORKSPACE_PATCHED\n"
+    # The decoy (backend cwd) was left untouched.
+    assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"

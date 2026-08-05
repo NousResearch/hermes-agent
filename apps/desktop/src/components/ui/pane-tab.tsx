@@ -31,12 +31,21 @@ const TAB_ACTIVE_UNDERLINE = 'shadow-[inset_0_-2px_0_var(--pane-tab-active-accen
 const TAB_IDLE =
   'text-(--ui-text-tertiary) [--tab-bg:var(--pane-tab-strip-bg,var(--ui-sidebar-surface-background))] hover:shadow-[inset_0_0_0_100vmax_color-mix(in_srgb,#000_var(--ui-tab-hover-darken),transparent)] hover:text-(--ui-text-secondary)'
 
+// A tab riding a multi-tab selection: an accent wash over whatever surface the
+// tab sits on. A background-image gradient (not a shadow) so it stacks cleanly
+// over `--tab-bg` without fighting the active underline / hover shadows.
+const TAB_SELECTED =
+  '[background-image:linear-gradient(color-mix(in_srgb,var(--ui-accent)_14%,transparent),color-mix(in_srgb,var(--ui-accent)_14%,transparent))] text-foreground'
+
 interface PaneTabProps extends React.ComponentProps<'div'> {
   active?: boolean
   dirty?: boolean
   /** Close gesture, no hover X (too easy to hit on small tabs): middle-click,
    *  or ⌘-click as the trackpad-friendly Mac equivalent. */
   onClose?: () => void
+  /** Part of a multi-tab selection (⌥/Ctrl-click, Shift-click) — an accent
+   *  wash marks every tab that a drag would carry, Chrome-style. */
+  selected?: boolean
   /** Vertical rail form (collapsed sidebar zones). */
   vertical?: boolean
   /** Content-facing edge of a vertical rail — the strip line the active tab cuts. */
@@ -59,6 +68,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
     onPointerDown,
     onPointerUp,
     onClickCapture,
+    selected = false,
     vertical = false,
     side = 'left',
     children,
@@ -81,9 +91,11 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         active
           ? cn(TAB_ACTIVE, !vertical && TAB_ACTIVE_UNDERLINE)
           : cn(TAB_IDLE, edge && `${edge}-(--ui-stroke-tertiary)`),
+        selected && TAB_SELECTED,
         className
       )}
       data-active={active}
+      data-selected={selected || undefined}
       data-vertical={vertical || undefined}
       onClickCapture={event => {
         // Sites whose tab activates on the label's own onClick (the preview

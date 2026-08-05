@@ -97,6 +97,11 @@ export interface KanbanAttachment {
 export interface KanbanTaskFull extends KanbanTask {
   result?: null | string
   created_by?: null | string
+  /** Per-task worker overrides. Null/absent = the assigned profile's own
+   *  model, provider, and reasoning effort decide. */
+  model_override?: null | string
+  provider_override?: null | string
+  reasoning_effort?: null | string
   completed_at?: null | number
   last_failure_error?: null | string
   workspace_kind?: null | string

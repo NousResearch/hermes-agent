@@ -107,7 +107,9 @@ jobs:
           version: "0.9.28"
 
       - name: Set up Python 3.11 (for docker tests)
-        run: uv python install 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
 
       - name: Install Python dependencies (for docker tests)
         # ``dev`` extra pulls in pytest, pytest-asyncio —

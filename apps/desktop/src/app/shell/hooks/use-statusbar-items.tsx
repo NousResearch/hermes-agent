@@ -139,14 +139,13 @@ export function useStatusbarItems({
   // bail-out key on its own.
   const focusedUsage = useStoreSelector($focusedSessionState, state => state?.usage ?? null)
   const focusedStateCwd = useStoreSelector($focusedSessionState, state => state?.cwd?.trim() || '')
+
   // Runtime slices carry the stored id they were bound for. During a primary
   // tab switch the runtime id can lag a frame behind the new selection — the
   // slice still describes the PREVIOUS chat. Gate live cwd on ownership so we
   // never paint session A's workspace while the tab already shows session B.
-  const focusedStateStoredId = useStoreSelector(
-    $focusedSessionState,
-    state => state?.storedSessionId?.trim() || null
-  )
+  const focusedStateStoredId = useStoreSelector($focusedSessionState, state => state?.storedSessionId?.trim() || null)
+
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const primaryFocused = !focusedStoredSessionId || focusedStoredSessionId === selectedStoredSessionId
 
@@ -168,6 +167,7 @@ export function useStatusbarItems({
       ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.started_at ?? null)
       : null
   )
+
   const focusedRowCwd = useStoreSelector($sessions, sessions => {
     if (!focusedStoredSessionId) {
       return ''
@@ -195,12 +195,14 @@ export function useStatusbarItems({
 
     return idsShareLineage(focusedStoredSessionId, focusedStateStoredId, sessions)
   })
+
   const liveCwdBelongsToFocus =
     Boolean(focusedStateCwd) &&
     (!focusedStoredSessionId ||
       !focusedStateStoredId ||
       focusedStateStoredId === focusedStoredSessionId ||
       liveCwdSharesFocusLineage)
+
   const currentCwd = (
     (liveCwdBelongsToFocus ? focusedStateCwd : '') ||
     focusedRowCwd ||

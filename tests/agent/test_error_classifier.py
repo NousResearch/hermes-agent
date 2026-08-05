@@ -371,6 +371,39 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
+    def test_404_bare_model_id_missing_prefix_is_model_not_found(self):
+        """A bare id the provider only serves as ``vendor/id`` is malformed.
+
+        Regression for #78796: NVIDIA NIM answers a prefix-less
+        ``nemotron-3-ultra-550b-a55b`` with a naked ``404 page not found``.
+        Without the catalogue check this fell into the generic branch and
+        burned three retries on a deterministic failure, reporting what
+        looked like an outage.
+        """
+        e = MockAPIError("404 page not found", status_code=404)
+        result = classify_api_error(
+            e, provider="nvidia", model="nemotron-3-ultra-550b-a55b"
+        )
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+
+    def test_404_correctly_prefixed_model_stays_generic(self):
+        """A properly prefixed id hitting a 404 is a real endpoint problem —
+        it must keep the retryable generic classification."""
+        e = MockAPIError("404 page not found", status_code=404)
+        result = classify_api_error(
+            e, provider="nvidia", model="nvidia/nemotron-3-ultra-550b-a55b"
+        )
+        assert result.reason == FailoverReason.unknown
+        assert result.retryable is True
+
+    def test_404_unknown_bare_model_stays_generic(self):
+        """A local NIM container isn't in the catalogue — no verdict invented."""
+        e = MockAPIError("404 page not found", status_code=404)
+        result = classify_api_error(e, provider="nvidia", model="my-local-nim")
+        assert result.reason == FailoverReason.unknown
+        assert result.retryable is True
+
     # ── Provider policy-block (OpenRouter privacy/guardrail) ──
 
 

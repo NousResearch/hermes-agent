@@ -42,11 +42,13 @@ jobs:
     timeout-minutes: 10
     outputs:
       python: ${{ steps.classify.outputs.python }}
+      python_prod: ${{ steps.classify.outputs.python_prod }}
       frontend: ${{ steps.classify.outputs.frontend }}
       site: ${{ steps.classify.outputs.site }}
       scan: ${{ steps.classify.outputs.scan }}
       deps: ${{ steps.classify.outputs.deps }}
       npm_lock: ${{ steps.classify.outputs.npm_lock }}
+      installer: ${{ steps.classify.outputs.installer }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
       ci_review: ${{ steps.classify.outputs.ci_review }}
@@ -86,10 +88,29 @@ jobs:
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
 
+  installer-tests:
+    name: Installer tests
+    needs: detect
+    # Windows-only, and only for PRs that touch install.ps1 or its tests.
+    if: needs.detect.outputs.installer == 'true'
+    uses: ./.github/workflows/installer-tests.yml
+
   e2e-desktop:
     name: Desktop E2E
     needs: detect
-    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true'
+    # python_prod (not python): the Playwright suite exercises the built app
+    # + `hermes serve` backend, which never import anything under tests/.
+    # Tests-only PRs (~17% of commits) skip this 5-minute job — the longest
+    # single job in the workflow — while still running the full pytest lanes.
+    #
+    # ⛔ TEMPORARILY DISABLED (Aug 2, 2026, Teknium) — the suite is red on
+    # every PR and on main itself since the Aug 1 night engines/npm churn
+    # (#76499 → #76562 → #76575): the mock-backend Electron window never
+    # gets a title, so boot/chat/setup/interim specs all fail identically
+    # regardless of the PR's diff (verified on #76573 and the docs-only
+    # #76582). Tracking issue: #76627 (assigned: Ari). To re-enable,
+    # delete the `false &&` below — nothing else changed.
+    if: ${{ false && (needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true') }}
     uses: ./.github/workflows/e2e-desktop.yml
 
   docs-site:
@@ -137,8 +158,10 @@ jobs:
     needs: detect
     # Trusted main pushes run docker.yml directly so its container-publish
     # environment secrets never cross this reusable-workflow call. PR runs
-    # remain build/test-only and secret-free.
-    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true')
+    # remain build/test-only and secret-free. Gated on python_prod (not
+    # python): the image copies installed code, never tests/ — tests-only
+    # PRs skip the build.
+    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true')
     uses: ./.github/workflows/docker.yml
 
   supply-chain:
@@ -201,47 +224,10 @@ jobs:
           COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
           COMMIT_MESSAGE: ${{ github.event.pull_request.head.commit.message }}
           COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number }}/commits/${{ github.event.pull_request.head.sha }}
-          # Structured review statuses from workflow_call jobs.
-          # Each job outputs a JSON array of {source, results: [...]} objects
-          # that the assembler renders directly — no hardcoded job-name
-          # matching. We merge all available outputs into one array.
-          REVIEW_STATUSES: ${{ toJSON(needs.*.outputs.review_status) }}
         run: |
-          set -uo pipefail
-
-          # REVIEW_STATUSES is a JSON array of strings (some may be empty
-          # when a job was skipped). Parse each string and merge into one
-          # flat array for the assembler.
-          python3 - <<'PYEOF'
-          import json, os, sys
-
-          raw = os.environ.get("REVIEW_STATUSES", "")
-          merged = []
-          if raw:
-              try:
-                  arr = json.loads(raw)
-              except (json.JSONDecodeError, TypeError):
-                  arr = []
-              for item in arr:
-                  if not item:
-                      continue
-                  try:
-                      statuses = json.loads(item)
-                  except (json.JSONDecodeError, TypeError):
-                      continue
-                  if isinstance(statuses, list):
-                      merged.extend(statuses)
-
-          # Write merged array to a temp file the poller reads.
-          with open("/tmp/review_statuses.json", "w") as f:
-              json.dump(merged, f)
-          print(f"Merged {len(merged)} review status entries")
-          PYEOF
-
           python3 scripts/ci/live_comment.py \
             --interval 15 \
-            --timeout 2100 \
-            --review-statuses-file /tmp/review_statuses.json
+            --timeout 2100
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
@@ -260,6 +246,7 @@ jobs:
       - tests
       - lint
       - js-tests
+      - installer-tests
       - e2e-desktop
       - docs-site
       - history-check
@@ -309,8 +296,9 @@ jobs:
   # report with a gantt chart + per-step breakdown. The report is uploaded
   # as an artifact and a markdown summary is written to $GITHUB_STEP_SUMMARY.
   #
-  # The live comment poller can read the standalone review-status artifact
-  # after the HTML report is uploaded, so its link points straight at that report.
+  # The live comment poller dynamically fetches all review-status-* artifacts
+  # across the orchestrator and sub-workflow runs every cycle, so its link
+  # points straight at that report.
   # ─────────────────────────────────────────────────────────────────────
   ci-timings:
     name: CI timing report
@@ -369,7 +357,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ci-timings-review-status
+          name: review-status-ci-timings
           path: review-status.json
           retention-days: 14
 

@@ -50,9 +50,10 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, Iterator, Optional
 from urllib.parse import urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -3348,6 +3349,98 @@ def _strip_markdown_for_tts(text: str) -> str:
     return text.strip()
 
 
+class _SyncSentencePipeline:
+    """Overlap per-sentence synthesis with playback for non-streaming providers.
+
+    The universal sync fallback used to run strictly serially per sentence —
+    synthesize, play, and only then start synthesizing the next sentence — so
+    every sentence boundary added a full synthesis-time of dead air. For local
+    model providers that cost dominates the conversation: a provider at
+    real-time-factor ~1 spends as long silent between sentences as it does
+    speaking. Chunked streamers already avoid this; this closes the same gap
+    for everyone else (edge, piper, plugin providers, …) without touching the
+    provider contract.
+
+    Shape: one synthesis worker (single-threaded executor, so sentences are
+    synthesized FIFO and providers never see concurrent calls from this loop —
+    same effective concurrency as the serial path) feeding one playback worker
+    through a small bounded queue. While sentence *n* plays, sentence *n+1* is
+    already synthesizing. The bound keeps lookahead — and the temp files it
+    implies — small, and gives natural backpressure to the caller.
+
+    ``synthesize``/``play`` are resolved late (module global / import inside
+    the worker) so tests that monkeypatch ``text_to_speech_tool`` or
+    ``tools.voice_mode`` keep working unchanged.
+    """
+
+    def __init__(self, stop_event: threading.Event, *, lookahead: int = 2):
+        self._stop = stop_event
+        self._queue: "queue.Queue[Optional[tuple[str, Future]]]" = queue.Queue(
+            maxsize=max(1, lookahead)
+        )
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="tts-sync-synth"
+        )
+        self._player = threading.Thread(
+            target=self._drain, name="tts-sync-play", daemon=True
+        )
+        self._player.start()
+
+    def speak(self, cleaned: str) -> None:
+        """Queue one sentence. Blocks only when the lookahead bound is full."""
+        if self._stop.is_set():
+            return
+        future = self._executor.submit(self._synthesize_to_tmp, cleaned)
+        self._queue.put((cleaned, future))
+
+    def close(self) -> None:
+        """Flush queued sentences in order (skipped if stopped), then join."""
+        self._queue.put(None)
+        self._player.join()
+        self._executor.shutdown(wait=True)
+
+    def _synthesize_to_tmp(self, cleaned: str) -> Optional[str]:
+        if self._stop.is_set():
+            return None
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+            os.close(fd)
+            text_to_speech_tool(text=cleaned, output_path=tmp_path)
+            return tmp_path
+        except Exception as exc:
+            logger.warning("Sync per-sentence TTS synthesis failed: %s", exc)
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            return None
+
+    def _drain(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            _sentence, future = item
+            tmp_path = None
+            try:
+                tmp_path = future.result()
+                if (tmp_path and not self._stop.is_set()
+                        and os.path.isfile(tmp_path)
+                        and os.path.getsize(tmp_path) > 0):
+                    from tools.voice_mode import play_audio_file
+                    play_audio_file(tmp_path)
+            except Exception as exc:
+                logger.warning("Sync per-sentence TTS failed: %s", exc)
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+
 def stream_tts_to_speaker(
     text_queue: queue.Queue,
     stop_event: threading.Event,
@@ -3372,15 +3465,25 @@ def stream_tts_to_speaker(
           waiting on it (continuous voice mode) know playback is finished.
     """
     tts_done_event.clear()
+    sync_pipeline: Optional[_SyncSentencePipeline] = None
 
     try:
         output_stream = None
+        streamer = None  # type: ignore[assignment]
+        _worker_thread = None
+        _audio_queue = None  # type: ignore[assignment]
+        _prefetch_threads = []
         tts_config = _load_tts_config()
 
         # Prefer a chunked streamer for low time-to-first-audio; fall back to
         # per-sentence sync synthesis (universal — edge + every non-streamer).
         from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         streamer = resolve_streaming_provider(tts_config, preferred=provider)
+
+        # No chunked streamer: per-sentence sync synthesis, pipelined so the
+        # next sentence synthesizes while the current one plays (closed in the
+        # finally block, which flushes anything still queued).
+        sync_pipeline = _SyncSentencePipeline(stop_event) if streamer is None else None
 
         stream_max_len = 0
         if streamer is not None:
@@ -3418,8 +3521,210 @@ def stream_tts_to_speaker(
         queue_timeout = 0.5
         _spoken_sentences: list[str] = []  # track spoken sentences to skip duplicates
 
+        # --- Per-sentence prefetch pipeline ---
+        # Every sentence gets its own streamer.stream() call the moment it's
+        # complete. A background prefetch thread fires the HTTP request
+        # immediately, buffering PCM chunks into a per-segment queue. The
+        # single playback worker drains these queues in FIFO order. This
+        # means sentence N+1's HTTP request fires WHILE sentence N is still
+        # playing, so by the time the worker reaches it, audio is already
+        # arriving — no inter-sentence gap.
+        _audio_queue: queue.Queue[Optional[queue.Queue[Optional[bytes]]]] = queue.Queue()
+        _prefetch_threads: list[threading.Thread] = []
+        _prefetch_sem = threading.Semaphore(3)
+        _CHUNK_QUEUE_MAX = 64
+
+        def _create_output_stream():
+            """Create and start a fresh PortAudio OutputStream."""
+            sd = _import_sounddevice()
+            new_stream = sd.OutputStream(
+                samplerate=streamer.sample_rate,
+                channels=streamer.channels,
+                dtype="int16",
+            )
+            new_stream.start()
+            return new_stream
+
+        def _consume_to_queue(
+            audio_iter: Iterator[bytes],
+            chunk_queue: "queue.Queue[Optional[bytes]]",
+        ) -> None:
+            """Consume a generator into a thread-safe queue."""
+            try:
+                for chunk in audio_iter:
+                    if stop_event.is_set():
+                        logger.info(
+                            "TTS CUT: prefetch cancelled (stop_event set "
+                            "mid-sentence) — partial audio only"
+                        )
+                        break
+                    chunk_queue.put(chunk, timeout=30.0)
+            except Exception as exc:
+                logger.warning(
+                    "TTS CUT: streaming TTS prefetch failed mid-sentence "
+                    "(partial audio only): %s",
+                    exc,
+                )
+            finally:
+                chunk_queue.put(None)  # sentinel: no more chunks
+                _prefetch_sem.release()  # free a prefetch slot
+
+        def _reinit_output_stream():
+            """Close the broken PortAudio stream and try to create a fresh one."""
+            nonlocal output_stream
+            if output_stream is not None:
+                try:
+                    output_stream.stop()
+                    output_stream.close()
+                except Exception:
+                    pass
+            try:
+                new_stream = _create_output_stream()
+                output_stream = new_stream
+                logger.info(
+                    "TTS: PortAudio output stream reinitialized after error"
+                )
+                return new_stream
+            except Exception as exc:
+                logger.warning(
+                    "TTS: PortAudio stream reinit failed: %s", exc
+                )
+                output_stream = None
+                return None
+
+        def _playback_worker() -> None:
+            """Single consumer: play audio segments from the queue in order."""
+            assert streamer is not None
+            if output_stream is not None:
+                import numpy as _np
+
+                try:
+                    from tools.voice_mode import mark_audio_output_active
+                except Exception:
+                    def mark_audio_output_active(_active):
+                        return None
+
+                mark_audio_output_active(True)
+                try:
+                    _max_reinit = 3
+                    _reinit_count = 0
+                    _current_stream = output_stream
+                    while True:
+                        chunk_queue = _audio_queue.get()
+                        if chunk_queue is None:
+                            break
+                        if stop_event.is_set():
+                            continue
+                        if _current_stream is None:
+                            _chunks = []
+                            while True:
+                                chunk = chunk_queue.get()
+                                if chunk is None:
+                                    break
+                                _chunks.append(chunk)
+                            _play_via_tempfile(
+                                iter(_chunks), stop_event, streamer.sample_rate
+                            )
+                            continue
+                        _pcm_leftover = b""
+                        while True:
+                            chunk = chunk_queue.get()
+                            if chunk is None:
+                                break
+                            if stop_event.is_set():
+                                break
+                            _buf = _pcm_leftover + chunk
+                            _aligned_len = len(_buf) - (len(_buf) % 2)
+                            if _aligned_len >= 2:
+                                try:
+                                    _current_stream.write(
+                                        _np.frombuffer(
+                                            _buf[:_aligned_len], dtype="<i2"
+                                        ).reshape(-1, 1)
+                                    )
+                                except Exception as write_exc:
+                                    logger.warning(
+                                        "PortAudio write failed, attempting "
+                                        "stream reinit: %s",
+                                        write_exc,
+                                    )
+                                    if _reinit_count < _max_reinit:
+                                        _reinit_count += 1
+                                        _current_stream = _reinit_output_stream()
+                                        if _current_stream is not None:
+                                            try:
+                                                _current_stream.write(
+                                                    _np.frombuffer(
+                                                        _buf[:_aligned_len],
+                                                        dtype="<i2",
+                                                    ).reshape(-1, 1)
+                                                )
+                                            except Exception:
+                                                pass
+                                            _pcm_leftover = (
+                                                _buf[_aligned_len:]
+                                                if _aligned_len < len(_buf)
+                                                else b""
+                                            )
+                                            continue
+                                    else:
+                                        logger.warning(
+                                            "TTS: PortAudio reinit exhausted "
+                                            "after %d attempts, falling back "
+                                            "to tempfile for remaining "
+                                            "sentences",
+                                            _max_reinit,
+                                        )
+                                        _current_stream = None
+                                    break
+                            _pcm_leftover = (
+                                _buf[_aligned_len:] if _aligned_len < len(_buf) else b""
+                            )
+                finally:
+                    mark_audio_output_active(False)
+            else:
+                while True:
+                    chunk_queue = _audio_queue.get()
+                    if chunk_queue is None:
+                        break
+                    if stop_event.is_set():
+                        continue
+                    _chunks = []
+                    while True:
+                        chunk = chunk_queue.get()
+                        if chunk is None:
+                            break
+                        _chunks.append(chunk)
+                    _play_via_tempfile(
+                        iter(_chunks), stop_event, streamer.sample_rate
+                    )
+
+        def _enqueue_audio(text_to_speak: str) -> None:
+            """Synthesize *text_to_speak* and start prefetching immediately."""
+            assert streamer is not None
+            try:
+                audio_iter = streamer.stream(text_to_speak)
+            except Exception as exc:
+                logger.warning("Streaming TTS synthesis failed: %s", exc)
+                return
+            _prefetch_sem.acquire()
+            chunk_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=_CHUNK_QUEUE_MAX)
+            _audio_queue.put(chunk_queue)
+            t = threading.Thread(
+                target=_consume_to_queue,
+                args=(audio_iter, chunk_queue),
+                daemon=True,
+            )
+            _prefetch_threads.append(t)
+            t.start()
+
+        _worker_thread: Optional[threading.Thread] = None
+        if streamer is not None:
+            _worker_thread = threading.Thread(target=_playback_worker, daemon=True)
+            _worker_thread.start()
+
         def _speak_sentence(sentence: str):
-            """Display sentence and optionally generate + play audio."""
+            """Display sentence and route to the appropriate audio path."""
             if stop_event.is_set():
                 return
             cleaned = _strip_markdown_for_tts(sentence).strip()
@@ -3434,63 +3739,33 @@ def stream_tts_to_speaker(
             # Display raw sentence on screen before TTS processing
             if display_callback is not None:
                 display_callback(sentence)
-            # No chunked streamer → per-sentence sync synthesis (universal).
-            if streamer is None:
-                _speak_via_sync(cleaned)
+            # No chunked streamer → per-sentence sync synthesis (universal),
+            # pipelined: this enqueues and returns, so sentence n+1 is already
+            # synthesizing while sentence n is still playing.
+            if sync_pipeline is not None:
+                sync_pipeline.speak(cleaned)
                 return
             # Truncate very long sentences to the provider's per-request cap.
             if stream_max_len and len(cleaned) > stream_max_len:
                 cleaned = cleaned[:stream_max_len]
-            try:
-                audio_iter = streamer.stream(cleaned)
-                if output_stream is not None:
-                    import numpy as _np
+            # Every sentence gets its own prefetch thread — the HTTP request
+            # fires the moment the sentence boundary is detected, so audio for
+            # sentence N+1 is already buffering while sentence N plays.
+            _enqueue_audio(cleaned)
 
-                    # Flag real speaker output for the duration of this
-                    # sentence so ambient cues (thinking sound) stay quiet.
-                    # Fail-open: stubbed/partial voice_mode modules (tests)
-                    # must never break sentence playback.
-                    try:
-                        from tools.voice_mode import mark_audio_output_active
-                    except Exception:
-                        def mark_audio_output_active(_active):
-                            return None
-                    mark_audio_output_active(True)
-                    try:
-                        for chunk in audio_iter:
-                            if stop_event.is_set():
-                                break
-                            output_stream.write(_np.frombuffer(chunk, dtype=_np.int16).reshape(-1, 1))
-                    finally:
-                        mark_audio_output_active(False)
-                else:
-                    # No audio device: buffer chunks to a temp WAV and play it.
-                    _play_via_tempfile(audio_iter, stop_event, streamer.sample_rate)
-            except Exception as exc:
-                logger.warning("Streaming TTS sentence failed: %s", exc)
-
-        def _speak_via_sync(cleaned: str):
-            """Synthesize one sentence via the proven sync tool, then block on
-            playback. No chunked API, but per-*sentence* granularity keeps the
-            flow conversational for edge and every other non-streaming provider.
-            """
-            tmp_path = None
-            try:
-                fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
-                os.close(fd)
-                text_to_speech_tool(text=cleaned, output_path=tmp_path)
-                if (not stop_event.is_set() and os.path.isfile(tmp_path)
-                        and os.path.getsize(tmp_path) > 0):
-                    from tools.voice_mode import play_audio_file
-                    play_audio_file(tmp_path)
-            except Exception as exc:
-                logger.warning("Sync per-sentence TTS failed: %s", exc)
-            finally:
-                if tmp_path:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
+        def _align_int16_chunks(chunks, stop_evt):
+            """Yield int16-aligned byte chunks from an iterable."""
+            leftover = b""
+            for chunk in chunks:
+                if stop_evt.is_set():
+                    break
+                buf = leftover + chunk
+                aligned_len = len(buf) - (len(buf) % 2)
+                if aligned_len >= 2:
+                    yield buf[:aligned_len]
+                leftover = buf[aligned_len:] if aligned_len < len(buf) else b""
+            if leftover:
+                yield b"\x00"
 
         def _play_via_tempfile(audio_iter, stop_evt, sample_rate=24000):
             """Write PCM chunks to a temp WAV file and play it."""
@@ -3504,10 +3779,8 @@ def stream_tts_to_speaker(
                     wf.setnchannels(1)
                     wf.setsampwidth(2)  # 16-bit
                     wf.setframerate(sample_rate)
-                    for chunk in audio_iter:
-                        if stop_evt.is_set():
-                            break
-                        wf.writeframes(chunk)
+                    for aligned in _align_int16_chunks(audio_iter, stop_evt):
+                        wf.writeframes(aligned)
                 # wave.open() given a file object flushes but does NOT close it
                 # (it only closes files it opened itself, by name), so the OS
                 # handle to tmp stays open.  On Windows an open write handle
@@ -3563,6 +3836,21 @@ def stream_tts_to_speaker(
     except Exception as exc:
         logger.warning("Streaming TTS pipeline error: %s", exc)
     finally:
+        # Flush the sync pipeline first: queued sentences finish playing (or
+        # are skipped when stop_event is set) BEFORE tts_done_event fires, so
+        # continuous voice mode never reopens the mic over its own voice.
+        if sync_pipeline is not None:
+            try:
+                sync_pipeline.close()
+            except Exception:
+                pass
+        # Signal the playback worker that no more audio is coming.  This lives
+        # in finally: so an exception in the text pump still sends the sentinel.
+        if streamer is not None and _worker_thread is not None:
+            _audio_queue.put(None)
+            _worker_thread.join(timeout=300.0)
+        for t in _prefetch_threads:
+            t.join(timeout=10.0)
         # Always close the audio output stream to avoid locking the device
         if output_stream is not None:
             try:

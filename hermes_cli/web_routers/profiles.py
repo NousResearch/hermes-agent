@@ -26,6 +26,8 @@ from hermes_cli.web_deps import late
 from hermes_cli.web_models import (
     ProfileCreate,
     ProfileActiveUpdate,
+    ProfileExport,
+    ProfileImport,
     ProfileRename,
     ProfileSoulUpdate,
     ProfileDescriptionUpdate,
@@ -56,7 +58,13 @@ _write_profile_model = late("_write_profile_model")
 
 @sessions_router.get("/api/profiles/sessions")
 def get_profiles_sessions(
-    limit: int = Query(20, ge=0),
+    # ``le=500`` caps the per-request page size (idea from #39200) — this
+    # endpoint fans the query out across EVERY profile's state.db, so an
+    # unbounded limit multiplies the damage. 500 (not 100) because real
+    # desktop callers use limit=200 (sessions-settings ARCHIVED_FETCH_LIMIT,
+    # command palette) and the electron remote-merge over-fetches
+    # ``limit + offset``.
+    limit: int = Query(20, ge=0, le=500),
     offset: int = Query(0, ge=0),
     min_messages: int = 0,
     archived: str = "exclude",
@@ -681,3 +689,105 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
         # auto-generated.
         "description_auto": bool(outcome.ok),
     }
+
+
+# ── Export / Import ──────────────────────────────────────────────────────────
+# Profile sharing for the desktop: wraps hermes_cli.profiles.export_profile /
+# import_profile (the same machinery behind `hermes profile export|import`).
+# Paths are exchanged, not bytes — the desktop's local and pooled backends
+# share the filesystem with the native save/open dialogs that produce them.
+
+
+@router.post("/api/profiles/{name}/export")
+async def export_profile_endpoint(name: str, body: ProfileExport):
+    from hermes_cli import profiles as profiles_mod
+
+    output = (body.output or "").strip()
+    if not output:
+        from hermes_constants import get_hermes_home
+        staging = get_hermes_home() / "profile-exports"
+        try:
+            staging.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not create export directory: {exc}")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        output = str(staging / f"{profiles_mod.normalize_profile_name(name)}-{stamp}.tar.gz")
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: profiles_mod.export_profile(name, output, extra_files=body.extra_files or None),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("POST /api/profiles/%s/export failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "archive": str(result)}
+
+
+@router.post("/api/profiles/import")
+async def import_profile_endpoint(body: ProfileImport):
+    from hermes_cli import profiles as profiles_mod
+
+    archive = (body.archive or "").strip()
+    if not archive:
+        raise HTTPException(status_code=400, detail="archive path is required")
+
+    loop = asyncio.get_running_loop()
+    try:
+        profile_dir = await loop.run_in_executor(
+            None,
+            lambda: profiles_mod.import_profile(archive, name=(body.name or "").strip() or None),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (ValueError, FileExistsError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("POST /api/profiles/import failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    imported = profile_dir.name
+    # Match the CLI import flow: create the wrapper alias when it's safe.
+    try:
+        if not profiles_mod.check_alias_collision(imported):
+            profiles_mod.create_wrapper_script(imported)
+    except Exception:
+        _log.exception("Creating wrapper for imported profile %s failed", imported)
+
+    # Surface the bundled desktop appearance overlay (if the archive carried
+    # one) so the desktop can apply theme/interface prefs without re-reading
+    # the file over another round-trip.
+    desktop_overlay = None
+    overlay_path = profile_dir / "desktop.json"
+    if overlay_path.is_file():
+        try:
+            import json as _json
+            desktop_overlay = _json.loads(overlay_path.read_text(encoding="utf-8"))
+        except Exception:
+            _log.exception("Reading desktop.json from imported profile %s failed", imported)
+
+    return {
+        "ok": True,
+        "name": imported,
+        "path": str(profile_dir),
+        "desktop": desktop_overlay,
+    }
+
+
+@router.get("/api/profiles/{name}/desktop-overlay")
+async def get_profile_desktop_overlay(name: str):
+    """The desktop appearance/interface overlay bundled with an imported
+    profile (``desktop.json`` at the profile root), or ``exists: false``."""
+    overlay_path = _resolve_profile_dir(name) / "desktop.json"
+    if not overlay_path.is_file():
+        return {"exists": False, "desktop": None}
+    try:
+        import json as _json
+        return {"exists": True, "desktop": _json.loads(overlay_path.read_text(encoding="utf-8"))}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not read desktop.json: {e}")

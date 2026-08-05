@@ -73,6 +73,28 @@ def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
     return remaining <= max(0, int(skew_seconds))
 
 
+def _read_user_token_override() -> Optional[str]:
+    """Read the TOOL_GATEWAY_USER_TOKEN env override through the secret scope.
+
+    Availability scans run both inside agent turns (scope installed) and in
+    unscoped CLI paths, so this uses the Slack pattern: honor the scope's
+    verdict when installed (a scoped miss does NOT borrow the process env
+    under multiplex), fall back to ``os.environ`` only when unscoped.
+    """
+    try:
+        from agent.secret_scope import UnscopedSecretError, get_secret
+
+        try:
+            explicit = get_secret("TOOL_GATEWAY_USER_TOKEN")
+        except UnscopedSecretError:
+            explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
+    except Exception:
+        explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    return None
+
+
 def peek_nous_access_token() -> Optional[str]:
     """Cheap probe for a Nous gateway token without triggering refresh.
 
@@ -83,9 +105,9 @@ def peek_nous_access_token() -> Optional[str]:
     network calls. Truthful refresh handling stays in request/session paths
     that call :func:`read_nous_access_token`.
     """
-    explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
+    explicit = _read_user_token_override()
+    if explicit:
+        return explicit
 
     nous_provider = _read_nous_provider_state() or {}
     access_token = nous_provider.get("access_token")
@@ -96,9 +118,9 @@ def peek_nous_access_token() -> Optional[str]:
 
 def read_nous_access_token() -> Optional[str]:
     """Read a Nous Subscriber OAuth access token from auth store or env override."""
-    explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
+    explicit = _read_user_token_override()
+    if explicit:
+        return explicit
     nous_provider = _read_nous_provider_state() or {}
     cached_token = peek_nous_access_token()
 

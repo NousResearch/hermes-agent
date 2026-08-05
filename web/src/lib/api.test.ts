@@ -1,8 +1,36 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./api";
+import { api, fetchJSON } from "./api";
+
+const reloadMocks = vi.hoisted(() => ({
+  attemptDashboardTokenReloadOnce: vi.fn(() => false),
+  clearDashboardTokenReloadAttempt: vi.fn(),
+}));
+
+vi.mock("./dashboard-auth-reload", () => ({
+  attemptDashboardTokenReloadOnce: reloadMocks.attemptDashboardTokenReloadOnce,
+  clearDashboardTokenReloadAttempt: reloadMocks.clearDashboardTokenReloadAttempt,
+}));
 
 const SESSION_HEADER = "X-Hermes-Session-Token";
+
+beforeEach(() => {
+  reloadMocks.attemptDashboardTokenReloadOnce.mockReset();
+  reloadMocks.attemptDashboardTokenReloadOnce.mockReturnValue(false);
+  reloadMocks.clearDashboardTokenReloadAttempt.mockReset();
+
+  Object.defineProperty(window, "__HERMES_SESSION_TOKEN__", {
+    configurable: true,
+    value: "stale-token",
+    writable: true,
+  });
+  Object.defineProperty(window, "__HERMES_AUTH_REQUIRED__", {
+    configurable: true,
+    value: false,
+    writable: true,
+  });
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -18,6 +46,47 @@ function jsonFetchMock(body: unknown = { ok: true }) {
       }),
   );
 }
+
+describe("fetchJSON", () => {
+  it("tries the one-shot reload path for loopback 401s", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        clone: () => ({
+          json: async () => ({}),
+        }),
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+        text: async () => "Unauthorized",
+      })),
+    );
+    reloadMocks.attemptDashboardTokenReloadOnce.mockReturnValue(true);
+
+    const pending = fetchJSON("/api/status");
+    await expect(Promise.race([pending, Promise.resolve("pending")])).resolves.toBe(
+      "pending",
+    );
+
+    expect(reloadMocks.attemptDashboardTokenReloadOnce).toHaveBeenCalledTimes(1);
+    expect(reloadMocks.clearDashboardTokenReloadAttempt).not.toHaveBeenCalled();
+  });
+
+  it("clears the reload latch after a successful response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        json: async () => ({ ok: true }),
+        ok: true,
+        status: 200,
+      })),
+    );
+
+    await expect(fetchJSON("/api/status")).resolves.toEqual({ ok: true });
+
+    expect(reloadMocks.clearDashboardTokenReloadAttempt).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("api.getModelOptions", () => {
   it("requests a live model refresh when asked", async () => {

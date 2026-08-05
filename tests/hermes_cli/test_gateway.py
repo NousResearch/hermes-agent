@@ -369,7 +369,7 @@ class TestWaitForGatewayExit:
 
 class TestStopProfileGateway:
     def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
-        calls = {"kill": 0, "alive_probes": 0, "remove": 0}
+        calls = {"kill": 0, "alive_probes": 0, "remove": 0, "reap_calls": 0}
 
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
         # Post-#21561: the stop loop sends one SIGTERM via ``os.kill`` then
@@ -389,11 +389,42 @@ class TestStopProfileGateway:
             "gateway.status.remove_pid_file",
             lambda: calls.__setitem__("remove", calls["remove"] + 1),
         )
+        # Mock the orphan reap so it doesn't scan for real gateway processes
+        # (#75936 — stop_profile_gateway now calls _reap_unsupervised_gateway_orphans
+        # after killing the pid-file PID).
+        monkeypatch.setattr(
+            gateway,
+            "_reap_unsupervised_gateway_orphans",
+            lambda extra_exclude=None: calls.__setitem__("reap_calls", calls["reap_calls"] + 1) or False,
+        )
 
         assert gateway.stop_profile_gateway() is True
         assert calls["kill"] == 1          # one SIGTERM
         assert calls["alive_probes"] == 20 # 20 liveness polls over the 2s window
         assert calls["remove"] == 0
+        assert calls["reap_calls"] == 1    # orphan sweep ran after kill
+
+    def test_stop_profile_gateway_excludes_killed_pid_from_orphan_reap(self, monkeypatch):
+        """The PID we killed must be excluded from the orphan sweep (#75936)."""
+        killed_pid = 99999
+        reap_extra_excludes = []
+
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: killed_pid)
+        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+
+        def fake_reap(extra_exclude=None):
+            if extra_exclude:
+                reap_extra_excludes.append(extra_exclude)
+            return False
+
+        monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", fake_reap)
+
+        assert gateway.stop_profile_gateway() is True
+        assert len(reap_extra_excludes) == 1
+        assert killed_pid in reap_extra_excludes[0]
 
 
 def test_module_has_logger():

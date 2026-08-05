@@ -711,6 +711,110 @@ class TestInternalHelpers:
 
 
 # ===================================================================
+# TestWriteProfileMetaDurability
+# ===================================================================
+
+class TestWriteProfileMetaDurability:
+    """``profile.yaml`` must survive an interrupted ``write_profile_meta``.
+
+    ``write_profile_meta`` is a read-modify-write whose docstring promises
+    "unspecified fields preserve existing values".  Its read half swallows
+    any parse error and falls back to ``{}``, so a truncated profile.yaml is
+    not transient corruption — the *next* call reads ``{}`` and silently and
+    permanently drops every field the caller did not explicitly pass.
+    """
+
+    @staticmethod
+    def _seed(tmp_path):
+        profile_dir = tmp_path / "coder"
+        profile_dir.mkdir()
+        profiles.write_profile_meta(
+            profile_dir, description="Curated by hand", description_auto=False
+        )
+        return profile_dir
+
+    @staticmethod
+    def _interrupted_write(profile_dir):
+        """Run a ``write_profile_meta`` whose serialization fails mid-call.
+
+        The pre-fix code called ``yaml.safe_dump``; ``utils.atomic_yaml_write``
+        calls ``yaml.dump``.  Breaking both keeps this serializer-agnostic, so
+        it measures durability rather than the choice of entry point.  A
+        scoped ``MonkeyPatch.context`` is used instead of the fixture so the
+        patch is reverted immediately, without touching the session-wide env
+        isolation that shares the function-scoped ``monkeypatch`` instance.
+        """
+        def _boom(*args, **kwargs):
+            raise RuntimeError("simulated interruption mid-write")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(yaml, "safe_dump", _boom)
+            mp.setattr(yaml, "dump", _boom)
+            with pytest.raises(RuntimeError):
+                profiles.write_profile_meta(profile_dir, description_auto=True)
+
+    def test_failed_write_leaves_existing_file_intact(self, tmp_path):
+        profile_dir = self._seed(tmp_path)
+        path = profile_dir / "profile.yaml"
+        before = path.read_text(encoding="utf-8")
+        assert "Curated by hand" in before
+
+        self._interrupted_write(profile_dir)
+
+        # A truncating open() destroys the file before the dump ever runs.
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_failed_write_does_not_silently_drop_unspecified_fields(self, tmp_path):
+        profile_dir = self._seed(tmp_path)
+
+        self._interrupted_write(profile_dir)
+
+        # The user retries; this call does not pass a description, so the
+        # documented merge contract requires the existing one to survive.
+        profiles.write_profile_meta(profile_dir, description_auto=True)
+        meta = profiles.read_profile_meta(profile_dir)
+        assert meta["description"] == "Curated by hand"
+        assert meta["description_auto"] is True
+
+    def test_emoji_description_is_written_as_real_utf8(self, tmp_path):
+        """Astral-plane chars must not become ``\\UXXXXXXXX`` escapes (#51356).
+
+        Supersedes #51808, which fixed this symptom alone by adding
+        ``allow_unicode=True``; ``atomic_yaml_write`` sets it internally.
+        """
+        profile_dir = tmp_path / "wizard"
+        profile_dir.mkdir()
+        profiles.write_profile_meta(profile_dir, description="Code wizard 🧙 ✨")
+
+        raw = (profile_dir / "profile.yaml").read_text(encoding="utf-8")
+        assert "\\U" not in raw
+        assert "🧙" in raw
+        assert profiles.read_profile_meta(profile_dir)["description"] == "Code wizard 🧙 ✨"
+
+    def test_symlinked_profile_yaml_survives_the_write(self, tmp_path):
+        """Guard on the conversion, not a behavior change.
+
+        Dotfile managers (chezmoi/stow) symlink profile.yaml into a tracked
+        repo.  ``open(path, "w")`` wrote through the link; a naive
+        ``os.replace`` would detach it.  ``atomic_replace`` resolves the link
+        first (GitHub #16743), so the link must still be intact afterwards.
+        """
+        profile_dir = tmp_path / "linked"
+        profile_dir.mkdir()
+        real_dir = tmp_path / "dotfiles"
+        real_dir.mkdir()
+        real = real_dir / "profile.yaml"
+        real.write_text("description: from dotfiles\n", encoding="utf-8")
+        (profile_dir / "profile.yaml").symlink_to(real)
+
+        profiles.write_profile_meta(profile_dir, description="updated")
+
+        assert (profile_dir / "profile.yaml").is_symlink()
+        assert "updated" in real.read_text(encoding="utf-8")
+        assert [p.name for p in profile_dir.iterdir() if p.name.endswith(".tmp")] == []
+
+
+# ===================================================================
 # Edge cases and additional coverage
 # ===================================================================
 

@@ -43,6 +43,38 @@ class TestNativeAnthropic:
         )
         assert agent._anthropic_prompt_cache_policy() == (True, True)
 
+    def test_anthropic_provider_on_third_party_host_stays_message_only(self):
+        agent = _make_agent(
+            provider="anthropic",
+            base_url="https://api.minimax.io/anthropic",
+            api_mode="anthropic_messages",
+            model="claude-sonnet-4-6",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+        assert agent._direct_native_anthropic_tool_cache_capability() is False
+
+    def test_only_direct_native_anthropic_enables_tool_markers(self):
+        agent = _make_agent(
+            provider="anthropic",
+            base_url="https://api.anthropic.com",
+            api_mode="anthropic_messages",
+            model="claude-sonnet-4-6",
+        )
+        assert agent._direct_native_anthropic_tool_cache_capability() is True
+
+        assert agent._direct_native_anthropic_tool_cache_capability(
+            provider="custom",
+            base_url="https://api.minimax.io/anthropic",
+            api_mode="anthropic_messages",
+            model="claude-sonnet-4-6",
+        ) is False
+        assert agent._direct_native_anthropic_tool_cache_capability(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4.6",
+        ) is False
+
 
 
 class TestOpenRouter:
@@ -259,13 +291,19 @@ class TestQwenAlibabaFamily:
 
 
 class TestDeepSeekOpenCode:
-    """DeepSeek uses OpenCode's envelope-layout cache markers (#24617)."""
+    """DeepSeek on OpenCode does NOT use cache markers (#77217).
+
+    OpenCode Zen's relay rejects the Anthropic-style content block format
+    that cache markers produce (content becomes a block array instead of a
+    plain string), causing HTTP 400.  DeepSeek is intentionally excluded
+    from the caching path.
+    """
 
     @pytest.mark.parametrize(
         "provider",
         ["opencode", "opencode-zen", "opencode-go"],
     )
-    def test_deepseek_on_opencode_caches_with_envelope_layout(self, provider):
+    def test_deepseek_on_opencode_does_not_cache(self, provider):
         agent = _make_agent(
             provider=provider,
             base_url="https://opencode.ai/v1",
@@ -273,7 +311,7 @@ class TestDeepSeekOpenCode:
             model="deepseek-v4-pro",
         )
 
-        assert agent._anthropic_prompt_cache_policy() == (True, False)
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
 
     def test_deepseek_on_direct_alibaba_does_not_cache(self):
         agent = _make_agent(

@@ -126,6 +126,98 @@ class TestPlanToolBatchSegments:
         # Order and completeness preserved.
         assert _flatten_ids(segments) == ["w1", "r1", "w2", "r2"]
 
+    def test_v4a_decoy_path_does_not_parallelize_with_real_target(self, tmp_path):
+        """mode=patch scopes via V4A headers, not a decoy path= argument.
+
+        A patch that claims path=dummy.txt but updates real.py must not share
+        a parallel segment with write_file/read_file on real.py.
+        """
+        patch_body = (
+            "*** Begin Patch\n"
+            "*** Update File: real.py\n"
+            "@@\n"
+            "-old\n"
+            "+new\n"
+            "*** End Patch\n"
+        )
+        patch_args = json.dumps({
+            "mode": "patch",
+            "path": "dummy.txt",
+            "patch": patch_body,
+        })
+        calls = [
+            _tc("patch", patch_args, call_id="p1"),
+            _tc("write_file", '{"path":"real.py","content":"x"}', call_id="w1"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        assert _flatten_ids(segments) == ["p1", "w1"]
+        # Overlap on real.py must prevent a single parallel segment.
+        assert not (
+            len(segments) == 1
+            and segments[0][0] == "parallel"
+            and [tc.id for tc in segments[0][1]] == ["p1", "w1"]
+        )
+        # Solo runs demote to sequential and may merge; either shape is safe.
+        if len(segments) == 1:
+            assert segments[0][0] == "sequential"
+        else:
+            assert [tc.id for tc in segments[0][1]] == ["p1"]
+            assert [tc.id for tc in segments[1][1]] == ["w1"]
+
+    def test_v4a_multi_file_reserves_all_header_targets(self, tmp_path):
+        """Multi-file V4A must reserve every Update/Add/Delete/Move target."""
+        patch_body = (
+            "*** Begin Patch\n"
+            "*** Update File: a.py\n"
+            "@@\n-a\n+b\n"
+            "*** Add File: b.py\n"
+            "+fresh\n"
+            "*** End Patch\n"
+        )
+        # Honest path= only names a.py — b.py still must be reserved.
+        patch_args = json.dumps({
+            "mode": "patch",
+            "path": "a.py",
+            "patch": patch_body,
+        })
+        calls = [
+            _tc("patch", patch_args, call_id="p1"),
+            _tc("read_file", '{"path":"b.py"}', call_id="r1"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        assert _flatten_ids(segments) == ["p1", "r1"]
+        assert not (
+            len(segments) == 1
+            and segments[0][0] == "parallel"
+            and [tc.id for tc in segments[0][1]] == ["p1", "r1"]
+        )
+        if len(segments) == 1:
+            assert segments[0][0] == "sequential"
+        else:
+            assert [tc.id for tc in segments[0][1]] == ["p1"]
+            assert [tc.id for tc in segments[1][1]] == ["r1"]
+
+    def test_v4a_without_path_arg_still_scopes_from_headers(self, tmp_path):
+        """mode=patch with no path= must still parallel-scope from V4A headers."""
+        patch_body = (
+            "*** Begin Patch\n"
+            "*** Update File: real.py\n"
+            "@@\n-old\n+new\n"
+            "*** End Patch\n"
+        )
+        patch_args = json.dumps({"mode": "patch", "patch": patch_body})
+        calls = [
+            _tc("patch", patch_args, call_id="p1"),
+            _tc("write_file", '{"path":"other.py","content":"x"}', call_id="w1"),
+            _tc("read_file", '{"path":"real.py"}', call_id="r1"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        # p1+w1 are disjoint → can share a parallel run; r1 overlaps real.py → new run.
+        assert _flatten_ids(segments) == ["p1", "w1", "r1"]
+        assert [tc.id for tc in segments[0][1]] == ["p1", "w1"]
+        assert segments[0][0] == "parallel"
+        assert [tc.id for tc in segments[1][1]] == ["r1"]
+
     def test_path_scoped_tool_without_path_is_a_barrier(self):
         calls = [
             _tc("read_file", "{}", call_id="nopath"),
@@ -145,6 +237,104 @@ class TestPlanToolBatchSegments:
         ]
         segments = _plan_tool_batch_segments(calls)
         assert _flatten_ids(segments) == ["b1", "r1", "c1", "r2", "r3"]
+
+
+class TestReaderWriterPathRoles:
+    """Reader/writer reservation semantics on path-scoped tools.
+
+    The originating bug: ``search_files`` was in ``_PARALLEL_SAFE_TOOLS``
+    with no path reservation, so ``patch(path=X)`` + ``search_files(path=dir(X))``
+    landed in ONE parallel segment and the search could observe pre-patch
+    file content (stale-read race).  Fix: ``search_files`` reserves its
+    search root as a READER; overlap conflicts only when a WRITER is on
+    either side.
+    """
+
+    def test_search_files_after_patch_same_subtree_splits(self, tmp_path, monkeypatch):
+        """The exact smoke-test race: patch a file, search its directory."""
+        monkeypatch.chdir(tmp_path)
+        calls = [
+            _tc("patch", '{"path":"scratch/sample.txt","old_string":"a","new_string":"patched"}', call_id="w1"),
+            _tc("search_files", '{"pattern":"patched","path":"scratch"}', call_id="s1"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        # Both calls survive, but never in the same PARALLEL segment.
+        # (A shared *sequential* segment is fine — sequential is ordered.)
+        assert _flatten_ids(segments) == ["w1", "s1"]
+        for kind, seg_calls in segments:
+            ids = [tc.id for tc in seg_calls]
+            assert not (kind == "parallel" and {"w1", "s1"} <= set(ids)), (
+                "write and dependent search must not share a parallel segment"
+            )
+
+    def test_search_files_default_root_conflicts_with_write_into_cwd(self, tmp_path, monkeypatch):
+        """search_files with NO path arg reserves the cwd — a write anywhere
+        under the cwd must not share its segment."""
+        monkeypatch.chdir(tmp_path)
+        calls = [
+            _tc("write_file", '{"path":"out/notes.txt","content":"x"}', call_id="w1"),
+            _tc("search_files", '{"pattern":"notes"}', call_id="s1"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        for kind, seg_calls in segments:
+            ids = [tc.id for tc in seg_calls]
+            assert not (kind == "parallel" and {"w1", "s1"} <= set(ids))
+
+    def test_reader_reader_same_file_stays_parallel(self, tmp_path, monkeypatch):
+        """Two reads of the same file commute — the old planner needlessly
+        split them; they must now share one parallel segment."""
+        monkeypatch.chdir(tmp_path)
+        calls = [
+            _tc("read_file", '{"path":"a.py"}', call_id="r1"),
+            _tc("read_file", '{"path":"a.py"}', call_id="r2"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        assert _kinds(segments) == ["parallel"]
+        assert [tc.id for tc in segments[0][1]] == ["r1", "r2"]
+
+    def test_read_file_and_search_files_overlapping_stay_parallel(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        calls = [
+            _tc("read_file", '{"path":"src/a.py"}', call_id="r1"),
+            _tc("search_files", '{"pattern":"foo","path":"src"}', call_id="s1"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        assert _kinds(segments) == ["parallel"]
+
+    def test_search_files_disjoint_from_write_stays_parallel(self, tmp_path, monkeypatch):
+        """A search rooted outside the written subtree has no conflict."""
+        monkeypatch.chdir(tmp_path)
+        calls = [
+            _tc("write_file", '{"path":"src/a.py","content":"x"}', call_id="w1"),
+            _tc("search_files", '{"pattern":"foo","path":"docs"}', call_id="s1"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        assert _kinds(segments) == ["parallel"]
+        assert [tc.id for tc in segments[0][1]] == ["w1", "s1"]
+
+    def test_writer_writer_same_path_still_splits(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        calls = [
+            _tc("write_file", '{"path":"a.py","content":"1"}', call_id="w1"),
+            _tc("write_file", '{"path":"a.py","content":"2"}', call_id="w2"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        for kind, seg_calls in segments:
+            ids = [tc.id for tc in seg_calls]
+            assert not (kind == "parallel" and {"w1", "w2"} <= set(ids))
+
+    def test_read_then_write_same_file_still_splits(self, tmp_path, monkeypatch):
+        """Reader followed by writer on the same path keeps the pre-existing
+        split (write must not clobber a file mid-read)."""
+        monkeypatch.chdir(tmp_path)
+        calls = [
+            _tc("read_file", '{"path":"a.py"}', call_id="r1"),
+            _tc("write_file", '{"path":"a.py","content":"x"}', call_id="w1"),
+        ]
+        segments = _plan_tool_batch_segments(calls, execution_cwd=tmp_path)
+        for kind, seg_calls in segments:
+            ids = [tc.id for tc in seg_calls]
+            assert not (kind == "parallel" and {"r1", "w1"} <= set(ids))
 
 
 class TestShouldParallelizeBackwardCompat:

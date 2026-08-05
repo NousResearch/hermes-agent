@@ -102,6 +102,30 @@ def _declared_model_ids(value: Any) -> list[str]:
     return ids
 
 
+def _models_config_is_allowlist(value: Any) -> bool:
+    """Return True when ``models:`` is an intentional ID allowlist.
+
+    A mapping like ``{model_id: {context_length: N}}`` is per-model *metadata*
+    written by ``_save_custom_provider`` / the ``hermes model`` wizard — not a
+    catalog narrow. Treating that shape as an allowlist made Desktop/Telegram
+    pickers show only the saved default for local Ollama (no ``api_key``),
+    while ``hermes model`` still live-probed the full ``/v1/models`` list.
+    Refresh could not help because the same gate skipped probing.
+
+    List/string shapes remain allowlists for no-key endpoints. To pin a
+    dict-shaped catalog, set ``discover_models: false``.
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return False
+    if isinstance(value, (list, tuple)):
+        return bool(_declared_model_ids(value))
+    return False
+
+
 def _save_discovered_models_to_config(
     api_url: str, model_ids: list[str]
 ) -> None:
@@ -2631,12 +2655,13 @@ def list_authenticated_providers(
             for _m in entry_models:
                 if _m and _m not in ep_groups[group_key]["models"]:
                     ep_groups[group_key]["models"].append(_m)
-            # Track explicit ``models:`` declarations separately from the
-            # merged list: a singular ``default_model``/``model`` is only the
-            # active selection and must not be mistaken for the user narrowing
-            # the endpoint to a curated subset (mirrors section 4's
-            # declaration-tracking; see #40542 / PR #61928).
-            if entry_declared_models:
+            # Track allowlist-shaped ``models:`` separately from the merged
+            # list: a singular ``default_model``/``model`` is only the active
+            # selection and must not suppress discovery (see #40542 / PR
+            # #61928). Dict-shaped ``models:`` is context_length metadata from
+            # ``hermes model``, not an allowlist — see
+            # ``_models_config_is_allowlist``.
+            if _models_config_is_allowlist(ep_cfg.get("models")):
                 ep_groups[group_key]["has_explicit_models"] = True
             ep_groups[group_key]["raw_names"].append(display_name)
             ep_groups[group_key]["aliases"].update(
@@ -2663,14 +2688,16 @@ def list_authenticated_providers(
             # unless the provider explicitly opts out via discover_models: false.
             # Policy mirrors Section 4's should_probe logic:
             # - With an api_key: always probe (user opted into the endpoint).
-            # - Without an api_key but with an explicit ``models:`` list:
-            #   skip — the user is narrowing a public endpoint to a specific
-            #   subset. A singular ``default_model``/``model`` does NOT count
-            #   as narrowing (it's just the active selection) and must not
-            #   suppress discovery — mirrors section 4 / #40542.
-            # - Without an api_key AND no explicit models: probe anyway so
-            #   bare-endpoint providers (local llama.cpp / Ollama servers)
-            #   still show their full model catalog.
+            # - Without an api_key but with an allowlist-shaped ``models:``
+            #   (list/string): skip — the user narrowed a public endpoint.
+            #   A singular ``default_model``/``model`` does NOT count as
+            #   narrowing (mirrors section 4 / #40542).
+            # - A dict-shaped ``models:`` is per-model metadata
+            #   (context_length), not an allowlist — still probe so local
+            #   Ollama/llama.cpp match ``hermes model``. Pin with
+            #   ``discover_models: false`` instead.
+            # - Without an api_key AND no allowlist: probe anyway so bare
+            #   local endpoints still show their full model catalog.
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
@@ -2702,6 +2729,7 @@ def list_authenticated_providers(
                     live_models = fetch_api_models(
                         api_key,
                         api_url,
+                        timeout=1.5 if for_picker else 5.0,  # picker: fail fast so a slow custom endpoint doesn't block /model
                         headers=_extra_headers_from_config(ep_cfg) or None,
                     )
                     if live_models:
@@ -2769,7 +2797,11 @@ def list_authenticated_providers(
             try:
                 from hermes_cli.models import fetch_api_models
 
-                _live_models = fetch_api_models("", str(current_base_url).strip().rstrip("/"))
+                _live_models = fetch_api_models(
+                    "",
+                    str(current_base_url).strip().rstrip("/"),
+                    timeout=1.5 if for_picker else 5.0,  # picker: fail fast on a slow current endpoint
+                )
                 if _live_models:
                     _models = _live_models
             except Exception:
@@ -2906,8 +2938,12 @@ def list_authenticated_providers(
             if default_model and default_model not in groups[group_key]["models"]:
                 groups[group_key]["models"].append(default_model)
 
-            declared_models = _declared_model_ids(entry.get("models", {}))
-            if declared_models:
+            models_field = entry.get("models", {})
+            declared_models = _declared_model_ids(models_field)
+            # Dict-shaped models: is context_length metadata from
+            # ``_save_custom_provider``, not an allowlist — see
+            # ``_models_config_is_allowlist``.
+            if _models_config_is_allowlist(models_field):
                 groups[group_key]["has_explicit_models"] = True
             for model_id in declared_models:
                 if model_id not in groups[group_key]["models"]:
@@ -2969,24 +3005,20 @@ def list_authenticated_providers(
             # Live-discovery policy:
             # - With an api_key, the user has explicitly opted into the
             #   endpoint and live /models is the source of truth — replace
-            #   the (possibly partial) ``models:`` subset configured for
-            #   context-length overrides with the full live catalog.
-            #   This is the Bifrost / aggregator-gateway case.
-            # - Without an api_key but with an explicit ``models:`` list,
-            #   the user is narrowing a public endpoint to a specific subset
-            #   (e.g. ollama.com /v1/models returns 35 models but the user
-            #   only wants 4). Preserve the explicit list and skip live
-            #   discovery. The singular ``model:`` field is only the current
-            #   active selection and must not suppress discovery on local
-            #   no-key endpoints.
-            # - Without an api_key AND no explicit models, fall through to
-            #   live discovery so bare-endpoint custom providers (local
-            #   llama.cpp / Ollama servers) still appear populated.
+            #   the (possibly partial) ``models:`` subset with the full
+            #   live catalog (Bifrost / aggregator-gateway case).
+            # - Without an api_key but with an allowlist-shaped ``models:``
+            #   (list/string), the user narrowed a public endpoint (e.g.
+            #   ollama.com). Preserve that list and skip live discovery.
+            # - A dict-shaped ``models:`` is per-model metadata written by
+            #   ``_save_custom_provider`` for context_length — not an
+            #   allowlist. Still probe so Desktop/Telegram match
+            #   ``hermes model``. Pin a dict catalog with
+            #   ``discover_models: false``.
+            # - The singular ``model:`` field is only the current active
+            #   selection and must not suppress discovery.
             # - When discover_models: false is set, skip live discovery and
-            #   keep the explicit ``models:`` list regardless of whether an
-            #   api_key is present. This supports endpoints that expose a
-            #   full aggregator catalog via /models but only serve a subset
-            #   (parity with section 3's user ``providers:`` behaviour).
+            #   keep the configured ``models:`` list regardless of api_key.
             _grp_is_current = (
                 slug.lower() == _current_provider_norm
                 or _current_provider_norm in {
@@ -3012,6 +3044,7 @@ def list_authenticated_providers(
                     live_models = fetch_api_models(
                         api_key,
                         api_url,
+                        timeout=1.5 if for_picker else 5.0,  # picker: fail fast so a slow custom endpoint doesn't block /model
                         headers=grp.get("extra_headers") or None,
                     )
                     if live_models:

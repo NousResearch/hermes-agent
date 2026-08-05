@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -310,35 +311,44 @@ def _choice_table():
     return _simplex._APPROVAL_CHOICES
 
 
-def _approval_adapter(reaction_response=None, item_id=501):
+def _approval_adapter(reaction_response=None, item_id=501, reject_emoji=None):
     """Adapter plus a fake daemon that records every command it is sent.
 
     ``/_send`` answers with a ``newChatItems`` reply carrying *item_id* so
     the approval prompt has an anchor; ``/_reaction`` answers with
-    *reaction_response* (default: accepted).
+    *reaction_response* (default: accepted), or with a command error for the
+    single emoji named in *reject_emoji*.
     """
     adapter = _adapter_with_ws()
     sent = []
+    timeouts = {}
 
     async def fake_send_command(command, timeout=30.0):
         sent.append(command)
+        timeouts[command.split(" ", 1)[0]] = timeout
         if command.startswith("/_send "):
             return {
                 "type": "newChatItems",
                 "chatItems": [
                     {
                         "chatInfo": {"type": "direct"},
-                        "chatItem": {"meta": {"itemId": item_id}},
+                        "chatItem": {"meta": {"itemId": adapter._next_item_id}},
                     }
                 ],
             }
         if command.startswith("/_reaction "):
+            if reject_emoji is not None and f'"{reject_emoji}"' in command:
+                return {"type": "chatCmdError", "chatError": {}}
             if reaction_response is not None:
                 return reaction_response
             return {"type": "chatItemReaction", "added": True}
         return None
 
     adapter._send_command = fake_send_command
+    adapter._command_timeouts = timeouts
+    # Tests that send a second prompt bump this so the fake daemon hands back
+    # a fresh chat-item id, the way a real one would.
+    adapter._next_item_id = item_id
     return adapter, sent
 
 
@@ -357,6 +367,14 @@ def _prompt_text(sent):
     assert send_cmds, "no /_send command was recorded"
     composed = json.loads(send_cmds[-1].split(" json ", 1)[1])
     return composed[0]["msgContent"]["text"]
+
+
+def _ws_texts(adapter):
+    """Every plain (non-anchored) message the adapter pushed at the socket."""
+    return [
+        json.loads(call[0][0])["cmd"]
+        for call in adapter._ws.send.call_args_list
+    ]
 
 
 def _reaction_commands(sent, toggle="on"):
@@ -378,23 +396,26 @@ def _reaction_event(
     dir_type="directRcv",
     contact_id=42,
     member=None,
+    chat_info=None,
 ):
     """A daemon ``chatItemReaction`` event in the documented ACIReaction shape."""
     chat_dir = {"type": dir_type}
     if member is not None:
         chat_dir["groupMember"] = member
+    if chat_info is None:
+        chat_info = {
+            "type": "direct",
+            "contact": {
+                "contactId": contact_id,
+                "localDisplayName": "tester",
+            },
+        }
     return {
         "resp": {
             "type": "chatItemReaction",
             "added": added,
             "reaction": {
-                "chatInfo": {
-                    "type": "direct",
-                    "contact": {
-                        "contactId": contact_id,
-                        "localDisplayName": "tester",
-                    },
-                },
+                "chatInfo": chat_info,
                 "chatReaction": {
                     "chatDir": chat_dir,
                     "chatItem": {"meta": {"itemId": item_id}},
@@ -455,11 +476,10 @@ async def test_exec_approval_anchors_prompt_and_seeds_reactions():
 
 @pytest.mark.asyncio
 async def test_exec_approval_legend_matches_seeded_emoji():
-    """Every advertised reaction is one the bot actually placed.
+    """Every advertised reaction is one the bot tried to place.
 
-    Matrix advertises ❎ for deny but seeds ❌; users are told to use an
-    emoji that is not there. Generating both from one table makes that
-    class of drift unrepresentable, and this asserts it.
+    Generating the legend text and the seed set from one table is what keeps
+    them from drifting apart.
     """
     adapter, sent = _approval_adapter()
     await adapter.send_exec_approval(
@@ -528,37 +548,18 @@ async def test_exec_approval_text_only_when_chat_id_is_a_display_name():
 
 
 @pytest.mark.asyncio
-async def test_exec_approval_degrades_when_daemon_rejects_reactions():
-    """A daemon that refuses reactions leaves the typed flow, not a broken one."""
-    adapter, sent = _approval_adapter(
-        reaction_response={"type": "chatCmdError", "chatError": {}}
-    )
-
-    first = await adapter.send_exec_approval(
-        chat_id="42", command="rm -rf /tmp/a", session_key="s1", description="delete"
+async def test_typed_only_prompt_still_lists_every_offered_tier():
+    """Losing the tap lane must not lose the session/permanent instructions."""
+    adapter, _sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="alice", command="rm -rf /", session_key="s", description="delete"
     )
     await _drain(adapter)
 
-    assert first.success is True
-    assert adapter._reactions_supported is False
-    # Exactly one attempt, then it stops trying.
-    assert len(_reaction_commands(sent)) == 1
-    notice = json.loads(adapter._ws.send.call_args[0][0])["cmd"]
-    assert "/approve" in notice
-
-    sent.clear()
-    adapter._ws.send.reset_mock()
-    second = await adapter.send_exec_approval(
-        chat_id="42", command="rm -rf /tmp/b", session_key="s2", description="delete"
-    )
-    await _drain(adapter)
-
-    assert second.success is True
-    # No anchoring send, no reaction attempts — just the plain text prompt.
-    assert sent == []
-    second_prompt = json.loads(adapter._ws.send.call_args[0][0])["cmd"]
-    assert "tap a reaction" not in second_prompt
-    assert "/approve" in second_prompt
+    prompt = _ws_texts(adapter)[0]
+    assert "approve session" in prompt
+    assert "approve always" in prompt
+    assert "tap a reaction" not in prompt
 
 
 @pytest.mark.asyncio
@@ -574,6 +575,358 @@ async def test_exec_approval_reports_failure_when_daemon_rejects_the_send():
         chat_id="42", command="rm -rf /", session_key="s", description="delete"
     )
     assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_fails_when_the_websocket_is_down():
+    """A prompt that was never sent must not be reported as delivered.
+
+    ``run.py`` suppresses its own plain-text fallback on success, so
+    answering "delivered" for a send that never left the process means the
+    user sees no approval prompt at all — a security gate that silently
+    disappears.
+    """
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    assert adapter._ws is None
+
+    result = await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /", session_key="s", description="delete"
+    )
+    assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_anchored_send_leaves_headroom_under_the_caller_budget():
+    """gateway/run.py abandons send_exec_approval after 15s.
+
+    Waiting the full 15 here means a slow daemon produces two approval
+    prompts for one command.
+    """
+    adapter, _sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+
+    assert adapter._command_timeouts["/_send"] < 15.0
+
+
+@pytest.mark.asyncio
+async def test_prompt_window_follows_the_configured_approval_timeout(monkeypatch):
+    """The tap window is the operator's approvals.timeout, not a constant."""
+    import tools.approval as approval_mod
+
+    monkeypatch.setattr(approval_mod, "_get_approval_timeout", lambda: 900)
+
+    adapter, _sent = _approval_adapter()
+    before = time.monotonic()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+
+    prompt = adapter._approval_prompts_by_item["501"]
+    assert prompt.expires_at - before == pytest.approx(900, abs=5)
+
+
+@pytest.mark.asyncio
+async def test_expired_prompts_are_swept_when_the_next_prompt_is_sent():
+    """Prompts nobody ever answered must not accumulate for the process life."""
+    adapter, _sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/a", session_key="s1", description="delete"
+    )
+    await _drain(adapter)
+    adapter._approval_prompts_by_item["501"].expires_at = 0.0
+
+    adapter._next_item_id = 777
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/b", session_key="s2", description="delete"
+    )
+    await _drain(adapter)
+
+    assert list(adapter._approval_prompts_by_item) == ["777"]
+    assert "s1" not in adapter._approval_prompt_by_session
+
+
+# ---------------------------------------------------------------------------
+# 11a. One live prompt per session — the tap must be unambiguous
+# ---------------------------------------------------------------------------
+
+
+async def _two_prompts_one_session(adapter, sent):
+    """Send prompt A (item 501), then prompt B in the same session."""
+    await adapter.send_exec_approval(
+        chat_id="42", command="touch /tmp/live-A", session_key="s",
+        description="create A",
+    )
+    await _drain(adapter)
+    adapter._ws.send.reset_mock()
+
+    adapter._next_item_id = 777
+    await adapter.send_exec_approval(
+        chat_id="42", command="touch /tmp/live-B", session_key="s",
+        description="create B",
+    )
+    await _drain(adapter)
+
+
+@pytest.mark.asyncio
+async def test_second_approval_withdraws_the_first_prompt():
+    """The superseded message must stop looking answerable, and say so.
+
+    ``resolve_gateway_approval`` is FIFO per session (upstream #64001): a tap
+    cannot name a queue entry. Leaving the old message decorated with four
+    live-looking emoji is what turns that into a wrong-command execution.
+    """
+    adapter, sent = _approval_adapter()
+    await _two_prompts_one_session(adapter, sent)
+
+    first = [c for c in _reaction_commands(sent, toggle="off") if " 501 " in c]
+    assert len(first) == len(_choice_table())  # every seed taken back off
+    assert adapter._approval_prompts_by_item == {}
+
+    notice = "\n".join(_ws_texts(adapter))
+    assert "superseded" in notice
+    assert "/approve" in notice
+
+
+@pytest.mark.asyncio
+async def test_second_approval_in_a_session_is_typed_only():
+    """With two approvals pending, neither one may offer a tap."""
+    adapter, sent = _approval_adapter()
+    await _two_prompts_one_session(adapter, sent)
+
+    # The second prompt went out as an ordinary message, not an anchored one.
+    assert [c for c in sent if c.startswith("/_send ")] == [
+        c for c in sent if c.startswith("/_send @42 json ") and "live-A" in c
+    ]
+    second = [t for t in _ws_texts(adapter) if "live-B" in t]
+    assert len(second) == 1
+    assert "tap a reaction" not in second[0]
+    assert "/approve" in second[0]
+    assert adapter._approval_prompts_by_item == {}
+
+
+@pytest.mark.asyncio
+async def test_a_session_that_piled_up_stays_typed_until_the_window_lapses():
+    """The third prompt must not get a tap lane back.
+
+    Answering by typing is invisible to this adapter, so after a pile-up the
+    prompt map goes empty while two unanswered commands are still queued in
+    core. Offering a tap on a third prompt would run the oldest of them.
+    """
+    adapter, sent = _approval_adapter()
+    await _two_prompts_one_session(adapter, sent)
+
+    adapter._next_item_id = 888
+    adapter._ws.send.reset_mock()
+    await adapter.send_exec_approval(
+        chat_id="42", command="touch /tmp/live-C", session_key="s",
+        description="create C",
+    )
+    await _drain(adapter)
+
+    assert adapter._approval_prompts_by_item == {}
+    third = [t for t in _ws_texts(adapter) if "live-C" in t]
+    assert len(third) == 1
+    assert "tap a reaction" not in third[0]
+
+    # ...and it comes back once the window has lapsed.
+    adapter._typed_only_sessions["s"] = 0.0
+    adapter._next_item_id = 999
+    await adapter.send_exec_approval(
+        chat_id="42", command="touch /tmp/live-D", session_key="s",
+        description="create D",
+    )
+    await _drain(adapter)
+    assert list(adapter._approval_prompts_by_item) == ["999"]
+
+
+@pytest.mark.asyncio
+async def test_tap_on_a_withdrawn_prompt_resolves_nothing(resolved_approvals):
+    """The whole point of the guard: a stale tap cannot execute anything."""
+    calls, _state = resolved_approvals
+    adapter, sent = _approval_adapter()
+    await _two_prompts_one_session(adapter, sent)
+
+    await adapter._handle_event(_reaction_event("✅", item_id=501))
+    await _drain(adapter)
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_typed_fallback_still_withdraws_the_live_prompt(resolved_approvals):
+    """The guard runs before every return, not just the happy path.
+
+    A second approval that falls back to plain text for any reason used to
+    leave the first message tappable, and a tap on it resolved the *newer*
+    command — the queue is FIFO and the tap carries no id.
+    """
+    calls, _state = resolved_approvals
+    adapter, _sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="42", command="touch /tmp/live-A", session_key="s",
+        description="create A",
+    )
+    await _drain(adapter)
+
+    # Daemon stops accepting the bot's own reactions between the two prompts.
+    adapter._reactions_supported = False
+    await adapter.send_exec_approval(
+        chat_id="42", command="touch /tmp/live-B", session_key="s",
+        description="create B",
+    )
+    await _drain(adapter)
+
+    await adapter._handle_event(_reaction_event("✅", item_id=501))
+    await _drain(adapter)
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_prompt_that_is_not_the_session_current_one_is_refused(
+    resolved_approvals,
+):
+    """Belt-and-braces currency check, independent of the send-side guard."""
+    calls, _state = resolved_approvals
+    adapter, _sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+    adapter._approval_prompt_by_session["s"] = "999"
+    adapter._ws.send.reset_mock()
+
+    await adapter._handle_event(_reaction_event("✅"))
+    await _drain(adapter)
+
+    assert calls == []
+    assert "no longer pending" in "\n".join(_ws_texts(adapter))
+
+
+# ---------------------------------------------------------------------------
+# 11b. Direct chats only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_group_approval_never_offers_the_tap_lane():
+    """v1 keeps reactions to DMs; groups get the gateway-authorized typed lane."""
+    adapter, sent = _approval_adapter()
+
+    result = await adapter.send_exec_approval(
+        chat_id="group:7", command="rm -rf /tmp/x", session_key="s",
+        description="delete",
+    )
+    await _drain(adapter)
+
+    assert result.success is True
+    assert sent == []  # no anchoring send, no seeded reactions
+    assert adapter._approval_prompts_by_item == {}
+    prompt = _ws_texts(adapter)[0]
+    assert "tap a reaction" not in prompt
+    assert "/approve" in prompt
+
+
+@pytest.mark.asyncio
+async def test_group_reaction_resolves_nothing(resolved_approvals):
+    """No group prompt is ever registered, so no group tap can resolve one."""
+    calls, _state = resolved_approvals
+    adapter, _sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="group:7", command="rm -rf /tmp/x", session_key="s",
+        description="delete",
+    )
+    await _drain(adapter)
+
+    await adapter._handle_event(
+        _reaction_event(
+            "✅",
+            dir_type="groupRcv",
+            member={"memberId": "member-a", "localDisplayName": "alice"},
+            chat_info={"type": "group", "groupInfo": {"groupId": 7}},
+        )
+    )
+    await _drain(adapter)
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_group_member_reaction_on_a_dm_prompt_is_ignored(resolved_approvals):
+    """A member id is not a contact id — never let the namespaces collide.
+
+    ``localDisplayName`` is attacker-chosen, and a member id lives in a
+    different namespace from the contact id a DM prompt is keyed on, so a
+    group-directed reaction can never authorize a DM approval.
+    """
+    calls, _state = resolved_approvals
+    adapter, _sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+
+    await adapter._handle_event(
+        _reaction_event(
+            "✅",
+            dir_type="groupRcv",
+            member={"memberId": "42", "localDisplayName": "42"},
+        )
+    )
+    await _drain(adapter)
+
+    assert calls == []
+    assert adapter._approval_prompts_by_item  # still pending
+
+
+@pytest.mark.asyncio
+async def test_reaction_from_another_contact_is_ignored(resolved_approvals):
+    """Fail closed: only the contact whose DM raised the approval may answer."""
+    calls, _state = resolved_approvals
+    adapter, _sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+
+    await adapter._handle_event(_reaction_event("✅", contact_id=99))
+    assert calls == []
+    assert adapter._approval_prompts_by_item  # still pending
+
+
+@pytest.mark.asyncio
+async def test_reaction_from_another_chat_is_ignored(resolved_approvals):
+    """The event's own chat must match the chat the prompt was posted in."""
+    calls, _state = resolved_approvals
+    adapter, _sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+
+    await adapter._handle_event(
+        _reaction_event("✅", chat_info={"type": "group", "groupInfo": {"groupId": 7}})
+    )
+    assert calls == []
+    assert adapter._approval_prompts_by_item
+
+
+def test_group_chat_ref_requires_a_numeric_id():
+    """Group refs get the same numeric validation contact refs already get."""
+    assert SimplexAdapter._chat_ref("group:7") == "#7"
+    assert SimplexAdapter._chat_ref("group:friends") is None
+    assert SimplexAdapter._chat_ref("group:") is None
+
+
+# ---------------------------------------------------------------------------
+# 11c. Resolving a tap
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -650,50 +1003,6 @@ async def test_removing_a_reaction_does_not_resolve(resolved_approvals):
 
 
 @pytest.mark.asyncio
-async def test_reaction_from_another_contact_is_ignored(resolved_approvals):
-    """Fail closed: only the contact whose DM raised the approval may answer."""
-    calls, _state = resolved_approvals
-    adapter, _sent = _approval_adapter()
-    await adapter.send_exec_approval(
-        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
-    )
-    await _drain(adapter)
-
-    await adapter._handle_event(_reaction_event("✅", contact_id=99))
-    assert calls == []
-    assert adapter._approval_prompts_by_item  # still pending
-
-
-@pytest.mark.asyncio
-async def test_group_reaction_requires_the_allowlist(monkeypatch, resolved_approvals):
-    calls, _state = resolved_approvals
-    monkeypatch.setenv("SIMPLEX_GROUP_ALLOWED", "7")
-    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "member-a")
-    adapter, sent = _approval_adapter()
-    await adapter.send_exec_approval(
-        chat_id="group:7", command="rm -rf /tmp/x", session_key="s",
-        description="delete",
-    )
-    await _drain(adapter)
-    assert _reaction_commands(sent)[0].startswith("/_reaction #7 501 on ")
-
-    outsider = _reaction_event(
-        "✅", dir_type="groupRcv",
-        member={"memberId": "member-b", "localDisplayName": "mallory"},
-    )
-    await adapter._handle_event(outsider)
-    assert calls == []
-
-    insider = _reaction_event(
-        "✅", dir_type="groupRcv",
-        member={"memberId": "member-a", "localDisplayName": "alice"},
-    )
-    await adapter._handle_event(insider)
-    await _drain(adapter)
-    assert calls == [("s", "once")]
-
-
-@pytest.mark.asyncio
 async def test_unmapped_reaction_explains_itself_once(resolved_approvals):
     calls, _state = resolved_approvals
     adapter, _sent = _approval_adapter()
@@ -712,6 +1021,34 @@ async def test_unmapped_reaction_explains_itself_once(resolved_approvals):
 
 
 @pytest.mark.asyncio
+async def test_a_tier_the_prompt_did_not_offer_is_refused(resolved_approvals):
+    """The emoji map is global; the offer is per-prompt.
+
+    ❤ is not seeded on a prompt that disallows the permanent tier, but the
+    user can still place it by hand — and core would have refused it, so
+    acknowledging "approved permanently" would be a lie told by a security UI.
+    """
+    calls, _state = resolved_approvals
+    adapter, _sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="42",
+        command="rm -rf /tmp/x",
+        session_key="s",
+        description="delete",
+        allow_permanent=False,
+    )
+    await _drain(adapter)
+    adapter._ws.send.reset_mock()
+
+    await adapter._handle_event(_reaction_event("❤"))
+    await _drain(adapter)
+
+    assert calls == []
+    assert "not one of the approval options" in "\n".join(_ws_texts(adapter))
+    assert "permanent" not in "\n".join(_ws_texts(adapter))
+
+
+@pytest.mark.asyncio
 async def test_stale_tap_is_told_the_command_did_not_run(resolved_approvals):
     """resolve returning 0 means the queue was already drained (#63501)."""
     calls, state = resolved_approvals
@@ -727,7 +1064,7 @@ async def test_stale_tap_is_told_the_command_did_not_run(resolved_approvals):
     await _drain(adapter)
 
     assert calls == [("s", "once")]
-    reply = json.loads(adapter._ws.send.call_args[0][0])["cmd"]
+    reply = "\n".join(_ws_texts(adapter))
     assert "no longer pending" in reply
     assert "Approved" not in reply
 
@@ -748,24 +1085,168 @@ async def test_expired_prompt_is_retired_without_resolving(resolved_approvals):
 
     assert calls == []
     assert adapter._approval_prompts_by_item == {}
-    assert "expired" in json.loads(adapter._ws.send.call_args[0][0])["cmd"]
+    assert "expired" in "\n".join(_ws_texts(adapter))
 
 
 @pytest.mark.asyncio
-async def test_new_prompt_for_a_session_evicts_the_previous_one():
-    """Single-flight per session, same as the Matrix adapter."""
-    adapter, _sent = _approval_adapter(item_id=501)
+async def test_expiry_notice_is_not_a_stranger_operated_megaphone(
+    resolved_approvals,
+):
+    """Authorization runs before expiry, so an outsider cannot make us post."""
+    calls, _state = resolved_approvals
+    adapter, _sent = _approval_adapter()
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/x", session_key="s", description="delete"
+    )
+    await _drain(adapter)
+    adapter._approval_prompts_by_item["501"].expires_at = 0.0
+    adapter._ws.send.reset_mock()
+
+    await adapter._handle_event(_reaction_event("✅", contact_id=99))
+    await _drain(adapter)
+
+    assert calls == []
+    assert adapter._ws.send.call_count == 0
+    assert adapter._approval_prompts_by_item  # untouched by the outsider
+
+
+@pytest.mark.asyncio
+async def test_malformed_reaction_payload_is_ignored():
+    """A type guard has to run before the access it guards, not after."""
+    adapter, _sent = _approval_adapter()
+
+    await adapter._handle_reaction_event(
+        {"type": "chatItemReaction", "added": True, "reaction": ["not-a-dict"]}
+    )
+    await adapter._handle_reaction_event(
+        {"type": "chatItemReaction", "added": True, "reaction": {
+            "chatReaction": ["not-a-dict"]
+        }}
+    )
+
+
+# ---------------------------------------------------------------------------
+# 11d. Seeding and degradation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_degrades_when_daemon_rejects_reactions():
+    """A daemon that refuses reactions leaves the typed flow, not a broken one."""
+    adapter, sent = _approval_adapter(
+        reaction_response={"type": "chatCmdError", "chatError": {}}
+    )
+
+    first = await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/a", session_key="s1", description="delete"
+    )
+    await _drain(adapter)
+
+    assert first.success is True
+    assert adapter._reactions_supported is False
+    # Exactly one attempt, then it stops trying.
+    assert len(_reaction_commands(sent)) == 1
+    assert "/approve" in "\n".join(_ws_texts(adapter))
+
+    sent.clear()
+    adapter._ws.send.reset_mock()
+    second = await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/b", session_key="s2", description="delete"
+    )
+    await _drain(adapter)
+
+    assert second.success is True
+    # No further seeding attempts, and nothing advertised that is not there.
+    assert _reaction_commands(sent) == []
+    assert "tap a reaction" not in _prompt_text(sent)
+    assert "/approve" in _prompt_text(sent)
+
+
+@pytest.mark.asyncio
+async def test_seed_rejection_keeps_the_inbound_reaction_lane(resolved_approvals):
+    """'The bot may not react' and 'the user may not react' are not the same.
+
+    A daemon that refuses the bot's own reactions has said nothing about a
+    reaction the user places, so the prompt stays anchored and registered.
+    """
+    calls, _state = resolved_approvals
+    adapter, sent = _approval_adapter(
+        reaction_response={"type": "chatCmdError", "chatError": {}}
+    )
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/a", session_key="s1", description="delete"
+    )
+    await _drain(adapter)
+    assert adapter._reactions_supported is False
+
+    adapter._next_item_id = 777
+    await adapter.send_exec_approval(
+        chat_id="42", command="rm -rf /tmp/b", session_key="s2", description="delete"
+    )
+    await _drain(adapter)
+
+    assert "777" in adapter._approval_prompts_by_item
+    await adapter._handle_event(_reaction_event("✅", item_id=777))
+    await _drain(adapter)
+    assert calls == [("s2", "once")]
+
+
+@pytest.mark.asyncio
+async def test_one_refused_emoji_does_not_kill_the_whole_lane():
+    """Only a rejection of the first, always-valid emoji means 'no reactions'.
+
+    ✅ is on the daemon's own allowlist, so a rejection there is about
+    reactions in general. A rejection further down the list is about that one
+    emoji and must not disable the feature process-wide.
+    """
+    adapter, sent = _approval_adapter(reject_emoji="🚀")
+
     await adapter.send_exec_approval(
         chat_id="42", command="rm -rf /tmp/a", session_key="s", description="delete"
     )
     await _drain(adapter)
 
-    adapter2, _s2 = _approval_adapter(item_id=777)
-    adapter._send_command = adapter2._send_command
-    await adapter.send_exec_approval(
-        chat_id="42", command="rm -rf /tmp/b", session_key="s", description="delete"
+    assert adapter._reactions_supported is True
+    seeded = {_reaction_emoji(c) for c in _reaction_commands(sent)}
+    assert seeded == {"✅", "🚀", "❤", "👎"}
+    assert adapter._approval_prompts_by_item["501"].seeded_emoji == ["✅", "❤", "👎"]
+
+
+@pytest.mark.asyncio
+async def test_a_seed_that_lands_after_resolution_is_taken_back_off():
+    """No bot reaction may outlive the prompt it decorates.
+
+    A leftover ✅ on a resolved prompt is a live-looking tap target on a
+    message that can no longer answer for itself.
+    """
+    adapter, _sent = _approval_adapter()
+    prompt = _simplex._SimplexApprovalPrompt(
+        session_key="s",
+        chat_id="42",
+        chat_ref="@42",
+        item_id="501",
+        choices=frozenset({"once", "deny"}),
+        expires_at=time.monotonic() + 300,
     )
+    gate = asyncio.Event()
+    calls = []
+
+    async def fake_set_reaction(chat_ref, item_id, emoji, *, add=True):
+        calls.append((emoji, add))
+        if add:
+            await gate.wait()
+        return True
+
+    adapter._set_reaction = fake_set_reaction
+    task = asyncio.create_task(
+        adapter._seed_approval_reactions(prompt, _choice_table()[:1])
+    )
+    await asyncio.sleep(0)
+
+    adapter._retire_prompt(prompt)
+    gate.set()
+    await task
     await _drain(adapter)
 
-    assert list(adapter._approval_prompts_by_item) == ["777"]
-    assert adapter._approval_prompt_by_session == {"s": "777"}
+    assert ("✅", False) in calls
+    assert prompt.seeded_emoji == []

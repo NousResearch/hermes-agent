@@ -122,38 +122,62 @@ voice note (audio extensions) or a document.
 ## Exec approval
 
 When the agent wants to run a potentially dangerous command it asks first.
-The prompt shows the command, the reason, and the choices — and the bot
+The prompt always shows the command, the reason, and the typed commands
+that answer it: `/approve`, `/approve session`, `/approve always`, `/deny`.
+
+**In a direct chat**, when exactly one approval is waiting, the bot also
 pre-places the decision emoji on its own message so you can answer with a
 long-press and a tap instead of typing:
 
-- ✅ approve once
-- 🚀 approve for this session
-- ❤️ approve always (adds the pattern to the permanent allowlist)
-- 👎 deny
+| reaction | means |
+|---|---|
+| ✅ | approve once |
+| 🚀 | approve for this session |
+| ❤️ | approve always |
+| 👎 | deny |
+| 👍 | approve once (accepted, but not pre-placed) |
 
-Typing still works and is always offered in the prompt: `/approve`,
-`/approve session`, `/approve always`, `/deny`. Only the emoji above are
-recognised — the simplex-chat daemon accepts a fixed set of reaction emoji,
-so the tiers use what SimpleX actually allows rather than the icons other
-Hermes platforms use.
+Nothing else is recognised, and a reaction is only accepted for a tier the
+prompt actually offered — reacting ❤️ to a prompt that did not offer the
+permanent tier gets you a short reply, not a permanent approval. The emoji
+are not the ones other Hermes platforms use: the simplex-chat daemon
+validates reactions against a fixed set, so these are what SimpleX allows.
 
-Who may answer:
+❤️ **approve always** writes the command pattern into your permanent
+allowlist on disk. It applies to that pattern everywhere Hermes runs it —
+not just this chat and not just this platform. Use 🚀 if you only mean "for
+now".
 
-- **Direct chats** — the contact whose conversation raised the approval.
-  Nobody else can react in a DM, so no extra allowlist entry is needed and
-  DM pairing works as-is.
-- **Group chats** — the reacting member must appear in
-  `SIMPLEX_ALLOWED_USERS` (by member id or display name). With no allowlist
-  configured, group reactions are ignored and `/approve` is the way in.
+### When you get a typed prompt instead
 
-A prompt stays tappable for 5 minutes, matching the agent-side approval
-timeout. After that a tap gets an "expired" reply rather than silently
-doing nothing, and a tap that lands after the command was already answered
-is told the command did not run.
+The tap lane is only offered when a tap can mean exactly one thing. These
+cases fall back to typed commands, which the gateway authorizes in full:
 
-If your daemon is too old to accept reactions, the first attempt fails, the
-bot says so once, and every later prompt is plain text with the typed
-commands only — approvals keep working either way.
+- **Group chats.** Any member can react, and the identity the daemon
+  reports for a group reactor is not one this adapter can tie to a verified
+  operator, so v1 keeps reactions to direct chats.
+- **Two approvals at once in the same session.** `resolve_gateway_approval`
+  resolves a session's approvals oldest-first and cannot be pointed at a
+  specific one (upstream issue #64001), so a tap could not say *which*
+  command you meant. When a second approval arrives, the bot withdraws the
+  reactions from the first message, tells you it was superseded, and sends
+  the new prompt typed-only. Answer both with `/approve` or `/deny`. That
+  session keeps getting typed prompts until the approval window lapses —
+  answering by typing happens inside the gateway, so the adapter cannot see
+  that the queue drained.
+- **After a gateway restart.** Prompts live in memory. Reactions left on a
+  message from before a restart do nothing — type `/approve` instead.
+- **A daemon that will not let the bot place reactions.** The bot says so
+  once and stops pre-placing them; typed commands keep working, and a
+  reaction you place yourself is still read.
+
+`SIMPLEX_ALLOW_ALL_USERS` controls who may talk to the bot. It does not
+grant anyone the right to approve a command.
+
+A prompt stays tappable for as long as your `approvals.timeout` setting
+allows. After that a tap gets an "expired" reply rather than silently doing
+nothing, and a tap that lands after the command was already answered is
+told the command did not run.
 
 ## Using SimpleX with cron jobs
 

@@ -1577,6 +1577,7 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "surface": "auto",            # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
         "input_device": None,          # PortAudio input device index/name; null uses the process default
+        "capture": "auto",            # auto | local | client — where PCM is captured (client = desktop streams mic via wake.feed)
         "provider": "openwakeword",   # "openwakeword" (free, local) | "sherpa" (free, ANY phrase, no training) | "porcupine" (premium; needs PORCUPINE_ACCESS_KEY)
         "phrase": "hey hermes",       # for "sherpa" this IS the detected phrase (any text works); for other engines it's a cosmetic label — detection is keyed by the model/keyword below
         "sensitivity": 0.6,           # 0.0-1.0 detection threshold, consistent across engines (higher = stricter, fewer false triggers)

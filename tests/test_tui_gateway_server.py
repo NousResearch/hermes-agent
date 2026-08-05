@@ -1473,10 +1473,15 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
     state = {"owner": None, "callback": None, "paused": False}
     voice_callbacks = {}
 
-    def start_listening(callback, *, owner, config):
+    def start_listening(callback, *, owner, config, external_audio=False):
         if state["owner"] is not None and state["owner"] is not owner:
             raise wake_word.WakeWordInUse
-        state.update(owner=owner, callback=callback, paused=False)
+        state.update(
+            owner=owner,
+            callback=callback,
+            paused=False,
+            external_audio=bool(external_audio),
+        )
 
     def pause_listening(*, owner):
         if state["owner"] is not owner:
@@ -1670,7 +1675,9 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
     listener = {"owner": None}
     monkeypatch.setattr(
         wake_word, "start_listening",
-        lambda callback, *, owner, config: listener.update(owner=owner),
+        lambda callback, *, owner, config, external_audio=False: listener.update(
+            owner=owner, external_audio=bool(external_audio)
+        ),
     )
     monkeypatch.setattr(
         wake_word, "stop_listening",

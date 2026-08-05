@@ -2024,6 +2024,30 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     return t
 
 
+def _scoped_key_env(name: str) -> str:
+    """Read a provider key env var through the per-profile secret scope.
+
+    The multiplexed gateway installs a secret scope per turn; a raw
+    ``os.environ`` read hands the current profile whatever key happens to be
+    in the process environment — another profile's, in a multiplexer. That is
+    the class swept in 854007d1c for the fallback/aux key reads; the picker's
+    ``key_env`` reads were not covered.
+
+    Identical to ``os.getenv`` when multiplexing is off. A fail-closed
+    ``UnscopedSecretError`` (multiplexing on, no scope installed) means "no
+    credential visible for this profile here", which is exactly how the picker
+    already treats a missing key.
+    """
+    if not name:
+        return ""
+    try:
+        from agent.secret_scope import get_secret
+
+        return (get_secret(name, "") or "").strip()
+    except Exception:
+        return ""
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -2791,7 +2815,7 @@ def list_authenticated_providers(
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
-                api_key = os.environ.get(key_env, "").strip() if key_env else ""
+                api_key = _scoped_key_env(key_env)
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
@@ -2965,9 +2989,7 @@ def list_authenticated_providers(
                 continue
             inline_api_key = (entry.get("api_key") or "").strip()
             key_env = (entry.get("key_env") or "").strip()
-            api_key = inline_api_key or (
-                os.environ.get(key_env, "").strip() if key_env else ""
-            )
+            api_key = inline_api_key or _scoped_key_env(key_env)
             api_mode = str(
                 entry.get("api_mode")
                 or entry.get("transport")

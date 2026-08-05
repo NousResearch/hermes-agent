@@ -93,7 +93,7 @@ def _load_request(conn: sqlite3.Connection, *, board: str, tenant: str, orch_id:
 def _load_by_parent(conn: sqlite3.Connection, *, parent_task_id: str) -> sqlite3.Row:
     row = conn.execute(
         "SELECT r.orch_id, r.parent_task_id, r.lifecycle_state, r.lifecycle_revision, "
-        "r.board_instance_id, r.tenant_scope, o.origin_kind "
+        "r.plan_version, r.board_instance_id, r.tenant_scope, o.origin_kind "
         "FROM orch_requests r "
         "JOIN orch_origins o ON o.board_instance_id=r.board_instance_id "
         " AND o.tenant_scope=r.tenant_scope AND o.origin_id=r.origin_id "
@@ -109,7 +109,7 @@ def _list_open_board_only(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return list(
         conn.execute(
             "SELECT r.orch_id, r.parent_task_id, r.lifecycle_state, r.lifecycle_revision, "
-            "r.board_instance_id, r.tenant_scope, o.origin_kind "
+            "r.plan_version, r.board_instance_id, r.tenant_scope, o.origin_kind "
             "FROM orch_requests r "
             "JOIN orch_origins o ON o.board_instance_id=r.board_instance_id "
             " AND o.tenant_scope=r.tenant_scope AND o.origin_id=r.origin_id "
@@ -184,7 +184,28 @@ def judge_board_only_once(
         return JudgeResult(**base, skipped=True, reason="already_terminal")
 
     try:
-        if work_done:
+        # Prefer progressive multi-lane path over short-complete when possible.
+        if status in ACTIVE_NATIVE and state == "submitted":
+            step = apply_lifecycle_transition_db(
+                conn,
+                board_instance_id=board_instance_id,
+                tenant_scope=tenant,
+                orch_id=orch_id,
+                event="claim_decomposition",
+                to_state="decomposing",
+            )
+        elif work_done and state == "submitted":
+            # parent/children already terminal at submit time: still claim first
+            # so deeper multi-lane can materialize on the next tick when ≥2 children.
+            step = apply_lifecycle_transition_db(
+                conn,
+                board_instance_id=board_instance_id,
+                tenant_scope=tenant,
+                orch_id=orch_id,
+                event="claim_decomposition",
+                to_state="decomposing",
+            )
+        elif work_done:
             step = apply_lifecycle_transition_db(
                 conn,
                 board_instance_id=board_instance_id,
@@ -195,15 +216,6 @@ def judge_board_only_once(
                 origin_kind="board_only",
                 native_parent_done=parent_done,
                 children_all_done=children_all_done,
-            )
-        elif status in ACTIVE_NATIVE and state == "submitted":
-            step = apply_lifecycle_transition_db(
-                conn,
-                board_instance_id=board_instance_id,
-                tenant_scope=tenant,
-                orch_id=orch_id,
-                event="claim_decomposition",
-                to_state="decomposing",
             )
         else:
             return JudgeResult(**base, skipped=True, reason=f"no_rule_for:{state}:{status}:children={children_done}/{children_total}")
@@ -316,9 +328,28 @@ def _judge_with_bridge(br: OrchBridge, parent_task_id: str) -> JudgeResult:
     children = read_native_children(br._native, parent_task_id)
     total, done, all_done = children_progress(children)
     row = _load_by_parent(br._sidecar, parent_task_id=parent_task_id)
-    # Deeper multi-lane: when ≥2 children and request is decomposing/waiting_lanes,
-    # prefer plan materialize + lane accept path before board_only short complete.
+    # Prefer multi-lane when ≥2 children once past submitted (or after claim).
     state = row["lifecycle_state"]
+    if total >= 2 and state == "submitted":
+        # force claim first so multilane can materialize next
+        first = judge_board_only_to_fixed_point(
+            br._sidecar,
+            board_instance_id=row["board_instance_id"],
+            tenant_scope=row["tenant_scope"] or "",
+            orch_id=row["orch_id"],
+            native_status=ref.status,
+            children_all_done=False,  # don't short-complete on this claim step
+            children_total=total,
+            children_done=done,
+        )
+        row = _load_by_parent(br._sidecar, parent_task_id=parent_task_id)
+        state = row["lifecycle_state"]
+        if first.steps and state == "decomposing":
+            # continue into multilane below
+            pass
+        elif first.after_state in TERMINAL_ORCH:
+            return first
+
     if total >= 2 and state in {"decomposing", "waiting_lanes"}:
         try:
             from hermes_cli.kanban_orch_multilane import MultiLaneError, run_multilane_once
@@ -335,46 +366,67 @@ def _judge_with_bridge(br: OrchBridge, parent_task_id: str) -> JudgeResult:
                         "title": (crow["title"] if crow else c["child_id"]),
                     }
                 )
-            ml = run_multilane_once(
-                br._sidecar,
-                board_instance_id=row["board_instance_id"],
-                tenant_scope=row["tenant_scope"] or "",
-                orch_id=row["orch_id"],
-                parent_task_id=parent_task_id,
-                parent_title=ref.title or parent_task_id,
-                parent_status=ref.status,
-                children=enriched,
-            )
-            if not ml.skipped:
-                # Re-load for board_only residual completion if still open
-                row2 = _load_by_parent(br._sidecar, parent_task_id=parent_task_id)
-                residual = judge_board_only_to_fixed_point(
+            ml_steps = []
+            before_ml = state
+            after_ml = state
+            accepted = 0
+            plan_v = int(row["plan_version"] or 0)
+            for _ in range(6):
+                ml = run_multilane_once(
                     br._sidecar,
-                    board_instance_id=row2["board_instance_id"],
-                    tenant_scope=row2["tenant_scope"] or "",
-                    orch_id=row2["orch_id"],
-                    native_status=ref.status,
-                    children_all_done=all_done,
-                    children_total=total,
-                    children_done=done,
+                    board_instance_id=row["board_instance_id"],
+                    tenant_scope=row["tenant_scope"] or "",
+                    orch_id=row["orch_id"],
+                    parent_task_id=parent_task_id,
+                    parent_title=ref.title or parent_task_id,
+                    parent_status=ref.status,
+                    children=enriched,
                 )
+                if ml.skipped:
+                    break
+                ml_steps.extend(ml.steps)
+                after_ml = ml.after_state
+                accepted = ml.accepted_required_lanes
+                plan_v = ml.plan_version
+                if ml.after_state in TERMINAL_ORCH:
+                    break
+                row = _load_by_parent(br._sidecar, parent_task_id=parent_task_id)
+
+            if ml_steps:
+                row2 = _load_by_parent(br._sidecar, parent_task_id=parent_task_id)
+                # Only residual short-complete if multi-lane already finished accept path
+                # or multi-lane cannot proceed and board_only is acceptable (< nothing left).
+                residual_steps = []
+                if row2["lifecycle_state"] not in TERMINAL_ORCH and accepted >= 2:
+                    residual = judge_board_only_to_fixed_point(
+                        br._sidecar,
+                        board_instance_id=row2["board_instance_id"],
+                        tenant_scope=row2["tenant_scope"] or "",
+                        orch_id=row2["orch_id"],
+                        native_status=ref.status,
+                        children_all_done=all_done,
+                        children_total=total,
+                        children_done=done,
+                    )
+                    residual_steps = residual.steps
+                    after_ml = residual.after_state if residual.steps else after_ml
                 steps = [
                     JudgeStep(
                         event=f"multilane:{s.action}",
-                        from_state=ml.before_state,
-                        to_state=ml.after_state,
+                        from_state=before_ml,
+                        to_state=after_ml,
                         lifecycle_revision=int(row2["lifecycle_revision"]),
                     )
-                    for s in ml.steps
+                    for s in ml_steps
                 ]
-                steps.extend(residual.steps)
+                steps.extend(residual_steps)
                 return JudgeResult(
                     orch_id=row2["orch_id"],
                     parent_task_id=parent_task_id,
                     native_status=ref.status,
                     origin_kind=row2["origin_kind"],
-                    before_state=ml.before_state,
-                    after_state=residual.after_state if residual.steps else ml.after_state,
+                    before_state=before_ml,
+                    after_state=after_ml,
                     steps=steps,
                     skipped=False,
                     children_total=total,

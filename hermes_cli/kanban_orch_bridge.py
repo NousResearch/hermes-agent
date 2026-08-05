@@ -103,6 +103,9 @@ class OrchBridge:
         from hermes_cli.kanban_orch_cmin_schema import apply_cmin_transition_patch
 
         apply_cmin_transition_patch(self._sidecar)
+        from hermes_cli.kanban_orch_multilane_schema import apply_multilane_soft_fk_patch
+
+        apply_multilane_soft_fk_patch(self._sidecar)
 
         self._native_path = native_path
         self._sidecar_path = sidecar_path

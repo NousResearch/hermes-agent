@@ -316,6 +316,74 @@ def _judge_with_bridge(br: OrchBridge, parent_task_id: str) -> JudgeResult:
     children = read_native_children(br._native, parent_task_id)
     total, done, all_done = children_progress(children)
     row = _load_by_parent(br._sidecar, parent_task_id=parent_task_id)
+    # Deeper multi-lane: when ≥2 children and request is decomposing/waiting_lanes,
+    # prefer plan materialize + lane accept path before board_only short complete.
+    state = row["lifecycle_state"]
+    if total >= 2 and state in {"decomposing", "waiting_lanes"}:
+        try:
+            from hermes_cli.kanban_orch_multilane import MultiLaneError, run_multilane_once
+
+            enriched = []
+            for c in children:
+                crow = br._native.execute(
+                    "SELECT title, status FROM tasks WHERE id=?", (c["child_id"],)
+                ).fetchone()
+                enriched.append(
+                    {
+                        "child_id": c["child_id"],
+                        "status": ((crow["status"] if crow else c["status"]) or "").lower(),
+                        "title": (crow["title"] if crow else c["child_id"]),
+                    }
+                )
+            ml = run_multilane_once(
+                br._sidecar,
+                board_instance_id=row["board_instance_id"],
+                tenant_scope=row["tenant_scope"] or "",
+                orch_id=row["orch_id"],
+                parent_task_id=parent_task_id,
+                parent_title=ref.title or parent_task_id,
+                parent_status=ref.status,
+                children=enriched,
+            )
+            if not ml.skipped:
+                # Re-load for board_only residual completion if still open
+                row2 = _load_by_parent(br._sidecar, parent_task_id=parent_task_id)
+                residual = judge_board_only_to_fixed_point(
+                    br._sidecar,
+                    board_instance_id=row2["board_instance_id"],
+                    tenant_scope=row2["tenant_scope"] or "",
+                    orch_id=row2["orch_id"],
+                    native_status=ref.status,
+                    children_all_done=all_done,
+                    children_total=total,
+                    children_done=done,
+                )
+                steps = [
+                    JudgeStep(
+                        event=f"multilane:{s.action}",
+                        from_state=ml.before_state,
+                        to_state=ml.after_state,
+                        lifecycle_revision=int(row2["lifecycle_revision"]),
+                    )
+                    for s in ml.steps
+                ]
+                steps.extend(residual.steps)
+                return JudgeResult(
+                    orch_id=row2["orch_id"],
+                    parent_task_id=parent_task_id,
+                    native_status=ref.status,
+                    origin_kind=row2["origin_kind"],
+                    before_state=ml.before_state,
+                    after_state=residual.after_state if residual.steps else ml.after_state,
+                    steps=steps,
+                    skipped=False,
+                    children_total=total,
+                    children_done=done,
+                    children_all_done=all_done,
+                )
+        except MultiLaneError:
+            # fall through to board_only path
+            pass
     return judge_board_only_to_fixed_point(
         br._sidecar,
         board_instance_id=row["board_instance_id"],

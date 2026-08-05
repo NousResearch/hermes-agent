@@ -294,38 +294,51 @@ def apply_lifecycle_transition_db(
                 target_key="*",
             ),
         )
-        cur = conn.execute(
-            "UPDATE orch_requests SET lifecycle_state=?, lifecycle_revision=?, cancel_epoch=?, "
-            "resume_state=?, blocked_from_state=?, block_revision=?, "
-            "delivery_closed_at=CASE WHEN ?= 'completed' THEN COALESCE(delivery_closed_at, ?) ELSE delivery_closed_at END, "
-            "work_accepted_at=CASE WHEN ?= 'completed' THEN COALESCE(work_accepted_at, ?) ELSE work_accepted_at END, "
-            "terminal_reason_code=CASE WHEN ?= 'completed' THEN COALESCE(terminal_reason_code, ?) "
-            "WHEN ? IN ('failed','cancelled') THEN COALESCE(terminal_reason_code, ?) "
-            "ELSE terminal_reason_code END, "
-            "updated_at=? "
-            "WHERE board_instance_id=? AND tenant_scope=? AND orch_id=? AND lifecycle_revision=?",
-            (
-                nxt.state,
-                nxt.lifecycle_revision,
-                nxt.cancel_epoch,
-                nxt.resume_state,
-                nxt.blocked_from_state,
-                nxt.block_revision,
-                nxt.state,
-                _now(),
-                nxt.state,
-                _now(),
-                nxt.state,
-                "board_only_parent_done" if event == "board_only_parent_done" else "completed",
-                nxt.state,
-                event,
-                _now(),
-                board_instance_id,
-                tenant,
-                orch_id,
-                req.lifecycle_revision,
-            ),
+        # Build UPDATE carefully so multi-lane plan/delivery epochs satisfy SQL fences.
+        now = _now()
+        sets = [
+            "lifecycle_state=?",
+            "lifecycle_revision=?",
+            "cancel_epoch=?",
+            "resume_state=?",
+            "blocked_from_state=?",
+            "block_revision=?",
+            "updated_at=?",
+        ]
+        vals: list[Any] = [
+            nxt.state,
+            nxt.lifecycle_revision,
+            nxt.cancel_epoch,
+            nxt.resume_state,
+            nxt.blocked_from_state,
+            nxt.block_revision,
+            now,
+        ]
+        if event == "valid_plan_materialized" and to_state == "waiting_lanes":
+            sets.append("plan_version=plan_version+1")
+            sets.append("plan_epoch_revision=?")
+            vals.append(nxt.lifecycle_revision)
+        if event == "result_accepted" and to_state == "work_accepted":
+            sets.append("delivery_epoch_revision=?")
+            sets.append("work_accepted_at=COALESCE(work_accepted_at, ?)")
+            vals.extend([nxt.lifecycle_revision, now])
+        if nxt.state == "completed":
+            sets.append("delivery_closed_at=COALESCE(delivery_closed_at, ?)")
+            sets.append("work_accepted_at=COALESCE(work_accepted_at, ?)")
+            sets.append("terminal_reason_code=COALESCE(terminal_reason_code, ?)")
+            reason = "board_only_parent_done" if event == "board_only_parent_done" else "completed"
+            vals.extend([now, now, reason])
+        elif nxt.state in {"failed", "cancelled"}:
+            sets.append("terminal_reason_code=COALESCE(terminal_reason_code, ?)")
+            vals.append(event)
+
+        sql = (
+            "UPDATE orch_requests SET "
+            + ", ".join(sets)
+            + " WHERE board_instance_id=? AND tenant_scope=? AND orch_id=? AND lifecycle_revision=?"
         )
+        vals.extend([board_instance_id, tenant, orch_id, req.lifecycle_revision])
+        cur = conn.execute(sql, vals)
         if cur.rowcount != 1:
             raise OrchAPIError("lifecycle_cas_conflict")
         conn.commit()

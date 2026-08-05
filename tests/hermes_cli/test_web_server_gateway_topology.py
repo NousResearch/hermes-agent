@@ -77,7 +77,35 @@ class TestCollectProfileGatewayTopology:
         assert topo["profiles"] == ["default", "coder"]
         assert topo["gateway_mode"] == "none"
         assert topo["gateways"] == []
+        assert topo["profile_platforms"] == {}
 
+    def test_collects_per_profile_platform_maps(self, tmp_path, monkeypatch):
+        # Independent per-profile gateways (gateway_mode == "multiple") each
+        # write their own gateway_state.json; the collector surfaces every
+        # LIVE profile's raw platform map for the /api/status merge (OOF-3).
+        homes = [("default", tmp_path / "d"), ("coder", tmp_path / "c")]
+        runtimes = {
+            "default": {"platforms": {"telegram": {"state": "connected"}}},
+            "coder": {
+                "platforms": {
+                    "discord": {
+                        "state": "fatal",
+                        "error_code": "duplicate_credential",
+                    }
+                }
+            },
+        }
+        _patch_topology(
+            monkeypatch, homes, running={"default", "coder"}, runtimes=runtimes
+        )
+        topo = _collect_profile_gateway_topology()
+        assert topo["gateway_mode"] == "multiple"
+        assert topo["profile_platforms"] == {
+            "default": {"telegram": {"state": "connected"}},
+            "coder": {
+                "discord": {"state": "fatal", "error_code": "duplicate_credential"}
+            },
+        }
 
 
 
@@ -89,7 +117,12 @@ class TestCollectProfileGatewayTopology:
 
         monkeypatch.setattr(profiles_mod, "profiles_to_serve", _boom)
         topo = _collect_profile_gateway_topology()
-        assert topo == {"profiles": [], "gateway_mode": "unknown", "gateways": []}
+        assert topo == {
+            "profiles": [],
+            "gateway_mode": "unknown",
+            "gateways": [],
+            "profile_platforms": {},
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +216,178 @@ class TestStatusEndpointTopology:
 
         assert resp.status_code == 200
         assert "reviewer:discord:../../secret" not in resp.json()["gateway_platforms"]
+
+    def test_namespaced_key_validation_does_not_fail_open(self, monkeypatch):
+        # If loading the configured-platform set throws, plain keys keep the
+        # historical pass-through — but colon-containing keys must STILL be
+        # validated against the key grammar. A config-load failure must not
+        # let malformed keys from a process-local JSON file reach the public
+        # endpoint.
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 123)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda path=None: {
+                "gateway_state": "running",
+                "platforms": {
+                    "telegram": {"state": "connected"},
+                    "reviewer:discord": {"state": "fatal"},
+                    "reviewer:discord:../../secret": {"state": "fatal"},
+                    "REVIEWER:DISCORD": {"state": "fatal"},
+                },
+            },
+        )
+
+        def _boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(
+            web_server, "_load_configured_gateway_platforms", _boom
+        )
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        platforms = resp.json()["gateway_platforms"]
+        assert "telegram" in platforms
+        assert "reviewer:discord" in platforms
+        assert "reviewer:discord:../../secret" not in platforms
+        assert "REVIEWER:DISCORD" not in platforms
+
+    def test_status_preserves_hyphenated_plugin_platform_key(self, monkeypatch):
+        # Plugin platform IDs may contain hyphens (plugins/platforms/<dir>
+        # names are lowercased directory names; the Platform enum accepts
+        # them). A valid ``reviewer:foo-bar`` fatal entry must survive the
+        # public filter.
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 123)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda path=None: {
+                "gateway_state": "running",
+                "platforms": {
+                    "reviewer:foo-bar": {
+                        "state": "fatal",
+                        "error_code": "duplicate_credential",
+                    },
+                },
+            },
+        )
+        monkeypatch.setattr(
+            web_server,
+            "_load_configured_gateway_platforms",
+            lambda: {"telegram"},
+        )
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        platforms = resp.json()["gateway_platforms"]
+        assert platforms["reviewer:foo-bar"]["error_code"] == "duplicate_credential"
+
+    def test_status_merges_independent_profile_gateway_failures(self, monkeypatch):
+        # OOF-3 deployment mode: separate gateway services per profile
+        # (gateway_mode == "multiple"). Each profile's failures live in its
+        # own gateway_state.json; the machine-level /api/status must fold
+        # them in as <profile>:<platform> so NAS health monitoring sees them.
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 123)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda path=None: {
+                "gateway_state": "running",
+                "platforms": {"telegram": {"state": "connected"}},
+            },
+        )
+        monkeypatch.setattr(
+            web_server,
+            "_load_configured_gateway_platforms",
+            lambda: {"telegram"},
+        )
+        monkeypatch.setattr(
+            profiles_mod, "get_active_profile_name", lambda: "default"
+        )
+        monkeypatch.setattr(
+            web_server, "_collect_profile_gateway_topology",
+            lambda: {
+                "profiles": ["default", "lead-gen-outreach"],
+                "gateway_mode": "multiple",
+                "gateways": [
+                    {"profile": "default", "ports": {}},
+                    {"profile": "lead-gen-outreach", "ports": {}},
+                ],
+                "profile_platforms": {
+                    "default": {"telegram": {"state": "connected"}},
+                    "lead-gen-outreach": {
+                        "telegram": {
+                            "state": "fatal",
+                            "error_code": "duplicate_credential",
+                        },
+                        "bad key": {"state": "fatal"},
+                    },
+                },
+            },
+        )
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        platforms = data["gateway_platforms"]
+        # Active profile's own entry untouched, no self-namespacing.
+        assert platforms["telegram"]["state"] == "connected"
+        assert "default:telegram" not in platforms
+        # Independent profile's failure folded in under the namespaced key.
+        assert (
+            platforms["lead-gen-outreach:telegram"]["error_code"]
+            == "duplicate_credential"
+        )
+        # Keys that don't survive the grammar are dropped, not projected.
+        assert not any("bad key" in key for key in platforms)
+        # The platforms component rollup counts the merged failure.
+        assert data["components"]["platforms"]["status"] == "degraded"
+
+    def test_profile_scoped_status_does_not_merge_other_profiles(self, monkeypatch):
+        # ?profile=<name> targets one profile's view — merging every other
+        # profile's failures into it would misattribute state.
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 123)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda path=None: {
+                "gateway_state": "running",
+                "platforms": {"telegram": {"state": "connected"}},
+            },
+        )
+        monkeypatch.setattr(
+            web_server,
+            "_load_configured_gateway_platforms",
+            lambda: {"telegram"},
+        )
+        monkeypatch.setattr(
+            profiles_mod, "get_active_profile_name", lambda: "default"
+        )
+        monkeypatch.setattr(
+            web_server, "_collect_profile_gateway_topology",
+            lambda: {
+                "profiles": ["default", "coder"],
+                "gateway_mode": "multiple",
+                "gateways": [],
+                "profile_platforms": {
+                    "coder": {"telegram": {"state": "fatal"}},
+                },
+            },
+        )
+
+        resp = self.client.get("/api/status", params={"profile": "current"})
+
+        assert resp.status_code == 200
+        platforms = resp.json()["gateway_platforms"]
+        assert "coder:telegram" not in platforms
 
     def test_profile_names_and_mode_public_when_auth_gated(self, monkeypatch):
         # Profile NAMES + gateway_mode are low-sensitivity product surface: the

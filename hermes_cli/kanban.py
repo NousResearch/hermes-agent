@@ -455,9 +455,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         metavar="KEY",
         help="Restrict to tasks with this current_step_key",
     )
-    p_list.add_argument(
+    list_scope = p_list.add_mutually_exclusive_group()
+    list_scope.add_argument(
         "--all", action="store_true",
         help="Query across all boards instead of the current board",
+    )
+    list_scope.add_argument(
+        "--board",
+        dest="list_board",
+        default=None,
+        metavar="<slug>",
+        help="Query one board by slug",
     )
 
     # --- show ---
@@ -1003,7 +1011,7 @@ def kanban_command(args: argparse.Namespace) -> int:
     # (rather than threading `board=` through 50+ kb.connect() sites)
     # keeps the patch small and inherits the exact same resolution the
     # dispatcher uses for workers — consistency is a feature here.
-    board_override = getattr(args, "board", None)
+    board_override = getattr(args, "list_board", None) or getattr(args, "board", None)
     board_scope = contextlib.nullcontext()
     if board_override:
         try:

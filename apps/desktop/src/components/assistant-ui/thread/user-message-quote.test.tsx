@@ -26,7 +26,8 @@ vi.mock('@/components/assistant-ui/thread/use-message-reactions', () => ({
     enabled: true,
     react: vi.fn(),
     reactions: []
-  })
+  }),
+  useTapbackDoubleClick: () => undefined
 }))
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')

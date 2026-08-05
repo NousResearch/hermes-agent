@@ -388,6 +388,83 @@ class TestUpdateAdmissionControl:
         assert data["user_id"] == f"user-{data['chat_id']}"
 
     @pytest.mark.asyncio
+    async def test_rejects_when_notifier_claims_a_live_update_mid_admission(self, tmp_path):
+        """A marker renamed to `.claimed` mid-admission still blocks the caller.
+
+        ``_send_update_notification`` renames pending -> claimed while an update
+        is in flight. Landing that between the ``claimed`` check and the
+        exclusive create leaves ``pending`` momentarily absent, so the create
+        would succeed and admit a second updater against the live one — and the
+        notifier's later ``claimed.replace(pending)`` would clobber the new
+        reservation.
+
+        The claimed marker here is written from *inside* the admission window
+        to stand in for that concurrent notifier — it is not pre-seeded state
+        the guard is handed up front.
+        """
+        from gateway import slash_commands as slash_commands_module
+
+        runner = _make_runner()
+        slash_commands_file, hermes_home = _fake_checkout(tmp_path)
+        pending_path = hermes_home / ".update_pending.json"
+        claimed_path = hermes_home / ".update_pending.claimed.json"
+        event = _make_event(platform=Platform.TELEGRAM, chat_id="second-chat")
+
+        real_claim = slash_commands_module._claim_update_slot
+
+        def _claim_after_notifier_rename(path, ttl_seconds):
+            # The notifier claims a live update's marker right here, after this
+            # handler already saw claimed_path missing.
+            claimed_path.write_text(
+                json.dumps({
+                    "platform": "telegram",
+                    "chat_id": "live-chat",
+                    "user_id": "live-user",
+                }),
+                encoding="utf-8",
+            )
+            return real_claim(path, ttl_seconds)
+
+        mock_watch = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.slash_commands.__file__", slash_commands_file), \
+             patch.object(slash_commands_module, "_claim_update_slot",
+                          _claim_after_notifier_rename), \
+             patch.object(runner, "_schedule_update_notification_watch", mock_watch), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen") as mock_popen:
+            reply = await runner._handle_update_command(event)
+
+        mock_popen.assert_not_called()
+        assert "already running" in reply.lower()
+        mock_watch.assert_called_once()
+
+        # The reservation was handed back, and the live update's claimed marker
+        # is untouched so its owner still gets the completion notice.
+        assert not pending_path.exists()
+        assert json.loads(claimed_path.read_text())["chat_id"] == "live-chat"
+
+    def test_release_update_slot_keeps_a_marker_that_holds_metadata(self, tmp_path):
+        """Releasing never deletes someone else's routing metadata.
+
+        If the notifier restores a live update's marker with
+        ``claimed_path.replace(pending_path)`` before the release runs, the
+        marker is no longer this caller's empty reservation and must survive.
+        """
+        from gateway.slash_commands import _claim_update_slot, _release_update_slot
+
+        pending_path = tmp_path / ".update_pending.json"
+
+        assert _claim_update_slot(pending_path, 3600.0) is True
+        _release_update_slot(pending_path)
+        assert not pending_path.exists()
+
+        pending_path.write_text(json.dumps({"chat_id": "live-chat"}), encoding="utf-8")
+        _release_update_slot(pending_path)
+        assert pending_path.exists()
+        assert json.loads(pending_path.read_text())["chat_id"] == "live-chat"
+
+    @pytest.mark.asyncio
     async def test_failed_spawn_releases_the_update_slot(self, tmp_path):
         """A spawn that never started must not block the next /update.
 

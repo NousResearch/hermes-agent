@@ -162,6 +162,22 @@ def _claim_update_slot(pending_path: Path, ttl_seconds: float) -> bool:
     return _create_exclusive()
 
 
+def _release_update_slot(pending_path: Path) -> None:
+    """Give back a reservation taken by :func:`_claim_update_slot`.
+
+    Only removes the marker while it is still the empty file the claim created.
+    A non-empty marker means somebody else's routing metadata is now there —
+    the notifier restoring a live update's marker via
+    ``claimed_path.replace(pending_path)`` — and deleting that would lose their
+    completion notice.
+    """
+    try:
+        if pending_path.stat().st_size == 0:
+            pending_path.unlink()
+    except OSError:
+        pass
+
+
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
@@ -5510,12 +5526,18 @@ class GatewaySlashCommandsMixin:
         #
         # `.update_pending.claimed.json` is the notifier's transient rename of
         # the marker (see _send_update_notification); while it exists an update
-        # is in flight, so reject. Checking it is not a check-then-create race:
-        # it can only ever produce an extra rejection, never an extra spawn,
-        # and the exclusive create below is what actually decides the winner.
-        if claimed_path.exists() or not _claim_update_slot(
+        # is in flight. It is checked both BEFORE and AFTER the exclusive
+        # create, because the notifier can rename pending -> claimed between
+        # the two: that leaves pending momentarily absent, so the create would
+        # otherwise succeed and admit a second updater against a live one.
+        admitted = not claimed_path.exists() and _claim_update_slot(
             pending_path, _UPDATE_RESERVATION_TTL_S
-        ):
+        )
+        if admitted and claimed_path.exists():
+            _release_update_slot(pending_path)
+            admitted = False
+
+        if not admitted:
             # The loser still gets the outcome: the watcher is profile-wide and
             # reports the result into the chat that started the update.
             self._schedule_update_notification_watch()

@@ -2776,6 +2776,23 @@ class ShellFileOperations(FileOperations):
         """
         if not self._has_command('rg'):
             return None
+
+        def _tally(stdout: str):
+            """Parse ``path:count`` lines from rg --count-matches."""
+            total = 0
+            per_file = []
+            for line in (stdout or "").strip().splitlines():
+                p, _sep, n = line.rpartition(":")
+                if n.isdigit():
+                    total += int(n)
+                    per_file.append(p)
+            return total, per_file
+
+        def _paths_note(per_file, cap: int = 5) -> str:
+            shown = ", ".join(per_file[:cap])
+            extra = len(per_file) - cap
+            return shown + (f" (+{extra} more)" if extra > 0 else "")
+
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
         probe = self._exec(
             f"rg -i --count-matches{glob_expr} "
@@ -2783,17 +2800,12 @@ class ShellFileOperations(FileOperations):
             f"2>/dev/null | head -50",
             timeout=30,
         )
-        ci_total = 0
-        ci_files = 0
-        for line in (probe.stdout or "").strip().splitlines():
-            _p, _sep, n = line.rpartition(":")
-            if n.isdigit():
-                ci_total += int(n)
-                ci_files += 1
+        ci_total, ci_paths = _tally(probe.stdout)
         if ci_total > 0:
             return (
                 f"0 exact matches, but {ci_total} case-insensitive match(es) "
-                f"in {ci_files} file(s) — the pattern's casing may be wrong."
+                f"in {len(ci_paths)} file(s): {_paths_note(ci_paths)} — "
+                "the pattern's casing may be wrong."
             )
         # Hidden/ignored probe: rg skips dotdirs and .gitignore'd files by
         # default. When the pattern exists only there, say so instead of
@@ -2805,18 +2817,12 @@ class ShellFileOperations(FileOperations):
             f"2>/dev/null | head -50",
             timeout=30,
         )
-        h_total = 0
-        h_files = 0
-        for line in (hidden.stdout or "").strip().splitlines():
-            _p, _sep, n = line.rpartition(":")
-            if n.isdigit():
-                h_total += int(n)
-                h_files += 1
+        h_total, h_paths = _tally(hidden.stdout)
         if h_total > 0:
             return (
                 f"0 matches in visible files, but {h_total} match(es) in "
-                f"{h_files} hidden or gitignored file(s) — these are excluded "
-                "by default. Search the hidden path explicitly to include them."
+                f"{len(h_paths)} hidden or gitignored file(s): "
+                f"{_paths_note(h_paths)} — these are excluded by default."
             )
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
@@ -2825,14 +2831,11 @@ class ShellFileOperations(FileOperations):
                 f"2>/dev/null | head -50",
                 timeout=30,
             )
-            f_total = sum(
-                int(line.rpartition(":")[2])
-                for line in (fixed.stdout or "").strip().splitlines()
-                if line.rpartition(":")[2].isdigit()
-            )
+            f_total, f_paths = _tally(fixed.stdout)
             if f_total > 0:
                 return (
-                    f"0 regex matches, but {f_total} literal match(es) — the "
+                    f"0 regex matches, but {f_total} literal match(es) in "
+                    f"{len(f_paths)} file(s): {_paths_note(f_paths)} — the "
                     "pattern contains regex metacharacters that likely need "
                     "escaping (or pass a simpler substring)."
                 )

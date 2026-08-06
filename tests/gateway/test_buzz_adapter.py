@@ -1339,7 +1339,7 @@ class TestInboundAttachments:
         adapter._download_attachment.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("authorization", [False, None, "raise"])
+    @pytest.mark.parametrize("authorization", [False, None, "raise", "truthy"])
     async def test_non_true_gateway_authority_never_caches_even_for_locally_allowed_sender(
         self,
         authorization,
@@ -1353,6 +1353,8 @@ class TestInboundAttachments:
                 raise RuntimeError("authorization backend unavailable")
 
             adapter.set_authorization_check(raise_unknown)
+        elif authorization == "truthy":
+            adapter.set_authorization_check(lambda *_args: "AUTHORIZED")
         else:
             adapter.set_authorization_check(lambda *_args: False)
         adapter._cache_inbound_attachments = AsyncMock()

@@ -66,6 +66,12 @@ def test_cmd_chat_swallows_keyboard_interrupt_during_startup(
         raise KeyboardInterrupt()
 
     monkeypatch.setattr("cli.main", boom)
+    # Hermetic: a clean CI has no provider configured, which makes cmd_chat
+    # exit at the first-run guard (code 1) before the interrupt can land.
+    # Force the configured path so the KeyboardInterrupt is genuinely reached.
+    monkeypatch.setattr(
+        "hermes_cli.main._has_any_provider_configured", lambda: True
+    )
 
     from hermes_cli.main import cmd_chat
 

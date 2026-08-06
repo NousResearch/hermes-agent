@@ -2436,7 +2436,23 @@ class HindsightMemoryProvider(MemoryProvider):
                         except Exception:
                             pass
                     try:
-                        self._client.close()
+                        # Hermes-inherited clients own an ephemeral daemon
+                        # profile and its loopback bridge. Stop that daemon
+                        # with the bridge; leaving it alive after bridge
+                        # shutdown creates orphaned consolidation retries
+                        # against a dead localhost endpoint. Direct-provider
+                        # clients retain the upstream idle-timeout behavior.
+                        stop_daemon = self._embedded_profile_override is not None
+                        if stop_daemon:
+                            close_embedded = getattr(self._client, "close")
+                            try:
+                                close_embedded(stop_daemon=True)
+                            except TypeError:
+                                # Older embedded clients may not expose the
+                                # explicit stop_daemon keyword.
+                                close_embedded()
+                        else:
+                            self._client.close()
                     except RuntimeError:
                         pass
                 else:

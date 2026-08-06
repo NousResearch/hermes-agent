@@ -1288,11 +1288,12 @@ class TestShutdown:
 
         provider._mode = "local_embedded"
         provider._client = embedded
+        provider._embedded_profile_override = "jarpis-hermes-test-instance"
 
         provider.shutdown()
 
         inner_client.aclose.assert_awaited_once()
-        embedded.close.assert_called_once()
+        embedded.close.assert_called_once_with(stop_daemon=True)
         assert embedded._client is None
         assert provider._client is None
 

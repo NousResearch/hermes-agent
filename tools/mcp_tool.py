@@ -430,6 +430,11 @@ _MAX_BACKOFF_SECONDS = 60
 # server is unrevivable: its tools are out of the registry, so no tool call
 # can ever reach the circuit-breaker half-open probe or _signal_reconnect.
 _PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
+# Cold-start mode: a deterministically-broken server (same error every
+# attempt — missing module, revoked creds) must not self-probe forever.
+# After N consecutive identical failures, park WITHOUT a self-probe and
+# only revive on an external trigger (tool call / manual /mcp refresh).
+_COLD_START_IDENTICAL_FAILURES = 5
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
 # Jitter applied to reconnect backoff sleeps. Without it, every server that
 # lost the same backend retries in lockstep (thundering herd) and log lines
@@ -441,6 +446,23 @@ def _jittered(seconds: float) -> float:
     """Return ``seconds`` with +/-20% uniform jitter, floored at 0."""
     return max(0.0, seconds * random.uniform(1.0 - _BACKOFF_JITTER,
                                              1.0 + _BACKOFF_JITTER))
+
+
+def _failure_fingerprint(exc: BaseException) -> str:
+    """Stable string key for a failure, for identical-error detection.
+
+    Root-causes the exception (unwrapping anyio TaskGroup wrappers) and
+    keys on the exception type + primary message so the same
+    deterministically-broken server (missing module, revoked token)
+    fingerprints identically across attempts, while genuinely different
+    failures (network blip vs auth vs EOF) stay distinct.
+    """
+    root = _unwrap_exception_group(exc)
+    msg = str(root).strip() or type(root).__name__
+    # Truncate to the first line so stack traces / multi-line payloads
+    # don't defeat the match.
+    first_line = msg.splitlines()[0] if msg.splitlines() else msg
+    return f"{type(root).__name__}:{first_line[:200]}"
 
 # Keepalive cadence for HTTP/SSE sessions. The MCP spec lets a server expire
 # idle sessions on any TTL it chooses (Streamable HTTP "Session Management"),
@@ -2077,6 +2099,7 @@ class MCPServerTask:
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
         "_reconnect_retries", "_session_proven", "_was_parked",
+        "_identical_failures", "_last_failure_fingerprint",
     )
 
     def __init__(self, name: str):
@@ -2099,6 +2122,12 @@ class MCPServerTask:
         self._elicitation: Optional[ElicitationHandler] = None
         self._registered_tool_names: list[str] = []
         self._reconnect_retries: int = 0
+        # Identical-error streak (#79141): consecutive failures whose
+        # fingerprint matches the previous failure. Once >= 5, the server is
+        # deterministically broken (missing module, revoked creds) and parks
+        # cold — no self-probe, revive only on external trigger.
+        self._identical_failures: int = 0
+        self._last_failure_fingerprint: Optional[str] = None
         # Rapid-drop budget (#62212): a freshly (re)established session is
         # UNPROVEN until it demonstrates real health — it survived at least
         # one full keepalive interval (keepalive success path) or served at
@@ -2777,6 +2806,10 @@ class MCPServerTask:
                     # prior outage so the first call after recovery isn't
                     # gated on a stale consecutive-failure count (#16788).
                     _reset_server_error(self.name)
+                    # Identical-error streak is moot once the server is up
+                    # again (#79141).
+                    self._identical_failures = 0
+                    self._last_failure_fingerprint = None
                     # A completed handshake alone is NOT proof of health: a
                     # flapping transport can handshake fine and drop moments
                     # later, forever (#62212). The session must prove itself
@@ -3577,6 +3610,51 @@ class MCPServerTask:
                         self._ready.clear()
                         continue
 
+                    # Track identical-error streak AFTER the permanent
+                    # classification: a deterministically-broken server
+                    # (missing module) fingerprints the same every attempt,
+                    # but a permanent error (auth/ENOENT) parks immediately on
+                    # attempt 1 and must NOT advance the streak — otherwise the
+                    # 5th permanent revival would cold-park with a misleading
+                    # "deterministically broken" message and burn the ladder
+                    # it already avoided (#79141).
+                    fp = _failure_fingerprint(root)
+                    if fp == self._last_failure_fingerprint:
+                        self._identical_failures += 1
+                    else:
+                        self._identical_failures = 1
+                        self._last_failure_fingerprint = fp
+                    if self._identical_failures >= _COLD_START_IDENTICAL_FAILURES:
+                        logger.warning(
+                            "MCP server '%s' failed %d consecutive attempts with "
+                            "the same error, entering cold-start mode; will only "
+                            "revive on an explicit reconnect request (state: "
+                            "connecting → parked): %s: %s",
+                            self.name, self._identical_failures,
+                            type(root).__name__, root,
+                        )
+                        self._error = exc
+                        self._ready.set()
+                        self._was_parked = True
+                        self._deregister_tools()
+                        self._reconnect_event.clear()
+                        parked = await self._wait_for_reconnect_or_shutdown()
+                        if parked == "shutdown":
+                            return
+                        logger.debug(
+                            "MCP server '%s': cold-start revival requested "
+                            "(explicit reconnect); rebuilding transport.",
+                            self.name,
+                        )
+                        self._identical_failures = 0
+                        self._last_failure_fingerprint = None
+                        initial_retries = 0
+                        self._reconnect_retries = 0
+                        backoff = 1.0
+                        self._error = None
+                        self._ready.clear()
+                        continue
+
                     initial_retries += 1
                     if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
                         logger.warning(
@@ -3665,6 +3743,42 @@ class MCPServerTask:
                     continue
 
                 self._reconnect_retries += 1
+                # Identical-error streak for a server that WAS working: the
+                # first N failures after a healthy session may be a genuine
+                # outage, but the same error 5x in a row is deterministic —
+                # park cold (no self-probe) instead of probing forever.
+                fp = _failure_fingerprint(root)
+                if fp == self._last_failure_fingerprint:
+                    self._identical_failures += 1
+                else:
+                    self._identical_failures = 1
+                    self._last_failure_fingerprint = fp
+                if self._identical_failures >= _COLD_START_IDENTICAL_FAILURES:
+                    logger.warning(
+                        "MCP server '%s' failed %d consecutive reconnects with "
+                        "the same error, entering cold-start mode; will only "
+                        "revive on an explicit reconnect request (state: "
+                        "degraded → parked): %s: %s",
+                        self.name, self._identical_failures,
+                        type(root).__name__, root,
+                    )
+                    self._was_parked = True
+                    self._deregister_tools()
+                    self._reconnect_event.clear()
+                    parked = await self._wait_for_reconnect_or_shutdown()
+                    if parked == "shutdown":
+                        return
+                    logger.debug(
+                        "MCP server '%s': cold-start revival requested "
+                        "(explicit reconnect); rebuilding transport.",
+                        self.name,
+                    )
+                    self._identical_failures = 0
+                    self._last_failure_fingerprint = None
+                    self._reconnect_retries = _MAX_RECONNECT_RETRIES
+                    backoff = 1.0
+                    continue
+
                 if self._reconnect_retries > _MAX_RECONNECT_RETRIES:
                     logger.warning(
                         "MCP server '%s' failed after %d reconnection attempts, "

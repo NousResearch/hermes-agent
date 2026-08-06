@@ -4543,6 +4543,21 @@ def launchd_restart():
             _clear_launchd_unsupported_marker()
             return
         if pid is not None:
+            # An external macOS CLI can use the same drain-aware SIGUSR1 path
+            # as systemd. Wait before stop() until active chat and cron work
+            # finishes instead of force-killing a legitimate long cron run.
+            wait_budget = _get_restart_exit_wait_budget()
+            print(
+                f"⏳ Launchd service restarting gracefully (PID {pid}) — "
+                f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
+            )
+            if _graceful_restart_via_sigusr1(pid, wait_budget):
+                print("✓ Service restart requested")
+                _clear_launchd_unsupported_marker()
+                return
+
+            # Preserve the existing hard fallback when SIGUSR1 is unavailable
+            # or the configured after-turn safety cap expires.
             # Announce the drain BEFORE waiting on it. This wait can run for
             # the full drain budget (180s by default) while the old gateway
             # finishes in-flight agent runs, and it streams into surfaces with

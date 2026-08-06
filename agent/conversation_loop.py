@@ -94,6 +94,13 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+_TEXTUAL_INVOKE_RE = re.compile(
+    r"(?:^|\r?\n)[ \t]*card[ \t]*\r?\n[ \t]*"
+    r"<invoke\b[^>]*\bname\s*=\s*(?P<quote>[\"'])(?P<name>[^\"']+)"
+    r"(?P=quote)[^>]*>.*</invoke>[ \t]*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
@@ -855,6 +862,23 @@ def _invalid_tool_name_error_content(name: str, valid_tool_names) -> str:
         )
     available = ", ".join(sorted(valid_tool_names))
     return f"Tool '{name}' does not exist. Available tools: {available}"
+
+
+def _textual_invoke_tool_name(content: str, valid_tool_names) -> Optional[str]:
+    """Return a known tool emitted as trailing ``<invoke>`` text.
+
+    Some models copy transcript/UI tool markup into a normal text block and
+    finish with ``stop`` instead of using the provider's structured tool-call
+    channel. Only recognize a complete trailing ``card`` block for a currently
+    exposed tool; explanatory prose and unknown names remain ordinary text.
+    """
+    if not isinstance(content, str) or not content:
+        return None
+    match = _TEXTUAL_INVOKE_RE.search(content)
+    if not match:
+        return None
+    name = match.group("name").strip()
+    return name if name in (valid_tool_names or ()) else None
 
 
 def _content_policy_blocked_result(
@@ -6954,7 +6978,10 @@ def run_conversation(
                     final_response = "".join(truncated_response_parts) + final_response
                     truncated_response_parts = []
                     length_continue_retries = 0
-                
+
+                _textual_invoke_tool = _textual_invoke_tool_name(
+                    final_response, agent.valid_tool_names,
+                )
                 final_response = agent._strip_think_blocks(final_response).strip()
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
@@ -6962,27 +6989,46 @@ def run_conversation(
                 # ── Dropped tool-call recovery (copilot/Claude) ────────
                 # Some providers (observed: claude-opus-4.8 / claude-sonnet-4.5
                 # on GitHub Copilot, ~2026-07) return finish_reason="tool_calls"
-                # while the parsed tool_calls array is empty — the model
-                # signalled it wanted to act but the payload shipped no call.
+                # while the parsed tool_calls array is empty. Models can also
+                # copy transcript/UI ``card`` + ``<invoke>`` markup into a text
+                # block and return finish_reason="stop" instead of using the
+                # provider's structured tool channel.
                 # Reaching finalization with that mismatch means the turn is
                 # about to end with the task unstarted (the narration, which may
                 # be in content or only in the reasoning field, gets treated as
                 # the final answer). Re-prompt (bounded to 3 CONSECUTIVE stalls;
                 # the budget resets after any successful tool round) to make the
-                # model emit the call instead of exiting. finish_reason="stop"
-                # text finishes never enter this guard.
-                if (
+                # model emit the native call instead of exiting. Textual markup
+                # is never parsed or executed here.
+                _empty_structured_call = (
                     finish_reason == "tool_calls"
                     and not assistant_message.tool_calls
+                )
+                _textual_invoke_call = (
+                    finish_reason == "stop"
+                    and not assistant_message.tool_calls
+                    and _textual_invoke_tool is not None
+                )
+                if (
+                    (_empty_structured_call or _textual_invoke_call)
                     and getattr(agent, "_dropped_toolcall_retries", 0) < 3
                 ):
                     agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
-                    logger.warning(
-                        "finish_reason=tool_calls with empty tool_calls array "
-                        "(narration only) — re-prompting to emit the call "
-                        "(retry %d/3, model=%s provider=%s)",
-                        agent._dropped_toolcall_retries, agent.model, agent.provider,
-                    )
+                    if _textual_invoke_call:
+                        logger.warning(
+                            "finish_reason=stop with textual invoke for known tool %r "
+                            "— re-prompting to emit a structured call "
+                            "(retry %d/3, model=%s provider=%s)",
+                            _textual_invoke_tool, agent._dropped_toolcall_retries,
+                            agent.model, agent.provider,
+                        )
+                    else:
+                        logger.warning(
+                            "finish_reason=tool_calls with empty tool_calls array "
+                            "(narration only) — re-prompting to emit the call "
+                            "(retry %d/3, model=%s provider=%s)",
+                            agent._dropped_toolcall_retries, agent.model, agent.provider,
+                        )
                     agent._emit_status(
                         "↻ Model signaled a tool call but sent none — "
                         f"re-prompting ({agent._dropped_toolcall_retries}/3)"
@@ -6999,13 +7045,23 @@ def run_conversation(
                     # flush regardless of position.
                     final_msg["_dropped_toolcall_nudge"] = True
                     messages.append(final_msg)
-                    messages.append({
-                        "role": "user",
-                        "content": (
+                    if _textual_invoke_call:
+                        _toolcall_nudge = (
+                            "Your previous turn wrote tool-call markup as plain text "
+                            f"for the {_textual_invoke_tool!r} tool, so no call ran. "
+                            "Do not emit XML, a card label, narration, or restate "
+                            "intent — issue the provider-native structured tool call "
+                            "now to continue the task."
+                        )
+                    else:
+                        _toolcall_nudge = (
                             "Your previous turn indicated a tool call but none was "
                             "included. Do not narrate a plan or restate intent — issue "
                             "the actual tool call now to continue the task."
-                        ),
+                        )
+                    messages.append({
+                        "role": "user",
+                        "content": _toolcall_nudge,
                         "_dropped_toolcall_nudge": True,
                     })
                     agent._session_messages = messages

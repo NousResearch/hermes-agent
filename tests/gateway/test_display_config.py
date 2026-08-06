@@ -275,6 +275,22 @@ class TestToolProgressGrouping:
             == "separate"
         )
 
+    def test_platform_rolling(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress_grouping": "separate",
+                "platforms": {
+                    "discord": {"tool_progress_grouping": " RoLlInG "},
+                },
+            }
+        }
+        assert (
+            resolve_display_setting(config, "discord", "tool_progress_grouping")
+            == "rolling"
+        )
+
 
 class TestReasoningStyle:
     """Per-platform reasoning render style (code | blockquote | subtext)."""

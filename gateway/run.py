@@ -752,6 +752,29 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     return text
 
 
+def _rolling_activity_terminal_header(
+    result: Optional[Dict[str, Any]],
+    *,
+    timed_out: bool = False,
+    cancelled: bool = False,
+) -> str:
+    """Choose the final state shown by a rolling activity message."""
+    result = result or {}
+    if timed_out:
+        return "⚠️ Needs attention"
+    if cancelled or result.get("interrupted"):
+        return "⏹️ Stopped"
+    if (
+        not result
+        or result.get("failed")
+        or result.get("partial")
+        or result.get("completed") is False
+        or bool(result.get("error"))
+    ):
+        return "⚠️ Needs attention"
+    return "✅ Completed"
+
+
 def render_notice_line(notice) -> str:
     """Render an AgentNotice to a single plaintext line for messaging platforms.
 
@@ -3968,9 +3991,12 @@ class TurnRunner:
                     break
             return
 
-        progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
+        progress_lines = []      # Complete tool entries in the CURRENT editable bubble
         progress_msg_id = None   # ID of the current progress message to edit
         can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+        rolling_omitted_count = 0
+        rolling_header = "⏳ Working…" if ctx.progress_grouping == "rolling" else None
+        rolling_state_changed = False
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
@@ -4030,7 +4056,28 @@ class TurnRunner:
             return await adapter.edit_message(**kwargs)
 
         def _progress_text(lines: list) -> str:
-            return "\n".join(str(line) for line in lines)
+            rendered = [str(line) for line in lines]
+            if rolling_header:
+                rendered.insert(0, rolling_header)
+            if rolling_header and rolling_omitted_count:
+                rendered.insert(
+                    1,
+                    f"… {rolling_omitted_count} earlier activities omitted",
+                )
+            return "\n".join(rendered)
+
+        def _fit_rolling_progress_tail() -> None:
+            """Drop whole oldest entries until the rolling bubble fits."""
+            nonlocal rolling_omitted_count
+            if ctx.progress_grouping != "rolling":
+                return
+            while (
+                progress_lines
+                and _progress_len_fn(_progress_text(progress_lines))
+                > _PROGRESS_TEXT_LIMIT
+            ):
+                progress_lines.pop(0)
+                rolling_omitted_count += 1
 
         def _split_progress_groups(lines: list) -> list[list]:
             """Partition progress lines into platform-sized editable bubbles."""
@@ -4075,6 +4122,9 @@ class TurnRunner:
                 """
             nonlocal progress_msg_id, progress_lines, can_edit
             if not progress_lines or not can_edit:
+                return False
+            if ctx.progress_grouping == "rolling":
+                _fit_rolling_progress_tail()
                 return False
             groups = _split_progress_groups(progress_lines)
             if len(groups) <= 1:
@@ -4140,10 +4190,15 @@ class TurnRunner:
                 # Handle dedup messages: update last line with repeat counter
                 if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                     _, base_msg, count = raw
-                    if progress_lines:
+                    if progress_lines and (
+                        progress_lines[-1] == base_msg
+                        or str(progress_lines[-1]).startswith(f"{base_msg} (×")
+                    ):
                         progress_lines[-1] = f"{base_msg} (×{count + 1})"
                     msg = progress_lines[-1] if progress_lines else base_msg
                 elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
+                    if ctx.progress_grouping == "rolling":
+                        continue
                     # Content bubble just landed on the platform — close off
                     # the current tool-progress bubble so the next tool
                     # starts a fresh bubble below the content. Without this,
@@ -4154,9 +4209,16 @@ class TurnRunner:
                     # linearization regression after PR #7885.)
                     progress_msg_id = None
                     progress_lines = []
+                    rolling_omitted_count = 0
                     ctx.last_progress_msg[0] = None
                     ctx.repeat_count[0] = 0
                     continue
+                elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__activity_start__":
+                    msg = rolling_header or "⏳ Working…"
+                elif isinstance(raw, tuple) and len(raw) >= 2 and raw[0] == "__activity_state__":
+                    rolling_header = str(raw[1])
+                    rolling_state_changed = True
+                    msg = rolling_header
                 else:
                     msg = raw
                     progress_lines.append(msg)
@@ -4186,7 +4248,7 @@ class TurnRunner:
 
                 if can_edit and progress_msg_id is not None:
                     # Try to edit the existing progress message
-                    full_text = "\n".join(progress_lines)
+                    full_text = _progress_text(progress_lines)
                     result = await _edit_progress_message(progress_msg_id, full_text)
                     if not result.success:
                         _err = (getattr(result, "error", "") or "").lower()
@@ -4226,7 +4288,7 @@ class TurnRunner:
                 else:
                     if can_edit:
                         # First tool: send all accumulated text as new message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _progress_text(progress_lines)
                         result = await adapter.send(
                             chat_id=ctx.source.chat_id,
                             content=full_text,
@@ -4262,10 +4324,15 @@ class TurnRunner:
                         raw = ctx.progress_queue.get_nowait()
                         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                             _, base_msg, count = raw
-                            if progress_lines:
+                            if progress_lines and (
+                                progress_lines[-1] == base_msg
+                                or str(progress_lines[-1]).startswith(f"{base_msg} (×")
+                            ):
                                 progress_lines[-1] = f"{base_msg} (×{count + 1})"
                                 await _roll_progress_overflow_if_needed()
                         elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
+                            if ctx.progress_grouping == "rolling":
+                                continue
                             # Content-bubble marker during drain: close off
                             # the current progress bubble and start a fresh
                             # one for any tool lines that arrived after.
@@ -4278,17 +4345,30 @@ class TurnRunner:
                                     pass
                             progress_msg_id = None
                             progress_lines = []
+                            rolling_omitted_count = 0
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
+                        elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__activity_start__":
+                            continue
+                        elif isinstance(raw, tuple) and len(raw) >= 2 and raw[0] == "__activity_state__":
+                            rolling_header = str(raw[1])
+                            rolling_state_changed = True
                         else:
                             progress_lines.append(raw)
                             await _roll_progress_overflow_if_needed()
                     except Exception:
                         break
-                # Final edit with all remaining tools (only if editing works)
-                if can_edit and progress_lines and progress_msg_id:
+                # Final edit with all remaining tools (only if editing works).
+                # A rolling bubble can contain only its omission marker when a
+                # single oversized activity was dropped as one complete entry.
+                _has_final_progress = bool(
+                    progress_lines
+                    or rolling_state_changed
+                    or (rolling_header and rolling_omitted_count)
+                )
+                if can_edit and _has_final_progress and progress_msg_id:
                     await _roll_progress_overflow_if_needed()
-                if can_edit and progress_lines and progress_msg_id:
+                if can_edit and _has_final_progress and progress_msg_id:
                     full_text = _progress_text(progress_lines)
                     try:
                         await _edit_progress_message(progress_msg_id, full_text)
@@ -4545,6 +4625,15 @@ class TurnRunner:
             if not ctx._run_still_current():
                 return
             display_text = text
+            if (
+                ctx.progress_grouping == "rolling"
+                and ctx.tool_progress_enabled
+                and ctx.progress_queue is not None
+                and not already_streamed
+                and str(display_text or "").strip()
+            ):
+                ctx.progress_queue.put(f"💬 {display_text}")
+                return
             if _stream_consumer is not None:
                 if already_streamed:
                     _stream_consumer.on_segment_break()
@@ -24368,7 +24457,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _env_tp and not _tool_progress_configured
             else (_resolved_tp or _env_tp or "all")
         )
-        # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
+        # Tool progress grouping: accumulated history, bounded rolling tail, or
+        # one separate message per tool.
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         _generic_status_recent: List[str] = []
@@ -24841,6 +24931,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         progress_task = None
         if needs_progress_queue:
             progress_task = asyncio.create_task(send_progress_messages())
+            if progress_grouping == "rolling" and tool_progress_enabled:
+                progress_queue.put(("__activity_start__",))
 
         # Start the tool-call log writer when tool_progress == "log".
         log_task = None
@@ -25040,6 +25132,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
                 )
                 try:
+                    if (
+                        progress_grouping == "rolling"
+                        and tool_progress_enabled
+                        and progress_queue is not None
+                    ):
+                        progress_queue.put(_heartbeat_text)
+                        continue
                     _notify_res = None
                     if _heartbeat_msg_id:
                         try:
@@ -25105,6 +25204,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         return False
             return False
 
+        _inactivity_timeout = False
         try:
             # Run in thread pool to not block.  Use an *inactivity*-based
             # timeout instead of a wall-clock limit: the agent can run for
@@ -25190,7 +25290,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._run_in_executor_with_context(_run_sync_with_timeout_lifecycle)
             )
 
-            _inactivity_timeout = False
             _POLL_INTERVAL = 5.0
 
             if _agent_timeout is None:
@@ -25779,6 +25878,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         finally:
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
+                if progress_grouping == "rolling" and tool_progress_enabled:
+                    _activity_result = result_holder[0] or {}
+                    _current_task = asyncio.current_task()
+                    _activity_header = _rolling_activity_terminal_header(
+                        _activity_result,
+                        timed_out=_inactivity_timeout,
+                        cancelled=bool(
+                            _current_task and _current_task.cancelling()
+                        ),
+                    )
+                    progress_queue.put(("__activity_state__", _activity_header))
                 progress_task.cancel()
             if log_task:
                 log_task.cancel()

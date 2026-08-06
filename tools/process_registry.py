@@ -97,6 +97,8 @@ WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 
 _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
+_SYSTEMD_SCOPE_PROBED_AT = 0.0
+_SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
 
 
 def _systemd_run_user_scope_available() -> bool:
@@ -110,16 +112,31 @@ def _systemd_run_user_scope_available() -> bool:
     (``systemd-run --user --scope --unit=… -- /bin/true``) and remember the
     outcome.
     """
-    global _SYSTEMD_SCOPE_AVAILABLE
-    if _SYSTEMD_SCOPE_AVAILABLE is not None:
-        return _SYSTEMD_SCOPE_AVAILABLE
+    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    cached = _SYSTEMD_SCOPE_AVAILABLE
+    now = time.monotonic()
+    if cached is True:
+        return True
+    if (
+        cached is False
+        and now - _SYSTEMD_SCOPE_PROBED_AT < _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
+    ):
+        return False
 
     # Double-checked locking keeps concurrent first-use spawns from observing
     # a temporary False while the definitive probe is still in flight.  Such a
     # race would launch the losing workload back inside the gateway cgroup.
     with _SYSTEMD_SCOPE_PROBE_LOCK:
-        if _SYSTEMD_SCOPE_AVAILABLE is not None:
-            return _SYSTEMD_SCOPE_AVAILABLE
+        cached = _SYSTEMD_SCOPE_AVAILABLE
+        now = time.monotonic()
+        if cached is True:
+            return True
+        if (
+            cached is False
+            and now - _SYSTEMD_SCOPE_PROBED_AT
+            < _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
+        ):
+            return False
 
         available = False
         if not _IS_WINDOWS:
@@ -130,9 +147,7 @@ def _systemd_run_user_scope_available() -> bool:
                 if binary:
                     # Probe: create a transient scope that immediately exits.
                     # A unique unit avoids collisions; timeout bounds D-Bus.
-                    probe_unit = (
-                        f"hermes-probe-scope-{os.getpid()}-{int(time.time())}"
-                    )
+                    probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
                     result = subprocess.run(
                         [
                             binary, "--user", "--scope", "--quiet",
@@ -156,6 +171,7 @@ def _systemd_run_user_scope_available() -> bool:
                 logger.debug("systemd-run --user --scope probe error: %s", exc)
 
         _SYSTEMD_SCOPE_AVAILABLE = available
+        _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
         return available
 
 
@@ -215,10 +231,17 @@ def _stop_systemd_unit(unit_name: str) -> bool:
             timeout=15,
         )
         if result.returncode != 0:
+            stderr = (result.stderr or b"").decode(errors="replace").strip()
+            stderr_lower = stderr.lower()
+            if any(
+                marker in stderr_lower
+                for marker in ("not loaded", "not found", "does not exist")
+            ):
+                return True
             logger.debug(
                 "systemctl --user stop %s exited %d: %s",
                 unit_name, result.returncode,
-                result.stderr.decode(errors="replace").strip(),
+                stderr,
             )
             return False
         return True
@@ -969,7 +992,7 @@ class ProcessRegistry:
         # scope so it gets a separate cgroup.  An OOM in the worker then
         # kills only the worker instead of taking down the whole gateway
         # cgroup (and the messaging control plane with it).  We only do this
-        # for the common pipe-mode path; PTY mode is left as future work.
+        # for both pipe mode and the PTY path above.
         shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
         use_systemd_scope = False
         under_supervisor = False
@@ -1048,7 +1071,14 @@ class ProcessRegistry:
             # descendants spawned via setsid) before re-raising so they do not
             # leak as untracked background processes.
             try:
-                if not _IS_WINDOWS:
+                if session.systemd_unit:
+                    # systemd-run --scope shares the gateway's process group
+                    # because start_new_session=False.  Never killpg here: that
+                    # can signal the gateway itself.  Stop the sibling cgroup,
+                    # then safely terminate the wrapper PID tree as fallback.
+                    _stop_systemd_unit(session.systemd_unit)
+                    self._terminate_host_pid(proc.pid, session.host_start_time)
+                elif not _IS_WINDOWS:
                     try:
                         kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
                         os.killpg(os.getpgid(proc.pid), kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above

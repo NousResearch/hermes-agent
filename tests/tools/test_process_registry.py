@@ -1717,6 +1717,71 @@ class TestSystemdCgroupIsolation:
         assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
         assert captured["start_new_session"] is True
 
+    def test_systemd_post_spawn_failure_never_kills_gateway_process_group(
+        self, registry, monkeypatch
+    ):
+        """The scope wrapper shares the gateway PG, so cleanup must not killpg."""
+        fake_popen, _captured = self._fake_popen_capture()
+        fake_proc = fake_popen(["placeholder"])
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        broken_reader = MagicMock()
+        broken_reader.start.side_effect = RuntimeError("reader failed")
+
+        with patch("subprocess.Popen", return_value=fake_proc), \
+            patch("threading.Thread", return_value=broken_reader), \
+            patch("tools.process_registry._stop_systemd_unit", return_value=True) as stop_unit, \
+            patch("os.killpg") as killpg, \
+            patch.object(registry, "_write_checkpoint"):
+            with pytest.raises(RuntimeError, match="reader failed"):
+                registry.spawn_local("echo hello", cwd="/tmp")
+
+        stop_unit.assert_called_once()
+        assert stop_unit.call_args.args[0].startswith("hermes-worker-proc_")
+        assert stop_unit.call_args.args[0].endswith(".scope")
+        killpg.assert_not_called()
+
+    def test_pty_spawn_is_wrapped_in_systemd_scope(self, registry, monkeypatch):
+        """Interactive executors receive the same sibling-cgroup isolation."""
+        from ptyprocess import PtyProcess
+
+        fake_pty = MagicMock()
+        fake_pty.pid = 4321
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn, \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        argv = pty_spawn.call_args.args[0]
+        assert argv[0] == "/usr/bin/systemd-run"
+        assert "--scope" in argv
+        assert "--unit" in argv
+        assert "--" in argv
+        assert argv[-3:] == ["/bin/bash", "-lic", "set +m; codex"]
+        assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
+
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch
     ):
@@ -1817,3 +1882,45 @@ class TestSystemdCgroupIsolation:
         assert not second.is_alive()
         assert results == [True, True]
         assert len(probe_calls) == 1
+
+    def test_failed_systemd_probe_retries_after_cache_ttl(self, monkeypatch):
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0, raising=False)
+        clock = [100.0]
+        probe_results = [1, 0]
+        probe_calls = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            return subprocess.CompletedProcess(
+                args=args[0], returncode=probe_results.pop(0)
+            )
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("tools.process_registry.time.monotonic", lambda: clock[0])
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is False
+        assert pr._systemd_run_user_scope_available() is False
+        assert len(probe_calls) == 1
+
+        clock[0] += 61
+        assert pr._systemd_run_user_scope_available() is True
+        assert len(probe_calls) == 2
+
+    def test_stop_systemd_unit_treats_absent_unit_as_clean(self, monkeypatch):
+        import tools.process_registry as pr
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args=args[0],
+                returncode=5,
+                stderr=b"Unit hermes-worker-gone.scope not loaded.\n",
+            ),
+        )
+
+        assert pr._stop_systemd_unit("hermes-worker-gone.scope") is True

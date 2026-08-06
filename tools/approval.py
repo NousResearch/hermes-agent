@@ -200,6 +200,17 @@ def reset_current_observability_context(
     _approval_turn_id.reset(turn_token)
 
 
+def get_current_tool_call_id() -> str:
+    """Return the active tool_call_id bound for observability, if any.
+
+    Set by ``handle_function_call`` via ``set_current_observability_context``
+    before a tool handler runs, so handlers (e.g. the MCP call-tool handler)
+    can correlate out-of-band side-channel payloads with the tool call the
+    gateway later reports in ``tool.complete``.
+    """
+    return _approval_tool_call_id.get()
+
+
 def get_current_session_key(default: str = "default") -> str:
     """Return the active session key, preferring context-local state.
 

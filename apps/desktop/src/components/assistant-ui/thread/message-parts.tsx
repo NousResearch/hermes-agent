@@ -8,6 +8,7 @@ import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useSta
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
+import { hasMcpUi, McpAppCard } from '@/components/assistant-ui/mcp-app-card'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
@@ -58,6 +59,12 @@ const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
   // narrating its own tapback. Failures still render so they're debuggable.
   if (props.toolName === 'react_to_message' && !props.isError) {
     return null
+  }
+
+  // MCP Apps: any tool whose result carries an interactive UI card renders
+  // as a sandboxed iframe, regardless of the (dynamic) MCP tool name.
+  if (hasMcpUi(props.result)) {
+    return <McpAppCard {...props} />
   }
 
   if (props.toolName === 'delegate_task') {

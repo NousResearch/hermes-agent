@@ -209,6 +209,7 @@ _LONG_HANDLERS = frozenset(
         "billing.step_up",
         "browser.manage",
         "cli.exec",
+        "mcp.app.request",
         # Completion RPCs run inline on the reader thread by default, but both
         # can block it for seconds: complete.path spawns `git ls-files` and
         # fuzzy-ranks the whole repo (slow on large repos / WSL2 mounts), and
@@ -5331,6 +5332,17 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     duration_s = time.time() - started_at if started_at else None
     if duration_s is not None:
         payload["duration_s"] = duration_s
+    # MCP Apps: a UI card stashed out-of-band during the tool call (keyed by
+    # tool_call_id) rides out on tool.complete so UI-capable hosts (desktop)
+    # can render it. Single-use pop; ui-less calls and non-UI hosts unaffected.
+    try:
+        from tools.mcp_tool import pop_mcp_ui_payload
+
+        ui_payload = pop_mcp_ui_payload(tool_call_id)
+        if ui_payload:
+            payload["ui"] = ui_payload
+    except Exception:
+        pass
     try:
         payload["result"] = json.loads(result)
     except Exception:
@@ -7639,6 +7651,46 @@ def _queued_prompt_snapshot(session: dict) -> dict | None:
         return None
     user = _inflight_text(queued.get("text"))
     return {"user": user} if user else None
+
+
+@method("mcp.app.request")
+def _(rid, params: dict) -> dict:
+    """Proxy an MCP Apps card's JSON-RPC frame to its MCP server session.
+
+    The desktop renderer relays the sandboxed iframe's ``{jsonrpc, id, method,
+    params}`` message here as ``params = {server, toolCallId, message}``. We run
+    it against the connected session and return ``{response}`` -- the JSON-RPC
+    reply the renderer posts back into the iframe (preserving its ``id``
+    correlation).
+
+    Security: the bridged method is validated against the server's registered
+    tool names to prevent a card from invoking unrelated MCP tools. The
+    ``toolCallId`` ties each bridge call back to the originating card for audit.
+    """
+    params = params or {}
+    server = params.get("server")
+    tool_call_id = params.get("toolCallId")
+    message = params.get("message") or {}
+    inner_id = message.get("id")
+    inner_method = message.get("method")
+    inner_params = message.get("params") or {}
+    if not server or not isinstance(inner_method, str) or not inner_method:
+        return _err(rid, -32602,
+                    "mcp.app.request requires 'server' and 'message.method'")
+    try:
+        from tools.mcp_tool import call_mcp_app_request
+
+        result = call_mcp_app_request(
+            server, inner_method, inner_params,
+            tool_call_id=tool_call_id,
+        )
+    except Exception as e:
+        return _err(rid, -32000, f"mcp bridge error: {e}")
+    if isinstance(result, dict) and set(result.keys()) == {"error"}:
+        response = {"jsonrpc": "2.0", "id": inner_id, "error": result["error"]}
+    else:
+        response = {"jsonrpc": "2.0", "id": inner_id, "result": result}
+    return _ok(rid, {"response": response})
 
 
 # ── Methods: session ─────────────────────────────────────────────────

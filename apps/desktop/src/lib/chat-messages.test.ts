@@ -995,6 +995,72 @@ describe('upsertToolPart', () => {
       summary: 'Did 1 search in 0.5s'
     })
   })
+
+  it('tool.start with a stable id adopts the synthetic generating row (MCP tools, no context)', () => {
+    // Regression: tool.generating emits name-only -> synthetic `live-tool:` row.
+    // MCP tools have no context/preview, so contextual matching can never link
+    // the follow-up tool.start; the synthetic row was orphaned as a
+    // forever-spinning "Running …" line next to the completed row.
+    let parts = upsertToolPart([], { name: 'mcp_utp_utp_cart_add' }, 'running')
+
+    parts = upsertToolPart(parts, { tool_id: 'tc-adopt-1', name: 'mcp_utp_utp_cart_add' }, 'running')
+    parts = upsertToolPart(
+      parts,
+      { tool_id: 'tc-adopt-1', name: 'mcp_utp_utp_cart_add', result: '{"error":"boom"}', error: true },
+      'complete'
+    )
+
+    expect(parts).toHaveLength(1)
+    expect((parts[0] as Extract<ChatMessagePart, { type: 'tool-call' }>).toolCallId).toBe('tc-adopt-1')
+    expect((parts[0] as Extract<ChatMessagePart, { type: 'tool-call' }>).result).toBeDefined()
+  })
+
+  it('tool.start with a stable id does not steal a pending row already owned by another id', () => {
+    let parts = upsertToolPart([], { tool_id: 'tc-a', name: 'mcp_utp_utp_cart_add' }, 'running')
+
+    parts = upsertToolPart(parts, { tool_id: 'tc-b', name: 'mcp_utp_utp_cart_add' }, 'running')
+
+    expect(parts).toHaveLength(2)
+    expect(parts.map(p => (p as Extract<ChatMessagePart, { type: 'tool-call' }>).toolCallId)).toEqual([
+      'tc-a',
+      'tc-b'
+    ])
+  })
+})
+
+describe('whitespace-only stream deltas (thinking split / empty shell regressions)', () => {
+  it('does not open a text part with pure whitespace between reasoning bursts (D5)', () => {
+    // qwen/deepseek stream a leading "\n\n" content delta; an invisible text
+    // part here split one continuous Thinking run into two disclosures.
+    let parts = appendReasoningPart([], '思考第一段')
+
+    parts = appendAssistantTextPart(parts, '\n\n')
+    parts = appendReasoningPart(parts, '，思考继续')
+
+    expect(parts).toHaveLength(1)
+    expect((parts[0] as Extract<ChatMessagePart, { type: 'reasoning' }>).text).toBe('思考第一段，思考继续')
+  })
+
+  it('whitespace still appends to an already-open text part (real prose spacing)', () => {
+    let parts = appendAssistantTextPart([], '第一段')
+
+    parts = appendAssistantTextPart(parts, '\n\n')
+    parts = appendAssistantTextPart(parts, '第二段')
+
+    expect(parts).toHaveLength(1)
+    expect((parts[0] as Extract<ChatMessagePart, { type: 'text' }>).text).toBe('第一段\n\n第二段')
+  })
+
+  it('does not open an empty reasoning shell from a whitespace-only delta (D7)', () => {
+    expect(appendReasoningPart([], '\n\n')).toHaveLength(0)
+
+    // ...but whitespace appends fine once a reasoning part is open.
+    let parts = appendReasoningPart([], '真思考')
+
+    parts = appendReasoningPart(parts, '\n')
+    expect(parts).toHaveLength(1)
+    expect((parts[0] as Extract<ChatMessagePart, { type: 'reasoning' }>).text).toBe('真思考\n')
+  })
 })
 
 describe('mergeFinalAssistantText', () => {

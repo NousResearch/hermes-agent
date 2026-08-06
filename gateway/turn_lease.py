@@ -32,9 +32,9 @@ Safety properties:
   newer turn's lease (the #28686 ownership lesson applied). Release is
   idempotent.
 - **Fail-closed on timeout.** A timed-out waiter raises
-  :class:`TurnLeaseTimeoutError` and must be deferred by the dispatch layer.
-  It never runs concurrently against the still-live holder and therefore
-  cannot defeat the serialization invariant this lease exists to enforce.
+  :class:`TurnLeaseTimeoutError` and must be rejected by the dispatch layer
+  with a visible resend notice. It never runs concurrently against the
+  still-held lease and therefore cannot defeat the serialization invariant.
 - **Bounded registry.** The per-session lease map is size-capped; eviction
   only ever removes idle (unheld, uncontended) entries, never a live lease.
 
@@ -61,9 +61,10 @@ logger = logging.getLogger(__name__)
 # cap rather than break serialization.
 DEFAULT_MAX_LEASES = 512
 
-# Fallback wait (seconds) when the caller passes no positive timeout. Matches
-# the gateway's default agent inactivity timeout. A caller that reaches this
-# bound must defer the turn rather than run it concurrently with the holder.
+# Fallback wait (seconds) when the caller passes no positive timeout. The
+# gateway exposes this independently as HERMES_TURN_LEASE_TIMEOUT because lease
+# contention is not agent inactivity. A caller that reaches this bound must
+# reject the turn rather than run it concurrently with the holder.
 DEFAULT_LEASE_WAIT = 1800.0
 
 
@@ -190,7 +191,7 @@ class SessionTurnLeaseRegistry:
 
         Returns a held :class:`TurnLeaseToken`. Raises
         :class:`TurnLeaseTimeoutError` when the wait budget expires; the caller
-        must defer rather than enter the serialized region. Returns ``None``
+        must reject rather than enter the serialized region. Returns ``None``
         for a falsy ``session_id``.
         """
         if not session_id:
@@ -223,7 +224,7 @@ class SessionTurnLeaseRegistry:
                 "turn lease wait timed out after %.0fs on session %s "
                 "(waiter: routing key %s gen %s; holder: routing key %s "
                 "gen %s) — failing closed: refusing to run this turn "
-                "UNSERIALIZED against the still-live holder",
+                "UNSERIALIZED against the still-held lease",
                 wait,
                 session_id,
                 owner_key,

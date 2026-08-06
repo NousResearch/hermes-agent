@@ -12,16 +12,18 @@ Covers:
 - generation-scoped, idempotent release: a stale unwind can never free a
   newer turn's lease; double-release is a no-op
 - timeout fail-closed: a timed-out waiter never enters the transcript region,
-  and the gateway returns a safe retry response before loading history
+  and outer dispatch returns a visible rejection/resend notice without invoking
+  goal continuation
 - registry stays bounded; live leases are never evicted
 - GatewayRunner._release_turn_lease wiring (bare-runner safe, token-scoped)
 """
 
 import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.turn_lease import SessionTurnLeaseRegistry
+from gateway.turn_lease import SessionTurnLeaseRegistry, TurnLeaseTimeoutError
 
 
 def _run(coro):
@@ -100,8 +102,6 @@ def test_timeout_fails_closed_instead_of_authorizing_an_unserialized_turn():
     The two turns could then load the same history base and interleave their
     transcript writes, defeating the serialization invariant this lease owns.
     """
-    from gateway.turn_lease import TurnLeaseTimeoutError
-
     async def scenario():
         registry = SessionTurnLeaseRegistry()
         holder = await registry.acquire(
@@ -129,13 +129,14 @@ def test_timeout_fails_closed_instead_of_authorizing_an_unserialized_turn():
 
 
 @pytest.mark.asyncio
-async def test_gateway_defers_timed_out_lease_before_loading_transcript(
+async def test_agent_path_propagates_timed_out_lease_before_loading_transcript(
     monkeypatch, tmp_path
 ):
-    """The dispatch layer turns a lease timeout into a safe retry response.
+    """The agent path propagates timeout before transcript work can begin.
 
-    Most importantly, transcript loading and agent execution must not start:
-    both would operate without the per-session serialization guarantee.
+    Outer dispatch owns the visible rejection/resend notice. Most importantly,
+    transcript loading and agent execution must not start: both would operate
+    without the per-session serialization guarantee.
     """
     from tests.gateway.test_42039_duplicate_user_message import (
         _bootstrap,
@@ -149,7 +150,7 @@ async def test_gateway_defers_timed_out_lease_before_loading_transcript(
         "sess-dedup", owner_key="holder-key", generation=1, timeout=1
     )
     assert holder is not None
-    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "0.02")
+    monkeypatch.setenv("HERMES_TURN_LEASE_TIMEOUT", "0.02")
 
     runner.session_store.load_transcript.side_effect = AssertionError(
         "transcript must not load after a turn-lease timeout"
@@ -157,17 +158,56 @@ async def test_gateway_defers_timed_out_lease_before_loading_transcript(
     runner._run_agent = pytest.fail
 
     try:
-        response = await runner._handle_message_with_agent(
-            _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
-        )
+        with pytest.raises(TurnLeaseTimeoutError):
+            await runner._handle_message_with_agent(
+                _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+            )
+    finally:
+        assert runner._turn_leases.release(holder) is True
+
+    runner.session_store.load_transcript.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
+    monkeypatch, tmp_path
+):
+    """A lease rejection is not a completed turn for `/goal` evaluation.
+
+    The lease wait also has its own clock: a short lease budget must reject
+    promptly even while the normal agent inactivity timeout remains long.
+    """
+    from tests.gateway.test_42039_duplicate_user_message import _bootstrap, _event
+
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._turn_leases = SessionTurnLeaseRegistry()
+    holder = await runner._turn_leases.acquire(
+        "sess-dedup", owner_key="holder-key", generation=1, timeout=1
+    )
+    assert holder is not None
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "5")
+    monkeypatch.setenv("HERMES_TURN_LEASE_TIMEOUT", "0.02")
+
+    runner.session_store.load_transcript.side_effect = AssertionError(
+        "transcript must not load after a turn-lease timeout"
+    )
+    session_env_tokens = object()
+    runner._set_session_env = MagicMock(return_value=session_env_tokens)
+    runner._clear_session_env = MagicMock()
+    runner._run_agent = pytest.fail
+    runner._post_turn_goal_continuation = AsyncMock()
+
+    try:
+        response = await asyncio.wait_for(runner._handle_message(_event()), timeout=1)
     finally:
         assert runner._turn_leases.release(holder) is True
 
     assert isinstance(response, str)
-    assert "still running" in response.lower()
     assert "not processed" in response.lower()
     assert "resend" in response.lower()
     runner.session_store.load_transcript.assert_not_called()
+    runner._clear_session_env.assert_called_once_with(session_env_tokens)
+    runner._post_turn_goal_continuation.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

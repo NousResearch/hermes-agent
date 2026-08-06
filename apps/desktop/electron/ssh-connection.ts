@@ -58,6 +58,7 @@ const REMOTE_PROBE_TIMEOUT_SECS = 15
 const DEFAULT_TUNNEL_RESTART_LIMIT = 5
 const DEFAULT_TUNNEL_RESTART_DELAY_MS = 1_000
 const CONTROL_PERSIST_SECONDS = 300
+const DEFAULT_CONTROL_KEEPALIVE_MS = 60_000
 
 // eslint-disable-next-line no-control-regex -- deliberately reject control chars in ssh targets
 const _CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/
@@ -652,6 +653,9 @@ class SshConnection {
   _mux: boolean
   _tunnels: Map<string, any>
   _controlMasters: ControlMasterHolders
+  _forwardedSpecs: Set<string>
+  _controlKeepaliveMs: number
+  _controlKeepaliveTimer: ReturnType<typeof setInterval> | null
 
   constructor(cfg, opts: any = {}) {
     if (!cfg || !cfg.host) {
@@ -684,6 +688,7 @@ class SshConnection {
       : ''
     this._tunnels = new Map()
     this._controlMasters = opts.controlMasterHolders || sharedControlMasterHolders
+    this._forwardedSpecs = new Set()
 
     this._spawnFn = opts.spawnFn || spawn
 
@@ -693,6 +698,8 @@ class SshConnection {
     this._forwardTimeoutMs = opts.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS
     this._tunnelRestartLimit = opts.tunnelRestartLimit ?? DEFAULT_TUNNEL_RESTART_LIMIT
     this._tunnelRestartDelayMs = opts.tunnelRestartDelayMs ?? DEFAULT_TUNNEL_RESTART_DELAY_MS
+    this._controlKeepaliveMs = opts.controlKeepaliveMs ?? DEFAULT_CONTROL_KEEPALIVE_MS
+    this._controlKeepaliveTimer = null
     this._opened = false
   }
 
@@ -881,6 +888,30 @@ class SshConnection {
 
       return false
     }
+  }
+
+  // `ssh -O forward` does not keep a ControlPersist master busy by itself.
+  // Refresh the mux while Desktop owns local forwards so the 300s idle timer
+  // cannot silently remove their listener sockets. The finite persist timeout
+  // still cleans up an orphaned master if Desktop crashes.
+  _startControlKeepalive() {
+    if (!this._mux || this._controlKeepaliveTimer || this._forwardedSpecs.size === 0) {
+      return
+    }
+
+    this._controlKeepaliveTimer = setInterval(() => {
+      void this.isAlive()
+    }, this._controlKeepaliveMs)
+    this._controlKeepaliveTimer.unref?.()
+  }
+
+  _stopControlKeepalive() {
+    if (!this._controlKeepaliveTimer) {
+      return
+    }
+
+    clearInterval(this._controlKeepaliveTimer)
+    this._controlKeepaliveTimer = null
   }
 
   // A real exec through the master (`exit 0` works under POSIX shells and
@@ -1139,6 +1170,9 @@ class SshConnection {
     if (!sshCloseOk(result)) {
       throw this._fail(result)
     }
+
+    this._forwardedSpecs.add(spec)
+    this._startControlKeepalive()
   }
 
   // Cancel a previously-established forward. Best-effort: a failure here is
@@ -1173,6 +1207,12 @@ class SshConnection {
       this._logLine(`cancelled forward 127.0.0.1:${localPort}`)
     } catch (error: any) {
       this._logLine(`cancelForward failed (ignored): ${error.message}`)
+    } finally {
+      this._forwardedSpecs.delete(spec)
+
+      if (this._forwardedSpecs.size === 0) {
+        this._stopControlKeepalive()
+      }
     }
   }
 
@@ -1181,6 +1221,8 @@ class SshConnection {
   // this connection's claim (#97264). No-mux: kill the tunnel children.
   // Best-effort; never throws.
   async close() {
+    this._stopControlKeepalive()
+    this._forwardedSpecs.clear()
     const action = this._mux ? this._controlMasters.release(this.controlPath, this) : 'exit-master'
 
     if (!this._opened) {

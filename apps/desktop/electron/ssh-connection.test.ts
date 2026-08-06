@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   baseSshOptions,
@@ -509,6 +509,37 @@ test('forward() issues -O forward with a loopback-bound -L spec', async () => {
   assert.equal(args[0], '-O')
   assert.equal(args[1], 'forward')
   assert.ok(args.includes('127.0.0.1:5000:127.0.0.1:6000'))
+  await conn.cancelForward(5000, 6000)
+})
+
+test('mux forward keeps the ControlPersist master alive until the final forward is cancelled', async () => {
+  vi.useFakeTimers()
+
+  try {
+    const spawnFn = scriptedSpawn({ code: 0 })
+
+    const conn = new SshConnection(
+      { host: 'box', user: 'me' },
+      { spawnFn, controlDir: '/tmp/d', controlKeepaliveMs: 1_000 }
+    )
+
+    await conn.forward(5000, 6000)
+    await conn.forward(5001, 6001)
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    const checks = () => spawnFn.calls.filter(args => args[0] === '-O' && args[1] === 'check').length
+    assert.equal(checks(), 1, 'a tracked forward refreshes the ControlPersist timer')
+
+    await conn.cancelForward(5000, 6000)
+    await vi.advanceTimersByTimeAsync(1_000)
+    assert.equal(checks(), 2, 'cancelling one of several forwards keeps the refresh active')
+
+    await conn.cancelForward(5001, 6001)
+    await vi.advanceTimersByTimeAsync(2_000)
+    assert.equal(checks(), 2, 'cancelling the final forward stops the refresh timer')
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 test('lifecycle logging passes through redaction', async () => {

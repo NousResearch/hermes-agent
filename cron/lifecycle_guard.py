@@ -35,12 +35,15 @@ informative rejection instead of scheduling a job that will only fail
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
 import stat
 from pathlib import Path
 from typing import Callable, Iterator, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class GatewayLifecycleBlocked(ValueError):
@@ -170,10 +173,41 @@ def contains_launchctl_submit_command(command: str) -> bool:
     return False
 
 
-def _resolve_terminal_script_path(candidate: str, cwd: Optional[str]) -> Path:
-    path = Path(candidate).expanduser()
+def _expand_candidate_path(candidate: str) -> Optional[Path]:
+    """Sanitize a tokenized path candidate at the ingestion boundary.
+
+    Candidate tokens come from shlex-splitting arbitrary command text —
+    including text recursively decoded from binaries or remote reads — so
+    they can carry NUL bytes or other junk no real filesystem path can
+    contain. Every OS-facing ``Path`` operation downstream (``expanduser``,
+    ``os.open``, ``resolve``) raises a *different* exception for the same
+    junk (``ValueError: embedded null byte``, ``RuntimeError: Could not
+    determine home directory`` when HOME is unset under launchd, OSError
+    for over-long paths). Rejecting here — once, before any OS call — is
+    the whole-class fix; catching per-syscall was the whack-a-mole that
+    produced #76762, #77703, #77780, and #78256.
+
+    Returns ``None`` for candidates that cannot be a real path (nothing to
+    scan), otherwise the ``expanduser()``-expanded ``Path``.
+    """
+    if not candidate or "\x00" in candidate:
+        return None
+    try:
+        return Path(candidate).expanduser()
+    except (ValueError, RuntimeError, OSError):
+        return None
+
+
+def _resolve_terminal_script_path(candidate: str, cwd: Optional[str]) -> Optional[Path]:
+    path = _expand_candidate_path(candidate)
+    if path is None:
+        return None
     if not path.is_absolute():
-        path = Path(cwd or Path.cwd()) / path
+        try:
+            path = Path(cwd or Path.cwd()) / path
+        except OSError:
+            # Path.cwd() can raise when the process cwd was deleted.
+            return None
     return path
 
 
@@ -192,7 +226,9 @@ def _iter_referenced_shell_scripts(
 
         if executable_name in {".", "source"}:
             if len(segment) > index + 1:
-                yield _resolve_terminal_script_path(segment[index + 1], cwd)
+                resolved = _resolve_terminal_script_path(segment[index + 1], cwd)
+                if resolved is not None:
+                    yield resolved
             continue
 
         if executable_name in _SHELL_EXECUTABLES:
@@ -216,7 +252,9 @@ def _iter_referenced_shell_scripts(
                 "-c",
                 "--command",
             }:
-                yield _resolve_terminal_script_path(arguments[arg_index], cwd)
+                resolved = _resolve_terminal_script_path(arguments[arg_index], cwd)
+                if resolved is not None:
+                    yield resolved
             continue
 
         # A bare "/" token is pathlib's division operator in Python sources
@@ -226,7 +264,9 @@ def _iter_referenced_shell_scripts(
         # (#77131). Skip pure-separator tokens.
         if executable.strip("/"):
             if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
-                yield _resolve_terminal_script_path(executable, cwd)
+                resolved = _resolve_terminal_script_path(executable, cwd)
+                if resolved is not None:
+                    yield resolved
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:
@@ -246,7 +286,7 @@ def _resolve_script_directory(script_path: str) -> Optional[str]:
     """Return the directory *script_path* resolves to, handling relative names."""
     try:
         path = _resolve_script_path(script_path)
-        if path.is_absolute():
+        if path is not None and path.is_absolute():
             return str(path.parent)
     except Exception:
         pass
@@ -290,6 +330,31 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     return data.decode("utf-8", errors="replace"), False
 
 
+def _sanitize_remote_script_text(text: Optional[str]) -> tuple[Optional[str], bool]:
+    """Apply the local-read contract to text from a ``read_remote_script`` callback.
+
+    The recursion boundary must not trust its callbacks: any backend (SSH,
+    Modal, Daytona, or a future one) can hand back raw binary bytes decoded
+    as text, or arbitrarily large output. Mirror
+    ``_read_referenced_script``'s semantics — NUL bytes mean binary
+    (nothing to scan, checked first, #77703), oversized text fails closed
+    like an oversized local file (#76762) — so remote and local reads can
+    never diverge again. The size bound here is in characters rather than
+    bytes: the downstream cost (shlex tokenization of the text) is
+    per-character, and decoded characters never exceed source bytes, so
+    the character bound is at least as strict for scan work. Enforced here
+    rather than inside each callback so the guarantee holds for every
+    callback, not just the ones we hardened.
+    """
+    if not text:
+        return None, False
+    if "\x00" in text:
+        return None, False
+    if len(text) > _MAX_REFERENCED_SCRIPT_BYTES:
+        return None, True
+    return text, False
+
+
 def _contains_unsafe_gateway_action(
     command: str,
     *,
@@ -331,7 +396,14 @@ def _contains_unsafe_gateway_action(
             return True
         if script_text is None and read_remote_script is not None:
             # Local path missing; try the remote backend if one is available.
-            script_text = read_remote_script(str(script_path))
+            # The callback's output crosses the same trust boundary as a
+            # local read — sanitize it identically before it enters the
+            # recursion (binary skip + size fail-closed).
+            script_text, unsafe = _sanitize_remote_script_text(
+                read_remote_script(str(script_path))
+            )
+            if unsafe:
+                return True
         if not script_text:
             continue
         # Relative references inside a script resolve against that script's
@@ -354,19 +426,45 @@ def contains_gateway_lifecycle_command_or_referenced_script(
     cwd: Optional[str] = None,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
 ) -> bool:
-    """Detect lifecycle/submit commands, including bounded nested scripts."""
-    return _contains_unsafe_gateway_action(
-        command,
-        cwd=cwd,
-        depth=0,
-        visited=set(),
-        read_remote_script=read_remote_script,
-    )
+    """Detect lifecycle/submit commands, including bounded nested scripts.
+
+    Total by construction: this function returns a verdict for *every*
+    input and never raises. The direct scans below are pure string
+    operations; the referenced-script walk touches the filesystem, remote
+    backends, and shlex on arbitrary decoded bytes, so it is best-effort
+    defense-in-depth — any unexpected failure inside it is logged and
+    treated as "walk found nothing" rather than crashing the caller.
+
+    This is the contract #76762 established ("a guarded path must never
+    crash the guard") enforced at the boundary instead of per-syscall: a
+    guard crash propagates out of ``tools/terminal_tool.py`` and breaks
+    every terminal command until the gateway restarts (#77780, #78256),
+    which is strictly worse than either verdict.
+    """
+    if contains_gateway_lifecycle_command(command) or contains_launchctl_submit_command(
+        command
+    ):
+        return True
+    try:
+        return _contains_unsafe_gateway_action(
+            command,
+            cwd=cwd,
+            depth=0,
+            visited=set(),
+            read_remote_script=read_remote_script,
+        )
+    except Exception:
+        logger.warning(
+            "lifecycle guard referenced-script walk failed; "
+            "falling back to direct-scan verdict",
+            exc_info=True,
+        )
+        return False
 
 
 
 
-def _resolve_script_path(script_path: str) -> Path:
+def _resolve_script_path(script_path: str) -> Optional[Path]:
     """Resolve a cron ``script`` value the same way the scheduler does.
 
     The scheduler (``cron.scheduler``) resolves a bare/relative script path
@@ -376,10 +474,17 @@ def _resolve_script_path(script_path: str) -> Path:
     (``~/.hermes/scripts/restart.sh``) but is passed as the bare name
     ``restart.sh`` would read as a nonexistent relative path and silently
     scan prompt-only content, letting the command through.
+
+    Returns ``None`` for values that cannot be a real path (NUL bytes,
+    unexpandable ``~``) — the same ingestion contract as
+    ``_expand_candidate_path``; such a value can never name a file the
+    scheduler would execute, so there is nothing to scan.
     """
     from hermes_constants import get_hermes_home
 
-    raw = Path(script_path).expanduser()
+    raw = _expand_candidate_path(script_path)
+    if raw is None:
+        return None
     if raw.is_absolute():
         return raw
     return get_hermes_home() / "scripts" / raw
@@ -389,10 +494,13 @@ def _read_script_for_scanning(script_path: str) -> str:
     """Read a cron script with the bounded terminal-script scanner.
 
     Non-regular or oversized inputs fail closed by returning a lifecycle-shaped
-    sentinel, while missing/unreadable paths remain empty so ordinary scheduler
-    path validation can report them.
+    sentinel, while missing/unreadable/unresolvable paths remain empty so
+    ordinary scheduler path validation can report them.
     """
-    script_text, unsafe = _read_referenced_script(_resolve_script_path(script_path))
+    resolved = _resolve_script_path(script_path)
+    if resolved is None:
+        return ""
+    script_text, unsafe = _read_referenced_script(resolved)
     if unsafe:
         return "hermes gateway restart"
     return script_text or ""
@@ -417,7 +525,8 @@ def check_gateway_lifecycle(
     combined = prompt or ""
     python_script = False
     if script:
-        python_script = _resolve_script_path(script).suffix == ".py"
+        resolved_script = _resolve_script_path(script)
+        python_script = resolved_script is not None and resolved_script.suffix == ".py"
         script_text = _read_script_for_scanning(script)
         if script_text:
             combined = f"{combined}\n{script_text}"

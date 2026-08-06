@@ -2557,12 +2557,21 @@ def terminal_tool(
                 except Exception:
                     pass
                 # Remote / sandboxed backend: read via the environment's shell.
+                # Bound the read at the source with `head -c` so an oversized
+                # file (e.g. a 166MB ELF invoked by absolute path) never
+                # crosses the wire — `cat` of such a binary previously pinned
+                # the gateway's tool thread on a superlinear shlex scan for
+                # 30+ minutes. One byte over the guard's 1 MiB budget is
+                # enough for lifecycle_guard's sanitizer to fail the
+                # oversized case closed, mirroring the local-read semantics.
                 try:
-                    result = env.execute(f"cat {shlex.quote(script_path)}")
+                    result = env.execute(
+                        f"head -c 1048577 {shlex.quote(script_path)}"
+                    )
                     if result.get("returncode", -1) == 0:
                         output = result.get("output", "")
                         if output and "\x00" in output:
-                            # Binary content from a remote `cat`: skip for the
+                            # Binary content from a remote read: skip for the
                             # same reason as the local branch above (#77703).
                             return None
                         return output

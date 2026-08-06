@@ -267,7 +267,7 @@ declare global {
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
       // Soft gateway-mode apply: primary backend was torn down without a window
       // reload. Wipe session lists (skeletons) and re-dial.
-      onConnectionApplied?: (callback: () => void) => () => void
+      onConnectionApplied?: (callback: (payload: DesktopConnectionAppliedPayload) => void) => () => void
       onPowerResume?: (callback: () => void) => () => void
       getOnBattery?: () => Promise<boolean>
       onBatteryChanged?: (callback: (onBattery: boolean) => void) => () => void
@@ -524,6 +524,10 @@ export interface DesktopConnectionConfig {
   // The profile this config describes, or null for the global/default
   // connection. Per-profile entries let a profile point at its own backend.
   profile: null | string
+  // Named profile scopes distinguish an explicit local/remote/cloud entry from
+  // an inherited view of the global connection. Global scope is always false.
+  inherited: boolean
+  profileOverride: boolean
   remoteAuthMode: 'oauth' | 'token'
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
@@ -546,6 +550,9 @@ export interface DesktopConnectionConfigInput {
   // When set, the save/apply/test targets this profile's per-profile remote
   // override instead of the global connection.
   profile?: null | string
+  // For a named profile, remove its scoped entry and resume using the global
+  // connection. Ignored for the global scope.
+  inherit?: boolean
   remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
   remoteUrl?: string
@@ -558,6 +565,12 @@ export interface DesktopConnectionConfigInput {
   sshKeyPath?: string
   sshRemoteHermesPath?: string
   sshRemoteProfile?: string
+}
+
+export interface DesktopConnectionAppliedPayload {
+  // null means global/primary apply; a named value scopes the apply to that
+  // profile's pooled renderer gateway.
+  profile: null | string
 }
 
 export interface DesktopConnectionTestResult {
@@ -764,6 +777,10 @@ export interface HermesApiRequest {
   // ArrayBuffer. Token-mode backends only.
   upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
   timeoutMs?: number
+  // Authoritative backend target for this request. Current profile routing
+  // supports `local`; omit to use the applied ambient connection. Unknown ids
+  // fail closed until Desktop has a real gateway registry again.
+  gatewayId?: string
   // Route this REST call to a specific profile's backend. Omit for the primary
   // (window) backend. Read-only cross-profile data is served by the primary, so
   // this is only needed for profile-scoped live/settings calls.

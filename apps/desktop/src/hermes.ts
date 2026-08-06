@@ -25,6 +25,8 @@ import type {
   EnvVarInfo,
   HermesConfig,
   HermesConfigRecord,
+  KanbanBoardResponse,
+  KanbanBoardsResponse,
   LogsResponse,
   McpCatalogResponse,
   McpServerSummary,
@@ -162,6 +164,8 @@ export type {
   GatewayReadyPayload,
   HermesConfig,
   HermesConfigRecord,
+  KanbanBoardResponse,
+  KanbanBoardsResponse,
   LogsResponse,
   McpCatalogEntry,
   McpCatalogResponse,
@@ -226,6 +230,8 @@ export type {
   WebhooksResponse
 } from '@/types/hermes'
 
+export type { KanbanBoardSummary } from '@/types/hermes'
+
 export class HermesGateway extends JsonRpcGatewayClient {
   constructor() {
     super({
@@ -246,14 +252,13 @@ export class HermesGateway extends JsonRpcGatewayClient {
 // change is needed. Null → primary, so single-profile users are unaffected.
 let _apiProfile: null | string = null
 
-export function setApiRequestProfile(profile: null | string): void {
-  _apiProfile = profile || null
+export interface HermesApiTarget {
+  gatewayId?: string
+  profile?: null | string
 }
 
-function profileScoped(profile?: null | string): { profile?: string } {
-  const selected = profile === undefined ? _apiProfile : profile
-
-  return selected ? { profile: selected } : {}
+export function setApiRequestProfile(profile: null | string): void {
+  _apiProfile = profile || null
 }
 
 /** Profile that profile-scoped REST/WS calls should target (null → primary).
@@ -367,6 +372,16 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
   return () => {
     disposed = true
     socket?.close()
+  }
+}
+
+function profileScoped(target: HermesApiTarget = {}): HermesApiTarget {
+  const profile = Object.prototype.hasOwnProperty.call(target, 'profile') ? target.profile : _apiProfile
+  const gatewayId = target.gatewayId?.trim()
+
+  return {
+    ...(gatewayId ? { gatewayId } : {}),
+    ...(profile ? { profile } : {})
   }
 }
 
@@ -717,7 +732,7 @@ export function getLogs(params: {
 
 export function getHermesConfig(profile?: string): Promise<HermesConfig> {
   return window.hermesDesktop.api<HermesConfig>({
-    ...profileScoped(profile),
+    ...(profile === undefined ? profileScoped() : profileScoped({ profile })),
     path: '/api/config',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
@@ -751,6 +766,44 @@ export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: bool
     path: '/api/config',
     method: 'PUT',
     body: { config }
+  })
+}
+
+export function listKanbanBoards(target: HermesApiTarget = {}): Promise<KanbanBoardsResponse> {
+  return window.hermesDesktop.api<KanbanBoardsResponse>({
+    ...profileScoped(target),
+    path: '/api/plugins/kanban/boards'
+  })
+}
+
+export function getKanbanBoard(
+  options: {
+    board?: string
+    gatewayId?: string
+    includeArchived?: boolean
+    profile?: null | string
+    tenant?: string
+  } = {}
+): Promise<KanbanBoardResponse> {
+  const query = new URLSearchParams()
+
+  if (options.board) {
+    query.set('board', options.board)
+  }
+
+  if (options.tenant) {
+    query.set('tenant', options.tenant)
+  }
+
+  if (options.includeArchived) {
+    query.set('include_archived', 'true')
+  }
+
+  const suffix = query.toString()
+
+  return window.hermesDesktop.api<KanbanBoardResponse>({
+    ...profileScoped(options),
+    path: suffix ? `/api/plugins/kanban/board?${suffix}` : '/api/plugins/kanban/board'
   })
 }
 

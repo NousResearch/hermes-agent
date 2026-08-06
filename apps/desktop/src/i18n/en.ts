@@ -341,6 +341,7 @@ export const en: Translations = {
       providerApiKeys: 'API keys',
       providerCustomEndpoints: 'Custom Endpoints',
       gateway: 'Gateway',
+      kanban: 'Kanban',
       apiKeys: 'Tools & Keys',
       keybinds: 'Keyboard Shortcuts',
       keysTools: 'Tools',
@@ -364,6 +365,30 @@ export const en: Translations = {
       failed: 'failed',
       empty: 'No desktop plugins installed yet.',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' }
+    },
+    kanban: {
+      title: 'Kanban',
+      loadingBoards: 'Loading Kanban boards...',
+      boardsLoadFailed: 'Kanban boards failed to load',
+      boardLoadFailed: 'Kanban board failed to load',
+      unavailableTitle: 'Kanban is unavailable',
+      unavailableDescription: 'The Kanban plugin is not enabled for this profile.',
+      loadFailedTitle: 'Could not load Kanban',
+      loadFailedDescription: 'Check the backend connection and try again.',
+      retry: 'Retry',
+      refresh: 'Refresh',
+      boardCount: count => `${count} ${count === 1 ? 'board' : 'boards'}`,
+      taskCount: count => `${count} ${count === 1 ? 'task' : 'tasks'}`,
+      current: 'current',
+      emptyTitle: 'No Kanban boards',
+      emptyDescription: 'The active profile has no Kanban boards.',
+      loadingBoard: 'Loading board...',
+      noSelectionTitle: 'No board selected',
+      noSelectionDescription: 'Pick a board on the left.',
+      boardUnavailableTitle: 'Board unavailable',
+      boardUnavailableDescription: 'This board could not be loaded. Select another board or try again.',
+      untitledTask: 'Untitled task',
+      moreTasks: count => `+${count} more`
     },
     notifications: {
       title: 'Notifications',
@@ -616,6 +641,8 @@ export const en: Translations = {
       defaultConnection: 'Default connection for every profile that has no override of its own.',
       profileConnection: profile =>
         `Connection used only when “${profile}” is the active profile. Choose Use default gateway to remove its override.`,
+      useDefaultTitle: 'Use default',
+      useDefaultDesc: 'Inherit the connection selected for All profiles.',
       envOverrideTitle: 'Environment variables are controlling this desktop session.',
       envOverrideDesc:
         'Unset HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN to use the saved setting below.',

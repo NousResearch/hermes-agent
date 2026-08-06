@@ -219,6 +219,15 @@ _MATRIX_PERMANENT_ERRCODES = frozenset({
 })
 # Leading HTTP status on error strings formatted as ``"<status>: <body>"``.
 _MATRIX_LEADING_STATUS_RE = re.compile(r"^\s*(\d{3})\b")
+# Transport-level failures are always transient. Checked before any status or
+# text inspection so no amount of unlucky digits or keywords in a message can
+# ever promote a network timeout or dropped connection to "permanent".
+_MATRIX_TRANSIENT_EXC_TYPES: tuple[type[BaseException], ...] = (
+    asyncio.TimeoutError,
+    TimeoutError,
+    ConnectionError,  # covers ConnectionResetError, ConnectionRefusedError, ...
+    OSError,
+)
 
 
 def _is_permanent_matrix_auth_error(exc: object) -> bool:
@@ -231,6 +240,12 @@ def _is_permanent_matrix_auth_error(exc: object) -> bool:
     the sync loop permanently on a passing blip. Classify on the real HTTP
     status / errcode instead, and retry everything that is not 401/403.
     """
+    # Transport failures are never permanent, regardless of what their
+    # message text says. A ConnectionError raised while retrying a call whose
+    # URL happens to contain "403" must still be retried.
+    if isinstance(exc, _MATRIX_TRANSIENT_EXC_TYPES):
+        return False
+
     # Prefer structured attributes when the exception carries them.
     errcode = getattr(exc, "errcode", None)
     if (
@@ -238,21 +253,33 @@ def _is_permanent_matrix_auth_error(exc: object) -> bool:
         and errcode.strip().lower() in _MATRIX_PERMANENT_ERRCODES
     ):
         return True
-    for attr in ("http_status", "status", "status_code", "code"):
-        val = getattr(exc, attr, None)
-        if isinstance(val, int):
-            return val in (401, 403)
+
+    # mautrix's MatrixRequestError exposes ``.http_status``. Deliberately not
+    # ``.status``/``.status_code``/``.code``: those belong to unrelated
+    # exception shapes (aiohttp responses, OS errno, generic process exit
+    # codes) and a first-int-wins probe across all of them can misclassify on
+    # a coincidental integer that has nothing to do with the HTTP response.
+    status = getattr(exc, "http_status", None)
+    if isinstance(status, int):
+        return status in (401, 403)
 
     # Fall back to parsing a leading status code off the string form
-    # (e.g. ``"502: <!DOCTYPE html>..."``). A known status is authoritative:
+    # (e.g. ``"502: <!DOCTYPE html>...``). A known status is authoritative:
     # only 401/403 are permanent; 5xx/429/etc. must retry regardless of body.
     text = str(exc)
     m = _MATRIX_LEADING_STATUS_RE.match(text)
     if m:
         return int(m.group(1)) in (401, 403)
 
-    # No status available: trust only whole-word auth errcodes/keywords found in
-    # a bounded prefix, so a large HTML body cannot smuggle a false positive.
+    # No structured status available at all: fall back to a bounded,
+    # whole-word text scan. This is a deliberate divergence from a
+    # structured-only classifier. Some transports (a bare Exception wrapping a
+    # homeserver error) never expose http_status/errcode, so without this
+    # fallback we'd silently treat every unstructured auth failure as
+    # retryable forever.
+    # Bounded to the first 200 characters with \b word boundaries so a large
+    # HTML error body (which can run to kilobytes) has no way to smuggle a
+    # false positive the way the old unbounded substring check did.
     head = text[:200].lower()
     return bool(
         re.search(

@@ -1341,6 +1341,79 @@ class TestMatrixSyncLoop:
         assert captured[0].source.chat_type == "dm"
 
     @pytest.mark.asyncio
+    async def test_sync_loop_retries_transient_error_instead_of_stopping(self):
+        """A transient error containing a false-positive status digit must be retried, not fatal.
+
+        This is the regression the false-positive substring match caused in
+        production: an HTML error body with an embedded coordinate like
+        "40.4302" contains the digits "403", so a naive `"403" in str(exc)`
+        check stopped the sync loop permanently on what was really a passing
+        502 blip. This test drives `_sync_loop` itself (not just the
+        classifier function) so a regression in how the loop wires the
+        classifier in would also be caught here.
+        """
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        real_502 = (
+            '502: <!DOCTYPE html><svg><path d="M17.4517 40.4302'
+            'C12.7214 40.4302 9.82339 41.8182 7.98048 44.0001"/></svg>'
+        )
+
+        calls = {"n": 0}
+
+        async def _sync_side_effect(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise Exception(real_502)
+            # Second call: stop the loop cleanly after proving the retry
+            # happened, without needing a real sync payload.
+            adapter._closing = True
+            return {"next_batch": "s1"}
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_side_effect)
+        fake_client.sync_store = mock_sync_store
+        adapter._client = fake_client
+
+        with patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            await adapter._sync_loop()
+
+        # Retried rather than returning after the first (transient) error.
+        assert calls["n"] == 2
+        # The 5s backoff sleep on the retry path (not the 0s dispatch-yield).
+        assert 5 in [call.args[0] for call in mock_sleep.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_real_permanent_auth_error(self):
+        """A genuine 401/403 auth failure must stop the loop, not retry forever."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        auth_exc = Exception("M_FORBIDDEN: Invalid access token")
+        auth_exc.errcode = "M_FORBIDDEN"
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=auth_exc)
+        fake_client.sync_store = mock_sync_store
+        adapter._client = fake_client
+
+        with patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            await adapter._sync_loop()
+
+        # No retry backoff: the loop returned on the first, permanent error.
+        assert fake_client.sync.await_count == 1
+        assert 5 not in [call.args[0] for call in mock_sleep.await_args_list]
+
+    @pytest.mark.asyncio
     async def test_connect_receives_dm_from_initial_sync_dispatch(self):
         """A DM delivered by initial sync should reach the message handler after connect."""
         from plugins.platforms.matrix.adapter import MatrixAdapter
@@ -3397,3 +3470,37 @@ class TestMatrixPermanentAuthClassifier:
 
     def test_bare_auth_keyword_without_status_stops_sync(self):
         assert self._fn()(Exception("Unauthorized")) is True
+
+    def test_misleading_code_attribute_is_not_misclassified(self):
+        # A non-Matrix exception with a bare `.code` that happens to be 401
+        # must NOT be treated as an auth failure. `.code` on an arbitrary
+        # exception can be an errno or an exit code; only `.http_status`
+        # is trustworthy for HTTP status classification.
+        exc = Exception("subprocess failed")
+        exc.code = 401
+        assert self._fn()(exc) is False
+
+    def test_status_attribute_is_ignored_in_favor_of_http_status(self):
+        # aiohttp response objects and similar carry `.status`, which is a
+        # different namespace than mautrix's `.http_status`. A bare `.status`
+        # must not drive the classification.
+        exc = Exception("some http client error")
+        exc.status = 403
+        assert self._fn()(exc) is False
+
+    @pytest.mark.parametrize(
+        "exc_factory",
+        [
+            lambda: asyncio.TimeoutError("401 in the pagination token url"),
+            lambda: TimeoutError("403 in the pagination token url"),
+            lambda: ConnectionError("... forbidden ..."),
+            lambda: ConnectionResetError("Connection reset, status 401"),
+            lambda: OSError("network unreachable, code 403"),
+        ],
+    )
+    def test_transient_exception_types_never_classify_as_permanent(self, exc_factory):
+        # Transport-level exception types are short-circuited to "transient"
+        # before any text/status inspection runs, so a coincidental "401"
+        # or the keyword "forbidden" inside their message can never flip
+        # them to permanent.
+        assert self._fn()(exc_factory()) is False

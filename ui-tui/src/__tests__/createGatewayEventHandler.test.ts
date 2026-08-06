@@ -66,6 +66,23 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('attaches a per-turn token breakdown (usage delta) to the assistant message', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // First completion sets the cumulative usage baseline.
+    onEvent({ payload: { text: 'a', usage: { input: 1000, output: 200, reasoning: 50 } }, type: 'message.complete' } as any)
+    // Second completion: breakdown is the delta vs the previous cumulative.
+    onEvent({ payload: { text: 'b', usage: { input: 3000, output: 500, reasoning: 80 } }, type: 'message.complete' } as any)
+
+    const assistants = appended.filter(m => m.role === 'assistant')
+    expect(assistants.at(-1)?.tokenBreakdown).toEqual({ input: 2000, output: 300, reasoning: 30 })
+    // A compression reset (cumulative shrinks) clamps deltas to 0; with no
+    // positive delta no breakdown is attached (avoids a misleading 0/0/0).
+    onEvent({ payload: { text: 'c', usage: { input: 100, output: 10, reasoning: 0 } }, type: 'message.complete' } as any)
+    expect(appended.filter(m => m.role === 'assistant').at(-1)?.tokenBreakdown).toBeUndefined()
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 

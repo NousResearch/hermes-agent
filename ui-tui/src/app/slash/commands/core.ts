@@ -299,6 +299,48 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'per-message token breakdown footer [on|off|always|status]',
+    name: 'tokens',
+    run: (arg, ctx) => {
+      const a = (arg || '').trim().toLowerCase()
+
+      if (a === '' || a === 'status') {
+        queueMicrotask(() => ctx.transcript.sys(`tokens ${ctx.ui.showTokens ? 'on' : 'off'}`))
+        return
+      }
+      // `always` persists to config (shows in every future session); `on` is
+      // session-only; `off` disables and clears the persisted preference.
+      // Persistence is only CLAIMED once the gateway confirms the write
+      // (mirrors /theme): a rejected config.set must not be reported as
+      // saved, or the preference silently vanishes on restart. The session
+      // flip stays optimistic — it is local state and cannot fail.
+      if (a === 'always') {
+        patchUiState({ showTokens: true })
+        ctx.gateway
+          .rpc<ConfigSetResponse>('config.set', { key: 'show_message_tokens', value: 'on' })
+          .then(ctx.guarded<ConfigSetResponse>(() => ctx.transcript.sys('tokens always (saved)')))
+          .catch(ctx.guardedErr)
+        return
+      }
+      if (a === 'off') {
+        patchUiState({ showTokens: false })
+        queueMicrotask(() => ctx.transcript.sys('tokens off'))
+        ctx.gateway
+          .rpc<ConfigSetResponse>('config.set', { key: 'show_message_tokens', value: 'off' })
+          .catch(ctx.guardedErr)
+        return
+      }
+      if (a === 'on') {
+        patchUiState({ showTokens: true })
+        queueMicrotask(() => ctx.transcript.sys('tokens on (this session)'))
+        return
+      }
+
+      return ctx.transcript.sys('usage: /tokens [on|off|always|status]')
+    }
+  },
+
+  {
     aliases: ['detail'],
     help: 'control agent detail visibility (global or per-section)',
     name: 'details',

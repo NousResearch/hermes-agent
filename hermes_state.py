@@ -1887,6 +1887,116 @@ def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
             handle.close()
 
 
+def _token_category_decode_sql(tag: int) -> str:
+    """SQL summing one bit-packed token category (by codec tag) over rows.
+
+    Decodes the codec layout [F:1][tag1:4][value1:27][tag2:4][value2:28]
+    (see :mod:`hermes_token_codec`): a packed row (token_count < 0)
+    contributes value1 when tag1 == tag and value2 when tag2 == tag.
+
+    SQLite's ``>>`` is arithmetic (sign-extending) on the negative packed
+    integers, so EVERY ``>>`` is immediately followed by ``& mask`` to
+    discard sign-extended high bits; the 28-bit value2 field is masked
+    without a shift.
+    """
+    from hermes_token_codec import _TAG_MASK, _V1_MAX, _V2_MAX
+
+    return (
+        "SUM(CASE WHEN token_count < 0 "
+        f"AND ((token_count >> 59) & {_TAG_MASK}) = {tag} "
+        f"THEN ((token_count >> 32) & {_V1_MAX}) ELSE 0 END) + "
+        "SUM(CASE WHEN token_count < 0 "
+        f"AND ((token_count >> 28) & {_TAG_MASK}) = {tag} "
+        f"THEN (token_count & {_V2_MAX}) ELSE 0 END)"
+    )
+
+
+# Legacy non-negative counts historically only carried assistant output.
+_LEGACY_OUTPUT_SQL = (
+    " + SUM(CASE WHEN token_count >= 0 AND role = 'assistant' "
+    "THEN token_count ELSE 0 END)"
+)
+
+
+def _token_decode_columns_sql() -> str:
+    """The four decoded token-bucket columns (input/output/cache_read/reasoning)."""
+    from hermes_token_codec import (
+        TAG_OUTPUT,
+        TAG_REASONING,
+        TAG_TOTAL_INPUT,
+        TAG_CACHE_READ,
+    )
+    return (
+        f"COALESCE(({_token_category_decode_sql(TAG_TOTAL_INPUT)}), 0) AS input, "
+        f"COALESCE(({_token_category_decode_sql(TAG_OUTPUT)}{_LEGACY_OUTPUT_SQL}), 0) AS output, "
+        f"COALESCE(({_token_category_decode_sql(TAG_CACHE_READ)}), 0) AS cache_read, "
+        f"COALESCE(({_token_category_decode_sql(TAG_REASONING)}), 0) AS reasoning"
+    )
+
+
+def _build_message_token_totals_select() -> str:
+    """Build the SELECT that aggregates bit-packed messages.token_count.
+
+    Decodes legacy and packed rows in a single pass via
+    :func:`_token_decode_columns_sql`. Returns the four token buckets plus a
+    message count; callers append the FROM/WHERE/GROUP BY.
+    """
+    return (
+        "SELECT "
+        f"{_token_decode_columns_sql()}, "
+        "COUNT(*) AS messages "
+        "FROM messages "
+    )
+
+
+# Built once at import; pure function of the codec layout constants.
+_MESSAGE_TOKEN_TOTALS_SELECT = _build_message_token_totals_select()
+
+
+def _row_to_token_totals(row) -> Dict[str, int]:
+    """Normalise an aggregate row into the standard token-bucket dict."""
+    if row is None:
+        return {"input": 0, "output": 0, "cache_read": 0, "reasoning": 0, "messages": 0}
+    return {
+        "input": int(row["input"] or 0),
+        "output": int(row["output"] or 0),
+        "cache_read": int(row["cache_read"] or 0),
+        "reasoning": int(row["reasoning"] or 0),
+        "messages": int(row["messages"] or 0),
+    }
+
+
+_TOKEN_VIEW_UNSET = object()
+
+
+def _attach_token_view(msg: Dict[str, Any], raw_token_count: Any = _TOKEN_VIEW_UNSET) -> Dict[str, Any]:
+    """Flatten a message's bit-packed ``token_count`` into a readable view.
+
+    The stored ``token_count`` is bit-packed and **negative** for packed rows
+    (see :mod:`hermes_token_codec`); dashboard / API / TUI consumers that read
+    it off these getters would otherwise see a raw negative sentinel. Attach
+    the resolved ``{input, output, cache_read, reasoning}`` buckets under
+    ``tokens``, and — when the dict still carries a scalar ``token_count`` —
+    replace it with a legacy-safe non-negative value (assistant output count,
+    else ``None``) so nothing surfaces the packed sentinel.
+
+    ``raw_token_count`` lets callers whose row dict omits the column (e.g. the
+    conversation-replay getter, which never selected ``token_count``) pass the
+    value explicitly; in that case no scalar ``token_count`` key is added, so
+    replay dicts stay clean.
+    """
+    from hermes_token_codec import resolve_message_tokens
+
+    role = msg.get("role")
+    raw = msg.get("token_count") if raw_token_count is _TOKEN_VIEW_UNSET else raw_token_count
+    tokens = resolve_message_tokens(role, raw)
+    msg["tokens"] = tokens
+    if "token_count" in msg:
+        msg["token_count"] = tokens["output"] if role == "assistant" else None
+    return msg
+
+
+
 class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin):
     """
     SQLite-backed session storage with FTS5 search.
@@ -7047,6 +7157,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_inactive: bool = False,
         limit: Optional[int] = None,
         offset: int = 0,
+        flatten_tokens: bool = True,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -7054,6 +7165,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``include_inactive=True`` to load soft-deleted rows (e.g. for
         audit / debug views of rewound history). See
         :meth:`rewind_to_message` for the soft-delete mechanic.
+
+        By default (``flatten_tokens=True``) each row's bit-packed
+        ``token_count`` is flattened for display: a readable ``tokens``
+        bucket dict is attached and the scalar ``token_count`` is reduced to
+        a legacy-safe non-negative value, so dashboard / TUI / search
+        consumers never read the raw negative packed sentinel. Pass
+        ``flatten_tokens=False`` to keep the raw packed value untouched —
+        required by re-persist paths (fork / transcript rewrite) that write
+        these dicts back via :meth:`replace_messages`, so packed token
+        accounting survives the round-trip.
 
         Ordered by AUTOINCREMENT id (true insertion order) rather than
         timestamp — see c03acca50 for the WSL2 clock-regression rationale.
@@ -7090,8 +7211,186 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     msg["tool_calls"] = []
             if msg.get("display_metadata") is not None:
                 msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
+            # Flatten the bit-packed token_count so callers never read the raw
+            # negative packed sentinel (dashboard / search / export consumers).
+            # Re-persist callers pass flatten_tokens=False to keep raw values.
+            if flatten_tokens:
+                _attach_token_view(msg)
             result.append(msg)
         return result
+
+    def get_message_tokens(self, message_id: int) -> Dict[str, int]:
+        """Decode the bit-packed ``token_count`` for a single message row.
+
+        Returns the resolved ``{input, output, cache_read, reasoning}``
+        buckets (see :func:`hermes_token_codec.resolve_message_tokens`).
+        Legacy non-negative counts are attributed to assistant ``output``
+        only; a missing/unknown row yields all-zero buckets.
+        """
+        from hermes_token_codec import resolve_message_tokens
+
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT role, token_count FROM messages WHERE id = ?",
+                (message_id,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return {"input": 0, "output": 0, "cache_read": 0, "reasoning": 0}
+        return resolve_message_tokens(row["role"], row["token_count"])
+
+    def get_session_message_token_totals(self, session_id: str) -> Dict[str, int]:
+        """Aggregate per-message token buckets for one session.
+
+        Sums the bit-packed ``token_count`` across every message row in the
+        session — mixing legacy (non-negative) and packed (negative) rows in
+        a single SQL pass via :data:`_MESSAGE_TOKEN_TOTALS_SELECT`. Inactive
+        (rewound / compacted) rows are included: their tokens were spent and
+        belong in the accounting total. Returns
+        ``{input, output, cache_read, reasoning, messages}``.
+        """
+        sql = _MESSAGE_TOKEN_TOTALS_SELECT + "WHERE session_id = ?"
+        with self._lock:
+            cursor = self._conn.execute(sql, (session_id,))
+            row = cursor.fetchone()
+        return _row_to_token_totals(row)
+
+    def get_conversation_message_token_totals(
+        self, root_session_id: str
+    ) -> Dict[str, int]:
+        """Aggregate per-message token buckets across a compression lineage.
+
+        Walks the ``parent_session_id`` chain from ``root_session_id`` down
+        through every compression-continuation descendant (the same lineage
+        rule used by :meth:`set_session_archived`) and sums the bit-packed
+        ``token_count`` over all their messages. Use this to get whole-
+        conversation totals that survive compression-triggered session
+        splits. Returns ``{input, output, cache_read, reasoning, messages}``.
+        """
+        sql = (
+            "WITH RECURSIVE descendants(id) AS ("
+            "  SELECT ? "
+            "  UNION "
+            "  SELECT child.id "
+            "  FROM descendants d "
+            "  JOIN sessions parent ON parent.id = d.id "
+            "  JOIN sessions child ON child.parent_session_id = parent.id "
+            "  WHERE parent.end_reason = 'compression' "
+            "    AND child.started_at >= parent.ended_at"
+            ") "
+            + _MESSAGE_TOKEN_TOTALS_SELECT
+            + "WHERE session_id IN (SELECT id FROM descendants)"
+        )
+        with self._lock:
+            cursor = self._conn.execute(sql, (root_session_id,))
+            row = cursor.fetchone()
+        return _row_to_token_totals(row)
+
+    def get_message_token_timeseries(
+        self,
+        start_ts: float,
+        end_ts: float,
+        bucket_seconds: int,
+        session_id: Optional[str] = None,
+    ) -> List[Dict[str, int]]:
+        """Time-bucketed decoded token usage + request counts.
+
+        Buckets messages by ``timestamp`` into ``bucket_seconds``-wide windows
+        in ``[start_ts, end_ts)`` and, per bucket, returns the decoded token
+        buckets (input/output/cache_read/reasoning) plus:
+          * ``requests`` — assistant rows (≈ one per API completion),
+          * ``messages`` — all rows.
+
+        Powers the analytics rate / trend / cache-hit views. Only buckets with
+        at least one message are returned, ascending by ``bucket_start``. Pass
+        ``session_id`` to scope to one session. Active rows only.
+        """
+        if bucket_seconds <= 0:
+            raise ValueError("bucket_seconds must be positive")
+        where = "WHERE active = 1 AND timestamp >= ? AND timestamp < ?"
+        params: List[Any] = [start_ts, end_ts]
+        if session_id is not None:
+            where += " AND session_id = ?"
+            params.append(session_id)
+        sql = (
+            "SELECT "
+            "CAST(timestamp / ? AS INTEGER) * ? AS bucket_start, "
+            "SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END) AS requests, "
+            f"{_token_decode_columns_sql()}, "
+            "COUNT(*) AS messages "
+            "FROM messages "
+            f"{where} "
+            "GROUP BY bucket_start ORDER BY bucket_start"
+        )
+        # bucket_seconds is bound twice at the front, then the WHERE params.
+        bind = [bucket_seconds, bucket_seconds, *params]
+        with self._lock:
+            rows = self._conn.execute(sql, bind).fetchall()
+        out: List[Dict[str, int]] = []
+        for r in rows:
+            out.append({
+                "bucket_start": int(r["bucket_start"]),
+                "requests": int(r["requests"] or 0),
+                "input": int(r["input"] or 0),
+                "output": int(r["output"] or 0),
+                "cache_read": int(r["cache_read"] or 0),
+                "reasoning": int(r["reasoning"] or 0),
+                "messages": int(r["messages"] or 0),
+            })
+        return out
+
+    def get_session_cost_aggregates(self, since_ts: float) -> List[Dict[str, Any]]:
+        """Per-(model, provider, base_url) token sums for sessions in a window.
+
+        Groups sessions whose activity (``COALESCE(ended_at, started_at)``) is
+        at/after ``since_ts`` and sums the session-level token columns plus the
+        stored ``estimated_cost_usd``. Feeds cost analytics (priced per tier
+        from the model). Returns a list of dicts; values are plain ints/floats.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT model, billing_provider, billing_base_url, "
+                "COUNT(*) AS sessions, "
+                "COALESCE(SUM(input_tokens),0) AS input_tokens, "
+                "COALESCE(SUM(output_tokens),0) AS output_tokens, "
+                "COALESCE(SUM(cache_read_tokens),0) AS cache_read_tokens, "
+                "COALESCE(SUM(cache_write_tokens),0) AS cache_write_tokens, "
+                "COALESCE(SUM(reasoning_tokens),0) AS reasoning_tokens, "
+                "COALESCE(SUM(estimated_cost_usd),0) AS estimated_cost_usd "
+                "FROM sessions "
+                "WHERE COALESCE(ended_at, started_at) >= ? "
+                "GROUP BY model, billing_provider, billing_base_url",
+                (since_ts,),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            out.append({
+                "model": r["model"],
+                "billing_provider": r["billing_provider"],
+                "billing_base_url": r["billing_base_url"],
+                "sessions": int(r["sessions"] or 0),
+                "input_tokens": int(r["input_tokens"] or 0),
+                "output_tokens": int(r["output_tokens"] or 0),
+                "cache_read_tokens": int(r["cache_read_tokens"] or 0),
+                "cache_write_tokens": int(r["cache_write_tokens"] or 0),
+                "reasoning_tokens": int(r["reasoning_tokens"] or 0),
+                "estimated_cost_usd": float(r["estimated_cost_usd"] or 0.0),
+            })
+        return out
+
+    def get_active_providers(self, since_ts: float) -> List[str]:
+        """Distinct non-empty billing_provider values active since ``since_ts``.
+
+        Used by analytics to decide which provider quotas to compare against.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT billing_provider FROM sessions "
+                "WHERE billing_provider IS NOT NULL AND billing_provider != '' "
+                "AND COALESCE(ended_at, started_at) >= ?",
+                (since_ts,),
+            ).fetchall()
+        return [r[0] for r in rows if r[0]]
 
     def get_messages_around(
         self,
@@ -7269,6 +7568,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_inactive: bool = False,
         repair_alternation: bool = False,
         include_row_ids: bool = False,
+        include_token_view: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -7316,6 +7616,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             include_ancestors=include_ancestors,
             repair_alternation=repair_alternation,
             include_row_ids=include_row_ids,
+            include_token_view=include_token_view,
         )
 
     # Columns every conversation projection decodes. Shared by
@@ -7325,7 +7626,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
-        "api_content, display_kind, display_metadata"
+        "api_content, display_kind, display_metadata, token_count"
     )
 
     def _rows_to_conversation(
@@ -7336,6 +7637,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_ancestors: bool,
         repair_alternation: bool,
         include_row_ids: bool = False,
+        include_token_view: bool = False,
     ) -> List[Dict[str, Any]]:
         """Decode fetched message rows into the OpenAI conversation format.
 
@@ -7423,6 +7725,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize codex_message_items, falling back to None")
                         msg["codex_message_items"] = None
+            # Flattened, readable token view for display surfaces that want it.
+            # OPT-IN, exactly like include_row_ids above: this is accounting
+            # metadata, not transcript content, and every default consumer
+            # (ACP restore, model replay, export, inspection) compares or
+            # re-persists the historical shape. The raw column is passed
+            # explicitly so no scalar token_count enters the replay dict.
+            if include_token_view:
+                _attach_token_view(msg, raw_token_count=row["token_count"])
             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
                 continue
             messages.append(msg)

@@ -313,10 +313,27 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     files_touched: Set[str] = set()
     full_text_parts: List[str] = []
     error_count = 0
+    # Decoded per-message token usage. get_messages() attaches a flattened
+    # `tokens` bucket dict (bit-packed token_count is otherwise an opaque
+    # negative — see hermes_token_codec); fall back to decoding the raw column
+    # if a caller passed un-flattened rows.
+    tok_input = tok_output = tok_cache_read = tok_reasoning = 0
 
     for msg in messages:
         text = _content(msg)
         full_text_parts.append(text)
+        _tok = msg.get("tokens")
+        if not isinstance(_tok, dict):
+            try:
+                from hermes_token_codec import resolve_message_tokens
+                _tok = resolve_message_tokens(msg.get("role"), msg.get("token_count"))
+            except Exception:
+                _tok = None
+        if isinstance(_tok, dict):
+            tok_input += int(_tok.get("input") or 0)
+            tok_output += int(_tok.get("output") or 0)
+            tok_cache_read += int(_tok.get("cache_read") or 0)
+            tok_reasoning += int(_tok.get("reasoning") or 0)
         if msg.get("tool_name"):
             name = str(msg["tool_name"])
             tool_names.add(name)
@@ -415,6 +432,12 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
         "screenshot_events": len(re.findall(r"screenshot|playwright|vision_analyze|browser_vision|\.png|image data", full_text, re.I)),
         "release_events": len(re.findall(r"\bgit\s+tag|release|version bump|changelog|publish|pushed? tag", full_text, re.I)),
         "cache_events": len(re.findall(r"cache hit|prompt caching|cache_read", full_text, re.I)),
+        # Decoded per-session token usage (from bit-packed messages.token_count).
+        "total_input_tokens": tok_input,
+        "total_output_tokens": tok_output,
+        "total_cache_read_tokens": tok_cache_read,
+        "total_reasoning_tokens": tok_reasoning,
+        "total_message_tokens": tok_input + tok_output + tok_reasoning,
         "model_names": set(),
     }
 
@@ -703,6 +726,8 @@ def aggregate_stats(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
     sum_keys = [
         "traceback_events", "log_read_events", "port_conflict_events", "permission_denied_events", "install_error_events", "install_success_events", "restart_after_error_events", "env_var_error_events", "yaml_error_events", "docker_conflict_events", "frontend_activity_events", "css_activity_events", "git_events", "tiny_patch_after_errors_events", "skill_events", "skill_manage_events", "memory_events", "memory_write_events", "context_events", "gateway_events", "plugin_events", "rollback_events", "docs_activity_events", "model_events", "openrouter_events", "codex_events", "claude_events", "gemini_events", "local_model_events", "toolset_events", "config_events", "git_history_events", "test_events", "screenshot_events", "release_events", "cache_events",
+        # Decoded token usage rolled up to lifetime totals across all sessions.
+        "total_input_tokens", "total_output_tokens", "total_cache_read_tokens", "total_reasoning_tokens", "total_message_tokens",
     ]
     for key in sum_keys:
         agg[key] = 0

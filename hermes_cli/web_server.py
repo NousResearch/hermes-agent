@@ -14191,6 +14191,116 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         db.close()
 
 
+# ── Real-time message-level analytics (bit-packed token_count) ─────────
+# Mirrors the gateway api_server endpoints on the dashboard's management
+# server so the Analytics page can render them. The bit-packed token_count
+# decode lives ONCE, in SessionDB (get_message_token_timeseries /
+# get_session_cost_aggregates / get_active_providers); this module only picks
+# the window and defers the math to agent.analytics. An earlier revision
+# inlined its own copy of the decode SQL here and drifted -- it never decoded
+# the reasoning tag and returned a hardcoded reasoning=0, undercounting
+# reasoning models on every dashboard trend response.
+
+_ANALYTICS_WINDOWS = {"1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000}
+_ANALYTICS_TREND_BUCKETS = {"1h": 60, "24h": 3600, "7d": 86400, "30d": 86400}
+
+
+@app.get("/api/analytics/provider-quotas")
+async def get_provider_quotas(provider: Optional[str] = None):
+    from agent.provider_quotas import get_provider_quota, list_provider_quotas
+
+    if provider:
+        q = get_provider_quota(provider)
+        data = [q] if q else []
+    else:
+        data = list_provider_quotas()
+    return {"object": "list", "data": data}
+
+
+def _analytics_window_seconds(window: str) -> int:
+    """Resolve a window preset, raising the endpoint's 400 for anything else."""
+    from fastapi import HTTPException
+
+    seconds = _ANALYTICS_WINDOWS.get(window)
+    if seconds is None:
+        raise HTTPException(status_code=400, detail="window must be 1h|24h|7d|30d")
+    return seconds
+
+
+# Each endpoint is a sync worker + an async wrapper that hands it to a thread:
+# SessionDB is blocking SQLite, and running it inline would stall the event
+# loop for the whole dashboard. Same shape as _get_usage_analytics below.
+
+
+def _get_usage_rates(window: str, profile: Optional[str] = None):
+    from agent.analytics import compute_usage_rates
+    from agent.provider_quotas import get_provider_quota
+
+    seconds = _analytics_window_seconds(window)
+    db = _open_session_db_for_profile(profile, read_only=True)
+    try:
+        now = time.time()
+        minute_buckets = db.get_message_token_timeseries(now - seconds, now, 60)
+        daily = db.get_message_token_timeseries(now - 86400, now, 86400)
+        daily_totals = daily[-1] if daily else {}
+        quotas = [q for q in (get_provider_quota(p) for p in db.get_active_providers(now - seconds)) if q]
+        rates = compute_usage_rates(minute_buckets, daily_totals, quotas)
+        return {"window": window, "generated_at": now, **rates}
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/usage-rates")
+async def get_usage_rates(window: str = "24h", profile: Optional[str] = None):
+    return await asyncio.to_thread(_get_usage_rates, window, profile)
+
+
+def _get_token_trends(window: str, bucket: Optional[int] = None, profile: Optional[str] = None):
+    from agent.analytics import compute_token_trends
+
+    seconds = _analytics_window_seconds(window)
+    bucket_seconds = bucket if bucket and bucket >= 60 else _ANALYTICS_TREND_BUCKETS[window]
+    db = _open_session_db_for_profile(profile, read_only=True)
+    try:
+        now = time.time()
+        buckets = db.get_message_token_timeseries(now - seconds, now, bucket_seconds)
+        trends = compute_token_trends(buckets)
+        return {"window": window, "bucket_seconds": bucket_seconds, "generated_at": now, **trends}
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/token-trends")
+async def get_token_trends(window: str = "24h", bucket: Optional[int] = None, profile: Optional[str] = None):
+    return await asyncio.to_thread(_get_token_trends, window, bucket, profile)
+
+
+def _get_cost_estimate(window: str, profile: Optional[str] = None):
+    from agent.analytics import compute_cost_estimate
+    from agent.usage_pricing import get_pricing_entry
+
+    seconds = _analytics_window_seconds(window)
+    db = _open_session_db_for_profile(profile, read_only=True)
+    try:
+        now = time.time()
+        groups = db.get_session_cost_aggregates(now - seconds)
+
+        def _lookup(model, prov, base_url):
+            if not model:
+                return None
+            return get_pricing_entry(model, provider=prov, base_url=base_url)
+
+        estimate = compute_cost_estimate(groups, seconds, _lookup)
+        return {"window": window, "generated_at": now, **estimate}
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/cost-estimate")
+async def get_cost_estimate(window: str = "24h", profile: Optional[str] = None):
+    return await asyncio.to_thread(_get_cost_estimate, window, profile)
+
+
 @app.get("/api/analytics/usage")
 async def get_usage_analytics(
     days: int = Query(30, ge=1, le=365),

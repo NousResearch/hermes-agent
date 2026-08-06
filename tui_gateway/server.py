@@ -11040,6 +11040,28 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.tui_compact", nv_b)
         return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
 
+    if key == "show_message_tokens":
+        # Persistent counterpart of the TUI's /tokens toggle: `always` writes
+        # this so every future session starts with the per-message token
+        # footer on. Read back by useConfigSync's applyDisplay via
+        # display.show_message_tokens. Without a handler here the RPC fell
+        # through to `unknown config key` and /tokens always reported a
+        # persistence that never happened.
+        raw = str(value or "").strip().lower()
+        cfg0 = _load_cfg()
+        d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
+        cur_b = bool(d0.get("show_message_tokens", False))
+        if raw in {"", "toggle"}:
+            nv_b = not cur_b
+        elif raw in {"on", "true", "yes"}:
+            nv_b = True
+        elif raw in {"off", "false", "no"}:
+            nv_b = False
+        else:
+            return _err(rid, 4002, f"unknown show_message_tokens value: {value}")
+        _write_config_key("display.show_message_tokens", nv_b)
+        return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
+
     if key == "battery":
         raw = str(value or "").strip().lower()
         cfg0 = _load_cfg()

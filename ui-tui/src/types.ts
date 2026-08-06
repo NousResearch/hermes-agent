@@ -126,6 +126,7 @@ export interface Msg {
   // visible even when `display.sections.thinking` is hidden.
   isMoaReference?: boolean
   thinkingTokens?: number
+  tokenBreakdown?: { input: number; output: number; reasoning: number }
   toolTokens?: number
   tools?: string[]
   todos?: TodoItem[]

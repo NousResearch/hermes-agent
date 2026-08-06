@@ -12,6 +12,7 @@ import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.
 import {
   boundedLiveRenderText,
   compactPreview,
+  formatTokenCount,
   hasAnsi,
   isPasteBackedText,
   sanitizeAnsiForRender,
@@ -37,6 +38,7 @@ export const MessageLine = memo(function MessageLine({
   msg,
   prev,
   sections,
+  showTokens = false,
   t,
   tools = []
 }: MessageLineProps) {
@@ -275,6 +277,15 @@ export const MessageLine = memo(function MessageLine({
 
         <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
       </Box>
+
+      {showTokens && msg.role === 'assistant' && msg.tokenBreakdown && (
+        <Box>
+          <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth} />
+          <Text color={t.color.muted} dimColor>
+            {`📊 in:${formatTokenCount(msg.tokenBreakdown.input)} out:${formatTokenCount(msg.tokenBreakdown.output)} rsn:${formatTokenCount(msg.tokenBreakdown.reasoning)}`}
+          </Text>
+        </Box>
+      )}
     </Box>
   )
 })
@@ -306,6 +317,9 @@ interface MessageLineProps {
   // the transcript or when spacing is irrelevant.
   prev?: Msg
   sections?: SectionVisibility
+  // When true, assistant messages carrying a per-turn tokenBreakdown render a
+  // compact "📊 in/out/reason" footer (gated by the /tokens toggle).
+  showTokens?: boolean
   t: Theme
   tools?: ActiveTool[]
 }

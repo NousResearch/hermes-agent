@@ -46,9 +46,12 @@ IDEMPOTENT_TOOL_NAMES = frozenset(
 # IDEMPOTENT_TOOL_NAMES, and the failure one only counts non-zero exits. So we
 # classify the *command*, not just the tool.
 #
-# The allowlist is deliberately conservative: an unrecognised command is
-# treated as mutating, so a miss costs a later block (the mutating threshold
-# still applies), never a wrongly-blocked write.
+# Everything below is an allowlist and the default answer is "this writes": an
+# unrecognised command, subcommand, flag or redirection classifies as a write.
+# A miss therefore costs a later block (the mutating threshold still applies),
+# never a wrongly-blocked write.
+
+# Commands that read whatever their arguments are.
 READ_ONLY_SHELL_COMMANDS = frozenset(
     {
         "basename", "cat", "column", "cut", "date", "df", "dirname", "du",
@@ -60,18 +63,37 @@ READ_ONLY_SHELL_COMMANDS = frozenset(
     }
 )
 
-# Commands whose first argument decides whether the call reads or writes.
+# Flags that turn one of those readers into a writer. Scoped per command on
+# purpose: a global flag list conflates unrelated meanings (`-f` is
+# `--field` to gh but `--file` to grep, `-x` is `--method` to gh but
+# `--exclude-type` to df), which mislabels innocent reads as writes.
+# Flag names are compared lowercased and with any `=value` suffix stripped.
+_WRITE_FLAGS_BY_COMMAND = {
+    "find": frozenset(
+        {
+            "-delete", "-exec", "-execdir", "-fls", "-fprint", "-fprint0",
+            "-fprintf", "-ok", "-okdir",
+        }
+    ),
+    "gh": frozenset(
+        {"-x", "--method", "-f", "--field", "--raw-field", "--input"}
+    ),
+    "jq": frozenset({"-i", "--in-place"}),
+    "sort": frozenset({"-o", "--output"}),
+    "yq": frozenset({"-i", "--inplace", "--in-place"}),
+}
+
+# `<command> <subcommand>` pairs that read.
 READ_ONLY_SHELL_SUBCOMMANDS = {
-    "cargo": frozenset({"tree", "metadata"}),
+    "cargo": frozenset({"metadata", "tree"}),
     "docker": frozenset({"images", "info", "inspect", "logs", "ps", "version"}),
-    "gh": frozenset({"api", "browse", "label", "search", "status", "version"}),
+    "gh": frozenset({"api", "browse", "search", "status", "version"}),
     "git": frozenset(
         {
-            "blame", "branch", "cat-file", "config", "count-objects",
-            "describe", "diff", "for-each-ref", "log", "ls-files",
-            "ls-remote", "ls-tree", "rev-list", "rev-parse", "shortlog",
-            "show", "show-ref", "status", "symbolic-ref", "tag", "var",
-            "whatchanged",
+            "blame", "cat-file", "count-objects", "describe", "diff",
+            "for-each-ref", "log", "ls-files", "ls-remote", "ls-tree",
+            "rev-list", "rev-parse", "shortlog", "show", "show-ref",
+            "status", "symbolic-ref", "var", "whatchanged",
         }
     ),
     "kubectl": frozenset({"describe", "get", "logs", "version"}),
@@ -81,31 +103,69 @@ READ_ONLY_SHELL_SUBCOMMANDS = {
     "yarn": frozenset({"info", "list", "why"}),
 }
 
-# `gh <noun> <verb>` and `git <sub>` verbs that read. Kept separate from the
-# noun allowlist above so `gh pr view` reads while `gh pr merge` does not.
+# `<command> <noun> <verb>` triples that read. The noun alone cannot decide:
+# `gh pr view` reads, `gh pr merge` does not; `gh label list` reads,
+# `gh label create` does not.
 READ_ONLY_SHELL_NOUN_VERBS = {
-    "gh": frozenset({"diff", "list", "checks", "view"}),
+    "gh": frozenset({"checks", "diff", "list", "view"}),
 }
 
-# Flags that turn an otherwise-read subcommand into a write. `gh api -X POST`
-# and `git config --unset` are mutations wearing a reader's name.
-_MUTATING_SHELL_FLAGS = frozenset(
-    {
-        "-x", "--method", "-f", "--field", "-f-", "--raw-field", "-input",
-        "--input", "--unset", "--unset-all", "--replace-all", "--add",
-        "--edit", "--delete", "--remove", "--set", "--write", "--fix",
-    }
-)
+# Subcommands where the flags, not the name, decide: `git config --get x`
+# reads while `git config x y` writes; `git branch` lists while
+# `git branch name` creates. Each entry is (flags that may appear,
+# subset of those that consume the following positional).
+_FLAG_DECIDED_SUBCOMMANDS = {
+    ("git", "config"): (
+        frozenset(
+            {
+                "--get", "--get-all", "--get-regexp", "--get-urlmatch",
+                "--list", "-l", "--global", "--local", "--system",
+                "--worktree", "--file", "--show-origin", "--show-scope",
+                "--null", "-z", "--name-only", "--type", "--default",
+            }
+        ),
+        frozenset({"--get", "--get-all", "--get-regexp", "--get-urlmatch"}),
+    ),
+    ("git", "branch"): (
+        frozenset(
+            {
+                "--list", "-l", "-a", "--all", "-r", "--remotes", "-v", "-vv",
+                "--verbose", "--contains", "--no-contains", "--merged",
+                "--no-merged", "--points-at", "--show-current", "--format",
+                "--sort", "-i", "--ignore-case", "--color", "--no-color",
+            }
+        ),
+        frozenset(
+            {"--contains", "--no-contains", "--merged", "--no-merged",
+             "--points-at", "--format", "--sort"}
+        ),
+    ),
+    ("git", "tag"): (
+        frozenset(
+            {
+                "-l", "--list", "-n", "--contains", "--no-contains",
+                "--points-at", "--merged", "--no-merged", "--format",
+                "--sort", "-i", "--ignore-case", "--color", "--no-color",
+            }
+        ),
+        frozenset(
+            {"-l", "--list", "--contains", "--no-contains", "--points-at",
+             "--merged", "--no-merged", "--format", "--sort"}
+        ),
+    ),
+}
 
-# Shell operators that separate commands. Every segment must read for the whole
-# line to read. Redirections that create or append to a file are writes, so
-# `>` / `>>` disqualify — but `2>&1` and `2>/dev/null` are diagnostics, not
-# state changes, and appear in almost every real read command.
+# Operators that separate commands. Every segment must read for the whole line
+# to read.
 _SHELL_SPLIT_TOKENS = ("&&", "||", ";", "|", "\n")
 
 
 def _segment_writes_to_file(segment: str) -> bool:
-    """True when a segment redirects output into a file (not a std stream)."""
+    """True when a segment redirects output into a file (not a std stream).
+
+    `2>&1` and `2>/dev/null` are diagnostics that appear in almost every real
+    read command, so they do not disqualify; `> out` and `>> out` do.
+    """
     rest = segment
     while True:
         idx = rest.find(">")
@@ -123,12 +183,55 @@ def _segment_writes_to_file(segment: str) -> bool:
         return True
 
 
+def _flag_names(args: list[str]) -> set[str]:
+    """Lowercased flag names with any `=value` suffix removed."""
+    return {a.split("=", 1)[0].lower() for a in args if a.startswith("-")}
+
+
+def _segment_command_reads(name: str, args: list[str]) -> bool:
+    """True when a single command plus its arguments only inspects state."""
+    # `cd somewhere` is positional setup, not state we track.
+    if name == "cd":
+        return True
+
+    flags = _flag_names(args)
+    write_flags = _WRITE_FLAGS_BY_COMMAND.get(name)
+    if write_flags and flags & write_flags:
+        return False
+
+    if name in READ_ONLY_SHELL_COMMANDS:
+        return True
+
+    subcommands = READ_ONLY_SHELL_SUBCOMMANDS.get(name)
+    if subcommands is None:
+        return False
+
+    positional = [a for a in args if not a.startswith("-")]
+    if not positional:
+        return False
+    subcommand = positional[0]
+
+    mode = _FLAG_DECIDED_SUBCOMMANDS.get((name, subcommand))
+    if mode is not None:
+        read_flags, value_flags = mode
+        if flags - read_flags:
+            return False
+        # A positional past the subcommand is a name being acted on unless a
+        # read flag consumes it (`git config --get user.name`).
+        return len(positional) == 1 or bool(flags & value_flags)
+
+    if subcommand in subcommands:
+        return True
+
+    verbs = READ_ONLY_SHELL_NOUN_VERBS.get(name)
+    return bool(verbs and len(positional) >= 2 and positional[1] in verbs)
+
+
 def shell_command_is_read_only(command: Any) -> bool:
     """True when every segment of a shell command only inspects state.
 
-    Conservative by design: unknown commands, file redirections and mutating
-    flags all return False. Used to decide whether a repeated `terminal` call
-    deserves the tight read-only no-progress threshold.
+    Used to decide whether a repeated `terminal` call earns the tight
+    read-only no-progress threshold instead of the looser mutating one.
     """
     if not isinstance(command, str):
         return False
@@ -156,33 +259,9 @@ def shell_command_is_read_only(command: Any) -> bool:
             words = words[1:]
         if not words:
             continue
-        name = posixpath.basename(words[0])
-        args = words[1:]
-        lowered = {a.split("=", 1)[0].lower() for a in args if a.startswith("-")}
-        if lowered & _MUTATING_SHELL_FLAGS:
+        if not _segment_command_reads(posixpath.basename(words[0]), words[1:]):
             return False
-
-        # `cd somewhere` is positional setup, not a state change we care about.
-        if name == "cd":
-            saw_command = True
-            continue
-        if name in READ_ONLY_SHELL_COMMANDS:
-            saw_command = True
-            continue
-        subs = READ_ONLY_SHELL_SUBCOMMANDS.get(name)
-        if subs is None:
-            return False
-        positional = [a for a in args if not a.startswith("-")]
-        if not positional:
-            return False
-        if positional[0] in subs:
-            saw_command = True
-            continue
-        verbs = READ_ONLY_SHELL_NOUN_VERBS.get(name)
-        if verbs and len(positional) >= 2 and positional[1] in verbs:
-            saw_command = True
-            continue
-        return False
+        saw_command = True
 
     return saw_command
 

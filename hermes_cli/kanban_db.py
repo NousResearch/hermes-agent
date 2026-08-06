@@ -4318,17 +4318,6 @@ def recompute_ready(
                 # legitimate exit (it emits ``"unblocked"`` which flips
                 # this predicate back).
                 continue
-            if (
-                skip_decompose_children
-                and cur_status == "todo"
-                and int(row["created_from_decompose"] or 0)
-            ):
-                # Manual-review gate: a decompose-created child stays in
-                # 'todo' until a human promotes it while
-                # auto_promote_children=false (#79608). 'blocked' tasks are
-                # not skipped — a dependency-blocked decompose child should
-                # still unblock when its parents complete.
-                continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
@@ -4336,6 +4325,23 @@ def recompute_ready(
                 (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
+                if (
+                    skip_decompose_children
+                    and cur_status == "todo"
+                    and not parents
+                    and int(row["created_from_decompose"] or 0)
+                ):
+                    # Manual-review gate: a decompose-created child stays in
+                    # 'todo' until a human promotes it while
+                    # auto_promote_children=false (#79608). This fires only
+                    # for PARENT-FREE decompose children — the exact gap the
+                    # issue names. A child with parents (dependency-gated)
+                    # flows through the parents check unchanged: once its
+                    # parents complete it promotes normally, and a 'blocked'
+                    # decompose child still unblocks via the circuit-breaker
+                    # path below. (parent-free = empty parent set; the
+                    # all(...) above is vacuously True for it.)
+                    continue
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
@@ -6501,6 +6507,15 @@ def promote_task(
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
+        # Manual promotion IS the review pass for the #79608 gate: clear the
+        # decompose marker so a reviewed child that later returns to 'todo'
+        # (claim_task parents_not_done demote, link_tasks, unblock_task) is
+        # not gated again — the gate applies once, to children awaiting
+        # their first review, and releases permanently after it.
+        conn.execute(
+            "UPDATE tasks SET created_from_decompose = 0 WHERE id = ?",
+            (task_id,),
+        )
         _append_event(
             conn,
             task_id,

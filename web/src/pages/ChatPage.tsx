@@ -183,6 +183,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
   const syncMetricsRef = useRef<(() => void) | null>(null);
+  // NS-434 follow-up: the keyboard-inset sync + reset closures from the main
+  // PTY effect, exposed to the visibility-gated listener effect below.
+  // ChatPage stays mounted (hidden) on every dashboard route, so the
+  // visualViewport listeners must only be attached while /chat is the active
+  // tab — otherwise the scroll pin fires when a soft keyboard opens on
+  // Settings etc. and fights iOS's own focus-scroll behavior there.
+  const keyboardInsetSyncRef = useRef<(() => void) | null>(null);
+  const keyboardInsetResetRef = useRef<(() => void) | null>(null);
   // Sticky activation latch: the PTY-connect effect below must not open
   // `/api/pty` until the chat tab has actually been active at least once.
   // The dashboard mounts ChatPage persistently (hidden) on every route, so
@@ -1012,10 +1020,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
 
     window.addEventListener("resize", scheduleSyncTerminalMetrics);
-    window.visualViewport?.addEventListener("resize", onViewportChange);
-    // offsetTop changes (keyboard-driven visual scroll on iOS) arrive as
-    // vv `scroll` events, not `resize`.
-    window.visualViewport?.addEventListener("scroll", onViewportChange);
+    // The visualViewport listeners that drive `onViewportChange` are NOT
+    // attached here: ChatPage is persistently mounted (hidden) on every
+    // dashboard route, so they are attached/detached by the isActive-gated
+    // effect below via these refs. Attaching them unconditionally made the
+    // scroll pin fire when a soft keyboard opened on any page.
+    keyboardInsetSyncRef.current = onViewportChange;
+    keyboardInsetResetRef.current = () => {
+      appliedKeyboardInset = 0;
+      if (termWrap) termWrap.style.paddingBottom = "";
+    };
     scheduleHostSync();
     requestAnimationFrame(() => scheduleHostSync());
 
@@ -1458,8 +1472,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       host.removeEventListener("drop", handleBrowserDrop, true);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
-      window.visualViewport?.removeEventListener("resize", onViewportChange);
-      window.visualViewport?.removeEventListener("scroll", onViewportChange);
+      keyboardInsetSyncRef.current = null;
+      keyboardInsetResetRef.current = null;
       const wrap = termWrap;
       if (wrap) wrap.style.paddingBottom = "";
       ro.disconnect();
@@ -1499,6 +1513,35 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     scopedProfile,
     reconnectNonce,
   ]);
+
+  // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
+  // ONLY while the chat tab is actually visible. ChatPage stays mounted
+  // (display:none) on every other dashboard route, so unconditional
+  // listeners made the scroll pin (`window.scrollTo(0, 0)`) fire whenever a
+  // soft keyboard opened on Settings/Sessions/etc., fighting iOS Safari's
+  // own scroll-into-view for the focused input there. The handlers read
+  // through refs populated by the main PTY effect, so attach/detach here is
+  // independent of that effect's lifecycle (and a no-op before the terminal
+  // exists). On deactivation we also clear any applied inset padding so a
+  // keyboard left open during navigation can't leave the hidden terminal
+  // wrapper padded with a stale value.
+  useEffect(() => {
+    if (!isActive || typeof window === "undefined") return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onViewportChange = () => keyboardInsetSyncRef.current?.();
+    vv.addEventListener("resize", onViewportChange);
+    // offsetTop changes (keyboard-driven visual scroll on iOS) arrive as
+    // vv `scroll` events, not `resize`.
+    vv.addEventListener("scroll", onViewportChange);
+    // Catch up on any geometry change that happened while hidden.
+    onViewportChange();
+    return () => {
+      vv.removeEventListener("resize", onViewportChange);
+      vv.removeEventListener("scroll", onViewportChange);
+      keyboardInsetResetRef.current?.();
+    };
+  }, [isActive]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.

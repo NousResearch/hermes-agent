@@ -18,7 +18,7 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
-ACTIVE_TURN_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+ACTIVE_TURN_MAX_AGE_SECONDS = 60 * 60
 
 
 def _make_source(chat_id: str = "active-turn-chat") -> SessionSource:
@@ -133,7 +133,7 @@ def test_exact_old_active_turn_recovers_even_when_updated_at_is_stale(tmp_path):
     with store._lock:
         current = store._entries[entry.session_key]
         current.updated_at = datetime.now() - timedelta(hours=2)
-        current.active_turn_started_at = datetime.now() - timedelta(hours=2)
+        current.active_turn_started_at = datetime.now() - timedelta(minutes=10)
         store._save()
 
     # Prove the marker survives a fresh SessionStore and is not relying on the
@@ -200,7 +200,7 @@ def test_ancient_active_marker_is_cleared_without_auto_resume(tmp_path):
 
     with store._lock:
         current = store._entries[entry.session_key]
-        current.active_turn_started_at = datetime.now() - timedelta(days=8)
+        current.active_turn_started_at = datetime.now() - timedelta(hours=2)
 
     assert store.recover_interrupted_turns(
         max_age_seconds=ACTIVE_TURN_MAX_AGE_SECONDS
@@ -260,12 +260,15 @@ async def test_runner_active_turn_carrier_clears_the_exact_resolved_key():
 async def test_runner_active_turn_clear_is_best_effort():
     runner = object.__new__(GatewayRunner)
     runner.session_store = MagicMock()
+    clear_active = AsyncMock(
+        side_effect=[OSError("disk unavailable"), True]
+    )
     setattr(
         runner,
         "_async_session_store",
         SimpleNamespace(
             _store=runner.session_store,
-            clear_turn_active=AsyncMock(side_effect=OSError("disk unavailable")),
+            clear_turn_active=clear_active,
         ),
     )
     event = SimpleNamespace(
@@ -275,16 +278,47 @@ async def test_runner_active_turn_clear_is_best_effort():
 
     await runner._clear_durable_active_turn(cast(Any, event))
 
+    assert clear_active.await_count == 2
     assert not hasattr(event, "_gateway_active_turn_session_key")
     assert not hasattr(event, "_gateway_active_turn_token")
 
 
 @pytest.mark.asyncio
-async def test_unclean_recovery_promotes_exact_markers_before_legacy_fallback():
+async def test_runner_active_turn_clear_stops_after_bounded_retries():
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = MagicMock()
+    clear_active = AsyncMock(side_effect=OSError("disk unavailable"))
+    setattr(
+        runner,
+        "_async_session_store",
+        SimpleNamespace(
+            _store=runner.session_store,
+            clear_turn_active=clear_active,
+        ),
+    )
+    event = SimpleNamespace(
+        _gateway_active_turn_session_key="resolved-session-key",
+        _gateway_active_turn_token="token-1",
+    )
+
+    assert await runner._clear_durable_active_turn(cast(Any, event)) is False
+
+    assert clear_active.await_count == 3
+    assert not hasattr(event, "_gateway_active_turn_session_key")
+    assert not hasattr(event, "_gateway_active_turn_token")
+
+
+@pytest.mark.asyncio
+async def test_unclean_recovery_promotes_exact_markers_before_legacy_fallback(
+    monkeypatch,
+):
     runner = object.__new__(GatewayRunner)
     calls: list[str] = []
 
-    async def _recover():
+    monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
+
+    async def _recover(*, max_age_seconds):
+        assert max_age_seconds == ACTIVE_TURN_MAX_AGE_SECONDS
         calls.append("exact")
         return 1
 

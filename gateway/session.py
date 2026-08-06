@@ -2829,7 +2829,7 @@ class SessionStore:
 
     def recover_interrupted_turns(
         self,
-        max_age_seconds: int = 7 * 24 * 60 * 60,
+        max_age_seconds: int = 60 * 60,
     ) -> int:
         """Promote exact crash-left turn markers into ``resume_pending``.
 

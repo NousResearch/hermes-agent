@@ -117,12 +117,13 @@ def _authorization_gate_lock_timeout() -> float:
     Long enough that serialization is never broken while a legitimate approval
     prompt is still answerable; short enough that a wedged holder (hanging
     ``pre_tool_call`` plugin, dead approval client) cannot park other workers
-    forever (#79719).
+    forever (#79719). Resolved once per gate (per batch), so a mid-process
+    ``approvals.timeout`` change applies from the next batch.
     """
     try:
-        from tools.approval import _get_approval_timeout
+        from tools.approval import HUMAN_WAIT_MARGIN_S, _get_approval_timeout
 
-        return float(_get_approval_timeout()) + 60.0
+        return float(_get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
     except Exception:
         return _AUTHORIZATION_GATE_LOCK_TIMEOUT_S
 
@@ -416,7 +417,11 @@ class _ConcurrentToolAuthorizationGate:
             # context may differ from the workers'.
             self._session_key = get_current_session_key()
         except Exception:
-            pass
+            logger.debug(
+                "authorization gate could not snapshot the session key; "
+                "human-wait exclusion will re-resolve it at poll time",
+                exc_info=True,
+            )
         self._baseline_wait_seconds = self._human_wait_seconds()
 
     def _human_wait_seconds(self) -> float:

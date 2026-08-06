@@ -2239,22 +2239,42 @@ class _HumanWaitState:
 _human_wait_lock = threading.Lock()
 _human_wait_states: dict[str, _HumanWaitState] = {}
 _HUMAN_WAIT_MAX_SESSIONS = 256
+# Margin added on top of approvals.timeout when clamping a window's
+# contribution (read-side AND close-side) and when bounding the authorization
+# gate's serialization-lock acquire in agent/tool_executor.py. One constant so
+# the clamps can't drift apart.
+HUMAN_WAIT_MARGIN_S = 60.0
+
+
+def _human_wait_ceiling() -> float:
+    """Max seconds a single window may contribute: approvals.timeout + margin.
+
+    Every legitimate human wait self-terminates at ``approvals.timeout`` (the
+    CLI prompt join and the gateway poll loop both enforce it), so a window
+    that overstays this ceiling is itself wedged and must not keep extending
+    a batch deadline. Never call while holding ``_human_wait_lock`` — it
+    reads the config cache.
+    """
+    return float(_get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
 
 
 def _human_wait_state(session_key: str) -> _HumanWaitState:
     """Return (creating if needed) the wait state for *session_key*.
 
     Caller must hold ``_human_wait_lock``. Evicts idle entries (no pending
-    waiter) oldest-first when the table is full so an army of short-lived
-    session keys cannot grow it without bound.
+    waiter) insertion-order-first until the table is under the cap so an army
+    of short-lived session keys cannot grow it without bound. Entries with an
+    open window are never evicted (that would corrupt live accounting), so
+    the cap is best-effort under 256+ concurrently-pending sessions.
     """
     state = _human_wait_states.get(session_key)
     if state is None:
         if len(_human_wait_states) >= _HUMAN_WAIT_MAX_SESSIONS:
             for key in list(_human_wait_states):
+                if len(_human_wait_states) < _HUMAN_WAIT_MAX_SESSIONS:
+                    break
                 if _human_wait_states[key].pending == 0:
                     del _human_wait_states[key]
-                    break
         state = _HumanWaitState()
         _human_wait_states[session_key] = state
     return state
@@ -2283,14 +2303,19 @@ def human_wait_window(session_key: str | None = None):
         yield
     finally:
         now = time.monotonic()
+        # Same ceiling as the open-window read in human_wait_seconds(): every
+        # legitimate wait self-terminates at approvals.timeout, so a window
+        # that overstayed it was wedged — record at most the ceiling instead
+        # of retroactively injecting the whole overstay into the exclusion.
+        ceiling = _human_wait_ceiling()
         with _human_wait_lock:
             state = _human_wait_states.get(key)
             if state is not None:
                 state.pending -= 1
                 if state.pending == 0:
                     if state.window_started is not None:
-                        state.completed_seconds += max(
-                            0.0, now - state.window_started
+                        state.completed_seconds += min(
+                            max(0.0, now - state.window_started), ceiling
                         )
                     state.window_started = None
 
@@ -2312,7 +2337,7 @@ def human_wait_seconds(session_key: str | None = None) -> float:
     now = time.monotonic()
     # Resolve the clamp outside the lock: it reads the config cache, which
     # must never nest under _human_wait_lock.
-    ceiling = float(_get_approval_timeout()) + 60.0
+    ceiling = _human_wait_ceiling()
     with _human_wait_lock:
         state = _human_wait_states.get(key)
         if state is None:

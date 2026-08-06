@@ -118,9 +118,24 @@ class TestHumanWaitTracker:
             for i in range(approval_mod._HUMAN_WAIT_MAX_SESSIONS + 8):
                 with approval_mod.human_wait_window(f"burst-{i}"):
                     pass
-            # The active session survived the eviction pressure.
+            # The active session survived the eviction pressure and the table
+            # stayed at (or under) its cap.
             assert SESSION in approval_mod._human_wait_states
             assert approval_mod._human_wait_states[SESSION].pending == 1
+            assert (
+                len(approval_mod._human_wait_states)
+                <= approval_mod._HUMAN_WAIT_MAX_SESSIONS
+            )
+
+    def test_late_close_of_wedged_window_is_clamped(self, monkeypatch):
+        """A wedged window that eventually CLOSES must not retroactively inject
+        its full overstay into completed_seconds (close-side clamp)."""
+        monkeypatch.setattr(approval_mod, "_get_approval_timeout", lambda: 300)
+        with approval_mod.human_wait_window(SESSION):
+            state = approval_mod._human_wait_states[SESSION]
+            # Simulate the window having been open for a full day before close.
+            state.window_started = time.monotonic() - 86_400.0
+        assert approval_mod.human_wait_seconds(SESSION) <= 300.0 + 60.0
 
 
 class TestAuthorizationGate:

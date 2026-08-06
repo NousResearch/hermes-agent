@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from io import StringIO
 import subprocess
 
@@ -573,6 +574,37 @@ def test_label_sanitizer_rejects_invalid_characters():
     assert len(docker_env._sanitize_label_value(long_value)) == 63
 
 
+def test_reuse_environment_fingerprint_tracks_immutable_configuration():
+    """Containers with different images, mounts, or Hermes homes must not
+    share the label used for cross-process reuse."""
+    base = docker_env._reuse_environment_fingerprint(
+        image="python:3.11",
+        mount_args=["-v", "volume-a:/workspace"],
+        hermes_home="/profiles/alpha",
+    )
+
+    assert base == docker_env._reuse_environment_fingerprint(
+        image="python:3.11",
+        mount_args=["-v", "volume-a:/workspace"],
+        hermes_home="/profiles/alpha",
+    )
+    assert base != docker_env._reuse_environment_fingerprint(
+        image="python:3.12",
+        mount_args=["-v", "volume-a:/workspace"],
+        hermes_home="/profiles/alpha",
+    )
+    assert base != docker_env._reuse_environment_fingerprint(
+        image="python:3.11",
+        mount_args=["-v", "volume-b:/workspace"],
+        hermes_home="/profiles/alpha",
+    )
+    assert base != docker_env._reuse_environment_fingerprint(
+        image="python:3.11",
+        mount_args=["-v", "volume-a:/workspace"],
+        hermes_home="/profiles/beta",
+    )
+
+
 def test_run_command_sanitizes_unsafe_task_id(monkeypatch):
     """A task_id containing characters Docker rejects in label values must be
     sanitized before reaching ``docker run --label``; otherwise the daemon
@@ -600,12 +632,36 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 
     env = _make_dummy_env(task_id="abc")
 
-    assert env._labels == {
+    labels = dict(env._labels)
+    environment_label = labels.pop("hermes-environment")
+    assert labels == {
         "hermes-agent": "1",
         "hermes-task-id": "abc",
         "hermes-profile": "default",
         "hermes-egress": "off",
     }
+    assert re.fullmatch(r"[0-9a-f]{24}", environment_label)
+
+
+def test_reuse_probe_filters_on_environment_fingerprint(monkeypatch):
+    """The fingerprint on a new container must also constrain later reuse
+    probes, otherwise the label would not prevent cross-profile collisions."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(task_id="fingerprinted-reuse")
+    fingerprint = env._labels["hermes-environment"]
+
+    ps_calls = [
+        c[0] for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "ps"
+    ]
+    assert ps_calls
+    assert any(
+        f"label=hermes-environment={fingerprint}" in call
+        for call in ps_calls
+    )
 
 
 # ── Cross-process container reuse (issue #20561) ──────────────────

@@ -290,22 +290,8 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     except (PermissionError, OSError):
         return False
 
-    import time as _time
-
-    deadline = _time.monotonic() + max(drain_timeout, 1.0)
-    # IMPORTANT Windows note: ``os.kill(pid, 0)`` is NOT a no-op on
-    # Windows — Python's implementation calls ``TerminateProcess(handle, 0)``
-    # for sig=0, hard-killing the target. Use the cross-platform
-    # ``_pid_exists`` helper in gateway.status which does OpenProcess +
-    # WaitForSingleObject on Windows.
-    from gateway.status import _pid_exists
-
-    while _time.monotonic() < deadline:
-        if not _pid_exists(pid):
-            return True
-        _time.sleep(0.5)
-    # Drain didn't finish in time.
-    return False
+    # Drain-wait: delegate to the shared PID-exit helper (0.5s poll, bounded).
+    return _wait_for_pid_exit(pid, max(drain_timeout, 1.0))
 
 
 def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
@@ -322,7 +308,11 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
 
     import time as _time
 
-    # ``os.kill(pid, 0)`` hard-kills on Windows — use the cross-platform helper.
+    # IMPORTANT Windows note: ``os.kill(pid, 0)`` is NOT a no-op on
+    # Windows — Python's implementation calls ``TerminateProcess(handle, 0)``
+    # for sig=0, hard-killing the target. Use the cross-platform
+    # ``_pid_exists`` helper in gateway.status which does OpenProcess +
+    # WaitForSingleObject on Windows.
     from gateway.status import _pid_exists
 
     deadline = _time.monotonic() + max(timeout, 0.0)
@@ -4233,8 +4223,9 @@ def refresh_launchd_plist_if_needed() -> bool:
     # (e.g. the agent triggered a self-update via its terminal tool), a direct
     # `launchctl bootout` tears down the service's process group — which
     # includes THIS CLI — before the follow-up `bootstrap` can run. The gateway
-    # then stays unloaded and KeepAlive can't revive it (#43842). Detect that
-    # case and hand the reload to a detached session that survives the bootout.
+    # then stays unloaded and KeepAlive can't revive it (#43842). The reload is
+    # therefore always handed to a detached helper job (see NOTE below — POSIX
+    # ancestry cannot reliably detect the dangerous case, so we no longer try).
     gateway_pid = None
     try:
         from gateway.status import get_running_pid
@@ -4312,15 +4303,16 @@ def refresh_launchd_plist_if_needed() -> bool:
             f"_deadline=$(($(date +%s) + {_reload_budget})); "
             f"while :; do "
             f"  launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null; "
-            # Require a PID, not just exit 0: a bare `launchctl list` also
-            # succeeds for a registered-but-not-running definition, which would
-            # end this loop reporting success for a job launchd isn't running.
-            f"  if launchctl list {shlex.quote(label)} 2>/dev/null | grep -q '\"PID\"'; then break; fi; "
+            # Require a POSITIVE PID, not just exit 0: a bare `launchctl list`
+            # also succeeds for a registered-but-not-running definition, and a
+            # recently-crashed job reports `"PID" = -1` — both must keep the
+            # loop retrying (mirrors _parse_launchd_pid_from_list_output).
+            f"  if launchctl list {shlex.quote(label)} 2>/dev/null | grep -qE '\\\"PID\\\" = [0-9]+;'; then break; fi; "
             f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] bootstrap not yet registered for {shlex.quote(target)} — retrying\" >> {shlex.quote(str(reload_log_path))}; "
             f"  if [ $(date +%s) -ge $_deadline ]; then break; fi; "
             f"  sleep 2; "
             f"done; "
-            f"if ! launchctl list {shlex.quote(label)} 2>/dev/null | grep -q '\"PID\"'; then "
+            f"if ! launchctl list {shlex.quote(label)} 2>/dev/null | grep -qE '\\\"PID\\\" = [0-9]+;'; then "
             f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] FAILED launchd reload for {shlex.quote(target)} — service NOT registered after {_reload_budget}s of retries\" >> {shlex.quote(str(reload_log_path))}; "
             f"fi; "
             # Submitted jobs stay registered with launchd after the script
@@ -4403,8 +4395,7 @@ def refresh_launchd_plist_if_needed() -> bool:
     ):
         _append_launchd_reload_log(
             f"FAILED launchd reload of {target} — service NOT registered after "
-            f"retrying for {int(_reload_budget)}s (refresh ran outside gateway "
-            f"process tree)"
+            f"retrying for {int(_reload_budget)}s (in-process fallback path)"
         )
         logger.error(
             "launchd reload of %s failed — service not registered after %ds of "

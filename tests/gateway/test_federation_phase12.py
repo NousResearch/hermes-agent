@@ -47,7 +47,9 @@ class TestAPISecurityAuth:
         request.headers = {}
 
         async def _test():
-            response = await api._auth_middleware(request, MagicMock())
+            from gateway.federation.federation_api import _make_auth_middleware
+            middleware = _make_auth_middleware("secret-token")
+            response = await middleware(request, MagicMock())
             assert response.status == 401
 
         asyncio.get_event_loop().run_until_complete(_test())

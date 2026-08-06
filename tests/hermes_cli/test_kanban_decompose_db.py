@@ -161,5 +161,79 @@ def test_dispatcher_tick_promotes_decompose_children_by_default(kanban_home):
             assert kb.get_task(conn, cid).status == "ready"
 
 
+def test_parent_gated_decompose_child_promotes_after_parent_done(kanban_home):
+    """#79608: the manual-review gate applies ONLY to parent-free decompose
+    children. A dependency-gated decompose child whose parent completes must
+    still promote under skip_decompose_children=True (issue: 'existing
+    behavior for dependency-gated children is unaffected')."""
+    with kb.connect() as conn:
+        tid = _create_triage(conn)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee=None,
+            children=[
+                {"title": "research", "assignee": "researcher", "parents": []},
+                {"title": "build", "assignee": "engineer", "parents": [0]},
+            ],
+            author="decomposer",
+            auto_promote=False,
+        )
+    assert child_ids is not None
+    c_research, c_build = child_ids
+
+    # Human review pass on the parent-free child: promote → claim → complete.
+    with kb.connect() as conn:
+        ok, _ = kb.promote_task(conn, c_research, actor="human", reason="reviewed")
+        assert ok
+        assert kb.claim_task(conn, c_research, claimer="worker") is not None
+        assert kb.complete_task(conn, c_research) is True
+        assert kb.get_task(conn, c_research).status == "done"
+
+    with kb.connect() as conn:
+        # Dispatcher tick with auto_promote_children=false (skip=True): the
+        # parent-gated build child must still promote once its parent is done.
+        res = kb.dispatch_once(conn, dry_run=False, max_spawn=10, skip_decompose_children=True)
+        assert kb.get_task(conn, c_build).status == "ready"
+        assert kb.get_task(conn, c_build).created_from_decompose is True
+        assert res.promoted == 0  # only build promoted via parents-path; root still gated
+
+
+def test_manual_promote_clears_decompose_marker(kanban_home):
+    """#79608: a human promote IS the review pass — it clears the decompose
+    marker so a reviewed child that later returns to 'todo' (claim demote on
+    an undone parent, link_tasks, unblock_task) is not gated again."""
+    with kb.connect() as conn:
+        tid = _create_triage(conn)
+        cid = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee=None,
+            children=[{"title": "child A"}],
+            author="decomposer",
+            auto_promote=False,
+        )[0]
+
+        t = kb.get_task(conn, cid)
+        assert t.created_from_decompose is True
+        ok, _ = kb.promote_task(conn, cid, actor="human", reason="reviewed")
+        assert ok
+        t = kb.get_task(conn, cid)
+        assert t.status == "ready"
+        assert t.created_from_decompose is False
+
+        # Reviewed child returns to todo (link an undone parent → claim demote).
+        parent = kb.create_task(conn, title="new parent", assignee="x")
+        kb.link_tasks(conn, parent, cid)
+        assert kb.claim_task(conn, cid, claimer="worker") is None  # parents_not_done
+        assert kb.get_task(conn, cid).status == "todo"
+        assert kb.get_task(conn, cid).created_from_decompose is False
+        kb.complete_task(conn, parent)
+
+        # Under skip=True, the demoted (previously reviewed) child must promote.
+        kb.dispatch_once(conn, dry_run=False, max_spawn=10, skip_decompose_children=True)
+        assert kb.get_task(conn, cid).status == "ready"
+
+
 
 

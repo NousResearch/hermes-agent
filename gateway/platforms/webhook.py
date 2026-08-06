@@ -57,6 +57,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 from gateway.platforms.webhook_filters import (
@@ -941,6 +942,14 @@ class WebhookAdapter(BasePlatformAdapter):
             source=source,
             raw_message=payload,
             message_id=delivery_id,
+            metadata={
+                "webhook_route": route_name,
+                "webhook_completion_script": self._route_processor.snapshot_script_value(
+                    route_config.get("completion_script")
+                )
+                if route_config.get("completion_script")
+                else None,
+            },
         )
 
         logger.info(
@@ -972,9 +981,14 @@ class WebhookAdapter(BasePlatformAdapter):
         )
 
     async def on_processing_complete(
-        self, event: "MessageEvent", outcome: Any
+        self, event: "MessageEvent", outcome: ProcessingOutcome
     ) -> None:
-        """Close the per-delivery webhook session once its run finishes.
+        """Finalize a webhook run, then close its per-delivery session.
+
+        Completion scripts are best effort and run only for terminal success or
+        failure outcomes. Expected cancellation represents an interrupted run,
+        so it must not be reported as complete. Script failures never replace
+        the original outcome or block session cleanup.
 
         A webhook delivery is one-shot: the ``delivery_id`` is baked into the
         session key, so the session will never receive a second turn.  Mirror
@@ -994,6 +1008,31 @@ class WebhookAdapter(BasePlatformAdapter):
         row, so this never clobbers a ``compression``/``agent_close`` reason.
         """
         await self._end_webhook_session(event, event.source.chat_id)
+        if outcome not in {ProcessingOutcome.SUCCESS, ProcessingOutcome.FAILURE}:
+            return
+        if event.metadata.get("webhook_completion_outcome") is not None:
+            return
+        event.metadata["webhook_completion_outcome"] = outcome.value
+        await self._run_completion_script(event, outcome)
+
+    async def _run_completion_script(
+        self, event: "MessageEvent", outcome: ProcessingOutcome
+    ) -> None:
+        """Run the completion script snapshotted when the route was dispatched."""
+        script = event.metadata.get("webhook_completion_script")
+        route = event.metadata.get("webhook_route")
+        if not script or not isinstance(route, str) or not route:
+            return
+        envelope = {
+            "version": 1,
+            "route": route,
+            "outcome": outcome.value,
+            "delivery_id": event.message_id,
+            "payload": event.raw_message,
+        }
+        await asyncio.to_thread(
+            self._route_processor.run_completion_script, script, envelope
+        )
 
     async def _end_webhook_session(
         self, event: "MessageEvent", session_chat_id: str

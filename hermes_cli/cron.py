@@ -460,6 +460,59 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     return 0
 
 
+def cron_audit(args) -> int:
+    """Display recent cron audit entries."""
+    from cron.audit import audit_log_path, is_audit_enabled, read_audit_entries
+
+    limit = getattr(args, "limit", 50) or 50
+    job_id = getattr(args, "job_id", None)
+    action = getattr(args, "action", None)
+    entries = read_audit_entries(limit=limit, job_id=job_id, action=action)
+    log_path = audit_log_path()
+
+    if not entries:
+        print(color("No matching cron audit entries found.", Colors.DIM))
+        if not log_path.exists() and not is_audit_enabled():
+            print(color("Enable by setting cron.audit_log: true in config.yaml.", Colors.DIM))
+        return 0
+
+    print()
+    print(color("┌─────────────────────────────────────────────────────────────────────────┐", Colors.CYAN))
+    print(color(f"│  Cron Audit Log ({len(entries)} entries, path: {log_path.name})", Colors.CYAN))
+    print(color("└─────────────────────────────────────────────────────────────────────────┘", Colors.CYAN))
+    print()
+
+    for entry in entries:
+        ts = str(entry.get("ts", "?"))[:19]
+        entry_job_id = str(entry.get("job_id", "?"))[:12]
+        job_name = entry.get("job_name") or "(unnamed)"
+        entry_action = entry.get("action", "?")
+        actor = entry.get("actor", "?")
+        details = entry.get("details") or {}
+
+        if entry_action in {"created", "resumed", "completed"}:
+            action_display = color(entry_action, Colors.GREEN)
+        elif entry_action in {"removed", "disabled", "failed"}:
+            action_display = color(entry_action, Colors.RED)
+        elif entry_action == "paused":
+            action_display = color(entry_action, Colors.YELLOW)
+        else:
+            action_display = color(entry_action, Colors.CYAN)
+
+        print(f"  {ts}  {color(entry_job_id, Colors.YELLOW)}  {action_display}  by {actor}")
+        print(f"    {job_name}")
+        if details:
+            detail_parts = []
+            for key, value in details.items():
+                if key == "changes" and isinstance(value, dict):
+                    detail_parts.append(f"fields={','.join(value.keys())}")
+                else:
+                    detail_parts.append(f"{key}={value}")
+            print(f"    {color(' '.join(detail_parts), Colors.DIM)}")
+        print()
+    return 0
+
+
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
@@ -496,9 +549,12 @@ def cron_command(args):
     if subcmd == "run":
         return _job_action("run", args.job_id, "Triggered")
 
+    if subcmd == "audit":
+        return cron_audit(args)
+
     if subcmd in {"remove", "rm", "delete"}:
         return _job_action("remove", args.job_id, "Removed")
 
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|tick|audit]")
     sys.exit(1)

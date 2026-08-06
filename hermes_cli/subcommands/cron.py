@@ -191,5 +191,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     # cron tick (mostly for debugging)
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     add_accept_hooks_flag(cron_tick)
+
+    # cron audit
+    cron_audit = cron_subparsers.add_parser("audit", help="Show cron job audit log")
+    cron_audit.add_argument("--limit", type=int, default=50, help="Maximum entries to show")
+    cron_audit.add_argument("--job-id", help="Filter to one job ID")
+    cron_audit.add_argument("--action", help="Filter to one action, e.g. created, paused, removed")
+
     add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)

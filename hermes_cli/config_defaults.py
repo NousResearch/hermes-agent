@@ -2240,6 +2240,14 @@ DEFAULT_CONFIG = {
         # wedges the job's dispatch guard forever. Also overridable via
         # HERMES_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
         "session_db_timeout_seconds": 10,
+        # Opt-in append-only audit log of cron job state changes
+        # (created/paused/resumed/triggered/completed/removed). Off by
+        # default; set true to record lifecycle events.
+        "audit_log": False,
+        # Override the audit log location. null = <HERMES_HOME>/cron/audit.log.
+        "audit_log_path": None,
+        # Rotate the audit log once it exceeds this many megabytes.
+        "audit_log_max_mb": 10,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
 from utils import atomic_replace, atomic_write_text
+from cron.audit import audit_event, completion_details, removal_details, update_details
 
 # ``croniter`` compiles ~15 ms of regexes at import and only matters for
 # 5-field cron expressions. Resolve lazily; ``HAS_CRONITER`` stays a module
@@ -1437,6 +1438,12 @@ def create_job(
         jobs = load_jobs()
         jobs.append(job)
         save_jobs(jobs)
+    audit_event(
+        job["id"],
+        job.get("name", ""),
+        "created",
+        {"schedule": job.get("schedule_display", ""), "deliver": job.get("deliver")},
+    )
 
     return job
 
@@ -1504,7 +1511,13 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     return jobs
 
 
-def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def update_job(
+    job_id: str,
+    updates: Dict[str, Any],
+    *,
+    audit_action: str = "updated",
+    audit_details: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
     # Block mutation of immutable fields. ``id`` in particular is a filesystem
     # path component under OUTPUT_DIR — letting an update change it leaks
@@ -1601,7 +1614,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
             jobs[i] = updated
             save_jobs(jobs)
-            return _normalize_job_record(jobs[i])
+            normalized = _normalize_job_record(jobs[i])
+            audit_event(
+                normalized["id"],
+                normalized.get("name", ""),
+                audit_action,
+                audit_details if audit_details is not None else update_details(updates),
+            )
+            return normalized
     return None
 
 
@@ -1618,6 +1638,8 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
             "paused_at": _hermes_now().isoformat(),
             "paused_reason": reason,
         },
+        audit_action="paused",
+        audit_details={"reason": reason} if reason else {},
     )
 
 
@@ -1643,6 +1665,8 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_reason": None,
             "next_run_at": next_run_at,
         },
+        audit_action="resumed",
+        audit_details={},
     )
 
 
@@ -1660,6 +1684,8 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_reason": None,
             "next_run_at": _hermes_now().isoformat(),
         },
+        audit_action="triggered",
+        audit_details={},
     )
 
 
@@ -1682,6 +1708,7 @@ def remove_job(job_id: str) -> bool:
             # Clean up output directory to prevent orphaned dirs accumulating
             if job_output_dir.exists():
                 shutil.rmtree(job_output_dir)
+            audit_event(canonical_id, job.get("name", ""), "removed", removal_details("manual"))
             return True
     return False
 
@@ -1748,10 +1775,14 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         # next_run_at-is-None branch below; the retention
                         # sweep prunes these after
                         # COMPLETED_ONESHOT_RETENTION_DAYS.
+                        # The audit "removed" event moved with the actual
+                        # removal — see the retention sweep in
+                        # _get_due_jobs_locked().
                         job["enabled"] = False
                         job["state"] = "completed"
                         job["next_run_at"] = None
                         save_jobs(jobs)
+                        audit_event(job_id, job.get("name", ""), "completed" if success else "failed", completion_details(success, error, delivery_error))
                         return
                 
                 # Compute next run
@@ -1783,10 +1814,12 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     else:
                         job["enabled"] = False
                         job["state"] = "completed"
+                        audit_event(job_id, job.get("name", ""), "disabled", removal_details("oneshot_completed"))
                 elif job.get("state") != "paused":
                     job["state"] = "scheduled"
 
                 save_jobs(jobs)
+                audit_event(job_id, job.get("name", ""), "completed" if success else "failed", completion_details(success, error, delivery_error))
                 return
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
@@ -1898,6 +1931,7 @@ def claim_dispatch(job_id: str) -> bool:
                     completed,
                     times,
                 )
+                audit_event(job_id, job.get("name", ""), "removed", removal_details("dispatch_limit_stale"))
                 return False
             # Claim this dispatch before the side effect runs.
             repeat["completed"] = completed + 1
@@ -2102,21 +2136,24 @@ def _completed_oneshot_retention_days() -> float:
         return float(COMPLETED_ONESHOT_RETENTION_DAYS)
 
 
-def _sweep_completed_oneshots(raw_jobs: List[Dict[str, Any]], now: datetime) -> bool:
+def _sweep_completed_oneshots(
+    raw_jobs: List[Dict[str, Any]], now: datetime
+) -> List[Dict[str, Any]]:
     """Prune terminal ``state == "completed"`` one-shot records past retention.
 
-    Mutates *raw_jobs* in place; returns True when anything was removed (the
-    caller persists). Only one-shot (``schedule.kind == "once"``) records in
-    the terminal completed state are candidates; recurring jobs and non-
-    terminal one-shots are never touched. Age is measured from
-    ``last_run_at`` — a completed record without a parseable ``last_run_at``
-    is kept (never guess a record into deletion).
+    Mutates *raw_jobs* in place; returns the removed records (truthy when
+    anything was removed — the caller persists and audits them). Only
+    one-shot (``schedule.kind == "once"``) records in the terminal completed
+    state are candidates; recurring jobs and non-terminal one-shots are never
+    touched. Age is measured from ``last_run_at`` — a completed record
+    without a parseable ``last_run_at`` is kept (never guess a record into
+    deletion).
     """
     retention_days = _completed_oneshot_retention_days()
     if retention_days <= 0:
-        return False
+        return []
     cutoff = now - timedelta(days=retention_days)
-    removed = False
+    removed: List[Dict[str, Any]] = []
     for rj in list(raw_jobs):
         try:
             if rj.get("state") != "completed":
@@ -2135,7 +2172,7 @@ def _sweep_completed_oneshots(raw_jobs: List[Dict[str, Any]], now: datetime) -> 
             if last_run_dt >= cutoff:
                 continue
             raw_jobs.remove(rj)
-            removed = True
+            removed.append(rj)
             logger.info(
                 "Job '%s': pruning completed one-shot record "
                 "(finished %s, retention %.1f days)",
@@ -2175,6 +2212,11 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     now = _hermes_now()
     raw_jobs = load_jobs()
     needs_save = False
+    # Deferred until after save_jobs() below confirms the removal actually
+    # persisted — this whole scan batches its saves into one call at the end,
+    # so auditing at the point of raw_jobs.remove() would record a removal
+    # that hasn't landed yet if the scan or save fails partway through.
+    _pending_removal_audits: List[Tuple[str, str, str]] = []
 
     # Repair id-less records BEFORE anything keys off ``job["id"]``. A direct
     # jobs.json edit that bypassed add_job() can leave a record without an "id"
@@ -2276,9 +2318,14 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     # being deleted on completion, but they must not accumulate in jobs.json
     # forever. Prune terminal one-shot records older than the retention
     # window each scan.
-    if _sweep_completed_oneshots(raw_jobs, now):
+    _swept = _sweep_completed_oneshots(raw_jobs, now)
+    if _swept:
         needs_save = True
         jobs = [j for j in jobs if any(rj.get("id") == j.get("id") for rj in raw_jobs)]
+        for _rj in _swept:
+            _pending_removal_audits.append(
+                (str(_rj.get("id", "")), str(_rj.get("name", "")), "retention_sweep")
+            )
 
     for job in jobs:
         # Per-job containment (structural guard): one malformed or
@@ -2480,6 +2527,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             # the entry look due) — leave an operator-visible
                             # diagnostic instead of vanishing silently (#73973).
                             _write_wedged_oneshot_diagnostic(job)
+                            _pending_removal_audits.append((job["id"], job.get("name", ""), "dispatch_limit_stale"))
                             continue
 
                 # Durably claim a one-shot for the DURATION of its run before
@@ -2517,6 +2565,9 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
     if needs_save:
         save_jobs(raw_jobs)
+
+    for removed_job_id, removed_job_name, removed_reason in _pending_removal_audits:
+        audit_event(removed_job_id, removed_job_name, "removed", removal_details(removed_reason))
 
     return due
 

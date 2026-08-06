@@ -132,6 +132,12 @@ model:
   #       CF-Access-Client-Id: "xxxx.access"
   #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
   #       X-Client-Name: "hermes-agent"
+# providers:
+#   meta:
+#     base_url: https://api.meta.ai/v1
+#     api_key: ${META_API_KEY}
+#     # api_mode auto-detected as codex_responses for api.meta.ai; no need to set
+
 
 # Command-minted credentials (optional): key_cmd
 # ------------------------------------------------------------------

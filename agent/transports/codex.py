@@ -115,10 +115,16 @@ def _default_prompt_cache_retention_for_request(
     model: str,
     base_url: Any,
 ) -> Optional[str]:
-    """Return ``24h`` for supported models on Amazon Bedrock Mantle."""
+    """Return ``24h`` for supported hosts/models (Bedrock Mantle, Meta)."""
     from utils import base_url_hostname
 
-    hostname_parts = base_url_hostname(str(base_url or "")).split(".")
+    hostname = base_url_hostname(str(base_url or "")).lower()
+    # Meta Model API: prompt caching is opt-in via prompt_cache_retention.
+    # Measured 0% hits on /chat/completions vs 93-99% on /responses with 24h.
+    if hostname == "api.meta.ai":
+        return "24h"
+
+    hostname_parts = hostname.split(".")
     is_bedrock_mantle = (
         len(hostname_parts) == 4
         and hostname_parts[0] == "bedrock-mantle"

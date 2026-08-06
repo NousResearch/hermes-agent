@@ -828,6 +828,14 @@ Separate discovery system for pluggable memory backends. Current built-in
 providers include **honcho, mem0, supermemory, byterover, hindsight,
 holographic, openviking, retaindb**.
 
+Discovery covers the same four sources as the general `PluginManager` —
+bundled, `$HERMES_HOME/plugins/`, `./.hermes/plugins/` (opt-in via
+`HERMES_ENABLE_PROJECT_PLUGINS`), and `hermes_agent.memory_providers` entry
+points — but with **bundled-first** precedence, the reverse of the general
+system's later-wins order: a memory provider is activated by name, so a
+dropped-in directory must not be able to shadow a shipped one. Discovery
+enumerates without importing; nothing runs until `memory.provider` names it.
+
 Each provider implements the `MemoryProvider` ABC (see `agent/memory_provider.py`)
 and is orchestrated by `agent/memory_manager.py`. Lifecycle hooks include
 `sync_turn(turn_messages)`, `prefetch(query)`, `shutdown()`, and optional

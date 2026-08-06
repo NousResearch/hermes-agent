@@ -14,15 +14,32 @@ Memory providers are one of two **provider plugin** types. The other is [Context
 
 ## Installation Layouts
 
-Hermes discovers memory providers from bundled directories, user-installed
-directories, and installed Python package entry points. Bundled providers take
-precedence over a user directory with the same name, which takes precedence
-over a package entry point.
+Hermes discovers memory providers from four sources, in this precedence order:
+
+| Source | Location | Notes |
+|---|---|---|
+| Bundled | `plugins/memory/<name>/` | Ships with Hermes. Closed to new providers — see [CONTRIBUTING](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md). |
+| User | `$HERMES_HOME/plugins/<name>/` | Dropped in by the user, per profile. |
+| Project | `./.hermes/plugins/<name>/` | Opt-in via `HERMES_ENABLE_PROJECT_PLUGINS=1`. |
+| Package | `hermes_agent.memory_providers` entry point | `pip install`, nothing to copy. |
+
+Earlier sources win on a name collision, so a directory dropped into a working
+tree can never shadow a shipped provider.
+
+:::note
+This is the reverse of the general plugin system's later-wins order. A memory
+provider is activated by *name* (`memory.provider`), so shadowing would
+silently redirect the agent's memory rather than merely override a tool.
+:::
+
+Discovery only *enumerates* — it never imports a provider. Nothing runs until
+`memory.provider` names it.
 
 ### Directory Provider
 
 A directory provider lives in `plugins/memory/<name>/` when bundled with
-Hermes, or in `$HERMES_HOME/plugins/<name>/` when installed by a user:
+Hermes, in `$HERMES_HOME/plugins/<name>/` when installed by a user, or in
+`./.hermes/plugins/<name>/` for a project-local one:
 
 ```
 plugins/memory/my-provider/
@@ -43,9 +60,15 @@ name users select in `memory.provider`; its value points to the provider's
 my-provider = "my_provider:register"
 ```
 
-The package can keep its provider implementation, skills, and other resources
-inside its normal Python package layout. No copy under
-`$HERMES_HOME/plugins/` is required.
+Point the entry point at the **package**, or at a `register(ctx)` inside it, and
+keep your implementation, skills, and other resources in the normal Python
+package layout. No copy under `$HERMES_HOME/plugins/` is required.
+
+A package entry point gets everything a directory install does, including the
+two files Hermes reads from disk rather than importing — `config_schema.py`
+(the dashboard config panel) and `cli.py` (your `hermes <provider>`
+subcommands). Both are found next to your package's `__init__.py`, so point the
+entry point at a package rather than a single module if you ship either.
 
 ## The MemoryProvider ABC
 

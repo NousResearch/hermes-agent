@@ -862,36 +862,40 @@ def _read_source_from_origin(origin: Optional[str], limit: int = 8192) -> str:
         return ""
 
 
-def _resolve_module_source(module_name: str, limit: int = 8192) -> str:
-    """Return the first ``limit`` chars of a module's source WITHOUT importing it.
+def resolve_module_origin(module_name: str) -> Optional[str]:
+    """Return a module's source path WITHOUT importing it, or ``None``.
 
     ``importlib.util.find_spec`` on a dotted name imports the parent
     package first (executing its ``__init__.py``), which would run
     arbitrary package initialization during discovery and pay the very
-    import cost this classification exists to avoid — a provider whose
-    heavy imports live in ``package/__init__.py`` would still pay them.
+    import cost this exists to avoid — a provider whose heavy imports
+    live in ``package/__init__.py`` would still pay them.
 
     Only the top-level name is resolved with ``find_spec`` (import-free
     for top-level names); the remaining dotted segments are walked
     through ``submodule_search_locations`` by hand, mirroring the file
     layout conventions of the default PathFinder (``part.py`` module or
     ``part/__init__.py`` package). Namespace packages, zipped modules,
-    extension modules, and anything else unexpected fall back to ``""``
-    (→ ``standalone``, the safe default).
+    extension modules, and anything else unexpected return ``None``.
+
+    Shared with ``plugins/memory/__init__.py``, which needs the directory
+    of a pip-installed provider to find its ``config_schema.py`` and
+    ``cli.py`` — both of which are loaded by path precisely so the
+    provider module never has to be imported.
     """
     parts = [p for p in module_name.split(".") if p]
     if not parts:
-        return ""
+        return None
     try:
         spec = importlib.util.find_spec(parts[0])
         if spec is None or not spec.origin:
-            return ""
+            return None
         if len(parts) == 1:
-            return _read_source_from_origin(spec.origin, limit)
+            return spec.origin
 
         search_paths = spec.submodule_search_locations
         if not search_paths:
-            return ""
+            return None
         for i, part in enumerate(parts[1:], start=2):
             found_origin = None
             next_paths = None
@@ -907,13 +911,22 @@ def _resolve_module_source(module_name: str, limit: int = 8192) -> str:
                     found_origin = str(mod_file)
                     break
             if found_origin is None:
-                return ""
+                return None
             if i == len(parts) or next_paths is None:
-                return _read_source_from_origin(found_origin, limit)
+                return found_origin
             search_paths = next_paths
-        return ""
+        return None
     except Exception:
-        return ""
+        return None
+
+
+def _resolve_module_source(module_name: str, limit: int = 8192) -> str:
+    """First ``limit`` chars of a module's source, without importing it.
+
+    Empty string when the module cannot be resolved or read, which
+    callers treat as ``standalone`` — the safe default.
+    """
+    return _read_source_from_origin(resolve_module_origin(module_name), limit)
 
 
 @dataclass
@@ -2167,6 +2180,38 @@ class PluginContext:
         logger.info(
             "Plugin '%s' registered context reference: @%s:",
             self.manifest.name, provider.prefix,
+        )
+
+    # -- memory provider registration ---------------------------------------
+
+    def register_memory_provider(self, provider) -> None:
+        """Register a memory provider.
+
+        Memory providers are activated exclusively, by name, through
+        ``memory.provider`` in config.yaml, and ``plugins/memory/__init__.py``
+        owns that path with its own collector. A provider reaching *this*
+        implementation is therefore one the general PluginManager loaded — it
+        was not classified ``exclusive`` — so the call is recorded and
+        otherwise inert. Without it, such a plugin's ``register()`` dies on a
+        missing attribute and the plugin fails to load at all.
+
+        Memory was the only provider category with no ``register_*`` here,
+        which is what made that failure mode possible. The provider must be an
+        instance of ``agent.memory_provider.MemoryProvider``.
+        """
+        from agent.memory_provider import MemoryProvider
+
+        if not isinstance(provider, MemoryProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a memory provider that does not "
+                "inherit from MemoryProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        self._memory_provider = provider
+        logger.debug(
+            "Plugin '%s' registered memory provider: %s",
+            self.manifest.name, getattr(provider, "name", "?"),
         )
 
     # -- image gen provider registration ------------------------------------
@@ -4147,9 +4192,10 @@ class PluginManager:
 
             # Auto-coerce user-installed memory providers to kind="exclusive"
             # so they're routed to plugins/memory discovery instead of being
-            # loaded by the general PluginManager (which has no
-            # register_memory_provider on PluginContext). Mirrors the
-            # heuristic in plugins/memory/__init__.py:_is_memory_provider_dir.
+            # loaded by the general PluginManager (whose PluginContext
+            # register_memory_provider is a recorded no-op, not an
+            # activation path). Mirrors the heuristic in
+            # plugins/memory/__init__.py:_is_memory_provider_dir.
             # Bundled memory providers are already skipped via skip_names.
             if kind == "standalone" and "kind" not in data:
                 init_file = plugin_dir / "__init__.py"

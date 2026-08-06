@@ -522,7 +522,7 @@ class HonchoMemoryProvider(MemoryProvider):
                         )
                     except Exception as exc:
                         logger.debug("Honcho dialectic prewarm failed: %s", exc)
-                        self._dialectic_empty_streak += 1
+                        self._note_dialectic_failure(exc)
                         return
                     if r and r.strip():
                         with self._prefetch_lock:
@@ -715,6 +715,11 @@ class HonchoMemoryProvider(MemoryProvider):
 
         parts = []
 
+        # One-time notice, relayed by the model, that auth is dead and memory is paused.
+        auth_notice = self._pop_auth_notice()
+        if auth_notice:
+            parts.append(auth_notice)
+
         # ----- Layer 1: Base context (representation + card) -----
         if not _skip_base:
             # The first base fetch gets the remaining turn-1 budget. Later
@@ -804,7 +809,7 @@ class HonchoMemoryProvider(MemoryProvider):
                         r = self._run_dialectic_depth(query)
                     except Exception as exc:
                         logger.debug("Honcho first-turn dialectic failed: %s", exc)
-                        self._dialectic_empty_streak += 1
+                        self._note_dialectic_failure(exc)
                         return
                     if r and r.strip():
                         with self._prefetch_lock:
@@ -844,6 +849,25 @@ class HonchoMemoryProvider(MemoryProvider):
         result = self._truncate_to_budget(result)
 
         return result
+
+    def _pop_auth_notice(self) -> str:
+        """One-time model-facing notice that Honcho auth expired and memory is paused."""
+        pop = getattr(self._manager, "pop_auth_notice", None)
+        if not callable(pop):
+            return ""
+        try:
+            msg = pop()
+        except Exception:
+            return ""
+        if not isinstance(msg, str) or not msg:
+            return ""
+        return (
+            "[Honcho memory status] Authentication with the Honcho memory backend "
+            "has expired and automatic token refresh failed, so memory sync and "
+            f"recall are paused. Reason: {msg}\n"
+            "Tell the user (once) that Honcho memory is paused and that running "
+            "'hermes honcho setup' to re-authenticate will restore it."
+        )
 
     def _consume_pending_dialectic(self) -> str:
         """Pop any pending dialectic result, applying the stale-discard guard.
@@ -941,7 +965,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 result = self._run_dialectic_depth(query)
             except Exception as e:
                 logger.debug("Honcho prefetch failed: %s", e)
-                self._dialectic_empty_streak += 1
+                self._note_dialectic_failure(e)
                 return
             if result and result.strip():
                 with self._prefetch_lock:
@@ -1019,6 +1043,22 @@ class HonchoMemoryProvider(MemoryProvider):
         widened = self._dialectic_cadence + self._dialectic_empty_streak
         ceiling = self._dialectic_cadence * self._BACKOFF_MAX
         return min(widened, ceiling)
+
+    def _note_dialectic_failure(self, exc: BaseException) -> None:
+        """Widen the empty-streak backoff after a failed dialectic cycle.
+
+        Auth failures are exempt: waiting cannot fix a dead token, and backoff
+        would delay recovery after the user re-authenticates.
+        """
+        from plugins.memory.honcho.session import HonchoAuthError
+
+        if isinstance(exc, HonchoAuthError):
+            logger.warning(
+                "Honcho dialectic auth failure (not counted toward cadence backoff): %s",
+                exc,
+            )
+            return
+        self._dialectic_empty_streak += 1
 
     def liveness_snapshot(self) -> dict:
         """In-process snapshot of dialectic liveness state for diagnostics.

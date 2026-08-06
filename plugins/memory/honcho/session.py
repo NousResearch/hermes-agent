@@ -24,6 +24,38 @@ _PEER_ID_HASH_LEN = 8
 _PEER_ID_HASH_ESCALATION_LENGTHS = (_PEER_ID_HASH_LEN, 12, 16, 24, 32, 64)
 
 
+class HonchoAuthError(RuntimeError):
+    """Auth failure that survived a forced token refresh and one retry.
+
+    Raised instead of swallowed so callers can tell a rejected credential
+    apart from an empty result; cadence backoff must not count it as empty.
+    """
+
+
+# The SDK raises different exception classes per transport, but an auth failure always carries one of these markers.
+_AUTH_ERROR_MARKERS = (
+    "invalid or expired access token",
+    "authentication",
+    "unauthorized",
+    "401",
+)
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status == 401:
+        return True
+    text = str(exc).lower()
+    return any(marker in text for marker in _AUTH_ERROR_MARKERS)
+
+
+def _auth_error_message(exc: BaseException) -> str:
+    return (
+        f"Honcho rejected our credentials and a forced token refresh did not recover: {exc}. "
+        "Re-authenticate with 'hermes honcho setup'."
+    )
+
+
 @dataclass
 class HonchoSession:
     """
@@ -105,6 +137,10 @@ class HonchoSessionManager:
         self._peers_cache: dict[str, Any] = {}
         self._sessions_cache: dict[str, Any] = {}
 
+        # Set when a call still fails auth after a forced token refresh; cleared on the next success.
+        self._auth_failure: str | None = None
+        self._auth_notice_emitted = False
+
         # Write frequency state
         write_frequency = (config.write_frequency if config else "async")
         self._write_frequency = write_frequency
@@ -160,6 +196,59 @@ class HonchoSessionManager:
         """
         self._honcho = get_honcho_client()
         return self._honcho
+
+    def _record_auth_failure(self, exc: BaseException) -> None:
+        if self._auth_failure is None:
+            logger.error(
+                "Honcho authentication failed and token refresh did not recover; "
+                "memory sync and recall are paused until the user re-authenticates: %s",
+                exc,
+            )
+        self._auth_failure = str(exc)
+
+    def _clear_auth_failure(self) -> None:
+        if self._auth_failure is not None:
+            logger.info("Honcho authentication recovered; memory sync and recall resumed")
+            self._auth_failure = None
+            self._auth_notice_emitted = False
+
+    def pop_auth_notice(self) -> str | None:
+        """Return the pending auth-failure message once; later calls return None."""
+        if self._auth_failure is None or self._auth_notice_emitted:
+            return None
+        self._auth_notice_emitted = True
+        return self._auth_failure
+
+    def _force_reauth(self) -> bool:
+        """Rotate the OAuth token after a server-side 401 and rebind the client.
+
+        Returns True when a fresh token was obtained and applied. False for
+        static API keys (no OAuth credential), a dead grant, or a failed
+        exchange — callers surface the original auth error in that case.
+        """
+        try:
+            from plugins.memory.honcho import oauth
+            from plugins.memory.honcho.client import (
+                reset_honcho_client,
+                resolve_config_path,
+            )
+
+            host = getattr(self._config, "host", "") or ""
+            if not host:
+                return False
+            token = oauth.force_refresh_token(resolve_config_path(), host)
+            if not token:
+                return False
+            if not oauth.apply_token_to_client(self.honcho, token):
+                # SDK shape changed: rebuild the client and drop objects holding the old transport.
+                reset_honcho_client()
+                with self._cache_lock:
+                    self._peers_cache.clear()
+                    self._sessions_cache.clear()
+            return True
+        except Exception:
+            logger.warning("Honcho post-401 token refresh failed", exc_info=True)
+            return False
 
     def _get_or_create_peer(self, peer_id: str) -> Any:
         """
@@ -442,7 +531,19 @@ class HonchoSessionManager:
             honcho_messages.append(peer.message(msg["content"]))
 
         try:
-            honcho_session.add_messages(honcho_messages)
+            try:
+                honcho_session.add_messages(honcho_messages)
+            except Exception as e:
+                if not _is_auth_error(e):
+                    raise
+                logger.warning(
+                    "Honcho message sync hit an auth error; forcing token "
+                    "refresh and retrying once: %s", e,
+                )
+                if not self._force_reauth():
+                    raise
+                honcho_session.add_messages(honcho_messages)
+            self._clear_auth_failure()
             for msg in new_messages:
                 msg["_synced"] = True
             logger.debug("Synced %d messages to Honcho for %s", len(honcho_messages), session.key)
@@ -450,6 +551,8 @@ class HonchoSessionManager:
                 self._cache[session.key] = session
             return True
         except Exception as e:
+            if _is_auth_error(e):
+                self._record_auth_failure(e)
             for msg in new_messages:
                 msg["_synced"] = False
             logger.error("Failed to sync messages to Honcho: %s", e)
@@ -638,6 +741,10 @@ class HonchoSessionManager:
 
         Returns:
             Honcho's synthesized answer, or empty string on failure.
+
+        Raises:
+            HonchoAuthError: the backend rejected our credentials and a forced
+                token refresh plus one retry did not recover.
         """
         session = self._cache.get(session_key)
         if not session:
@@ -656,23 +763,43 @@ class HonchoSessionManager:
         else:
             level = self._default_reasoning_level()
 
-        try:
+        def _chat_once() -> str:
             if self._ai_observe_others:
                 # AI peer can observe other peers — use assistant as observer.
                 ai_peer_obj = self._get_or_create_peer(session.assistant_peer_id)
                 if target_peer_id == session.assistant_peer_id:
-                    result = ai_peer_obj.chat(query, reasoning_level=level) or ""
-                else:
-                    result = ai_peer_obj.chat(
-                        query,
-                        target=target_peer_id,
-                        reasoning_level=level,
-                    ) or ""
-            else:
-                # Without cross-observation, each peer queries its own context.
-                target_peer = self._get_or_create_peer(target_peer_id)
-                result = target_peer.chat(query, reasoning_level=level) or ""
+                    return ai_peer_obj.chat(query, reasoning_level=level) or ""
+                return ai_peer_obj.chat(
+                    query,
+                    target=target_peer_id,
+                    reasoning_level=level,
+                ) or ""
+            # Without cross-observation, each peer queries its own context.
+            target_peer = self._get_or_create_peer(target_peer_id)
+            return target_peer.chat(query, reasoning_level=level) or ""
 
+        try:
+            try:
+                result = _chat_once()
+            except Exception as e:
+                if not _is_auth_error(e):
+                    raise
+                logger.warning(
+                    "Honcho dialectic query hit an auth error; forcing token "
+                    "refresh and retrying once: %s", e,
+                )
+                if not self._force_reauth():
+                    self._record_auth_failure(e)
+                    raise HonchoAuthError(_auth_error_message(e)) from e
+                try:
+                    result = _chat_once()
+                except Exception as retry_exc:
+                    if _is_auth_error(retry_exc):
+                        self._record_auth_failure(retry_exc)
+                        raise HonchoAuthError(_auth_error_message(retry_exc)) from retry_exc
+                    raise
+
+            self._clear_auth_failure()
             # Only automatic injection uses the Hermes-side character cap.
             if (
                 apply_injection_cap
@@ -682,6 +809,8 @@ class HonchoSessionManager:
             ):
                 result = result[:self._dialectic_max_chars].rsplit(" ", 1)[0] + " …"
             return result
+        except HonchoAuthError:
+            raise
         except Exception as e:
             logger.warning("Honcho dialectic query failed: %s", e)
             return ""

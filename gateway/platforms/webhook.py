@@ -34,7 +34,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
@@ -664,8 +664,14 @@ class WebhookAdapter(BasePlatformAdapter):
                                    user_id=f"webhook:{route_name}", user_name=route_name)
         if profile and isinstance(profile, str):
             source.profile = profile
+        # completion_script is snapshotted (env-expanded, path unresolved) at dispatch time so a
+        # config reload mid-run cannot swap the script out from under an in-flight delivery.
+        completion_script = route_config.get("completion_script")
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
-                             message_id=delivery_id)
+                             message_id=delivery_id,
+                             metadata={"webhook_route": route_name,
+                                       "webhook_completion_script": self._route_processor.snapshot_script_value(
+                                           completion_script) if completion_script else None})
         # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
         # (``handle_message`` is fire-and-forget, so nothing can be closed here).
         task = asyncio.create_task(self.handle_message(event))
@@ -673,11 +679,33 @@ class WebhookAdapter(BasePlatformAdapter):
         task.add_done_callback(self._background_tasks.discard)
         return task
 
-    async def on_processing_complete(self, event: "MessageEvent", outcome: Any) -> None:
-        """Close the one-shot per-delivery session: ``prune_sessions`` only reaps rows with ``ended_at`` set, so
-        unclosed webhook sessions leak unbounded. Fires at the true end of the run; ``end_session()`` is
-        first-reason-wins."""
+    async def on_processing_complete(self, event: "MessageEvent", outcome: ProcessingOutcome) -> None:
+        """Finalize a webhook run: close the one-shot per-delivery session, then run its completion script.
+
+        Closing matters because ``prune_sessions`` only reaps rows with ``ended_at`` set, so unclosed
+        webhook sessions leak unbounded. Fires at the true end of the run; ``end_session()`` is
+        first-reason-wins.
+
+        Completion scripts are best effort and run only for the terminal SUCCESS/FAILURE outcomes —
+        cancellation is an interrupted run and must not be reported as complete. A script failure never
+        replaces the original outcome nor blocks session cleanup, which is why it runs last.
+        """
         await self._end_webhook_session(event, event.source.chat_id)
+        if outcome not in {ProcessingOutcome.SUCCESS, ProcessingOutcome.FAILURE}:
+            return
+        if event.metadata.get("webhook_completion_outcome") is not None:
+            return
+        event.metadata["webhook_completion_outcome"] = outcome.value
+        await self._run_completion_script(event, outcome)
+
+    async def _run_completion_script(self, event: "MessageEvent", outcome: ProcessingOutcome) -> None:
+        """Run the completion script snapshotted when the route was dispatched, off the event loop."""
+        script, route = event.metadata.get("webhook_completion_script"), event.metadata.get("webhook_route")
+        if not script or not isinstance(route, str) or not route:
+            return
+        envelope = {"version": 1, "route": route, "outcome": outcome.value,
+                    "delivery_id": event.message_id, "payload": event.raw_message}
+        await asyncio.to_thread(self._route_processor.run_completion_script, script, envelope)
 
     async def _end_webhook_session(self, event: "MessageEvent", session_chat_id: str) -> None:
         """Mark the per-delivery session ended via ``SessionDB.end_session`` (never a hand-written UPDATE),

@@ -190,4 +190,67 @@ describe('subagent store', () => {
         .sort()
     ).toEqual(['c', 'd'])
   })
+
+  // ── #80018: timeout and error are terminal statuses ───────────────
+
+  it('treats timeout status from subagent.complete as terminal', () => {
+    upsertSubagent('s1', { goal: 'long task', status: 'running', subagent_id: 'a1', task_index: 0 })
+    upsertSubagent(
+      's1',
+      { goal: 'long task', status: 'timeout', subagent_id: 'a1', summary: 'Timed out after 600s', task_index: 0 },
+      true,
+      'subagent.complete'
+    )
+
+    const item = listFor('s1')[0]
+    expect(item?.status).toBe('timeout')
+    expect(item?.summary).toBe('Timed out after 600s')
+    // A terminal status must NOT keep a currentTool
+    expect(item?.currentTool).toBeUndefined()
+  })
+
+  it('treats error status from subagent.complete as terminal', () => {
+    upsertSubagent('s1', { goal: 'risky task', status: 'running', subagent_id: 'a2', task_index: 0 })
+    upsertSubagent(
+      's1',
+      { goal: 'risky task', status: 'error', subagent_id: 'a2', summary: 'Connection lost', task_index: 0 },
+      true,
+      'subagent.complete'
+    )
+
+    const item = listFor('s1')[0]
+    expect(item?.status).toBe('error')
+    expect(item?.summary).toBe('Connection lost')
+  })
+
+  it('does not regress to running when a late running event arrives after timeout', () => {
+    upsertSubagent('s1', { goal: 'task', status: 'running', subagent_id: 'a3', task_index: 0 })
+    upsertSubagent(
+      's1',
+      { goal: 'task', status: 'timeout', subagent_id: 'a3', summary: 'Timed out', task_index: 0 },
+      true,
+      'subagent.complete'
+    )
+    // Late progress event must not revive the spinner
+    upsertSubagent('s1', { goal: 'task', status: 'running', subagent_id: 'a3', task_index: 0, text: 'late' })
+
+    const item = listFor('s1')[0]
+    expect(item?.status).toBe('timeout')
+  })
+
+  it('defensively treats an unknown subagent.complete status as terminal (failed)', () => {
+    upsertSubagent('s1', { goal: 'unknown outcome', status: 'running', subagent_id: 'a4', task_index: 0 })
+    // Simulate the backend sending a status the renderer doesn't recognize yet
+    upsertSubagent(
+      's1',
+      { goal: 'unknown outcome', status: 'crashed', subagent_id: 'a4', summary: '', task_index: 0 },
+      true,
+      'subagent.complete'
+    )
+
+    const item = listFor('s1')[0]
+    // 'crashed' is not a known status — asStatus maps it to 'running',
+    // but the defensive fallback on subagent.complete upgrades it to 'failed'
+    expect(item?.status).toBe('failed')
+  })
 })

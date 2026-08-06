@@ -2,7 +2,7 @@ import { atom } from 'nanostores'
 
 import { capitalize } from '@/lib/text'
 
-export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
+export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout' | 'error'
 export type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
 
 export interface SubagentStreamEntry {
@@ -43,7 +43,7 @@ export interface SubagentNode extends SubagentProgress {
 
 export type SubagentPayload = Record<string, unknown>
 
-const TERMINAL: ReadonlySet<SubagentStatus> = new Set(['completed', 'failed', 'interrupted'])
+const TERMINAL: ReadonlySet<SubagentStatus> = new Set(['completed', 'failed', 'interrupted', 'timeout', 'error'])
 const MAX_STREAM = 24
 const PREVIEW_MAX = 220
 const TOOL_PREVIEW_MAX = 96
@@ -56,7 +56,10 @@ const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : u
 const strList = (v: unknown) => (Array.isArray(v) ? v.filter(isStr) : [])
 
 const asStatus = (v: unknown): SubagentStatus =>
-  v === 'completed' || v === 'failed' || v === 'interrupted' || v === 'queued' ? v : 'running'
+  v === 'completed' || v === 'failed' || v === 'interrupted' || v === 'queued'
+  || v === 'timeout' || v === 'error'
+    ? v
+    : 'running'
 
 const compact = (text: string, max = PREVIEW_MAX) => {
   const line = text.replace(/\s+/g, ' ').trim()
@@ -148,7 +151,15 @@ function streamFromPayload(
 
 function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined, eventType = ''): SubagentProgress {
   const at = Date.now()
-  const status = asStatus(payload.status)
+  let status = asStatus(payload.status)
+  // Defensive fallback: a subagent.complete event means the subagent is done.
+  // If the status was not recognized (mapped to 'running' by asStatus), treat
+  // it as 'failed' so the spinner stops — never leave a completed subagent
+  // spinning because the backend sent a status the renderer doesn't know yet
+  // (#80018).
+  if (eventType === 'subagent.complete' && status === 'running' && prev?.status === 'running') {
+    status = 'failed'
+  }
   const tool = str(payload.tool_name)
   const stream = streamFromPayload(payload, status, eventType, at).reduce(appendStream, prev?.stream ?? [])
   const filesRead = strList(payload.files_read)

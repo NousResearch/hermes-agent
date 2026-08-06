@@ -2880,13 +2880,39 @@ def run_doctor(args):
     from hermes_cli.config import get_env_value
 
     def _gh_authenticated() -> bool:
-        """Check if gh CLI is authenticated via token file or device flow."""
+        """Check if gh CLI has a usable authentication token configured.
+
+        ``gh auth token`` is the preferred non-interactive probe because it is
+        stable across modern gh output formats and exits successfully when gh
+        can resolve a token from its keyring/configuration. Very old gh builds
+        may not implement that subcommand, so fall back to ``gh auth status``
+        on failure while keeping stdin closed to avoid interactive device-flow
+        prompts inside doctor.
+        """
+        common_kwargs = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "timeout": 10,
+            "stdin": subprocess.DEVNULL,
+        }
         try:
             result = subprocess.run(
-                ["gh", "auth", "status", "--json", "authenticated"],
-                capture_output=True, timeout=10,
+                ["gh", "auth", "token"],
+                stdout=common_kwargs["stdout"],
+                stderr=common_kwargs["stderr"],
+                timeout=10,
+                stdin=common_kwargs["stdin"],
             )
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
+            fallback = subprocess.run(
+                ["gh", "auth", "status"],
+                stdout=common_kwargs["stdout"],
+                stderr=common_kwargs["stderr"],
+                timeout=10,
+                stdin=common_kwargs["stdin"],
+            )
+            return fallback.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
 

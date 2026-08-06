@@ -1009,7 +1009,13 @@ class TestGitHubTokenCheck:
         call_log = []
         def mock_run(cmd, **kwargs):
             call_log.append(cmd)
-            if cmd[:2] == ["gh", "auth"]:
+            # Match the command used by Skills Hub and discard its secret
+            # stdout rather than depending on version-specific status JSON.
+            if cmd == ["gh", "auth", "token"]:
+                assert kwargs["stdout"] is subprocess.DEVNULL
+                assert kwargs["stderr"] is subprocess.DEVNULL
+                assert kwargs["stdin"] is subprocess.DEVNULL
+                assert kwargs["timeout"] == 10
                 result = types.SimpleNamespace(returncode=0, stdout="", stderr="")
             else:
                 result = types.SimpleNamespace(returncode=1, stdout="", stderr="")
@@ -1027,6 +1033,50 @@ class TestGitHubTokenCheck:
         out = buf.getvalue()
 
         assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
+        assert "GitHub authenticated via gh CLI" in out or "token configured" in out
+
+    def test_gh_authenticated_falls_back_to_auth_status_for_old_gh(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        import shutil
+        real_which = shutil.which
+
+        def mock_which(cmd):
+            return "/usr/local/bin/gh" if cmd == "gh" else real_which(cmd)
+
+        monkeypatch.setattr(shutil, "which", mock_which)
+
+        call_log = []
+
+        def mock_run(cmd, **kwargs):
+            call_log.append(cmd)
+            if cmd[:2] == ["gh", "auth"]:
+                assert kwargs["stdout"] is subprocess.DEVNULL
+                assert kwargs["stderr"] is subprocess.DEVNULL
+                assert kwargs["stdin"] is subprocess.DEVNULL
+                assert kwargs["timeout"] == 10
+                rc = 0 if cmd == ["gh", "auth", "status"] else 1
+            else:
+                rc = 1
+            return types.SimpleNamespace(returncode=rc, stdout="", stderr="")
+
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert ["gh", "auth", "token"] in call_log
+        assert ["gh", "auth", "status"] in call_log
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
 
 

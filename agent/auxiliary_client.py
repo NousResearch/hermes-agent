@@ -4641,6 +4641,45 @@ def _fallback_destination(
     return _complete_fallback_destination(provider, base_url, api_mode, model)
 
 
+def _resolve_fallback_timeout(
+    *,
+    task: Optional[str],
+    fb_label: str,
+    destination: _FallbackDestination,
+    effective_timeout: float,
+    timeout_override: Optional[float],
+) -> float:
+    """Resolve a fallback deadline without leaking the primary route policy."""
+    entry_timeout = _fallback_entry_timeout(task, fb_label)
+    if entry_timeout is not None:
+        if entry_timeout != effective_timeout:
+            logger.info(
+                "Auxiliary %s: %s using its configured timeout %.0fs "
+                "(task-level was %.0fs)",
+                task or "call", fb_label, entry_timeout, effective_timeout,
+            )
+        return entry_timeout
+
+    if task != "compression" or timeout_override is not None:
+        return effective_timeout
+
+    destination_timeout = _effective_aux_timeout(
+        task,
+        None,
+        base_url=destination.base_url,
+    )
+    if destination_timeout != effective_timeout:
+        logger.info(
+            "Auxiliary %s: %s resolved endpoint timeout %.0fs "
+            "(primary was %.0fs)",
+            task,
+            fb_label,
+            destination_timeout,
+            effective_timeout,
+        )
+    return destination_timeout
+
+
 def _replan_synchronous_cache_sections(
     messages: list,
     tools: Optional[list],
@@ -4671,6 +4710,7 @@ def _call_fallback_candidate_sync(
     max_tokens: Optional[int],
     tools: Optional[list],
     effective_timeout: float,
+    timeout_override: Optional[float] = None,
     effective_extra_body: dict,
     reasoning_config: Optional[dict],
 ) -> Optional[Any]:
@@ -4689,20 +4729,18 @@ def _call_fallback_candidate_sync(
     expired token), mark the provider unhealthy and return ``None`` so the
     caller can continue to the next fallback layer. Non-auth errors raise.
 
-    ``effective_timeout`` is the task-level deadline; a configured-chain
-    candidate with its own ``timeout`` entry gets that instead, so a
-    fallback tuned differently from the primary is allowed its own budget
-    (#62452).
+    ``effective_timeout`` is the primary route's deadline. A configured-chain
+    candidate with its own ``timeout`` entry gets that exact value; otherwise
+    implicit compression timeouts are recalculated for the fallback endpoint.
     """
-    fb_timeout = _fallback_entry_timeout(task, fb_label)
-    if fb_timeout is not None and fb_timeout != effective_timeout:
-        logger.info(
-            "Auxiliary %s: %s using its configured timeout %.0fs "
-            "(task-level was %.0fs)",
-            task or "call", fb_label, fb_timeout, effective_timeout,
-        )
-        effective_timeout = fb_timeout
     destination = _fallback_destination(task, fb_client, fb_model, fb_label)
+    effective_timeout = _resolve_fallback_timeout(
+        task=task,
+        fb_label=fb_label,
+        destination=destination,
+        effective_timeout=effective_timeout,
+        timeout_override=timeout_override,
+    )
     fallback_messages, fallback_tools = _replan_synchronous_cache_sections(
         messages,
         tools,
@@ -4796,19 +4834,19 @@ async def _call_fallback_candidate_async(
     max_tokens: Optional[int],
     tools: Optional[list],
     effective_timeout: float,
+    timeout_override: Optional[float] = None,
     effective_extra_body: dict,
     reasoning_config: Optional[dict],
 ) -> Optional[Any]:
     """Async mirror of :func:`_call_fallback_candidate_sync`."""
-    fb_timeout = _fallback_entry_timeout(task, fb_label)
-    if fb_timeout is not None and fb_timeout != effective_timeout:
-        logger.info(
-            "Auxiliary %s: %s using its configured timeout %.0fs "
-            "(task-level was %.0fs)",
-            task or "call", fb_label, fb_timeout, effective_timeout,
-        )
-        effective_timeout = fb_timeout
     destination = _fallback_destination(task, fb_client, fb_model, fb_label)
+    effective_timeout = _resolve_fallback_timeout(
+        task=task,
+        fb_label=fb_label,
+        destination=destination,
+        effective_timeout=effective_timeout,
+        timeout_override=timeout_override,
+    )
     fallback_messages, fallback_tools = _replan_synchronous_cache_sections(
         messages,
         tools,
@@ -7572,19 +7610,42 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     return default
 
 
-def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
+def _is_local_aux_base_url(base_url: Optional[str]) -> bool:
+    """Return whether an auxiliary endpoint is bound to the local machine."""
+    try:
+        host = base_url_hostname(str(base_url or ""))
+    except Exception:
+        return False
+    return (host or "").strip().lower().strip("[]") in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "0.0.0.0",
+    }
+
+
+def _effective_aux_timeout(
+    task: str,
+    timeout: Optional[float],
+    *,
+    base_url: Optional[str] = None,
+) -> float:
     """Resolve the effective timeout for an auxiliary LLM call.
 
     Uses the caller-provided ``timeout`` when given; otherwise reads
     ``auxiliary.{task}.timeout`` from config via :func:`_get_task_timeout`.
     For the ``compression`` task only, applies a bounded floor so a reasoning
     model summarising a large context is not cut off by the default timeout
-    (#54915).  The floor is intentionally skipped when the caller passes an
-    explicit ``timeout=`` — explicit per-call deadlines are always honoured —
-    and it is a minimum (``max``), so a config value already above it is kept.
+    (#54915). The floor is skipped for local endpoints and when the caller
+    passes an explicit ``timeout=``; a configured value above the floor is
+    kept unchanged.
     """
     effective = timeout if timeout is not None else _get_task_timeout(task)
-    if timeout is None and task == "compression":
+    if (
+        timeout is None
+        and task == "compression"
+        and not _is_local_aux_base_url(base_url)
+    ):
         effective = max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS)
     return effective
 
@@ -8767,7 +8828,6 @@ def _call_llm_impl(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
-    effective_timeout = _effective_aux_timeout(task, timeout)
     _set_relay_auxiliary_route(
         resolved_provider,
         final_model,
@@ -8776,6 +8836,11 @@ def _call_llm_impl(
 
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
+    effective_timeout = _effective_aux_timeout(
+        task,
+        timeout,
+        base_url=_base_info or resolved_base_url,
+    )
     if task:
         logger.info("Auxiliary %s: using %s (%s)%s",
                      task, resolved_provider or "auto", final_model or "default",
@@ -9297,6 +9362,7 @@ def _call_llm_impl(
                     task=task, messages=messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, effective_timeout=effective_timeout,
+                    timeout_override=timeout,
                     effective_extra_body=effective_extra_body,
                     reasoning_config=reasoning_config)
                 if fb_resp is not None:
@@ -9312,6 +9378,7 @@ def _call_llm_impl(
                         task=task, messages=messages,
                         temperature=temperature, max_tokens=max_tokens,
                         tools=tools, effective_timeout=effective_timeout,
+                        timeout_override=timeout,
                         effective_extra_body=effective_extra_body,
                         reasoning_config=reasoning_config)
                     if fb_resp is not None:
@@ -9526,7 +9593,6 @@ async def _async_call_llm_impl(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
-    effective_timeout = _effective_aux_timeout(task, timeout)
     _set_relay_auxiliary_route(
         resolved_provider,
         final_model,
@@ -9537,6 +9603,11 @@ async def _async_call_llm_impl(
     # endpoint-specific temperature overrides can distinguish
     # api.moonshot.ai vs api.kimi.com/coding even on auto-detected routes.
     _client_base = str(getattr(client, "base_url", "") or "")
+    effective_timeout = _effective_aux_timeout(
+        task,
+        timeout,
+        base_url=_client_base or resolved_base_url,
+    )
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
@@ -9938,6 +10009,7 @@ async def _async_call_llm_impl(
                     task=task, messages=messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, effective_timeout=effective_timeout,
+                    timeout_override=timeout,
                     effective_extra_body=effective_extra_body,
                     reasoning_config=reasoning_config)
                 if fb_resp is not None:
@@ -9955,6 +10027,7 @@ async def _async_call_llm_impl(
                         task=task, messages=messages,
                         temperature=temperature, max_tokens=max_tokens,
                         tools=tools, effective_timeout=effective_timeout,
+                        timeout_override=timeout,
                         effective_extra_body=effective_extra_body,
                         reasoning_config=reasoning_config)
                     if fb_resp is not None:

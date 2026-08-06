@@ -221,31 +221,33 @@ def _detect_offline(
 
 
 def _claim_task(conn: sqlite3.Connection, device_id: str) -> Optional[dict]:
-    """Atomically claim one pending_reassign task (v1)."""
-    busy = conn.execute(
-        "SELECT current_task_id FROM device_heartbeats WHERE device_id=?",
-        (device_id,),
-    ).fetchone()
-    if busy and busy["current_task_id"]:
-        return None
+    """Atomically claim one pending_reassign task (v1).
 
-    task = conn.execute(
-        "SELECT task_id, title, description, context_snapshot, priority "
-        "FROM federation_tasks "
-        "WHERE status='pending_reassign' AND fail_count < max_retries "
-        "ORDER BY priority ASC, created_at ASC LIMIT 1",
-    ).fetchone()
-    if not task:
-        return None
-
+    Fixes TOCTOU race: BEGIN IMMEDIATE is now the first statement,
+    so idleness check and task selection both happen inside the
+    SQLite write transaction — no window for another connection to
+    claim the same task between the idle check and the UPDATE.
+    """
     try:
         conn.execute("BEGIN IMMEDIATE")
 
-        check = conn.execute(
-            "SELECT status FROM federation_tasks WHERE task_id=?",
-            (task["task_id"],),
+        # Check if this device is already busy (inside transaction)
+        busy = conn.execute(
+            "SELECT current_task_id FROM device_heartbeats WHERE device_id=?",
+            (device_id,),
         ).fetchone()
-        if not check or check["status"] != "pending_reassign":
+        if busy and busy["current_task_id"]:
+            conn.execute("ROLLBACK")
+            return None
+
+        # Select the best task to claim
+        task = conn.execute(
+            "SELECT task_id, title, description, context_snapshot, priority "
+            "FROM federation_tasks "
+            "WHERE status='pending_reassign' AND fail_count < max_retries "
+            "ORDER BY priority ASC, created_at ASC LIMIT 1",
+        ).fetchone()
+        if not task:
             conn.execute("ROLLBACK")
             return None
 

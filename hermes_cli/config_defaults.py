@@ -2294,6 +2294,10 @@ DEFAULT_CONFIG = {
         # otherwise saturate one profile's local model / API quota /
         # browser pool while leaving other profiles idle.
         "max_in_progress_per_profile": None,
+        # Review handling after a worker submits a completed implementation.
+        # ``agent`` preserves the automatic sdlc-review worker flow. ``human``
+        # leaves the card in Review until an operator completes or requeues it.
+        "review_mode": "agent",
         # When true, the kanban dispatcher auto-runs the decomposer on
         # tasks that land in Triage (every dispatcher tick). When false,
         # decomposition is manual via `hermes kanban decompose <id>` or

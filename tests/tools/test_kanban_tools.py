@@ -132,6 +132,39 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_review_happy_path(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_review({
+        "summary": "PR ready for Nick",
+        "metadata": {
+            "pr_url": "https://example.test/pr/1",
+            "head_sha": "abc123",
+        },
+    })
+    data = json.loads(out)
+    assert data["ok"] is True
+    assert data["task_id"] == worker_env
+
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "review"
+        run = kb.latest_run(conn, worker_env)
+        assert run is not None
+        assert run.outcome == "submitted_for_review"
+        assert run.summary == "PR ready for Nick"
+        assert run.metadata == {
+            "pr_url": "https://example.test/pr/1",
+            "head_sha": "abc123",
+        }
+    finally:
+        conn.close()
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the
@@ -213,6 +246,36 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
         assert task.status == "running"  # Should still be running, not done
     finally:
         conn2.close()
+
+
+def test_review_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    task_id = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    monkeypatch.setattr("tools.kanban_tools._goal_judge_available", lambda: True)
+    monkeypatch.setattr(
+        "tools.kanban_tools.judge_goal",
+        lambda *args, **kwargs: (
+            "continue",
+            "missing verification evidence",
+            False,
+            None,
+            False,
+        ),
+    )
+
+    result = json.loads(kt._handle_review({"summary": "PR is open"}))
+
+    assert "error" in result
+    assert "Goal review submission rejected by judge" in result["error"]
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "running"
+    finally:
+        conn.close()
 
 
 def test_block_happy_path(worker_env):

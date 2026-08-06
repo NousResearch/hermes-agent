@@ -809,6 +809,90 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(f"kanban_complete: {e}")
 
 
+def _handle_review(args: dict, **kw) -> str:
+    """Submit the current task for review with a structured handoff."""
+    delegated_err = _reject_delegated_child_mutation("kanban_review")
+    if delegated_err:
+        return delegated_err
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    summary = args.get("summary")
+    if not summary or not str(summary).strip():
+        return tool_error("summary is required — describe what is ready for review")
+    summary = redact_sensitive_text(str(summary), force=True)
+    metadata = args.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        return tool_error(
+            f"metadata must be an object/dict, got {type(metadata).__name__}"
+        )
+    metadata = dict(metadata or {})
+    for key in ("pr_url", "head_sha"):
+        value = args.get(key)
+        if value:
+            metadata[key] = str(value).strip()
+    if metadata:
+        metadata_json = redact_sensitive_text(
+            json.dumps(metadata), force=True
+        )
+        try:
+            metadata = json.loads(metadata_json)
+        except json.JSONDecodeError:
+            pass
+    metadata = _stamp_worker_session_metadata(tid, metadata or None)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            task = kb.get_task(conn, tid)
+            if task and task.goal_mode and _goal_judge_available():
+                verdict = "done"
+                reason = ""
+                try:
+                    verdict, reason, _, _, _ = judge_goal(
+                        goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                        last_response=summary.strip(),
+                    )
+                except Exception as judge_exc:
+                    logger.warning(
+                        "goal judge check failed, allowing review submission: %s",
+                        judge_exc,
+                        exc_info=True,
+                    )
+                if verdict != "done":
+                    return tool_error(
+                        f"Goal review submission rejected by judge: {reason}. "
+                        "Provide explicit acceptance evidence in the review "
+                        "summary or keep the task running."
+                    )
+            ok = kb.submit_task_for_review(
+                conn,
+                tid,
+                summary=summary,
+                metadata=metadata,
+                expected_run_id=_worker_run_id(tid),
+            )
+            if not ok:
+                return tool_error(
+                    f"could not submit {tid} for review "
+                    f"(unknown id or not in running/ready)"
+                )
+            run = kb.latest_run(conn, tid)
+            return _ok(task_id=tid, run_id=run.id if run else None)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_review failed")
+        return tool_error(f"kanban_review: {e}")
+
+
 def _handle_block(args: dict, **kw) -> str:
     """Transition the task to blocked with a reason a human will read."""
     delegated_err = _reject_delegated_child_mutation("kanban_block")
@@ -1604,7 +1688,7 @@ KANBAN_LIST_SCHEMA = {
                 "type": "string",
                 "enum": [
                     "triage", "todo", "ready", "running",
-                    "blocked", "done", "archived",
+                    "review", "blocked", "done", "archived",
                 ],
                 "description": "Optional task status filter.",
             },
@@ -1718,6 +1802,49 @@ KANBAN_COMPLETE_SCHEMA = {
             "board": _board_schema_prop(),
         },
         "required": [],
+    },
+}
+
+KANBAN_REVIEW_SCHEMA = {
+    "name": "kanban_review",
+    "description": (
+        "Submit your current task to the Review column with a structured "
+        "handoff. Use this when implementation and verification are complete "
+        "but a human or configured review agent must approve the result. "
+        "Review is not a blocker and does not mark the task done."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "Human-readable review handoff describing the completed "
+                    "work and verification evidence."
+                ),
+            },
+            "metadata": {
+                "type": "object",
+                "description": (
+                    "Structured review evidence such as changed_files, tests, "
+                    "findings, PR URL, and final SHA."
+                ),
+            },
+            "pr_url": {
+                "type": "string",
+                "description": "Optional pull-request URL ready for review.",
+            },
+            "head_sha": {
+                "type": "string",
+                "description": "Optional final reviewed branch/PR head SHA.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["summary"],
     },
 }
 
@@ -2166,6 +2293,15 @@ registry.register(
     handler=_handle_complete,
     check_fn=_check_kanban_mode,
     emoji="✔",
+)
+
+registry.register(
+    name="kanban_review",
+    toolset="kanban",
+    schema=KANBAN_REVIEW_SCHEMA,
+    handler=_handle_review,
+    check_fn=_check_kanban_mode,
+    emoji="👁",
 )
 
 registry.register(

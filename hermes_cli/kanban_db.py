@@ -4044,6 +4044,7 @@ def _synthesize_ended_run(
     task_id: str,
     *,
     outcome: str,
+    status: Optional[str] = None,
     summary: Optional[str] = None,
     error: Optional[str] = None,
     metadata: Optional[dict] = None,
@@ -4081,7 +4082,7 @@ def _synthesize_ended_run(
         """,
         (
             task_id, profile, step_key,
-            outcome, outcome,
+            status or outcome, outcome,
             summary, error,
             json.dumps(metadata, ensure_ascii=False) if metadata else None,
             now, now,
@@ -4101,8 +4102,8 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     A ``blocked`` status can come from two very different sources:
 
     * **Worker- or operator-initiated** — a worker called
-      ``kanban_block(reason="review-required: ...")`` (or somebody ran
-      ``hermes kanban block <id>``).  This is a deliberate handoff that
+      ``kanban_block(reason="missing credential: ...")`` (or somebody ran
+      ``hermes kanban block <id>``).  This is a deliberate blocker that
       should stay blocked until an operator unblocks it.  The block tool
       emits a ``"blocked"`` event row in ``task_events``.
 
@@ -4833,6 +4834,89 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+def submit_task_for_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Transition ``running|ready -> review`` and preserve the handoff.
+
+    Review is a successful implementation handoff, not a blocker and not a
+    completed task.  The implementation run is closed, worker ownership is
+    released, and ``completed_at`` remains unset until a reviewer accepts the
+    task via :func:`complete_task`.
+    """
+    with write_txn(conn):
+        query = """
+            UPDATE tasks
+               SET status = 'review',
+                   claim_lock = NULL,
+                   claim_expires = NULL,
+                   worker_pid = NULL,
+                   block_kind = NULL,
+                   block_recurrences = 0,
+                   consecutive_failures = 0,
+                   last_failure_error = NULL
+             WHERE id = ?
+               AND status IN ('running', 'ready')
+        """
+        params: tuple[Any, ...] = (task_id,)
+        if expected_run_id is not None:
+            query += " AND current_run_id = ?"
+            params = (task_id, int(expected_run_id))
+        cur = conn.execute(query, params)
+        if cur.rowcount != 1:
+            return False
+
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="submitted_for_review",
+            status="review",
+            summary=summary,
+            metadata=metadata,
+        )
+        if run_id is None and (summary or metadata):
+            run_id = _synthesize_ended_run(
+                conn,
+                task_id,
+                outcome="submitted_for_review",
+                status="review",
+                summary=summary,
+                metadata=metadata,
+            )
+        event_summary = (summary or "").strip().splitlines()[0][:400] or None
+        payload: dict[str, Any] = {"summary": event_summary}
+        if isinstance(metadata, dict):
+            pr_url = metadata.get("pr_url")
+            head_sha = metadata.get("head_sha")
+            if pr_url:
+                payload["pr_url"] = pr_url
+            if head_sha:
+                payload["head_sha"] = head_sha
+        _append_event(
+            conn,
+            task_id,
+            "submitted_for_review",
+            payload,
+            run_id=run_id,
+        )
+
+    review_task = get_task(conn, task_id)
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_submitted_for_review",
+        task_id,
+        board=get_current_board(),
+        assignee=review_task.assignee if review_task else None,
+        run_id=run_id,
+        summary=summary,
+    )
+    return True
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4917,7 +5001,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready', 'blocked', 'review')
                 """,
                 (result, now, task_id),
             )
@@ -4934,7 +5018,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready', 'blocked', 'review')
                    AND current_run_id = ?
                 """,
                 (result, now, task_id, int(expected_run_id)),
@@ -8176,6 +8260,32 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _resolve_review_mode(value: Optional[str] = None) -> str:
+    """Resolve ``kanban.review_mode`` with an agent-safe fallback."""
+    if value is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_config = load_config().get("kanban") or {}
+            value = str(kanban_config.get("review_mode", "agent"))
+        except Exception as exc:
+            _log.warning(
+                "kanban dispatcher: could not load kanban.review_mode (%s); "
+                "using human to suppress automated review dispatch",
+                exc,
+            )
+            return "human"
+    mode = str(value).strip().lower()
+    if mode not in {"agent", "human"}:
+        _log.warning(
+            "kanban dispatcher: invalid kanban.review_mode=%r; using human "
+            "to suppress automated review dispatch",
+            mode,
+        )
+        return "human"
+    return mode
+
+
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one review+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -8184,6 +8294,8 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     used by the health telemetry to decide whether the dispatcher
     should have spawned a review agent.
     """
+    if _resolve_review_mode() == "human":
+        return False
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
         "WHERE status = 'review' AND assignee IS NOT NULL "
@@ -8214,6 +8326,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    review_mode: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -8230,6 +8343,8 @@ def dispatch_once(
     boards tick in parallel. See :func:`_dispatch_tick_lock` for the
     cross-process / cross-platform mechanics.
     """
+    review_mode = _resolve_review_mode(review_mode)
+
     try:
         db_path = kanban_db_path(board=board)
     except Exception:
@@ -8248,6 +8363,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            review_mode=review_mode,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -8264,6 +8380,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            review_mode=review_mode,
         )
         # Still under the dispatch lock: opportunistically truncate the WAL
         # at a coarse interval so it cannot grow unbounded between restarts.
@@ -8284,6 +8401,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    review_mode: str = "agent",
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -8599,11 +8717,13 @@ def _dispatch_once_locked(
     # Same concurrency model as ready dispatch: review spawns count
     # against max_spawn alongside ready tasks, so the total number of
     # running workers stays bounded.
-    review_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'review' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
+    review_rows = []
+    if str(review_mode).strip().lower() == "agent":
+        review_rows = conn.execute(
+            "SELECT id, assignee FROM tasks "
+            "WHERE status = 'review' AND claim_lock IS NULL "
+            "ORDER BY priority DESC, created_at ASC"
+        ).fetchall()
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break

@@ -136,3 +136,47 @@ def test_apiserver_sub_wakes_real_session_via_self_post(tmp_path, monkeypatch):
     # once the wake succeeds.
     assert _unseen_terminal_events(tid, "api_server", "raw-sid-123") == []
 
+
+def test_apiserver_review_wake_names_human_review(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver-review.db"))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="review handoff",
+            assignee="worker",
+            session_id="raw-review-session",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="api_server",
+            chat_id="raw-review-session",
+        )
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.submit_task_for_review(
+            conn,
+            tid,
+            summary="PR ready",
+            expected_run_id=claimed.current_run_id,
+        )
+    finally:
+        conn.close()
+
+    posts = []
+
+    async def fake_self_post(adapter, *, text, session_id):
+        posts.append({"text": text, "session_id": session_id})
+
+    import gateway.wake as wake_mod
+
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+    adapter = ApiServerLikeAdapter()
+    runner = _make_runner({Platform.API_SERVER: adapter})
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(posts) == 1
+    assert "ready for human review" in posts[0]["text"]
+

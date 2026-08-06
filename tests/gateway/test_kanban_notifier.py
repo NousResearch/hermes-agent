@@ -81,6 +81,43 @@ def _unseen_terminal_events(tid):
         conn.close()
 
 
+def test_kanban_notifier_delivers_human_review_handoff(tmp_path, monkeypatch):
+    db_path = tmp_path / "human-review.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="review the PR", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+        )
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.submit_task_for_review(
+            conn,
+            tid,
+            summary="Agenda board is ready for Nick",
+            metadata={"pr_url": "https://example.test/pr/1"},
+            expected_run_id=claimed.current_run_id,
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "ready for review" in text.lower()
+    assert "Agenda board is ready for Nick" in text
+    assert "https://example.test/pr/1" in text
+
+
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):
     db_path = tmp_path / "dm-topic-metadata.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

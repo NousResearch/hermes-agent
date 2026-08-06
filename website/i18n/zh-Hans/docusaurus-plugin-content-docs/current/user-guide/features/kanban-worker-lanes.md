@@ -51,27 +51,29 @@ Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `
 每次 claim 必须以以下之一结束：
 
 - `kanban_complete(summary=..., metadata=...)` — 任务成功，状态切换为 `done`。
+- `kanban_review(summary=..., metadata=..., pr_url=..., head_sha=...)` — 实现已完成但等待审查，状态切换为 `review`。
 - `kanban_block(reason=...)` — 任务等待人工输入，状态切换为 `blocked`。调度器在 `kanban_unblock` 运行时重新生成。
 - worker 进程退出而未调用任何工具。内核回收该进程并发出 `crashed`（PID 已消亡）、`gave_up`（连续失败断路器触发）或 `timed_out`（超过 max_runtime）。这是失败路径；健康的 worker 不会在此结束。
 
 kanban 内核强制要求每次运行恰好由其中一项终止。既未调用任何终止工具又正常退出的 worker 将被视为崩溃。
 
-## 输出与 review-required 约定
+## 输出与 Review 生命周期
 
-对于大多数涉及代码变更的任务，worker 完成的那一刻并不意味着真正*完成*——还需要人工审查。kanban 内核不强制执行这一区分（"涉及代码变更的任务"定义模糊，且在每个代码 worker 上强制 block 而非 complete 会破坏不需要审查的流程）。这是叠加在上层的约定：
+对于大多数涉及代码变更的任务，worker 完成的那一刻并不意味着真正*完成*——还需要审查。已完成的实现应提交到 Review，而不是误标为 blocked：
 
-- **使用 block 而非 complete**，`reason` 以 `review-required: ` 为前缀，使仪表板 / `hermes kanban show` 将该行显示为等待审查。
-- **先将结构化元数据写入 `kanban_comment`**，因为 `kanban_block` 只携带人类可读的 `reason`。Comment 是持久的注解通道——所有与审计相关的字段（changed_files、tests_run、diff_path 或 PR url、决策记录）都应放在这里。
-- **Reviewer 批准并解除阻塞**，这将重新生成 worker 并附带 comment 线程用于后续跟进；或通过另一条 comment 要求修改，下一次 worker 运行时将通过 `kanban_show` 的上下文看到这些内容。
+- 调用 `kanban_review`，传入摘要、结构化证据、PR URL 和最终 head SHA。实现运行将关闭，卡片移动到 `review`，但不会设置 `completed_at`。
+- 设置 `kanban.review_mode: human` 时，调度器会将卡片保留在 Review，直到操作员完成任务或将其移回 Ready 进行修改。
+- 设置 `kanban.review_mode: agent`（默认值）时，调度器可将 Review 卡片分配给现有的自动 `sdlc-review` 通道。
+- `kanban_block` 仅用于真正阻止继续推进的情况。
 
-自动注入的 `KANBAN_GUIDANCE` 同时涵盖 `kanban_complete`（真正终态的任务——拼写修复、文档变更、研究报告）和 `review-required` block 模式。
+自动注入的 `KANBAN_GUIDANCE` 明确涵盖 `kanban_complete`、`kanban_review` 和真正的阻塞情况。
 
 ## 日志与审计追踪
 
 调度器将每个任务的 worker stdout/stderr 写入 `<board-root>/logs/<task_id>.log`。日志可通过 kanban 元数据进行审计：
 
 - `task_runs` 行携带 `log_path`、退出码（如有）、摘要和元数据。
-- `task_events` 行携带每次状态转换（`promoted`、`claimed`、`heartbeat`、`completed`、`blocked`、`gave_up`、`crashed`、`timed_out`、`reclaimed`、`claim_extended`）。
+- `task_events` 行携带每次状态转换（`promoted`、`claimed`、`heartbeat`、`submitted_for_review`、`completed`、`blocked`、`gave_up`、`crashed`、`timed_out`、`reclaimed`、`claim_extended`）。
 - `kanban_show` 同时返回两者，因此 reviewer（或后续 worker）读取任务时无需访问仪表板即可获得完整历史。
 
 仪表板以摘要、元数据块和退出状态徽章渲染运行历史。CLI 用户可运行 `hermes kanban tail <task_id>` 实时跟踪，或运行 `hermes kanban runs <task_id>` 查看历史尝试列表。

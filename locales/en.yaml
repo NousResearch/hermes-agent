@@ -177,6 +177,7 @@ gateway:
     no_output:             "(no output)"
     wake:
       completed:           "completed"
+      review:              "ready for human review"
       gave_up:             "gave up (retries exhausted)"
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"

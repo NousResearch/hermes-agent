@@ -882,6 +882,13 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     summary=payload.summary,
                     metadata=payload.metadata,
                 )
+            elif s == "review":
+                ok = kanban_db.submit_task_for_review(
+                    conn,
+                    task_id,
+                    summary=payload.summary,
+                    metadata=payload.metadata,
+                )
             elif s == "blocked":
                 ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
             elif s == "scheduled":

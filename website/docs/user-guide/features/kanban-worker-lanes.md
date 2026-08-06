@@ -51,27 +51,29 @@ For non-Hermes lanes (registered via a plugin), the plugin supplies its own `spa
 Every claim must end in exactly one of:
 
 - `kanban_complete(summary=..., metadata=...)` — task succeeds, status flips to `done`.
+- `kanban_review(summary=..., metadata=..., pr_url=..., head_sha=...)` — implementation succeeds but awaits review, status flips to `review`.
 - `kanban_block(reason=...)` — task waits for human input, status flips to `blocked`. The dispatcher respawns when `kanban_unblock` runs.
 - The worker process exits without a tool call. The kernel reaps it and emits `crashed` (PID died) or `gave_up` (consecutive-failure breaker tripped) or `timed_out` (max_runtime exceeded). This is the failure path; healthy workers don't end here.
 
 The kanban kernel enforces that exactly one of these terminates each run. A worker that calls neither and exits normally is treated as crashed.
 
-## Outputs and the review-required convention
+## Outputs and the Review lifecycle
 
-For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a human reviewer. The kanban kernel doesn't enforce this distinction (a "code-changing task" is fuzzy and forcing block-instead-of-complete on every code worker would break flows where no review is wanted). It's a convention layered on top:
+For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a reviewer. Submit completed implementation to Review instead of misclassifying it as blocked:
 
-- **Block instead of complete**, with `reason` prefixed `review-required: ` so the dashboard / `hermes kanban show` surfaces the row as awaiting review.
-- **Drop structured metadata into a `kanban_comment` first** since `kanban_block` only carries the human-readable `reason`. Comments are the durable annotation channel — every audit-relevant field (changed_files, tests_run, diff_path or PR url, decisions) belongs there.
-- **Reviewer either approves and unblocks**, which respawns the worker with the comment thread for follow-ups; or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
+- Call `kanban_review` with the human-readable summary, structured evidence, PR URL, and final head SHA. The implementation run closes and the card moves to `review` without setting `completed_at`.
+- With `kanban.review_mode: human`, the dispatcher leaves the card in Review until an operator completes it or moves it back to Ready for changes.
+- With `kanban.review_mode: agent` (the default), the dispatcher may claim the Review card for the existing automated `sdlc-review` lane.
+- Reserve `kanban_block` for a genuine condition that prevents progress.
 
-The injected `KANBAN_GUIDANCE` covers both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
+The injected `KANBAN_GUIDANCE` covers `kanban_complete`, `kanban_review`, and genuine blockers explicitly.
 
 ## Logs and audit trail
 
 The dispatcher writes per-task worker stdout/stderr to `<board-root>/logs/<task_id>.log`. Logs are auditable from kanban metadata:
 
 - `task_runs` rows carry the `log_path`, exit code (where available), summary, and metadata.
-- `task_events` rows carry every state transition (`promoted`, `claimed`, `heartbeat`, `completed`, `blocked`, `gave_up`, `crashed`, `timed_out`, `reclaimed`, `claim_extended`).
+- `task_events` rows carry every state transition (`promoted`, `claimed`, `heartbeat`, `submitted_for_review`, `completed`, `blocked`, `gave_up`, `crashed`, `timed_out`, `reclaimed`, `claim_extended`).
 - `kanban_show` returns both, so a reviewer (or a follow-up worker) reading the task gets the full history without needing dashboard access.
 
 The dashboard renders run history with summaries, metadata blocks, and exit-status badges. CLI users can run `hermes kanban tail <task_id>` to follow live, or `hermes kanban runs <task_id>` for the historical attempt list.

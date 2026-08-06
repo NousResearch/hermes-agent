@@ -224,6 +224,34 @@ def test_task_detail_includes_links_and_events(client):
 # ---------------------------------------------------------------------------
 
 
+def test_patch_task_can_submit_for_review(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "review handoff", "assignee": "worker"},
+    ).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "status": "review",
+            "summary": "PR ready for Nick",
+            "metadata": {
+                "pr_url": "https://example.test/pr/1",
+                "head_sha": "abc123",
+            },
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    detail = client.get(
+        f"/api/plugins/kanban/tasks/{task['id']}"
+    ).json()
+    assert detail["task"]["status"] == "review"
+    assert detail["runs"][-1]["status"] == "review"
+    assert detail["runs"][-1]["outcome"] == "submitted_for_review"
+    assert detail["runs"][-1]["summary"] == "PR ready for Nick"
+
+
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 

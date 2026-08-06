@@ -155,7 +155,7 @@ class GatewayKanbanWatchersMixin:
 
         # "status" covers dashboard drag-drop and `_set_status_direct()`
         # writes — surface those transitions to subscribers too.
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected")
+        TERMINAL_KINDS = ("completed", "submitted_for_review", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected")
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -432,6 +432,20 @@ class GatewayKanbanWatchersMixin:
                                 f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
                                 f" — {title}{handoff}"
                             )
+                        elif kind == "submitted_for_review":
+                            handoff = ""
+                            pr_line = ""
+                            if ev.payload:
+                                payload_summary = ev.payload.get("summary")
+                                if payload_summary:
+                                    handoff = f"\n{str(payload_summary)[:200]}"
+                                pr_url = ev.payload.get("pr_url")
+                                if pr_url:
+                                    pr_line = f"\n{str(pr_url)[:500]}"
+                            msg = (
+                                f"👁 {board_tag}{tag}Kanban {sub['task_id']} ready for review"
+                                f" — {title}{handoff}{pr_line}"
+                            )
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
@@ -618,7 +632,7 @@ class GatewayKanbanWatchersMixin:
                         #   claim exactly like a failed send() above, so the
                         #   next tick retries.
                         task_terminal = task and task.status in {"done", "archived"}
-                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
+                        _WAKE_KINDS = ("completed", "submitted_for_review", "gave_up", "crashed", "timed_out", "blocked")
                         _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
                         from gateway.wake import adapter_supports_push as _adapter_push_ok
 
@@ -632,6 +646,7 @@ class GatewayKanbanWatchersMixin:
                             _assignee = task.assignee if task else ""
                             _parts = []
                             if "completed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.completed"))
+                            if "submitted_for_review" in _wake_kinds: _parts.append(t("gateway.kanban.wake.review"))
                             if "gave_up" in _wake_kinds: _parts.append(t("gateway.kanban.wake.gave_up"))
                             if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
                             if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))

@@ -47,6 +47,8 @@ from cron.jobs import (
     pause_job,
     remove_job,
     resolve_job_ref,
+    resnapshot_all_unpinned,
+    resnapshot_job,
     resume_job,
     update_job,
 )
@@ -1049,6 +1051,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    all: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1166,6 +1169,32 @@ def cronjob(
             jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
+        if normalized == "resnap":
+            if bool(all):
+                # Bulk: adopt the current global resolution for every job with
+                # an unpinned axis. No job_id required. Skips no_agent jobs and
+                # fully-pinned jobs (nothing unpinned to refresh).
+                updated = resnapshot_all_unpinned()
+                _notify_provider_jobs_changed_safe()
+                return json.dumps(
+                    {
+                        "success": True,
+                        "message": (
+                            f"Refreshed inference snapshots on {len(updated)} unpinned "
+                            "job(s) to the current global resolution. Jobs remain "
+                            "unpinned and will track future global changes."
+                        ),
+                        "updated_jobs": [_format_job(j) for j in updated],
+                    },
+                    indent=2,
+                )
+            if not job_id:
+                return tool_error(
+                    "resnap requires either `job_id=<id>` (single job) or `all=true` "
+                    "(refresh every unpinned job). Refusing to guess scope.",
+                    success=False,
+                )
+
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
@@ -1223,6 +1252,27 @@ def cronjob(
             updated = resume_job(job_id)
             _notify_provider_jobs_changed_safe()
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+
+        if normalized == "resnap":
+            # Single-job: refresh this job's snapshot(s) to the current global
+            # resolution without pinning it. (Bulk path handled above; the
+            # `all=true` case returns before job resolution.)
+            updated = resnapshot_job(job["id"])
+            if not updated:
+                return tool_error(f"Failed to resnap job '{job_id}'", success=False)
+            _notify_provider_jobs_changed_safe()
+            return json.dumps(
+                {
+                    "success": True,
+                    "message": (
+                        f"Cron job '{updated['name']}' refreshed to the current "
+                        "global inference resolution. It remains unpinned and will "
+                        "track future global changes."
+                    ),
+                    "job": _format_job(updated),
+                },
+                indent=2,
+            )
 
         if normalized in {"run", "run_now", "trigger"}:
             # Per-run context (#57331, salvaged from #57342/@liuhao1024 and
@@ -1443,6 +1493,7 @@ CRONJOB_SCHEMA = {
 Use action='create' to schedule a new job from a prompt or one or more skills.
 Use action='list' to inspect jobs.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
+Use action='resnap' to adopt the CURRENT global inference resolution for an unpinned job (or all unpinned jobs with all=true) WITHOUT pinning it — the job stays unpinned and keeps tracking future global changes. Use this after deliberately changing the default model so cron jobs follow the new default instead of failing the drift guard.
 
 action='run' fires the job immediately in the BACKGROUND (like delegate_task): the call returns at once with a handle and the job's outcome re-enters the conversation as a new message when it finishes. Do not wait or poll after triggering a run — just continue. Optionally pass 'prompt' with action='run' to inject transient per-run context (appended to the job's stored prompt for that single fire only, never persisted).
 
@@ -1462,11 +1513,15 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, pause, resume, remove, run, resnap. When action=create, the 'schedule' and 'prompt' fields are REQUIRED. When action=resnap, pass either job_id (single job) or all=true (every unpinned job)."
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run"
+                "description": "Required for update/pause/resume/remove/run. For resnap: the job to adopt the current global inference resolution (omit if all=true)."
+            },
+            "all": {
+                "type": "boolean",
+                "description": "Only for action='resnap'. all=true refreshes the inference snapshot of EVERY unpinned agent job to the current global resolution (bulk 'make everything follow my new default'). Must be explicitly set to true — never implied. Omit (or false) to resnap a single job via job_id."
             },
             "prompt": {
                 "type": "string",
@@ -1608,6 +1663,8 @@ registry.register(
         no_agent=args.get("no_agent"),
         monitor_script=args.get("monitor_script"),
         monitor_url=args.get("monitor_url"),
+        attach_to_session=args.get("attach_to_session"),
+        all=args.get("all"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
     ),

@@ -652,6 +652,189 @@ class TestImportEdgeCases:
         assert (hermes_home / "sessions" / "s0599.json").exists()
 
 
+class _ExplodingMember:
+    """Zip member whose stream dies mid-restore (ENOSPC / corrupt member).
+
+    Both the pre-fix ``dst.write(src.read())`` and the atomic
+    ``shutil.copyfileobj`` path pull bytes through ``read()``, so injecting
+    here exercises whichever implementation is in the tree.
+    """
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self, *args):
+        raise OSError(28, "No space left on device")
+
+    def close(self):
+        pass
+
+
+def _break_member(monkeypatch, failing_member: str) -> None:
+    """Make ``ZipFile.open`` hand back a dying stream for one member only."""
+    real_open = zipfile.ZipFile.open
+
+    def _patched(self, name, *args, **kwargs):
+        filename = name.filename if isinstance(name, zipfile.ZipInfo) else name
+        if filename == failing_member:
+            return _ExplodingMember()
+        return real_open(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", _patched)
+
+
+class TestImportAtomicWrites:
+    """`hermes import` must never leave a user's file truncated.
+
+    The pre-fix code did ``open(target, "wb")`` then ``dst.write(src.read())``,
+    which zeroes the existing file *before* any replacement bytes exist. These
+    tests pin the invariant for both restore branches: the HERMES_HOME branch
+    and the ``_external/`` branch that writes into third-party configs under
+    the user's home.
+    """
+
+    def _zip(self, zip_path: Path, files: dict) -> None:
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for name, content in files.items():
+                zf.writestr(name, content)
+
+    def test_failed_member_leaves_existing_file_intact(self, tmp_path, monkeypatch):
+        """A dying member must not destroy the file it was replacing."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        original = "model: original\napi_key: keep-me\n"
+        (hermes_home / "config.yaml").write_text(original)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._zip(zip_path, {"config.yaml": "model: replacement\n", "state.db": ""})
+        _break_member(monkeypatch, "config.yaml")
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        # Pre-fix this file is 0 bytes: the truncate landed, the write did not.
+        assert (hermes_home / "config.yaml").read_text() == original
+        # And the aborted write must not litter the directory it staged in.
+        assert list(hermes_home.glob(".config.yaml.*")) == []
+
+    def test_failed_external_member_leaves_existing_file_intact(self, tmp_path, monkeypatch):
+        """Same invariant on the `_external/` branch, which writes outside HERMES_HOME."""
+        dst_home = tmp_path / "dst"
+        dst_home.mkdir()
+        hermes_home = dst_home / ".hermes"
+        hermes_home.mkdir()
+        honcho = dst_home / ".honcho"
+        honcho.mkdir()
+        original = '{"peer":"original"}'
+        (honcho / "config.json").write_text(original)
+
+        zip_path = tmp_path / "backup.zip"
+        self._zip(zip_path, {
+            "config.yaml": "model: {}\n",
+            "_external/.honcho/config.json": '{"peer":"replacement"}',
+        })
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: dst_home)
+        _break_member(monkeypatch, "_external/.honcho/config.json")
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert (honcho / "config.json").read_text() == original
+        assert list(honcho.glob(".config.json.*")) == []
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX symlinks")
+    def test_symlinked_target_keeps_its_symlink(self, tmp_path, monkeypatch):
+        """A symlinked target is written through, not replaced by a regular file.
+
+        Guards the atomic rewrite against a naive ``os.replace``, which would
+        detach dotfiles-managed deployments (GitHub #16743). ``atomic_replace``
+        resolves the link first.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        store = hermes_home / "store"
+        store.mkdir()
+        real = store / "config.yaml"
+        real.write_text("model: original\n")
+        link = hermes_home / "config.yaml"
+        link.symlink_to(real)
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._zip(zip_path, {"config.yaml": "model: restored\n", "state.db": ""})
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert link.is_symlink(), "import replaced the symlink with a regular file"
+        assert real.read_text() == "model: restored\n"
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX symlinks")
+    def test_symlinked_external_target_keeps_its_symlink(self, tmp_path, monkeypatch):
+        """Same guard on the `_external/` branch — the realistic dotfiles case."""
+        dst_home = tmp_path / "dst"
+        dst_home.mkdir()
+        hermes_home = dst_home / ".hermes"
+        hermes_home.mkdir()
+        dotfiles = dst_home / "dotfiles"
+        dotfiles.mkdir()
+        real = dotfiles / "honcho.json"
+        real.write_text('{"peer":"original"}')
+        honcho = dst_home / ".honcho"
+        honcho.mkdir()
+        link = honcho / "config.json"
+        link.symlink_to(real)
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: dst_home)
+
+        zip_path = tmp_path / "backup.zip"
+        self._zip(zip_path, {
+            "config.yaml": "model: {}\n",
+            "_external/.honcho/config.json": '{"peer":"restored"}',
+        })
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert link.is_symlink(), "import replaced the symlink with a regular file"
+        assert real.read_text() == '{"peer":"restored"}'
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+    def test_restore_preserves_existing_file_mode(self, tmp_path, monkeypatch):
+        """Staging through mkstemp must not silently tighten restored files to 0600.
+
+        ``tempfile.mkstemp`` creates at 0600; the mode of the file being
+        replaced has to survive the publish, or Docker/NAS installs that rely
+        on broader permissions break on restore.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        target = hermes_home / "config.yaml"
+        target.write_text("model: original\n")
+        os.chmod(target, 0o644)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._zip(zip_path, {"config.yaml": "model: restored\n", "state.db": ""})
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert target.read_text() == "model: restored\n"
+        assert (target.stat().st_mode & 0o777) == 0o644
+
+
 # ---------------------------------------------------------------------------
 # Profile restoration tests
 # ---------------------------------------------------------------------------

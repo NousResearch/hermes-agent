@@ -2088,7 +2088,7 @@ def test_reset_statuses_clears_active_cooldowns_on_disk(tmp_path, monkeypatch):
             assert entry.get("last_error_message") is None
             # identity must survive the reset untouched
             assert entry["id"] in ("cred-1", "cred-2")
-            assert entry["access_token"] == f"sk-mock-{entry["id"]}"
+            assert entry["access_token"] == f"sk-mock-{entry['id']}"
 
     # A fresh load must see the pool as healthy again.
     reloaded = load_pool("openai-codex")

@@ -246,6 +246,8 @@ events must reach the TUI; inside tmux, keep `display.mouse_tracking` set to
 
 Runtime toggles:
 
+- `/copy-on-select [on|off|auto|status]` — override copy-on-select or restore
+  the platform default with `auto`
 - `/details [hidden|collapsed|expanded|cycle]` — set the global mode
 - `/details <section> [hidden|collapsed|expanded|reset]` — override one section
   (sections: `thinking`, `tools`, `subagents`, `activity`)

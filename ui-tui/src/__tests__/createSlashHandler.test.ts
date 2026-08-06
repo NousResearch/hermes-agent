@@ -97,6 +97,38 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
   })
 
+  it.each([
+    [true, '/copy-on-select on', 'on'],
+    [false, '/copy-on-select off', 'off'],
+    [null, '/copy-on-select auto', 'auto']
+  ] as const)('applies and persists copy-on-select mode %s', (expected, command, value) => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)(command)).toBe(true)
+    expect(getUiState().copyOnSelect).toBe(expected)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', { key: 'copy-on-select', value })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('reports copy-on-select status without persisting it', () => {
+    patchUiState({ copyOnSelect: null })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/copy-on-select status')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(
+      `copy on select: auto (currently ${process.platform === 'darwin' ? 'on' : 'off'})`
+    )
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('rejects an invalid copy-on-select mode', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/copy-on-select maybe')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /copy-on-select [on|off|auto|status]')
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
   it('opens the editor locally for /prompt without slash worker fallback', () => {
     const ctx = buildCtx()
 

@@ -178,6 +178,35 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'set copy on select [on|off|auto|status]',
+    name: 'copy-on-select',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const current = ctx.ui.copyOnSelect
+
+      if (!mode || mode === 'status') {
+        const status =
+          current === null ? `auto (currently ${process.platform === 'darwin' ? 'on' : 'off'})` : current ? 'on' : 'off'
+
+        return ctx.transcript.sys(`copy on select: ${status}`)
+      }
+
+      const next = mode === 'on' ? true : mode === 'off' ? false : mode === 'auto' ? null : undefined
+
+      if (next === undefined) {
+        return ctx.transcript.sys('usage: /copy-on-select [on|off|auto|status]')
+      }
+
+      patchUiState({ copyOnSelect: next })
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'copy-on-select', value: mode })
+        .catch(() => {})
+
+      queueMicrotask(() => ctx.transcript.sys(`copy on select: ${mode}`))
+    }
+  },
+
+  {
     aliases: ['new'],
     help: 'start a new session',
     name: 'clear',

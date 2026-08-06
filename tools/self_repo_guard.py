@@ -27,6 +27,7 @@ _WORKTREE_MUTATIONS = frozenset({
     "cherry-pick",
     "revert",
 })
+_WORKTREE_TARGET_ACTIONS = frozenset({"move", "remove"})
 _STASH_SAFE_ACTIONS = frozenset({"list", "show", "create", "store", "drop", "clear"})
 _RESET_WORKTREE_MODES = frozenset({"--hard", "--merge", "--keep"})
 _KNOWN_GIT_BUILTINS = frozenset({
@@ -500,6 +501,34 @@ def _mutates_worktree(subcommand: str, args: list[str]) -> bool:
     return subcommand in _WORKTREE_MUTATIONS
 
 
+def _next_positional(args: list[str], index: int) -> int:
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return index + 1
+        if arg.startswith("-") and arg != "-":
+            index += 1
+            continue
+        return index
+    return index
+
+
+def _inspect_git_worktree(args: list[str], cwd: Path, root: Path) -> str | None:
+    """Block `worktree remove|move` aimed at the running root, from any directory."""
+    action_index = _next_positional(args, 0)
+    if action_index >= len(args):
+        return None
+    action = args[action_index].lower()
+    if action not in _WORKTREE_TARGET_ACTIONS:
+        return None
+    target_index = _next_positional(args, action_index + 1)
+    if target_index >= len(args):
+        return None
+    if _resolve(args[target_index], cwd) == root:
+        return f"git worktree {action}"
+    return None
+
+
 def _read_git_alias(executable: str, target: Path, alias: str) -> str | None:
     try:
         result = subprocess.run(
@@ -526,7 +555,12 @@ def _inspect_git(
     target, subcommand, sub_args, inline_aliases = _git_target_and_subcommand(
         args, current_dir, env
     )
-    if subcommand is None or not _is_within(target, root):
+    if subcommand is None:
+        return None
+    # `worktree` names its victim as an argument, so the cwd check does not apply.
+    if subcommand == "worktree":
+        return _inspect_git_worktree(sub_args, target, root)
+    if not _is_within(target, root):
         return None
     if _mutates_worktree(subcommand, sub_args):
         return f"git {subcommand}"

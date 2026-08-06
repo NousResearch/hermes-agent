@@ -255,6 +255,71 @@ class TestAllowsSafeCommands:
         assert msg is None
 
 
+class TestWorktreeTargetingSourceRoot:
+    @pytest.mark.parametrize(
+        "sub",
+        [
+            "remove .",
+            "remove -f .",
+            "remove --force .",
+            "remove -- .",
+            "move . {other}",
+            "move -f . {other}",
+        ],
+    )
+    def test_blocks_relative_target_from_inside(self, repo, tmp_path, sub):
+        command = f"git worktree {sub.format(other=tmp_path / 'moved')}"
+        hit, msg = _detect(command, repo, repo)
+        assert hit is True
+        assert str(repo) in msg
+
+    @pytest.mark.parametrize("action", ["remove", "remove -f", "remove --force"])
+    def test_blocks_absolute_target_from_outside(self, repo, tmp_path, action):
+        hit, _ = _detect(f"git worktree {action} {repo}", tmp_path, repo)
+        assert hit is True
+
+    def test_blocks_move_of_root_from_outside(self, repo, tmp_path):
+        command = f"git worktree move {repo} {tmp_path / 'moved'}"
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_blocks_dash_c_worktree_remove(self, repo, tmp_path):
+        hit, _ = _detect(f"git -C {tmp_path} worktree remove {repo}", tmp_path, repo)
+        assert hit is True
+
+    def test_blocks_parent_relative_target_from_subdirectory(self, repo):
+        hit, _ = _detect("git worktree remove ..", repo / "agent", repo)
+        assert hit is True
+
+    def test_blocks_sibling_relative_target(self, repo):
+        hit, _ = _detect(f"git worktree remove ../{repo.name}", repo, repo)
+        assert hit is True
+
+    @pytest.mark.parametrize(
+        "sub",
+        [
+            "add {other}",
+            "add -b feature {other}",
+            "list",
+            "list --porcelain",
+            "prune",
+            "lock {other}",
+            "unlock {other}",
+            "remove {other}",
+            "move {other} {other}-dest",
+        ],
+    )
+    def test_allows_other_worktrees_and_add(self, repo, tmp_path, sub):
+        command = f"git worktree {sub.format(other=tmp_path / 'other-wt')}"
+        hit, _ = _detect(command, repo, repo)
+        assert hit is False
+
+    @pytest.mark.parametrize("sub", ["", "remove", "move", "-f"])
+    def test_incomplete_worktree_command_is_not_blocked(self, repo, sub):
+        hit, _ = _detect(f"git worktree {sub}".strip(), repo, repo)
+        assert hit is False
+
+
 class TestSourceRootResolution:
     def test_resolves_to_repo_when_git_dir_present(self):
         root = get_running_source_root()

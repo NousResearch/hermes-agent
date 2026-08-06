@@ -32,6 +32,7 @@ _DEFAULT_API_TIMEOUT = 5.0
 _MIN_CAPTURE_LENGTH = 10
 _MAX_ENTITY_CONTEXT_LENGTH = 1500
 _CONVERSATIONS_URL = "https://api.supermemory.ai/v4/conversations"
+_API_KEY_URL = "http://app.supermemory.ai/integrations?connect=hermes"
 _TRIVIAL_RE = re.compile(
     r"^(ok|okay|thanks|thank you|got it|sure|yes|no|yep|nope|k|ty|thx|np)\.?$",
     re.IGNORECASE,
@@ -263,6 +264,19 @@ def _is_trivial_message(text: str) -> bool:
 
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
+        # Lazy-install the supermemory SDK on demand. ensure() honors
+        # security.allow_lazy_installs (default true) and, on a sealed Docker
+        # venv, redirects the install to the durable target. On failure we
+        # fall through so the raw import below produces the canonical
+        # ImportError message.
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("memory.supermemory", prompt=False)
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
         from supermemory import Supermemory
 
         self._api_key = api_key
@@ -387,6 +401,65 @@ class _SupermemoryClient:
             return
 
 
+def _resolve_container_tag_for_setup(hermes_home: str, *, identity: str = "default") -> str:
+    config = _load_supermemory_config(hermes_home)
+    env_tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG", "").strip()
+    raw_tag = env_tag or config["container_tag"]
+    return _sanitize_tag(raw_tag.replace("{identity}", identity))
+
+
+def _probe_supermemory_connection(api_key: str, hermes_home: str, *, identity: str = "default") -> dict:
+    config = _load_supermemory_config(hermes_home)
+    status = {
+        "ok": False,
+        "error": "",
+        "container_tag": _resolve_container_tag_for_setup(hermes_home, identity=identity),
+        "profile_facts": 0,
+        "auto_recall": bool(config["auto_recall"]),
+        "auto_capture": bool(config["auto_capture"]),
+    }
+    if not (api_key or "").strip():
+        status["error"] = "SUPERMEMORY_API_KEY not set"
+        return status
+    try:
+        __import__("supermemory")
+    except ImportError:
+        status["error"] = "supermemory package not installed"
+        return status
+    try:
+        client = _SupermemoryClient(
+            api_key=api_key.strip(),
+            timeout=config["api_timeout"],
+            container_tag=status["container_tag"],
+            search_mode=config["search_mode"],
+        )
+        profile = client.get_profile()
+        facts = [
+            fact for fact in (profile.get("static") or []) + (profile.get("dynamic") or [])
+            if fact and str(fact).strip()
+        ]
+        status["profile_facts"] = len(facts)
+        status["ok"] = True
+    except Exception as exc:
+        status["error"] = str(exc).strip()[:160] or "connection failed"
+    return status
+
+
+def _format_connection_summary(status: dict) -> str:
+    recall = "on" if status.get("auto_recall") else "off"
+    capture = "on" if status.get("auto_capture") else "off"
+    container = status.get("container_tag") or _DEFAULT_CONTAINER_TAG
+    if status.get("ok"):
+        facts = int(status.get("profile_facts") or 0)
+        fact_label = "fact" if facts == 1 else "facts"
+        return (
+            f"✓ Connected · container: {container} · {facts} profile {fact_label} · "
+            f"auto_recall {recall} · auto_capture {capture}"
+        )
+    err = status.get("error") or "connection failed"
+    return f"✗ {err} · container: {container} · auto_recall {recall} · auto_capture {capture}"
+
+
 STORE_SCHEMA = {
     "name": "supermemory_store",
     "description": "Store an explicit memory for future recall.",
@@ -473,21 +546,21 @@ class SupermemoryMemoryProvider(MemoryProvider):
         return "supermemory"
 
     def is_available(self) -> bool:
-        api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
-        if not api_key:
-            return False
-        try:
-            __import__("supermemory")
-            return True
-        except Exception:
-            return False
+        # Key presence only — no SDK import check. The supermemory SDK is
+        # lazy-installed when the client is first constructed in initialize()
+        # (see _SupermemoryClient.__init__). Gating availability on the SDK
+        # being importable here would be a chicken-and-egg trap: on a sealed
+        # Docker venv the package isn't present until ensure() runs, but
+        # ensure() only runs once the provider is loaded — which this gates.
+        # Mirrors honcho/mem0, which check config only. No network calls.
+        return bool(os.environ.get("SUPERMEMORY_API_KEY", ""))
 
     def get_config_schema(self):
         # Only prompt for the API key during `hermes memory setup`.
         # All other options are documented for $HERMES_HOME/supermemory.json
         # or the SUPERMEMORY_CONTAINER_TAG env var.
         return [
-            {"key": "api_key", "description": "Supermemory API key", "secret": True, "required": True, "env_var": "SUPERMEMORY_API_KEY", "url": "https://supermemory.ai"},
+            {"key": "api_key", "description": "Supermemory API key", "secret": True, "required": True, "env_var": "SUPERMEMORY_API_KEY", "url": _API_KEY_URL},
         ]
 
     def save_config(self, values, hermes_home):
@@ -497,6 +570,57 @@ class SupermemoryMemoryProvider(MemoryProvider):
         if "entity_context" in sanitized:
             sanitized["entity_context"] = _clamp_entity_context(str(sanitized["entity_context"]))
         _save_supermemory_config(sanitized, hermes_home)
+
+    def get_status_config(self, provider_config: dict) -> dict:
+        from hermes_constants import get_hermes_home
+
+        del provider_config
+        hermes_home = str(get_hermes_home())
+        api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
+        status = _probe_supermemory_connection(api_key, hermes_home)
+        return {"summary": _format_connection_summary(status)}
+
+    def post_setup(self, hermes_home: str, config: dict) -> None:
+        from pathlib import Path
+
+        from hermes_cli.config import save_config
+        from hermes_cli.memory_setup import _prompt, _write_env_vars
+
+        print("\n  Configuring supermemory:\n")
+        print(f"  Get your API key at {_API_KEY_URL}\n")
+
+        env_writes: dict[str, str] = {}
+        existing = os.environ.get("SUPERMEMORY_API_KEY", "")
+        if existing:
+            masked = f"...{existing[-4:]}" if len(existing) > 4 else "set"
+            val = _prompt(f"Supermemory API key (current: {masked}, blank to keep)", secret=True)
+        else:
+            val = _prompt("Supermemory API key", secret=True)
+        if val:
+            env_writes["SUPERMEMORY_API_KEY"] = val
+
+        if not isinstance(config.get("memory"), dict):
+            config["memory"] = {}
+        config["memory"]["provider"] = self.name
+        save_config(config)
+
+        if env_writes:
+            _write_env_vars(Path(hermes_home) / ".env", env_writes)
+
+        api_key = env_writes.get("SUPERMEMORY_API_KEY") or existing
+        # Make the freshly-entered key visible to the connection probe below.
+        # (Checks the VALUE of SUPERMEMORY_API_KEY, not whether the key string
+        # happens to name some unrelated env var.)
+        if api_key and os.environ.get("SUPERMEMORY_API_KEY") != api_key:
+            os.environ["SUPERMEMORY_API_KEY"] = api_key
+
+        status = _probe_supermemory_connection(api_key, hermes_home)
+        print(f"\n  {_format_connection_summary(status)}")
+        print("\n  Memory provider: supermemory")
+        print("  Activation saved to config.yaml")
+        if env_writes:
+            print("  API keys saved to .env")
+        print("\n  Start a new session to activate.\n")
 
     def initialize(self, session_id: str, **kwargs) -> None:
         from hermes_constants import get_hermes_home

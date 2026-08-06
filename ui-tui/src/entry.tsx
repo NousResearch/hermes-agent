@@ -5,7 +5,7 @@ import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@hermes/ink'
 
-import { TERMUX_TUI_MODE } from './config/env.js'
+import { DASHBOARD_TUI_MODE, TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
@@ -76,7 +76,12 @@ setupGracefulExit({
     recordParentLifecycle(`graceful-exit received signal=${signal} → killing gateway`)
     resetTerminalModes()
     process.stderr.write(`hermes-tui lifecycle: received ${signal}\n`)
-  }
+  },
+  // The dashboard chat tab has no in-page restart path after the PTY child
+  // exits. Ignore SIGINT there so Ctrl+C cannot kill the embedded TUI if raw
+  // mode briefly drops and the terminal driver turns the keystroke into a
+  // signal instead of input bytes. SIGTERM/SIGHUP still cleanly shut down.
+  ignoredSignals: DASHBOARD_TUI_MODE ? ['SIGINT'] : []
 })
 
 const stopMemoryMonitor = startMemoryMonitor({
@@ -84,9 +89,13 @@ const stopMemoryMonitor = startMemoryMonitor({
     // process.exit(137) closes the child's stdin → the gateway logs a clean
     // EOF, NOT SIGTERM. Recording it here is the only way a crash report can
     // attribute a death to Node OOM rather than a signal-driven kill.
-    recordParentLifecycle(`memory-critical process.exit(137) heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)} dump=${dump?.heapPath ?? 'failed'}`)
+    recordParentLifecycle(
+      `memory-critical process.exit(137) heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)} dump=${dump?.heapPath ?? 'failed'}`
+    )
     resetTerminalModes()
-    process.stderr.write(`hermes-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`)
+    process.stderr.write(
+      `hermes-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`
+    )
     process.stderr.write(dumpNotice(snap, dump))
     process.stderr.write('hermes-tui: exiting to avoid OOM; restart to recover\n')
     process.exit(137)
@@ -97,7 +106,9 @@ const stopMemoryMonitor = startMemoryMonitor({
   // so the only trace was a bare gateway `stdin EOF`. Persist a breadcrumb +
   // stderr line so the next such death is attributable instead of silent.
   onWarn: snap => {
-    recordParentLifecycle(`memory-warning fast heap growth heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}`)
+    recordParentLifecycle(
+      `memory-warning fast heap growth heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}`
+    )
     process.stderr.write(
       `hermes-tui: heap climbing fast (${formatBytes(snap.heapUsed)}) — a large tool output or long session may be straining memory\n`
     )

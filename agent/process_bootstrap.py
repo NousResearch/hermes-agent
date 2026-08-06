@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 import sys
 import urllib.request
-from typing import Optional
+from typing import Any, Optional
 
 from utils import base_url_hostname, normalize_proxy_url
 
@@ -142,6 +142,65 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     return proxy
 
 
+def build_keepalive_http_client(
+    base_url: str = "",
+    *,
+    async_mode: bool = False,
+    verify: Any = True,
+) -> Optional[Any]:
+    """Build an httpx client for OpenAI SDK calls with env-only proxy policy.
+
+    Uses explicit ``HTTPS_PROXY`` / ``NO_PROXY`` env vars via
+    ``_get_proxy_for_base_url``. Plain no-proxy mounts disable httpx's default
+    ``trust_env`` proxy path, so macOS system proxy settings from
+    ``urllib.request.getproxies()`` (which omit the ExceptionsList) are not
+    applied. Mirrors ``AIAgent._build_keepalive_http_client``.
+
+    Connection lifecycle is managed at the HTTP pool layer
+    (``keepalive_expiry=20.0`` reaps idle connections before reverse proxies'
+    typical 30-60 s timeouts) instead of the former custom
+    ``socket_options`` transport, which broke streaming behind reverse
+    proxies (#54049, #12952) and stalled TLS handshakes by stripping
+    ``TCP_NODELAY``.
+
+    ``verify`` is forwarded to httpx so auxiliary-client calls (compression,
+    vision, web_extract, title generation, etc.) honor the same per-provider
+    ``ssl_ca_cert`` / ``ssl_verify`` and ``HERMES_CA_BUNDLE`` settings the main
+    client uses. It is passed on the client AND on the plain no-proxy mounts
+    (a mounted transport owns the SSL context for its scheme).
+    """
+    try:
+        import httpx
+
+        proxy = _get_proxy_for_base_url(base_url)
+
+        limits = httpx.Limits(
+            max_keepalive_connections=20,
+            max_connections=100,
+            keepalive_expiry=20.0,
+        )
+        # Generous read=None for SSE streaming endpoints.
+        timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)
+
+        transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
+        client_cls = httpx.AsyncClient if async_mode else httpx.Client
+        mounts = {}
+        if proxy is None:
+            mounts = {
+                "http://": transport_cls(verify=verify),
+                "https://": transport_cls(verify=verify),
+            }
+        return client_cls(
+            limits=limits,
+            timeout=timeout,
+            proxy=proxy,
+            mounts=mounts or None,
+            verify=verify,
+        )
+    except Exception:
+        return None
+
+
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
     for stream_name in ("stdout", "stderr"):
@@ -164,4 +223,5 @@ __all__ = [
     "_install_safe_stdio",
     "_get_proxy_from_env",
     "_get_proxy_for_base_url",
+    "build_keepalive_http_client",
 ]

@@ -41,6 +41,8 @@ def _build_parser():
     mcp_add.add_argument("name")
     mcp_add.add_argument("--url")
     mcp_add.add_argument("--command", dest="mcp_command")
+    mcp_add.add_argument("--connect-timeout", type=float)
+    mcp_add.add_argument("--args", nargs=argparse.REMAINDER, default=[])
 
     return parser
 
@@ -85,3 +87,45 @@ class TestMcpAddCommandDest:
         assert args.command == "mcp"
         assert args.mcp_command is None
         assert args.url is None
+
+    def test_connect_timeout_flag_sets_probe_timeout(self):
+        """`--connect-timeout` exposes the per-server discovery timeout."""
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "mcp",
+                "add",
+                "slow",
+                "--url",
+                "https://example.com/mcp",
+                "--connect-timeout",
+                "180",
+            ]
+        )
+
+        assert args.command == "mcp"
+        assert args.mcp_action == "add"
+        assert args.connect_timeout == 180
+
+    def test_args_passthrough_keeps_nested_option_flags(self):
+        """`--args` must keep command flags like Docker MCP's --profile."""
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "mcp",
+                "add",
+                "docker-research",
+                "--command",
+                "docker",
+                "--args",
+                "mcp",
+                "gateway",
+                "run",
+                "--profile",
+                "research",
+            ]
+        )
+
+        assert args.command == "mcp"
+        assert args.mcp_command == "docker"
+        assert args.args == ["mcp", "gateway", "run", "--profile", "research"]

@@ -51,3 +51,18 @@ def test_reload_runtime_env_keeps_env_max_iterations_when_config_omits_key(
     gateway_run._reload_runtime_env_preserving_config_authority()
 
     assert os.environ["HERMES_MAX_ITERATIONS"] == "123"
+
+
+def test_current_max_iterations_reloads_before_reading(monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_MAX_ITERATIONS", "90")
+
+    def _fake_reload() -> None:
+        os.environ["HERMES_MAX_ITERATIONS"] = "200"
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_reload_runtime_env_preserving_config_authority",
+        _fake_reload,
+    )
+
+    assert gateway_run._current_max_iterations() == 200

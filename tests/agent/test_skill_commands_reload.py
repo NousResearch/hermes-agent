@@ -39,10 +39,9 @@ def _write_skill(skills_dir: Path, name: str, description: str = "") -> Path:
 def hermes_home(monkeypatch):
     """Isolate HERMES_HOME for ``reload_skills`` tests.
 
-    Rather than popping cache-bearing modules from ``sys.modules`` (which
-    races against pytest-xdist's parallel workers), we monkeypatch the
-    module-level ``HERMES_HOME`` / ``SKILLS_DIR`` constants in place so the
-    isolation is local to this fixture's scope.
+    Rather than popping cache-bearing modules from ``sys.modules``,
+    we monkeypatch the module-level ``HERMES_HOME`` / ``SKILLS_DIR``
+    constants in place so the isolation is local to this fixture's scope.
     """
     td = tempfile.mkdtemp(prefix="hermes-reload-skills-")
     monkeypatch.setenv("HERMES_HOME", td)

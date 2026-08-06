@@ -1,7 +1,7 @@
 name: simplex-platform
 label: SimpleX Chat
 kind: platform
-version: 1.0.0
+version: 1.1.0
 description: >
   SimpleX Chat gateway adapter for Hermes Agent.
   Connects to a local simplex-chat daemon via WebSocket and relays
@@ -9,7 +9,7 @@ description: >
   SimpleX is decentralised and assigns no persistent user IDs —
   every contact is an opaque internal ID generated at connection
   time, making it one of the most private messengers available.
-author: Mibayy
+author: Mibayy, jooray
 # ``requires_env`` and ``optional_env`` entries are surfaced in the
 # ``hermes config`` UI via the platform-plugin env var injector in
 # ``hermes_cli/config.py``.
@@ -27,6 +27,18 @@ optional_env:
     description: "Allow any contact to talk to the bot (dev only — disables allowlist)"
     prompt: "Allow all contacts? (true/false)"
     password: false
+  - name: SIMPLEX_AUTO_ACCEPT
+    description: "Auto-accept incoming contact requests (default: true)"
+    prompt: "Auto-accept contact requests? (true/false)"
+    password: false
+  - name: SIMPLEX_GROUP_ALLOWED
+    description: >-
+      Comma-separated SimpleX group IDs the bot should participate in, or
+      '*' to allow any group. Omit to ignore group messages entirely
+      (safer default — a bot in a group otherwise processes every
+      member's traffic).
+    prompt: "Allowed group IDs (comma-separated, or '*' for any)"
+    password: false
   - name: SIMPLEX_HOME_CHANNEL
     description: "Default contact/group ID for cron / notification delivery"
     prompt: "Home channel contact/group ID (or empty)"
@@ -34,4 +46,11 @@ optional_env:
   - name: SIMPLEX_HOME_CHANNEL_NAME
     description: "Human label for the home channel (defaults to the ID)"
     prompt: "Home channel display name (or empty)"
+    password: false
+  - name: HERMES_SIMPLEX_TEXT_BATCH_DELAY
+    description: >-
+      Quiet-period seconds (default: 0.8) used to concatenate rapid-fire
+      inbound text messages into a single MessageEvent — same pattern as
+      Telegram's text batching.
+    prompt: "Text batch flush delay in seconds (default 0.8)"
     password: false

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import gateway.platforms.base as base_platform
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
@@ -21,7 +22,7 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         self.edits = []
         self.typing = []
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -144,6 +145,29 @@ class FakeAgent:
         }
 
 
+class ThinkingAgent:
+    """Agent that emits _thinking scratch text (no tool calls).
+
+    Used to prove the progress callback relays _thinking bubbles when
+    thinking_progress is enabled but tool_progress is off.
+    """
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("_thinking", "weighing the options here")
+            time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class LongPreviewAgent:
     """Agent that emits a tool call with a very long preview string."""
     LONG_CMD = "cd /home/teknium/.hermes/hermes-agent/.worktrees/hermes-d8860339 && source .venv/bin/activate && python -m pytest tests/gateway/test_run_progress_topics.py -n0 -q"
@@ -236,6 +260,7 @@ def _make_runner(adapter):
     runner._session_db = None
     runner._running_agents = {}
     runner._session_run_generation = {}
+    runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
@@ -283,7 +308,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '💻 terminal: "pwd"',
+            "content": '💻 Running pwd',
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }
@@ -471,6 +496,27 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
 # ---------------------------------------------------------------------------
 
 
+def _extract_progress_preview(content: str) -> str | None:
+    """Extract the argument-preview portion from a tool-progress message.
+
+    Handles both render styles:
+    - Legacy / custom tools:  ``🔧 tool_name: "<preview>"`` (quoted)
+    - Friendly built-in verb: ``💻 Running <preview>`` (verb prefix, no quotes)
+    """
+    import re
+
+    # Legacy quoted form takes precedence when present.
+    match = re.search(r'"(.+)"', content)
+    if match:
+        return match.group(1)
+    # Friendly form: "<emoji> <verb> <preview>". The terminal verb is "Running".
+    marker = " Running "
+    idx = content.find(marker)
+    if idx != -1:
+        return content[idx + len(marker):].strip()
+    return None
+
+
 def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     """Shared setup for long-preview truncation tests.
 
@@ -527,13 +573,10 @@ def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # The long command should be truncated — total preview <= 40 chars
+    # The long command should be truncated — the preview portion <= 40 chars.
     assert "..." in content
-    # Extract the preview part between quotes
-    import re
-    match = re.search(r'"(.+)"', content)
-    assert match, f"No quoted preview found in: {content}"
-    preview_text = match.group(1)
+    preview_text = _extract_progress_preview(content)
+    assert preview_text is not None, f"No preview found in: {content}"
     assert len(preview_text) <= 40, f"Preview too long ({len(preview_text)}): {preview_text}"
 
 
@@ -543,11 +586,9 @@ def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # With 120-char cap, the command (165 chars) should still be truncated but longer
-    import re
-    match = re.search(r'"(.+)"', content)
-    assert match, f"No quoted preview found in: {content}"
-    preview_text = match.group(1)
+    # With 120-char cap, the command (165 chars) should still be truncated but longer.
+    preview_text = _extract_progress_preview(content)
+    assert preview_text is not None, f"No preview found in: {content}"
     # Should be longer than the 40-char default
     assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
     # But still capped at 120
@@ -595,6 +636,24 @@ class PreviewedResponseAgent:
             self.interim_assistant_callback("You're welcome.", already_streamed=False)
         return {
             "final_response": "You're welcome.",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class PreviewedSplitAfterCommentaryAgent:
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.session_id = kwargs.get("session_id")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
+        self.session_id = f"{self.session_id}-child"
+        return {
+            "final_response": "Final answer after compression.",
             "response_previewed": True,
             "messages": [],
             "api_calls": 1,
@@ -919,6 +978,21 @@ async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_run_agent_previewed_split_keeps_final_delivery_pending(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PreviewedSplitAfterCommentaryAgent,
+        session_id="sess-split",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    assert result["session_id"] == "sess-split-child"
+    assert result.get("already_sent") is not True
+    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_matrix_streaming_omits_cursor(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
@@ -1074,6 +1148,62 @@ async def test_base_processing_releases_post_delivery_callback_after_main_send()
     sent_texts = [call["content"] for call in adapter.sent]
     assert sent_texts == ["done", "💾 Skill 'prospect-scanner' created."]
     assert released == [True]
+
+
+@pytest.mark.asyncio
+async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
+    monkeypatch,
+):
+    """A stuck post-delivery callback must not keep the typing task alive."""
+    monkeypatch.setattr(base_platform, "_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS", 0.01)
+    adapter = ProgressCaptureAdapter()
+    events = []
+
+    async def _handler(event):
+        return "done"
+
+    async def _post_delivery_cb():
+        events.append("callback-start")
+        await asyncio.Event().wait()
+
+    async def _stop_typing(chat_id):
+        events.append("typing-stopped")
+        await ProgressCaptureAdapter.stop_typing(adapter, chat_id)
+
+    adapter.set_message_handler(_handler)
+    adapter.stop_typing = _stop_typing
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-1",
+    )
+    session_key = "agent:main:telegram:group:-1001:17585"
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._post_delivery_callbacks[session_key] = _post_delivery_cb
+
+    await asyncio.wait_for(
+        adapter._process_message_background(event, session_key), timeout=1.0
+    )
+
+    assert [call["content"] for call in adapter.sent] == ["done"]
+    # Invariant: typing must stop before the (hung) post-delivery callback
+    # starts.  Don't pin the exact stop_typing call count — the shared
+    # cleanup path may make more than one bounded stop attempt.
+    assert "typing-stopped" in events
+    assert "callback-start" in events
+    assert events.index("typing-stopped") < events.index("callback-start")
+    assert events[: events.index("callback-start")] == (
+        ["typing-stopped"] * events.index("callback-start")
+    )
+    assert any(call["metadata"] == {"stopped": True} for call in adapter.typing)
 
 
 @pytest.mark.asyncio
@@ -1295,10 +1425,12 @@ class TerminalCommandAgent:
 
 
 @pytest.mark.asyncio
-async def test_terminal_progress_is_truncated_preview_not_bash_block(monkeypatch, tmp_path):
-    """Regression for #41215: terminal progress must render as a short truncated
-    preview, never the full command in a fenced ```bash block, even on a
-    markdown-capable (supports_code_blocks) gateway."""
+async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path):
+    """Terminal progress on a markdown-capable (supports_code_blocks) gateway
+    renders a bare fenced code block — no language tag (Slack mrkdwn would print
+    'bash' as a literal first code line).  In non-verbose ("all"/"new") mode the
+    command is collapsed to a single line capped at tool_preview_length so a long
+    or multi-line command doesn't render as a huge block (#42634)."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -1328,18 +1460,71 @@ async def test_terminal_progress_is_truncated_preview_not_bash_block(monkeypatch
         context_prompt="",
         history=[],
         source=source,
-        session_id="sess-terminal-no-bash-block",
+        session_id="sess-terminal-code-block",
         session_key="agent:main:telegram:dm:12345",
     )
 
     assert result["final_response"] == "done"
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
-    # Compact truncated preview, not a fenced bash block.
+    # Bare fenced block, no language tag (no '```bash').
+    assert "```" in all_content
     assert "```bash" not in all_content
-    assert 'terminal: "' in all_content
-    # The full multi-line command body must not reach the chat.
+    # Non-verbose collapses to the first line + truncation marker — the later
+    # command lines must NOT appear (this was the "huge block" regression).
+    assert "set -euo pipefail" in all_content
     assert "npm install -g hyperframes@latest" not in all_content
+    assert "node --version" not in all_content
+    # No truncated quoted preview for the terminal command.
+    assert 'terminal: "' not in all_content
+
+
+@pytest.mark.asyncio
+async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_path):
+    """Verbose mode on a markdown-capable gateway renders the FULL multi-line
+    command in a bare fenced block (no truncation, no 'bash' tag).  This is the
+    parity guarantee for #42634: verbose keeps full detail, non-verbose caps."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "verbose")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-code-block-verbose",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    assert "```" in all_content
+    assert "```bash" not in all_content
+    # Full command body present — verbose is uncapped.
+    assert "npm install -g hyperframes@latest" in all_content
+    assert "node --version" in all_content
 
 
 @pytest.mark.asyncio
@@ -1384,3 +1569,118 @@ async def test_terminal_progress_no_bash_block_in_verbose_mode(monkeypatch, tmp_
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
     assert "```bash" not in all_content
+
+class MultiTerminalCommandAgent:
+    """Emits several consecutive terminal tool.started events, then a
+    different tool, then terminal again — to exercise header collapsing."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        cb("tool.started", "terminal", "echo one", {"command": "echo one"})
+        cb("tool.started", "terminal", "echo two", {"command": "echo two"})
+        cb("tool.started", "terminal", "echo three", {"command": "echo three"})
+        cb("tool.started", "web_search", "query stuff", {"query": "query stuff"})
+        cb("tool.started", "terminal", "echo four", {"command": "echo four"})
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_path):
+    """Back-to-back terminal calls render ONE "terminal" header followed by
+    adjacent code blocks; a different tool in between resets the header so the
+    next terminal call gets a fresh one."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = MultiTerminalCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-consecutive",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    contents = [call["content"] for call in adapter.sent] + [
+        call["content"] for call in adapter.edits
+    ]
+    final = max(contents, key=len) if contents else ""
+    # All four commands present as code blocks.
+    for cmd in ("echo one", "echo two", "echo three", "echo four"):
+        assert cmd in final
+    # Exactly TWO terminal headers: one for the first run of three calls,
+    # one for the terminal call after web_search broke the streak.
+    assert final.count("terminal\n```") == 2
+
+
+@pytest.mark.asyncio
+async def test_run_agent_relays_thinking_when_tool_progress_off(monkeypatch, tmp_path):
+    """_thinking scratch text relays as a bubble when thinking_progress is on,
+    even with tool_progress off.
+
+    Regression: agent.tool_progress_callback used to be gated on
+    tool_progress_enabled alone, so enabling only thinking_progress left the
+    callback None and _thinking never relayed — despite the progress queue
+    being created for it (needs_progress_queue = tool OR thinking).
+    """
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThinkingAgent,
+        session_id="sess-thinking-on",
+        config_data={"display": {"thinking_progress": True, "tool_progress": "off"}},
+    )
+
+    assert result["final_response"] == "done"
+    blob = "\n".join(
+        [c["content"] for c in adapter.sent] + [c["content"] for c in adapter.edits]
+    )
+    assert "weighing the options here" in blob
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_thinking_when_thinking_off(monkeypatch, tmp_path):
+    """With thinking_progress off and tool_progress off, _thinking is suppressed
+    (no callback wired → no relay)."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThinkingAgent,
+        session_id="sess-thinking-off",
+        config_data={"display": {"thinking_progress": False, "tool_progress": "off"}},
+    )
+
+    assert result["final_response"] == "done"
+    blob = "\n".join(
+        [c["content"] for c in adapter.sent] + [c["content"] for c in adapter.edits]
+    )
+    assert "weighing the options here" not in blob

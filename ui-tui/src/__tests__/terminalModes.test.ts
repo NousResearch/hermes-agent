@@ -4,8 +4,8 @@ import { resetTerminalModes, TERMINAL_MODE_RESET } from '../lib/terminalModes.js
 
 describe('terminal mode reset', () => {
   it('includes common sticky input modes', () => {
-    expect(TERMINAL_MODE_RESET).toContain('\x1b[0\'z')
-    expect(TERMINAL_MODE_RESET).toContain('\x1b[0\'{')
+    expect(TERMINAL_MODE_RESET).toContain("\x1b[0'z")
+    expect(TERMINAL_MODE_RESET).toContain("\x1b[0'{")
     expect(TERMINAL_MODE_RESET).toContain('\x1b[?2029l')
     expect(TERMINAL_MODE_RESET).toContain('\x1b[?1016l')
     expect(TERMINAL_MODE_RESET).toContain('\x1b[?1015l')
@@ -54,6 +54,7 @@ describe('terminal mode reset', () => {
 
     expect(write).toHaveBeenCalledTimes(1)
     const written = write.mock.calls[0]?.[0] as string
+
     for (const mode of ['\x1b[?1006l', '\x1b[?1003l', '\x1b[?1002l', '\x1b[?1000l']) {
       expect(written).toContain(mode)
     }

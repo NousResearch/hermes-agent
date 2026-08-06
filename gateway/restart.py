@@ -6,6 +6,12 @@ from hermes_cli.config import DEFAULT_CONFIG
 # the gateway after a graceful drain/reload path completes.
 GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
 
+# EX_CONFIG from sysexits.h — fatal configuration error (e.g. token
+# collision, no messaging platforms).  The s6 finish script translates
+# this into exit 125 (permanent failure) so the supervisor stops
+# restarting the gateway.  See #51228.
+GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
+
 DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT = float(
     DEFAULT_CONFIG["agent"]["restart_drain_timeout"]
 )

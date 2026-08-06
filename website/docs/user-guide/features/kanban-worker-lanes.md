@@ -7,7 +7,7 @@ This page is the contract. It exists for two audiences:
 - **Operators** picking which lanes to wire into a board (which profiles to create, which assignees to use).
 - **Plugin / integration authors** wanting to add a new lane shape (a CLI worker that wraps Codex / Claude Code / OpenCode, a containerised review worker, a non-Hermes service that pulls tasks via the API).
 
-If you're writing the worker code itself — the agent that runs *inside* a lane — the [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill is the deeper procedural detail.
+If you're writing the worker code itself — the agent that runs *inside* a lane — the kanban lifecycle and reference details are injected into the worker's system prompt automatically (the `KANBAN_GUIDANCE` block in [`agent/prompt_builder.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/prompt_builder.py)).
 
 ## The hierarchy
 
@@ -64,7 +64,7 @@ For most code-changing tasks, the work isn't truly *done* the moment the worker 
 - **Drop structured metadata into a `kanban_comment` first** since `kanban_block` only carries the human-readable `reason`. Comments are the durable annotation channel — every audit-relevant field (changed_files, tests_run, diff_path or PR url, decisions) belongs there.
 - **Reviewer either approves and unblocks**, which respawns the worker with the comment thread for follow-ups; or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
 
-The [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill has worked examples for both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
+The injected `KANBAN_GUIDANCE` covers both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
 
 ## Logs and audit trail
 
@@ -80,9 +80,9 @@ The dashboard renders run history with summaries, metadata blocks, and exit-stat
 
 ### Hermes profile lane (default)
 
-The shape every kanban worker takes today: the assignee is a profile name, the dispatcher spawns `hermes -p <profile>`, the worker auto-loads the [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill plus the `KANBAN_GUIDANCE` system-prompt block, and uses the `kanban_*` tools to terminate the run. No setup beyond defining the profile.
+The shape every kanban worker takes today: the assignee is a profile name, the dispatcher spawns `hermes -p <profile>`, the worker gets the `KANBAN_GUIDANCE` system-prompt block injected automatically, and uses the `kanban_*` tools to terminate the run. No setup beyond defining the profile.
 
-When you create profiles for your fleet, choose names that match the *role* you want the orchestrator to route to. The orchestrator (when there is one) discovers your profile names via `hermes profile list` — there's no fixed roster the system assumes (see the [`kanban-orchestrator`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-orchestrator/SKILL.md) skill for the orchestrator side of the contract).
+When you create profiles for your fleet, choose names that match the *role* you want the orchestrator to route to. The orchestrator (when there is one) discovers your profile names via `hermes profile list` — there's no fixed roster the system assumes (the orchestrator side of the contract is part of the injected `KANBAN_GUIDANCE`).
 
 ### Orchestrator profile lane
 
@@ -110,5 +110,4 @@ So lane authors don't have to reimplement these:
 
 - [Kanban overview](./kanban) — the user-facing intro.
 - [Kanban tutorial](./kanban-tutorial) — walkthrough with the dashboard open.
-- [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) — the skill the worker process loads.
-- [`kanban-orchestrator`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-orchestrator/SKILL.md) — the orchestrator side.
+- [`KANBAN_GUIDANCE`](https://github.com/NousResearch/hermes-agent/blob/main/agent/prompt_builder.py) — the worker + orchestrator lifecycle injected into every kanban worker's system prompt.

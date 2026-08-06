@@ -1797,6 +1797,11 @@ class TestRegisterSessionMcpServers:
         state.agent.tools = []
         state.agent.valid_tool_names = set()
         state.agent._cached_system_prompt = "old prompt"
+        state.agent._memory_manager = SimpleNamespace(
+            get_all_tool_schemas=lambda: [
+                {"name": "hindsight_recall", "description": "Recall", "parameters": {}}
+            ]
+        )
 
         server = McpServerStdio(
             name="srv",
@@ -1807,6 +1812,7 @@ class TestRegisterSessionMcpServers:
 
         fake_tools = [
             {"function": {"name": "mcp_srv_search"}},
+            {"function": {"name": "memory"}},
             {"function": {"name": "terminal"}},
         ]
 
@@ -1820,8 +1826,21 @@ class TestRegisterSessionMcpServers:
             quiet_mode=True,
         )
         assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
-        assert state.agent.tools == fake_tools
-        assert state.agent.valid_tool_names == {"mcp_srv_search", "terminal"}
+        assert state.agent.tools is fake_tools
+        assert state.agent.tools[-1] == {
+            "type": "function",
+            "function": {
+                "name": "hindsight_recall",
+                "description": "Recall",
+                "parameters": {},
+            },
+        }
+        assert state.agent.valid_tool_names == {
+            "hindsight_recall",
+            "memory",
+            "mcp_srv_search",
+            "terminal",
+        }
         # _invalidate_system_prompt should have been called
         state.agent._invalidate_system_prompt.assert_called_once()
 

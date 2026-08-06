@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { getScrollbarSnapshot, getViewportSnapshot, scrollbarSnapshotKey, viewportSnapshotKey } from '../lib/viewportStore.js'
+import {
+  getScrollbarSnapshot,
+  getViewportSnapshot,
+  scrollbarSnapshotKey,
+  viewportSnapshotKey
+} from '../lib/viewportStore.js'
 
 describe('viewportStore', () => {
   it('normalizes absent scroll handles', () => {

@@ -422,7 +422,7 @@ stt:
 
 **OpenAI API** — 优先使用 `VOICE_TOOLS_OPENAI_KEY`，回退至 `OPENAI_API_KEY`。支持 `whisper-1`、`gpt-4o-mini-transcribe` 和 `gpt-4o-transcribe`。
 
-**Mistral API（Voxtral Transcribe）** — 需要 `MISTRAL_API_KEY`。使用 Mistral 的 [Voxtral Transcribe](https://docs.mistral.ai/capabilities/audio/speech_to_text/) 模型。支持 13 种语言、说话人分离和词级时间戳。通过 `pip install hermes-agent[mistral]` 安装。
+**Mistral API（Voxtral Transcribe）** — 需要 `MISTRAL_API_KEY`。使用 Mistral 的 [Voxtral Transcribe](https://docs.mistral.ai/capabilities/audio/speech_to_text/) 模型。支持 13 种语言、说话人分离和词级时间戳。通过 `cd ~/.hermes/hermes-agent && uv pip install -e ".[mistral]"` 安装。
 
 **xAI Grok STT** — 需要 `XAI_API_KEY`。以 multipart/form-data 格式发送至 `https://api.x.ai/v1/stt`。如果你已在使用 xAI 进行聊天或 TTS 并希望一个 API 密钥搞定一切，这是个好选择。自动检测顺序将其排在 Groq 之后——显式设置 `stt.provider: xai` 可强制使用。
 

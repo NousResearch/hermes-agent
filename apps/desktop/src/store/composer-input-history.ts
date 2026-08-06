@@ -55,11 +55,15 @@ export function deriveUserHistory<T extends { role: string }>(
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!
 
-    if (m.role !== 'user') {continue}
+    if (m.role !== 'user') {
+      continue
+    }
 
     const t = getText(m).trim()
 
-    if (t) {out.push(t)}
+    if (t) {
+      out.push(t)
+    }
   }
 
   return out
@@ -138,7 +142,9 @@ export function resetBrowseState(sessionId: string | null | undefined) {
   const all = { ...$perSessionBrowse.get() }
   const existing = all[sessionId]
 
-  if (!existing) {return}
+  if (!existing) {
+    return
+  }
 
   all[sessionId] = { cursor: -1, draftSnapshot: '' }
   $perSessionBrowse.set(all)

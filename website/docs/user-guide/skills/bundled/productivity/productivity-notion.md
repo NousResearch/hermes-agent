@@ -41,7 +41,7 @@ Talk to Notion two ways. Same integration token works for both — pick by what'
 
 1. Create an integration at https://notion.so/my-integrations
 2. Copy the API key (starts with `ntn_` or `secret_`)
-3. Store in `~/.hermes/.env`:
+3. Store in `${HERMES_HOME:-~/.hermes}/.env`:
    ```
    NOTION_API_KEY=ntn_your_key_here
    ```
@@ -65,7 +65,7 @@ export NOTION_API_TOKEN=$NOTION_API_KEY      # ntn reads NOTION_API_TOKEN
 export NOTION_KEYRING=0                       # don't try to use the OS keychain
 ```
 
-Add those exports to your shell profile (or to `~/.hermes/.env`) so every session inherits them.
+Add those exports to your shell profile (or to `${HERMES_HOME:-~/.hermes}/.env`) so every session inherits them.
 
 ### 3. Choose path at runtime
 

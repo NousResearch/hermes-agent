@@ -129,10 +129,53 @@ class TestSessionKeyHelpers:
             "_last_active_session_key",
             {"default": "default::local", "task-42": "task-42"},
         )
+        monkeypatch.setattr(
+            browser_tool,
+            "_active_sessions",
+            {"default::local": {"session_name": "local_sess"}},
+        )
         assert browser_tool._last_session_key("default") == "default::local"
         assert browser_tool._last_session_key("task-42") == "task-42"
         # Unknown task_id still falls back
         assert browser_tool._last_session_key("other") == "other"
+
+    def test_last_session_key_drops_stale_sidecar_binding(self, monkeypatch):
+        """A cleaned last-active sidecar must not be silently resurrected."""
+        last_active = {"default": "default::local"}
+        monkeypatch.setattr(browser_tool, "_last_active_session_key", last_active)
+        monkeypatch.setattr(
+            browser_tool,
+            "_active_sessions",
+            {"default": {"session_name": "cloud_sess"}},
+        )
+
+        assert browser_tool._last_session_key("default") == "default"
+        assert last_active == {}
+
+    def test_last_session_key_keeps_bare_task_binding_without_active_session(self, monkeypatch):
+        """Bare task fallback preserves historical lazy-create behavior."""
+        monkeypatch.setattr(browser_tool, "_last_active_session_key", {"default": "default"})
+        monkeypatch.setattr(browser_tool, "_active_sessions", {})
+        assert browser_tool._last_session_key("default") == "default"
+
+    def test_last_session_key_drops_mismatched_owner_metadata(self, monkeypatch):
+        """Explicit ownership metadata prevents retargeting to another task's session."""
+        last_active = {"default": "other-task::local"}
+        monkeypatch.setattr(browser_tool, "_last_active_session_key", last_active)
+        monkeypatch.setattr(
+            browser_tool,
+            "_active_sessions",
+            {
+                "other-task::local": {
+                    "session_name": "local_sess",
+                    "session_key": "other-task::local",
+                    "owner_task_id": "other-task",
+                }
+            },
+        )
+
+        assert browser_tool._last_session_key("default") == "default"
+        assert last_active == {}
 
 
 class TestHybridRoutingSessionCreation:
@@ -155,6 +198,8 @@ class TestHybridRoutingSessionCreation:
         assert session["bb_session_id"] is None
         assert session["cdp_url"] is None
         assert session["features"]["local"] is True
+        assert session["session_key"] == "default::local"
+        assert session["owner_task_id"] == "default"
 
     def test_bare_task_id_with_cloud_provider_uses_cloud(self, monkeypatch):
         """A bare task_id with cloud provider configured hits the cloud path."""
@@ -172,6 +217,8 @@ class TestHybridRoutingSessionCreation:
 
         assert provider.create_session.call_count == 1
         assert session["bb_session_id"] == "bb_123"
+        assert session["session_key"] == "default"
+        assert session["owner_task_id"] == "default"
 
 
 class TestCleanupHybridSessions:
@@ -244,5 +291,6 @@ class TestCleanupHybridSessions:
         browser_tool.cleanup_browser("default::local")
 
         assert reaped == ["default::local"]
-        # Last-active pointer NOT dropped (primary task is still alive)
-        assert browser_tool._last_active_session_key.get("default") == "default::local"
+        # The cleaned sidecar must not remain the recorded owner; otherwise a
+        # later click/snapshot could resurrect it instead of using the primary.
+        assert "default" not in browser_tool._last_active_session_key

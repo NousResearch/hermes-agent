@@ -32,6 +32,10 @@ def _make_runner(session_db=None):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
+    # Gateway holds the async facade; the slash handlers await it.
+    if session_db is not None:
+        from hermes_state import AsyncSessionDB
+        session_db = AsyncSessionDB(session_db)
     runner._session_db = session_db
 
     # Mock session_store that returns a session entry with a known session_id
@@ -166,6 +170,42 @@ class TestHandleTitleCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_set_title_propagates_to_telegram_topic_rename(self, tmp_path):
+        """/title <name> also renames the visible Telegram topic, not just the DB."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        runner._schedule_telegram_topic_title_rename = MagicMock()
+
+        event = _make_event(text="/title My Topic Name")
+        result = await runner._handle_title_command(event)
+
+        assert "My Topic Name" in result
+        runner._schedule_telegram_topic_title_rename.assert_called_once_with(
+            event.source, "test_session_123", "My Topic Name"
+        )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_show_title_does_not_rename_topic(self, tmp_path):
+        """Showing the title (no arg) must not trigger a topic rename."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+        db.set_session_title("test_session_123", "Existing Title")
+
+        runner = _make_runner(session_db=db)
+        runner._schedule_telegram_topic_title_rename = MagicMock()
+
+        event = _make_event(text="/title")
+        await runner._handle_title_command(event)
+
+        runner._schedule_telegram_topic_title_rename.assert_not_called()
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_works_across_platforms(self, tmp_path):
         """The /title command works for Discord, Slack, and WhatsApp too."""
         from hermes_state import SessionDB
@@ -260,7 +300,7 @@ class TestResetCommandWithTitle:
         runner._running_agents = {}
         runner._pending_messages = {}
         runner._pending_approvals = {}
-        runner._session_db = MagicMock()
+        runner._session_db = AsyncMock()
         runner._agent_cache = {}
         runner._agent_cache_lock = None
         runner._is_user_authorized = lambda _source: True
@@ -320,7 +360,7 @@ class TestResetCommandWithTitle:
         runner._running_agents = {}
         runner._pending_messages = {}
         runner._pending_approvals = {}
-        runner._session_db = MagicMock()
+        runner._session_db = AsyncMock()
         runner._session_db.set_session_title.side_effect = ValueError(
             "Title 'Dup' is already in use by session abc-123"
         )

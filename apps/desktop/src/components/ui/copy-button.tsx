@@ -1,6 +1,7 @@
 import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
+import { ContextMenuItem } from '@/components/ui/context-menu'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -9,7 +10,7 @@ import { Check, Copy, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 type CopyPayload = string | (() => Promise<string> | string)
-type CopyButtonAppearance = 'button' | 'icon' | 'inline' | 'menu-item' | 'tool-row'
+type CopyButtonAppearance = 'button' | 'icon' | 'inline' | 'menu-item' | 'context-menu-item' | 'tool-row'
 type CopyStatus = 'copied' | 'error' | 'idle'
 const COPIED_RESET_MS = 1_500
 
@@ -48,6 +49,7 @@ export interface CopyButtonProps {
   onCopyError?: (error: unknown) => void
   preventDefault?: boolean
   showLabel?: boolean
+  side?: React.ComponentProps<typeof Tip>['side']
   stopPropagation?: boolean
   text: CopyPayload
   title?: string
@@ -68,6 +70,7 @@ export function CopyButton({
   onCopyError,
   preventDefault = false,
   showLabel,
+  side,
   stopPropagation = false,
   text,
   title
@@ -157,11 +160,14 @@ export function CopyButton({
 
   const feedbackLabel =
     status === 'copied' ? t.common.copied : status === 'error' ? resolvedErrorMessage : (title ?? resolvedLabel)
+
   const ariaLabel = status === 'idle' ? resolvedLabel : feedbackLabel
 
-  if (appearance === 'menu-item') {
+  if (appearance === 'menu-item' || appearance === 'context-menu-item') {
+    const MenuItem = appearance === 'menu-item' ? DropdownMenuItem : ContextMenuItem
+
     return (
-      <DropdownMenuItem
+      <MenuItem
         className={className}
         disabled={disabled}
         onSelect={event => {
@@ -170,24 +176,26 @@ export function CopyButton({
         }}
       >
         {content}
-      </DropdownMenuItem>
+      </MenuItem>
     )
   }
 
   if (appearance === 'inline') {
     return (
-      <button
-        aria-label={ariaLabel}
-        className={cn(
-          'inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[0.75rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40',
-          className
-        )}
-        disabled={disabled}
-        onClick={event => void copy(event)}
-        type="button"
-      >
-        {content}
-      </button>
+      <Tip label={feedbackLabel} side={side}>
+        <button
+          aria-label={ariaLabel}
+          className={cn(
+            'inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[0.75rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40',
+            className
+          )}
+          disabled={disabled}
+          onClick={event => void copy(event)}
+          type="button"
+        >
+          {content}
+        </button>
+      </Tip>
     )
   }
 
@@ -225,5 +233,11 @@ export function CopyButton({
   )
 
   // Only icon-only buttons need a tooltip; the text variant already shows its label.
-  return appearance === 'icon' ? <Tip label={feedbackLabel}>{button}</Tip> : button
+  return appearance === 'icon' ? (
+    <Tip label={feedbackLabel} side={side ?? 'bottom'}>
+      {button}
+    </Tip>
+  ) : (
+    button
+  )
 }

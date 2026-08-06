@@ -1,52 +1,37 @@
 name: photon-platform
-label: Photon iMessage
+label: iMessage via Photon
 kind: platform
-version: 0.1.0
+version: 0.3.0
 description: >
   Photon Spectrum gateway adapter for Hermes Agent.
   Connects to iMessage (and other Spectrum interfaces) through Photon's
-  managed Spectrum platform. Inbound messages arrive as signed webhooks
-  on a local aiohttp server; outbound messages are sent via a small
-  supervised Node sidecar that runs the `spectrum-ts` SDK (Photon does
-  not currently expose a public HTTP send endpoint).
+  managed Spectrum platform. Both directions run over the `spectrum-ts`
+  SDK's long-lived gRPC stream via a small supervised Node sidecar —
+  inbound messages arrive on the SDK's `app.messages` stream (no webhook,
+  no public URL, no signing secret), and outbound messages are sent over
+  the same sidecar.
 
-  The plugin ships with a `hermes photon` CLI for the one-time login
-  + project + user setup, persists Spectrum credentials to
-  ``~/.hermes/auth.json`` under ``credential_pool.photon`` (token) and
-  ``credential_pool.photon_project`` (project id + secret), and exposes
-  Photon's free shared-line model so users can get started without a
-  paid plan.
+  The plugin ships with a `hermes photon` CLI for the one-time device
+  login + project + user setup. Runtime credentials are written to
+  ``~/.hermes/.env`` (``PHOTON_PROJECT_ID`` = the Spectrum project id,
+  ``PHOTON_PROJECT_SECRET``) like every other channel, with management
+  metadata (device token, dashboard project id) in ``~/.hermes/auth.json``.
+  Photon's free shared-line model lets users get started without a paid plan.
 author: NousResearch
 requires_env:
   - name: PHOTON_PROJECT_ID
-    description: "Spectrum project ID (set by `hermes photon setup`)"
-    prompt: "Photon Spectrum project ID"
+    description: "Spectrum project id (the project's spectrumProjectId; set by `hermes photon setup`)"
+    prompt: "Photon Spectrum project id"
     url: "https://app.photon.codes/"
     password: false
   - name: PHOTON_PROJECT_SECRET
-    description: "Spectrum project secret (set by `hermes photon setup`)"
-    prompt: "Photon Spectrum project secret"
+    description: "Project secret paired with the Spectrum project id (set by `hermes photon setup`)"
+    prompt: "Photon project secret"
     url: "https://app.photon.codes/"
     password: true
 optional_env:
-  - name: PHOTON_WEBHOOK_SECRET
-    description: "Per-URL HMAC-SHA256 signing secret returned at webhook registration"
-    prompt: "Photon webhook signing secret"
-    password: true
-  - name: PHOTON_WEBHOOK_PORT
-    description: "Local port the webhook receiver listens on (default 8788)"
-    prompt: "Webhook receiver port"
-    password: false
-  - name: PHOTON_WEBHOOK_PATH
-    description: "Path the webhook receiver listens on (default /photon/webhook)"
-    prompt: "Webhook receiver path"
-    password: false
-  - name: PHOTON_WEBHOOK_BIND
-    description: "Bind address for the webhook receiver (default 0.0.0.0)"
-    prompt: "Webhook bind address"
-    password: false
   - name: PHOTON_SIDECAR_PORT
-    description: "Loopback port for the Node sidecar control channel (default 8789)"
+    description: "Loopback port for the Node sidecar control + inbound channel (default 8789)"
     prompt: "Sidecar control port"
     password: false
   - name: PHOTON_SIDECAR_AUTOSTART
@@ -57,13 +42,13 @@ optional_env:
     description: "Path to the node binary (default: shutil.which('node'))"
     prompt: "Node executable path"
     password: false
-  - name: PHOTON_API_HOST
-    description: "Spectrum management API host (default https://spectrum.photon.codes)"
-    prompt: "Spectrum API host"
-    password: false
   - name: PHOTON_DASHBOARD_HOST
-    description: "Dashboard API host (default https://app.photon.codes)"
+    description: "Photon Dashboard API host (default https://app.photon.codes)"
     prompt: "Dashboard host"
+    password: false
+  - name: PHOTON_SPECTRUM_HOST
+    description: "Photon Spectrum API host (default https://spectrum.photon.codes)"
+    prompt: "Spectrum API host"
     password: false
   - name: PHOTON_ALLOWED_USERS
     description: "Comma-separated E.164 phone numbers allowed to talk to the bot"
@@ -82,10 +67,22 @@ optional_env:
     prompt: "Group mention patterns"
     password: false
   - name: PHOTON_HOME_CHANNEL
-    description: "Default Spectrum space ID for cron / notification delivery"
-    prompt: "Home space ID"
+    description: "Default Photon target for cron / notification delivery: Spectrum space id, DM GUID, or bare E.164 phone number"
+    prompt: "Home Photon target"
     password: false
   - name: PHOTON_HOME_CHANNEL_NAME
     description: "Human label for the home channel"
     prompt: "Home channel display name"
+    password: false
+  - name: PHOTON_TELEMETRY
+    description: "Enable Spectrum SDK telemetry in the sidecar (true/false, default false; toggle with `hermes photon telemetry on|off`)"
+    prompt: "Enable Spectrum telemetry? (true/false)"
+    password: false
+  - name: PHOTON_MARKDOWN
+    description: "Send agent replies as markdown — iMessage renders it natively, other Spectrum platforms degrade to plain text (true/false, default true)"
+    prompt: "Render replies as markdown? (true/false)"
+    password: false
+  - name: PHOTON_REACTIONS
+    description: "Tapback 👀/👍/👎 on messages as processing status and route tapbacks on bot messages to the agent (true/false, default false)"
+    prompt: "Enable reaction tapbacks? (true/false)"
     password: false

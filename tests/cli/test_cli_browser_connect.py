@@ -9,8 +9,10 @@ from unittest.mock import patch
 
 from cli import HermesCLI
 from hermes_cli.browser_connect import (
+    _wait_for_browser_debug_ready_or_exit,
     get_chrome_debug_candidates,
     is_browser_debug_ready,
+    launch_chrome_debug,
     manual_chrome_debug_command,
 )
 
@@ -65,6 +67,7 @@ class TestChromeDebugLaunch:
 
         with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: r"C:\Chrome\chrome.exe" if name == "chrome.exe" else None), \
              patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == r"C:\Chrome\chrome.exe"), \
+             patch("hermes_cli.browser_connect._wait_for_browser_debug_ready_or_exit", return_value="ready"), \
              patch("subprocess.Popen", side_effect=fake_popen):
             assert HermesCLI._try_launch_chrome_debug(9333, "Windows") is True
 
@@ -94,6 +97,7 @@ class TestChromeDebugLaunch:
 
         with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
              patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == installed), \
+             patch("hermes_cli.browser_connect._wait_for_browser_debug_ready_or_exit", return_value="ready"), \
              patch("subprocess.Popen", side_effect=fake_popen):
             assert HermesCLI._try_launch_chrome_debug(9222, "Windows") is True
 
@@ -194,10 +198,110 @@ class TestChromeDebugLaunch:
             return object()
 
         with patch("hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[brave, chrome]), \
+             patch("hermes_cli.browser_connect._wait_for_browser_debug_ready_or_exit", return_value="ready"), \
              patch("subprocess.Popen", side_effect=fake_popen):
             assert HermesCLI._try_launch_chrome_debug(9222, "Linux") is True
 
         assert attempts == [brave, chrome]
+
+    def test_wait_for_browser_debug_ready_or_exit_detects_early_exit(self, monkeypatch):
+        class _Proc:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return 1 if self.calls >= 2 else None
+
+        monkeypatch.setattr("hermes_cli.browser_connect.time.sleep", lambda _seconds: None)
+        with patch("hermes_cli.browser_connect.is_browser_debug_ready", return_value=False):
+            state = _wait_for_browser_debug_ready_or_exit(_Proc(), 9222, timeout=0.3, interval=0.01)
+
+        assert state == "exited"
+
+    def test_launch_tries_next_browser_when_first_candidate_exits_before_debug_ready(self):
+        brave = "/usr/bin/brave-browser"
+        chrome = "/usr/bin/google-chrome"
+        attempts = []
+
+        class _Proc:
+            pass
+
+        def fake_popen(cmd, **kwargs):
+            attempts.append(cmd[0])
+            return _Proc()
+
+        with patch("hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[brave, chrome]), \
+             patch("hermes_cli.browser_connect._wait_for_browser_debug_ready_or_exit", side_effect=["exited", "ready"]), \
+             patch("subprocess.Popen", side_effect=fake_popen):
+            assert HermesCLI._try_launch_chrome_debug(9222, "Linux") is True
+
+        assert attempts == [brave, chrome]
+
+    def test_launch_result_hints_singleton_forward_on_clean_exit(self, tmp_path, monkeypatch):
+        """A candidate that exits code 0 without opening the port = an existing
+        instance absorbed the launch (Chromium single-instance behavior)."""
+        chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+        class _Proc:
+            pid = 1234
+            returncode = 0
+
+            def poll(self):
+                return 0
+
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.chrome_debug_data_dir", lambda: str(tmp_path)
+        )
+        with patch("hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[chrome]), \
+             patch("hermes_cli.browser_connect.is_browser_debug_ready", return_value=False), \
+             patch("subprocess.Popen", return_value=_Proc()):
+            result = launch_chrome_debug(9222, "Windows")
+
+        assert result.launched is False
+        assert result.attempts[0].state == "exited"
+        assert result.attempts[0].returncode == 0
+        assert result.hint is not None
+        assert "already-running" in result.hint
+        assert "chrome.exe" in result.hint
+
+    def test_launch_result_surfaces_stderr_tail_on_crash(self, tmp_path, monkeypatch):
+        chrome = "/usr/bin/google-chrome"
+
+        class _Proc:
+            pid = 4321
+            returncode = 127
+
+            def __init__(self, stderr_path):
+                # Simulate the browser writing to the redirected stderr file.
+                with open(stderr_path, "w", encoding="utf-8") as fh:
+                    fh.write("error while loading shared libraries: libnspr4.so\n")
+
+            def poll(self):
+                return 127
+
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.chrome_debug_data_dir", lambda: str(tmp_path)
+        )
+        stderr_path = tmp_path / "launch-stderr.log"
+        with patch("hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[chrome]), \
+             patch("hermes_cli.browser_connect.is_browser_debug_ready", return_value=False), \
+             patch("subprocess.Popen", side_effect=lambda *a, **k: _Proc(stderr_path)):
+            result = launch_chrome_debug(9222, "Linux")
+
+        assert result.launched is False
+        assert result.attempts[0].returncode == 127
+        assert "libnspr4.so" in result.attempts[0].stderr_tail
+        assert result.hint is not None
+        assert "libnspr4.so" in result.hint
+
+    def test_launch_result_no_hint_when_no_candidates(self):
+        with patch("hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[]):
+            result = launch_chrome_debug(9222, "Linux")
+
+        assert result.launched is False
+        assert result.attempts == []
+        assert result.hint is None
 
     def test_manual_command_uses_wsl_windows_chrome_when_available(self):
         chrome = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"

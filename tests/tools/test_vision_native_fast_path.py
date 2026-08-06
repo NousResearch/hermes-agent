@@ -119,7 +119,9 @@ class TestVisionAnalyzeNative:
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert parsed.get("success") is False
-        assert "Invalid image source" in parsed.get("error", "")
+        # Unified resolver: local backend reports a clean not-found.
+        err = parsed.get("error", "").lower()
+        assert "image file not found" in err or "no active sandbox" in err
 
     def test_empty_image_url_returns_error(self):
         result = asyncio.get_event_loop().run_until_complete(

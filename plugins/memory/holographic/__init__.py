@@ -251,6 +251,17 @@ class HolographicMemoryProvider(MemoryProvider):
                 logger.debug("Holographic memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
+        # Release the shared SQLite connection deterministically on the
+        # caller's thread. Dropping the reference alone leaves fd finalization
+        # to GC, which keeps the connection (and its write lock) alive on a
+        # long-running gateway and prolongs the "database is locked" contention
+        # this store's shared-connection refcounting is meant to eliminate.
+        # close() is idempotent and refcount-guarded, so siblings stay safe.
+        if self._store is not None:
+            try:
+                self._store.close()
+            except Exception as e:
+                logger.debug("Holographic shutdown close() failed: %s", e)
         self._store = None
         self._retriever = None
 

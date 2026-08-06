@@ -183,7 +183,7 @@ class NtfyAdapter(BasePlatformAdapter):
 
     # -- Connection lifecycle -----------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to ntfy by starting the streaming subscription task."""
         if not HTTPX_AVAILABLE:
             logger.warning("[%s] httpx not installed. Run: pip install httpx", self.name)

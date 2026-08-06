@@ -1,11 +1,7 @@
 import { atom, computed } from 'nanostores'
 
-import {
-  defaultBindings,
-  KEYBIND_ACTION_IDS,
-  keybindAction,
-  type KeybindBindings
-} from '@/lib/keybinds/actions'
+import { defaultBindings, KEYBIND_ACTION_IDS, keybindAction, type KeybindBindings } from '@/lib/keybinds/actions'
+import { canonicalizeCombo } from '@/lib/keybinds/combo'
 import { arraysEqual, persistString, storedString } from '@/lib/storage'
 
 const STORAGE_KEY = 'hermes.desktop.keybinds'
@@ -59,14 +55,17 @@ export const $bindings = atom<KeybindBindings>(loadBindings())
 $bindings.subscribe(persistBindings)
 
 // Reverse lookup combo → actionId for dispatch. First action wins on conflict;
-// the panel/edit overlay surface conflicts so users can resolve them.
+// the panel/edit overlay surface conflicts so users can resolve them. Keys go
+// through `canonicalizeCombo` so a `ctrl+…` binding resolves everywhere.
 export const $comboIndex = computed($bindings, bindings => {
   const index = new Map<string, string>()
 
   for (const id of KEYBIND_ACTION_IDS) {
     for (const combo of bindings[id] ?? []) {
-      if (!index.has(combo)) {
-        index.set(combo, id)
+      const key = canonicalizeCombo(combo)
+
+      if (!index.has(key)) {
+        index.set(key, id)
       }
     }
   }

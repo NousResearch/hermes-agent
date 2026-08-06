@@ -43,6 +43,47 @@ class TestWhitespaceDifference:
         assert count == 1
         assert "bar" in new
 
+    def test_boundary_space_preserved_after_match(self):
+        """Regression: whitespace_normalized match ending with a non-space
+        character must NOT consume the word-boundary space that follows.
+        https://github.com/NousResearch/hermes-agent/issues/52491"""
+        # Case 1 — simple word boundary
+        new, count, strategy, err = fuzzy_find_and_replace(
+            "foo   bar baz", "foo bar", "XY",
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "whitespace_normalized"
+        assert new == "XY baz", f"Boundary space deleted: {new!r}"
+
+    def test_boundary_space_preserved_in_code_edit(self):
+        """Regression: real-world code-edit scenario where the space before
+        the next operator must survive a whitespace-normalized match."""
+        content = "result = compute(a,  b) + tail"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "compute(a, b)", "compute(a, b, c)",
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "whitespace_normalized"
+        assert new == "result = compute(a, b, c) + tail", f"Boundary space deleted: {new!r}"
+
+    def test_trailing_ws_still_consumed_when_match_ends_with_space(self):
+        """When the normalized match itself ends with whitespace (pattern has
+        trailing space), the expansion must still consume the full whitespace
+        run in the original."""
+        # Use a pattern with trailing space where the boundary is clear:
+        # content has "foo   " then "bar", pattern is "foo " — the match
+        # should cover all 3 original spaces (the trailing ws run).
+        new, count, strategy, err = fuzzy_find_and_replace(
+            "a = foo   + bar", "foo +", "XY",
+        )
+        assert err is None
+        assert count == 1
+        # "foo   +" normalized to "foo +" matches; trailing spaces consumed
+        # Result: "a = XY bar"
+        assert "XY" in new and "bar" in new
+
 
 class TestIndentDifference:
     def test_different_indentation(self):
@@ -166,6 +207,39 @@ class TestReplaceAll:
         assert count == 2
         assert new == "ccc bbb ccc"
 
+    def test_self_overlapping_pattern_non_overlapping_matches(self):
+        """Self-overlapping patterns must produce non-overlapping spans.
+
+        Regression: _strategy_exact advanced the scan cursor by 1 instead of
+        len(pattern), so "aa" in "aaaa" matched at offsets 0, 1, 2 (overlapping)
+        instead of 0, 2. _apply_replacements works in reverse order, so the
+        stale offsets corrupted the file. Fix aligns with str.replace().
+        """
+        # replace_all: 2 non-overlapping matches, not 3 overlapping ones.
+        new, count, _, err = fuzzy_find_and_replace("aaaa", "aa", "b", replace_all=True)
+        assert err is None
+        assert count == 2
+        assert new == "bb"
+
+        # single-char pattern still counts every occurrence
+        new, count, _, err = fuzzy_find_and_replace("aaa", "a", "b", replace_all=True)
+        assert err is None
+        assert count == 3
+        assert new == "bbb"
+
+        # embedded in surrounding content — non-matched parts preserved
+        new, count, _, err = fuzzy_find_and_replace(
+            "prefix aaaa suffix", "aa", "b", replace_all=True
+        )
+        assert err is None
+        assert count == 2
+        assert new == "prefix bb suffix"
+
+        # without the flag, the non-overlapping count is reported (2, not 3)
+        new, count, _, err = fuzzy_find_and_replace("aaaa", "aa", "b", replace_all=False)
+        assert count == 0
+        assert "2 matches" in err
+
 
 class TestUnicodeNormalized:
     """Tests for the unicode_normalized strategy (Bug 5)."""
@@ -196,6 +270,54 @@ class TestUnicodeNormalized:
         new, count, strategy, err = fuzzy_find_and_replace(content, "hello", "hi")
         assert count == 1
         assert strategy == "exact"
+
+    def test_unicode_preserved_in_output(self):
+        """Unicode characters in unchanged portions survive the replacement."""
+        content = "Hello\u2014world"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "Hello--world", "Hello--there"
+        )
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        # The em-dash should be preserved; only "world" → "there" should change
+        assert new == "Hello\u2014there", f"Got {new!r}"
+
+    def test_smart_quotes_preserved(self):
+        """Smart quotes survive when only the quoted text changes."""
+        content = 'He said \u201chello\u201d to her'
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, 'He said "hello" to her', 'He said "goodbye" to her'
+        )
+        assert count == 1, f"Expected match, got err={err}"
+        assert new == 'He said \u201cgoodbye\u201d to her', f"Got {new!r}"
+
+    def test_ellipsis_preserved(self):
+        """Ellipsis survives when surrounding text changes."""
+        content = "Wait for it\u2026and done"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "Wait for it...and done", "Wait for it...then done"
+        )
+        assert count == 1, f"Expected match, got err={err}"
+        assert new == "Wait for it\u2026then done", f"Got {new!r}"
+
+    def test_mixed_unicode_multiline(self):
+        """Multiple Unicode types in a multi-line block all survive."""
+        content = 'Line 1 \u2014 with dash\nLine 2 \u201cquoted\u201d text\nLine 3 plain'
+        old = 'Line 1 -- with dash\nLine 2 "quoted" text\nLine 3 plain'
+        new_str = 'Line 1 -- with dash\nLine 2 "quoted" text\nLine 3 changed'
+        new, count, strategy, err = fuzzy_find_and_replace(content, old, new_str)
+        assert count == 1, f"Expected match, got err={err}"
+        expected = 'Line 1 \u2014 with dash\nLine 2 \u201cquoted\u201d text\nLine 3 changed'
+        assert new == expected, f"Got {new!r}"
+
+    def test_no_unicode_no_change(self):
+        """When file has no Unicode, replacement is direct (no-op guard)."""
+        content = "plain text here"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "plain text here", "plain text there"
+        )
+        assert count == 1
+        assert new == "plain text there"
 
 
 class TestBlockAnchorThreshold:

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { clearClarifyRequest, setClarifyRequest } from './clarify'
 import {
+  $activeSessionAwaitingInput,
   $approvalRequest,
   $secretRequest,
   $sudoRequest,
@@ -22,6 +24,7 @@ beforeEach(() => {
 
 afterEach(() => {
   clearAllPrompts()
+  clearClarifyRequest()
   $activeSessionId.set(null)
 })
 
@@ -52,6 +55,17 @@ describe('approval prompt store', () => {
     clearApprovalRequest('s1')
 
     expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('carries allowPermanent so the bar can hide "Always allow"', () => {
+    setApprovalRequest({
+      allowPermanent: false,
+      command: 'curl x | bash',
+      description: 'content-security',
+      sessionId: 's1'
+    })
+
+    expect($approvalRequest.get()?.allowPermanent).toBe(false)
   })
 })
 
@@ -117,5 +131,28 @@ describe('clearAllPrompts', () => {
 
     $activeSessionId.set('s2')
     expect($approvalRequest.get()?.command).toBe('y')
+  })
+})
+
+describe('$activeSessionAwaitingInput', () => {
+  it('is true while any blocking prompt (clarify or approval/sudo/secret) is parked on the active session', () => {
+    expect($activeSessionAwaitingInput.get()).toBe(false)
+
+    setApprovalRequest({ command: 'x', description: 'd', sessionId: 's1' })
+    expect($activeSessionAwaitingInput.get()).toBe(true)
+
+    clearApprovalRequest('s1')
+    expect($activeSessionAwaitingInput.get()).toBe(false)
+
+    setClarifyRequest({ choices: null, question: 'q', requestId: 'c1', sessionId: 's1' })
+    expect($activeSessionAwaitingInput.get()).toBe(true)
+  })
+
+  it('ignores a prompt parked on a background session', () => {
+    setSudoRequest({ requestId: 'r', sessionId: 's2' })
+    expect($activeSessionAwaitingInput.get()).toBe(false)
+
+    $activeSessionId.set('s2')
+    expect($activeSessionAwaitingInput.get()).toBe(true)
   })
 })

@@ -14,12 +14,38 @@ from hermes_cli.commands import resolve_command
 class _FakeSessionDB:
     def __init__(self):
         self.rows: dict[str, dict] = {}
+        self.fail_writes = False
 
-    def get_session(self, session_id: str):
+    async def get_session(self, session_id: str):
         return self.rows.get(session_id)
 
-    def update_session_cwd(self, session_id: str, cwd: str):
-        self.rows.setdefault(session_id, {"id": session_id})["cwd"] = cwd or None
+    async def update_session_cwd(
+        self,
+        session_id: str,
+        cwd: str,
+        git_branch: str | None = None,
+        git_repo_root: str | None = None,
+    ):
+        if self.fail_writes:
+            raise RuntimeError("database write failed")
+        row = self.rows.setdefault(session_id, {"id": session_id})
+        row["cwd"] = cwd
+        if git_branch:
+            row["git_branch"] = git_branch
+        if git_repo_root:
+            row["git_repo_root"] = git_repo_root
+
+    async def clear_session_workspace(self, session_id: str):
+        if self.fail_writes:
+            raise RuntimeError("database write failed")
+        row = self.rows.setdefault(session_id, {"id": session_id})
+        row.update(cwd=None, git_branch=None, git_repo_root=None)
+
+    async def set_session_workspace(self, session_id: str, cwd: str):
+        if self.fail_writes:
+            raise RuntimeError("database write failed")
+        row = self.rows.setdefault(session_id, {"id": session_id})
+        row.update(cwd=cwd, git_branch=None, git_repo_root=None)
 
 
 class _Store:
@@ -28,6 +54,14 @@ class _Store:
 
     def get_or_create_session(self, _source):
         return self.entry
+
+
+class _AsyncStore:
+    def __init__(self, store):
+        self._store = store
+
+    async def get_or_create_session(self, source):
+        return self._store.get_or_create_session(source)
 
 
 def _source() -> SessionSource:
@@ -57,11 +91,17 @@ def _runner(tmp_path, monkeypatch):
         chat_type="dm",
     )
     db = _FakeSessionDB()
-    db.rows[entry.session_id] = {"id": entry.session_id, "cwd": None}
+    db.rows[entry.session_id] = {
+        "id": entry.session_id,
+        "cwd": None,
+        "git_branch": None,
+        "git_repo_root": None,
+    }
 
     runner = object.__new__(GatewayRunner)
     runner._session_db = db
     runner.session_store = _Store(entry)
+    runner._async_session_store = _AsyncStore(runner.session_store)
     evicted: list[str] = []
     runner._evict_cached_agent = evicted.append
     runner._global_gateway_cwd = lambda: str(tmp_path / "global")
@@ -104,31 +144,70 @@ async def test_workspace_set_and_clear_persist_session_cwd(tmp_path, monkeypatch
     runner, entry, db = _runner(tmp_path, monkeypatch)
     project = tmp_path / "project"
     project.mkdir()
+    db.rows[entry.session_id].update(
+        cwd=str(tmp_path / "old-project"),
+        git_branch="feature/old-workspace",
+        git_repo_root=str(tmp_path / "old-project"),
+    )
 
     set_result = await runner._handle_workspace_command(_event(f"/workspace {project}"))
 
     assert "Workspace set" in set_result
     assert db.rows[entry.session_id]["cwd"] == str(project)
+    assert db.rows[entry.session_id]["git_branch"] is None
+    assert db.rows[entry.session_id]["git_repo_root"] is None
     assert (entry.session_id, {"cwd": str(project)}) in runner._workspace_probe.registered
     assert entry.session_id in runner._workspace_probe.cleaned
     assert entry.session_key in runner._workspace_probe.evicted
 
+    db.rows[entry.session_id].update(
+        git_branch="feature/workspace",
+        git_repo_root=str(project),
+    )
     clear_result = await runner._handle_workspace_command(_event("/workspace clear"))
 
     assert "cleared" in clear_result
-    assert db.rows[entry.session_id]["cwd"] is None
+    assert db.rows[entry.session_id] == {
+        "id": entry.session_id,
+        "cwd": None,
+        "git_branch": None,
+        "git_repo_root": None,
+    }
     assert entry.session_id in runner._workspace_probe.cleared
 
 
-def test_workspace_cwd_carries_across_session_id_rotation(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_workspace_status_reports_session_override(tmp_path, monkeypatch):
     runner, entry, db = _runner(tmp_path, monkeypatch)
     project = tmp_path / "project"
     project.mkdir()
     db.rows[entry.session_id]["cwd"] = str(project)
 
-    runner._carry_gateway_session_cwd(entry.session_id, "sess-2")
+    result = await runner._handle_workspace_command(_event("/workspace status"))
 
-    assert db.rows["sess-2"]["cwd"] == str(project)
+    assert str(project) in result
+    assert "session override" in result
+
+
+@pytest.mark.asyncio
+async def test_workspace_metadata_carries_across_session_id_rotation(tmp_path, monkeypatch):
+    runner, entry, db = _runner(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    project.mkdir()
+    db.rows[entry.session_id].update(
+        cwd=str(project),
+        git_branch="feature/workspace",
+        git_repo_root=str(project),
+    )
+
+    await runner._carry_gateway_session_workspace(entry.session_id, "sess-2")
+
+    assert db.rows["sess-2"] == {
+        "id": "sess-2",
+        "cwd": str(project),
+        "git_branch": "feature/workspace",
+        "git_repo_root": str(project),
+    }
     assert ("sess-2", {"cwd": str(project)}) in runner._workspace_probe.registered
     assert entry.session_id in runner._workspace_probe.cleared
 
@@ -142,3 +221,17 @@ async def test_workspace_rejects_relative_and_missing_paths(tmp_path, monkeypatc
 
     assert "absolute path" in relative
     assert "not an existing directory" in missing
+
+
+@pytest.mark.asyncio
+async def test_workspace_does_not_report_success_when_persistence_fails(tmp_path, monkeypatch):
+    runner, _entry, db = _runner(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    project.mkdir()
+    db.fail_writes = True
+
+    result = await runner._handle_workspace_command(_event(f"/workspace {project}"))
+
+    assert "Failed to save workspace" in result
+    assert not runner._workspace_probe.registered
+    assert not runner._workspace_probe.evicted

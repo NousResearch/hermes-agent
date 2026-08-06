@@ -116,7 +116,7 @@ hermes model
 
 ### 无头环境 / SSH / 远程配置
 
-OAuth 需要浏览器，但回调的 loopback 运行在 Hermes 所在的机器上。对于远程主机，请参阅 [OAuth over SSH / 远程主机](/guides/oauth-over-ssh)——与其他基于 OAuth 的提供商相同的方式同样适用于 Portal（`ssh -L` 端口转发，或在 Cloud Shell / Codespaces 等纯浏览器环境中使用 `--manual-paste`）。
+OAuth 需要浏览器，但回调的 loopback 运行在 Hermes 所在的机器上。对于远程主机，请参阅 [OAuth over SSH / 远程主机](/guides/oauth-over-ssh)——与其他基于 OAuth 的提供商相同的方式同样适用于 Portal（`ssh -L` 端口转发）。
 
 ### Profile 配置
 

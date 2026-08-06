@@ -1,7 +1,7 @@
 ---
 name: antigravity-cli
 description: "Operate the Antigravity CLI (agy): plugins, auth, sandbox."
-version: 0.1.0
+version: 0.2.0
 author: Tony Simons (asimons81), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -62,6 +62,66 @@ skills use. For one-shot smoke tests and scripted prompts, prefer
 
 To inspect Antigravity's own files, use `read_file` on the paths under Core
 paths below — do not `cat` them through the terminal.
+
+## Delegation patterns
+
+`agy` is a coding-agent backend in the same family as `codex` / `claude-code`,
+so the same delegation shapes apply. Use these when handing real work (features,
+fixes, reviews, second opinions) to Antigravity rather than just smoke-testing.
+
+### One-shot (preferred for scripted prompts and second opinions)
+
+```
+terminal(command="agy -p 'Review this diff for bugs and security issues' --model 'Gemini 3.1 Pro (High)'", workdir="/path/to/repo", timeout=300)
+```
+
+`-p` is non-interactive: it runs the prompt and exits. Pick the engine with
+`--model` (run `agy models` for the exact display strings, e.g.
+`'Gemini 3.1 Pro (High)'`, `'Claude Opus 4.6 (Thinking)'`). Add extra context
+roots with repeatable `--add-dir`.
+
+### Long / bounded runs (tests, builds, multi-file changes)
+
+Background it and get notified on completion, the same as the `codex` skill:
+
+```
+terminal(command="agy -p 'Implement the change described in TASK.md and run the tests' --dangerously-skip-permissions", workdir="/path/to/repo", background=true, notify_on_complete=true)
+# then: process(action="poll"/"log"/"wait", session_id=<id>)
+```
+
+### Interactive multi-turn (PTY + tmux)
+
+For a conversational session, launch `agy -i` (or bare `agy`) under `pty=true`
+with tmux for `capture-pane` / `send-keys`, exactly the pattern documented in
+the `codex` / `claude-code` skills. Resume later with `--continue` / `-c` or a
+specific `--conversation <id>`.
+
+### Parallel instances (batch sub-issue / worktree fan-out)
+
+Create one git worktree per task and launch an independent `agy -p` in each
+(background), then collect results — same worktree fan-out the `codex` skill
+uses for batch issue fixing. Bound concurrency to what the machine and your
+review capacity can absorb.
+
+### Output + bounding caveat (differs from Claude Code)
+
+- `agy -p` returns **plain text** — there is **no `--output-format json`** and
+  no result envelope with `session_id` / cost / turn count. Parse stdout
+  directly; don't expect a JSON object.
+- There is **no `--max-turns`**. A print run is bounded by **`--print-timeout`**
+  (default `5m`). Raise it for long tasks: `--print-timeout 20m`. Pair with the
+  `terminal` `timeout=` so the outer call doesn't cut the run short.
+
+### Orchestration boundary
+
+Antigravity is a **worker execution backend or third-opinion reviewer** — an
+execution detail owned by the agent/profile running a task, NOT a first-class
+orchestration primitive. Do not put `agy` on a kanban board as its own card or
+treat it as a coordination layer; route work through the normal task graph and
+let the assigned worker choose `agy` (vs. codex/claude-code/direct tools) as its
+method. Reach for it explicitly only when the user asks, when a worker is
+configured to wrap it, or when you want a Gemini-family cross-check against
+another agent's plan or diff.
 
 ## Core paths
 
@@ -157,6 +217,10 @@ paths below — do not `cat` them through the terminal.
   session-state problems, not browser-only problems.
 - Workspace identity can depend on launch directory and the `.antigravitycli`
   project marker.
+- `agy -p` prints plain text only — no `--output-format json`, no result
+  envelope. Don't try to parse a JSON object out of it (unlike `claude-code`).
+- Bound print runs with `--print-timeout` (default `5m`), not `--max-turns`
+  (which does not exist on `agy`).
 
 ## Verification
 

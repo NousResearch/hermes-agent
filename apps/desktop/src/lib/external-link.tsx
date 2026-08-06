@@ -12,6 +12,12 @@ const titleSubs = new Map<string, Set<(value: string) => void>>()
 const URL_RE =
   /(?:https?:\/\/|www\.)[^\s<>"'`]+[^\s<>"'`.,;:!?)]|[a-z0-9](?:[a-z0-9-]*\.)+[a-z]{2,}(?:\/[^\s<>"'`.,;:!?)]*)?/gi
 
+// Explicit-scheme / www. URLs only — no bare-domain matching. Used where the
+// surrounding text is full of filename-shaped tokens (e.g. `agent.log`,
+// `errors.log` in a /debug report) that the bare-domain branch of URL_RE would
+// otherwise mistake for domains and linkify.
+const EXPLICIT_URL_RE = /(?:https?:\/\/|www\.)[^\s<>"'`]+[^\s<>"'`.,;:!?)]/gi
+
 const DOMAIN_RE = /^(?:www\.)?[a-z0-9](?:[a-z0-9-]*\.)+[a-z]{2,}(?::\d+)?(?:[/?#][^\s]*)?$/i
 const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|hermes):/i
 const LOCAL_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$/i
@@ -261,13 +267,14 @@ interface LinkifiedTextProps {
   className?: string
   text: string
   pretty?: boolean
+  explicitOnly?: boolean
 }
 
-export function LinkifiedText({ className, pretty = true, text }: LinkifiedTextProps) {
+export function LinkifiedText({ className, explicitOnly = false, pretty = true, text }: LinkifiedTextProps) {
   const nodes: ReactNode[] = []
   let cursor = 0
 
-  for (const match of text.matchAll(URL_RE)) {
+  for (const match of text.matchAll(explicitOnly ? EXPLICIT_URL_RE : URL_RE)) {
     const raw = match[0]
     const url = normalizeExternalUrl(raw)
     const index = match.index ?? 0

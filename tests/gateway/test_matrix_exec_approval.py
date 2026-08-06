@@ -10,7 +10,7 @@ class TestMatrixExecApprovalReactions:
     @pytest.mark.asyncio
     async def test_send_exec_approval_registers_prompt_and_seeds_reactions(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@liizfq:liizfq.top")
-        from gateway.platforms.matrix import MatrixAdapter
+        from plugins.platforms.matrix.adapter import MatrixAdapter
 
         adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
         adapter._client = types.SimpleNamespace()
@@ -27,14 +27,14 @@ class TestMatrixExecApprovalReactions:
         assert result.success is True
         assert adapter._approval_prompt_by_session["sess-1"] == "$evt1"
         assert adapter._approval_prompts_by_event["$evt1"].session_key == "sess-1"
-        assert adapter._send_reaction.await_count == 2
+        assert adapter._send_reaction.await_count == 3
         emojis = [call.args[2] for call in adapter._send_reaction.await_args_list]
-        assert emojis == ["✅", "❎"]
+        assert emojis == ["✅", "♾️", "❌"]
 
     @pytest.mark.asyncio
     async def test_reaction_resolves_pending_approval(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@liizfq:liizfq.top")
-        from gateway.platforms.matrix import MatrixAdapter, _MatrixApprovalPrompt
+        from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
 
         adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
         # Resolve user_id so _is_self_sender doesn't defensively drop all traffic (#15763).

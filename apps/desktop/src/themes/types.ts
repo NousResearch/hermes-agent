@@ -54,6 +54,37 @@ export interface DesktopThemeTypography {
   fontUrl?: string
 }
 
+/**
+ * Integrated-terminal ANSI palette (xterm `ITheme`, minus `background`).
+ *
+ * Populated only when a converted VS Code theme ships a full `terminal.ansi*`
+ * set; otherwise the terminal keeps its built-in VS Code default palette.
+ * `background` is intentionally absent — the pane always paints the live skin
+ * surface so it stays translucent.
+ */
+export interface DesktopTerminalPalette {
+  foreground?: string
+  cursor?: string
+  /** Keeps its source alpha — xterm blends it over the surface. */
+  selectionBackground?: string
+  black?: string
+  red?: string
+  green?: string
+  yellow?: string
+  blue?: string
+  magenta?: string
+  cyan?: string
+  white?: string
+  brightBlack?: string
+  brightRed?: string
+  brightGreen?: string
+  brightYellow?: string
+  brightBlue?: string
+  brightMagenta?: string
+  brightCyan?: string
+  brightWhite?: string
+}
+
 export interface DesktopTheme {
   name: string
   label: string
@@ -63,4 +94,8 @@ export interface DesktopTheme {
   /** Hand-tuned dark palette. Skins like `nous` ship one. */
   darkColors?: DesktopThemeColors
   typography?: Partial<DesktopThemeTypography>
+  /** Light-variant terminal ANSI palette (also the fallback for dark). */
+  terminal?: DesktopTerminalPalette
+  /** Dark-variant terminal ANSI palette. Falls back to `terminal`. */
+  darkTerminal?: DesktopTerminalPalette
 }

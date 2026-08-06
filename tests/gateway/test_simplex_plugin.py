@@ -205,6 +205,13 @@ def test_corr_id_pending_set_self_trims():
 
 @pytest.mark.asyncio
 async def test_send_dm():
+    """DMs use the bare ``@<id> text`` chat-command form.
+
+    The bracketed form ``@[<id>] text`` is what the daemon's man page
+    documents, but in practice both addressing styles route through
+    the same chat-command parser; bare ``@<id>`` matches what every
+    Hermes deployment has been using in production for months.
+    """
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
@@ -222,6 +229,14 @@ async def test_send_dm():
 
 @pytest.mark.asyncio
 async def test_send_group():
+    """Groups use the structured ``/_send #<id> json [...]`` form.
+
+    The bracket chat-command form ``#[<id>] text`` *looks* like an exact
+    ID match in the daemon docs but is parsed as a display-name lookup
+    — so messages to groups whose display name isn't literally the ID
+    silently drop. The structured ``/_send`` form addresses by numeric
+    ID and survives newlines/quoting through ``json.dumps``.
+    """
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
@@ -231,7 +246,11 @@ async def test_send_group():
 
     result = await adapter.send("group:grp-99", "Hello, group!")
     payload = json.loads(mock_ws.send.call_args[0][0])
-    assert payload["cmd"] == "#[grp-99] Hello, group!"
+    assert payload["cmd"].startswith("/_send #grp-99 json ")
+    msg_content = json.loads(payload["cmd"].split(" json ", 1)[1])[0][
+        "msgContent"
+    ]
+    assert msg_content == {"type": "text", "text": "Hello, group!"}
     assert result.success is True
 
 
@@ -377,3 +396,74 @@ def test_register_calls_register_platform():
     assert callable(kwargs["setup_fn"])
     # SimpleX uses opaque IDs only — no PII to redact.
     assert kwargs["pii_safe"] is True
+
+
+# ---------------------------------------------------------------------------
+# Inbound attachment message type classification
+# ---------------------------------------------------------------------------
+
+def _make_file_chat_item(file_path: str, file_name: str) -> dict:
+    """Minimal direct-chat rcvMsgContent item carrying a completed file."""
+    return {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 42, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemTs": "2026-01-01T00:00:00Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "file", "text": "here you go"},
+            },
+            "file": {
+                "fileId": 7,
+                "fileName": file_name,
+                "fileSource": {"filePath": file_path},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_document_file_sets_document_type():
+    """A non-image/non-audio file must classify as DOCUMENT, not TEXT,
+    so run.py's document-context injection surfaces the path to the agent."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_file_chat_item("/tmp/report.pdf", "report.pdf"))
+
+    assert dispatched, "_handle_chat_item did not dispatch any event"
+    assert dispatched[0].message_type == MessageType.DOCUMENT
+    assert dispatched[0].media_urls == ["/tmp/report.pdf"]
+    assert dispatched[0].media_types == ["application/octet-stream"]
+
+
+@pytest.mark.asyncio
+async def test_image_file_still_sets_photo_type():
+    """Regression guard: image files keep classifying as PHOTO after the
+    document catch-all was added."""
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    dispatched = []
+
+    async def _capture(event):
+        dispatched.append(event)
+
+    adapter.handle_message = _capture
+    await adapter._handle_chat_item(_make_file_chat_item("/tmp/pic.jpg", "pic.jpg"))
+
+    assert dispatched, "_handle_chat_item did not dispatch any event"
+    assert dispatched[0].message_type == MessageType.PHOTO

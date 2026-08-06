@@ -111,8 +111,10 @@ def gw_session(monkeypatch):
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
     monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-    # Force manual mode regardless of host config.
+    # Force manual mode regardless of host config and disable any process-level
+    # yolo inherited from the developer's live environment.
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
 
     session_key = "cluster-test-session"
     token = A.set_current_session_key(session_key)
@@ -231,11 +233,21 @@ def test_guard_gateway_user_denies_blocks(gw_session):
     assert res["user_consent"] is False
 
 
-def test_guard_gateway_timeout_blocks(gw_session, monkeypatch):
+@pytest.mark.parametrize(
+    "approval_config",
+    [
+        {"timeout": 0},
+        {"timeout": 0, "gateway_timeout": 300},
+    ],
+    ids=["shared-timeout-only", "shared-timeout-is-canonical"],
+)
+def test_guard_gateway_wait_uses_canonical_timeout(
+    gw_session, monkeypatch, approval_config
+):
     # Register a callback that never resolves; force an immediate timeout.
     with A._lock:
         A._gateway_notify_cbs[gw_session] = lambda _d: None
-    monkeypatch.setattr(A, "_get_approval_config", lambda: {"gateway_timeout": 0})
+    monkeypatch.setattr(A, "_get_approval_config", lambda: approval_config)
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is False
     assert res["outcome"] == "timeout"

@@ -9,6 +9,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.signal import SignalAdapter
+from gateway.platforms.signal_format import markdown_to_signal
 
 
 # ---------------------------------------------------------------------------
@@ -18,6 +19,11 @@ from gateway.platforms.signal import SignalAdapter
 def _m2s(text: str):
     """Shorthand: call the static method and return (plain_text, styles)."""
     return SignalAdapter._markdown_to_signal(text)
+
+
+def test_shared_helper_matches_signal_adapter_wrapper():
+    text = "🙂 **bold** and `code`"
+    assert markdown_to_signal(text) == SignalAdapter._markdown_to_signal(text)
 
 
 def _style_types(styles: list[str]) -> list[str]:
@@ -138,7 +144,28 @@ class TestItalicFalsePositives:
         """* item lines must NOT be treated as italic delimiters."""
         md = "* item one\n* item two\n* item three"
         text, styles = _m2s(md)
+        assert text == "• item one\n• item two\n• item three"
         assert _find_style(styles, "ITALIC") == []
+
+    def test_hyphen_bullet_list_uses_signal_safe_bullets(self):
+        """Signal does not render Markdown list markers; normalize them."""
+        md = "- item one\n- item two"
+        text, styles = _m2s(md)
+        assert text == "• item one\n• item two"
+        assert styles == []
+
+    def test_plus_bullet_list_uses_signal_safe_bullets(self):
+        md = "+ item one\n+ item two"
+        text, styles = _m2s(md)
+        assert text == "• item one\n• item two"
+        assert styles == []
+
+    def test_markdown_bullets_inside_fenced_code_are_preserved(self):
+        md = "before\n```\n- literal\n* literal\n```\nafter"
+        text, styles = _m2s(md)
+        assert "- literal\n* literal" in text
+        assert "• literal" not in text
+        assert any(s.endswith(":MONOSPACE") for s in styles)
 
     def test_bullet_list_with_content_before(self):
         md = "Here are things:\n\n* first thing\n* second thing"

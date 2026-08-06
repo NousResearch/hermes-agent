@@ -151,7 +151,18 @@ class TestSupportedDocumentTypes:
 
     @pytest.mark.parametrize(
         "ext",
-        [".pdf", ".md", ".txt", ".zip", ".docx", ".xlsx", ".pptx"],
+        [
+            ".pdf",
+            ".md",
+            ".txt",
+            ".zip",
+            ".doc",
+            ".docx",
+            ".xls",
+            ".xlsx",
+            ".ppt",
+            ".pptx",
+        ],
     )
     def test_expected_extensions_present(self, ext):
         assert ext in SUPPORTED_DOCUMENT_TYPES
@@ -207,10 +218,25 @@ class TestCacheMediaBytes:
         assert result.kind == "document"
         assert result.media_type == "text/csv"
 
-    def test_unsupported_document_returns_none(self):
+    def test_unknown_document_cached_as_octet_stream(self):
+        """Unknown file types are cached (not dropped) so the agent can inspect them.
+
+        Authorization to message the agent is the gate, not the file extension.
+        """
         from gateway.platforms.base import cache_media_bytes
-        result = cache_media_bytes(b"MZ", filename="malware.exe", mime_type="application/x-msdownload")
-        assert result is None
+        result = cache_media_bytes(b"MZ", filename="program.exe", mime_type="application/x-msdownload")
+        assert result is not None
+        assert result.kind == "document"
+        # Caller-supplied MIME is preserved when present.
+        assert result.media_type == "application/x-msdownload"
+        assert os.path.exists(result.path)
+
+    def test_unknown_document_no_mime_falls_back_to_octet_stream(self):
+        from gateway.platforms.base import cache_media_bytes
+        result = cache_media_bytes(b"\x00\x01\x02", filename="mystery.qux", mime_type="")
+        assert result is not None
+        assert result.kind == "document"
+        assert result.media_type == "application/octet-stream"
 
     def test_invalid_image_returns_none(self):
         from gateway.platforms.base import cache_media_bytes

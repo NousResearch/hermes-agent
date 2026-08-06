@@ -171,8 +171,12 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
     with patch.object(GatewayRunner, "_handle_message_with_agent", slow_inner):
         # Start first message (will block at barrier)
         task1 = asyncio.create_task(runner._handle_message(event1))
-        # Yield so task1 enters slow_inner and sentinel is set
-        await asyncio.sleep(0)
+        # Yield until task1 has claimed the sentinel (it crosses a few awaits
+        # before the claim; don't assume a fixed number of scheduler slices).
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
+                break
 
         # Verify sentinel is set
         assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
@@ -417,7 +421,10 @@ async def test_stop_during_sentinel_force_cleans_session():
 
     with patch.object(GatewayRunner, "_handle_message_with_agent", slow_inner):
         task1 = asyncio.create_task(runner._handle_message(event1))
-        await asyncio.sleep(0)
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
+                break
 
         # Sentinel should be set
         assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL

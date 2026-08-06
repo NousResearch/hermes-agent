@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import { capitalize } from '@/lib/text'
+
 export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
 export type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
 
@@ -14,6 +16,8 @@ export interface SubagentProgress {
   id: string
   parentId: null | string
   goal: string
+  /** The child's own stored session id — lets UIs open its session window. */
+  sessionId?: string
   model?: string
   status: SubagentStatus
   taskCount: number
@@ -64,12 +68,7 @@ const compact = (text: string, max = PREVIEW_MAX) => {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }
 
-const toolLabel = (name: string) =>
-  name
-    .split('_')
-    .filter(Boolean)
-    .map(p => p[0]!.toUpperCase() + p.slice(1))
-    .join(' ') || name
+const toolLabel = (name: string) => name.split('_').filter(Boolean).map(capitalize).join(' ') || name
 
 const formatTool = (name: string, preview = '') => {
   const snippet = compact(preview, TOOL_PREVIEW_MAX)
@@ -159,6 +158,7 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     id: prev?.id ?? idOf(payload),
     parentId: str(payload.parent_id) || prev?.parentId || null,
     goal: str(payload.goal) || prev?.goal || 'Subagent',
+    sessionId: str(payload.child_session_id) || prev?.sessionId,
     model: str(payload.model) || prev?.model,
     status,
     taskCount: num(payload.task_count) ?? prev?.taskCount ?? 1,
@@ -258,3 +258,10 @@ export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentN
 
 export const activeSubagentCount = (items: readonly SubagentProgress[]) =>
   items.filter(item => item.status === 'queued' || item.status === 'running').length
+
+export const failedSubagentCount = (items: readonly SubagentProgress[]) =>
+  items.filter(item => item.status === 'failed' || item.status === 'interrupted').length
+
+/** Flatten every session's subagents — the scope the Spawn-tree panel and the
+ *  status-bar indicator must agree on. */
+export const allSubagents = (bySession: Record<string, SubagentProgress[]>) => Object.values(bySession).flat()

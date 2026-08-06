@@ -124,11 +124,11 @@ class TestOpenRouterProfileParity:
     def test_reasoning_full_config(self, transport):
         rc = {"enabled": True, "effort": "high"}
         legacy = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6", messages=_msgs(), tools=None,
+            model="deepseek/deepseek-chat", messages=_msgs(), tools=None,
             provider_profile=get_provider_profile("openrouter"), supports_reasoning=True, reasoning_config=rc,
         )
         profile = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6", messages=_msgs(), tools=None,
+            model="deepseek/deepseek-chat", messages=_msgs(), tools=None,
             provider_profile=get_provider_profile("openrouter"),
             supports_reasoning=True, reasoning_config=rc,
         )
@@ -136,11 +136,11 @@ class TestOpenRouterProfileParity:
 
     def test_default_reasoning(self, transport):
         legacy = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6", messages=_msgs(), tools=None,
+            model="deepseek/deepseek-chat", messages=_msgs(), tools=None,
             provider_profile=get_provider_profile("openrouter"), supports_reasoning=True,
         )
         profile = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6", messages=_msgs(), tools=None,
+            model="deepseek/deepseek-chat", messages=_msgs(), tools=None,
             provider_profile=get_provider_profile("openrouter"),
             supports_reasoning=True,
         )

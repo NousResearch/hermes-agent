@@ -2,9 +2,10 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-import { TERMINAL_BG } from './selection'
+import { $terminalTakeover } from '../store'
 
-import { TerminalTab } from './index'
+import { ensureTerminal } from './terminals'
+import { TerminalWorkspace } from './workspace'
 
 /**
  * One xterm Terminal mounted at the layout root and CSS-overlayed onto
@@ -40,7 +41,6 @@ export function TerminalSlot({ className = SLOT_CLASS }: { className?: string })
 }
 
 interface PersistentTerminalProps {
-  cwd: string
   onAddSelectionToChat: (text: string, label?: string) => void
 }
 
@@ -54,10 +54,25 @@ interface Rect {
 const sameRect = (a: Rect | null, b: Rect) =>
   !!a && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height
 
-export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerminalProps) {
+export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalProps) {
   const slot = useStore($slot)
+  const terminalTakeover = useStore($terminalTakeover)
   const [rect, setRect] = useState<Rect | null>(null)
   const [ready, setReady] = useState(false)
+
+  // VS Code parity: once the pane has ever been opened, keep the terminals
+  // mounted — and their shells alive — even while hidden. Hiding the pane just
+  // collapses the slot, so the overlay below goes invisible; nothing is torn
+  // down. Only an explicit per-tab close kills a PTY. Re-opening re-ensures one
+  // terminal exists (covers having closed the last tab).
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    if (terminalTakeover && ready) {
+      setMounted(true)
+      ensureTerminal()
+    }
+  }, [terminalTakeover, ready])
 
   useLayoutEffect(() => {
     if (!slot) {
@@ -107,16 +122,18 @@ export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerm
     visibility: visible ? 'visible' : 'hidden',
     pointerEvents: visible ? 'auto' : 'none',
     zIndex: 4,
-    backgroundColor: TERMINAL_BG,
+    // Match the live skin surface so the header strip (transparent) and body
+    // read as one cohesive pane instead of revealing a near-black slab behind.
+    backgroundColor: 'var(--ui-editor-surface-background)',
     contain: 'layout size paint'
   }
 
-  // Defer mount until real dims — booting xterm at 0×0 starts the shell at
-  // 80×24, then the first ResizeObserver SIGWINCH redraws the prompt on a
-  // new line. After first measurement we keep it mounted forever.
+  // Defer the FIRST mount until the pane is open and the slot has real dims —
+  // booting xterm/node-pty at 0×0 starts the shell at 80×24 and spawns a visible
+  // conhost on Windows. After that `mounted` latches: shells persist while hidden.
   return (
     <div aria-hidden={!visible} style={style}>
-      {ready && <TerminalTab cwd={cwd} onAddSelectionToChat={onAddSelectionToChat} />}
+      {mounted && <TerminalWorkspace onAddSelectionToChat={onAddSelectionToChat} />}
     </div>
   )
 }

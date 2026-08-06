@@ -185,18 +185,100 @@ def test_goal_requires_session(server):
 # ── slash.exec /goal routing ──────────────────────────────────────────
 
 
-def test_slash_exec_rejects_goal_routes_to_command_dispatch(server, session):
-    """slash.exec must reject /goal with 4018 so the TUI client falls through
-    to command.dispatch. Without this, the HermesCLI slash-worker subprocess
-    would set the goal but silently drop the kickoff — the queue is in-proc."""
+def test_slash_exec_routes_goal_to_command_dispatch(server, session):
+    """slash.exec must route /goal directly to command.dispatch internally
+    instead of returning an error.  Previously the 4018 error required the
+    TUI client to retry via command.dispatch, but some clients failed the
+    fallback, leaving the command empty ("empty command")."""
     sid, _, _ = session
     r = _call(server, "slash.exec", command="goal status", session_id=sid)
-    assert "error" in r
-    assert r["error"]["code"] == 4018
-    assert "command.dispatch" in r["error"]["message"]
+    # Should succeed by routing to command.dispatch internally
+    assert "result" in r
+    assert r["result"]["type"] == "exec"
+    assert "No active goal" in r["result"]["output"]
 
 
 def test_pending_input_commands_includes_goal(server):
     """Guard: _PENDING_INPUT_COMMANDS must list 'goal' — removing it would
     silently re-break the TUI."""
     assert "goal" in server._PENDING_INPUT_COMMANDS
+
+
+# ── command.dispatch /moa ────────────────────────────────────────────
+
+def _write_moa_config(home, text):
+    cfg_path = home / "config.yaml"
+    cfg_path.write_text(text)
+
+
+def test_moa_bare_returns_usage(server, session, hermes_home):
+    _write_moa_config(hermes_home, """
+moa:
+  default_preset: default
+  presets:
+    default:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""")
+    sid, _, s = session
+    r = _call(server, "command.dispatch", name="moa", arg="", session_id=sid)
+    # Bare /moa is usage-only now; switching to a preset is via the model picker.
+    assert "error" in r
+    assert "model_override" not in s
+
+
+def test_moa_arg_is_always_one_shot(server, session, hermes_home):
+    # Any arg (even a preset name) is a one-shot prompt through the DEFAULT
+    # preset; /moa never does a sticky switch anymore.
+    _write_moa_config(hermes_home, """
+moa:
+  default_preset: default
+  presets:
+    default: {}
+    review:
+      reference_models:
+        - provider: openrouter
+          model: deepseek/deepseek-v4-pro
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""")
+    sid, _, s = session
+    r = _call(server, "command.dispatch", name="moa", arg="review", session_id=sid)
+    result = r["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "review"
+    assert "one-shot" in result["notice"]
+    # Lazy session (no live agent) → MoA preset pinned via model_override for
+    # the build, and it is the DEFAULT preset, not the "review" arg.
+    assert s["model_override"]["provider"] == "moa"
+    assert s["model_override"]["model"] == "default"
+
+
+def test_moa_non_preset_returns_one_shot_send(server, session, hermes_home):
+    _write_moa_config(hermes_home, """
+moa:
+  default_preset: default
+  presets:
+    default:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""")
+    sid, _, _ = session
+    r = _call(server, "command.dispatch", name="moa", arg="inspect this project", session_id=sid)
+    result = r["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "inspect this project"
+    assert "one-shot" in result["notice"]
+
+
+def test_pending_input_commands_includes_moa(server):
+    assert "moa" in server._PENDING_INPUT_COMMANDS

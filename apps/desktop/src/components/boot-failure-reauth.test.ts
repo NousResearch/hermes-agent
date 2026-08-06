@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest'
 
 import type { DesktopConnectionConfig } from '@/global'
 
-import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
+import {
+  deriveProviderShape,
+  isRemoteConfig,
+  isRemoteReauthError,
+  isRemoteReauthFailure,
+  signInLabel
+} from './boot-failure-reauth'
 
 function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnectionConfig {
   return {
@@ -14,21 +20,51 @@ function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnec
     remoteTokenPreview: null,
     remoteTokenSet: false,
     remoteUrl: 'https://box:9119',
+    cloudOrg: '',
     ...overrides
   }
 }
+
+describe('isRemoteConfig', () => {
+  it('true for remote/cloud with a URL, regardless of auth mode or connection', () => {
+    expect(isRemoteConfig(config({ remoteAuthMode: 'token', remoteOauthConnected: false }))).toBe(true)
+    expect(isRemoteConfig(config({ mode: 'cloud', remoteOauthConnected: true }))).toBe(true)
+  })
+
+  it('false for local, for a remote with no URL, and for nullish', () => {
+    expect(isRemoteConfig(config({ mode: 'local' }))).toBe(false)
+    expect(isRemoteConfig(config({ remoteUrl: '' }))).toBe(false)
+    expect(isRemoteConfig(null)).toBe(false)
+  })
+})
 
 describe('isRemoteReauthFailure', () => {
   it('true for a remote, gated, disconnected gateway with a URL', () => {
     expect(isRemoteReauthFailure(config())).toBe(true)
   })
 
-  it('false when the oauth session is still connected', () => {
-    expect(isRemoteReauthFailure(config({ remoteOauthConnected: true }))).toBe(false)
+  it('false when connected and the boot error is not auth-shaped', () => {
+    expect(isRemoteReauthFailure(config({ remoteOauthConnected: true }), 'Python exploded')).toBe(false)
+  })
+
+  it('true when the indicator reads connected but the boot error is auth-shaped (expired session)', () => {
+    expect(
+      isRemoteReauthFailure(config({ remoteOauthConnected: true }), 'Your remote gateway session has expired.')
+    ).toBe(true)
   })
 
   it('false for a local gateway', () => {
     expect(isRemoteReauthFailure(config({ mode: 'local' }))).toBe(false)
+  })
+
+  it('true for a cloud connection with a lapsed session (cloud resolves to remote oauth)', () => {
+    // A 'cloud' connection is a remote oauth backend under the hood (Q6), so a
+    // lapsed cloud session is the same reauth failure as a lapsed remote one.
+    expect(isRemoteReauthFailure(config({ mode: 'cloud' }))).toBe(true)
+  })
+
+  it('false for a connected cloud session', () => {
+    expect(isRemoteReauthFailure(config({ mode: 'cloud', remoteOauthConnected: true }))).toBe(false)
   })
 
   it('false for a token (non-gated) remote gateway', () => {
@@ -42,6 +78,18 @@ describe('isRemoteReauthFailure', () => {
   it('false for null/undefined config', () => {
     expect(isRemoteReauthFailure(null)).toBe(false)
     expect(isRemoteReauthFailure(undefined)).toBe(false)
+  })
+})
+
+describe('isRemoteReauthError', () => {
+  it('recognizes auth-shaped boot errors', () => {
+    expect(isRemoteReauthError('Your remote gateway session has expired.')).toBe(true)
+    expect(isRemoteReauthError('OAuth: please sign in')).toBe(true)
+  })
+
+  it('ignores non-auth boot errors and nullish', () => {
+    expect(isRemoteReauthError('Hermes background process exited during startup.')).toBe(false)
+    expect(isRemoteReauthError(null)).toBe(false)
   })
 })
 

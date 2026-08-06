@@ -415,14 +415,17 @@ class TestSendVoiceReply:
 
     @pytest.mark.asyncio
     async def test_calls_tts_and_send_voice(self, runner):
+        from gateway.config import Platform
+
         mock_adapter = AsyncMock()
         mock_adapter.send_voice = AsyncMock()
         event = _make_event()
+        event.source.platform = Platform.TELEGRAM
         runner.adapters[event.source.platform] = mock_adapter
 
         tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
 
-        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
              patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
@@ -430,8 +433,31 @@ class TestSendVoiceReply:
             await runner._send_voice_reply(event, "Hello world")
 
         mock_adapter.send_voice.assert_called_once()
+        assert mock_tts.call_args.kwargs["output_path"].endswith(".ogg")
         call_args = mock_adapter.send_voice.call_args
         assert call_args.kwargs.get("chat_id") == "123"
+
+    @pytest.mark.asyncio
+    async def test_non_telegram_auto_voice_reply_uses_mp3(self, runner):
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event()
+        event.source.platform = Platform.SLACK
+        runner.adapters[event.source.platform] = mock_adapter
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.mp3"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, "Hello world")
+
+        mock_adapter.send_voice.assert_called_once()
+        assert mock_tts.call_args.kwargs["output_path"].endswith(".mp3")
 
     @pytest.mark.asyncio
     async def test_auto_voice_reply_uses_thread_metadata_helper(self, runner):
@@ -1185,7 +1211,7 @@ class TestDiscordVoiceChannelMethods:
 
     def test_is_allowed_user_empty_list(self):
         adapter = self._make_adapter()
-        assert adapter._is_allowed_user("42") is True
+        assert adapter._is_allowed_user("42") is False
 
     def test_is_allowed_user_in_list(self):
         adapter = self._make_adapter()
@@ -1196,6 +1222,32 @@ class TestDiscordVoiceChannelMethods:
         adapter = self._make_adapter()
         adapter._allowed_user_ids = {"99"}
         assert adapter._is_allowed_user("42") is False
+
+    def test_is_allowed_user_wildcard_only(self):
+        """``DISCORD_ALLOWED_USERS="*"`` opens access to all users.
+
+        Mirrors ``SIGNAL_ALLOWED_USERS`` and the existing
+        ``DISCORD_ALLOWED_CHANNELS`` / ``_IGNORED_CHANNELS`` /
+        ``_FREE_RESPONSE_CHANNELS`` wildcard handling. This is the
+        convention ``claw migrate`` emits (#22334).
+        """
+        adapter = self._make_adapter()
+        adapter._allowed_user_ids = {"*"}
+        assert adapter._is_allowed_user("42") is True
+        assert adapter._is_allowed_user("999999999999999999") is True
+
+    def test_is_allowed_user_wildcard_mixed_with_ids(self):
+        """``DISCORD_ALLOWED_USERS="123,*"`` honors ``*`` for any user."""
+        adapter = self._make_adapter()
+        adapter._allowed_user_ids = {"123456789012345678", "*"}
+        assert adapter._is_allowed_user("42") is True
+        assert adapter._is_allowed_user("123456789012345678") is True
+
+    def test_is_allowed_user_wildcard_in_dm(self):
+        """Wildcard short-circuits before role-auth gating, so DMs honor it too."""
+        adapter = self._make_adapter()
+        adapter._allowed_user_ids = {"*"}
+        assert adapter._is_allowed_user("42", is_dm=True) is True
 
     @pytest.mark.asyncio
     async def test_process_voice_input_success(self):
@@ -1928,6 +1980,49 @@ class TestVoiceTimeoutCleansRunnerState:
             await adapter._voice_timeout_handler(111)
 
         assert 111 not in adapter._voice_clients
+
+    @pytest.mark.asyncio
+    async def test_timeout_skips_disconnect_when_voice_mode_off(self, adapter):
+        """Voice-off is deliberate text-only mode, not idle neglect — the
+        inactivity timer must NOT disconnect or spam the channel (#PanBartosz)."""
+        disconnect_calls = []
+        adapter._on_voice_disconnect = lambda chat_id: disconnect_calls.append(chat_id)
+        adapter._voice_mode_getter = lambda chat_id: "off"
+
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.disconnect = AsyncMock()
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_text_channels[111] = 999
+        adapter._voice_timeout_tasks[111] = MagicMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await adapter._voice_timeout_handler(111)
+
+        # Still connected, no disconnect callback, no "inactivity timeout" spam.
+        assert 111 in adapter._voice_clients
+        assert disconnect_calls == []
+        mock_vc.disconnect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_timeout_still_disconnects_when_voice_mode_active(self, adapter):
+        """A non-off mode still auto-disconnects on genuine inactivity."""
+        disconnect_calls = []
+        adapter._on_voice_disconnect = lambda chat_id: disconnect_calls.append(chat_id)
+        adapter._voice_mode_getter = lambda chat_id: "all"
+
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.disconnect = AsyncMock()
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_text_channels[111] = 999
+        adapter._voice_timeout_tasks[111] = MagicMock()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await adapter._voice_timeout_handler(111)
+
+        assert 111 not in adapter._voice_clients
+        assert disconnect_calls == ["999"]
 
 
 # =====================================================================

@@ -70,6 +70,21 @@ def is_interrupted() -> bool:
         return tid in _interrupted_threads
 
 
+def clear_current_thread_interrupt() -> None:
+    """Clear any interrupt bit on the CURRENT thread.
+
+    Gives a user-approved command a clean interrupt slate immediately before
+    it spawns its child process, so a stale bit that landed on this thread
+    during the blocking approval-wait cannot SIGINT the just-approved run
+    (exit 130 + "[Command interrupted]").  Single-thread ordering on this tid
+    keeps the DO-NOT-BREAK invariant intact: a *genuine* interrupt arriving
+    after this call re-sets the bit on the same thread and is still observed by
+    the executor's poll loop.  Call this directly, never via the
+    _interrupt_event proxy (its .clear() binds to whatever thread runs it).
+    """
+    set_interrupt(False)  # thread_id=None -> current thread (see set_interrupt)
+
+
 # ---------------------------------------------------------------------------
 # Backward-compatible _interrupt_event proxy
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import logging
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -51,7 +52,42 @@ class SSHEnvironment(BaseEnvironment):
         self.key_path = key_path
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
-        self.control_dir.mkdir(parents=True, exist_ok=True)
+        # Mode 0o700: the ControlPath socket is deterministic (sha256 of
+        # user@host:port). A world-writable /tmp/hermes-ssh lets another local
+        # user pre-create the dir or plant a socket and hijack/deny the
+        # multiplexed connection (#80284).
+        self.control_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            self.control_dir.chmod(0o700)
+        except OSError:
+            # Best-effort on filesystems that ignore chmod (e.g. some NTFS).
+            pass
+        # Reject an existing directory that is not owned by us or is group/
+        # world-writable — safer than reusing a pre-planted attacker path.
+        try:
+            st = self.control_dir.stat()
+            if st.st_uid != os.getuid():
+                raise RuntimeError(
+                    f"SSH control directory {self.control_dir} is not owned by "
+                    f"the current user (uid={st.st_uid}); refuse to use a "
+                    f"potentially planted path"
+                )
+            mode = stat.S_IMODE(st.st_mode)
+            if mode & 0o077:
+                # Tighten if we can; if still loose after chmod, refuse.
+                try:
+                    self.control_dir.chmod(0o700)
+                except OSError:
+                    pass
+                mode = stat.S_IMODE(self.control_dir.stat().st_mode)
+                if mode & 0o077:
+                    raise RuntimeError(
+                        f"SSH control directory {self.control_dir} is "
+                        f"group/world-accessible (mode={oct(mode)}); refuse "
+                        f"to place ControlPath sockets there"
+                    )
+        except FileNotFoundError:
+            pass
         # Keep the socket filename short and deterministic so the full path
         # stays under the 104-byte sun_path limit that macOS enforces on
         # Unix domain sockets. A raw ``user@host:port`` — especially with an

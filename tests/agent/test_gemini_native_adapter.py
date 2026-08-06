@@ -31,11 +31,18 @@ class DummyResponse:
 def test_followup_user_turn_is_not_merged_into_function_response_turn():
     """Human follow-up after tool results must stay its own user content.
 
+    The split pair is kept alternation-valid by interposing a placeholder
+    model turn between the functionResponse content and the human text
+    content (mirrors gemini-cli#28700's INTERRUPTED_RESPONSE_PLACEHOLDER).
+
     Scope: only the functionResponse↔human-text boundary. Ordinary same-role
     merges (parallel tool results, back-to-back plain user texts) remain
     required for Gemini alternation and are covered by sibling tests.
     """
-    from agent.gemini_native_adapter import _build_gemini_contents
+    from agent.gemini_native_adapter import (
+        _INTERRUPTED_RESPONSE_PLACEHOLDER,
+        _build_gemini_contents,
+    )
 
     messages = [
         {"role": "user", "content": "Load the skill"},
@@ -63,9 +70,11 @@ def test_followup_user_turn_is_not_merged_into_function_response_turn():
         "user",
         "model",
         "user",
+        "model",
         "user",
     ]
-    assert "functionResponse" in contents[-2]["parts"][0]
+    assert "functionResponse" in contents[2]["parts"][0]
+    assert contents[3]["parts"] == [{"text": _INTERRUPTED_RESPONSE_PLACEHOLDER}]
     assert contents[-1]["parts"] == [{"text": "Continue"}]
 
 

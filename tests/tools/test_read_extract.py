@@ -15,6 +15,7 @@ import os
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 from tools.read_extract import (
     ExtractionError,
@@ -162,6 +163,97 @@ class TestAnydocAbsent(unittest.TestCase):
         self.assertTrue(is_extractable_document("a.ipynb"))
         self.assertTrue(is_extractable_document("a.docx"))
         self.assertTrue(is_extractable_document("a.xlsx"))
+
+
+class TestAnydocInitLifecycle(unittest.TestCase):
+    """First-load lifecycle: one failed load must not disable extraction
+    for the rest of the process, and concurrent first use must not race."""
+
+    def setUp(self):
+        from tools import read_extract
+
+        self.rex = read_extract
+        self._saved_module = read_extract._anydoc_module
+        self._saved_failed_at = read_extract._anydoc_failed_at
+        self._saved_retry = read_extract.ANYDOC_RETRY_SECONDS
+        read_extract._anydoc_module = read_extract._ANYDOC_UNSET
+        read_extract._anydoc_failed_at = None
+
+    def tearDown(self):
+        self.rex._anydoc_module = self._saved_module
+        self.rex._anydoc_failed_at = self._saved_failed_at
+        self.rex.ANYDOC_RETRY_SECONDS = self._saved_retry
+
+    def test_successful_load_is_cached(self):
+        fake = object()
+        calls = []
+
+        def fake_import(name):
+            calls.append(name)
+            return fake
+
+        with mock.patch("importlib.import_module", side_effect=fake_import):
+            self.assertIs(self.rex._anydoc(), fake)
+            self.assertIs(self.rex._anydoc(), fake)
+        self.assertEqual(calls, ["anydoc"])
+
+    def test_failed_load_is_retried_after_cooldown(self):
+        fake = object()
+        calls = []
+
+        def fake_import(name):
+            calls.append(name)
+            if len(calls) == 1:
+                raise ImportError("boom")
+            return fake
+
+        self.rex.ANYDOC_RETRY_SECONDS = 0.0
+        with mock.patch("importlib.import_module", side_effect=fake_import):
+            self.assertIsNone(self.rex._anydoc())
+            self.assertIs(self.rex._anydoc(), fake)
+        self.assertEqual(calls, ["anydoc", "anydoc"])
+
+    def test_failed_load_not_retried_within_cooldown(self):
+        calls = []
+
+        def fake_import(name):
+            calls.append(name)
+            raise ImportError("boom")
+
+        self.rex.ANYDOC_RETRY_SECONDS = 3600.0
+        with mock.patch("importlib.import_module", side_effect=fake_import):
+            self.assertIsNone(self.rex._anydoc())
+            self.assertIsNone(self.rex._anydoc())
+        # One import attempt total, and the handle stays UNSET so a retry
+        # remains possible once the cooldown expires.
+        self.assertEqual(calls, ["anydoc"])
+        self.assertIs(self.rex._anydoc_module, self.rex._ANYDOC_UNSET)
+
+    def test_concurrent_first_load_imports_once(self):
+        import threading
+
+        fake = object()
+        calls = []
+        barrier = threading.Barrier(4)
+
+        def fake_import(name):
+            calls.append(name)
+            return fake
+
+        def worker(out):
+            barrier.wait(5)
+            out.append(self.rex._anydoc())
+
+        with mock.patch("importlib.import_module", side_effect=fake_import):
+            results = []
+            threads = [threading.Thread(target=worker, args=(results,)) for _ in range(3)]
+            for t in threads:
+                t.start()
+            barrier.wait(5)
+            for t in threads:
+                t.join(5)
+        self.assertEqual(calls, ["anydoc"])
+        self.assertEqual(results, [fake, fake, fake])
 
 
 # ---------------------------------------------------------------------------

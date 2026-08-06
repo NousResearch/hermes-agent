@@ -37,6 +37,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from hermes_constants import get_hermes_home
+
 ENGINE_NAME = "gpt-image-2-style-library"
 UPSTREAM_REPO = "freestylefly/awesome-gpt-image-2"
 UPSTREAM_PIN = "a04beebfa3195ef8dfbf1c57da7df9e989c2173b"
@@ -126,6 +128,7 @@ class Corpus:
     pin: str
     cases: dict[int, Case]
     templates: dict[str, Template]
+    cases_sha256: str
 
     @property
     def template_ids(self) -> tuple[str, ...]:
@@ -183,7 +186,9 @@ class Grounding:
 
 def _http_get(url: str) -> bytes:
     """Network seam. Module-level name so tests can monkeypatch it."""
-    req = urllib.request.Request(url, headers={"User-Agent": "hermes-image-prompt-factory"})
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "hermes-image-prompt-factory"}
+    )
     with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:  # noqa: S310
         return resp.read()
 
@@ -200,16 +205,26 @@ def cache_root(explicit: "str | Path | None" = None) -> Path:
     env = os.environ.get(CACHE_ENV)
     if env:
         return Path(env).expanduser()
-    return Path.home() / ".hermes" / "cache" / "image-prompt-factory"
+    return get_hermes_home() / "cache" / "image-prompt-factory"
+
+
+def _resolve_pin(pin: "str | None") -> str:
+    resolved = pin or UPSTREAM_PIN
+    if resolved != UPSTREAM_PIN:
+        raise UsageError(
+            f"unsupported corpus pin: {resolved}; only the integrity-pinned "
+            f"revision {UPSTREAM_PIN} is accepted"
+        )
+    return resolved
 
 
 def corpus_dir(*, pin: "str | None" = None, cache_dir=None) -> Path:
-    return cache_root(cache_dir) / (pin or UPSTREAM_PIN)
+    return cache_root(cache_dir) / _resolve_pin(pin)
 
 
 def prime(*, pin=None, cache_dir=None, force=None) -> Path:
     """ONLINE. Fetch, verify, and atomically install the corpus."""
-    resolved_pin = pin or UPSTREAM_PIN
+    resolved_pin = _resolve_pin(pin)
     force = bool(force)
     target = corpus_dir(pin=resolved_pin, cache_dir=cache_dir)
 
@@ -221,12 +236,16 @@ def prime(*, pin=None, cache_dir=None, force=None) -> Path:
             pass  # present but wrong: fall through and refetch
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f"{resolved_pin[:8]}.tmp.", dir=target.parent))
+    staging = Path(
+        tempfile.mkdtemp(prefix=f"{resolved_pin[:8]}.tmp.", dir=target.parent)
+    )
     try:
         for name, (path, expected) in CORPUS_FILES.items():
-            raw = _http_get(_RAW.format(repo=UPSTREAM_REPO, pin=resolved_pin, path=path))
+            raw = _http_get(
+                _RAW.format(repo=UPSTREAM_REPO, pin=resolved_pin, path=path)
+            )
             actual = _sha256(raw)
-            if resolved_pin == UPSTREAM_PIN and actual != expected:
+            if actual != expected:
                 raise CorpusMissing(
                     f"{path}: sha256 mismatch at pin {resolved_pin[:8]}\n"
                     f"  expected {expected}\n  actual   {actual}\n"
@@ -246,11 +265,10 @@ def prime(*, pin=None, cache_dir=None, force=None) -> Path:
 def require_corpus(*, pin=None, cache_dir=None) -> Corpus:
     """Decide validity by re-hashing the actual bytes on every call -- never a
     marker file's claim about them."""
-    resolved_pin = pin or UPSTREAM_PIN
+    resolved_pin = _resolve_pin(pin)
     root = corpus_dir(pin=resolved_pin, cache_dir=cache_dir)
     hint = (
-        f"corpus not provisioned at {root}\n"
-        "  run: python scripts/style_corpus.py prime"
+        f"corpus not provisioned at {root}\n  run: python scripts/style_corpus.py prime"
     )
     if not root.is_dir():
         raise CorpusMissing(hint)
@@ -259,19 +277,19 @@ def require_corpus(*, pin=None, cache_dir=None) -> Corpus:
         f = root / name
         if not f.is_file():
             raise CorpusMissing(f"{hint}\n  missing file: {name}")
-        if resolved_pin == UPSTREAM_PIN:
-            actual = _sha256(f.read_bytes())
-            if actual != expected:
-                raise CorpusMissing(
-                    f"{hint}\n  corrupt file: {name}\n"
-                    f"  expected {expected}\n  actual   {actual}"
-                )
+        actual = _sha256(f.read_bytes())
+        if actual != expected:
+            raise CorpusMissing(
+                f"{hint}\n  corrupt file: {name}\n"
+                f"  expected {expected}\n  actual   {actual}"
+            )
 
     return _load(root, resolved_pin)
 
 
 def _load(root: Path, pin: str) -> Corpus:
-    raw_cases = json.loads((root / "cases.json").read_text(encoding="utf-8"))
+    cases_bytes = (root / "cases.json").read_bytes()
+    raw_cases = json.loads(cases_bytes.decode("utf-8"))
     cases: dict[int, Case] = {}
     for c in raw_cases["cases"]:
         prompt = str(c.get("prompt") or "")
@@ -299,7 +317,13 @@ def _load(root: Path, pin: str) -> Corpus:
             scenes=tuple(t.get("scenes") or ()),
             example_cases=tuple(int(x) for x in (t.get("exampleCases") or ())),
         )
-    return Corpus(root=root, pin=pin, cases=cases, templates=templates)
+    return Corpus(
+        root=root,
+        pin=pin,
+        cases=cases,
+        templates=templates,
+        cases_sha256=_sha256(cases_bytes),
+    )
 
 
 def _truncate(prompt: str, cap: int) -> tuple[str, bool]:
@@ -317,7 +341,7 @@ def _provenance(corpus: Corpus) -> dict:
         "prompt_engine": ENGINE_NAME,
         "corpus_pin": corpus.pin,
         "corpus_source": UPSTREAM_HOME,
-        "corpus_sha256": CORPUS_FILES["cases.json"][1],
+        "corpus_sha256": corpus.cases_sha256,
         "license": UPSTREAM_LICENSE,
     }
 
@@ -471,7 +495,9 @@ def _cmd_ground(args) -> int:
     )
 
     out = Path(args.out) if args.out else sel_path.parent / "grounding.local.json"
-    out.write_text(json.dumps(grounding.full(), ensure_ascii=False, indent=2), encoding="utf-8")
+    out.write_text(
+        json.dumps(grounding.full(), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     summary = grounding.summary()
     summary["grounding_path"] = str(out)
@@ -480,8 +506,8 @@ def _cmd_ground(args) -> int:
 
 
 def _cmd_prime(args) -> int:
-    root = prime(pin=args.pin, cache_dir=args.cache_dir, force=args.force)
-    corpus = require_corpus(pin=args.pin, cache_dir=args.cache_dir)
+    root = prime(cache_dir=args.cache_dir, force=args.force)
+    corpus = require_corpus(cache_dir=args.cache_dir)
     print(
         json.dumps(
             {
@@ -499,13 +525,13 @@ def _cmd_prime(args) -> int:
 
 
 def _cmd_verify(args) -> int:
-    corpus = require_corpus(pin=args.pin, cache_dir=args.cache_dir)
+    corpus = require_corpus(cache_dir=args.cache_dir)
     print(json.dumps({"ok": True, "pin": corpus.pin, "cases": len(corpus.cases)}))
     return 0
 
 
 def _cmd_stats(args) -> int:
-    corpus = require_corpus(pin=args.pin, cache_dir=args.cache_dir)
+    corpus = require_corpus(cache_dir=args.cache_dir)
     by_cat: dict[str, int] = {}
     english = 0
     for c in corpus.cases.values():
@@ -529,7 +555,7 @@ def _cmd_stats(args) -> int:
 
 
 def _cmd_select(args) -> int:
-    corpus = require_corpus(pin=args.pin, cache_dir=args.cache_dir)
+    corpus = require_corpus(cache_dir=args.cache_dir)
     ids = [int(x) for x in (_csv(args.cases) or ())] or None
     grounding = select(
         corpus,
@@ -547,14 +573,15 @@ def _cmd_select(args) -> int:
 
 
 def _cmd_template(args) -> int:
-    corpus = require_corpus(pin=args.pin, cache_dir=args.cache_dir)
+    corpus = require_corpus(cache_dir=args.cache_dir)
     print(template_body(corpus, args.template_id))
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="style_corpus", description=__doc__.splitlines()[0])
-    p.add_argument("--pin", default=None)
+    p = argparse.ArgumentParser(
+        prog="style_corpus", description=__doc__.splitlines()[0]
+    )
     p.add_argument("--cache-dir", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -583,7 +610,9 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("template_id")
     st.set_defaults(func=_cmd_template)
 
-    sg = sub.add_parser("ground", help="OFFLINE: resolve a selection JSON into exemplars")
+    sg = sub.add_parser(
+        "ground", help="OFFLINE: resolve a selection JSON into exemplars"
+    )
     sg.add_argument("--selection", required=True, help="path to selection JSON")
     sg.add_argument("--out", default=None, help="grounding output path")
     sg.add_argument("--lang", default=None, choices=["en"])

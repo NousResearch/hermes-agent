@@ -81,11 +81,15 @@ def validate_pack(workdir: Path) -> dict:
         violations.append("pack has no concepts")
         concepts = []
     if len(concepts) > _MAX_CONCEPTS:
-        violations.append(f"{len(concepts)} concepts exceeds the cap of {_MAX_CONCEPTS}")
+        violations.append(
+            f"{len(concepts)} concepts exceeds the cap of {_MAX_CONCEPTS}"
+        )
 
     declared = pack.get("prompt_count")
     if declared is not None and concepts and declared != len(concepts):
-        violations.append(f"prompt_count says {declared} but pack has {len(concepts)} concepts")
+        violations.append(
+            f"prompt_count says {declared} but pack has {len(concepts)} concepts"
+        )
 
     try:
         brief_count = int(brief.get("count", 1))
@@ -93,9 +97,13 @@ def validate_pack(workdir: Path) -> dict:
         brief_count = 1
         violations.append(f"brief count is not a number: {brief.get('count')!r}")
     if brief_count > _MAX_CONCEPTS:
-        violations.append(f"brief count={brief_count} exceeds the cap of {_MAX_CONCEPTS}")
+        violations.append(
+            f"brief count={brief_count} exceeds the cap of {_MAX_CONCEPTS}"
+        )
 
-    placeholder = str(brief.get("subject_mode", "generic")).strip().lower() == "placeholder"
+    placeholder = (
+        str(brief.get("subject_mode", "generic")).strip().lower() == "placeholder"
+    )
     for i, c in enumerate(concepts, start=1):
         for key in ("baked_prompt", "overlay_prompt"):
             text = c.get(key)
@@ -133,7 +141,9 @@ def validate_pack(workdir: Path) -> dict:
                     f"HOLLOW CITATION: grounded=false but pack carries {key}"
                 )
         if pack.get("self_authored") is not True:
-            violations.append("grounded=false but pack does not declare self_authored: true")
+            violations.append(
+                "grounded=false but pack does not declare self_authored: true"
+            )
 
     pack_text = json.dumps(pack, ensure_ascii=False)
     if _LOCAL_PATH.search(pack_text):
@@ -157,19 +167,27 @@ def _cmd_validate(args) -> int:
     except PackInvalid as exc:
         for v in exc.violations:
             print(f"pack_validate: {v}", file=sys.stderr)
-        print(json.dumps({"pack_valid": False, "violations": exc.violations},
-                         ensure_ascii=False))
+        print(
+            json.dumps(
+                {"pack_valid": False, "violations": exc.violations}, ensure_ascii=False
+            )
+        )
         return 1
     print(json.dumps(summary, ensure_ascii=False))
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="pack_validate", description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser(
+        prog="pack_validate", description=__doc__.splitlines()[0]
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
     sv = sub.add_parser("validate", help="validate the pack in --workdir")
-    sv.add_argument("--workdir", required=True,
-                    help="directory containing brief.json, grounding.local.json, prompt-pack.json")
+    sv.add_argument(
+        "--workdir",
+        required=True,
+        help="directory containing brief.json, grounding.local.json, prompt-pack.json",
+    )
     sv.set_defaults(func=_cmd_validate)
     return p
 

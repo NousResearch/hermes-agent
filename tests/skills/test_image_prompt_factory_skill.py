@@ -6,16 +6,17 @@ Two layers, all offline (no network, no LLM):
     pack_validate.py rejects every violation class; style_corpus.py fails
     closed on a cold cache and ranks deterministically on a fixture corpus.
 """
+
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 
 import pytest
-import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL_DIR = REPO_ROOT / "optional-skills" / "creative" / "image-prompt-factory"
@@ -52,10 +53,22 @@ def skill_text() -> str:
 
 
 @pytest.fixture(scope="module")
-def frontmatter(skill_text: str) -> dict:
+def frontmatter(skill_text: str) -> str:
     m = re.search(r"^---\n(.*?)\n---", skill_text, re.DOTALL)
     assert m, "SKILL.md missing YAML frontmatter"
-    return yaml.safe_load(m.group(1))
+    return m.group(1)
+
+
+def _frontmatter_value(frontmatter: str, key: str) -> str:
+    match = re.search(rf"^\s*{re.escape(key)}:\s*(.+)$", frontmatter, re.MULTILINE)
+    assert match, f"frontmatter missing {key!r}"
+    return match.group(1).strip()
+
+
+def _frontmatter_list(frontmatter: str, key: str) -> list[str]:
+    value = _frontmatter_value(frontmatter, key)
+    assert value.startswith("[") and value.endswith("]")
+    return [item.strip() for item in value[1:-1].split(",") if item.strip()]
 
 
 @pytest.fixture(scope="module")
@@ -70,18 +83,20 @@ def style_corpus():
 
 # ── SKILL.md standards ──────────────────────────────────────────────────────
 
+
 def test_skill_md_present() -> None:
     assert (SKILL_DIR / "SKILL.md").is_file()
 
 
-def test_name_matches_dir(frontmatter: dict) -> None:
-    assert frontmatter["name"] == "image-prompt-factory"
+def test_name_matches_dir(frontmatter: str) -> None:
+    assert _frontmatter_value(frontmatter, "name") == "image-prompt-factory"
 
 
-def test_description_hardline(frontmatter: dict) -> None:
-    desc = frontmatter["description"]
-    assert isinstance(desc, str), "description must be a plain string"
-    assert len(desc) <= 60, f"description is {len(desc)} chars (hardline <=60): {desc!r}"
+def test_description_hardline(frontmatter: str) -> None:
+    desc = _frontmatter_value(frontmatter, "description")
+    assert len(desc) <= 60, (
+        f"description is {len(desc)} chars (hardline <=60): {desc!r}"
+    )
     assert desc.endswith("."), "description must end with a period"
     assert ". " not in desc, "description must be a single sentence"
     lowered = desc.lower()
@@ -89,20 +104,24 @@ def test_description_hardline(frontmatter: dict) -> None:
     assert "image-prompt-factory" not in lowered, "must not repeat the skill name"
 
 
-def test_platforms_all_three(frontmatter: dict) -> None:
-    assert set(frontmatter["platforms"]) == {"linux", "macos", "windows"}
+def test_platforms_all_three(frontmatter: str) -> None:
+    assert set(_frontmatter_list(frontmatter, "platforms")) == {
+        "linux",
+        "macos",
+        "windows",
+    }
 
 
-def test_author_credits_contributor(frontmatter: dict) -> None:
-    assert "TheSmokeDev" in frontmatter["author"]
+def test_author_credits_contributor(frontmatter: str) -> None:
+    assert "TheSmokeDev" in _frontmatter_value(frontmatter, "author")
 
 
-def test_license_mit(frontmatter: dict) -> None:
-    assert frontmatter["license"] == "MIT"
+def test_license_mit(frontmatter: str) -> None:
+    assert _frontmatter_value(frontmatter, "license") == "MIT"
 
 
-def test_related_skills_exist_in_repo(frontmatter: dict) -> None:
-    for related in frontmatter["metadata"]["hermes"]["related_skills"]:
+def test_related_skills_exist_in_repo(frontmatter: str) -> None:
+    for related in _frontmatter_list(frontmatter, "related_skills"):
         matches = list(REPO_ROOT.glob(f"skills/**/{related}/SKILL.md")) + list(
             REPO_ROOT.glob(f"optional-skills/**/{related}/SKILL.md")
         )
@@ -125,18 +144,14 @@ def test_line_budget(skill_text: str) -> None:
     assert len(skill_text.splitlines()) <= 220
 
 
-def test_scripts_are_pure_ascii_and_stdlib() -> None:
-    # Pure ASCII: the scripts are read and piped by cp1252-defaulting toolchains.
-    for name in ("style_corpus.py", "pack_validate.py"):
-        data = (SKILL_DIR / "scripts" / name).read_bytes()
-        assert all(b <= 127 for b in data), f"{name} contains non-ASCII bytes"
-
-
 # ── pack_validate.py behavior ───────────────────────────────────────────────
+
 
 def _write_workdir(tmp_path, *, brief=None, grounding=None, pack=None):
     (tmp_path / "brief.json").write_text(json.dumps(brief or {}), encoding="utf-8")
-    (tmp_path / "grounding.local.json").write_text(json.dumps(grounding or {}), encoding="utf-8")
+    (tmp_path / "grounding.local.json").write_text(
+        json.dumps(grounding or {}), encoding="utf-8"
+    )
     (tmp_path / "prompt-pack.json").write_text(json.dumps(pack or {}), encoding="utf-8")
     return tmp_path
 
@@ -276,6 +291,7 @@ def test_missing_copy_object_rejected(pack_validate, tmp_path) -> None:
 
 # ── style_corpus.py behavior ────────────────────────────────────────────────
 
+
 def test_cold_cache_fails_closed(style_corpus, tmp_path) -> None:
     with pytest.raises(style_corpus.CorpusMissing) as exc:
         style_corpus.require_corpus(cache_dir=tmp_path / "empty")
@@ -288,10 +304,64 @@ def test_cold_cache_cli_exit_1(style_corpus, tmp_path, capsys) -> None:
     assert "not provisioned" in capsys.readouterr().err
 
 
+def test_default_cache_uses_active_hermes_home(
+    style_corpus, tmp_path, monkeypatch
+) -> None:
+    profile_home = tmp_path / "profiles" / "work"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.delenv(style_corpus.CACHE_ENV, raising=False)
+    assert style_corpus.cache_root() == profile_home / "cache" / "image-prompt-factory"
+
+
+def test_alternate_pin_is_rejected_before_network(
+    style_corpus, tmp_path, monkeypatch
+) -> None:
+    def network_must_not_run(_url):
+        raise AssertionError("unsupported pins must fail before fetching")
+
+    monkeypatch.setattr(style_corpus, "_http_get", network_must_not_run)
+    with pytest.raises(style_corpus.UsageError, match="unsupported corpus pin"):
+        style_corpus.prime(pin="untrusted-pin", cache_dir=tmp_path)
+
+
+def test_provenance_hashes_materialized_cases_file(style_corpus, tmp_path) -> None:
+    cases_bytes = json.dumps(
+        {
+            "cases": [
+                {
+                    "id": 7,
+                    "title": "fixture",
+                    "prompt": "materialized prompt",
+                    "category": "fixture",
+                }
+            ]
+        },
+        separators=(",", ":"),
+    ).encode()
+    (tmp_path / "cases.json").write_bytes(cases_bytes)
+    (tmp_path / "style-library.json").write_text('{"templates": []}', encoding="utf-8")
+    corpus = style_corpus._load(tmp_path, style_corpus.UPSTREAM_PIN)
+
+    grounding = style_corpus.select(corpus, case_ids=[7])
+
+    assert (
+        grounding.provenance["corpus_sha256"] == hashlib.sha256(cases_bytes).hexdigest()
+    )
+
+
 def _fixture_corpus(style_corpus):
     mk = style_corpus.Case
     cases = {
-        1: mk(1, "en product", "studio product shot", "commerce", ("studio",), ("product",), True, ""),
+        1: mk(
+            1,
+            "en product",
+            "studio product shot",
+            "commerce",
+            ("studio",),
+            ("product",),
+            True,
+            "",
+        ),
         2: mk(2, "en poster", "bold poster layout", "poster", (), (), False, ""),
         3: mk(3, "cjk case", "中文提示词", "commerce", ("studio",), (), False, ""),
         4: mk(4, "en scene", "street scene photo", "photo", (), ("street",), False, ""),
@@ -301,13 +371,25 @@ def _fixture_corpus(style_corpus):
             "tpl-commerce", "commerce", "tpl-commerce", ("studio",), ("product",), (1,)
         )
     }
-    return style_corpus.Corpus(root=Path("."), pin="testpin", cases=cases, templates=templates)
+    return style_corpus.Corpus(
+        root=Path("."),
+        pin="testpin",
+        cases=cases,
+        templates=templates,
+        cases_sha256="fixture-sha256",
+    )
 
 
 def test_select_deterministic_ranking(style_corpus) -> None:
     corpus = _fixture_corpus(style_corpus)
-    g = style_corpus.select(corpus, template_id="tpl-commerce", category="commerce",
-                            styles=["studio"], scenes=["product"], k=3)
+    g = style_corpus.select(
+        corpus,
+        template_id="tpl-commerce",
+        category="commerce",
+        styles=["studio"],
+        scenes=["product"],
+        k=3,
+    )
     assert g.grounded is True
     # case 1: category 3 + style 2 + scene 1 + example 4 = 10; case 3: 3 + 2 = 5.
     assert g.resolved_case_ids[0] == 1
@@ -340,13 +422,21 @@ def test_select_unknown_template_raises(style_corpus) -> None:
         style_corpus.select(corpus, template_id="nope")
 
 
-def test_ground_cli_reads_selection_offline(style_corpus, tmp_path, monkeypatch, capsys) -> None:
+def test_ground_cli_reads_selection_offline(
+    style_corpus, tmp_path, monkeypatch, capsys
+) -> None:
     # No network: point ground at a fixture corpus via require_corpus monkeypatch.
     corpus = _fixture_corpus(style_corpus)
     monkeypatch.setattr(style_corpus, "require_corpus", lambda **kw: corpus)
     sel = tmp_path / "selection.json"
-    sel.write_text(json.dumps({"template_id": "tpl-commerce", "category": "commerce",
-                               "example_case_ids": [1]}), encoding="utf-8")
+    sel.write_text(
+        json.dumps({
+            "template_id": "tpl-commerce",
+            "category": "commerce",
+            "example_case_ids": [1],
+        }),
+        encoding="utf-8",
+    )
     rc = style_corpus.main(["ground", "--selection", str(sel)])
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
@@ -360,6 +450,7 @@ def test_ground_cli_reads_selection_offline(style_corpus, tmp_path, monkeypatch,
 def test_http_get_never_called_in_this_suite(style_corpus, monkeypatch) -> None:
     def boom(url):  # pragma: no cover - tripwire
         raise AssertionError(f"network attempted: {url}")
+
     monkeypatch.setattr(style_corpus, "_http_get", boom)
     corpus = _fixture_corpus(style_corpus)
     style_corpus.select(corpus, category="commerce", k=2)

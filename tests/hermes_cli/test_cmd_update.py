@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.main import cmd_update, PROJECT_ROOT
+from hermes_cli import main
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -753,3 +754,114 @@ class TestNodeRuntimeNpmResolution:
             not call.args or not call.args[0] or call.args[0][0] != windows_npm
             for call in mock_run.call_args_list
         )
+
+
+class TestCmdUpdateStayOnBranch:
+    """``hermes update --stay-on-branch`` ends on the update target branch.
+
+    Without the flag, an update that switches from a feature branch to main
+    switches BACK to the feature branch afterward (developer-friendly: keeps
+    you where you were working). With the flag — the desktop product-update
+    contract — the update stays on the target branch so the post-update
+    desktop rebuild packages the NEW code instead of the stale feature-branch
+    checkout. This is the field report behind the fix: desktop users stuck on
+    an old version while the CLI reported "already up to date" because HEAD
+    was on a feature branch that lagged main by hundreds of commits.
+    """
+
+    def _capture_git_commands(self, current_branch, target_branch="main", *, stay=False, commit_count="0"):
+        """Run cmd_update with a mocked git pipeline; return the git commands.
+
+        The side effect simulates a checkout on ``current_branch`` that the
+        updater must switch to ``target_branch`` to update. With commit_count
+        "0" the "no new commits" path runs, which is where the historical
+        switch-back-to-original-branch logic lives.
+        """
+        with patch("subprocess.run") as mock_run, \
+             patch("shutil.which", return_value=None), \
+             patch.object(main, "_stash_local_changes_if_needed", return_value=None):
+            mock_run.side_effect = TestCmdUpdateBranchFlag()._branch_side_effect(
+                current_branch=current_branch,
+                target_branch=target_branch,
+                commit_count=commit_count,
+            )
+            args = SimpleNamespace(
+                branch=target_branch,
+                stay_on_branch=stay,
+                yes=True,
+                check=False,
+                gateway=False,
+            )
+            cmd_update(args)
+
+        return [
+            " ".join(str(a) for a in c.args[0])
+            for c in mock_run.call_args_list
+            if c.args and c.args[0] and "git" in " ".join(str(a) for a in c.args[0][:1])
+        ]
+
+    def _checkout_commands(self, commands):
+        return [c for c in commands if " checkout " in c or c.startswith("checkout ")]
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_default_switches_back_to_feature_branch(self, mock_run, _mock_which):
+        """Without --stay-on-branch, an update from a feature branch returns to it."""
+        commands = self._capture_git_commands("feat/aide-squared-evolution", "main", stay=False)
+        checkouts = self._checkout_commands(commands)
+
+        # Switched to main for the update AND switched back to the feature branch.
+        assert any("checkout main" in c for c in checkouts), checkouts
+        assert any("checkout feat/aide-squared-evolution" in c for c in checkouts), checkouts
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_stay_on_branch_does_not_switch_back(self, mock_run, _mock_which):
+        """--stay-on-branch updates main and STAYS there (no switch-back)."""
+        commands = self._capture_git_commands("feat/aide-squared-evolution", "main", stay=True)
+        checkouts = self._checkout_commands(commands)
+
+        # Switched to main for the update.
+        assert any("checkout main" in c for c in checkouts), checkouts
+        # Must NOT switch back to the feature branch.
+        assert not any("checkout feat/aide-squared-evolution" in c for c in checkouts), checkouts
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_stay_on_branch_keeps_stash_for_manual_recovery(self, mock_run, _mock_which, capsys):
+        """With a stash present, --stay-on-branch must not auto-restore onto main."""
+        stash_ref = "refs/stash"
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="feat/aide-squared-evolution\n", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+            if "stash" in joined and "apply" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "stash" in joined and "drop" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("subprocess.run") as mock_run, \
+             patch.object(main, "_stash_local_changes_if_needed", return_value=stash_ref), \
+             patch.object(main, "_restore_stashed_changes") as mock_restore:
+            mock_run.side_effect = side_effect
+            args = SimpleNamespace(
+                branch="main",
+                stay_on_branch=True,
+                yes=True,
+                check=False,
+                gateway=False,
+            )
+            cmd_update(args)
+
+        # The stash was NOT auto-restored (would have contaminated main with
+        # feature-branch WIP) and the user was told how to recover it.
+        mock_restore.assert_not_called()
+        out = capsys.readouterr().out
+        assert "preserved in stash" in out
+        assert "git stash apply" in out

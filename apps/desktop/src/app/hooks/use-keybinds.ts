@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
-import { appViewForPath, isOverlayView } from '@/app/routes'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
+import { appViewForPath, isOverlayView } from '@/app/routes'
 import {
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,

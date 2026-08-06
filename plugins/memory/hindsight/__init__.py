@@ -37,6 +37,8 @@ import json
 import logging
 import os
 import queue
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1252,7 +1254,15 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _get_client(self):
         with self._client_lock:
-            return self._get_client_unlocked()
+            client = self._get_client_unlocked()
+        daemon_thread = self._daemon_thread
+        if (
+            daemon_thread is not None
+            and daemon_thread is not threading.current_thread()
+            and daemon_thread.is_alive()
+        ):
+            daemon_thread.join(timeout=float(self._timeout or _DEFAULT_TIMEOUT))
+        return client
 
     def _get_client_unlocked(self):
         """Return the cached Hindsight client (created once, reused)."""
@@ -2393,6 +2403,36 @@ class HindsightMemoryProvider(MemoryProvider):
             self._session_id, self._parent_session_id, reset, self._document_id,
         )
 
+    @staticmethod
+    def _find_owned_daemon_pids(manager: Any, profile: str) -> list[int]:
+        """Find detached daemon PIDs when the port health probe is already down."""
+        if os.name == "nt":
+            return []
+        try:
+            paths = manager._profile_manager.resolve_profile_paths(profile)
+            port = int(paths.port)
+            result = subprocess.run(
+                ["ps", "-axo", "pid=,command="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            needle = "hindsight-api --daemon --idle-timeout"
+            port_needle = f"--port {port}"
+            pids = []
+            for line in result.stdout.splitlines():
+                fields = line.strip().split(None, 1)
+                if len(fields) != 2 or needle not in fields[1] or port_needle not in fields[1]:
+                    continue
+                try:
+                    pids.append(int(fields[0]))
+                except ValueError:
+                    continue
+            return pids
+        except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+            return []
+
     def _force_stop_embedded_daemon(self) -> None:
         """Stop an owned embedded daemon if the wrapper close left it alive."""
         client = self._client
@@ -2403,6 +2443,12 @@ class HindsightMemoryProvider(MemoryProvider):
         try:
             if manager.is_running(profile):
                 manager.stop(profile)
+            for pid in self._find_owned_daemon_pids(manager, profile):
+                if not manager._kill_process(pid):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
         except Exception as exc:
             logger.debug("Hindsight embedded manager stop fallback failed: %s", type(exc).__name__)
 

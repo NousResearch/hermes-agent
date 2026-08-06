@@ -326,6 +326,15 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    global _last_resolved_tool_names
+
+    # `hermes chat --no-tools` is an absolute session-level override. Check it
+    # before the memoized path so a tool-bearing result cached by another
+    # session in the same process cannot leak into this one.
+    if os.environ.get("HERMES_NO_TOOLS") == "1":
+        _last_resolved_tool_names = []
+        return []
+
     # Fast path: memoized result when the caller doesn't need stdout prints.
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).
@@ -360,7 +369,6 @@ def get_tool_definitions(
         if cached is not None:
             # Update _last_resolved_tool_names so downstream callers see
             # consistent state even on a cache hit.
-            global _last_resolved_tool_names
             _last_resolved_tool_names = [t["function"]["name"] for t in cached]
             # Return a shallow copy of the list but share the dict references —
             # schemas are treated as read-only by all known callers.

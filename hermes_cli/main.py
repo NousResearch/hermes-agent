@@ -2530,6 +2530,7 @@ def cmd_chat(args):
     use_tui = _resolve_use_tui(args)
 
     _apply_safe_mode(args)
+    _apply_no_tools(args)
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
@@ -2714,6 +2715,7 @@ def cmd_chat(args):
         "provider": getattr(args, "provider", None),
         "reasoning": getattr(args, "reasoning", None),
         "toolsets": args.toolsets,
+        "no_tools": getattr(args, "no_tools", False),
         "skills": getattr(args, "skills", None),
         "verbose": getattr(args, "verbose", None),
         "quiet": getattr(args, "quiet", False),
@@ -10853,6 +10855,16 @@ def _apply_safe_mode(args) -> None:
     os.environ["HERMES_SAFE_MODE"] = "1"
     os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
     os.environ["HERMES_IGNORE_RULES"] = "1"
+
+
+def _apply_no_tools(args) -> None:
+    if not getattr(args, "no_tools", False):
+        return
+    if getattr(args, "toolsets", None):
+        raise SystemExit("--no-tools cannot be used with --toolsets")
+    # Internal bridge shared by the classic CLI and TUI child. The public
+    # configuration surface is the CLI flag, not this process-local variable.
+    os.environ["HERMES_NO_TOOLS"] = "1"
 
 
 def _set_chat_arg_defaults(args) -> None:

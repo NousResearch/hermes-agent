@@ -18028,6 +18028,7 @@ def main(
     q: str = None,
     image: str = None,
     toolsets: str = None,
+    no_tools: bool = False,
     skills: str | list[str] | tuple[str, ...] = None,
     model: str = None,
     provider: str = None,
@@ -18057,6 +18058,7 @@ def main(
         q: Shorthand for --query
         image: Optional local image path to attach to a single query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
+        no_tools: Disable all model tools for this session
         skills: Comma-separated or repeated list of skills to preload for the session
         model: Model to use (default: anthropic/claude-opus-4-20250514)
         provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
@@ -18140,7 +18142,12 @@ def main(
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools
     toolsets_list = None
-    if toolsets:
+    if no_tools:
+        if toolsets:
+            raise ValueError("--no-tools cannot be used with --toolsets")
+        os.environ["HERMES_NO_TOOLS"] = "1"
+        toolsets_list = []
+    elif toolsets:
         if isinstance(toolsets, str):
             toolsets_list = [t.strip() for t in toolsets.split(",")]
         elif isinstance(toolsets, (list, tuple)):

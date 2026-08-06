@@ -311,6 +311,12 @@ def build_top_level_parser():
         default=argparse.SUPPRESS,
         help="Comma-separated toolsets to enable",
     )
+    chat_parser.add_argument(
+        "--no-tools",
+        action="store_true",
+        default=False,
+        help="Disable all model tools for this session",
+    )
     _inherited_flag(
         chat_parser,
         "--reasoning",

@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from io import StringIO
 import subprocess
 
@@ -594,6 +595,37 @@ def test_label_sanitizer_rejects_invalid_characters():
     assert len(docker_env._sanitize_label_value(long_value)) == 63
 
 
+def test_reuse_environment_fingerprint_tracks_immutable_configuration():
+    """Containers with different images, mounts, or Hermes homes must not
+    share the label used for cross-process reuse."""
+    base = docker_env._reuse_environment_fingerprint(
+        image="python:3.11",
+        mount_args=["-v", "volume-a:/workspace"],
+        hermes_home="/profiles/alpha",
+    )
+
+    assert base == docker_env._reuse_environment_fingerprint(
+        image="python:3.11",
+        mount_args=["-v", "volume-a:/workspace"],
+        hermes_home="/profiles/alpha",
+    )
+    assert base != docker_env._reuse_environment_fingerprint(
+        image="python:3.12",
+        mount_args=["-v", "volume-a:/workspace"],
+        hermes_home="/profiles/alpha",
+    )
+    assert base != docker_env._reuse_environment_fingerprint(
+        image="python:3.11",
+        mount_args=["-v", "volume-b:/workspace"],
+        hermes_home="/profiles/alpha",
+    )
+    assert base != docker_env._reuse_environment_fingerprint(
+        image="python:3.11",
+        mount_args=["-v", "volume-a:/workspace"],
+        hermes_home="/profiles/beta",
+    )
+
+
 def test_run_command_sanitizes_unsafe_task_id(monkeypatch):
     """A task_id containing characters Docker rejects in label values must be
     sanitized before reaching ``docker run --label``; otherwise the daemon
@@ -728,28 +760,80 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 
     env = _make_dummy_env(task_id="abc")
 
-    assert env._labels == {
+    labels = dict(env._labels)
+    environment_label = labels.pop("hermes-environment")
+    assert labels == {
         "hermes-agent": "1",
         "hermes-task-id": "abc",
         "hermes-profile": "default",
         "hermes-egress": "off",
     }
+    assert re.fullmatch(r"[0-9a-f]{24}", environment_label)
 
 
-def test_shared_container_key_replaces_profile_identity(monkeypatch):
+@pytest.mark.parametrize("changed_setting", ["image", "volumes", "hermes_home"])
+def test_reuse_probe_filters_on_environment_fingerprint(monkeypatch, tmp_path, changed_setting):
+    """Reuse and recovery must select the requested configuration, not stale mounts."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "alpha"))
+    # Keep the auto-mounted skills directory present from the first startup.
+    for name in ("alpha", "beta"):
+        (tmp_path / name / "skills").mkdir(parents=True)
+    calls = _mock_subprocess_run(monkeypatch)
+
+    def reuse_filters():
+        return tuple(
+            arg for cmd, _ in calls if isinstance(cmd, list) and cmd[1] == "ps"
+            for arg in cmd if arg.startswith("label=")
+        )
+
+    config = {"image": "python:3.11", "volumes": ["volume-a:/workspace"]}
+    _make_dummy_env(**config)
+    original_filters = reuse_filters()
+    assert original_filters
+    calls.clear()
+    _make_dummy_env(**config)
+    assert reuse_filters() == original_filters
+
+    if changed_setting == "hermes_home":
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "beta"))
+    else:
+        config[changed_setting] = {"image": "python:3.12", "volumes": ["volume-b:/workspace"]}[changed_setting]
+    calls.clear()
+    env = _make_dummy_env(**config)
+    changed_filters = reuse_filters()
+    assert changed_filters != original_filters
+    assert f"label=hermes-environment={env._labels['hermes-environment']}" in changed_filters
+    assert set(f.removeprefix("label=") for f in changed_filters) <= _labels_in_run_args(_run_args_from_calls(calls))
+
+    calls.clear()
+    assert env._recreate_container()
+    assert reuse_filters() == changed_filters
+
+
+def test_shared_container_key_replaces_profile_identity(monkeypatch, tmp_path):
     """Trusted profiles using the same explicit key share the reuse label."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "research")
     _mock_subprocess_run(monkeypatch)
 
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "research"))
     a = _make_dummy_env(task_id="abc", shared_container_key="team/workspace")
-    b = _make_dummy_env(task_id="abc", shared_container_key="team/workspace")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "coding")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "coding"))
+    b = _make_dummy_env(
+        task_id="abc", shared_container_key="team/workspace",
+        image="python:3.12", volumes=["team-volume:/workspace"],
+    )
 
     # Deterministic across processes/profiles, not the profile label, and
     # digest-suffixed (label sanitization alone is lossy).
     assert a._labels["hermes-profile"] == b._labels["hermes-profile"]
     assert a._labels["hermes-profile"] != "research"
     assert a._labels["hermes-profile"].startswith("team_workspace-")
+    # Explicit sharing retains the first creator's immutable settings.
+    assert a._labels == b._labels
 
 
 def test_distinct_shared_keys_never_collide(monkeypatch):

@@ -1770,3 +1770,50 @@ class TestSystemdCgroupIsolation:
         assert first is True
         assert second is True
         assert len(probe_calls) == 1, "probe must run only once (cached)"
+
+    def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):
+        """Concurrent first-use callers must wait for one definitive probe.
+
+        A temporary cached ``False`` would let a racing worker spawn inside the
+        gateway cgroup, defeating the OOM isolation guarantee.
+        """
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        probe_started = threading.Event()
+        release_probe = threading.Event()
+        probe_calls = []
+        results = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            probe_started.set()
+            assert release_probe.wait(timeout=2)
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        first = threading.Thread(
+            target=lambda: results.append(pr._systemd_run_user_scope_available())
+        )
+        second = threading.Thread(
+            target=lambda: results.append(pr._systemd_run_user_scope_available())
+        )
+        first.start()
+        assert probe_started.wait(timeout=2)
+        second.start()
+
+        # The racing caller must be blocked behind the probe, not observe a
+        # temporary False cache value.
+        second.join(timeout=0.05)
+        assert second.is_alive()
+
+        release_probe.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert results == [True, True]
+        assert len(probe_calls) == 1

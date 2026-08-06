@@ -96,6 +96,7 @@ WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 # services and containers), and cache the result for the process lifetime.
 
 _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
+_SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 
 
 def _systemd_run_user_scope_available() -> bool:
@@ -113,40 +114,49 @@ def _systemd_run_user_scope_available() -> bool:
     if _SYSTEMD_SCOPE_AVAILABLE is not None:
         return _SYSTEMD_SCOPE_AVAILABLE
 
-    _SYSTEMD_SCOPE_AVAILABLE = False
-    if _IS_WINDOWS:
-        return False
-    try:
-        import shutil
+    # Double-checked locking keeps concurrent first-use spawns from observing
+    # a temporary False while the definitive probe is still in flight.  Such a
+    # race would launch the losing workload back inside the gateway cgroup.
+    with _SYSTEMD_SCOPE_PROBE_LOCK:
+        if _SYSTEMD_SCOPE_AVAILABLE is not None:
+            return _SYSTEMD_SCOPE_AVAILABLE
 
-        binary = shutil.which("systemd-run")
-        if not binary:
-            return False
-        # Probe: create a transient scope that immediately exits.  Use a
-        # unique unit name so concurrent probes don't collide.  A short
-        # timeout guards against a hung D-Bus.
-        probe_unit = f"hermes-probe-scope-{os.getpid()}-{int(time.time())}"
-        result = subprocess.run(
-            [
-                binary, "--user", "--scope", "--quiet",
-                "--unit", probe_unit,
-                "--collect", "--",
-                "/bin/true",
-            ],
-            capture_output=True,
-            timeout=3,
-        )
-        _SYSTEMD_SCOPE_AVAILABLE = result.returncode == 0
-        if not _SYSTEMD_SCOPE_AVAILABLE:
-            logger.debug(
-                "systemd-run --user --scope probe failed (rc=%s): %s",
-                result.returncode,
-                (result.stderr or b"").decode("utf-8", "replace").strip(),
-            )
-    except Exception as exc:
-        logger.debug("systemd-run --user --scope probe error: %s", exc)
-        _SYSTEMD_SCOPE_AVAILABLE = False
-    return _SYSTEMD_SCOPE_AVAILABLE
+        available = False
+        if not _IS_WINDOWS:
+            try:
+                import shutil
+
+                binary = shutil.which("systemd-run")
+                if binary:
+                    # Probe: create a transient scope that immediately exits.
+                    # A unique unit avoids collisions; timeout bounds D-Bus.
+                    probe_unit = (
+                        f"hermes-probe-scope-{os.getpid()}-{int(time.time())}"
+                    )
+                    result = subprocess.run(
+                        [
+                            binary, "--user", "--scope", "--quiet",
+                            "--unit", probe_unit,
+                            "--collect", "--",
+                            "/bin/true",
+                        ],
+                        capture_output=True,
+                        timeout=3,
+                    )
+                    available = result.returncode == 0
+                    if not available:
+                        logger.debug(
+                            "systemd-run --user --scope probe failed (rc=%s): %s",
+                            result.returncode,
+                            (result.stderr or b"").decode(
+                                "utf-8", "replace"
+                            ).strip(),
+                        )
+            except Exception as exc:
+                logger.debug("systemd-run --user --scope probe error: %s", exc)
+
+        _SYSTEMD_SCOPE_AVAILABLE = available
+        return available
 
 
 def _build_systemd_scope_argv(

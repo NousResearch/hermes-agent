@@ -18,11 +18,15 @@ import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
 import { type HermesGateway } from '@/hermes'
+import { getSessionMessages } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { toChatMessages } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { queryClient } from '@/lib/query-client'
+import { sessionMessagesQueryKey } from '@/lib/session-messages-cache'
 import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
@@ -431,6 +435,32 @@ export const ChatView = memo(function ChatView({
     queryKey: modelOptionsQueryKey(activeGatewayProfile, activeSessionId),
     queryFn: () => requestModelOptions({ gateway: gateway || undefined, sessionId: activeSessionId }),
     enabled: gatewayOpen
+  })
+
+  // SWR: show stale cache immediately while session loads
+  const storedSessionId = isPrimary ? routeSessionId(location.pathname) : selectedSessionId
+  const sessionProfile = isPrimary ? activeGatewayProfile : (storedId ? $sessions.get().find(s => s.id === storedId)?.profile ?? null : null)
+  
+  // Get cached messages if available (for SWR placeholderData)
+  const cachedMessages = sessionProfile && activeSessionId
+    ? queryClient.getQueryData(sessionMessagesQueryKey(sessionProfile, activeSessionId)) as ChatMessage[] | undefined
+    : undefined
+
+  const sessionMessagesQuery = useQuery<ChatMessage[]>({
+    queryKey: sessionProfile && activeSessionId ? sessionMessagesQueryKey(sessionProfile, activeSessionId) : ['session-messages', 'disabled'] as const,
+    queryFn: async () => {
+      if (!sessionProfile) {
+        return []
+      }
+
+      const response = await getSessionMessages(activeSessionId!, sessionProfile)
+
+      return toChatMessages(response.messages)
+    },
+    enabled: Boolean(sessionProfile) && Boolean(activeSessionId) && gatewayOpen && !loadingSession,
+    placeholderData: cachedMessages,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
   })
 
   const quickModels = useMemo(

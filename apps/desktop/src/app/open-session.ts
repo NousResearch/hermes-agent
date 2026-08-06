@@ -1,3 +1,4 @@
+import { prefetchSessionMessages } from '@/lib/session-messages-cache'
 /**
  * One door for "open this session" — every surface (sidebar, ⌘K, notifications,
  * session switcher, refs, cron/artifacts) goes through here so a chat that's
@@ -77,6 +78,12 @@ export function openSession(
   if (!storedSessionId) {
     return
   }
+
+  // Prefetch messages for SWR: prime the cache so the session renders instantly
+  // on switch. Fire-and-forget — we don't await because the UI should navigate
+  // immediately; the stale cache (if any) shows first, then background revalidate.
+  // The profile is resolved asynchronously inside prefetchSessionMessages.
+  void prefetchSessionMessages(storedSessionId, null)
 
   let resolved: OpenSessionIntent = intent
 

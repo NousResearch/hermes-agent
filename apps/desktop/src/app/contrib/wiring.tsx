@@ -66,7 +66,7 @@ import {
   setMessages
 } from '@/store/session'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
-import { armWakeWord } from '@/store/wake-word'
+import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
@@ -688,6 +688,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       if (event.type === 'wake.detected') {
         const payload = event.payload as { profile?: null | string; start_new_session?: boolean } | undefined
+
+        // Free the Mac mic so voice conversation can open getUserMedia.
+        // Server already pauses the detector lease; this stops client PCM feed.
+        stopClientCapture()
 
         // Audible confirmation that the wake registered, before voice capture
         // starts. Gated by the shared sound-mute toggle.

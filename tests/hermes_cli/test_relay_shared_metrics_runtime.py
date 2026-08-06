@@ -359,6 +359,13 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     }
     assert starts[0][2] == {}
     assert starts[0][3]["model_name"] == "unknown"
+    active_marks = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.event" and event[1] == "hermes.client.active"
+    ]
+    assert len(active_marks) == 2
+    assert all(mark[2]["data"] == {} for mark in active_marks)
     assert ends[0][2] == {
         "model": "claude-sonnet",
         "provider": "anthropic",
@@ -380,11 +387,18 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     package = json.loads(packages[0].read_text(encoding="utf-8"))
     metrics = {metric["name"]: metric for metric in package["metrics"]}
     assert set(metrics) == {
+        "hermes.client.active",
         "hermes.model_route.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
         "hermes.tool_approval.count",
         "hermes.tool_call.count",
+    }
+    assert metrics["hermes.client.active"] == {
+        "name": "hermes.client.active",
+        "type": "counter",
+        "dimensions": {},
+        "value": 1,
     }
     assert metrics["hermes.model_route.count"]["dimensions"] == {
         "model": "claude-sonnet",
@@ -605,6 +619,8 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     for counter in snapshot:
         by_metric.setdefault(counter["metric_name"], []).append(counter)
 
+    assert by_metric["hermes.client.active"][0]["dimensions"] == {}
+    assert by_metric["hermes.client.active"][0]["value"] == 1
     assert len(by_metric["hermes.task_run.started"]) == 1
     assert by_metric["hermes.task_run.started"][0]["value"] == 3
     assert len(by_metric["hermes.model_route.count"]) == 1
@@ -1214,6 +1230,7 @@ def test_disabling_shared_metrics_stops_collection_and_shutdown_export(
     root = profile / "telemetry" / "shared_metrics"
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
     assert [row["metric_name"] for row in store.counter_snapshot()] == [
+        "hermes.client.active",
         "hermes.task_run.started"
     ]
     assert list((root / "outbox").glob("*.json")) == []
@@ -2061,6 +2078,40 @@ def test_pending_tool_uses_the_outer_task_timeout_outcome(direct_runtime):
     assert "private timeout detail" not in repr(direct_runtime.events)
 
 
+def test_late_model_start_does_not_create_an_orphan_after_task_completion(
+    direct_runtime,
+):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "platform": "cli",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+
+    lifecycle.invoke_hook(
+        "pre_api_request",
+        **base,
+        api_request_id="late-request",
+        provider="nvidia",
+        model="nvidia/nemotron-3-super-120b-a12b",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    assert [event for event in direct_runtime.events if event[0] == "llm.call"] == []
+    assert [
+        event for event in direct_runtime.events if event[0] == "llm.call_end"
+    ] == []
+
+
 def test_approval_without_tool_context_is_counted_as_unattributed(direct_runtime):
     base = {
         "session_id": "s1",
@@ -2293,3 +2344,171 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
     assert flush_attempts == 2
     assert "Hermes shared-metrics task flush failed" in caplog.text
 
+
+def test_skill_lifecycle_flows_through_relay_to_a_privacy_safe_package(
+    direct_runtime,
+    tmp_path,
+):
+    common = {
+        "skill_name": "private-skill-name",
+        "provenance": "agent_created",
+    }
+    lifecycle.invoke_hook("on_skill_lifecycle", **common, action="created")
+    lifecycle.invoke_hook(
+        "on_skill_lifecycle",
+        **common,
+        action="loaded",
+        use_count=1,
+        reused=False,
+        reuse_after_patch=False,
+    )
+    lifecycle.invoke_hook("on_skill_lifecycle", **common, action="patched")
+    lifecycle.invoke_hook(
+        "on_skill_lifecycle",
+        **common,
+        action="loaded",
+        use_count=2,
+        reused=True,
+        reuse_after_patch=True,
+    )
+
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    runtime.shutdown()
+
+    marks = [event for event in direct_runtime.events if event[0] == "scope.event"]
+    assert [event[1] for event in marks] == [
+        "hermes.skill.lifecycle",
+        "hermes.skill.load",
+        "hermes.skill.lifecycle",
+        "hermes.skill.load",
+    ]
+    assert "private-skill-name" not in json.dumps(marks)
+
+    outbox = tmp_path / "hermes-home" / "telemetry" / "shared_metrics" / "outbox"
+    [package_path] = list(outbox.glob("*.json"))
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    skill_metrics = [
+        metric
+        for metric in package["metrics"]
+        if metric["name"].startswith("hermes.skill.")
+    ]
+    assert {metric["name"] for metric in skill_metrics} == {
+        "hermes.skill.lifecycle.count",
+        "hermes.skill.load.count",
+    }
+    assert "private-skill-name" not in json.dumps(package)
+
+
+def test_skill_lifecycle_with_only_task_id_uses_unique_task_scope(direct_runtime):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    task = runtime.start_task({
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "platform": "cli",
+    })
+    assert task is not None
+
+    lifecycle.invoke_hook(
+        "on_skill_lifecycle",
+        action="created",
+        skill_name="private-skill-name",
+        provenance="agent_created",
+        task_id="task-1",
+    )
+
+    [mark] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.event" and event[1] == "hermes.skill.lifecycle"
+    ]
+    assert mark[2]["handle"] == task.handle
+
+
+def test_skill_task_only_correlation_does_not_guess_across_sessions(direct_runtime):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    for session_id in ("session-1", "session-2"):
+        assert runtime.start_task({
+            "session_id": session_id,
+            "task_id": "shared-task",
+            "platform": "cli",
+        }) is not None
+
+    lifecycle.invoke_hook(
+        "on_skill_lifecycle",
+        action="created",
+        skill_name="private-skill-name",
+        provenance="agent_created",
+        task_id="shared-task",
+    )
+
+    [mark] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.event" and event[1] == "hermes.skill.lifecycle"
+    ]
+    assert "handle" not in mark[2]
+
+
+def test_late_skill_lifecycle_is_not_reemitted_at_the_root(direct_runtime):
+    base = {
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "turn_id": "turn-1",
+        "platform": "cli",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+
+    lifecycle.invoke_hook(
+        "on_skill_lifecycle",
+        **base,
+        action="loaded",
+        skill_name="private-skill-name",
+        provenance="local",
+        use_count=2,
+        reused=True,
+        reuse_after_patch=False,
+    )
+
+    assert [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.event" and event[1] == "hermes.skill.load"
+    ] == []
+
+
+def test_skill_lifecycle_does_not_fallback_across_an_explicit_session(
+    direct_runtime,
+):
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    assert runtime.start_task({
+        "session_id": "session-1",
+        "task_id": "task-1",
+        "platform": "cli",
+    }) is not None
+
+    lifecycle.invoke_hook(
+        "on_skill_lifecycle",
+        action="created",
+        skill_name="private-skill-name",
+        provenance="local",
+        session_id="wrong-session",
+        task_id="task-1",
+    )
+
+    assert [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.event" and event[1] == "hermes.skill.lifecycle"
+    ] == []

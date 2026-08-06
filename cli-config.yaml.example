@@ -1225,6 +1225,19 @@ stt:
 #     model: ""
 #     voice: "default"
 
+# "Hey Hermes" hands-free wake word (off by default; toggle with /wake).
+# Full engine/provider options inherit from DEFAULT_CONFIG in
+# hermes_cli/config_defaults.py — only capture placement is documented here.
+# wake_word:
+#   enabled: false
+#   capture: "auto"    # auto | local | client
+#                      # auto: backend PortAudio mic when one exists; a remote
+#                      #       desktop on a mic-less (headless/VPS) backend
+#                      #       streams its own mic via the wake.feed RPC.
+#                      # local: always the backend mic (wake_word.input_device).
+#                      # client: always desktop-streamed PCM (detection stays
+#                      #         on the backend).
+
 # Image generation. Each provider plugin reads its own ``image_gen.<name>``
 # block; deepinfra discovers models live from
 # api.deepinfra.com/v1/openai/models filtered by the ``image-gen`` tag —

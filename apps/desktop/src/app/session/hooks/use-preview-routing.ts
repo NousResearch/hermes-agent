@@ -10,8 +10,8 @@ import {
   progressPreviewServerRestart,
   requestPreviewReload
 } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
-import { $focusedRuntimeId } from '@/store/session-states'
+import { $activeSessionId, $currentCwd } from '@/store/session'
+import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
 type EventHandler = (event: RpcEvent) => void
@@ -63,16 +63,24 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
 
       if (event.type === 'preview.open') {
         // Agent-driven open in response to an explicit user request ("show
-        // cnn.com in the preview pane"). Honor it only for the session the user
-        // is actually looking at — a background turn must not yank the pane open
-        // (see desktop AGENTS.md: offer, don't hijack). That session is the
-        // focused one, which is a TILE's runtime whenever a tile is fronted, not
-        // the primary chat's. Routes through the same normalizer as the file
-        // browser so URLs, localhost, and file paths all resolve correctly.
+        // cnn.com in the preview pane"). Honor it for any session that's ON
+        // SCREEN — the primary chat or an open tile — not only the focused
+        // one: the turn's window routing already scoped the event to this
+        // window, and gating on focus made the open silently vanish whenever
+        // the user's click had moved focus to a different zone by the time
+        // the tool ran (an "open reddit" they explicitly asked for). A
+        // session that is NOT visible anywhere still can't yank the pane
+        // open (offer, don't hijack). Routes through the same normalizer as
+        // the file browser so URLs, localhost, and file paths all resolve.
         const { url, label } = asRecord(event.payload)
         const target = typeof url === 'string' ? url.trim() : ''
 
-        if (target && (!event.session_id || event.session_id === $focusedRuntimeId.get())) {
+        const onScreen = (sid: string) =>
+          sid === $focusedRuntimeId.get() ||
+          sid === $activeSessionId.get() ||
+          $sessionTiles.get().some(tile => tile.runtimeId === sid)
+
+        if (target && (!event.session_id || onScreen(event.session_id))) {
           void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(resolved => {
             if (resolved) {
               const trimmedLabel = typeof label === 'string' ? label.trim() : ''

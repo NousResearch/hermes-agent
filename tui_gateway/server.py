@@ -3138,6 +3138,7 @@ def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> 
         "sudo.request",
         "clarify.request",
         "terminal.read.request",
+        "preview.read.request",
     }:
         _emit(
             f"{event.removesuffix('.request')}.expire",
@@ -5673,6 +5674,16 @@ def _agent_cbs(sid: str) -> dict:
             sid,
             {k: v for k, v in (("start", start), ("count", count)) if v is not None},
             timeout=30,
+        ),
+        # read_preview tool (desktop GUI): the renderer serializes the active
+        # preview tab (a Browser webview's readable text, a file's identity)
+        # and answers preview.read.respond. Longer timeout than the terminal
+        # read — a URL tab extracts text from a live page.
+        "read_preview_callback": lambda start=None, count=None: _block(
+            "preview.read.request",
+            sid,
+            {k: v for k, v in (("start", start), ("count", count)) if v is not None},
+            timeout=45,
         ),
     }
 
@@ -13119,8 +13130,10 @@ def _(rid, params: dict) -> dict:
         from tools.wake_word import (
             WakeWordInUse,
             check_wake_word_requirements,
+            detector_frame_info,
             load_wake_word_config,
             owns_listener,
+            resolve_capture_mode,
             start_listening,
             wake_phrase,
             wake_surface_enabled,
@@ -13129,16 +13142,25 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5026, f"wake module unavailable: {e}")
 
     cfg = load_wake_word_config()
+    # Desktop remote (gui) prefers client capture: Mac mic → wake.feed PCM,
+    # while the engine still runs on the backend. CLI/TUI stay local.
+    prefer_client = surface in ("gui", "desktop") or bool(params.get("client_capture"))
+    capture_mode = resolve_capture_mode(cfg, prefer_client=prefer_client)
+    external_audio = capture_mode == "client"
     # Requirements first: a gesture on an unarmed-able setup (no STT/TTS, no
     # mic, missing key) must refuse WITHOUT flipping wake_word.enabled — else
     # config says on while nothing can ever arm, and auto-arm paths churn.
-    reqs = check_wake_word_requirements(cfg)
+    # Temporarily stamp capture so the probe matches the arm mode.
+    probe_cfg = dict(cfg)
+    probe_cfg["capture"] = capture_mode
+    reqs = check_wake_word_requirements(probe_cfg)
     if not reqs["available"]:
         logger.warning("wake.start(%s): not available — %s", surface, reqs.get("hint"))
         return _ok(rid, {
             "started": False,
             "reason": "unavailable",
             "hint": reqs.get("hint") or "",
+            "capture": capture_mode,
         })
     enabled_persisted = False
     if persist and not cfg.get("enabled"):
@@ -13202,7 +13224,12 @@ def _(rid, params: dict) -> dict:
             reset_transport(token)
 
     try:
-        start_listening(_on_detect, owner=transport, config=cfg)
+        start_listening(
+            _on_detect,
+            owner=transport,
+            config=cfg,
+            external_audio=external_audio,
+        )
     except WakeWordInUse:
         return _ok(rid, {
             "started": False,
@@ -13216,13 +13243,20 @@ def _(rid, params: dict) -> dict:
     with _wake_lock:
         _wake_owner_transport = transport
         _wake_owner_surface = surface
-    logger.info("wake.start(%s): listening for %r (%s)", surface, reqs["phrase"], reqs["provider"])
+    frame = detector_frame_info()
+    logger.info(
+        "wake.start(%s): listening for %r (%s) capture=%s frame=%s",
+        surface, reqs["phrase"], reqs["provider"], capture_mode, frame.get("frame_length"),
+    )
     return _ok(rid, {
         "started": True,
         "phrase": reqs["phrase"],
         "provider": reqs["provider"],
         "owner_surface": surface,
         "enabled_persisted": enabled_persisted,
+        "capture": capture_mode,
+        "sample_rate": frame.get("sample_rate", 16000),
+        "frame_length": frame.get("frame_length", 1280),
     })
 
 
@@ -13289,14 +13323,22 @@ def _(rid, params: dict) -> dict:
         from tools.wake_word import (
             audio_is_silent,
             check_wake_word_requirements,
+            detector_frame_info,
             get_input_device_status,
             is_listening,
             load_wake_word_config,
             owns_listener,
+            resolve_capture_mode,
             silent_audio_hint,
         )
         cfg = load_wake_word_config()
-        reqs = check_wake_word_requirements(cfg)
+        # Prefer client when the GUI asks (desktop remote re-arm / status).
+        prefer_client = bool(params.get("client_capture")) or str(
+            params.get("surface") or ""
+        ).strip().lower() in ("gui", "desktop")
+        probe_cfg = dict(cfg)
+        probe_cfg["capture"] = resolve_capture_mode(cfg, prefer_client=prefer_client)
+        reqs = check_wake_word_requirements(probe_cfg)
         transport = current_transport() or _stdio_transport
         owner, owner_surface = _wake_owner_snapshot()
         owned_by_caller = owns_listener(transport)
@@ -13308,6 +13350,19 @@ def _(rid, params: dict) -> dict:
             hint = f"Wake-word input device could not be resolved: {input_device['error']}"
         if silent and not hint:
             hint = silent_audio_hint(input_device)
+        # Effective capture: prefer the *armed* detector over config/auto.
+        # With capture:auto the GUI arms client mode, but a bare status probe
+        # would otherwise report "local" and the desktop would not reattach
+        # the PCM feeder after wake.detected.
+        frame = detector_frame_info()
+        if owned_by_caller and frame.get("external_audio"):
+            capture = "client"
+        elif owned_by_caller and listening:
+            capture = "local"
+        else:
+            capture = probe_cfg.get("capture") or reqs.get("capture") or str(
+                cfg.get("capture") or "auto"
+            )
         return _ok(rid, {
             "listening": listening,
             "owned_by_caller": owned_by_caller,
@@ -13323,9 +13378,52 @@ def _(rid, params: dict) -> dict:
             "enabled": bool(cfg.get("enabled")),
             # Armed but deaf despite an open stream; see platform-specific hint.
             "audio_silent": silent,
+            "capture": capture,
+            "local_input_available": bool(reqs.get("local_input_available")),
+            "sample_rate": frame.get("sample_rate", 16000),
+            "frame_length": frame.get("frame_length", 1280),
         })
     except Exception as e:
         return _err(rid, 5026, str(e))
+
+
+@method("wake.feed")
+def _(rid, params: dict) -> dict:
+    """Push client-captured PCM into the armed wake detector.
+
+    Params:
+      pcm: base64-encoded int16 mono little-endian samples (preferred), OR
+      pcm_b64: alias of pcm
+    Optional:
+      sample_rate: must be 16000 (ignored if missing; mismatched rates rejected)
+
+    Used when ``wake.start`` returned ``capture: "client"`` so remote backends
+    without a microphone can still run openWakeWord on Mac/desktop audio.
+    """
+    transport = current_transport() or _stdio_transport
+    raw_b64 = params.get("pcm") or params.get("pcm_b64") or ""
+    if not isinstance(raw_b64, str) or not raw_b64.strip():
+        return _err(rid, 4001, "wake.feed requires base64 pcm")
+    try:
+        import base64
+        pcm = base64.b64decode(raw_b64, validate=False)
+    except Exception as e:
+        return _err(rid, 4001, f"invalid base64 pcm: {e}")
+    if not pcm:
+        return _ok(rid, {"fed": False, "reason": "empty"})
+    # Soft size cap: 64000 bytes = 2s of 16 kHz int16 mono
+    if len(pcm) > 64000:
+        return _err(rid, 4001, "pcm frame too large")
+    sr = params.get("sample_rate")
+    if sr is not None and int(sr) not in (0, 16000):
+        return _err(rid, 4001, "wake.feed only accepts 16 kHz PCM")
+    try:
+        from tools.wake_word import feed_audio
+        ok = feed_audio(owner=transport, pcm_int16=pcm)
+    except Exception as e:
+        logger.debug("wake.feed failed: %s", e)
+        return _err(rid, 5026, str(e))
+    return _ok(rid, {"fed": bool(ok), "reason": None if ok else "not_owner"})
 
 
 @method("voice.toggle")

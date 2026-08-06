@@ -67,8 +67,101 @@ class TestIsExtractable(unittest.TestCase):
 
     def test_unrecognized_extensions(self):
         self.assertFalse(is_extractable_document("a.py"))
-        self.assertFalse(is_extractable_document("a.pdf"))
         self.assertFalse(is_extractable_document("a.txt"))
+        self.assertFalse(is_extractable_document("a.mp4"))
+
+    def test_anydoc_extensions_track_availability(self):
+        """PDF (and the other anydoc formats) are extractable exactly when
+        the optional `anydoc` converter is importable."""
+        from tools import read_extract
+
+        available = read_extract._anydoc() is not None
+        self.assertEqual(is_extractable_document("a.pdf"), available)
+        self.assertEqual(is_extractable_document("a.odt"), available)
+        self.assertEqual(is_extractable_document("a.epub"), available)
+
+
+# ---------------------------------------------------------------------------
+# Optional anydoc-backed formats (PDF, legacy Office, ODF, RTF, EPUB)
+# ---------------------------------------------------------------------------
+
+class TestAnydocExtraction(unittest.TestCase):
+    """Real-binding tests — skipped when firecrawl-anydoc is not installed."""
+
+    @classmethod
+    def setUpClass(cls):
+        from tools import read_extract
+
+        cls.mod = read_extract._anydoc()
+        if cls.mod is None:
+            raise unittest.SkipTest("firecrawl-anydoc not installed")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rex_anydoc_")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_rtf_extracts_markdown(self):
+        p = os.path.join(self.tmp, "doc.rtf")
+        with open(p, "w", encoding="ascii") as fh:
+            fh.write(r"{\rtf1\ansi {\b Bold title}\par plain body\par}")
+        text = extract_document_text(p)
+        self.assertIn("Bold title", text)
+        self.assertIn("plain body", text)
+        self.assertTrue(text.endswith("\n"))
+
+    def test_malformed_file_raises_extraction_error(self):
+        p = os.path.join(self.tmp, "junk.pdf")
+        with open(p, "wb") as fh:
+            fh.write(b"\x00\x01 not a pdf at all")
+        with self.assertRaises(ExtractionError):
+            extract_document_text(p)
+
+    def test_stdlib_docx_path_still_authoritative(self):
+        """A .docx keeps using the stdlib extractor even with anydoc
+        installed — behavior must be identical either way."""
+        p = os.path.join(self.tmp, "d.docx")
+        _write_docx(
+            p,
+            f'<w:document xmlns:w="{_NS_W}"><w:body>'
+            "<w:p><w:r><w:t>hello</w:t></w:r></w:p>"
+            "</w:body></w:document>",
+        )
+        text = extract_document_text(p)
+        self.assertEqual(text, "hello\n")
+
+
+class TestAnydocAbsent(unittest.TestCase):
+    """The absent-dep contract, verified regardless of local install state
+    by forcing the cached module handle to None."""
+
+    def setUp(self):
+        from tools import read_extract
+
+        self._saved = read_extract._anydoc_module
+        read_extract._anydoc_module = None
+
+    def tearDown(self):
+        from tools import read_extract
+
+        read_extract._anydoc_module = self._saved
+
+    def test_pdf_not_extractable_without_anydoc(self):
+        self.assertFalse(is_extractable_document("a.pdf"))
+        self.assertFalse(is_extractable_document("a.rtf"))
+
+    def test_extract_raises_unsupported_without_anydoc(self):
+        from tools.read_extract import _extract_anydoc
+
+        with self.assertRaises(ExtractionError):
+            _extract_anydoc("/tmp/whatever.pdf")
+
+    def test_stdlib_formats_unaffected(self):
+        self.assertTrue(is_extractable_document("a.ipynb"))
+        self.assertTrue(is_extractable_document("a.docx"))
+        self.assertTrue(is_extractable_document("a.xlsx"))
 
 
 # ---------------------------------------------------------------------------

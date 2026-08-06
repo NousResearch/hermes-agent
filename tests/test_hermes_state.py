@@ -78,6 +78,24 @@ def db(tmp_path):
     session_db.close()
 
 
+@pytest.fixture(autouse=True)
+def _no_fts_rebuild_throttle(monkeypatch):
+    """Zero the FTS-rebuild inter-chunk throttle for every test in this file.
+
+    ``optimize_fts_storage`` sleeps ``max(_FTS_REBUILD_MIN_PAUSE,
+    chunk_cost * _FTS_REBUILD_DUTY_FACTOR)`` between chunks so a LIVE
+    gateway/CLI sharing the DB isn't starved of the write lock. Tests run
+    against a private tmp-path DB with no concurrent process — the sleep
+    protects nobody and was pure dead time (measured: 4.1s of a 4.6s
+    migration test was time.sleep; ~20s across the file, whose total was
+    ~52s). The duty-cycle POLICY (sleep >= 4x chunk cost) stays covered by
+    the production constants themselves; no test asserts on wall-clock
+    pacing.
+    """
+    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_MIN_PAUSE", 0.0)
+    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_DUTY_FACTOR", 0.0)
+
+
 # =========================================================================
 # Connection lifecycle
 # =========================================================================
@@ -1067,6 +1085,99 @@ class TestPruneSessionFilters:
 
 
 
+
+    def test_title_like_underscore_is_literal_not_a_wildcard(self, db):
+        """``_`` is a single-character wildcard in SQL LIKE, so an unescaped
+        filter deletes sessions the operator never selected. The filters are
+        documented (and shown in the CLI confirmation) as substring matches.
+        """
+        self._mk(db, "target", title="user_auth refactor")
+        self._mk(db, "bystander1", title="user-auth review")
+        self._mk(db, "bystander2", title="userXauth notes")
+        self._mk(db, "bystander3", title="user auth meeting")
+
+        rows = db.list_prune_candidates(title_like="user_auth")
+        assert {r["id"] for r in rows} == {"target"}
+
+        pruned = db.prune_sessions(older_than_days=None, title_like="user_auth")
+        assert pruned == 1
+        for survivor in ("bystander1", "bystander2", "bystander3"):
+            assert db.get_session(survivor) is not None
+
+    def test_percent_in_filter_does_not_select_everything(self, db):
+        """``%`` matches any run of characters — a bare one would delete the
+        whole table."""
+        self._mk(db, "a", title="alpha")
+        self._mk(db, "b", title="beta")
+        self._mk(db, "pct", title="100% coverage run")
+
+        # Only the title that really contains a percent sign matches.
+        assert {r["id"] for r in db.list_prune_candidates(title_like="%")} == {"pct"}
+        assert {r["id"] for r in db.list_prune_candidates(title_like="100%")} == {"pct"}
+
+    def test_branch_like_underscore_is_literal(self, db):
+        """Branch names carry underscores routinely."""
+        self._mk_rich(db, "want", git_branch="fix/session_prune")
+        self._mk_rich(db, "other", git_branch="fix/session-prune")
+
+        rows = db.list_prune_candidates(branch_like="session_prune")
+        assert {r["id"] for r in rows} == {"want"}
+
+    def test_model_like_underscore_is_literal(self, db):
+        self._mk_rich(db, "want", model="vendor/model_mini")
+        self._mk_rich(db, "other", model="vendor/model-mini")
+
+        rows = db.list_prune_candidates(model_like="model_mini")
+        assert {r["id"] for r in rows} == {"want"}
+
+    def test_plain_substring_filters_still_match(self, db):
+        """Guard against over-escaping: ordinary filters keep working, and a
+        literal backslash in the needle is matched as itself."""
+        self._mk(db, "smoke", title="Codex Smoke Test")
+        self._mk_rich(db, "winpath", title=r"build C:\tmp artifacts")
+
+        assert {r["id"] for r in db.list_prune_candidates(title_like="smoke")} == {"smoke"}
+        assert {r["id"] for r in db.list_prune_candidates(title_like=r"c:\tmp")} == {"winpath"}
+
+    def test_cwd_prefix_underscore_is_literal_not_a_wildcard(self, db):
+        """``_`` is a LIKE wildcard but an ordinary character in a path, so an
+        unescaped prefix also matched a same-length sibling directory — and
+        prune_sessions deletes what it matches."""
+        self._mk(db, "target", cwd="/home/me/my_project/src")
+        self._mk(db, "sibling", cwd="/home/me/myXproject/src")
+
+        rows = db.list_prune_candidates(cwd_prefix="/home/me/my_project")
+        assert {r["id"] for r in rows} == {"target"}
+
+        pruned = db.prune_sessions(older_than_days=None, cwd_prefix="/home/me/my_project")
+        assert pruned == 1
+        assert db.get_session("sibling") is not None
+
+    def test_cwd_prefix_percent_does_not_select_everything(self, db):
+        self._mk(db, "a", cwd="/home/me/one")
+        self._mk(db, "b", cwd="/home/me/two")
+
+        assert db.list_prune_candidates(cwd_prefix="/home/me/%") == []
+
+    def test_cwd_prefix_still_matches_the_directory_and_its_children(self, db):
+        """Control: the prefix must keep matching itself and anything under it."""
+        self._mk(db, "root", cwd="/home/me/proj")
+        self._mk(db, "child", cwd="/home/me/proj/src")
+        self._mk(db, "outside", cwd="/home/me/other")
+
+        rows = db.list_prune_candidates(cwd_prefix="/home/me/proj")
+        assert {r["id"] for r in rows} == {"root", "child"}
+
+    def test_cwd_prefix_windows_separator_arm(self, db):
+        """The backslash child arm (``{esc}\\\\%`` in the pattern) must keep
+        matching Windows children while ``_`` stays literal — a guard against
+        'simplifying' the quadruple backslash."""
+        self._mk(db, "win_root", cwd=r"C:\Users\me\my_project")
+        self._mk(db, "win_child", cwd=r"C:\Users\me\my_project\src")
+        self._mk(db, "win_sibling", cwd=r"C:\Users\me\myXproject\src")
+
+        rows = db.list_prune_candidates(cwd_prefix=r"C:\Users\me\my_project")
+        assert {r["id"] for r in rows} == {"win_root", "win_child"}
 
     def test_unknown_filter_rejected(self, db):
         import pytest as _pytest
@@ -3471,8 +3582,19 @@ class TestGetMessagesPagination:
 
     def _seed(self, db, n=10):
         db.create_session(session_id="s1", source="cli")
-        for i in range(n):
-            db.append_message("s1", "user" if i % 2 == 0 else "assistant", f"msg-{i}")
+        # One write transaction for the whole seed: per-row append_message
+        # pays a commit (and, off WAL, an fsync) per message, which at
+        # n=3000 was ~10s of pure seeding before the query under test ran.
+        db.append_messages_batch(
+            "s1",
+            [
+                {
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": f"msg-{i}",
+                }
+                for i in range(n)
+            ],
+        )
 
     def test_default_returns_all_messages(self, db):
         self._seed(db)

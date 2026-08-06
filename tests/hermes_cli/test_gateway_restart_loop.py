@@ -145,7 +145,7 @@ class TestCronCreateLifecycleBlock:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         scripts_dir = tmp_path / ".hermes" / "scripts"
         scripts_dir.mkdir(parents=True)
-        (scripts_dir / "restart.sh").write_text("#!/bin/bash\nhermes gateway restart\n")
+        (scripts_dir / "restart.sh").write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
         args = Namespace(
             cron_command="create",
             schedule="1h",
@@ -302,7 +302,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "delayed-ops.sh"
-        script.write_text("#!/bin/bash\nsleep 45\nhermes gateway restart\n")
+        script.write_text("#!/bin/bash\nsleep 45\nhermes gateway restart\n", encoding="utf-8")
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(command=f"/bin/bash {script}"))
@@ -314,7 +314,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "health-check.sh"
-        script.write_text("#!/bin/bash\nprintf 'healthy\\n'\n")
+        script.write_text("#!/bin/bash\nprintf 'healthy\\n'\n", encoding="utf-8")
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(
@@ -392,7 +392,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "relative.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
 
         class _FakeEnv:
             env = {}
@@ -411,7 +411,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "delayed.sh"
-        script.write_text("#!/bin/bash\nhermes gateway stop\n")
+        script.write_text("#!/bin/bash\nhermes gateway stop\n", encoding="utf-8")
         script.chmod(0o700)
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
@@ -434,7 +434,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "options.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(
@@ -447,7 +447,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "nested.sh"
-        script.write_text("#!/bin/bash\nlaunchctl submit -l ai.hermes.loop -- /bin/true\n")
+        script.write_text("#!/bin/bash\nlaunchctl submit -l ai.hermes.loop -- /bin/true\n", encoding="utf-8")
 
         class _FakeEnv:
             env = {}
@@ -467,9 +467,9 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         inner = tmp_path / "inner.sh"
-        inner.write_text("#!/bin/bash\nhermes gateway restart\n")
+        inner.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
         outer = tmp_path / "outer.sh"
-        outer.write_text("#!/bin/bash\n/bin/bash inner.sh\n")
+        outer.write_text("#!/bin/bash\n/bin/bash inner.sh\n", encoding="utf-8")
 
         class _FakeEnv:
             env = {}
@@ -521,7 +521,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         calls = []
         script = tmp_path / "health-check.sh"
-        script.write_text("#!/bin/bash\nprintf 'healthy\\n'\n")
+        script.write_text("#!/bin/bash\nprintf 'healthy\\n'\n", encoding="utf-8")
 
         class _FakeEnv:
             env = {}
@@ -582,7 +582,7 @@ class TestLifecycleGuardModule:
     def test_script_with_command_raises(self, tmp_path, monkeypatch):
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
 
@@ -606,7 +606,7 @@ class TestLifecycleGuardModule:
     ):
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "persistent.sh"
-        script.write_text(f"#!/bin/bash\n{line}\n")
+        script.write_text(f"#!/bin/bash\n{line}\n", encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
 
@@ -615,7 +615,7 @@ class TestLifecycleGuardModule:
         script to slip through."""
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "ops.sh"
-        script.write_text("hermes gateway stop\n")
+        script.write_text("hermes gateway stop\n", encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily ops job", str(script))
 
@@ -672,7 +672,7 @@ class TestLifecycleGuardModule:
         by the direct regex scan."""
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "evil.py"
-        script.write_text('import os\nos.system("hermes gateway restart")\n')
+        script.write_text('import os\nos.system("hermes gateway restart")\n', encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
 
@@ -695,13 +695,69 @@ class TestLifecycleGuardModule:
         )
         assert result is False
 
+    def test_nul_byte_in_path_token_does_not_crash_guard(self):
+        """Residual #76762 class: when a NUL byte survives into the *path
+        token itself* (tokenized binary-adjacent command text), ``os.open``
+        raises ValueError — not OSError — inside
+        ``_read_referenced_script``. The guard must treat it as "nothing to
+        scan", never crash.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            "bash ./run\x00me.sh", cwd="/tmp"
+        )
+        assert result is False
+
+    def test_read_referenced_script_tolerates_nul_in_path(self):
+        """#77703: _read_referenced_script opens by path. A path with an
+        embedded NUL byte (a binary's bytes mis-tokenized into a bogus path by
+        the recursion) makes os.open raise ValueError — not OSError — which used
+        to escape the OSError-only guard and crash the whole terminal tool. It
+        is now caught and reported as nothing-to-scan."""
+        from pathlib import Path
+
+        from cron.lifecycle_guard import _read_referenced_script
+
+        text, unsafe = _read_referenced_script(Path("/tmp/hermes\x00binary"))
+        assert text is None
+        assert unsafe is False
+
+    def test_remote_read_fallback_binary_does_not_crash_guard(self):
+        """#77703: in the gateway the referenced-script walk carries a
+        ``read_remote_script`` fallback (SSH/Modal/Daytona backends read the
+        script over the wire). When the referenced path is an ELF binary, that
+        fallback returned the binary's decoded bytes; the scanner then
+        tokenized machine code into bogus NUL-bearing paths and crashed with
+        ``ValueError: embedded null byte`` (the tool errored out, the command
+        never ran). The guard must tolerate binary content from the fallback
+        and return False without raising."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        # Simulates the pre-fix _read_script_in_env handing back an ELF's
+        # decoded bytes (NUL preserved through errors="replace"). The newline
+        # puts a NUL-bearing absolute path in command position, exactly how the
+        # recursion re-tokenized machine code into a bogus script reference.
+        binary_blob = "\x7fELF\x01\x01\n/opt/bin/tool\x00\x01 --run\n"
+
+        def _remote_read(_path: str):
+            return binary_blob
+
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            "/home/zedi/venv/bin/python --version",
+            read_remote_script=_remote_read,
+        )
+        assert result is False
+
     def test_shell_script_reference_walk_still_works(self, tmp_path):
         """The referenced-script walk still applies to real shell scripts:
         a .sh script that itself invokes a lifecycle command is caught."""
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "wrapper.sh"
-        script.write_text("#!/bin/bash\n./deploy.sh\n")
-        (tmp_path / "deploy.sh").write_text("#!/bin/bash\nhermes gateway stop\n")
+        script.write_text("#!/bin/bash\n./deploy.sh\n", encoding="utf-8")
+        (tmp_path / "deploy.sh").write_text("#!/bin/bash\nhermes gateway stop\n", encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily ops", str(script))
 
@@ -837,8 +893,8 @@ class TestCronCreateLifecycleBlockExtra:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         scripts_dir = tmp_path / ".hermes" / "scripts"
         scripts_dir.mkdir(parents=True)
-        (scripts_dir / "inner.sh").write_text("#!/bin/bash\nhermes gateway restart\n")
-        (scripts_dir / "outer.sh").write_text("#!/bin/bash\n/bin/bash inner.sh\n")
+        (scripts_dir / "inner.sh").write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        (scripts_dir / "outer.sh").write_text("#!/bin/bash\n/bin/bash inner.sh\n", encoding="utf-8")
         args = Namespace(
             cron_command="create",
             schedule="1h",

@@ -130,6 +130,7 @@ import {
   StartWorkButton,
   useRepoWorktreeMap
 } from './projects'
+import { WorktreeDialog } from './projects/worktree-dialog'
 import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
 import { buildSessionByAnyId } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
@@ -1334,9 +1335,7 @@ export function ChatSidebar({
                 headerAction={
                   inProject && enteredProject ? (
                     <div className="group/workspace flex shrink-0 items-center gap-0.5">
-                      {enteredProject.path && (
-                        <StartWorkButton onStarted={onNewSessionInWorkspace} repoPath={enteredProject.path} />
-                      )}
+                      {enteredProject.path && <StartWorkButton repoPath={enteredProject.path} />}
                       {/* Home has no folder and no record to rename, theme, or delete. */}
                       {!enteredProject.isNoProject && (
                         <ProjectMenu
@@ -1518,6 +1517,8 @@ export function ChatSidebar({
         </div>
       </SidebarContent>
       <ProjectDialog />
+      {/* One mount for the whole app. The header of WorktreeDialog tells why. */}
+      <WorktreeDialog />
     </Sidebar>
   )
 }

@@ -2095,6 +2095,9 @@ export const zh: Translations = {
       baseBranchPlaceholder: '搜索分支…',
       baseBranchNone: '未找到分支',
       startWorkFailed: '无法创建工作树',
+      worktreeProjectLabel: '项目',
+      worktreeProjectPlaceholder: '搜索项目…',
+      worktreeProjectNone: '没有包含文件夹的项目',
       convertBranch: '转换分支…',
       convertBranchTitle: '转换分支',
       convertBranchDesc: '打开已检出的分支，或为可用分支创建工作树。',
@@ -2103,6 +2106,7 @@ export const zh: Translations = {
       branchOpenExisting: '打开',
       branchSwitchHome: '切回主检出',
       branchCreateWorktree: '新工作树',
+      branchTrackRemote: '跟踪远程',
       branchesLoading: '正在加载分支…',
       noBranches: '未找到分支',
       removeWorktree: '移除工作树',
@@ -2758,10 +2762,6 @@ export const zh: Translations = {
 
   preview: {
     tab: '预览',
-    closeTab: label => `关闭 ${label}`,
-    closeOthers: '关闭其他',
-    closeToRight: '关闭右侧',
-    closeAll: '全部关闭',
     closePane: '关闭预览面板',
     loading: '正在加载预览',
     unavailable: '预览不可用',

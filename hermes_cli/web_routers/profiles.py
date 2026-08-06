@@ -613,7 +613,25 @@ async def get_profile_soul(name: str):
 async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
     try:
-        soul_path.write_text(body.content, encoding="utf-8")
+        from utils import atomic_write_text
+
+        # PUT replaces the whole persona document from the dashboard editor.
+        # A bare write_text() truncates SOUL.md before the new body lands, and
+        # the paired GET above reports an unreadable file as
+        # ``{"content": "", "exists": False}`` -- so an interrupted save shows
+        # up as "your persona was never set" and the editor's next Save
+        # persists that empty document over it.
+        #
+        # preserve_mode carries an existing file's permission bits and owner
+        # across the replace. create_mode=0o644 covers the first save: named
+        # profiles seed SOUL.md at the umask default (hermes_cli.profiles
+        # chmods only .env to 0600), and SOUL.md is not a secret. (The default
+        # profile's runtime seeder does run it through _secure_file, but that
+        # seeder fires on every load_config, so the file already exists there
+        # and preserve_mode keeps whatever mode it set.)
+        atomic_write_text(
+            soul_path, body.content, preserve_mode=True, create_mode=0o644
+        )
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/soul failed", name)
         raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")

@@ -20,6 +20,7 @@ from agent.credential_pool import (
 )
 from agent.secret_scope import get_secret as _get_secret
 from hermes_cli.auth import (
+    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
     AuthError,
     DEFAULT_CODEX_BASE_URL,
     DEFAULT_QWEN_BASE_URL,
@@ -36,6 +37,8 @@ from hermes_cli.auth import (
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
     has_usable_secret,
+    is_actual_local_base_url,
+    normalize_actual_base_url,
 )
 from hermes_cli.config import (
     get_compatible_custom_providers,
@@ -130,6 +133,8 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     # surface, same Responses-API mandate. Shared predicate — see
     # providers.is_official_openai_host for the spoof-rejection contract.
     if is_official_openai_host(base_url):
+        return "codex_responses"
+    if hostname == "api.actual.inc":
         return "codex_responses"
     # Direct native Anthropic host: realign with providers.determine_api_mode,
     # which already maps this host to anthropic_messages. The exact-hostname
@@ -1607,12 +1612,17 @@ def _resolve_explicit_runtime(
             else:
                 base_url = env_url or pconfig.inference_base_url
 
+        if provider == "actual":
+            base_url = normalize_actual_base_url(base_url)
+
         api_key = explicit_api_key
         if not api_key:
             creds = resolve_api_key_provider_credentials(provider)
             api_key = creds.get("api_key", "")
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
+                if provider == "actual":
+                    base_url = normalize_actual_base_url(base_url)
 
         api_mode = "chat_completions"
         if provider == "copilot":
@@ -1622,6 +1632,8 @@ def _resolve_explicit_runtime(
                 target_model=target_model,
             )
         elif provider == "xai":
+            api_mode = "codex_responses"
+        elif provider == "actual":
             api_mode = "codex_responses"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -1634,6 +1646,9 @@ def _resolve_explicit_runtime(
                 api_mode = _fallback_api_mode(
                     provider, base_url, target_model or model_cfg.get("default", "")
                 )
+
+        if provider == "actual" and not api_key and is_actual_local_base_url(base_url):
+            api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
 
         return {
             "provider": provider,
@@ -2173,6 +2188,22 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
+        # Actual Computer: a loopback base_url configured in model_cfg (not
+        # just env) selects the daemon's local offline API, which requires no
+        # auth. Inject the placeholder BEFORE the usable-secret gate below,
+        # mirroring the env-driven path inside the credential resolver.
+        if provider == "actual" and not has_usable_secret(creds.get("api_key")):
+            _cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+            _cfg_url = ""
+            if _cfg_provider == provider:
+                _cfg_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            _effective_url = normalize_actual_base_url(
+                _cfg_url or creds.get("base_url", "").rstrip("/")
+            )
+            if is_actual_local_base_url(_effective_url):
+                creds = dict(creds)
+                creds["api_key"] = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
+                creds["source"] = creds.get("source") or "local-offline"
         # An explicitly selected API-key provider is authoritative. Returning
         # a runtime with an empty key defers failure until the first request and
         # can make a later fallback look like a silent provider switch. Fail at
@@ -2196,6 +2227,8 @@ def resolve_runtime_provider(
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
+        if provider == "actual":
+            base_url = normalize_actual_base_url(base_url)
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(
@@ -2204,6 +2237,8 @@ def resolve_runtime_provider(
                 target_model=target_model,
             )
         elif provider == "xai":
+            api_mode = "codex_responses"
+        elif provider == "actual":
             api_mode = "codex_responses"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -2236,11 +2271,14 @@ def resolve_runtime_provider(
             base_url = normalize_opencode_base_url(provider, api_mode, base_url)
         if provider == "lmstudio":
             base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
+        api_key = creds.get("api_key", "")
+        if provider == "actual" and not api_key and is_actual_local_base_url(base_url):
+            api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
         return {
             "provider": provider,
             "api_mode": api_mode,
             "base_url": base_url,
-            "api_key": creds.get("api_key", ""),
+            "api_key": api_key,
             "source": creds.get("source", "env"),
             "requested_provider": requested_provider,
         }

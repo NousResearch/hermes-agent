@@ -121,7 +121,10 @@ export function RemoteFolderPicker() {
 
   return (
     <Dialog onOpenChange={open => !open && close()} open={Boolean(pending)}>
-      <DialogContent className="flex h-[min(36rem,calc(100vh-4rem))] max-w-lg flex-col gap-0 overflow-hidden p-0">
+      <DialogContent
+        bodyClassName="flex min-h-0 flex-col gap-0 overflow-hidden p-0"
+        className="h-[min(36rem,calc(100vh-4rem))] max-w-lg"
+      >
         <div className="shrink-0 border-b border-border/70 px-4 py-3">
           <DialogTitle className="text-sm">{pending?.title || r.remotePickerTitle}</DialogTitle>
           <DialogDescription className="mt-1 text-xs">{r.remotePickerDescription}</DialogDescription>

@@ -81,7 +81,8 @@ export type GatewayEventPayload = {
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string
-  // terminal.read.request (GUI agent reading the in-app terminal pane)
+  // terminal.read.request / preview.read.request (GUI agent reading the
+  // in-app terminal pane or the browser/preview pane)
   start?: number
   count?: number
   // status.update (kind=process → background process completion/watch-match)

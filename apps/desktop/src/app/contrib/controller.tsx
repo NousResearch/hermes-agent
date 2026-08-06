@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
 
-import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right-rail'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
@@ -18,7 +17,6 @@ import {
   bindTreeSideVisibility,
   declareDefaultTree,
   dismissTreePane,
-  dockPaneBeside,
   isPaneVisible,
   markCollapsePane,
   mirrorLayoutTree,
@@ -55,7 +53,6 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
-import { $previewOpenRequest, $previewTabs, closeRightRail } from '@/store/preview'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import { $reviewOpen, closeReview, openReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
@@ -63,6 +60,7 @@ import { watchSessionPins } from '@/store/session-pin-sync'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
+import { watchPreviewTiles } from '../chat/preview-tile'
 import { watchRouteTiles } from '../chat/route-tile'
 import { startSessionDrag } from '../chat/session-drag'
 import {
@@ -74,7 +72,7 @@ import {
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { $workspaceIsPage } from '../routes'
 
-import { FilesPane, LogsPane, PreviewRailPane, ReviewPaneContent } from './panes'
+import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
 import { ContribWiring, WiredPane } from './wiring'
 
 /**
@@ -200,24 +198,6 @@ registry.registerMany([
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
     render: () => idle(<FilesPane />)
-  },
-  {
-    id: 'preview',
-    area: 'panes',
-    title: 'preview',
-    // The rail brings its OWN tab strip (per-target tabs with close buttons).
-    // Exists only while something is previewed — visibility is bound to the
-    // preview targets below, like every other self-managed surface. dock:
-    // adoption seed only — dockPaneBeside re-docks it next to files on every
-    // reveal anyway (position-aware).
-    data: {
-      placement: 'right',
-      dock: { pane: 'files', pos: 'left' },
-      width: 'clamp(18rem, 36vw, 32rem)',
-      minWidth: PREVIEW_RAIL_MIN_WIDTH,
-      maxWidth: PREVIEW_RAIL_MAX_WIDTH
-    },
-    render: () => idle(<PreviewRailPane />)
   },
   {
     id: 'review',
@@ -347,14 +327,15 @@ registry.registerMany([
 // Layout presets — CHAT (main) always dominates.
 // ---------------------------------------------------------------------------
 
-// The REAL default: sessions left, chat main, and the right sidebars in
-// column order main | … | review | preview | file-browser (files outermost,
-// preview DIRECTLY left of the file tree). Each is its OWN zone — main
-// parity: a file double-click slides the preview open as its own pane beside
-// the tree, never as a tab stacked into the files sidebar. Preview/review
-// zones collapse to nothing while their pane is hidden (no target / ⌘G off).
-// This static spot is just the seed — dockPaneBeside keeps preview adjacent
-// to files WHEREVER files moves (see the target listeners below).
+// The REAL default: sessions left, chat main, and the right sidebars in column
+// order main | … | review | file-browser (files outermost). Each is its OWN
+// zone. Review collapses to nothing while its pane is hidden (⌘G off).
+//
+// Preview tiles are DYNAMIC panes (like session tiles), so no preset names one:
+// they're registered by watchPreviewTiles as tabs open, and dockPaneBeside lands
+// each one directly beside the file tree wherever that currently lives — so a
+// file double-click still slides a preview open as its own pane next to the
+// tree, never as a tab stacked into the files sidebar.
 const DEFAULT_TREE = split(
   'row',
   [
@@ -365,12 +346,8 @@ const DEFAULT_TREE = split(
       [
         split(
           'row',
-          [
-            group(['review'], { id: 'grp-review' }),
-            group(['preview'], { id: 'grp-preview' }),
-            group(['files'], { id: 'grp-files' })
-          ],
-          [1, 1, 1.2],
+          [group(['review'], { id: 'grp-review' }), group(['files'], { id: 'grp-files' })],
+          [1, 1.2],
           'spl-rail'
         ),
         group(['terminal'], { id: 'grp-terminal' })
@@ -383,16 +360,12 @@ const DEFAULT_TREE = split(
   'spl-root'
 )
 
-const FOCUS_TREE = split(
-  'row',
-  [group(['sessions']), group(['workspace', 'files', 'preview', 'review', 'terminal'])],
-  [1, 4.6]
-)
+const FOCUS_TREE = split('row', [group(['sessions']), group(['workspace', 'files', 'review', 'terminal'])], [1, 4.6])
 
 const TERMINAL_TREE = split(
   'column',
   [
-    split('row', [group(['sessions']), group(['workspace']), group(['files', 'preview', 'review'])], [1, 3.2, 1.2]),
+    split('row', [group(['sessions']), group(['workspace']), group(['files', 'review'])], [1, 3.2, 1.2]),
     group(['terminal'])
   ],
   [3, 1]
@@ -402,7 +375,7 @@ const QUAD_TREE = split(
   'column',
   [
     split('row', [group(['sessions', 'files']), group(['workspace'])], [1, 3]),
-    split('row', [group(['terminal']), group(['preview', 'review'])], [1.4, 1])
+    split('row', [group(['terminal']), group(['review'])], [1.4, 1])
   ],
   [3, 1]
 )
@@ -429,6 +402,7 @@ watchContributedPanes()
 // main.
 watchSessionTiles()
 watchRouteTiles()
+watchPreviewTiles()
 
 // Composer pop-out state is keyed by layout zone, so drop entries for zones the
 // user has since closed or merged away — otherwise a long-lived install keeps a
@@ -544,8 +518,8 @@ bindTreeSideVisibility('right', $fileBrowserOpen, setFileBrowserOpen)
 const $hasWorkspace = computed($currentCwd, cwd => Boolean(cwd.trim()))
 
 // The tree pane's own presence tracks ⌘J directly, not just the column's
-// collapse — otherwise revealing a preview (which opens that shared column)
-// would drag the tree along with it. See revealPreview.
+// collapse — otherwise a pane revealed into that shared column would drag the
+// tree along with it.
 //
 // Both get a CLOSER and an OPENER. The closer keeps ⌘J/⌘G truthful when the
 // pane is closed from the tab menu; the opener is its mirror, so bringing the
@@ -590,14 +564,6 @@ registry.register(
     set: () => togglePaneVisible('terminal')
   })
 )
-
-// Preview EXISTS only while something is previewed (old-shell semantics:
-// closing the last preview tab closes the pane; a new target opens + fronts
-// it). Same visibility binding as every other self-managed surface, driven
-// by the open tabs instead of a toggle.
-const $previewVisible = computed($previewTabs, tabs => tabs.length > 0)
-
-bindPaneVisibility('preview', $previewVisible, closeRightRail)
 
 // Logs are ⌘K-ONLY chrome: the pane contribution EXISTS only while $logsOpen
 // is on. Off (the default) keeps logs out of the registry and the tree
@@ -695,21 +661,6 @@ registerPaneCloser('sessions', () =>
 registerPaneCloser('files', () =>
   paneRootSide('files') === 'right' ? setFileBrowserOpen(false) : dismissTreePane('files')
 )
-
-// A preview target lands NEXT TO the file tree — position-aware: wherever
-// files currently lives (default rail, ⌘\-flipped, dragged into a stack), the
-// preview zone docks directly beside it. A user who drags the preview pane
-// somewhere pins it there instead (until a preset/reset). Then reveal: open
-// the side, unhide, front — a NEW target while already visible still fronts.
-const revealPreview = () => {
-  dockPaneBeside('preview', 'files')
-  revealTreePane('preview')
-}
-
-// Keyed on open REQUESTS, not on the tab list: re-opening a tab that already
-// exists must still un-hide and front the pane, and closing one of two tabs
-// must not.
-$previewOpenRequest.listen(() => revealPreview())
 
 // ---------------------------------------------------------------------------
 

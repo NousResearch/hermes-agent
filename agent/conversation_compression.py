@@ -271,6 +271,7 @@ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
     "_last_compression_telemetry",
     "_active_compression_telemetry",
     "_compression_telemetry_seed",
+    "_proactive_prune_rearm_tokens",
 )
 
 _COMPRESSOR_COOLDOWN_STATE_FIELDS = (
@@ -3192,7 +3193,17 @@ def compress_context(
                     # for search/recovery (Teknium review — keep one durable id
                     # WITHOUT destroying history, unlike a hard replace_messages).
                     # See #38763.
-                    agent._session_db.archive_and_compact(agent.session_id, compressed)
+                    from agent.context_compressor import (
+                        PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY,
+                    )
+
+                    agent._session_db.archive_and_compact(
+                        agent.session_id,
+                        compressed,
+                        model_config_patch={
+                            PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None,
+                        },
+                    )
                     split_status = "in_place_committed"
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts
@@ -3329,6 +3340,24 @@ def compress_context(
                     messages[:] = copy.deepcopy(messages_before_compression)
                     compressed = messages
                     _compression_made_progress = False
+                    # Restore ONLY the prune runway, not the full attempt
+                    # snapshot: _restore_compressor_attempt_state is reserved
+                    # for pre-commit cancels (fence deny / explicit cancel),
+                    # while this branch is post-attempt — the other snapshot
+                    # fields (telemetry, aborted flags) must keep the failed
+                    # attempt's values. The runway is a property of transcript
+                    # state, and the transcript was just rolled back to its
+                    # pre-compression copy, so the runway rolls back with it.
+                    # (compress() zeroed it in-memory on summary success; the
+                    # durable copy was never cleared — that clear only rides
+                    # the atomic archive_and_compact / child-row publication
+                    # that just failed.)
+                    if "_proactive_prune_rearm_tokens" in _compressor_attempt_snapshot:
+                        agent.context_compressor._proactive_prune_rearm_tokens = (
+                            _compressor_attempt_snapshot[
+                                "_proactive_prune_rearm_tokens"
+                            ]
+                        )
                 split_status = (
                     "aborted"
                     if locals().get("old_session_id") is None and not in_place

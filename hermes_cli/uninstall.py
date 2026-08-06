@@ -87,7 +87,20 @@ def remove_path_from_shell_configs():
                 new_content = new_content.replace('\n\n\n', '\n\n')
             
             if new_content != original_content:
-                config_path.write_text(new_content, encoding="utf-8")
+                from utils import atomic_write_text
+
+                # This is the user's own shell rc, not a Hermes-owned file, and
+                # nothing in this function backs it up. A bare write_text()
+                # truncates it before the new content lands, so a crash or
+                # SIGINT mid-write leaves the user with an empty or truncated
+                # ~/.zshrc -- and the enclosing `except Exception` downgrades
+                # that to a warning, so the next login just starts a bare
+                # shell. atomic_replace also resolves a symlinked rc file, so a
+                # dotfiles-repo setup keeps the symlink instead of having it
+                # replaced by a regular file. preserve_mode keeps the rc's
+                # permission bits (normally 0644) and owner (sudo-run
+                # uninstalls) instead of mkstemp's 0600/root.
+                atomic_write_text(config_path, new_content, preserve_mode=True)
                 removed_from.append(config_path)
                 
         except Exception as e:

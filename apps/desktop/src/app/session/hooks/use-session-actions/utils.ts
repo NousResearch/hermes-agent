@@ -643,12 +643,17 @@ export function preserveLocalPendingTurnMessages(
     // replacement paths above so they still win: when the newest local user is
     // already the current authoritative turn (same visible text) and the
     // authoritative transcript already carries an assistant after it, an
-    // unmatched settled stream row was appended by an earlier polluted
-    // reconciliation, not by an uncommitted gateway turn, and must not be
-    // appended again.
+    // unmatched stream row was appended by an earlier polluted reconciliation
+    // or left behind by a disconnect, not by an uncommitted gateway turn, and
+    // must not be appended again. The `pending` flag is NOT a liveness signal
+    // here: a renderer that never saw message.complete can keep a committed
+    // turn's stream row `pending: true` (observed as "Connection error" then a
+    // resume), and with role ordinals shifted that dead row escapes both the
+    // ordinal pairing and the settled-only checks, re-rendering the same reply.
+    // Once the authoritative transcript already carries the current user turn
+    // and a later assistant, the committed row is the only copy that matters.
     if (
       isPendingAssistant &&
-      message.pending !== true &&
       newestLocalUser !== undefined &&
       latestNonMarkerAuthoritativeUser !== undefined &&
       textWithoutReferenceLines(chatMessageText(newestLocalUser)) ===

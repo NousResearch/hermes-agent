@@ -649,6 +649,53 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserveLocalPendingTurnMessages(authoritative, alreadyPolluted)).toBe(authoritative)
   })
 
+  // Live-stream rows can stay `pending: true` after a gateway disconnect even
+  // though the turn already committed — the renderer never saw message.complete
+  // (observed as "Connection error" then a resume). An extra stale stream row in
+  // the warm cache shifts the tail rows out of role-ordinal alignment with the
+  // authoritative transcript, so the dead still-pending rows fall through BOTH
+  // the ordinal pairing and the settled-only convergence gates, and get
+  // re-appended after the authoritative rows — the same reply rendered twice.
+  // The authoritative transcript already carries the user turn and its reply,
+  // so a still-pending unmatched stream row is a duplicate, not a live tail.
+  it('drops a still-pending stream row the authoritative turn already supersedes after ordinal shift', () => {
+    const authoritative = [
+      msg('1-user-stored', 'user', 'prompt one'),
+      msg('2-assistant-stored', 'assistant', 'reply one'),
+      msg('3-user-stored', 'user', 'prompt two'),
+      msg('4-assistant-stored', 'assistant', 'reply two')
+    ]
+
+    const disconnectedWarmCache = [
+      msg('1-user-stored', 'user', 'prompt one'),
+      msg('assistant-stream-stale', 'assistant', 'compressed-away reply', { pending: true }),
+      msg('2-assistant-stream', 'assistant', 'reply one', { pending: true }),
+      msg('3-user-stored', 'user', 'prompt two'),
+      msg('4-assistant-stream', 'assistant', 'reply two', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, disconnectedWarmCache)).toBe(authoritative)
+  })
+
+  // Same disconnect-residue class, pre-user variant: a still-pending stream row
+  // with no live local user anchor (or before the newest one) is compressed-away
+  // or stale history, never the in-flight tail — `pending: true` alone does not
+  // make it live once the authoritative transcript has moved past it.
+  it('drops a still-pending stream row that precedes the newest local user after ordinal shift', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('stored-assistant', 'assistant', 'the current reply')
+    ]
+
+    const disconnectedWarmCache = [
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: true }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: true }),
+      msg('user-inflight', 'user', 'the current prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, disconnectedWarmCache)).toBe(authoritative)
+  })
+
   it('drops the live tail once the latest authoritative user has persisted it after compression', () => {
     const compressedAuthority = [
       msg('stored-user', 'user', 'the one genuinely in-flight prompt'),

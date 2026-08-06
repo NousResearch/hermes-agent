@@ -27,7 +27,7 @@ This is a defence-in-depth layer.  ``tools/terminal_tool.py`` blocks direct
 commands and shell scripts they reference when ``_HERMES_GATEWAY=1``. It also
 rejects ``launchctl submit`` in gateway sessions because launchd treats that
 primitive as a persistent KeepAlive job, not a one-shot task. ``hermes gateway
-stop|restart`` separately refuse to self-target from inside the gateway.
+stop|restart|uninstall`` separately refuse to self-target from inside the gateway.
 Blocking cron specs at creation time as well means the agent gets an immediate,
 informative rejection instead of scheduling a job that will only fail
 (silently) when it fires.
@@ -60,7 +60,8 @@ class GatewayLifecycleBlocked(ValueError):
 # actual shell-command-shaped strings, not on prose.
 _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
-    # Branch A: `hermes gateway restart|stop` — the canonical foot-gun.
+    # Branch A: destructive `hermes gateway` operations.
+    # The destructive operations are restart, stop, and uninstall.
     # `start` is intentionally excluded: starting a gateway from inside a
     # gateway is benign (a no-op or "already running" error), and a
     # legitimate cron job might start a sibling profile's gateway.
@@ -70,7 +71,7 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # matching via the `/hermes` tail, while every real command position
     # (start of text, whitespace, `;`/`&`/`|`, `$(`, backtick, even a
     # U+FFFD from binary-content decoding) still matches.
-    r"(?:(?<![/\w.\-])hermes\s+gateway\s+(?:restart|stop)\b)"
+    r"(?:(?<![/\w.\-])hermes\s+gateway\s+(?:restart|stop|uninstall)\b)"
     # Branch B: launchctl ops on a hermes-gateway label. macOS launchd
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.

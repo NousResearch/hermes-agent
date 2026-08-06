@@ -28,6 +28,7 @@ class TestGatewayLifecyclePattern:
     @pytest.mark.parametrize("text", [
         "hermes gateway restart",
         "hermes gateway stop",
+        "hermes gateway uninstall",
         "hermes  gateway  restart",         # double spaces
         "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
         "HERMES GATEWAY RESTART",           # uppercase
@@ -43,6 +44,7 @@ class TestGatewayLifecyclePattern:
         "launchctl submit -l hermes-gateway-restart-helper -- /bin/sh helper.sh",
         # bootstrap loads an arbitrary plist — same laundering shape.
         "launchctl bootstrap gui/501 ~/Library/LaunchAgents/ai.hermes.gateway.restart-once.plist",
+        "launchctl bootout gui/501/ai.hermes.gateway",
         # The exact reported shape: split across shell line-continuations
         # (`\` immediately followed by a newline). `[^\n]*` alone can't span
         # that, so the verb and the gateway-label token land on different
@@ -400,7 +402,7 @@ class TestCronCreateLifecycleBlock:
 # ---------------------------------------------------------------------------
 
 class TestGatewaySelfTargetingGuard:
-    """Verify hermes gateway stop/restart refuse when _HERMES_GATEWAY=1."""
+    """Verify destructive gateway commands refuse inside the gateway."""
 
     def test_stop_refuses_inside_gateway(self, monkeypatch):
         from tools import process_registry
@@ -409,6 +411,15 @@ class TestGatewaySelfTargetingGuard:
         )
         from hermes_cli.gateway import gateway_command
         args = Namespace(gateway_command="stop", all=False, system=False)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_command(args)
+        assert exc_info.value.code == 1
+
+    def test_uninstall_refuses_inside_gateway(self, monkeypatch):
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        from hermes_cli.gateway import gateway_command
+
+        args = Namespace(gateway_command="uninstall", system=False)
         with pytest.raises(SystemExit) as exc_info:
             gateway_command(args)
         assert exc_info.value.code == 1
@@ -476,7 +487,9 @@ class TestTerminalToolGatewayLifecycleGuard:
         "systemctl --user restart hermes-gateway",
         "systemctl stop hermes-gateway.service",
         "hermes gateway restart",
+        "hermes gateway uninstall",
         "launchctl kickstart gui/501/ai.hermes.gateway",
+        "launchctl bootout gui/501/ai.hermes.gateway",
         # #62891 exact reported shape and its bootstrap sibling.
         "launchctl submit -l ai.hermes.gateway-hard-restart-no-photon-notice -- /bin/sh ~/.hermes/scripts/hard_restart_gateway_no_photon_notice.sh",
         "launchctl submit -l com.foo -- /path/gateway",

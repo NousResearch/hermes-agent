@@ -2251,7 +2251,16 @@ def _run_job_script(
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
-    raw = Path(script_path).expanduser()
+    try:
+        raw = Path(script_path).expanduser()
+    except (ValueError, RuntimeError, OSError):
+        # Same ingestion contract as cron.lifecycle_guard: a NUL-bearing
+        # value (ValueError) or an unexpandable ``~`` (RuntimeError with no
+        # resolvable HOME) can never name a real script. The creation-time
+        # guard tolerates such values as "nothing to scan", so they can
+        # reach fire time — fail the run with a report instead of crashing
+        # the scheduler with an unhandled exception.
+        return False, f"Blocked: script path is not a valid filesystem path: {script_path!r}"
     if raw.is_absolute():
         path = raw.resolve()
     else:

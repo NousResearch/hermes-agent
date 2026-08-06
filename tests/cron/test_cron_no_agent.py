@@ -118,3 +118,16 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+def test_run_job_script_nul_path_fails_cleanly(hermes_env):
+    """Sibling of the lifecycle-guard ingestion fix: a NUL-bearing script
+    value can survive to fire time (the creation-time guard treats it as
+    "nothing to scan"), and ``Path.expanduser()`` raises ValueError — not
+    OSError — on it. The scheduler must fail the run with a report, not
+    crash with an unhandled exception."""
+    from cron.scheduler import _run_job_script
+
+    ok, output = _run_job_script("~user\x00bad.sh")
+    assert ok is False
+    assert "Blocked" in output

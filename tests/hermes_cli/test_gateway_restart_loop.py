@@ -867,6 +867,30 @@ class TestLifecycleGuardModule:
             "echo hello"
         ) is False
 
+    def test_cron_guard_total_when_home_unresolvable(self, monkeypatch):
+        """`get_hermes_home()` falls back to Path.home(), which raises
+        RuntimeError when neither HERMES_HOME nor HOME resolves
+        (arbitrary-UID containers, launchd). The cron entry point must
+        treat a relative script value as unresolvable — nothing to scan —
+        not crash."""
+        from pathlib import Path
+
+        from cron.lifecycle_guard import check_gateway_lifecycle
+
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HOME", raising=False)
+        monkeypatch.setattr(
+            Path,
+            "home",
+            classmethod(
+                lambda cls: (_ for _ in ()).throw(
+                    RuntimeError("Could not determine home directory")
+                )
+            ),
+        )
+        # Must not raise; relative script cannot resolve without a home.
+        check_gateway_lifecycle("daily ops", "relative-script.sh")
+
 
 # ---------------------------------------------------------------------------
 # Defense 2 (chokepoint): cron.jobs.create_job blocks the AGENT model-tool path

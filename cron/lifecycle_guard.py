@@ -410,7 +410,7 @@ def _contains_unsafe_gateway_action(
         # Relative references inside a script resolve against that script's
         # directory, not the original command's cwd.
         script_dir = _resolve_script_directory(str(resolved)) or cwd
-        if script_text and _contains_unsafe_gateway_action(
+        if _contains_unsafe_gateway_action(
             script_text,
             cwd=script_dir,
             depth=depth + 1,
@@ -488,7 +488,13 @@ def _resolve_script_path(script_path: str) -> Optional[Path]:
         return None
     if raw.is_absolute():
         return raw
-    return get_hermes_home() / "scripts" / raw
+    try:
+        return get_hermes_home() / "scripts" / raw
+    except (RuntimeError, OSError):
+        # get_hermes_home() falls back to Path.home(), which raises when
+        # neither HERMES_HOME nor HOME is resolvable (launchd/systemd
+        # environments) — same ingestion contract: nothing to scan.
+        return None
 
 
 def _read_script_for_scanning(script_path: str) -> str:

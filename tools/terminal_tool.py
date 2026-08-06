@@ -2533,7 +2533,7 @@ def terminal_tool(
 
                 For local backends the script path is on the host filesystem. For
                 SSH/Modal/Daytona the same path is remote; the local read misses, so we
-                fall back to ``env.execute('cat ...')``.
+                fall back to a bounded ``env.execute('head -c ... < path')`` read.
                 """
                 if env is None:
                     return None

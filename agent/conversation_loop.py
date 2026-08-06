@@ -821,10 +821,23 @@ def _canonicalize_api_tool_calls(api_messages) -> None:
                         ),
                     }}
                 except Exception:
-                    tc["function"]["arguments"] = _repair_tool_call_arguments(
-                        tc["function"]["arguments"],
-                        tc["function"].get("name", "?"),
-                    )
+                    # Copy-on-write here too. ``api_messages`` holds shallow
+                    # per-message copies (``msg.copy()`` at the send-path
+                    # build), so the tool_call dicts are the SAME objects as
+                    # the persisted history's — assigning into
+                    # ``tc["function"]`` rewrites the stored turn. On the
+                    # unrepairable path the repair returns "{}", so that
+                    # in-place write replaced the model's real arguments with
+                    # an empty object in the transcript: a stream that died
+                    # mid ``write_file`` lost the file content it had already
+                    # streamed, with only a WARNING to show for it (#80498).
+                    tc = {**tc, "function": {
+                        **tc["function"],
+                        "arguments": _repair_tool_call_arguments(
+                            tc["function"]["arguments"],
+                            tc["function"].get("name", "?"),
+                        ),
+                    }}
             new_tcs.append(tc)
         am["tool_calls"] = new_tcs
 

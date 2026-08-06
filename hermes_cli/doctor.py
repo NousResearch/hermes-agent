@@ -2587,8 +2587,11 @@ def run_doctor(args):
         """Check if gh CLI is authenticated via token file or device flow."""
         try:
             result = subprocess.run(
-                ["gh", "auth", "status", "--json", "authenticated"],
-                capture_output=True, timeout=10,
+                ["gh", "auth", "token"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                stdin=subprocess.DEVNULL,
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):

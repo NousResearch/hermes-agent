@@ -214,6 +214,38 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in unit
         assert str(profile_node_bin) not in unit
 
+    def test_managed_node_makes_unit_independent_of_shell_path(self, tmp_path, monkeypatch):
+        import hermes_constants
+
+        hermes_home = tmp_path / ".hermes"
+        managed_node_bin = hermes_home / "node" / "bin"
+        managed_node_bin.mkdir(parents=True)
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(
+            hermes_constants,
+            "iter_hermes_node_dirs",
+            lambda hermes_root=None: (managed_node_bin,),
+        )
+
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda command: "/opt/node-from-install/bin/node" if command == "node" else None,
+        )
+        installed_unit = gateway_cli.generate_systemd_unit(system=False)
+
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda command: "/opt/node-from-restart/bin/node" if command == "node" else None,
+        )
+        restarted_unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert installed_unit == restarted_unit
+        assert str(managed_node_bin) in installed_unit
+        assert "/opt/node-from-" not in installed_unit
+
     def test_launchd_plist_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
         # Same #48700 regression for the macOS twin generate_launchd_plist().
         local_bin = tmp_path / ".local" / "bin"
@@ -1759,4 +1791,3 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
         )
         assert ok is True
         assert attempts["bootstrap"] >= 2  # the timeout was retried, not raised
-

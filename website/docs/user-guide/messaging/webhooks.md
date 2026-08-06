@@ -84,6 +84,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
 | `script` | No | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
+| `completion_script` | No | 位於 `~/.hermes/scripts/`、供 agent-backed route 使用的 best-effort finalizer。它會在終態成功或失敗後執行，並從 stdin 接收帶版本的 JSON envelope；中斷（`cancelled`）或 `deliver_only` route 不會執行。 |
 | `skills` | No | List of skill names to load for the agent run. |
 | `toolsets` | No | List of toolset keys (e.g. `["terminal", "file", "web"]`) that **replaces** the platform-level webhook toolset for runs triggered by this route only. Manual config edit only — not settable via `hermes webhook subscribe`, so agent-created subscriptions cannot self-grant elevated tools. Names are validated the same way as `platform_toolsets` entries (unknown or platform-restricted names are dropped). See [Per-route toolsets](#per-route-toolsets). |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
@@ -112,6 +113,7 @@ platforms:
             Diff URL: {pull_request.diff_url}
             Action: {action}
           skills: ["github-code-review"]
+          completion_script: "record-review-result.py"
           deliver: "github_comment"
           deliver_extra:
             repo: "{repository.full_name}"
@@ -188,6 +190,37 @@ Script outcomes:
 - JSON object stdout replaces the payload used by `prompt` and `deliver_extra`.
 - Non-JSON text stdout is added to the payload as `script_output`.
 - Empty stdout, exact `[SILENT]`, `{"__hermes_ignore__": true}`, timeout, missing script, or nonzero exit code returns HTTP 200 with `{"status":"ignored","reason":"script"}`.
+
+### 完成腳本
+
+當外部工作流程需要在 agent-backed route 結束後取得確定訊號時，請使用 `completion_script`。此腳本沿用 filter/transform `script` 的 interpreter 選擇、`~/.hermes/scripts/` 路徑限制、subprocess environment 與 `script_timeout_seconds` 設定。
+
+Hermes 會在終態成功或失敗後，透過 stdin 傳送一個 JSON envelope：
+
+```json
+{
+  "version": 1,
+  "route": "github-pr",
+  "outcome": "success",
+  "delivery_id": "delivery-123",
+  "payload": {
+    "action": "opened",
+    "number": 42
+  }
+}
+```
+
+`payload` 是任何 filter/transform `script` 執行後的 payload。Hermes 接受 delivery 時會展開環境變數並 snapshot route 與腳本設定；相對路徑會在執行時依該 route 的 active profile 解析，因此後續的 in-memory route reload 不會改變該次執行所使用的 finalizer。
+
+完成腳本刻意採用 best-effort 語意：
+
+- Exit code 0 表示 finalizer 成功；stdout 與 stderr 都會被忽略。
+- 缺少腳本、timeout、執行錯誤或非零 exit code 只會記錄不含腳本輸出的診斷資訊，不會改變 agent 原始 outcome，也不會阻止 one-shot session cleanup。
+- Hermes 不會重試完成腳本，也不提供 crash-safe exactly-once delivery。若 webhook provider 可能重新傳送事件，腳本應具備 idempotency。
+- Gateway shutdown 或 restart 期間的 expected cancellation 屬於中斷而非終態結果，因此不會執行腳本。
+- `deliver_only` route 會略過 agent lifecycle，因此不會執行完成腳本。
+
+與 preprocessing script 相同，payload value 僅以 JSON data 透過 stdin 傳入，絕不會插入 shell command。
 
 ### Prompt Templates
 

@@ -655,6 +655,20 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_unblock.add_argument("task_ids", nargs="+")
 
+    p_unguard = sub.add_parser(
+        "unguard",
+        help=(
+            "Clear the active_pr respawn guard so a task can re-spawn "
+            "(deliberate follow-up/rework) even though a PR link is still "
+            "in its recent comments"
+        ),
+    )
+    p_unguard.add_argument("task_ids", nargs="+")
+    p_unguard.add_argument(
+        "--reason", default=None,
+        help="Optional reason/note — recorded on the guard-cleared event. Quote multi-word reasons.",
+    )
+
     p_promote = sub.add_parser(
         "promote",
         help="Manually move one or more todo/blocked tasks to ready (recovery path)",
@@ -1066,6 +1080,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
+            "unguard":  _cmd_unguard,
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
@@ -2336,6 +2351,29 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _cmd_unguard(args: argparse.Namespace) -> int:
+    ids = list(args.task_ids or [])
+    if not ids:
+        print("at least one task_id is required", file=sys.stderr)
+        return 1
+    reason = getattr(args, "reason", None)
+    if reason is not None:
+        reason = reason.strip() or None
+    actor = _profile_author()
+    failed: list[str] = []
+    with kb.connect_closing() as conn:
+        for tid in ids:
+            if not kb.clear_respawn_guard(conn, tid, actor=actor, reason=reason):
+                failed.append(tid)
+                print(f"cannot unguard {tid} (unknown task?)", file=sys.stderr)
+            else:
+                print(
+                    f"Cleared active_pr respawn guard for {tid}"
+                    + (f": {reason}" if reason else "")
+                )
+    return 0 if not failed else 1
+
+
 def _cmd_promote(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
@@ -3146,6 +3184,7 @@ Common subcommands:
   `attach <id> <path>`  Attach a local file; `attachments <id>` to list
   `complete <id>…`      Mark task(s) done
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
+  `unguard <id>…`       Clear the active_pr respawn guard for a deliberate follow-up
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards
   `assignees`           Known profiles + counts

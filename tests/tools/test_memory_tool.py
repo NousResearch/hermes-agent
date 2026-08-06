@@ -652,14 +652,24 @@ class TestConsolidationPlanParsing:
     def test_update_carries_content(self):
         raw = (
             '{"entries": [{"index": 0, "action": "update", '
-            '"updated_content": "merged fact"}], "insert_new": false}'
+            '"updated_content": "revised old fact"}], "insert_new": true}'
         )
         plan = _parse_consolidation_plan(raw, entry_count=1)
-        assert plan["insert_new"] is False
-        assert plan["entries"][0] == ("update", "merged fact")
+        assert plan["insert_new"] is True
+        assert plan["entries"][0] == ("update", "revised old fact")
+
+    def test_insert_new_false_raises(self):
+        raw = '{"entries": [{"index": 0, "action": "keep"}], "insert_new": false}'
+        with pytest.raises(ValueError, match="exact incoming fact"):
+            _parse_consolidation_plan(raw, entry_count=1)
 
     def test_delete_action(self):
-        raw = '{"entries": [{"index": 1, "action": "delete"}], "insert_new": true}'
+        raw = (
+            '{"entries": ['
+            '{"index": 0, "action": "keep"}, '
+            '{"index": 1, "action": "delete"}'
+            '], "insert_new": true}'
+        )
         plan = _parse_consolidation_plan(raw, entry_count=2)
         assert plan["entries"][1] == ("delete", None)
 
@@ -675,6 +685,59 @@ class TestConsolidationPlanParsing:
     def test_index_out_of_range_raises(self):
         raw = '{"entries": [{"index": 9, "action": "delete"}], "insert_new": true}'
         with pytest.raises(ValueError):
+            _parse_consolidation_plan(raw, entry_count=2)
+
+    def test_duplicate_index_with_keep_then_delete_raises(self):
+        raw = (
+            '{"entries": ['
+            '{"index": 0, "action": "keep"}, '
+            '{"index": 0, "action": "delete"}'
+            '], "insert_new": true}'
+        )
+        with pytest.raises(ValueError, match="duplicate entry index"):
+            _parse_consolidation_plan(raw, entry_count=1)
+
+    def test_duplicate_index_with_multiple_updates_raises(self):
+        raw = (
+            '{"entries": ['
+            '{"index": 0, "action": "update", "updated_content": "first"}, '
+            '{"index": 0, "action": "update", "updated_content": "second"}'
+            '], "insert_new": true}'
+        )
+        with pytest.raises(ValueError, match="duplicate entry index"):
+            _parse_consolidation_plan(raw, entry_count=1)
+
+    @pytest.mark.parametrize(
+        "raw, entry_count",
+        [
+            ('{"insert_new": true}', 0),
+            ('{"entries": []}', 0),
+            ('{"entries": [], "insert_new": true, "note": "extra"}', 0),
+            (
+                '{"entries": [{"index": 0, "action": "keep", '
+                '"updated_content": "ambiguous"}], "insert_new": true}',
+                1,
+            ),
+            (
+                '{"entries": [{"index": 0, "action": "delete", '
+                '"updated_content": "ambiguous"}], "insert_new": true}',
+                1,
+            ),
+            ('{"entries": [], "entries": [], "insert_new": true}', 0),
+            (
+                '{"entries": [{"index": 0, "action": "keep", '
+                '"action": "delete"}], "insert_new": true}',
+                1,
+            ),
+        ],
+    )
+    def test_ambiguous_or_incomplete_schema_raises(self, raw, entry_count):
+        with pytest.raises(ValueError):
+            _parse_consolidation_plan(raw, entry_count=entry_count)
+
+    def test_missing_index_raises(self):
+        raw = '{"entries": [{"index": 0, "action": "keep"}], "insert_new": true}'
+        with pytest.raises(ValueError, match="exactly one action"):
             _parse_consolidation_plan(raw, entry_count=2)
 
     def test_unknown_action_raises(self):
@@ -785,24 +848,74 @@ class TestConsolidationOnAdd:
         assert len(store.memory_entries) == 1
         assert "Consolidated" in result.get("message", "")
 
-    def test_update_merges_in_place(self, store, monkeypatch):
-        """Plan updates the contradicting entry and does not insert a duplicate."""
+    def test_update_old_fact_and_insert_exact_incoming_fact(self, store, monkeypatch):
+        """Accepted consolidation may update old facts but stores the exact new fact."""
         monkeypatch.setattr("tools.memory_tool._cognitive_enabled", lambda: True)
         store.add("memory", "Lives in Portland")
 
         def _plan(content, entries, main_runtime=None):
             return {
-                "entries": {0: ("update", "Lives in Seattle (moved from Portland)")},
-                "insert_new": False,
+                "entries": {0: ("update", "Previously lived in Portland")},
+                "insert_new": True,
             }
 
         monkeypatch.setattr("tools.memory_tool._request_consolidation_plan", _plan)
 
         result = store.add("memory", "Lives in Seattle")
         assert result["success"] is True
-        assert "Lives in Seattle (moved from Portland)" in store.memory_entries
-        assert "Lives in Portland" not in store.memory_entries
-        assert len(store.memory_entries) == 1
+        assert store.memory_entries == [
+            "Previously lived in Portland",
+            "Lives in Seattle",
+        ]
+
+    def test_negated_incoming_substring_does_not_count_as_retention(
+        self, store, monkeypatch
+    ):
+        """Lexical containment cannot prove that an update retained the new fact."""
+        monkeypatch.setattr("tools.memory_tool._cognitive_enabled", lambda: True)
+        store.add("memory", "User prefers tabs")
+
+        def _plan(content, entries, main_runtime=None):
+            return {
+                "entries": {0: ("update", "It is false that User prefers spaces")},
+                "insert_new": False,
+            }
+
+        monkeypatch.setattr("tools.memory_tool._request_consolidation_plan", _plan)
+
+        result = store.add("memory", "User prefers spaces")
+
+        assert result["success"] is True
+        assert store.memory_entries == [
+            "User prefers tabs",
+            "User prefers spaces",
+        ]
+
+    def test_duplicate_keep_then_delete_plan_falls_back_without_mutation(
+        self, store, monkeypatch
+    ):
+        """A duplicate index cannot overwrite keep with a destructive action."""
+        monkeypatch.setattr("tools.memory_tool._cognitive_enabled", lambda: True)
+        store.add("memory", "User prefers tabs")
+        raw = (
+            '{"entries": ['
+            '{"index": 0, "action": "keep"}, '
+            '{"index": 0, "action": "delete"}'
+            '], "insert_new": true}'
+        )
+
+        def _plan(content, entries, main_runtime=None):
+            return _parse_consolidation_plan(raw, len(entries))
+
+        monkeypatch.setattr("tools.memory_tool._request_consolidation_plan", _plan)
+
+        result = store.add("memory", "User prefers spaces now")
+
+        assert result["success"] is True
+        assert store.memory_entries == [
+            "User prefers tabs",
+            "User prefers spaces now",
+        ]
 
     def test_delete_only_plan_without_insertion_falls_back(self, store, monkeypatch):
         """An auxiliary plan cannot delete old facts and discard the incoming fact."""

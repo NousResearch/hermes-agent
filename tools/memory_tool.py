@@ -144,12 +144,14 @@ _CONSOLIDATION_SYSTEM_PROMPT = (
     "store consistent and non-redundant.\n\n"
     "For each existing entry (by its number), choose exactly one action:\n"
     "  - \"keep\": the entry is unaffected by the new content.\n"
-    "  - \"update\": the new content REFINES or partially supersedes this "
-    "entry; provide \"updated_content\" with the merged/corrected text.\n"
+    "  - \"update\": revise this EXISTING entry to remove stale or redundant "
+    "claims; provide \"updated_content\". Do not use an update as a substitute "
+    "for storing the new entry.\n"
     "  - \"delete\": the new content CONTRADICTS or fully supersedes this entry; "
     "it should be removed.\n\n"
-    "Then decide \"insert_new\": true to store the new content as its own "
-    "entry, or false if it was already fully merged into an updated entry.\n\n"
+    "The submitted new entry must always be retained verbatim as a separate "
+    "artifact. Therefore \"insert_new\" MUST be true. Updates and deletes may "
+    "only alter existing entries.\n\n"
     "Be conservative: only update/delete on a genuine contradiction or clear "
     "redundancy. When in doubt, keep the existing entry and insert the new one. "
     "Never invent facts not present in the entries or the new content.\n\n"
@@ -190,26 +192,49 @@ def _parse_consolidation_plan(raw: str, entry_count: int) -> Dict[str, Any]:
             text = text[4:]
         text = text.strip()
 
-    data = json.loads(text)
+    def _reject_duplicate_keys(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError(f"duplicate JSON key: {key!r}")
+            obj[key] = value
+        return obj
+
+    data = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
     if not isinstance(data, dict):
         raise ValueError("consolidation plan is not an object")
+    if set(data) != {"entries", "insert_new"}:
+        raise ValueError("plan must contain exactly entries and insert_new")
+    if not isinstance(data["entries"], list):
+        raise ValueError("entries is not a list")
 
-    insert_new = data.get("insert_new", True)
+    insert_new = data["insert_new"]
     if not isinstance(insert_new, bool):
         raise ValueError("insert_new is not a boolean")
+    if insert_new is not True:
+        raise ValueError("plan must explicitly insert the exact incoming fact")
 
     plan_entries: Dict[int, tuple] = {}
-    for item in data.get("entries", []) or []:
+    for item in data["entries"]:
         if not isinstance(item, dict):
             raise ValueError("entry plan item is not an object")
-        idx = item.get("index")
+        action = item.get("action")
+        if action not in {"keep", "update", "delete"}:
+            raise ValueError(f"unknown entry action: {action!r}")
+        expected_keys = (
+            {"index", "action", "updated_content"}
+            if action == "update"
+            else {"index", "action"}
+        )
+        if set(item) != expected_keys:
+            raise ValueError(f"invalid fields for {action} action")
+        idx = item["index"]
         if not isinstance(idx, int) or isinstance(idx, bool):
             raise ValueError(f"entry index is not an int: {idx!r}")
         if idx < 0 or idx >= entry_count:
             raise ValueError(f"entry index {idx} out of range [0,{entry_count})")
-        action = item.get("action")
-        if action not in {"keep", "update", "delete"}:
-            raise ValueError(f"unknown entry action: {action!r}")
+        if idx in plan_entries:
+            raise ValueError(f"duplicate entry index: {idx}")
         updated = item.get("updated_content")
         if action == "update":
             if not isinstance(updated, str) or not updated.strip():
@@ -218,6 +243,9 @@ def _parse_consolidation_plan(raw: str, entry_count: int) -> Dict[str, Any]:
         else:
             updated = None
         plan_entries[idx] = (action, updated)
+
+    if set(plan_entries) != set(range(entry_count)):
+        raise ValueError("plan must contain exactly one action for every existing entry")
 
     return {"entries": plan_entries, "insert_new": insert_new}
 
@@ -646,15 +674,14 @@ class MemoryStore:
             plan_entries: Dict[int, tuple] = plan["entries"]
             insert_new: bool = plan["insert_new"]
 
-            # ``insert_new: false`` is only safe when an update demonstrably
-            # retains the submitted fact. Otherwise a schema-valid delete-only
-            # (or unrelated-update) plan could silently discard the new write.
-            if not insert_new and not any(
-                action == "update" and updated_content and content in updated_content
-                for action, updated_content in plan_entries.values()
-            ):
+            # Artifact-grounded retention invariant: every accepted consolidation
+            # must append the exact submitted fact. Updated text may mention or
+            # even negate the incoming content, so lexical containment cannot
+            # prove that the fact was preserved.
+            if insert_new is not True:
                 logger.warning(
-                    "Consolidation omitted the new fact; falling back to plain append."
+                    "Consolidation omitted exact insertion of the new fact; "
+                    "falling back to plain append."
                 )
                 return None
 

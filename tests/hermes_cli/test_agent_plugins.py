@@ -165,6 +165,10 @@ def test_stdio_command_and_data_cwd_containment(tmp_path: Path) -> None:
                     "command": "./bin/server",
                     "cwd": "${PLUGIN_DATA}/state",
                 },
+                "opaque-command": {
+                    "type": "stdio",
+                    "command": "./${PLUGIN_ROOT}",
+                },
                 "escape": {
                     "type": "stdio",
                     "command": "./../outside",
@@ -178,9 +182,12 @@ def test_stdio_command_and_data_cwd_containment(tmp_path: Path) -> None:
         },
     )
     package = load_agent_plugin(root, tmp_path / "data")
-    assert set(package.mcp_servers) == {"valid"}
+    assert set(package.mcp_servers) == {"opaque-command", "valid"}
     assert package.mcp_servers["valid"]["cwd"] == str(
         (tmp_path / "data" / "state").resolve()
+    )
+    assert package.mcp_servers["opaque-command"]["command"] == str(
+        (root / "${PLUGIN_ROOT}").resolve()
     )
 
 

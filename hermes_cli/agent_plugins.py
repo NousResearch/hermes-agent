@@ -260,8 +260,14 @@ def _expand(value: str, plugin_root: Path, data_root: Path) -> str:
     return _PLACEHOLDER_RE.sub(lambda match: replacements[match.group(1)], value)
 
 
-def _resolve_scoped_path(value: str, plugin_root: Path, data_root: Path) -> Path:
-    expanded = _expand(value, plugin_root, data_root)
+def _resolve_scoped_path(
+    value: str,
+    plugin_root: Path,
+    data_root: Path,
+    *,
+    expand_placeholders: bool = True,
+) -> Path:
+    expanded = _expand(value, plugin_root, data_root) if expand_placeholders else value
     if value.startswith("./"):
         base = plugin_root
         candidate = base / expanded[2:]
@@ -310,7 +316,14 @@ def _translate_stdio(
     if not isinstance(command, str) or not command or "\x00" in command:
         raise ValueError("command must be a non-empty executable token")
     if command.startswith("./"):
-        command_value = str(_resolve_scoped_path(command, plugin_root, data_root))
+        command_value = str(
+            _resolve_scoped_path(
+                command,
+                plugin_root,
+                data_root,
+                expand_placeholders=False,
+            )
+        )
     elif any(character.isspace() for character in command):
         raise ValueError("command must contain one executable token")
     elif "/" in command or "\\" in command or command in {".", ".."}:

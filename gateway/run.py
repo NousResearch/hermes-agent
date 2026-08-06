@@ -10778,6 +10778,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 logger.debug("Failed to cancel gateway loop floor timer", exc_info=True)
 
+    async def _recover_unclean_sessions(self) -> tuple[int, int]:
+        """Recover exact active turns, then run the legacy recency fallback."""
+        exact = 0
+        fallback = 0
+        try:
+            exact = await self.async_session_store.recover_interrupted_turns()
+        except Exception as exc:
+            logger.warning("Exact active-turn recovery on startup failed: %s", exc)
+        try:
+            fallback = await self.async_session_store.suspend_recently_active(
+                max_age_seconds=120
+            )
+        except Exception as exc:
+            logger.warning("Legacy session recovery on startup failed: %s", exc)
+        return exact, fallback
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -11113,10 +11129,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.warning("Process checkpoint recovery: %s", e)
 
-        # Suspend sessions that were active when the gateway last exited.
-        # This prevents stuck sessions from being blindly resumed on restart,
-        # which can create an unrecoverable loop (#7536).  Suspended sessions
-        # auto-reset on the next incoming message, giving the user a clean start.
+        # Recover sessions that were active when the gateway last exited.
+        # Exact durable turn markers cover long-running work; the 120-second
+        # recency heuristic remains as an upgrade fallback for turns started by
+        # older Hermes versions that did not write exact markers.
         #
         # SKIP suspension after a clean (graceful) shutdown — the previous
         # process already drained active agents, so sessions aren't stuck.
@@ -11126,16 +11142,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _clean_marker.exists():
             logger.info("Previous gateway exited cleanly — skipping session suspension")
             try:
+                discarded = await self.async_session_store.discard_active_turn_markers()
+                if discarded:
+                    logger.info(
+                        "Discarded %d orphan active-turn marker(s) after clean shutdown",
+                        discarded,
+                    )
+            except Exception as exc:
+                logger.warning("Clean-start marker cleanup failed: %s", exc)
+            try:
                 _clean_marker.unlink()
             except Exception:
                 pass
         else:
-            try:
-                suspended = await self.async_session_store.suspend_recently_active()
-                if suspended:
-                    logger.info("Marked %d in-flight session(s) as resumable from previous run", suspended)
-            except Exception as e:
-                logger.warning("Session suspension on startup failed: %s", e)
+            exact, fallback = await self._recover_unclean_sessions()
+            recovered = exact + fallback
+            if recovered:
+                logger.info(
+                    "Marked %d in-flight session(s) as resumable from previous run "
+                    "(%d exact, %d legacy)",
+                    recovered,
+                    exact,
+                    fallback,
+                )
 
         # Stuck-loop detection (#7536): if a session has been active across
         # 3+ consecutive restarts, it's probably stuck in a loop (the same
@@ -15923,6 +15952,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # and interrupt alike.
             self._restore_moa_one_shot(event, _quick_key)
             self._restore_pending_one_turn_model_override(_quick_key)
+            # Normal completion/exception/interrupt owns and clears this exact
+            # durable marker.  SIGKILL/OOM skips finally, leaving the marker for
+            # the next unclean startup's recovery pass.
+            await self._clear_durable_active_turn(event)
             # Unconditional release covers every exit path. _release_running_agent_state
             # is idempotent (pop-on-absent is harmless) and, called without a
             # run_generation guard, always clears the slot regardless of which
@@ -16452,6 +16485,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             facade = AsyncSessionStore(self.session_store)
             self._async_session_store = facade
         return facade
+
+    async def _mark_durable_active_turn(
+        self,
+        event: "MessageEvent",
+        session_key: str,
+    ) -> bool:
+        """Persist the exact resolved routing key for this running turn."""
+        try:
+            token = await self.async_session_store.mark_turn_active(session_key)
+        except Exception as exc:
+            logger.warning(
+                "Could not persist active-turn marker for %s: %s",
+                session_key,
+                exc,
+            )
+            return False
+        if not token:
+            return False
+        # Private event attributes are process-local ownership state.  Keep the
+        # token out of public metadata, transcripts, and platform payloads.
+        setattr(event, "_gateway_active_turn_session_key", session_key)
+        setattr(event, "_gateway_active_turn_token", token)
+        return True
+
+    async def _clear_durable_active_turn(self, event: "MessageEvent") -> bool:
+        """Best-effort CAS clear of the marker owned by *event*."""
+        session_key = getattr(event, "_gateway_active_turn_session_key", None)
+        token = getattr(event, "_gateway_active_turn_token", None)
+        try:
+            if not session_key or not token:
+                return False
+            return bool(
+                await self.async_session_store.clear_turn_active(session_key, token)
+            )
+        except Exception as exc:
+            # Never let marker cleanup block in-memory agent/lease release.  A
+            # stale marker is safer than wedging the live routing slot and is
+            # bounded by recover_interrupted_turns' maximum age.
+            logger.warning(
+                "Could not clear active-turn marker for %s: %s",
+                session_key,
+                exc,
+            )
+            return False
+        finally:
+            for attr in (
+                "_gateway_active_turn_session_key",
+                "_gateway_active_turn_token",
+            ):
+                try:
+                    delattr(event, attr)
+                except AttributeError:
+                    pass
 
     def _get_cached_session_source(self, session_key: str):
         if not session_key:

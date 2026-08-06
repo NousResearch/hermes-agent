@@ -852,6 +852,13 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Durable ownership marker for the agent turn currently executing on this
+    # routing entry.  A normal unwind clears it with compare-and-swap semantics;
+    # SIGKILL/OOM leaves it behind so the next unclean startup can recover the
+    # exact interrupted session instead of guessing from ``updated_at``.
+    active_turn_token: Optional[str] = None
+    active_turn_started_at: Optional[datetime] = None
+
     # Session-scoped /model override (model/provider/base_url ONLY — never
     # credentials).  ``_session_model_overrides`` in the gateway runner is
     # in-memory, so before this field a gateway restart silently reverted
@@ -888,6 +895,12 @@ class SessionEntry:
                 if self.last_resume_marked_at
                 else None
             ),
+            "active_turn_token": self.active_turn_token,
+            "active_turn_started_at": (
+                self.active_turn_started_at.isoformat()
+                if self.active_turn_started_at
+                else None
+            ),
             "is_fresh_reset": self.is_fresh_reset,
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
@@ -922,6 +935,20 @@ class SessionEntry:
                 last_resume_marked_at = datetime.fromisoformat(_lrma)
             except (TypeError, ValueError):
                 last_resume_marked_at = None
+
+        active_turn_started_at = None
+        _atsa = data.get("active_turn_started_at")
+        if _atsa:
+            try:
+                active_turn_started_at = datetime.fromisoformat(_atsa)
+            except (TypeError, ValueError):
+                active_turn_started_at = None
+        active_turn_token = data.get("active_turn_token")
+        if not isinstance(active_turn_token, str) or not active_turn_token:
+            # The token/timestamp pair is written atomically.  A partial or
+            # malformed pair is not trustworthy enough to auto-resume.
+            active_turn_token = None
+            active_turn_started_at = None
 
         session_key = data["session_key"]
         session_id = data["session_id"]
@@ -965,6 +992,8 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            active_turn_token=active_turn_token,
+            active_turn_started_at=active_turn_started_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
@@ -2755,6 +2784,125 @@ class SessionStore:
                 self._save()
                 return True
         return False
+
+    def mark_turn_active(self, session_key: str) -> Optional[str]:
+        """Persist exact ownership of the agent turn running for *session_key*.
+
+        The opaque token is returned to the caller and must be supplied to
+        :meth:`clear_turn_active`.  Re-marking replaces the previous token so
+        a stale asynchronous unwind cannot clear a newer turn.
+        """
+        token = uuid.uuid4().hex
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            now = _now()
+            entry.active_turn_token = token
+            entry.active_turn_started_at = now
+            # Keep the legacy 120-second startup heuristic effective during a
+            # rolling downgrade/upgrade window where an older binary cannot
+            # understand the exact marker fields.
+            entry.updated_at = now
+
+        # This is a per-turn metadata update, so use the existing durable
+        # single-entry fast path rather than rewriting the full routing index.
+        self._save_entry(session_key)
+        return token
+
+    def clear_turn_active(self, session_key: str, token: str) -> bool:
+        """Compare-and-swap clear an active-turn marker.
+
+        Returns ``False`` when the entry disappeared or a newer turn owns it.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.active_turn_token != token:
+                return False
+            entry.active_turn_token = None
+            entry.active_turn_started_at = None
+
+        self._save_entry(session_key)
+        return True
+
+    def recover_interrupted_turns(
+        self,
+        max_age_seconds: int = 7 * 24 * 60 * 60,
+    ) -> int:
+        """Promote exact crash-left turn markers into ``resume_pending``.
+
+        This must only be called by the unclean-startup path.  Old or invalid
+        markers are cleared without resuming so a downgrade/re-upgrade cycle
+        cannot revive arbitrarily stale work.  Explicitly suspended sessions
+        are likewise never re-armed.
+
+        Returns the number of newly promoted sessions.
+        """
+        from datetime import timedelta
+
+        now = _now()
+        max_age = timedelta(seconds=max(0, max_age_seconds))
+        promoted = 0
+        changed = False
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if not entry.active_turn_token:
+                    continue
+
+                started_at = entry.active_turn_started_at
+                try:
+                    marker_is_stale = (
+                        started_at is None
+                        or (max_age_seconds > 0 and now - started_at > max_age)
+                    )
+                except TypeError:
+                    # Mixed aware/naive timestamps are invalid for this local
+                    # marker.  Clear rather than risking an unsafe old resume.
+                    marker_is_stale = True
+
+                if not marker_is_stale and not entry.suspended:
+                    if entry.resume_pending:
+                        # A drain-timeout marker is more specific than the
+                        # generic crash reason; preserve it and its freshness.
+                        if entry.last_resume_marked_at is None:
+                            entry.last_resume_marked_at = now
+                    else:
+                        entry.resume_pending = True
+                        entry.resume_reason = "restart_interrupted"
+                        # Freshness starts when recovery is discovered, not
+                        # when a potentially hours-long turn began.
+                        entry.last_resume_marked_at = now
+                        promoted += 1
+
+                entry.active_turn_token = None
+                entry.active_turn_started_at = None
+                changed = True
+
+            if changed:
+                # Cold-start batch: one durable rewrite is clearer and cheaper
+                # than an upsert per interrupted routing entry.
+                self._save()
+
+        return promoted
+
+    def discard_active_turn_markers(self) -> int:
+        """Clear orphan turn markers after a verified clean shutdown."""
+        cleared = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if not entry.active_turn_token and entry.active_turn_started_at is None:
+                    continue
+                entry.active_turn_token = None
+                entry.active_turn_started_at = None
+                cleared += 1
+            if cleared:
+                self._save()
+        return cleared
 
     def mark_resume_pending(
         self,

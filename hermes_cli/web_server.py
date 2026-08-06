@@ -2130,6 +2130,8 @@ def _dashboard_local_update_managed_externally() -> bool:
     externally managed unless their apply path is proven safe inside the
     running container filesystem.
     """
+    if os.environ.get("HERMES_EXTERNAL_UPDATE_GUARD", "").strip().lower() in {"1", "true", "yes"}:
+        return True
     if _default_hermes_root_is_opt_data():
         return True
     try:

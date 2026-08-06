@@ -40,9 +40,14 @@ fi
   rc=$?
   echo "[$(date -Is)] finished backlog pregen rc=$rc"
   exit "$rc"
-) >>"$LOG" 2>&1 || true
+) >>"$LOG" 2>&1 || rc=$?
 
-# Synchronous — silent on success (no Discord delivery)
-# NOTE: || true prevents set -e from propagating the subshell's exit code.
-# The subshell's rc is already captured and logged inside the block.
-exit 0
+# Synchronous — silent on success (no Discord delivery).
+# NOTE: prior version always exited 0, masking the pipeline's rc=1 from the
+# scheduler (last_status stayed 'ok' even when the run ended failed_images),
+# so system-health could never report this job's failures. Propagate the real
+# rc so a failed run surfaces as last_status=error and the alert chain works.
+if [[ "$rc" -ne 0 ]]; then
+  echo "[$(date -Is)] backlog pregen FAILED rc=$rc (log: $LOG)" >&2
+fi
+exit "$rc"

@@ -2805,7 +2805,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
-                 tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None) -> str:
+                 tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
+                 skip_tool_execution_middleware: bool = False) -> str:
     """Invoke a single tool and return the result string. No display logic.
 
     Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -3019,8 +3020,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     # ── END KENSEI CUSTOM ──
     else:
         def _execute(next_args: dict) -> Any:
-            return _ra().handle_function_call(
-                function_name, next_args, effective_task_id,
+            dispatch_kwargs = dict(
                 tool_call_id=tool_call_id,
                 session_id=agent.session_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
@@ -3032,6 +3032,15 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
+            if skip_tool_execution_middleware:
+                dispatch_kwargs["skip_tool_execution_middleware"] = True
+            return _ra().handle_function_call(
+                function_name, next_args, effective_task_id,
+                **dispatch_kwargs,
+            )
+
+    if skip_tool_execution_middleware:
+        return _execute(function_args)
 
     from hermes_cli.middleware import run_tool_execution_middleware
 

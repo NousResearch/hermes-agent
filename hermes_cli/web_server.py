@@ -17603,14 +17603,30 @@ def start_server(
     try:
         from hermes_cli.config import load_config as _load_cfg
         _dash_cfg = (_load_cfg().get("dashboard") or {}) or {}
-        _ping_interval = _dash_cfg.get("ws_ping_interval", "unset")
-        _ping_timeout = _dash_cfg.get("ws_ping_timeout", "unset")
+        _ping_interval = _dash_cfg.get("ws_ping_interval", "auto")
+        _ping_timeout = _dash_cfg.get("ws_ping_timeout", "auto")
     except Exception:
-        _ping_interval = _ping_timeout = "unset"
-    if _ping_interval == "unset":
+        _ping_interval = _ping_timeout = "auto"
+
+    def _coerce_ping(value):
+        # Defensive coercion: hand-edited YAML may quote the number
+        # ("60"), which uvicorn would pass to loop.call_later as a str
+        # and crash the ping loop. Accept int/float/numeric-str; any
+        # other value (incl. explicit None) falls through untouched so
+        # "None disables ping" keeps working (#79635).
+        if isinstance(value, str) and value.strip():
+            try:
+                return float(value)
+            except ValueError:
+                return value
+        return value
+
+    if _ping_interval == "auto":
         _ping_interval = None if _is_loopback else 20.0
-    if _ping_timeout == "unset":
+    if _ping_timeout == "auto":
         _ping_timeout = None if _is_loopback else 20.0
+    _ping_interval = _coerce_ping(_ping_interval)
+    _ping_timeout = _coerce_ping(_ping_timeout)
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees

@@ -179,6 +179,39 @@ def test_start_server_config_override_can_disable_ping(monkeypatch):
     assert captured["ws_ping_timeout"] is None
 
 
+def test_start_server_auto_default_preserves_historical_behavior(monkeypatch):
+    """#79635: the DEFAULT_CONFIG 'auto' sentinel keeps the historical
+    loopback-disable / public-20s behavior, so adding the keys to
+    DEFAULT_CONFIG doesn't change anything for existing users."""
+    captured = _stub_uvicorn(monkeypatch)
+    monkeypatch.setattr(web_server, "should_require_auth", lambda *a, **k: False)
+    # Simulate the merged config with the 'auto' defaults in place.
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"dashboard": {"ws_ping_interval": "auto", "ws_ping_timeout": "auto"}},
+    )
+
+    web_server.start_server(host="0.0.0.0", port=0, open_browser=False)
+    assert captured["ws_ping_interval"] == 20.0
+    assert captured["ws_ping_timeout"] == 20.0
+
+
+def test_start_server_coerces_quoted_numeric_ping(monkeypatch):
+    """#79635: hand-edited YAML with quoted numbers ("60") must not crash
+    uvicorn's ping loop — coerce numeric strings to float at the boundary."""
+    captured = _stub_uvicorn(monkeypatch)
+    monkeypatch.setattr(web_server, "should_require_auth", lambda *a, **k: False)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"dashboard": {"ws_ping_interval": "60", "ws_ping_timeout": "90"}},
+    )
+
+    web_server.start_server(host="0.0.0.0", port=0, open_browser=False)
+
+    assert captured["ws_ping_interval"] == 60.0
+    assert captured["ws_ping_timeout"] == 90.0
+
+
 def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):
     """The dashboard/desktop backend must serve uvicorn on the loop *uvicorn*
     selects, not the interpreter default.

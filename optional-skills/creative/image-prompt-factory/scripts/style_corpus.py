@@ -129,6 +129,7 @@ class Corpus:
     cases: dict[int, Case]
     templates: dict[str, Template]
     cases_sha256: str
+    templates_doc: str = ""
 
     @property
     def template_ids(self) -> tuple[str, ...]:
@@ -273,22 +274,26 @@ def require_corpus(*, pin=None, cache_dir=None) -> Corpus:
     if not root.is_dir():
         raise CorpusMissing(hint)
 
+    verified_files: dict[str, bytes] = {}
     for name, (_path, expected) in CORPUS_FILES.items():
         f = root / name
         if not f.is_file():
             raise CorpusMissing(f"{hint}\n  missing file: {name}")
-        actual = _sha256(f.read_bytes())
+        data = f.read_bytes()
+        actual = _sha256(data)
         if actual != expected:
             raise CorpusMissing(
                 f"{hint}\n  corrupt file: {name}\n"
                 f"  expected {expected}\n  actual   {actual}"
             )
+        verified_files[name] = data
 
-    return _load(root, resolved_pin)
+    return _load(root, resolved_pin, verified_files)
 
 
-def _load(root: Path, pin: str) -> Corpus:
-    cases_bytes = (root / "cases.json").read_bytes()
+def _load(root: Path, pin: str, verified_files: dict[str, bytes]) -> Corpus:
+    """Parse only the immutable byte strings verified by ``require_corpus``."""
+    cases_bytes = verified_files["cases.json"]
     raw_cases = json.loads(cases_bytes.decode("utf-8"))
     cases: dict[int, Case] = {}
     for c in raw_cases["cases"]:
@@ -306,7 +311,7 @@ def _load(root: Path, pin: str) -> Corpus:
             source_url=str(c.get("sourceUrl") or ""),
         )
 
-    raw_lib = json.loads((root / "style-library.json").read_text(encoding="utf-8"))
+    raw_lib = json.loads(verified_files["style-library.json"].decode("utf-8"))
     templates: dict[str, Template] = {}
     for t in raw_lib.get("templates", ()):
         templates[str(t["id"])] = Template(
@@ -323,6 +328,7 @@ def _load(root: Path, pin: str) -> Corpus:
         cases=cases,
         templates=templates,
         cases_sha256=_sha256(cases_bytes),
+        templates_doc=verified_files["templates.md"].decode("utf-8"),
     )
 
 
@@ -448,7 +454,7 @@ def template_body(corpus: Corpus, template_id: str) -> str:
     tpl = corpus.templates.get(template_id)
     if tpl is None:
         raise UsageError(f"unknown template_id: {template_id}")
-    doc = (corpus.root / "templates.md").read_text(encoding="utf-8")
+    doc = corpus.templates_doc
     anchor = tpl.anchor or ""
     start = doc.find(f'<a name="{anchor}"></a>')
     if start < 0:
@@ -475,7 +481,12 @@ def _cmd_ground(args) -> int:
     sel_path = Path(args.selection)
     if not sel_path.is_file():
         raise UsageError(f"selection file not found: {sel_path}")
-    sel = json.loads(sel_path.read_text(encoding="utf-8"))
+    try:
+        sel = json.loads(sel_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UsageError(f"unreadable selection file {sel_path.name}: {exc}") from exc
+    if not isinstance(sel, dict):
+        raise UsageError(f"{sel_path.name} must contain a JSON object")
 
     corpus = require_corpus(cache_dir=args.cache_dir)
 

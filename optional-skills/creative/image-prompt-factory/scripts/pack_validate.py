@@ -24,10 +24,21 @@ from pathlib import Path
 # asks for subject_mode=placeholder. A renderer replaces it with the real
 # subject; the pack itself never invents one.
 SUBJECT_SENTINEL = "[SUBJECT SUPPLIED AT RENDER TIME]"
+SUBJECT_PRESERVATION_DIRECTIVE = (
+    "preserve the attached reference subject's identity, features, and proportions "
+    "exactly; do not invent, describe, or restyle the subject."
+)
+_PLACEHOLDER_SUBJECT_VALUE = f"{SUBJECT_SENTINEL}; {SUBJECT_PRESERVATION_DIRECTIVE}"
 
 # Provenance keys that may exist ONLY on a grounded pack, and must match the
 # grounding artifact byte-for-byte when they do.
-_PROVENANCE_EQUAL = ("prompt_engine", "corpus_pin", "corpus_sha256", "license")
+_PROVENANCE_EQUAL = (
+    "prompt_engine",
+    "corpus_pin",
+    "corpus_source",
+    "corpus_sha256",
+    "license",
+)
 _PROVENANCE_FORBIDDEN_UNGROUNDED = _PROVENANCE_EQUAL + (
     "prompt_engine_attribution",
     "example_case_ids",
@@ -54,11 +65,15 @@ class PackInvalid(Exception):
 
 def _read_json(path: Path, violations: list[str]) -> "dict | None":
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         violations.append(f"missing artifact: {path.name}")
     except (OSError, json.JSONDecodeError) as exc:
         violations.append(f"unreadable artifact {path.name}: {exc}")
+    else:
+        if isinstance(value, dict):
+            return value
+        violations.append(f"{path.name} must contain a JSON object")
     return None
 
 
@@ -105,14 +120,39 @@ def validate_pack(workdir: Path) -> dict:
         str(brief.get("subject_mode", "generic")).strip().lower() == "placeholder"
     )
     for i, c in enumerate(concepts, start=1):
+        if not isinstance(c, dict):
+            violations.append(f"concept {i}: must be a JSON object")
+            continue
         for key in ("baked_prompt", "overlay_prompt"):
             text = c.get(key)
             if not isinstance(text, str) or not text.strip():
                 violations.append(f"concept {i}: empty {key}")
-            elif placeholder and SUBJECT_SENTINEL not in text:
-                violations.append(
-                    f"concept {i}: subject_mode=placeholder but {key} lacks {SUBJECT_SENTINEL}"
-                )
+            elif placeholder:
+                subject_values = [
+                    line[len("Subject:") :].strip()
+                    for line in text.splitlines()
+                    if line.startswith("Subject:")
+                ]
+                if not subject_values or not subject_values[0].startswith(
+                    SUBJECT_SENTINEL
+                ):
+                    violations.append(
+                        f"concept {i}: {key} Subject: field must begin with "
+                        f"{SUBJECT_SENTINEL}"
+                    )
+                elif (
+                    len(subject_values) != 1
+                    or subject_values[0] != _PLACEHOLDER_SUBJECT_VALUE
+                ):
+                    violations.append(
+                        f"concept {i}: {key} Subject: field must use the canonical "
+                        "placeholder directive without invented traits"
+                    )
+                if text.count(SUBJECT_SENTINEL) != 1:
+                    violations.append(
+                        f"concept {i}: {key} must place the placeholder sentinel "
+                        "exactly once, in the Subject: field"
+                    )
         if not isinstance(c.get("copy"), dict):
             violations.append(f"concept {i}: missing copy object")
 

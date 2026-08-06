@@ -116,12 +116,13 @@ variant from the pack.
 - `subject_mode=generic`: neutral world, identity-stable generic traits. Do
   not invent brand names, slogans, people, data, or claims.
 - `subject_mode=placeholder`: the `Subject:` field of EVERY prompt (both
-  variants) must begin with the literal token
-  `[SUBJECT SUPPLIED AT RENDER TIME]`, followed only by placement and posture
-  notes plus: "preserve the attached reference subject's identity, features,
-  and proportions exactly; do not invent, describe, or restyle the subject."
-  Never write physical traits anywhere. A downstream renderer replaces the
-  token with its own reference-locked subject. This exists because an
+  variants) must be exactly: `Subject: [SUBJECT SUPPLIED AT RENDER TIME];
+  preserve the attached reference subject's identity, features, and
+  proportions exactly; do not invent, describe, or restyle the subject.` Put
+  placement or posture instructions in `Composition/framing:`, never in the
+  subject field. The sentinel must occur exactly once per prompt. Never write
+  physical traits anywhere. A downstream renderer replaces the token with
+  its own reference-locked subject. This exists because an
   appended identity LOSES to a pack's own invented `Subject:` line —
   reference images alone do not save you.
 

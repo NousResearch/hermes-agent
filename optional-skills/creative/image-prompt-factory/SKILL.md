@@ -107,11 +107,11 @@ Read the grounded exemplars with `read_file` for structure and quality, then
 write fresh wording — never paste exemplar text. For each concept emit BOTH
 variants (`baked_prompt` and `overlay_prompt` + `copy`) using the 13-block
 scaffold in `references/prompt-schema.md`. Provenance: stamp engine, pin,
-sha256, license, and resolved case ids if and only if the grounding says
+source, sha256, license, and resolved case ids if and only if the grounding says
 `grounded: true`; otherwise omit them all and set `self_authored: true`.
-When `subject_mode` is `placeholder`, every prompt's `Subject:` field starts
-with the literal `[SUBJECT SUPPLIED AT RENDER TIME]` and no invented traits
-appear anywhere.
+When `subject_mode` is `placeholder`, every prompt's `Subject:` field uses the
+exact sentinel + preservation directive in the schema; put placement/posture
+in `Composition/framing:`. No invented subject traits may appear anywhere.
 
 ### 5. Validate
 

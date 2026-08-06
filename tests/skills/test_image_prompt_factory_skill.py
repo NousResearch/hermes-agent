@@ -163,6 +163,7 @@ def _valid_grounded_inputs():
         "resolved_case_ids": [101, 205],
         "prompt_engine": "gpt-image-2-style-library",
         "corpus_pin": "pin",
+        "corpus_source": "https://example.test/corpus",
         "corpus_sha256": "sha",
         "license": "MIT",
     }
@@ -171,6 +172,7 @@ def _valid_grounded_inputs():
         "example_case_ids": [101],
         "prompt_engine": "gpt-image-2-style-library",
         "corpus_pin": "pin",
+        "corpus_source": "https://example.test/corpus",
         "corpus_sha256": "sha",
         "license": "MIT",
         "concepts": [
@@ -220,13 +222,40 @@ def test_cited_id_outside_resolved_set_rejected(pack_validate, tmp_path) -> None
     assert any("never resolved" in v for v in exc.value.violations)
 
 
-def test_provenance_mismatch_rejected(pack_validate, tmp_path) -> None:
+@pytest.mark.parametrize(
+    "field",
+    ["prompt_engine", "corpus_pin", "corpus_source", "corpus_sha256", "license"],
+)
+def test_each_documented_provenance_mismatch_rejected(
+    pack_validate, tmp_path, field
+) -> None:
     brief, grounding, pack = _valid_grounded_inputs()
-    pack["corpus_pin"] = "different-pin"
+    pack[field] = f"different-{field}"
     wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
     with pytest.raises(pack_validate.PackInvalid) as exc:
         pack_validate.validate_pack(wd)
-    assert any("provenance mismatch" in v for v in exc.value.violations)
+    assert any(f"provenance mismatch on {field}" in v for v in exc.value.violations)
+
+
+@pytest.mark.parametrize(
+    ("artifact", "value"),
+    [
+        ("brief.json", []),
+        ("grounding.local.json", "not-an-object"),
+        ("prompt-pack.json", ["not", "an", "object"]),
+    ],
+)
+def test_non_object_artifacts_fail_as_pack_invalid(
+    pack_validate, tmp_path, artifact, value
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+    (wd / artifact).write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(pack_validate.PackInvalid) as exc:
+        pack_validate.validate_pack(wd)
+
+    assert f"{artifact} must contain a JSON object" in exc.value.violations
 
 
 def test_concept_cap_enforced(pack_validate, tmp_path) -> None:
@@ -262,15 +291,57 @@ def test_placeholder_sentinel_satisfies(pack_validate, tmp_path) -> None:
     brief, grounding, pack = _valid_grounded_inputs()
     brief["subject_mode"] = "placeholder"
     tok = pack_validate.SUBJECT_SENTINEL
-    pack["concepts"][0]["baked_prompt"] = f"Subject: {tok} centered"
-    pack["concepts"][0]["overlay_prompt"] = f"Subject: {tok} left, no text, no words"
+    subject = f"Subject: {tok}; {pack_validate.SUBJECT_PRESERVATION_DIRECTIVE}"
+    pack["concepts"][0]["baked_prompt"] = subject
+    pack["concepts"][0]["overlay_prompt"] = (
+        f"{subject}\nText handling: no text, no words"
+    )
     wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
     assert pack_validate.validate_pack(wd)["subject_mode"] == "placeholder"
 
 
+def test_placeholder_sentinel_outside_subject_field_is_rejected(
+    pack_validate, tmp_path
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    brief["subject_mode"] = "placeholder"
+    tok = pack_validate.SUBJECT_SENTINEL
+    for key in ("baked_prompt", "overlay_prompt"):
+        pack["concepts"][0][key] = (
+            f"Subject: a red-haired woman\nConstraints: replace with {tok}"
+        )
+    wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    with pytest.raises(pack_validate.PackInvalid) as exc:
+        pack_validate.validate_pack(wd)
+
+    assert any("Subject: field" in v for v in exc.value.violations)
+
+
+def test_placeholder_subject_field_rejects_invented_traits(
+    pack_validate, tmp_path
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    brief["subject_mode"] = "placeholder"
+    tok = pack_validate.SUBJECT_SENTINEL
+    for key in ("baked_prompt", "overlay_prompt"):
+        pack["concepts"][0][key] = (
+            f"Subject: {tok}, a red-haired woman; "
+            f"{pack_validate.SUBJECT_PRESERVATION_DIRECTIVE}"
+        )
+    wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    with pytest.raises(pack_validate.PackInvalid) as exc:
+        pack_validate.validate_pack(wd)
+
+    assert any("canonical placeholder directive" in v for v in exc.value.violations)
+
+
 def test_local_path_rejected_but_urls_allowed(pack_validate, tmp_path) -> None:
     brief, grounding, pack = _valid_grounded_inputs()
-    pack["corpus_source"] = "https://github.com/freestylefly/awesome-gpt-image-2"
+    source = "https://github.com/freestylefly/awesome-gpt-image-2"
+    grounding["corpus_source"] = source
+    pack["corpus_source"] = source
     wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
     pack_validate.validate_pack(wd)  # URL must not trip the drive-letter regex
     pack["concepts"][0]["baked_prompt"] = r"see C:\Users\someone\art.png"
@@ -340,13 +411,116 @@ def test_provenance_hashes_materialized_cases_file(style_corpus, tmp_path) -> No
     ).encode()
     (tmp_path / "cases.json").write_bytes(cases_bytes)
     (tmp_path / "style-library.json").write_text('{"templates": []}', encoding="utf-8")
-    corpus = style_corpus._load(tmp_path, style_corpus.UPSTREAM_PIN)
+    corpus = style_corpus._load(
+        tmp_path,
+        style_corpus.UPSTREAM_PIN,
+        {
+            "cases.json": cases_bytes,
+            "style-library.json": b'{"templates": []}',
+            "templates.md": b"",
+            "LICENSE": b"fixture license",
+        },
+    )
 
     grounding = style_corpus.select(corpus, case_ids=[7])
 
     assert (
         grounding.provenance["corpus_sha256"] == hashlib.sha256(cases_bytes).hexdigest()
     )
+
+
+def test_verified_cache_bytes_are_the_bytes_consumed(
+    style_corpus, tmp_path, monkeypatch
+) -> None:
+    original = {
+        "cases.json": json.dumps({
+            "cases": [
+                {
+                    "id": 7,
+                    "title": "verified",
+                    "prompt": "verified prompt",
+                    "category": "verified-category",
+                }
+            ]
+        }).encode(),
+        "style-library.json": json.dumps({
+            "templates": [
+                {
+                    "id": "verified-template",
+                    "category": "verified-category",
+                    "templateAnchor": "tpl-verified",
+                    "exampleCases": [7],
+                }
+            ]
+        }).encode(),
+        "templates.md": b'<a name="tpl-verified"></a>\nVERIFIED TEMPLATE BODY\n',
+        "LICENSE": b"verified license",
+    }
+    replacement = {
+        "cases.json": json.dumps({
+            "cases": [
+                {
+                    "id": 8,
+                    "title": "swapped",
+                    "prompt": "swapped prompt",
+                    "category": "swapped-category",
+                }
+            ]
+        }).encode(),
+        "style-library.json": json.dumps({
+            "templates": [
+                {
+                    "id": "swapped-template",
+                    "category": "swapped-category",
+                    "templateAnchor": "tpl-swapped",
+                    "exampleCases": [8],
+                }
+            ]
+        }).encode(),
+        "templates.md": b'<a name="tpl-swapped"></a>\nSWAPPED TEMPLATE BODY\n',
+        "LICENSE": b"swapped license",
+    }
+    pin_dir = tmp_path / style_corpus.UPSTREAM_PIN
+    pin_dir.mkdir()
+    for name, data in original.items():
+        (pin_dir / name).write_bytes(data)
+    monkeypatch.setattr(
+        style_corpus,
+        "CORPUS_FILES",
+        {
+            name: (name, hashlib.sha256(data).hexdigest())
+            for name, data in original.items()
+        },
+    )
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes_then_swap(path):
+        data = real_read_bytes(path)
+        if path.name in original and data == original[path.name]:
+            path.write_bytes(replacement[path.name])
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_then_swap)
+
+    corpus = style_corpus.require_corpus(cache_dir=tmp_path)
+
+    assert set(corpus.cases) == {7}
+    assert set(corpus.templates) == {"verified-template"}
+    assert "VERIFIED TEMPLATE BODY" in style_corpus.template_body(
+        corpus, "verified-template"
+    )
+
+
+def test_ground_non_object_selection_fails_deterministically(
+    style_corpus, tmp_path, capsys
+) -> None:
+    selection = tmp_path / "selection.json"
+    selection.write_text("[]", encoding="utf-8")
+
+    rc = style_corpus.main(["ground", "--selection", str(selection)])
+
+    assert rc == 1
+    assert "selection.json must contain a JSON object" in capsys.readouterr().err
 
 
 def _fixture_corpus(style_corpus):

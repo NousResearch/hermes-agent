@@ -29,6 +29,37 @@ SUBJECT_PRESERVATION_DIRECTIVE = (
     "exactly; do not invent, describe, or restyle the subject."
 )
 _PLACEHOLDER_SUBJECT_VALUE = f"{SUBJECT_SENTINEL}; {SUBJECT_PRESERVATION_DIRECTIVE}"
+_PROMPT_FIELDS = {
+    "Use case",
+    "Template",
+    "Primary request",
+    "Input references",
+    "Scene/backdrop",
+    "Subject",
+    "Style/medium",
+    "Composition/framing",
+    "Lighting/mood",
+    "Color palette",
+    "Text handling",
+    "Constraints",
+    "Avoid",
+}
+
+# Placeholder prompts use a closed field grammar, then every non-Subject value
+# is audited for subject-bearing nouns and physical-trait language. The list is
+# deliberately conservative but leaves scene direction (pose, framing, lens,
+# light, mood, style, palette, wardrobe and expression) available.
+_PLACEHOLDER_TRAIT_LANGUAGE = re.compile(
+    r"(?ix)"
+    r"\b(?:woman|women|man|men|girl|girls|boy|boys|lady|ladies|gentleman|"
+    r"gentlemen|person|people|human|child|children|teenagers?|adults?|male|"
+    r"female)\b|"
+    r"\b[\w]+-(?:eyed|haired)\b|"
+    r"\b(?:black|blond|blonde|blue|brown|gray|grey|green|hazel|red|silver|"
+    r"white)\s+(?:eyes|hair)\b|"
+    r"\b(?:hair|eyes|skin|complexion|ethnicity|race|facial features?|nose|"
+    r"lips|jawline|freckles|tattoos?|body type|build|height|weight)\b"
+)
 
 # Provenance keys that may exist ONLY on a grounded pack, and must match the
 # grounding artifact byte-for-byte when they do.
@@ -77,6 +108,122 @@ def _read_json(path: Path, violations: list[str]) -> "dict | None":
     return None
 
 
+def _integer_array(value, label: str, violations: list[str]) -> list[int]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, int) or isinstance(item, bool) for item in value
+    ):
+        violations.append(f"{label} must be an array of integers")
+        return []
+    return value
+
+
+def _string_array(value, label: str, violations: list[str]) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        violations.append(f"{label} must be an array of strings")
+        return []
+    return value
+
+
+def _validate_grounding_shapes(grounding: dict, violations: list[str]) -> bool:
+    grounded = grounding.get("grounded")
+    if not isinstance(grounded, bool):
+        violations.append("grounding grounded must be a boolean")
+        grounded = False
+    if "matched" in grounding and (
+        not isinstance(grounding["matched"], int)
+        or isinstance(grounding["matched"], bool)
+    ):
+        violations.append("grounding matched must be an integer")
+    for key in ("resolved_case_ids", "unresolved_case_ids"):
+        if key in grounding:
+            _integer_array(grounding[key], f"grounding {key}", violations)
+
+    exemplars = grounding.get("exemplars")
+    if exemplars is not None:
+        if not isinstance(exemplars, list) or any(
+            not isinstance(item, dict) for item in exemplars
+        ):
+            violations.append("grounding exemplars must be an array of objects")
+        else:
+            for index, exemplar in enumerate(exemplars, start=1):
+                prefix = f"grounding exemplar {index}"
+                if "id" in exemplar and (
+                    not isinstance(exemplar["id"], int)
+                    or isinstance(exemplar["id"], bool)
+                ):
+                    violations.append(f"{prefix} id must be an integer")
+                for key in ("title", "prompt", "category", "source_url"):
+                    if key in exemplar and not isinstance(exemplar[key], str):
+                        violations.append(f"{prefix} {key} must be a string")
+                for key in ("styles", "scenes"):
+                    if key in exemplar:
+                        _string_array(exemplar[key], f"{prefix} {key}", violations)
+                if "truncated" in exemplar and not isinstance(
+                    exemplar["truncated"], bool
+                ):
+                    violations.append(f"{prefix} truncated must be a boolean")
+    return grounded
+
+
+def _validate_placeholder_prompt(
+    text: str, concept_number: int, prompt_key: str, violations: list[str]
+) -> None:
+    fields: dict[str, str] = {}
+    grammar_ok = True
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            violations.append(
+                f"concept {concept_number}: {prompt_key} line {line_number} must use "
+                "the documented '<field>: <value>' grammar"
+            )
+            grammar_ok = False
+            continue
+        field_name, value = (part.strip() for part in line.split(":", 1))
+        if field_name not in _PROMPT_FIELDS:
+            violations.append(
+                f"concept {concept_number}: {prompt_key} has unknown prompt field "
+                f"{field_name!r}"
+            )
+            grammar_ok = False
+            continue
+        if field_name in fields:
+            violations.append(
+                f"concept {concept_number}: {prompt_key} duplicates {field_name}: field"
+            )
+            grammar_ok = False
+            continue
+        fields[field_name] = value
+
+    subject_value = fields.get("Subject")
+    if subject_value is None or not subject_value.startswith(SUBJECT_SENTINEL):
+        violations.append(
+            f"concept {concept_number}: {prompt_key} Subject: field must begin with "
+            f"{SUBJECT_SENTINEL}"
+        )
+    elif subject_value != _PLACEHOLDER_SUBJECT_VALUE:
+        violations.append(
+            f"concept {concept_number}: {prompt_key} Subject: field must use the "
+            "canonical placeholder directive without invented traits"
+        )
+    if text.count(SUBJECT_SENTINEL) != 1:
+        violations.append(
+            f"concept {concept_number}: {prompt_key} must place the placeholder "
+            "sentinel exactly once, in the Subject: field"
+        )
+
+    if grammar_ok:
+        for field_name, value in fields.items():
+            if field_name != "Subject" and _PLACEHOLDER_TRAIT_LANGUAGE.search(value):
+                violations.append(
+                    f"concept {concept_number}: {prompt_key} contains forbidden "
+                    "subject identity/appearance language in "
+                    f"{field_name}: field"
+                )
+
+
 def validate_pack(workdir: Path) -> dict:
     """Validate the pack against the brief + grounding artifacts.
 
@@ -91,6 +238,8 @@ def validate_pack(workdir: Path) -> dict:
     if violations:
         raise PackInvalid(violations)
 
+    grounded = _validate_grounding_shapes(grounding, violations)
+
     concepts = pack.get("concepts")
     if not isinstance(concepts, list) or not concepts:
         violations.append("pack has no concepts")
@@ -101,7 +250,11 @@ def validate_pack(workdir: Path) -> dict:
         )
 
     declared = pack.get("prompt_count")
-    if declared is not None and concepts and declared != len(concepts):
+    if declared is not None and (
+        not isinstance(declared, int) or isinstance(declared, bool)
+    ):
+        violations.append("pack prompt_count must be an integer")
+    elif declared is not None and concepts and declared != len(concepts):
         violations.append(
             f"prompt_count says {declared} but pack has {len(concepts)} concepts"
         )
@@ -123,52 +276,44 @@ def validate_pack(workdir: Path) -> dict:
         if not isinstance(c, dict):
             violations.append(f"concept {i}: must be a JSON object")
             continue
+        for key in ("concept_id", "template_id", "aspect", "panel_side"):
+            if key in c and not isinstance(c[key], str):
+                violations.append(f"concept {i}: {key} must be a string")
         for key in ("baked_prompt", "overlay_prompt"):
             text = c.get(key)
             if not isinstance(text, str) or not text.strip():
                 violations.append(f"concept {i}: empty {key}")
             elif placeholder:
-                subject_values = [
-                    line[len("Subject:") :].strip()
-                    for line in text.splitlines()
-                    if line.startswith("Subject:")
-                ]
-                if not subject_values or not subject_values[0].startswith(
-                    SUBJECT_SENTINEL
-                ):
-                    violations.append(
-                        f"concept {i}: {key} Subject: field must begin with "
-                        f"{SUBJECT_SENTINEL}"
-                    )
-                elif (
-                    len(subject_values) != 1
-                    or subject_values[0] != _PLACEHOLDER_SUBJECT_VALUE
-                ):
-                    violations.append(
-                        f"concept {i}: {key} Subject: field must use the canonical "
-                        "placeholder directive without invented traits"
-                    )
-                if text.count(SUBJECT_SENTINEL) != 1:
-                    violations.append(
-                        f"concept {i}: {key} must place the placeholder sentinel "
-                        "exactly once, in the Subject: field"
-                    )
-        if not isinstance(c.get("copy"), dict):
+                _validate_placeholder_prompt(text, i, key, violations)
+        copy = c.get("copy")
+        if not isinstance(copy, dict):
             violations.append(f"concept {i}: missing copy object")
+        elif any(not isinstance(value, str) for value in copy.values()):
+            violations.append(f"concept {i}: copy values must be strings")
 
-    grounded = bool(grounding.get("grounded"))
     if grounded:
-        resolved = set(grounding.get("resolved_case_ids") or [])
+        resolved = set(
+            _integer_array(
+                grounding.get("resolved_case_ids"),
+                "grounding resolved_case_ids",
+                violations,
+            )
+        )
         cited = pack.get("example_case_ids")
         if not isinstance(cited, list) or not cited:
             violations.append("grounded run but pack cites no example_case_ids")
         else:
-            stray = [i for i in cited if i not in resolved]
+            valid_cited = _integer_array(cited, "pack example_case_ids", violations)
+            stray = [case_id for case_id in valid_cited if case_id not in resolved]
             if stray:
                 violations.append(
                     f"pack cites case ids the grounding never resolved: {stray}"
                 )
         for key in _PROVENANCE_EQUAL:
+            if not isinstance(grounding.get(key), str):
+                violations.append(f"grounding {key} must be a string")
+            if not isinstance(pack.get(key), str):
+                violations.append(f"pack {key} must be a string")
             if pack.get(key) != grounding.get(key):
                 violations.append(
                     f"provenance mismatch on {key}: pack={pack.get(key)!r}"

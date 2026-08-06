@@ -111,7 +111,12 @@ source, sha256, license, and resolved case ids if and only if the grounding says
 `grounded: true`; otherwise omit them all and set `self_authored: true`.
 When `subject_mode` is `placeholder`, every prompt's `Subject:` field uses the
 exact sentinel + preservation directive in the schema; put placement/posture
-in `Composition/framing:`. No invented subject traits may appear anywhere.
+in `Composition/framing:`. Placeholder prompts use the schema's closed field grammar:
+every nonblank line is a documented field, with no duplicate fields or free-form
+suffix. The validator audits every non-Subject value for conservative
+identity/appearance vocabulary. Keep identity and physical traits out of every
+field; pose, camera, lighting, mood, style, palette, wardrobe, and expression
+remain available as scene direction.
 
 ### 5. Validate
 
@@ -123,7 +128,8 @@ Exit 1 blocks the pack. The validator re-checks the physical artifacts and
 reports every violation at once: hollow citations (a stamped engine on an
 ungrounded pack), cited ids the grounding never resolved, provenance
 mismatches, more than 8 concepts, empty variants, a missing placeholder
-sentinel, missing copy objects, and absolute local paths in pack text.
+sentinel, malformed nested JSON, placeholder grammar/trait violations, missing
+copy objects, and absolute local paths in pack text.
 
 ### 6. Hand off
 
@@ -143,7 +149,9 @@ text-free image with the `copy` object for later compositing.
   their text never enters an artifact.
 - **The pack invents a subject it was told not to.** An appended identity
   loses to the pack's own `Subject:` line — that is why `placeholder` mode
-  demands the literal sentinel and forbids trait words entirely.
+  demands the literal sentinel, a closed field grammar, and a conservative
+  cross-field identity/appearance vocabulary audit. Do not treat that lexical
+  audit as permission to hide an unlisted synonym in another field.
 - **Skipping validation because the pack "looks right".** The validator
   exists because an instruction to a model is a suggestion; run it every
   time.

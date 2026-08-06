@@ -120,9 +120,17 @@ variant from the pack.
   preserve the attached reference subject's identity, features, and
   proportions exactly; do not invent, describe, or restyle the subject.` Put
   placement or posture instructions in `Composition/framing:`, never in the
-  subject field. The sentinel must occur exactly once per prompt. Never write
-  physical traits anywhere. A downstream renderer replaces the token with
-  its own reference-locked subject. This exists because an
+  subject field. The sentinel must occur exactly once per prompt. In this mode,
+  every nonblank line must use the closed field grammar shown above: one of the
+  documented labels, a colon, then its value; fields cannot repeat and free-form
+  lines are rejected. Every non-Subject value is audited against conservative
+  identity/appearance vocabulary (subject-bearing nouns, eye/hair descriptors,
+  and physical-trait terms). Never put identity or physical traits in any
+  field. Pose, framing, camera, lighting, mood, style, palette, wardrobe, and
+  expression remain valid scene direction. The lexical audit is an enforceable
+  boundary, not a claim that software can infer every possible synonym. A
+  downstream renderer replaces the token with its own reference-locked subject.
+  This exists because an
   appended identity LOSES to a pack's own invented `Subject:` line —
   reference images alone do not save you.
 

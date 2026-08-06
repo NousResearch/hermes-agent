@@ -83,6 +83,30 @@ _W_STYLE = 2
 _W_SCENE = 1
 _W_EXAMPLE_CASE = 4
 
+_TEMPLATE_KEYS = {
+    "id",
+    "anchor",
+    "cover",
+    "title",
+    "description",
+    "category",
+    "styles",
+    "scenes",
+    "tags",
+    "useWhen",
+    "guidance",
+    "pitfalls",
+    "exampleCases",
+}
+_SELECTION_KEYS = {
+    "template_id",
+    "category",
+    "style_tags",
+    "scene_tags",
+    "example_case_ids",
+    "case_ids",
+}
+
 # CJK ideographs plus CJK/fullwidth punctuation. Escaped rather than literal so
 # this file stays pure ASCII: it is read and piped by toolchains that default
 # to cp1252. Used only to offer an English-exemplar filter; the corpus is
@@ -291,6 +315,62 @@ def require_corpus(*, pin=None, cache_dir=None) -> Corpus:
     return _load(root, resolved_pin, verified_files)
 
 
+def _template_string_list(template: dict, key: str, label: str) -> tuple[str, ...]:
+    value = template.get(key)
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise UsageError(f"{label} {key} must be an array of strings")
+    return tuple(value)
+
+
+def _validate_localized_template_field(template: dict, key: str, label: str) -> None:
+    value = template.get(key)
+    if not isinstance(value, dict) or set(value) != {"en", "zh"}:
+        raise UsageError(f"{label} {key} must be an object with en and zh keys")
+    if key in {"guidance", "pitfalls"}:
+        for language, items in value.items():
+            if not isinstance(items, list) or any(
+                not isinstance(item, str) for item in items
+            ):
+                raise UsageError(
+                    f"{label} {key}.{language} must be an array of strings"
+                )
+    elif any(not isinstance(item, str) for item in value.values()):
+        raise UsageError(f"{label} {key} values must be strings")
+
+
+def _parse_template(value, index: int) -> Template:
+    label = f"template {index}"
+    if not isinstance(value, dict):
+        raise UsageError(f"{label} must be a JSON object")
+    unknown = set(value) - _TEMPLATE_KEYS
+    if unknown:
+        raise UsageError(
+            f"{label} {value.get('id', '<unknown>')!r} has unknown keys: "
+            f"{', '.join(sorted(unknown))}"
+        )
+    for key in ("id", "anchor", "cover", "category"):
+        if not isinstance(value.get(key), str) or not value[key].strip():
+            raise UsageError(f"{label} {key} must be a nonempty string")
+    for key in ("title", "description", "useWhen", "guidance", "pitfalls"):
+        _validate_localized_template_field(value, key, label)
+    styles = _template_string_list(value, "styles", label)
+    scenes = _template_string_list(value, "scenes", label)
+    _template_string_list(value, "tags", label)
+    example_cases = value.get("exampleCases")
+    if not isinstance(example_cases, list) or any(
+        not isinstance(item, int) or isinstance(item, bool) for item in example_cases
+    ):
+        raise UsageError(f"{label} exampleCases must be an array of integers")
+    return Template(
+        id=value["id"],
+        category=value["category"],
+        anchor=value["anchor"],
+        styles=styles,
+        scenes=scenes,
+        example_cases=tuple(example_cases),
+    )
+
+
 def _load(root: Path, pin: str, verified_files: dict[str, bytes]) -> Corpus:
     """Parse only the immutable byte strings verified by ``require_corpus``."""
     cases_bytes = verified_files["cases.json"]
@@ -312,17 +392,18 @@ def _load(root: Path, pin: str, verified_files: dict[str, bytes]) -> Corpus:
         )
 
     raw_lib = json.loads(verified_files["style-library.json"].decode("utf-8"))
+    if not isinstance(raw_lib, dict):
+        raise UsageError("style-library.json must contain a JSON object")
+    raw_templates = raw_lib.get("templates")
+    if not isinstance(raw_templates, list):
+        raise UsageError("style-library templates must be an array")
     templates: dict[str, Template] = {}
-    for t in raw_lib.get("templates", ()):
-        templates[str(t["id"])] = Template(
-            id=str(t["id"]),
-            category=str(t.get("category") or ""),
-            anchor=str(t.get("templateAnchor") or ""),
-            styles=tuple(t.get("styles") or ()),
-            scenes=tuple(t.get("scenes") or ()),
-            example_cases=tuple(int(x) for x in (t.get("exampleCases") or ())),
-        )
-    return Corpus(
+    for index, raw_template in enumerate(raw_templates, start=1):
+        template = _parse_template(raw_template, index)
+        if template.id in templates:
+            raise UsageError(f"duplicate template id: {template.id}")
+        templates[template.id] = template
+    corpus = Corpus(
         root=root,
         pin=pin,
         cases=cases,
@@ -330,6 +411,12 @@ def _load(root: Path, pin: str, verified_files: dict[str, bytes]) -> Corpus:
         cases_sha256=_sha256(cases_bytes),
         templates_doc=verified_files["templates.md"].decode("utf-8"),
     )
+    for template_id in corpus.template_ids:
+        body = template_body(corpus, template_id)
+        marker = f'<a name="{corpus.templates[template_id].anchor}"></a>'
+        if not body.removeprefix(marker).strip():
+            raise UsageError(f"template body is empty: {template_id}")
+    return corpus
 
 
 def _truncate(prompt: str, cap: int) -> tuple[str, bool]:
@@ -469,6 +556,32 @@ def _csv(value: "str | None") -> "list[str] | None":
     return [p.strip() for p in value.split(",") if p.strip()]
 
 
+def _validate_selection(sel: dict) -> dict:
+    unknown = set(sel) - _SELECTION_KEYS
+    if unknown:
+        raise UsageError(f"selection has unknown keys: {', '.join(sorted(unknown))}")
+    for key in ("template_id", "category"):
+        if key in sel and sel[key] is not None and not isinstance(sel[key], str):
+            raise UsageError(f"{key} must be a string")
+    for key in ("style_tags", "scene_tags"):
+        value = sel.get(key)
+        if value is not None and (
+            not isinstance(value, list)
+            or any(not isinstance(item, str) for item in value)
+        ):
+            raise UsageError(f"{key} must be an array of strings")
+    for key in ("example_case_ids", "case_ids"):
+        value = sel.get(key)
+        if value is not None and (
+            not isinstance(value, list)
+            or any(
+                not isinstance(item, int) or isinstance(item, bool) for item in value
+            )
+        ):
+            raise UsageError(f"{key} must be an array of integers")
+    return sel
+
+
 def _cmd_ground(args) -> int:
     """Resolve a selection JSON into grounded exemplars, fully offline.
 
@@ -488,11 +601,11 @@ def _cmd_ground(args) -> int:
     if not isinstance(sel, dict):
         raise UsageError(f"{sel_path.name} must contain a JSON object")
 
+    sel = _validate_selection(sel)
+
     corpus = require_corpus(cache_dir=args.cache_dir)
 
     ids = sel.get("example_case_ids") or sel.get("case_ids") or None
-    if ids:
-        ids = [int(re.sub(r"[^0-9]", "", str(i)) or -1) for i in ids]
 
     grounding = select(
         corpus,

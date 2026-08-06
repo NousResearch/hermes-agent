@@ -144,6 +144,13 @@ def test_line_budget(skill_text: str) -> None:
     assert len(skill_text.splitlines()) <= 220
 
 
+def test_placeholder_docs_match_mechanical_field_grammar(skill_text: str) -> None:
+    schema = (SKILL_DIR / "references" / "prompt-schema.md").read_text(encoding="utf-8")
+    for text in (skill_text, schema):
+        assert "closed field grammar" in text
+        assert "identity/appearance vocabulary" in text
+
+
 # ── pack_validate.py behavior ───────────────────────────────────────────────
 
 
@@ -222,6 +229,35 @@ def test_cited_id_outside_resolved_set_rejected(pack_validate, tmp_path) -> None
     assert any("never resolved" in v for v in exc.value.violations)
 
 
+def test_nested_grounding_case_id_fails_validation_not_type_error(
+    pack_validate, tmp_path
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    grounding["resolved_case_ids"] = [[]]
+    wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    with pytest.raises(pack_validate.PackInvalid) as exc:
+        pack_validate.validate_pack(wd)
+
+    assert (
+        "grounding resolved_case_ids must be an array of integers"
+        in exc.value.violations
+    )
+
+
+def test_nested_pack_case_id_fails_validation_not_type_error(
+    pack_validate, tmp_path
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    pack["example_case_ids"] = [[101]]
+    wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    with pytest.raises(pack_validate.PackInvalid) as exc:
+        pack_validate.validate_pack(wd)
+
+    assert "pack example_case_ids must be an array of integers" in exc.value.violations
+
+
 @pytest.mark.parametrize(
     "field",
     ["prompt_engine", "corpus_pin", "corpus_source", "corpus_sha256", "license"],
@@ -235,6 +271,63 @@ def test_each_documented_provenance_mismatch_rejected(
     with pytest.raises(pack_validate.PackInvalid) as exc:
         pack_validate.validate_pack(wd)
     assert any(f"provenance mismatch on {field}" in v for v in exc.value.violations)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["prompt_engine", "corpus_pin", "corpus_source", "corpus_sha256", "license"],
+)
+def test_matching_non_scalar_provenance_is_rejected(
+    pack_validate, tmp_path, field
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    grounding[field] = {"nested": field}
+    pack[field] = {"nested": field}
+    wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    with pytest.raises(pack_validate.PackInvalid) as exc:
+        pack_validate.validate_pack(wd)
+
+    assert f"grounding {field} must be a string" in exc.value.violations
+    assert f"pack {field} must be a string" in exc.value.violations
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda _g, p: p.update(prompt_count=[]),
+            "pack prompt_count must be an integer",
+        ),
+        (
+            lambda g, _p: g.update(unresolved_case_ids=[{}]),
+            "grounding unresolved_case_ids must be an array of integers",
+        ),
+        (
+            lambda g, _p: g.update(exemplars={}),
+            "grounding exemplars must be an array of objects",
+        ),
+        (
+            lambda _g, p: p["concepts"][0].update(concept_id=[]),
+            "concept 1: concept_id must be a string",
+        ),
+        (
+            lambda _g, p: p["concepts"][0]["copy"].update(headline=[]),
+            "concept 1: copy values must be strings",
+        ),
+    ],
+)
+def test_sibling_nested_shapes_fail_deterministically(
+    pack_validate, tmp_path, mutation, message
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    mutation(grounding, pack)
+    wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    with pytest.raises(pack_validate.PackInvalid) as exc:
+        pack_validate.validate_pack(wd)
+
+    assert message in exc.value.violations
 
 
 @pytest.mark.parametrize(
@@ -337,6 +430,99 @@ def test_placeholder_subject_field_rejects_invented_traits(
     assert any("canonical placeholder directive" in v for v in exc.value.violations)
 
 
+@pytest.mark.parametrize("field", ["Composition/framing", "Lighting/mood"])
+def test_placeholder_rejects_reviewer_trait_probes_outside_subject(
+    pack_validate, tmp_path, field
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    brief["subject_mode"] = "placeholder"
+    subject = (
+        f"Subject: {pack_validate.SUBJECT_SENTINEL}; "
+        f"{pack_validate.SUBJECT_PRESERVATION_DIRECTIVE}"
+    )
+    for key in ("baked_prompt", "overlay_prompt"):
+        pack["concepts"][0][key] = (
+            f"{subject}\n{field}: blue-eyed, red-haired woman in a medium shot"
+        )
+    wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    with pytest.raises(pack_validate.PackInvalid) as exc:
+        pack_validate.validate_pack(wd)
+
+    assert any(
+        f"forbidden subject identity/appearance language in {field}" in violation
+        for violation in exc.value.violations
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "Use case",
+        "Template",
+        "Primary request",
+        "Input references",
+        "Scene/backdrop",
+        "Style/medium",
+        "Composition/framing",
+        "Lighting/mood",
+        "Color palette",
+        "Text handling",
+        "Constraints",
+        "Avoid",
+    ],
+)
+def test_placeholder_audits_every_non_subject_prompt_field(
+    pack_validate, tmp_path, field
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    brief["subject_mode"] = "placeholder"
+    subject = (
+        f"Subject: {pack_validate.SUBJECT_SENTINEL}; "
+        f"{pack_validate.SUBJECT_PRESERVATION_DIRECTIVE}"
+    )
+    probe = f"{subject}\n{field}: red-haired woman"
+    pack["concepts"][0]["baked_prompt"] = probe
+    pack["concepts"][0]["overlay_prompt"] = probe
+    wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    with pytest.raises(pack_validate.PackInvalid) as exc:
+        pack_validate.validate_pack(wd)
+
+    assert any(
+        "forbidden subject identity/appearance language" in v
+        for v in exc.value.violations
+    )
+
+
+def test_placeholder_allows_useful_scene_pose_camera_lighting_and_style(
+    pack_validate, tmp_path
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    brief["subject_mode"] = "placeholder"
+    subject = (
+        f"Subject: {pack_validate.SUBJECT_SENTINEL}; "
+        f"{pack_validate.SUBJECT_PRESERVATION_DIRECTIVE}"
+    )
+    useful = "\n".join([
+        "Use case: editorial campaign hero",
+        "Template: realistic-photography",
+        "Scene/backdrop: quiet modern studio with a seamless backdrop",
+        subject,
+        "Style/medium: editorial photography with restrained film grain",
+        "Composition/framing: three-quarter standing pose, centered, eye-level 50 mm camera, medium shot",
+        "Lighting/mood: soft window light from camera left, calm cinematic mood",
+        "Color palette: navy, cream, and warm amber accents",
+        "Text handling: no text, no words",
+        "Constraints: preserve reference-locked wardrobe and expression",
+    ])
+    pack["concepts"][0]["baked_prompt"] = useful
+    pack["concepts"][0]["overlay_prompt"] = useful
+    wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    assert pack_validate.validate_pack(wd)["subject_mode"] == "placeholder"
+
+
 def test_local_path_rejected_but_urls_allowed(pack_validate, tmp_path) -> None:
     brief, grounding, pack = _valid_grounded_inputs()
     source = "https://github.com/freestylefly/awesome-gpt-image-2"
@@ -361,6 +547,64 @@ def test_missing_copy_object_rejected(pack_validate, tmp_path) -> None:
 
 
 # ── style_corpus.py behavior ────────────────────────────────────────────────
+
+PINNED_TEMPLATE_ANCHORS = (
+    ("ui-screenshot-system", "tpl-ui"),
+    ("infographic-engine", "tpl-infographic"),
+    ("scientific-scale-diagram", "tpl-infographic"),
+    ("poster-layout-system", "tpl-poster"),
+    ("sports-campaign-poster", "tpl-poster"),
+    ("conceptual-typography-poster", "tpl-poster"),
+    ("ink-double-exposure-poster", "tpl-poster"),
+    ("nature-science-poster", "tpl-poster"),
+    ("product-commerce-visual", "tpl-product"),
+    ("personalized-beauty-report", "tpl-product"),
+    ("brand-identity-package", "tpl-brand"),
+    ("brand-touchpoint-board", "tpl-brand"),
+    ("architecture-space", "tpl-architecture"),
+    ("realistic-photography", "tpl-photo"),
+    ("street-accident-moment", "tpl-photo"),
+    ("illustration-art-style", "tpl-illustration"),
+    ("character-design-sheet", "tpl-character"),
+    ("3d-collectible-toy", "tpl-character"),
+    ("scene-storytelling", "tpl-scene"),
+    ("history-classical-themes", "tpl-history"),
+    ("document-publishing", "tpl-document"),
+    ("concept-product-breakdown", "tpl-other"),
+)
+
+
+def _template_record(template_id: str, anchor: str) -> dict:
+    return {
+        "id": template_id,
+        "anchor": anchor,
+        "cover": "/images/fixture.jpg",
+        "title": {"en": "fixture", "zh": "fixture"},
+        "description": {"en": "fixture", "zh": "fixture"},
+        "category": "fixture",
+        "styles": ["fixture-style"],
+        "scenes": ["fixture-scene"],
+        "tags": ["fixture-tag"],
+        "useWhen": {"en": "fixture", "zh": "fixture"},
+        "guidance": {"en": ["fixture"], "zh": ["fixture"]},
+        "pitfalls": {"en": ["fixture"], "zh": ["fixture"]},
+        "exampleCases": [1],
+    }
+
+
+def _load_template_fixture(style_corpus, tmp_path, templates):
+    anchors = dict.fromkeys(t["anchor"] for t in templates)
+    doc = "\n".join(f'<a name="{anchor}"></a>\nBODY FOR {anchor}' for anchor in anchors)
+    return style_corpus._load(
+        tmp_path,
+        style_corpus.UPSTREAM_PIN,
+        {
+            "cases.json": b'{"cases": []}',
+            "style-library.json": json.dumps({"templates": templates}).encode(),
+            "templates.md": doc.encode(),
+            "LICENSE": b"fixture license",
+        },
+    )
 
 
 def test_cold_cache_fails_closed(style_corpus, tmp_path) -> None:
@@ -429,6 +673,94 @@ def test_provenance_hashes_materialized_cases_file(style_corpus, tmp_path) -> No
     )
 
 
+def test_load_consumes_documented_template_anchor(style_corpus, tmp_path) -> None:
+    corpus = _load_template_fixture(
+        style_corpus,
+        tmp_path,
+        [_template_record("3d-collectible-toy", "tpl-character")],
+    )
+
+    assert "BODY FOR tpl-character" in style_corpus.template_body(
+        corpus, "3d-collectible-toy"
+    )
+
+
+def test_all_22_pinned_templates_resolve_nonempty_bodies_and_toy_cli_succeeds(
+    style_corpus, tmp_path, monkeypatch, capsys
+) -> None:
+    corpus = _load_template_fixture(
+        style_corpus,
+        tmp_path,
+        [
+            _template_record(template_id, anchor)
+            for template_id, anchor in PINNED_TEMPLATE_ANCHORS
+        ],
+    )
+
+    assert len(corpus.templates) == 22
+    for template_id, _anchor in PINNED_TEMPLATE_ANCHORS:
+        body = style_corpus.template_body(corpus, template_id)
+        assert body.strip()
+        assert "BODY FOR" in body
+
+    monkeypatch.setattr(style_corpus, "require_corpus", lambda **_kwargs: corpus)
+    assert style_corpus.main(["template", "3d-collectible-toy"]) == 0
+    assert "BODY FOR tpl-character" in capsys.readouterr().out
+
+
+def test_template_schema_rejects_unknown_keys(style_corpus, tmp_path) -> None:
+    template = _template_record("3d-collectible-toy", "tpl-character")
+    template["templateAnchor"] = template["anchor"]
+
+    with pytest.raises(style_corpus.UsageError, match="unknown keys.*templateAnchor"):
+        _load_template_fixture(style_corpus, tmp_path, [template])
+
+
+@pytest.mark.parametrize(
+    ("templates", "message"),
+    [
+        ([[]], "template 1 must be a JSON object"),
+        (
+            [dict(_template_record("toy", "tpl-character"), exampleCases=[[101]])],
+            "exampleCases must be an array of integers",
+        ),
+        (
+            [dict(_template_record("toy", "tpl-character"), styles=[[]])],
+            "styles must be an array of strings",
+        ),
+    ],
+)
+def test_template_schema_nested_shapes_fail_deterministically(
+    style_corpus, tmp_path, templates, message
+) -> None:
+    with pytest.raises(style_corpus.UsageError, match=message):
+        style_corpus._load(
+            tmp_path,
+            style_corpus.UPSTREAM_PIN,
+            {
+                "cases.json": b'{"cases": []}',
+                "style-library.json": json.dumps({"templates": templates}).encode(),
+                "templates.md": b'<a name="tpl-character"></a>\nBODY\n',
+                "LICENSE": b"fixture license",
+            },
+        )
+
+
+def test_template_schema_rejects_empty_resolved_body(style_corpus, tmp_path) -> None:
+    template = _template_record("toy", "tpl-character")
+    with pytest.raises(style_corpus.UsageError, match="template body is empty"):
+        style_corpus._load(
+            tmp_path,
+            style_corpus.UPSTREAM_PIN,
+            {
+                "cases.json": b'{"cases": []}',
+                "style-library.json": json.dumps({"templates": [template]}).encode(),
+                "templates.md": b'<a name="tpl-character"></a>\n',
+                "LICENSE": b"fixture license",
+            },
+        )
+
+
 def test_verified_cache_bytes_are_the_bytes_consumed(
     style_corpus, tmp_path, monkeypatch
 ) -> None:
@@ -445,12 +777,11 @@ def test_verified_cache_bytes_are_the_bytes_consumed(
         }).encode(),
         "style-library.json": json.dumps({
             "templates": [
-                {
-                    "id": "verified-template",
-                    "category": "verified-category",
-                    "templateAnchor": "tpl-verified",
-                    "exampleCases": [7],
-                }
+                dict(
+                    _template_record("verified-template", "tpl-verified"),
+                    category="verified-category",
+                    exampleCases=[7],
+                )
             ]
         }).encode(),
         "templates.md": b'<a name="tpl-verified"></a>\nVERIFIED TEMPLATE BODY\n',
@@ -469,12 +800,11 @@ def test_verified_cache_bytes_are_the_bytes_consumed(
         }).encode(),
         "style-library.json": json.dumps({
             "templates": [
-                {
-                    "id": "swapped-template",
-                    "category": "swapped-category",
-                    "templateAnchor": "tpl-swapped",
-                    "exampleCases": [8],
-                }
+                dict(
+                    _template_record("swapped-template", "tpl-swapped"),
+                    category="swapped-category",
+                    exampleCases=[8],
+                )
             ]
         }).encode(),
         "templates.md": b'<a name="tpl-swapped"></a>\nSWAPPED TEMPLATE BODY\n',
@@ -521,6 +851,32 @@ def test_ground_non_object_selection_fails_deterministically(
 
     assert rc == 1
     assert "selection.json must contain a JSON object" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("selection", "message"),
+    [
+        (
+            {"example_case_ids": [[101]]},
+            "example_case_ids must be an array of integers",
+        ),
+        ({"style_tags": {"studio": True}}, "style_tags must be an array of strings"),
+        ({"scene_tags": [[]]}, "scene_tags must be an array of strings"),
+        ({"template_id": []}, "template_id must be a string"),
+        ({"category": {}}, "category must be a string"),
+    ],
+)
+def test_ground_selection_nested_shapes_fail_deterministically(
+    style_corpus, tmp_path, monkeypatch, capsys, selection, message
+) -> None:
+    monkeypatch.setattr(
+        style_corpus, "require_corpus", lambda **_kwargs: _fixture_corpus(style_corpus)
+    )
+    path = tmp_path / "selection.json"
+    path.write_text(json.dumps(selection), encoding="utf-8")
+
+    assert style_corpus.main(["ground", "--selection", str(path)]) == 1
+    assert message in capsys.readouterr().err
 
 
 def _fixture_corpus(style_corpus):

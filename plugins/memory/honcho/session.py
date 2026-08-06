@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from plugins.memory.honcho.client import get_honcho_client
+from plugins.memory.honcho.oauth import _redact_tokens
 
 if TYPE_CHECKING:
     from honcho import Honcho
@@ -32,26 +33,38 @@ class HonchoAuthError(RuntimeError):
     """
 
 
-# The SDK raises different exception classes per transport, but an auth failure always carries one of these markers.
+# Text fallback for transports without a status attribute. Conservative on
+# purpose: a false positive spends a refresh-token rotation, and a lost
+# rotation response can permanently revoke the grant. A missed auth error
+# only costs one un-recovered call. "authentication failed" (not bare
+# "authentication") so auth-infrastructure outage messages stay transient.
 _AUTH_ERROR_MARKERS = (
     "invalid or expired access token",
-    "authentication",
+    "authentication failed",
     "unauthorized",
-    "401",
 )
+
+# A 401 in text counts only with HTTP context ("HTTP 401", "status 401"), never as a bare number.
+_HTTP_401_RE = re.compile(r"\b(?:http|status(?:[ _]code)?\s*[:=]?)\s*401\b")
 
 
 def _is_auth_error(exc: BaseException) -> bool:
     status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
     if status == 401:
         return True
+    # The transport reported a concrete non-auth status; trust it over text.
+    if isinstance(status, int) and status not in (0, 401):
+        return False
     text = str(exc).lower()
+    if _HTTP_401_RE.search(text):
+        return True
     return any(marker in text for marker in _AUTH_ERROR_MARKERS)
 
 
 def _auth_error_message(exc: BaseException) -> str:
     return (
-        f"Honcho rejected our credentials and a forced token refresh did not recover: {exc}. "
+        "Honcho rejected our credentials and a forced token refresh did not "
+        f"recover: {_redact_tokens(str(exc))}. "
         "Re-authenticate with 'hermes honcho setup'."
     )
 
@@ -204,13 +217,14 @@ class HonchoSessionManager:
         return self._honcho
 
     def _record_auth_failure(self, exc: BaseException) -> None:
+        detail = _redact_tokens(str(exc))
         if self._auth_failure is None:
             logger.error(
                 "Honcho authentication failed and token refresh did not recover; "
                 "memory sync and recall are paused until the user re-authenticates: %s",
-                exc,
+                detail,
             )
-        self._auth_failure = str(exc)
+        self._auth_failure = detail
 
     def _clear_auth_failure(self) -> None:
         if self._auth_failure is not None:
@@ -566,7 +580,7 @@ class HonchoSessionManager:
                     raise
                 logger.warning(
                     "Honcho message sync hit an auth error; forcing token "
-                    "refresh and retrying once: %s", e,
+                    "refresh and retrying once: %s", _redact_tokens(str(e)),
                 )
                 if not self._force_reauth():
                     raise
@@ -820,7 +834,7 @@ class HonchoSessionManager:
                     raise
                 logger.warning(
                     "Honcho dialectic query hit an auth error; forcing token "
-                    "refresh and retrying once: %s", e,
+                    "refresh and retrying once: %s", _redact_tokens(str(e)),
                 )
                 if not self._force_reauth():
                     self._record_auth_failure(e)

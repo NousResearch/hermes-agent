@@ -222,6 +222,32 @@ class TestAuthErrorDetection:
         assert not _is_auth_error(Exception("connection reset by peer"))
         assert not _is_auth_error(Exception("HTTP 500 internal error"))
 
+    def test_bare_401_digits_are_not_auth_errors(self):
+        """A false positive spends a token rotation and can revoke the grant;
+        digits appearing in latency figures, request ids, or identifiers must
+        never classify as auth failures."""
+        for msg in (
+            "Rate limited, retry after 4010 ms",
+            "500 Internal Server Error (request id req-4012ab)",
+            "connection timeout to workspace ws-401-prod",
+            "peer 401k-planning not found",
+        ):
+            assert not _is_auth_error(Exception(msg)), msg
+
+    def test_401_with_http_context_matches(self):
+        assert _is_auth_error(Exception("HTTP 401"))
+        assert _is_auth_error(Exception("status 401"))
+        assert _is_auth_error(Exception("status_code: 401"))
+        assert _is_auth_error(Exception("401 Unauthorized"))
+
+    def test_concrete_non_auth_status_wins_over_text(self):
+        exc = Exception("authentication failed")
+        exc.status = 429
+        assert not _is_auth_error(exc)
+
+    def test_bare_authentication_word_is_not_enough(self):
+        assert not _is_auth_error(Exception("authentication service unreachable"))
+
 
 # ---------------------------------------------------------------------------
 # session: dialectic 401 recovery
@@ -494,6 +520,13 @@ class TestAuthNotice:
         with pytest.raises(HonchoAuthError):
             mgr.dialectic_query("k", "q")
         assert mgr.pop_auth_notice() is None
+
+    def test_recorded_failure_and_notice_redact_token_values(self):
+        mgr = _make_manager(_FlakyPeer(failures=0))
+        mgr._record_auth_failure(Exception("rejected token hch-at-secretvalue99"))
+        notice = mgr.pop_auth_notice()
+        assert "secretvalue99" not in notice
+        assert "hch-at-[redacted]" in notice
 
     def test_provider_prefetch_injects_notice_once(self):
         class _FakeManager:

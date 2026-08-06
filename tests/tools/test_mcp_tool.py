@@ -118,6 +118,29 @@ class TestLoadMCPConfig:
             result = _load_mcp_config()
             assert result == {}
 
+    def test_portable_servers_merge_after_native_interpolation(self):
+        native = {"native": {"command": "node", "args": ["${PORT}"]}}
+        portable = {
+            "agent-plugin-demo__worker": {
+                "command": "python",
+                "args": ["${UNKNOWN}"],
+                "cwd": "/plugin",
+            }
+        }
+        manager = SimpleNamespace(get_portable_mcp_servers=lambda: portable)
+        with (
+            patch("hermes_cli.config.load_config", return_value={"mcp_servers": native}),
+            patch("hermes_cli.plugins.discover_plugins"),
+            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+            patch.dict(os.environ, {"PORT": "3000"}),
+        ):
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result["native"]["args"] == ["3000"]
+        assert result["agent-plugin-demo__worker"]["args"] == ["${UNKNOWN}"]
+
 
 class TestMCPParallelSafetyProvenance:
     def test_parallel_safe_servers_keep_exact_raw_names(self, monkeypatch):
@@ -739,14 +762,17 @@ class TestMCPServerTask:
         p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
 
         async def _test():
-            with patch("tools.mcp_tool.StdioServerParameters"), p_stdio, p_cs:
+            with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
                 server = MCPServerTask("test_srv")
-                await server.start({"command": "npx", "args": ["-y", "test"]})
+                await server.start(
+                    {"command": "npx", "args": ["-y", "test"], "cwd": "/plugin"}
+                )
 
                 assert server.session is mock_session
                 assert len(server._tools) == 1
                 assert server._tools[0].name == "echo"
                 mock_session.initialize.assert_called_once()
+                assert params.call_args.kwargs["cwd"] == "/plugin"
 
                 await server.shutdown()
                 assert server.session is None

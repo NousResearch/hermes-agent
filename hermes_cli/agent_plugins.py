@@ -9,6 +9,7 @@ Python code.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -316,7 +317,8 @@ def _translate_stdio(
         for key, value in env.items()
     ):
         raise ValueError("env must map string keys to string values")
-    if "PLUGIN_ROOT" in env or "PLUGIN_DATA" in env:
+    env_keys = {key.upper() if os.name == "nt" else key for key in env}
+    if "PLUGIN_ROOT" in env_keys or "PLUGIN_DATA" in env_keys:
         raise ValueError("PLUGIN_ROOT and PLUGIN_DATA are reserved")
 
     cwd = config.get("cwd")
@@ -436,3 +438,12 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
         diagnostics=tuple(diagnostics),
     )
 
+
+def read_agent_plugin_manifest(plugin_root: Path) -> tuple[dict, tuple[AgentPluginDiagnostic, ...]]:
+    """Validate only root ``plugin.json`` without discovering components."""
+
+    root = Path(plugin_root).resolve(strict=True)
+    if not root.is_dir():
+        raise AgentPluginError("plugin root must be a directory")
+    manifest, diagnostics = _validate_manifest(root)
+    return manifest, tuple(diagnostics)

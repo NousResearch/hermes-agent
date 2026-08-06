@@ -34,6 +34,7 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.metadata
 import importlib.util
 import inspect
@@ -280,6 +281,15 @@ def _get_enabled_plugins() -> Optional[set]:
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 
 
+def _portable_skill_namespace(key: str) -> str:
+    """Return a readable, collision-resistant namespace for a portable plugin."""
+
+    slug = "".join(ch if ch.isalnum() or ch in "_-" else "-" for ch in key.lower())
+    slug = slug.strip("-_") or "plugin"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
+    return f"agent-plugin-{slug}-{digest}"
+
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
@@ -287,7 +297,7 @@ class PluginManifest:
     name: str
     version: str = ""
     description: str = ""
-    author: str = ""
+    author: Any = ""
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
@@ -315,6 +325,8 @@ class PluginManifest:
     # category plugin at ``plugins/image_gen/openai/`` the key is
     # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
+    portable: bool = False
+    skill_namespace: str = ""
 
 
 @dataclass
@@ -1258,10 +1270,13 @@ class PluginContext:
         if not path.exists():
             raise FileNotFoundError(f"SKILL.md not found at {path}")
 
-        qualified = f"{self.manifest.name}:{name}"
+        namespace = self.manifest.skill_namespace or self.manifest.name
+        qualified = f"{namespace}:{name}"
+        if qualified in self._manager._plugin_skills:
+            raise ValueError(f"Plugin skill '{qualified}' is already registered")
         self._manager._plugin_skills[qualified] = {
             "path": path,
-            "plugin": self.manifest.name,
+            "plugin": namespace,
             "bare_name": name,
             "description": description,
         }
@@ -1291,6 +1306,7 @@ class PluginManager:
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
@@ -1328,6 +1344,7 @@ class PluginManager:
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
+            self._portable_mcp_servers.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
             self._context_engine = None
@@ -1570,6 +1587,36 @@ class PluginManager:
                     manifests.append(manifest)
                 continue
 
+            portable_file = child / "plugin.json"
+            if portable_file.exists() or portable_file.is_symlink():
+                try:
+                    from hermes_cli.agent_plugins import read_agent_plugin_manifest
+
+                    data, diagnostics = read_agent_plugin_manifest(child)
+                    for diagnostic in diagnostics:
+                        logger.warning(
+                            "Agent Plugin '%s': %s",
+                            child,
+                            diagnostic.message,
+                        )
+                    key = f"{prefix}/{child.name}" if prefix else data["name"]
+                    manifests.append(
+                        PluginManifest(
+                            name=data["name"],
+                            version=data.get("version", ""),
+                            description=data.get("description", ""),
+                            author=data.get("author", ""),
+                            source=source,
+                            path=str(child),
+                            key=key,
+                            portable=True,
+                            skill_namespace=_portable_skill_namespace(key),
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to parse %s: %s", portable_file, exc)
+                continue
+
             # No manifest at this level. If we're still within the depth
             # cap, treat this directory as a category namespace and recurse
             # one level in looking for children with manifests.
@@ -1783,6 +1830,10 @@ class PluginManager:
             manifest.key or manifest.name, manifest.source, manifest.kind, manifest.path,
         )
 
+        if manifest.portable:
+            self._load_portable_plugin(manifest, loaded)
+            return
+
         from tools.registry import registry as _registry
         _plugin_id = manifest.key or manifest.name
         _slug = _plugin_id.replace("/", "__").replace("-", "_")
@@ -1858,6 +1909,53 @@ class PluginManager:
                 manifest.name, exc, exc_info=_PLUGINS_DEBUG,
             )
         self._plugins[manifest.key or manifest.name] = loaded
+
+    def _load_portable_plugin(
+        self, manifest: PluginManifest, loaded: LoadedPlugin
+    ) -> None:
+        """Load validated portable components without importing Python code."""
+
+        lookup_key = manifest.key or manifest.name
+        try:
+            from hermes_cli.agent_plugins import load_agent_plugin
+
+            package = load_agent_plugin(
+                Path(manifest.path),
+                get_hermes_home() / "plugin-data" / manifest.skill_namespace,
+            )
+            ctx = PluginContext(manifest, self)
+            for diagnostic in package.diagnostics:
+                logger.warning(
+                    "Agent Plugin '%s' [%s]: %s",
+                    lookup_key,
+                    diagnostic.scope,
+                    diagnostic.message,
+                )
+            for skill in package.skills:
+                try:
+                    ctx.register_skill(skill.name, skill.skill_md, skill.description)
+                except Exception as exc:
+                    logger.warning(
+                        "Agent Plugin '%s' skill '%s' skipped: %s",
+                        lookup_key,
+                        skill.name,
+                        exc,
+                    )
+            for server_name, config in package.mcp_servers.items():
+                internal_name = f"{manifest.skill_namespace}__{server_name}"
+                if internal_name in self._portable_mcp_servers:
+                    logger.warning(
+                        "Agent Plugin '%s' MCP server collision: %s",
+                        lookup_key,
+                        internal_name,
+                    )
+                    continue
+                self._portable_mcp_servers[internal_name] = dict(config)
+            loaded.enabled = True
+        except Exception as exc:
+            loaded.error = str(exc)
+            logger.warning("Failed to load Agent Plugin '%s': %s", lookup_key, exc)
+        self._plugins[lookup_key] = loaded
 
     def _load_directory_module(self, manifest: PluginManifest) -> types.ModuleType:
         """Import a directory-based plugin as ``hermes_plugins.<slug>``.
@@ -2046,6 +2144,29 @@ class PluginManager:
             for qn, e in self._plugin_skills.items()
             if qn.startswith(prefix)
         )
+
+    def list_plugin_skill_metadata(self) -> List[Dict[str, str]]:
+        """Return progressive-disclosure metadata for registered plugin skills."""
+
+        return [
+            {
+                "name": qualified,
+                "description": str(entry.get("description", "")),
+                "category": "plugin",
+            }
+            for qualified, entry in sorted(self._plugin_skills.items())
+        ]
+
+    def get_portable_mcp_servers(self) -> Dict[str, Dict[str, Any]]:
+        """Return a defensive copy of enabled portable MCP server configs."""
+
+        return {
+            name: dict(config)
+            for name, config in self._portable_mcp_servers.items()
+        }
+
+    def has_portable_mcp_servers(self) -> bool:
+        return bool(self._portable_mcp_servers)
 
     def remove_plugin_skill(self, qualified_name: str) -> None:
         """Remove a stale registry entry (silently ignores missing keys)."""

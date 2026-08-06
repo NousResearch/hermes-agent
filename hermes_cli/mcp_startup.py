@@ -17,7 +17,12 @@ def _has_configured_mcp_servers() -> bool:
         from hermes_cli.config import read_raw_config
 
         mcp_servers = (read_raw_config() or {}).get("mcp_servers")
-        return isinstance(mcp_servers, dict) and len(mcp_servers) > 0
+        if isinstance(mcp_servers, dict) and len(mcp_servers) > 0:
+            return True
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+        discover_plugins()
+        return get_plugin_manager().has_portable_mcp_servers()
     except Exception:
         # Be conservative: if config probing fails, try discovery in the
         # background so startup still can't block.

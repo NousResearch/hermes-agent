@@ -590,6 +590,23 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
+    // A live optimistic user row whose text already exists ANYWHERE in the
+    // authoritative transcript was already committed — the backend has since
+    // moved on to a later user, so the newest-user check above can no longer
+    // recognise it. Re-appending the row paints the same message twice (#78499
+    // follow-up: stale optimistic user rows after the turn advances).
+    if (
+      isOptimisticUser &&
+      nextMessages.some(
+        candidate =>
+          candidate.role === 'user' &&
+          textWithoutReferenceLines(chatMessageText(candidate)) ===
+            textWithoutReferenceLines(chatMessageText(message))
+      )
+    ) {
+      continue
+    }
+
     const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
 
     // A settled stream row (`pending: false` after message.complete) whose reply

@@ -1100,6 +1100,30 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(chatMessageText(preserved[1])).toBe('first answer')
     expect(preserved.filter(message => message.role === 'assistant')).toHaveLength(2)
   })
+
+  // Stale optimistic user: the row was already committed (its exact text exists
+  // in the authoritative transcript), but the renderer's warm cache kept BOTH
+  // the committed row and the optimistic duplicate — so the duplicate's
+  // role-ordinal shifts past the committed user onto a LATER user (e.g. a
+  // background process notice), and neither the newest-user check nor ordinal
+  // pairing can see it anymore. It must still be dropped.
+  it('drops a stale optimistic user row when ordinal pairing lands on a later user', () => {
+    const taskText = '任务：BM 设计卡批 2——D 卡'
+    const history = [msg('1-user-stored', 'user', 'earlier question')]
+    const committedTask = msg('2-user-stored', 'user', taskText)
+    const laterUser = msg('3-user-stored', 'user', '[IMPORTANT: background process done]')
+    const next = [...history, committedTask, laterUser]
+
+    // The warm cache already carries the committed row AND the optimistic
+    // duplicate — the duplicate pairs with the LATER user by ordinal now.
+    const optimisticStale = msg('user-runtime-1', 'user', taskText)
+    const previous = [...history, committedTask, optimisticStale, laterUser]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).not.toContain('user-runtime-1')
+    expect(preserved.filter(message => chatMessageText(message).includes(taskText))).toHaveLength(1)
+  })
 })
 
 describe('appendLiveSessionProjection', () => {

@@ -104,6 +104,11 @@ class TestWin32ToolPath:
             "C:/workspace/hermes-agent/tools"
         )
 
+    def test_cygdrive_and_mnt_drive_forms(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _win32_tool_path("/cygdrive/c/Users/x") == "C:/Users/x"
+        assert _win32_tool_path("/mnt/c/Users/x") == "C:/Users/x"
+
     def test_native_backslash_becomes_forward_slash(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         assert _win32_tool_path(r"C:\workspace\tools") == "C:/workspace/tools"

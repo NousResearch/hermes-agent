@@ -157,6 +157,11 @@ def finalize_turn(
                 from hermes_cli import kanban_db as _kb
                 _conn = _kb.connect()
                 try:
+                    _run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID", "")
+                    try:
+                        _expected_run_id = int(_run_id_raw) if _run_id_raw else None
+                    except ValueError:
+                        _expected_run_id = None
                     _kb._record_task_failure(
                         _conn,
                         _kanban_task,
@@ -173,6 +178,10 @@ def finalize_turn(
                             "budget_used": api_call_count,
                             "budget_max": agent.max_iterations,
                         },
+                        expected_run_id=_expected_run_id,
+                        expected_claim_lock=os.environ.get(
+                            "HERMES_KANBAN_CLAIM_LOCK"
+                        ),
                     )
                     logger.info(
                         "recorded budget-exhausted failure for task %s (%d/%d)",

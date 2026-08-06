@@ -1,7 +1,7 @@
 ---
-title: "Xlsx — Create, read, edit Excel"
+title: "Xlsx — Create, read, edit Excel .xlsx spreadsheets and CSVs"
 sidebar_label: "Xlsx"
-description: "Create, read, edit Excel"
+description: "Create, read, edit Excel .xlsx spreadsheets and CSVs"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}

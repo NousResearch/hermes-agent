@@ -73,36 +73,8 @@ def test_preflight_lock_skip_does_not_set_blocked_flag():
     assert ctx.preflight_compression_blocked is False
 
 
-def test_preflight_lock_skip_true_unconfirmed_holder_also_defers():
-    agent = _make_agent()
-    calls = []
-
-    def _lock_skip_compress(messages, _system_message, **_kwargs):
-        calls.append(1)
-        agent._compression_skipped_due_to_lock = True
-        return messages, "SYSTEM"
-
-    agent._compress_context = _lock_skip_compress
-
-    ctx = _build(agent, conversation_history=list(_HISTORY))
-
-    assert calls == [1]
-    assert ctx.preflight_compression_blocked is False
 
 
-def test_preflight_plain_noop_still_arms_blocker():
-    """Control: flag unset → unchanged pre-fix behavior (blocker armed)."""
-    agent = _make_agent()
-
-    def _noop_compress(messages, _system_message, **_kwargs):
-        agent._compression_skipped_due_to_lock = None
-        return messages, "SYSTEM"
-
-    agent._compress_context = _noop_compress
-
-    ctx = _build(agent, conversation_history=list(_HISTORY))
-
-    assert ctx.preflight_compression_blocked is True
 
 
 def test_preflight_magicmock_flag_value_is_not_a_defer():

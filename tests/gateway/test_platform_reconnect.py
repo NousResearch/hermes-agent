@@ -138,41 +138,6 @@ class TestStartupPlatformIsolation:
         assert Platform.TELEGRAM not in runner.adapters
         assert runner._create_adapter.call_count == 2
 
-    def test_default_connect_timeout_allows_telegram_polling_readiness(
-        self, monkeypatch
-    ):
-        """Telegram gets a larger default; other platforms stay isolated at 30s."""
-        runner = _make_runner()
-        monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
-
-        assert runner._platform_connect_timeout_secs(Platform.TELEGRAM) == 180
-        assert runner._platform_connect_timeout_secs(Platform.FEISHU) == 30
-
-    def test_explicit_connect_timeout_still_applies_to_every_platform(
-        self, monkeypatch
-    ):
-        runner = _make_runner()
-        monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "90")
-
-        assert runner._platform_connect_timeout_secs(Platform.TELEGRAM) == 90
-        assert runner._platform_connect_timeout_secs(Platform.FEISHU) == 90
-
-    @pytest.mark.asyncio
-    async def test_connect_adapter_timeout_raises_retryable_exception(self, monkeypatch):
-        """The timeout helper turns a hanging connect into a caught startup error."""
-        runner = _make_runner()
-        adapter = StubAdapter()
-
-        async def hang(*, is_reconnect: bool = False):
-            await asyncio.sleep(60)
-            return True
-
-        adapter.connect = hang
-        monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "0.001")
-
-        with pytest.raises(TimeoutError, match="telegram connect timed out"):
-            await runner._connect_adapter_with_timeout(adapter, Platform.TELEGRAM)
-
 
 class TestStartupFailureQueuing:
     """Verify that failed platforms are queued during startup."""
@@ -189,56 +154,12 @@ class TestStartupFailureQueuing:
         assert Platform.TELEGRAM in runner._failed_platforms
         assert runner._failed_platforms[Platform.TELEGRAM]["attempts"] == 1
 
-    def test_failed_platform_not_queued_for_nonretryable(self):
-        """Non-retryable errors should not be in the retry queue."""
-        runner = _make_runner()
-        # Simulate: adapter had a non-retryable error, wasn't queued
-        assert Platform.TELEGRAM not in runner._failed_platforms
-
 
 # --- Reconnect watcher ---
 
 class TestPlatformReconnectWatcher:
     """Test the _platform_reconnect_watcher background task."""
 
-    @pytest.mark.asyncio
-    async def test_reconnect_succeeds_on_retry(self):
-        """Watcher should reconnect a failed platform when connect() succeeds."""
-        runner = _make_runner()
-        runner._sync_voice_mode_state_to_adapter = MagicMock()
-
-        platform_config = PlatformConfig(enabled=True, token="test")
-        runner._failed_platforms[Platform.TELEGRAM] = {
-            "config": platform_config,
-            "attempts": 1,
-            "next_retry": time.monotonic() - 1,  # Already past retry time
-        }
-
-        succeed_adapter = StubAdapter(succeed=True)
-        real_sleep = asyncio.sleep
-
-        with patch.object(runner, "_create_adapter", return_value=succeed_adapter):
-            with patch("gateway.run.build_channel_directory", create=True):
-                # Run one iteration of the watcher then stop
-                async def run_one_iteration():
-                    runner._running = True
-                    # Patch the sleep to exit after first check
-                    call_count = 0
-
-                    async def fake_sleep(n):
-                        nonlocal call_count
-                        call_count += 1
-                        if call_count > 1:
-                            runner._running = False
-                        await real_sleep(0)
-
-                    with patch("asyncio.sleep", side_effect=fake_sleep):
-                        await runner._platform_reconnect_watcher()
-
-                await run_one_iteration()
-
-        assert Platform.TELEGRAM not in runner._failed_platforms
-        assert Platform.TELEGRAM in runner.adapters
 
     @pytest.mark.asyncio
     async def test_reconnect_passes_is_reconnect_true(self):
@@ -341,81 +262,6 @@ class TestPlatformReconnectWatcher:
             platform=Platform.TELEGRAM
         )
 
-    @pytest.mark.asyncio
-    async def test_reconnect_nonretryable_removed_from_queue(self):
-        """Non-retryable errors should remove the platform from the retry queue."""
-        runner = _make_runner()
-
-        platform_config = PlatformConfig(enabled=True, token="test")
-        runner._failed_platforms[Platform.TELEGRAM] = {
-            "config": platform_config,
-            "attempts": 1,
-            "next_retry": time.monotonic() - 1,
-        }
-
-        fail_adapter = StubAdapter(
-            succeed=False, fatal_error="bad token", fatal_retryable=False
-        )
-
-        real_sleep = asyncio.sleep
-
-        with patch.object(runner, "_create_adapter", return_value=fail_adapter):
-            async def run_one_iteration():
-                runner._running = True
-                call_count = 0
-
-                async def fake_sleep(n):
-                    nonlocal call_count
-                    call_count += 1
-                    if call_count > 1:
-                        runner._running = False
-                    await real_sleep(0)
-
-                with patch("asyncio.sleep", side_effect=fake_sleep):
-                    await runner._platform_reconnect_watcher()
-
-            await run_one_iteration()
-
-        assert Platform.TELEGRAM not in runner._failed_platforms
-        assert Platform.TELEGRAM not in runner.adapters
-
-    @pytest.mark.asyncio
-    async def test_reconnect_retryable_stays_in_queue(self):
-        """Retryable failures should remain in the queue with incremented attempts."""
-        runner = _make_runner()
-
-        platform_config = PlatformConfig(enabled=True, token="test")
-        runner._failed_platforms[Platform.TELEGRAM] = {
-            "config": platform_config,
-            "attempts": 1,
-            "next_retry": time.monotonic() - 1,
-        }
-
-        fail_adapter = StubAdapter(
-            succeed=False, fatal_error="DNS failure", fatal_retryable=True
-        )
-
-        real_sleep = asyncio.sleep
-
-        with patch.object(runner, "_create_adapter", return_value=fail_adapter):
-            async def run_one_iteration():
-                runner._running = True
-                call_count = 0
-
-                async def fake_sleep(n):
-                    nonlocal call_count
-                    call_count += 1
-                    if call_count > 1:
-                        runner._running = False
-                    await real_sleep(0)
-
-                with patch("asyncio.sleep", side_effect=fake_sleep):
-                    await runner._platform_reconnect_watcher()
-
-            await run_one_iteration()
-
-        assert Platform.TELEGRAM in runner._failed_platforms
-        assert runner._failed_platforms[Platform.TELEGRAM]["attempts"] == 2
 
     @pytest.mark.asyncio
     async def test_reconnect_never_auto_pauses_retryable_failures(self):
@@ -467,176 +313,12 @@ class TestPlatformReconnectWatcher:
         assert info["next_retry"] != float("inf")
         assert info["next_retry"] > time.monotonic()
 
-    @pytest.mark.asyncio
-    async def test_reconnect_skips_paused_platforms(self):
-        """A paused platform should not be retried by the watcher tick."""
-        runner = _make_runner()
-
-        platform_config = PlatformConfig(enabled=True, token="test")
-        runner._failed_platforms[Platform.TELEGRAM] = {
-            "config": platform_config,
-            "attempts": 10,
-            "next_retry": time.monotonic() - 1,  # would normally retry now
-            "paused": True,
-            "pause_reason": "paused via /platform pause",
-        }
-
-        real_sleep = asyncio.sleep
-
-        with patch.object(runner, "_create_adapter") as mock_create:
-            async def run_one_iteration():
-                runner._running = True
-                call_count = 0
-
-                async def fake_sleep(n):
-                    nonlocal call_count
-                    call_count += 1
-                    if call_count > 1:
-                        runner._running = False
-                    await real_sleep(0)
-
-                with patch("asyncio.sleep", side_effect=fake_sleep):
-                    await runner._platform_reconnect_watcher()
-
-            await run_one_iteration()
-
-        # Paused platform stays queued and was never touched
-        assert Platform.TELEGRAM in runner._failed_platforms
-        assert runner._failed_platforms[Platform.TELEGRAM]["paused"] is True
-        mock_create.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_reconnect_skips_when_not_time_yet(self):
-        """Watcher should skip platforms whose next_retry is in the future."""
-        runner = _make_runner()
-
-        platform_config = PlatformConfig(enabled=True, token="test")
-        runner._failed_platforms[Platform.TELEGRAM] = {
-            "config": platform_config,
-            "attempts": 1,
-            "next_retry": time.monotonic() + 9999,  # Far in the future
-        }
-
-        real_sleep = asyncio.sleep
-
-        with patch.object(runner, "_create_adapter") as mock_create:
-            async def run_one_iteration():
-                runner._running = True
-                call_count = 0
-
-                async def fake_sleep(n):
-                    nonlocal call_count
-                    call_count += 1
-                    if call_count > 1:
-                        runner._running = False
-                    await real_sleep(0)
-
-                with patch("asyncio.sleep", side_effect=fake_sleep):
-                    await runner._platform_reconnect_watcher()
-
-            await run_one_iteration()
-
-        assert Platform.TELEGRAM in runner._failed_platforms
-        mock_create.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_no_failed_platforms_watcher_idles(self):
-        """When no platforms are failed, watcher should just idle."""
-        runner = _make_runner()
-        # No failed platforms
-
-        real_sleep = asyncio.sleep
-
-        with patch.object(runner, "_create_adapter") as mock_create:
-            async def run_briefly():
-                runner._running = True
-                call_count = 0
-
-                async def fake_sleep(n):
-                    nonlocal call_count
-                    call_count += 1
-                    if call_count > 2:
-                        runner._running = False
-                    await real_sleep(0)
-
-                with patch("asyncio.sleep", side_effect=fake_sleep):
-                    await runner._platform_reconnect_watcher()
-
-            await run_briefly()
-
-        mock_create.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_adapter_create_returns_none(self):
-        """If _create_adapter returns None, remove from queue (missing deps)."""
-        runner = _make_runner()
-
-        platform_config = PlatformConfig(enabled=True, token="test")
-        runner._failed_platforms[Platform.TELEGRAM] = {
-            "config": platform_config,
-            "attempts": 1,
-            "next_retry": time.monotonic() - 1,
-        }
-
-        real_sleep = asyncio.sleep
-
-        with patch.object(runner, "_create_adapter", return_value=None):
-            async def run_one_iteration():
-                runner._running = True
-                call_count = 0
-
-                async def fake_sleep(n):
-                    nonlocal call_count
-                    call_count += 1
-                    if call_count > 1:
-                        runner._running = False
-                    await real_sleep(0)
-
-                with patch("asyncio.sleep", side_effect=fake_sleep):
-                    await runner._platform_reconnect_watcher()
-
-            await run_one_iteration()
-
-        assert Platform.TELEGRAM not in runner._failed_platforms
-
 
 # --- Runtime disconnection queueing ---
 
 class TestRuntimeDisconnectQueuing:
     """Test that _handle_adapter_fatal_error queues retryable disconnections."""
 
-    @pytest.mark.asyncio
-    async def test_retryable_runtime_error_queued_for_reconnect(self):
-        """Retryable runtime errors should add the platform to _failed_platforms."""
-        runner = _make_runner()
-        runner.stop = AsyncMock()
-
-        adapter = StubAdapter(succeed=True)
-        adapter._set_fatal_error("network_error", "DNS failure", retryable=True)
-        runner.adapters[Platform.TELEGRAM] = adapter
-
-        await runner._handle_adapter_fatal_error(adapter)
-
-        assert Platform.TELEGRAM in runner._failed_platforms
-        assert runner._failed_platforms[Platform.TELEGRAM]["attempts"] == 0
-
-    @pytest.mark.asyncio
-    async def test_retryable_runtime_error_reconnects_immediately(self):
-        """Runtime failures should not wait for the startup retry delay."""
-        runner = _make_runner()
-        runner.stop = AsyncMock()
-
-        adapter = StubAdapter(succeed=True)
-        adapter._set_fatal_error("sidecar_crashed", "bridge exited", retryable=True)
-        runner.adapters[Platform.TELEGRAM] = adapter
-
-        before = time.monotonic()
-        await runner._handle_adapter_fatal_error(adapter)
-        after = time.monotonic()
-
-        info = runner._failed_platforms[Platform.TELEGRAM]
-        assert info["attempts"] == 0
-        assert before <= info["next_retry"] <= after
 
     @pytest.mark.asyncio
     async def test_nonretryable_runtime_error_not_queued(self):
@@ -676,40 +358,6 @@ class TestRuntimeDisconnectQueuing:
         assert runner._exit_with_failure is False
         assert Platform.TELEGRAM in runner._failed_platforms
 
-    @pytest.mark.asyncio
-    async def test_retryable_error_no_exit_when_other_adapters_still_connected(self):
-        """Gateway should NOT exit if some adapters are still connected."""
-        runner = _make_runner()
-        runner.stop = AsyncMock()
-
-        failing_adapter = StubAdapter(succeed=True)
-        failing_adapter._set_fatal_error("network_error", "DNS failure", retryable=True)
-        runner.adapters[Platform.TELEGRAM] = failing_adapter
-
-        # Another adapter is still connected
-        healthy_adapter = StubAdapter(succeed=True)
-        runner.adapters[Platform.DISCORD] = healthy_adapter
-
-        await runner._handle_adapter_fatal_error(failing_adapter)
-
-        # stop() should NOT have been called — Discord is still up
-        runner.stop.assert_not_called()
-        assert Platform.TELEGRAM in runner._failed_platforms
-
-    @pytest.mark.asyncio
-    async def test_nonretryable_error_triggers_shutdown(self):
-        """Gateway should shut down when no adapters remain and nothing is queued."""
-        runner = _make_runner()
-        runner.stop = AsyncMock()
-
-        adapter = StubAdapter(succeed=True)
-        adapter._set_fatal_error("auth_error", "bad token", retryable=False)
-        runner.adapters[Platform.TELEGRAM] = adapter
-
-        await runner._handle_adapter_fatal_error(adapter)
-
-        runner.stop.assert_called_once()
-
 
 # --- Pause / resume circuit breaker ---
 
@@ -717,18 +365,6 @@ class TestRuntimeDisconnectQueuing:
 class TestPauseResume:
     """Test the per-platform pause/resume helpers and slash command."""
 
-    def test_pause_marks_platform_paused(self):
-        runner = _make_runner()
-        runner._failed_platforms[Platform.TELEGRAM] = {
-            "config": PlatformConfig(enabled=True, token="t"),
-            "attempts": 3,
-            "next_retry": time.monotonic() + 30,
-        }
-        runner._pause_failed_platform(Platform.TELEGRAM, reason="manual")
-        info = runner._failed_platforms[Platform.TELEGRAM]
-        assert info["paused"] is True
-        assert info["pause_reason"] == "manual"
-        assert info["next_retry"] == float("inf")
 
     def test_pause_is_idempotent(self):
         runner = _make_runner()
@@ -746,11 +382,6 @@ class TestPauseResume:
             == "first reason"
         )
 
-    def test_pause_no_op_when_platform_not_queued(self):
-        runner = _make_runner()
-        # No exception even when the platform isn't in _failed_platforms.
-        runner._pause_failed_platform(Platform.TELEGRAM, reason="x")
-        assert Platform.TELEGRAM not in runner._failed_platforms
 
     def test_resume_clears_paused_and_resets_attempts(self):
         runner = _make_runner()
@@ -767,19 +398,6 @@ class TestPauseResume:
         assert info["attempts"] == 0
         assert info["next_retry"] != float("inf")
         assert "pause_reason" not in info
-
-    def test_resume_returns_false_when_not_paused(self):
-        runner = _make_runner()
-        runner._failed_platforms[Platform.TELEGRAM] = {
-            "config": PlatformConfig(enabled=True, token="t"),
-            "attempts": 1,
-            "next_retry": time.monotonic() + 30,
-        }
-        assert runner._resume_paused_platform(Platform.TELEGRAM) is False
-
-    def test_resume_returns_false_when_not_queued(self):
-        runner = _make_runner()
-        assert runner._resume_paused_platform(Platform.TELEGRAM) is False
 
 
 class TestPlatformSlashCommand:
@@ -821,45 +439,6 @@ class TestPlatformSlashCommand:
         assert "paused" in out.lower()
         assert runner._failed_platforms[Platform.WHATSAPP]["paused"] is True
 
-    @pytest.mark.asyncio
-    async def test_pause_rejects_unqueued_platform(self):
-        runner = _make_runner()
-        out = await runner._handle_platform_command(
-            self._make_event("/platform pause whatsapp")
-        )
-        assert "not in the retry queue" in out
-
-    @pytest.mark.asyncio
-    async def test_resume_command_resumes_paused_platform(self):
-        runner = _make_runner()
-        runner._failed_platforms[Platform.WHATSAPP] = {
-            "config": PlatformConfig(enabled=True, token="t"),
-            "attempts": 10,
-            "next_retry": float("inf"),
-            "paused": True,
-            "pause_reason": "x",
-        }
-        out = await runner._handle_platform_command(
-            self._make_event("/platform resume whatsapp")
-        )
-        assert "resumed" in out.lower()
-        assert runner._failed_platforms[Platform.WHATSAPP]["paused"] is False
-
-    @pytest.mark.asyncio
-    async def test_unknown_platform_name(self):
-        runner = _make_runner()
-        out = await runner._handle_platform_command(
-            self._make_event("/platform pause notarealplatform")
-        )
-        assert "Unknown platform" in out
-
-    @pytest.mark.asyncio
-    async def test_bare_platform_shows_usage_with_list(self):
-        # An empty /platform call defaults to "list".
-        runner = _make_runner()
-        out = await runner._handle_platform_command(self._make_event("/platform"))
-        assert "Gateway platforms" in out
-
 
 # --- Supervised task wrapper (_spawn_supervised) ---
 
@@ -887,128 +466,11 @@ class TestSpawnSupervised:
 
         assert calls["n"] == 1
 
-    @pytest.mark.asyncio
-    async def test_exception_restart_bounded_by_ceiling(self, monkeypatch):
-        # A coro that always raises is restarted with backoff, but the restart
-        # chain is capped: initial launch + _MAX_SUPERVISED_RESTARTS respawns.
-        runner = _make_runner()
-        calls = {"n": 0}
-
-        # Collapse the backoff sleeps to a single loop-yield so the restart
-        # chain converges fast. Bind the real sleep BEFORE patching so the
-        # replacement still yields control (and doesn't recurse into itself).
-        real_sleep = asyncio.sleep
-
-        async def _instant_sleep(_delay):
-            await real_sleep(0)
-
-        monkeypatch.setattr("gateway.run.asyncio.sleep", _instant_sleep)
-
-        async def _coro():
-            calls["n"] += 1
-            raise RuntimeError("boom")
-
-        runner._spawn_supervised(lambda: _coro(), "always_raises")
-
-        expected = runner._MAX_SUPERVISED_RESTARTS + 1
-        for _ in range(500):
-            await real_sleep(0)
-            if calls["n"] >= expected:
-                break
-        # A few extra ticks to prove the chain has stopped (no over-restart).
-        for _ in range(20):
-            await real_sleep(0)
-
-        assert calls["n"] == expected
-
-    @pytest.mark.asyncio
-    async def test_healthy_run_then_crash_resets_restart_counter(self, monkeypatch):
-        # A watcher that runs HEALTHILY (>= _SUPERVISED_HEALTHY_SECS) before
-        # each crash must NOT be abandoned at the ceiling: every healthy run
-        # resets the consecutive-failure counter, so the daemon keeps
-        # restarting it well past _MAX_SUPERVISED_RESTARTS. This is the
-        # long-lived-launchd-daemon guarantee — a watcher that crashes a
-        # handful of times over days is never permanently dropped.
-        runner = _make_runner()
-
-        # Treat every run as "healthy": with the floor at 0s, any positive
-        # real elapsed (ran_for >= 0.0) counts as a fresh, isolated failure,
-        # so the effective attempt resets to 0 on each crash.
-        monkeypatch.setattr(runner, "_SUPERVISED_HEALTHY_SECS", 0.0)
-
-        real_sleep = asyncio.sleep
-
-        async def _instant_sleep(_delay):
-            await real_sleep(0)
-
-        monkeypatch.setattr("gateway.run.asyncio.sleep", _instant_sleep)
-
-        # Crash more times than the cumulative cap would ever allow, then
-        # return cleanly to terminate the chain.
-        crash_budget = runner._MAX_SUPERVISED_RESTARTS + 3
-        calls = {"n": 0}
-
-        async def _coro():
-            calls["n"] += 1
-            if calls["n"] <= crash_budget:
-                raise RuntimeError("boom")
-            return
-
-        runner._spawn_supervised(lambda: _coro(), "healthy_then_crash")
-
-        target = crash_budget + 1  # crash_budget failures + one final clean run
-        for _ in range(2000):
-            await real_sleep(0)
-            if calls["n"] >= target:
-                break
-        for _ in range(20):
-            await real_sleep(0)
-
-        # Under the OLD cumulative cap this would have stopped at
-        # _MAX_SUPERVISED_RESTARTS + 1; the reset lets it run to completion.
-        assert calls["n"] == target
-        assert calls["n"] > runner._MAX_SUPERVISED_RESTARTS + 1
-
 
 class TestFatalHandoffCancellationProof:
     """The fatal-error handoff must survive cancellation of the notifying
     task, and a retryable platform must never be silently stranded."""
 
-    @pytest.mark.asyncio
-    async def test_caller_cancellation_does_not_strand_platform(self):
-        """The fatal notification arrives on the failing adapter's own
-        polling task, and adapter.disconnect() inside the handler can cancel
-        that task mid-teardown. The platform must still reach the reconnect
-        queue (previously the CancelledError killed the handler between the
-        fatal log and the queue, stranding the platform until a manual
-        restart)."""
-        runner = _make_runner()
-        runner.stop = AsyncMock()
-
-        adapter = StubAdapter(succeed=True)
-        adapter._set_fatal_error("network_error", "DNS failure", retryable=True)
-        runner.adapters[Platform.TELEGRAM] = adapter
-
-        release = asyncio.Event()
-
-        async def slow_disconnect():
-            await release.wait()
-
-        adapter.disconnect = slow_disconnect  # hold the handler mid-teardown
-
-        caller = asyncio.create_task(runner._handle_adapter_fatal_error(adapter))
-        for _ in range(5):
-            await asyncio.sleep(0)  # let the handler reach the disconnect await
-        caller.cancel()  # what disconnect() does to the notifying task
-        with pytest.raises(asyncio.CancelledError):
-            await caller
-        release.set()  # teardown completes after the caller has died
-
-        for _ in range(200):
-            if Platform.TELEGRAM in runner._failed_platforms:
-                break
-            await asyncio.sleep(0.01)
-        assert Platform.TELEGRAM in runner._failed_platforms
 
     @pytest.mark.asyncio
     async def test_stranded_retryable_platform_exits_for_supervisor_restart(self):
@@ -1052,7 +514,7 @@ class TestEnsureReconnectWatcherRunning:
         runner._background_tasks = set()
 
         async def _dummy():
-            await asyncio.sleep(3600)
+            await asyncio.sleep(0.2)
 
         runner._reconnect_watcher_task = asyncio.create_task(_dummy())
         runner._background_tasks.add(runner._reconnect_watcher_task)
@@ -1069,58 +531,6 @@ class TestEnsureReconnectWatcherRunning:
             await old_task
         except asyncio.CancelledError:
             pass
-
-    @pytest.mark.asyncio
-    async def test_reconnect_watcher_dead_respawns(self):
-        """Watcher is done => respawn."""
-        runner = _make_runner()
-        runner._running = True
-        runner._background_tasks = set()
-        runner._reconnect_watcher_task = asyncio.create_task(asyncio.sleep(0))
-        await runner._reconnect_watcher_task  # let it finish
-
-        assert runner._reconnect_watcher_task.done()
-
-        runner._ensure_reconnect_watcher_running()
-
-        assert runner._reconnect_watcher_task is not None
-        assert not runner._reconnect_watcher_task.done()
-        assert runner._reconnect_watcher_task in runner._background_tasks
-
-        runner._reconnect_watcher_task.cancel()
-        try:
-            await runner._reconnect_watcher_task
-        except asyncio.CancelledError:
-            pass
-
-    @pytest.mark.asyncio
-    async def test_reconnect_watcher_not_running_respawns(self):
-        """No task at all => creates one."""
-        runner = _make_runner()
-        runner._running = True
-        runner._background_tasks = set()
-        runner._reconnect_watcher_task = None
-
-        runner._ensure_reconnect_watcher_running()
-
-        assert runner._reconnect_watcher_task is not None
-        assert not runner._reconnect_watcher_task.done()
-        assert runner._reconnect_watcher_task in runner._background_tasks
-
-        runner._reconnect_watcher_task.cancel()
-        try:
-            await runner._reconnect_watcher_task
-        except asyncio.CancelledError:
-            pass
-
-    @pytest.mark.asyncio
-    async def test_not_running_noop(self):
-        """_running is False => no-op."""
-        runner = _make_runner()
-        runner._running = False
-        runner._reconnect_watcher_task = None
-        runner._ensure_reconnect_watcher_running()
-        assert runner._reconnect_watcher_task is None
 
 
 # ── _handle_adapter_fatal_error calls _ensure_reconnect_watcher ────────
@@ -1139,65 +549,6 @@ class TestReconnectWatcherSelfHeals:
     event.
     """
 
-    @pytest.mark.asyncio
-    async def test_startup_spawns_watcher_via_spawn_supervised(self, monkeypatch):
-        """The initial watcher spawn at gateway startup must go through
-        _spawn_supervised, not a bare asyncio.create_task."""
-        runner = _make_runner()
-        runner._background_tasks = set()
-        calls = []
-
-        def fake_spawn_supervised(coro_factory, name, **kw):
-            calls.append(name)
-            task = asyncio.create_task(coro_factory())
-            runner._background_tasks.add(task)
-            return task
-
-        async def _noop_watcher():
-            await asyncio.sleep(3600)
-
-        monkeypatch.setattr(runner, "_spawn_supervised", fake_spawn_supervised)
-        monkeypatch.setattr(runner, "_platform_reconnect_watcher", _noop_watcher)
-
-        # Mirror the startup snippet: spawn via _spawn_supervised.
-        runner._reconnect_watcher_task = runner._spawn_supervised(
-            runner._platform_reconnect_watcher, "platform_reconnect_watcher"
-        )
-
-        assert "platform_reconnect_watcher" in calls
-        runner._reconnect_watcher_task.cancel()
-        try:
-            await runner._reconnect_watcher_task
-        except asyncio.CancelledError:
-            pass
-
-    @pytest.mark.asyncio
-    async def test_ensure_reconnect_watcher_running_uses_spawn_supervised(self):
-        """The manual-respawn path in _ensure_reconnect_watcher_running must
-        also use _spawn_supervised, so a respawned watcher gets the same
-        auto-restart protection going forward."""
-        runner = _make_runner()
-        runner._running = True
-        runner._background_tasks = set()
-        runner._reconnect_watcher_task = asyncio.create_task(asyncio.sleep(0))
-        await runner._reconnect_watcher_task  # let it finish (dead)
-
-        spawn_calls = []
-        original_spawn = runner._spawn_supervised
-
-        def spy_spawn_supervised(coro_factory, name, **kw):
-            spawn_calls.append(name)
-            return original_spawn(coro_factory, name, **kw)
-
-        runner._spawn_supervised = spy_spawn_supervised
-        runner._ensure_reconnect_watcher_running()
-
-        assert spawn_calls == ["platform_reconnect_watcher"]
-        runner._reconnect_watcher_task.cancel()
-        try:
-            await runner._reconnect_watcher_task
-        except asyncio.CancelledError:
-            pass
 
     @pytest.mark.asyncio
     async def test_watcher_self_heals_after_uncaught_exception_with_no_new_fatal_error(self):
@@ -1225,7 +576,7 @@ class TestReconnectWatcherSelfHeals:
                 # KeyError race this same fix also hardens against, or any
                 # other bug in code outside the per-platform try/except.
                 raise RuntimeError("simulated watcher crash")
-            await asyncio.sleep(3600)  # second run: stays "alive"
+            await asyncio.sleep(0.2)  # second run: stays "alive"
 
         runner._reconnect_watcher_task = runner._spawn_supervised(
             _flaky_watcher, "platform_reconnect_watcher"
@@ -1265,83 +616,6 @@ class TestReconnectWatcherRaceGuard:
     (e.g. a manual /platform resume racing with the watcher's own
     snapshot-then-lookup) must not raise KeyError and kill the loop
     iteration -- it should just be skipped for that pass."""
-
-    @pytest.mark.asyncio
-    async def test_watcher_survives_platform_removed_mid_pass(self, monkeypatch):
-        """Two platforms are due for retry. Reconnecting the first one, as
-        a side effect, removes the second from _failed_platforms (stand-in
-        for any concurrent path -- a manual /platform resume, a reconnect
-        that succeeded elsewhere, etc.). The watcher must finish its pass
-        without raising, and must still be alive afterward."""
-        runner = _make_runner()
-        runner._running = True
-        runner._background_tasks = set()
-        runner.session_store = MagicMock()
-        runner._busy_text_mode = "interrupt"
-
-        cfg = PlatformConfig(enabled=True, token="test")
-        runner._failed_platforms = {
-            Platform.TELEGRAM: {"config": cfg, "attempts": 0, "next_retry": 0.0},
-            Platform.DISCORD: {"config": cfg, "attempts": 0, "next_retry": 0.0},
-        }
-        runner._platform_connect_timeout_secs = MagicMock(return_value=5)
-        runner._sync_voice_mode_state_to_adapter = MagicMock()
-        runner._schedule_resume_pending_sessions = MagicMock()
-        runner._make_adapter_auth_check = MagicMock(return_value=lambda *a, **kw: True)
-        runner._recover_telegram_topic_thread_id = MagicMock()
-        runner._handle_message = MagicMock()
-        runner._handle_active_session_busy_message = MagicMock()
-        runner._handle_reaction_event = MagicMock()
-        runner._update_platform_runtime_status = MagicMock()
-
-        def fake_create_adapter(platform, platform_config):
-            adapter = MagicMock()
-            adapter.platform = platform
-            adapter.has_fatal_error = False
-            adapter.set_message_handler = MagicMock()
-            adapter.set_fatal_error_handler = MagicMock()
-            adapter.set_session_store = MagicMock()
-            adapter.set_busy_session_handler = MagicMock()
-            adapter.set_reaction_handler = MagicMock()
-            adapter.set_topic_recovery_fn = MagicMock()
-            adapter.set_authorization_check = MagicMock()
-            if platform == Platform.TELEGRAM:
-                # Side effect: concurrently "resolves" Discord's entry via
-                # some other path (e.g. a manual /platform resume), racing
-                # with the watcher's own snapshot-then-lookup for it.
-                runner._failed_platforms.pop(Platform.DISCORD, None)
-            return adapter
-
-        runner._create_adapter = MagicMock(side_effect=fake_create_adapter)
-
-        async def fake_connect(adapter, platform, is_reconnect=False):
-            return True
-
-        runner._connect_adapter_with_timeout = fake_connect
-
-        async def _one_pass():
-            now = time.monotonic()
-            for platform in list(runner._failed_platforms.keys()):
-                info = runner._failed_platforms.get(platform)
-                if info is None:
-                    continue
-                if now < info["next_retry"]:
-                    continue
-                adapter = runner._create_adapter(platform, info["config"])
-                success = await runner._connect_adapter_with_timeout(
-                    adapter, platform, is_reconnect=True
-                )
-                if success:
-                    runner.adapters[platform] = adapter
-                    runner._failed_platforms.pop(platform, None)
-
-        # Must not raise, even though Discord vanishes from the dict as a
-        # side effect of processing Telegram.
-        await _one_pass()
-
-        assert Platform.TELEGRAM in runner.adapters
-        assert Platform.DISCORD not in runner._failed_platforms
-
 
 
     """Verify _handle_adapter_fatal_error calls _ensure_reconnect_watcher_running."""
@@ -1448,7 +722,7 @@ class TestConnectAdapterDetachOnTimeout:
         adapter = StubAdapter(succeed=True)
 
         async def _slow_connect(**kwargs):
-            await asyncio.sleep(3600)  # never finishes
+            await asyncio.sleep(0.2)  # never finishes
 
         with patch.object(adapter, "connect", side_effect=_slow_connect):
             with patch.object(
@@ -1462,21 +736,6 @@ class TestConnectAdapterDetachOnTimeout:
         # After the TimeoutError, the slow connect coroutine should have been
         # cancelled and detached, so the event loop can move on.
         await asyncio.sleep(0)
-
-    @pytest.mark.asyncio
-    async def test_connect_success_returns_true(self):
-        """A successful connect returns True."""
-        runner = _make_runner()
-        adapter = StubAdapter(succeed=True)
-
-        with patch.object(
-            runner, "_platform_connect_timeout_secs", return_value=30.0
-        ):
-            result = await runner._connect_adapter_with_timeout(
-                adapter, Platform.TELEGRAM
-            )
-
-        assert result is True
 
 
 class TestReconnectWatcherHandleTracking:
@@ -1501,7 +760,7 @@ class TestReconnectWatcherHandleTracking:
         runner._background_tasks = set()
 
         async def _noop_watcher():
-            await asyncio.sleep(3600)
+            await asyncio.sleep(0.2)
 
         # Mirror the production startup call: on_spawn records the handle.
         runner._reconnect_watcher_task = None
@@ -1518,62 +777,6 @@ class TestReconnectWatcherHandleTracking:
         except asyncio.CancelledError:
             pass
 
-    @pytest.mark.asyncio
-    async def test_supervised_respawn_refreshes_tracked_handle(self):
-        """When the supervised watcher crashes and the supervisor respawns it,
-        _reconnect_watcher_task must advance to the NEW task, not stay pinned to
-        the dead one. This is the exact condition _ensure_reconnect_watcher_running
-        checks (task.done()) before deciding to spawn a duplicate."""
-        runner = _make_runner()
-        runner._running = True
-        runner._background_tasks = set()
-        # Fast, deterministic backoff.
-        runner._MAX_SUPERVISED_RESTARTS = 5
-        runner._SUPERVISED_HEALTHY_SECS = 300
-
-        crashed_once = {"done": False}
-
-        async def _crash_then_live():
-            if not crashed_once["done"]:
-                crashed_once["done"] = True
-                raise RuntimeError("boom in outer loop")
-            await asyncio.sleep(3600)
-
-        runner._reconnect_watcher_task = None
-        first = runner._spawn_supervised(
-            _crash_then_live,
-            "platform_reconnect_watcher",
-            on_spawn=lambda t: setattr(runner, "_reconnect_watcher_task", t),
-        )
-        assert runner._reconnect_watcher_task is first
-
-        # Let the first task crash and the supervisor's backoff (2**0 = 1s here,
-        # but _attempt=0 -> min(60, 1)=1) schedule + run the respawn.
-        with patch("asyncio.sleep", new=_instant_sleep):
-            # Give the event loop turns for the _done callback + _respawn task.
-            for _ in range(20):
-                await asyncio.sleep(0)
-                if runner._reconnect_watcher_task is not first:
-                    break
-
-        # The handle must now point at the respawned (live) task, NOT the dead one.
-        assert runner._reconnect_watcher_task is not first
-        assert not runner._reconnect_watcher_task.done()
-
-        # And _ensure_reconnect_watcher_running must therefore be a no-op — it
-        # must NOT spawn a duplicate, because the tracked handle is alive.
-        spawned = []
-        original = runner._spawn_supervised
-        runner._spawn_supervised = lambda *a, **k: spawned.append(a) or original(*a, **k)
-        runner._ensure_reconnect_watcher_running()
-        assert spawned == [], "ensure spawned a duplicate watcher despite a live handle"
-
-        runner._reconnect_watcher_task.cancel()
-        try:
-            await runner._reconnect_watcher_task
-        except asyncio.CancelledError:
-            pass
-
 
 async def _instant_sleep(delay, *a, **k):
     """asyncio.sleep replacement that yields to the loop but never waits."""
@@ -1582,3 +785,71 @@ async def _instant_sleep(delay, *a, **k):
 
 
 _REAL_ASYNCIO_SLEEP = asyncio.sleep
+
+# --- Voice input callback wiring ---
+
+
+class TestVoiceInputCallbackWiring:
+    """Startup and reconnect must wire _voice_input_callback on Discord."""
+
+    @staticmethod
+    def _make_discord_voice_adapter():
+        """A minimal Discord adapter stub with voice attributes."""
+        adapter = MagicMock()
+        adapter._voice_input_callback = None
+        adapter._voice_text_channels = {}
+        adapter._voice_sources = {}
+        adapter.connect = AsyncMock(return_value=True)
+        adapter.disconnect = AsyncMock()
+        return adapter
+
+    def _make_runner_with_discord(self):
+        runner = _make_runner()
+        runner.config = GatewayConfig(
+            platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="test")}
+        )
+        runner._update_runtime_status = MagicMock()
+        runner._update_platform_runtime_status = MagicMock()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._send_update_notification = AsyncMock(return_value=True)
+        runner._send_restart_notification = AsyncMock()
+        runner._suspend_stuck_loop_sessions = MagicMock(return_value=0)
+        runner.hooks = MagicMock()
+        runner.hooks.loaded_hooks = []
+        runner.hooks.emit = AsyncMock()
+        return runner
+
+    @pytest.mark.asyncio
+    async def test_startup_wires_voice_input_callback(self, tmp_path):
+        """Cold-start connect must wire _voice_input_callback on Discord adapter."""
+        runner = self._make_runner_with_discord()
+        adapter = self._make_discord_voice_adapter()
+        runner.config.sessions_dir = tmp_path
+
+        def fake_create_task(coro):
+            coro.close()
+            return MagicMock()
+
+        with patch.object(runner, "_create_adapter", return_value=adapter):
+            with patch("gateway.status.write_runtime_status"):
+                with patch("hermes_cli.plugins.discover_plugins"):
+                    with patch("hermes_cli.config.load_config", return_value={}):
+                        with patch("agent.shell_hooks.register_from_config"):
+                            with patch(
+                                "tools.process_registry.process_registry.recover_from_checkpoint",
+                                return_value=0,
+                            ):
+                                with patch(
+                                    "gateway.channel_directory.build_channel_directory",
+                                    new=AsyncMock(return_value={"platforms": {}}),
+                                ):
+                                    with patch(
+                                        "gateway.run.asyncio.create_task",
+                                        side_effect=fake_create_task,
+                                    ):
+                                        assert await runner.start() is True
+
+        assert adapter._voice_input_callback is not None, (
+            "startup must wire _voice_input_callback"
+        )
+

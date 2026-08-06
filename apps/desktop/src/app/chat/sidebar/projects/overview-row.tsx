@@ -137,9 +137,9 @@ export function ProjectOverviewRow({
           {project.label}
         </SidebarRowLink>
         {preview.length > 0 ? (
-          <Tip label={s.projects.toggle(project.label)}>
+          <Tip label={s.projects.toggle(project.label, !open)}>
             <button
-              aria-label={s.projects.toggle(project.label)}
+              aria-label={s.projects.toggle(project.label, !open)}
               className="flex flex-1 items-center self-stretch bg-transparent p-0"
               onClick={toggleOpen}
               type="button"

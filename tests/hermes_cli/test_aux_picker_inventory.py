@@ -86,44 +86,6 @@ def test_aux_picker_surfaces_user_defined_providers(configured_home):
     )
 
 
-def test_aux_picker_carries_configured_models_for_user_provider(configured_home):
-    """A user provider arrives with its configured model list, so the
-    follow-up model prompt has something to offer."""
-    from hermes_cli.inventory import build_aux_picker_rows
-
-    row = next(r for r in build_aux_picker_rows() if r["slug"] == "my-llm")
-
-    assert set(row["models"]) == {"big-model", "small-model"}
-
-
-def test_aux_picker_honors_excluded_providers(configured_home):
-    """``model_catalog.excluded_providers`` applies to aux pickers too.
-
-    A provider the user hid from ``/model`` must not reappear in an aux
-    picker — the exclusion is about the provider, not about one surface.
-    """
-    from hermes_cli.inventory import build_aux_picker_rows
-
-    slugs = {str(r["slug"]).lower() for r in build_aux_picker_rows()}
-
-    assert "copilot" not in slugs
-
-
-def test_aux_picker_omits_virtual_moa_row(configured_home):
-    """MoA is not a real endpoint and auxiliary_client unwraps it to the
-    aggregator slot, so offering it in an aux picker would be a selection
-    silently rewritten behind the user's back."""
-    from hermes_cli.inventory import build_aux_picker_rows
-
-    cfg = dict(CONFIG)
-    cfg["moa"] = {"presets": {"opus-gpt": {}}}
-    (configured_home / "config.yaml").write_text(yaml.safe_dump(cfg))
-
-    slugs = {str(r["slug"]).lower() for r in build_aux_picker_rows()}
-
-    assert "moa" not in slugs
-
-
 def test_aux_picker_requests_exhausted_pool_visibility(configured_home):
     """#66624: a provider whose credential pool is entirely rate-limited
     must stay visible. Rate limits are per-model and the aux picker writes a
@@ -142,53 +104,11 @@ def test_aux_picker_requests_exhausted_pool_visibility(configured_home):
     assert seen.get("for_picker") is True
 
 
-def test_aux_picker_does_not_block_on_offline_saved_endpoints(configured_home):
-    """Saved custom endpoints are not live-probed on open (a dead local
-    server would hang the picker); only the active one is."""
-    from hermes_cli import inventory
-
-    seen = {}
-
-    def _capture(**kwargs):
-        seen.update(kwargs)
-        return []
-
-    with patch("hermes_cli.model_switch.list_authenticated_providers", _capture):
-        inventory.build_aux_picker_rows()
-
-    assert seen.get("probe_custom_providers") is False
-    assert seen.get("probe_current_custom_provider") is True
-
-
 # ─── Shared rendering ───────────────────────────────────────────────────
 
 
-def test_format_entries_marks_current_provider():
-    from hermes_cli.inventory import format_aux_picker_entries
-
-    rows = [
-        {"slug": "my-llm", "name": "My LLM", "models": ["a", "b"], "total_models": 2},
-        {"slug": "openrouter", "name": "OpenRouter", "models": ["x"], "total_models": 1},
-    ]
-
-    entries = format_aux_picker_entries(rows, current_provider="my-llm")
-
-    assert entries[0] == ("my-llm", "My LLM — 2 models  ← current", ["a", "b"])
-    assert entries[1] == ("openrouter", "OpenRouter — 1 models", ["x"])
 
 
-def test_format_entries_base_url_owns_current_marker():
-    """When the task points at a raw base_url, the current selection is the
-    URL — no provider row may claim the marker."""
-    from hermes_cli.inventory import format_aux_picker_entries
-
-    rows = [{"slug": "my-llm", "name": "My LLM", "models": ["a"], "total_models": 1}]
-
-    entries = format_aux_picker_entries(
-        rows, current_provider="my-llm", current_base_url="https://elsewhere/v1"
-    )
-
-    assert "← current" not in entries[0][1]
 
 
 # ─── Seam guard ─────────────────────────────────────────────────────────

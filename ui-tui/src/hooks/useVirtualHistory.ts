@@ -48,17 +48,39 @@ const FREEZE_RENDERS = 2
 // from 25 → 12: each new item adds ~100 fibers / Yoga nodes, and a
 // 25-item commit was the dominant contributor to the 100ms+ p99 frames.
 const SLIDE_STEP = 12
+const MAX_VIRTUAL_ITEM_HEIGHT = 100_000
+const MAX_VIRTUAL_GEOMETRY = 1_000_000_000
 
 const NOOP = () => {}
+
+const validVirtualItemHeight = (value: number): boolean =>
+  Number.isFinite(value) && value > 0 && value <= MAX_VIRTUAL_ITEM_HEIGHT
+
+const safeUnsignedGeometry = (value: number, fallback = 0): number =>
+  Number.isFinite(value) && value >= 0 && value <= MAX_VIRTUAL_GEOMETRY ? value : fallback
+
+const safeSignedGeometry = (value: number, fallback = 0): number =>
+  Number.isFinite(value) && Math.abs(value) <= MAX_VIRTUAL_GEOMETRY ? value : fallback
+
+export const pruneVirtualHeightCache = (cache: Map<string, number>, items: readonly { key: string }[]): void => {
+  const active = new Set(items.map(item => item.key))
+
+  for (const key of cache.keys()) {
+    if (!active.has(key) || !validVirtualItemHeight(cache.get(key)!)) {
+      cache.delete(key)
+    }
+  }
+}
 
 export const virtualHistorySnapshotKey = (s?: ScrollBoxHandle | null): string => {
   if (!s) {
     return 'none'
   }
 
-  const target = s.getScrollTop() + s.getPendingDelta()
+  const target = safeUnsignedGeometry(safeUnsignedGeometry(s.getScrollTop()) + safeSignedGeometry(s.getPendingDelta()))
+
   const bin = Math.floor(target / QUANTUM)
-  const viewportHeight = Math.max(0, s.getViewportHeight())
+  const viewportHeight = safeUnsignedGeometry(s.getViewportHeight())
 
   return `${s.isSticky() ? ~bin : bin}:${viewportHeight}`
 }
@@ -97,11 +119,17 @@ export const ensureVirtualItemHeight = (
 ) => {
   const cached = heights.get(key)
 
-  if (cached !== undefined) {
-    return Math.max(1, Math.floor(cached))
+  if (cached !== undefined && validVirtualItemHeight(cached)) {
+    return Math.floor(cached)
   }
 
-  const seeded = Math.max(1, Math.floor(estimateHeight?.(index, key) ?? estimate))
+  if (cached !== undefined) {
+    heights.delete(key)
+  }
+
+  const fallback = validVirtualItemHeight(estimate) ? Math.floor(estimate) : estimate === 0 ? 1 : ESTIMATE
+  const candidate = estimateHeight?.(index, key) ?? fallback
+  const seeded = validVirtualItemHeight(candidate) ? Math.floor(candidate) : candidate === 0 ? 1 : fallback
   heights.set(key, seeded)
 
   return seeded
@@ -114,6 +142,7 @@ export function useVirtualHistory(
   {
     estimate = ESTIMATE,
     estimateHeight,
+    generation = 0,
     initialHeights,
     liveTailActive = false,
     onHeightsChange,
@@ -126,15 +155,16 @@ export function useVirtualHistory(
   const heights = useRef(new Map(initialHeights))
   const initialHeightsRef = useRef(initialHeights)
   const refs = useRef(new Map<string, (el: unknown) => void>())
+  const measuredBottoms = useRef(new Map<string, number>())
+  const unmountViewport = useRef<{ sticky: boolean; top: number } | null>(null)
   const onHeightsChangeRef = useRef(onHeightsChange)
   // Bump whenever heightCache mutates so offsets rebuild on next read.
   // Ref (not state) — checked during render phase, zero extra commits.
   const offsetVersion = useRef(0)
 
-  // Cached offsets: reused Float64Array keyed on (itemCount, version) so we
-  // only rebuild when something actually changed. Previous approach allocated
-  // a fresh Array(n+1) every render — at n=10k that's ~80KB/render of GC
-  // pressure during streaming.
+  // Cached offsets: reused Float64Array keyed on (itemCount, version). Clean
+  // renders reuse it, but a point-height invalidation still rebuilds the full
+  // prefix array; this is allocation reuse, not incremental prefix indexing.
   const offsetsCache = useRef<{ arr: Float64Array; n: number; version: number }>({
     arr: new Float64Array(0),
     n: -1,
@@ -158,8 +188,24 @@ export function useVirtualHistory(
   const skipMeasurement = useRef(false)
   const prevRange = useRef<null | readonly [number, number]>(null)
   const freezeRenders = useRef(0)
+  const generationRef = useRef<number | string>(generation)
 
   onHeightsChangeRef.current = onHeightsChange
+
+  if (generationRef.current !== generation) {
+    generationRef.current = generation
+    nodes.current.clear()
+    refs.current.clear()
+    measuredBottoms.current.clear()
+    unmountViewport.current = null
+    heights.current = new Map(initialHeights)
+    initialHeightsRef.current = initialHeights
+    prevRange.current = null
+    freezeRenders.current = 0
+    skipMeasurement.current = false
+    lastScrollTopRef.current = 0
+    offsetVersion.current++
+  }
 
   if (initialHeightsRef.current !== initialHeights) {
     initialHeightsRef.current = initialHeights
@@ -173,7 +219,13 @@ export function useVirtualHistory(
     prevColumns.current = columns
 
     for (const [k, h] of heights.current) {
-      heights.current.set(k, Math.max(1, Math.round(h * ratio)))
+      const scaled = Math.round(h * ratio)
+
+      if (validVirtualItemHeight(scaled)) {
+        heights.current.set(k, scaled)
+      } else {
+        heights.current.delete(k)
+      }
     }
 
     offsetVersion.current++
@@ -209,6 +261,7 @@ export function useVirtualHistory(
         heights.current.delete(k)
         nodes.current.delete(k)
         refs.current.delete(k)
+        measuredBottoms.current.delete(k)
         dirty = true
       }
     }
@@ -238,10 +291,10 @@ export function useVirtualHistory(
 
   const offsets = offsetsCache.current.arr
   const total = offsets[n] ?? 0
-  const top = Math.max(0, scrollRef.current?.getScrollTop() ?? 0)
-  const pendingDelta = scrollRef.current?.getPendingDelta() ?? 0
-  const target = Math.max(0, top + pendingDelta)
-  const vp = Math.max(0, scrollRef.current?.getViewportHeight() ?? 0)
+  const top = safeUnsignedGeometry(scrollRef.current?.getScrollTop() ?? 0)
+  const pendingDelta = safeSignedGeometry(scrollRef.current?.getPendingDelta() ?? 0)
+  const target = safeUnsignedGeometry(top + pendingDelta)
+  const vp = safeUnsignedGeometry(scrollRef.current?.getViewportHeight() ?? 0)
   const sticky = scrollRef.current?.isSticky() ?? true
   const recentManual = Date.now() - (scrollRef.current?.getLastManualScrollAt() ?? 0) < 1200
 
@@ -417,44 +470,90 @@ export function useVirtualHistory(
     }
   }
 
-  const measureRef = useCallback((key: string) => {
-    let fn = refs.current.get(key)
+  const measureRef = useCallback(
+    (key: string) => {
+      let fn = refs.current.get(key)
 
-    if (!fn) {
-      fn = (el: unknown) => {
-        if (el) {
-          nodes.current.set(key, el)
+      if (!fn) {
+        const refGeneration = generationRef.current
 
-          return
+        fn = (el: unknown) => {
+          if (refGeneration !== generationRef.current) {
+            return
+          }
+
+          if (el) {
+            nodes.current.set(key, el)
+
+            return
+          }
+
+          // A width-change render has already scaled the cache, but outgoing
+          // refs still point at Yoga from the previous layout. The render-phase
+          // skip flag remains set through mutation refs, so ignore that stale
+          // measurement and let the post-resize layout pass own correction.
+          if (skipMeasurement.current) {
+            nodes.current.delete(key)
+            measuredBottoms.current.delete(key)
+
+            return
+          }
+
+          // Measure-at-unmount: the yogaNode is still valid here (reconciler
+          // calls ref(null) before removeChild → freeRecursive), so we grab
+          // the final height before WASM release. Without this, items
+          // scrolled out during fast pan keep a stale estimate in heightCache
+          // and offset math drifts until the next mount/remount cycle.
+          const existing = nodes.current.get(key) as MeasuredNode | undefined
+          const h = Math.ceil(existing?.yogaNode?.getComputedHeight?.() ?? 0)
+          const previousHeight = heights.current.get(key)
+
+          if (validVirtualItemHeight(h) && previousHeight !== h) {
+            const s = scrollRef.current
+            const measuredBottom = measuredBottoms.current.get(key)
+
+            // All null refs in this commit share the viewport boundary captured
+            // before the first adjustment. Otherwise an earlier compensation
+            // can make an intersecting sibling look wholly above later in the
+            // same unmount batch.
+            const viewport = (unmountViewport.current ??= {
+              sticky: s?.isSticky() ?? true,
+              top: safeUnsignedGeometry(s?.getScrollTop() ?? 0)
+            })
+
+            if (
+              s &&
+              previousHeight !== undefined &&
+              measuredBottom !== undefined &&
+              measuredBottom <= viewport.top &&
+              !viewport.sticky
+            ) {
+              s.adjustScrollTop(h - previousHeight)
+            }
+
+            heights.current.set(key, h)
+            offsetVersion.current++
+            onHeightsChangeRef.current?.(heights.current)
+          }
+
+          nodes.current.delete(key)
+          measuredBottoms.current.delete(key)
         }
 
-        // Measure-at-unmount: the yogaNode is still valid here (reconciler
-        // calls ref(null) before removeChild → freeRecursive), so we grab
-        // the final height before WASM release. Without this, items
-        // scrolled out during fast pan keep a stale estimate in heightCache
-        // and offset math drifts until the next mount/remount cycle.
-        const existing = nodes.current.get(key) as MeasuredNode | undefined
-        const h = Math.ceil(existing?.yogaNode?.getComputedHeight?.() ?? 0)
-
-        if (h > 0 && heights.current.get(key) !== h) {
-          heights.current.set(key, h)
-          offsetVersion.current++
-          onHeightsChangeRef.current?.(heights.current)
-        }
-
-        nodes.current.delete(key)
+        refs.current.set(key, fn)
       }
 
-      refs.current.set(key, fn)
-    }
-
-    return fn
-  }, [])
+      return fn
+    },
+    [scrollRef]
+  )
 
   useLayoutEffect(() => {
+    unmountViewport.current = null
     const s = scrollRef.current
     let dirty = false
     let heightDirty = false
+    let anchorDelta = 0
 
     // Give the renderer the mounted-row coverage for passive scroll clamping.
     // Clamp MUST use the EFFECTIVE (deferred) range, not the immediate one.
@@ -466,18 +565,38 @@ export function useVirtualHistory(
     if (s && shouldSetVirtualClamp({ itemCount: n, liveTailActive, sticky, viewportHeight: vp })) {
       const effTopSpacer = offsets[effStart] ?? 0
       const effBottom = offsets[effEnd] ?? total
-      // At effEnd=n there's no bottomSpacer — use Infinity so render-node-
-      // to-output's own Math.min(cur, maxScroll) governs. Using offsets[n]
-      // here would bake in heightCache (one render behind Yoga), and during
-      // streaming the tail item's cached height lags its real height —
-      // sticky-break would then clamp below the real max and push
-      // streaming text off-viewport.
       const clampMin = effStart === 0 ? 0 : effTopSpacer
-      const clampMax = effEnd === n ? Infinity : Math.max(effTopSpacer, effBottom - vp)
+      // Preserve the intentional open tail: when the mounted range reaches
+      // the final row, Yoga may already know about growth that the measured
+      // height cache has not reconciled yet. A finite estimated clamp would
+      // trap a manual, non-sticky viewport above that newly grown tail.
+      const clampMax = effEnd === n ? Number.POSITIVE_INFINITY : Math.max(effTopSpacer, effBottom - vp)
 
-      s.setClampBounds(clampMin, clampMax)
+      if (
+        safeUnsignedGeometry(clampMin, -1) >= 0 &&
+        (clampMax === Number.POSITIVE_INFINITY || safeUnsignedGeometry(clampMax, -1) >= clampMin)
+      ) {
+        s.setClampBounds(clampMin, clampMax)
+      } else {
+        s.setClampBounds(undefined, undefined)
+      }
     } else {
       s?.setClampBounds(undefined, undefined)
+    }
+
+    // Stable metadata for measure-at-unmount. Ref(null) runs before the next
+    // commit's layout effects, so an outgoing row sees the bottom recorded by
+    // the last committed mounted range. This stays O(mounted), not O(history).
+    for (let i = effStart; i < effEnd; i++) {
+      const k = items[i]?.key
+
+      if (k) {
+        const bottom = offsets[i + 1] ?? 0
+
+        if (safeUnsignedGeometry(bottom, -1) >= 0) {
+          measuredBottoms.current.set(k, bottom)
+        }
+      }
     }
 
     if (skipMeasurement.current) {
@@ -492,8 +611,16 @@ export function useVirtualHistory(
         }
 
         const h = Math.ceil((nodes.current.get(k) as MeasuredNode | undefined)?.yogaNode?.getComputedHeight?.() ?? 0)
+        const previousHeight = heights.current.get(k)
 
-        if (h > 0 && heights.current.get(k) !== h) {
+        if (validVirtualItemHeight(h) && previousHeight !== h) {
+          // Keep the same content at the same screen row when estimates above
+          // the committed viewport converge. Rows intersecting or below the
+          // viewport intentionally retain the current scrollTop.
+          if (previousHeight !== undefined && (offsets[i + 1] ?? 0) <= top) {
+            anchorDelta += h - previousHeight
+          }
+
           heights.current.set(k, h)
           dirty = true
           heightDirty = true
@@ -501,11 +628,18 @@ export function useVirtualHistory(
       }
     }
 
+    // Sticky/live-tail positioning is owned by ScrollBox's bottom-follow
+    // logic. Manual viewports need an additive adjustment that leaves any
+    // pending input intact; scrollTo would clear that intent and other state.
+    if (s && anchorDelta !== 0 && !s.isSticky()) {
+      s.adjustScrollTop(anchorDelta)
+    }
+
     if (s) {
       const next = {
         sticky: s.isSticky(),
-        top: Math.max(0, s.getScrollTop() + s.getPendingDelta()),
-        vp: Math.max(0, s.getViewportHeight())
+        top: safeUnsignedGeometry(s.getScrollTop() + safeSignedGeometry(s.getPendingDelta())),
+        vp: safeUnsignedGeometry(s.getViewportHeight())
       }
 
       if (
@@ -526,7 +660,7 @@ export function useVirtualHistory(
     if (heightDirty) {
       bumpMeasuredHeightVersion(n => n + 1)
     }
-  }, [effEnd, effStart, items, liveTailActive, measuredHeightVersion, n, offsets, scrollRef, sticky, total, vp])
+  }, [effEnd, effStart, items, liveTailActive, measuredHeightVersion, n, offsets, scrollRef, sticky, top, total, vp])
 
   return {
     bottomSpacer: Math.max(0, total - (offsets[effEnd] ?? total)),
@@ -546,6 +680,7 @@ interface VirtualHistoryOptions {
   coldStartCount?: number
   estimate?: number
   estimateHeight?: (index: number, key: string) => number
+  generation?: number | string
   initialHeights?: ReadonlyMap<string, number>
   liveTailActive?: boolean
   maxMounted?: number

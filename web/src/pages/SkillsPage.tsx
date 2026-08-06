@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useMemo, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import {
   Package,
   Search,

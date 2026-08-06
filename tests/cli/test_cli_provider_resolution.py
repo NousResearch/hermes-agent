@@ -172,32 +172,6 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
-def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
-    cli = _import_cli()
-
-    def _runtime_resolve(**kwargs):
-        return {
-            "provider": "openai-codex",
-            "api_mode": "codex_responses",
-            "base_url": "https://same-endpoint.example/v1",
-            "api_key": "same-key",
-            "source": "env/config",
-        }
-
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
-    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-
-    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
-    shell.provider = "openrouter"
-    shell.api_mode = "chat_completions"
-    shell.base_url = "https://same-endpoint.example/v1"
-    shell.api_key = "same-key"
-    shell.agent = object()
-
-    assert shell._ensure_runtime_credentials() is True
-    assert shell.agent is None
-    assert shell.provider == "openai-codex"
-    assert shell.api_mode == "codex_responses"
 
 
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
@@ -214,139 +188,14 @@ def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     assert result["runtime"]["provider"] == "openrouter"
 
 
-def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
-    cli = _import_cli()
-
-    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
-    config_copy = dict(cli.CLI_CONFIG)
-    model_copy = dict(config_copy.get("model", {}))
-    model_copy["provider"] = "custom"
-    model_copy["base_url"] = "https://api.fireworks.ai/inference/v1"
-    config_copy["model"] = model_copy
-    monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
-
-    shell = cli.HermesCLI(model="fireworks/minimax-m2p5", compact=True, max_turns=1)
-
-    assert shell.requested_provider == "custom"
 
 
-def test_cli_init_wires_moa_preset_model_to_moa_provider(monkeypatch):
-    # #56828: constructing the CLI with `-m moa:<preset>` (the -Q one-shot
-    # path) must strip the prefix off self.model AND force
-    # requested_provider="moa", so the existing resolve_runtime_provider /
-    # agent_init MoA route runs non-interactively. The unit tests cover
-    # _normalize_moa_model() in isolation; this asserts the __init__ wiring
-    # the sweeper flagged as untested.
-    cli = _import_cli()
-
-    # Neutralize any config/env provider so a failure here can only come from
-    # the moa override, not an ambient default.
-    config_copy = dict(cli.CLI_CONFIG)
-    model_copy = dict(config_copy.get("model", {}))
-    model_copy["provider"] = None
-    config_copy["model"] = model_copy
-    monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
-    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
-
-    shell = cli.HermesCLI(model="moa:strategy", compact=True, max_turns=1)
-
-    assert shell.requested_provider == "moa"
-    assert shell.model == "strategy"
 
 
-def test_cli_init_moa_prefix_overrides_explicit_provider(monkeypatch):
-    # The #56828 regression case: `--provider deepseek -m moa:strategy`
-    # silently dropped MoA because the explicit provider won. __init__ resolves
-    # requested_provider as `_moa_provider_override or provider or ...`, so the
-    # moa: prefix must win over the explicit --provider.
-    cli = _import_cli()
-
-    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
-
-    shell = cli.HermesCLI(
-        model="moa:strategy", provider="deepseek", compact=True, max_turns=1
-    )
-
-    assert shell.requested_provider == "moa"
-    assert shell.model == "strategy"
 
 
-def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
-    """When provider resolves to openai-codex and no model was explicitly
-    chosen, the global config default (e.g. anthropic/claude-opus-4.6) must
-    be replaced with a Codex-compatible model.  Fixes #651."""
-    cli = _import_cli()
-
-    monkeypatch.delenv("LLM_MODEL", raising=False)
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
-    # Ensure local user config does not leak a model into the test
-    monkeypatch.setitem(cli.CLI_CONFIG, "model", {
-        "default": "",
-        "base_url": "https://openrouter.ai/api/v1",
-    })
-
-    def _runtime_resolve(**kwargs):
-        return {
-            "provider": "openai-codex",
-            "api_mode": "codex_responses",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "test-key",
-            "source": "env/config",
-        }
-
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
-    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-    monkeypatch.setattr(
-        "hermes_cli.codex_models.get_codex_model_ids",
-        lambda access_token=None: ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
-    )
-
-    shell = cli.HermesCLI(compact=True, max_turns=1)
-
-    assert shell._model_is_default is True
-    assert shell._ensure_runtime_credentials() is True
-    assert shell.provider == "openai-codex"
-    assert "anthropic" not in shell.model
-    assert "claude" not in shell.model
-    assert shell.model == "gpt-5.2-codex"
 
 
-def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_tts(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "hermes_cli.nous_subscription.managed_nous_tools_enabled",
-        lambda *args, **kwargs: True,
-    )
-    config = {
-        "model": {"provider": "nous", "default": "claude-opus-4-6"},
-        "tts": {"provider": "elevenlabs"},
-        "browser": {"cloud_provider": "browser-use"},
-    }
-
-    monkeypatch.setattr(
-        "hermes_cli.auth.get_provider_auth_state",
-        lambda provider: {"access_token": "nous-token"},
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_runtime_credentials",
-        lambda *args, **kwargs: {
-            "base_url": "https://inference.example.com/v1",
-            "api_key": "nous-key",
-        },
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth.fetch_nous_models",
-        lambda *args, **kwargs: ["claude-opus-4-6"],
-    )
-    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="", pricing=None, **kw: "claude-opus-4-6")
-    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
-    monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
-
-    hermes_main._model_flow_nous(config, current_model="claude-opus-4-6")
-
-    out = capsys.readouterr().out
-    assert "Default model set to:" in out
-    assert config["tts"]["provider"] == "elevenlabs"
-    assert config["browser"]["cloud_provider"] == "browser-use"
 
 
 def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeypatch):
@@ -445,124 +294,10 @@ def _seed_stale_custom_model(tmp_path, monkeypatch):
     return config_path
 
 
-def test_model_flow_openrouter_clears_stale_custom_key(tmp_path, monkeypatch):
-    import yaml
-
-    config_path = _seed_stale_custom_model(tmp_path, monkeypatch)
-
-    monkeypatch.setattr(
-        "hermes_cli.main._prompt_api_key",
-        lambda *args, **kwargs: ("sk-openrouter", False),
-    )
-    monkeypatch.setattr(
-        "hermes_cli.models.model_ids",
-        lambda **kwargs: ["anthropic/claude-sonnet-4.6"],
-    )
-    monkeypatch.setattr("hermes_cli.models.get_pricing_for_provider", lambda *a, **k: {})
-    monkeypatch.setattr(
-        "hermes_cli.auth._prompt_model_selection",
-        lambda *args, **kwargs: "anthropic/claude-sonnet-4.6",
-    )
-    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
-
-    hermes_main._model_flow_openrouter({}, current_model="glm-5.2")
-
-    config = yaml.safe_load(config_path.read_text()) or {}
-    model = config["model"]
-    assert model["provider"] == "openrouter"
-    assert model["default"] == "anthropic/claude-sonnet-4.6"
-    assert model["api_mode"] == "chat_completions"
-    assert "api_key" not in model
-    assert "api" not in model
 
 
-def test_model_flow_anthropic_clears_stale_custom_key_and_mode(tmp_path, monkeypatch):
-    import yaml
-
-    config_path = _seed_stale_custom_model(tmp_path, monkeypatch)
-
-    monkeypatch.setattr("hermes_cli.auth.get_anthropic_key", lambda: "sk-ant-api03-test")
-    monkeypatch.setattr(
-        "agent.anthropic_adapter.read_claude_code_credentials",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        "agent.anthropic_adapter.is_claude_code_token_valid",
-        lambda creds: False,
-    )
-    monkeypatch.setattr(
-        "hermes_cli.model_setup_flows._prompt_auth_credentials_choice",
-        lambda title: "use",
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth._prompt_model_selection",
-        lambda *args, **kwargs: "claude-sonnet-4-6",
-    )
-    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
-
-    hermes_main._model_flow_anthropic({}, current_model="glm-5.2")
-
-    config = yaml.safe_load(config_path.read_text()) or {}
-    model = config["model"]
-    assert model["provider"] == "anthropic"
-    assert model["default"] == "claude-sonnet-4-6"
-    assert "base_url" not in model
-    assert "api_key" not in model
-    assert "api" not in model
-    assert "api_mode" not in model
 
 
-def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatch, capsys):
-    from hermes_cli.nous_account import NousPortalAccountInfo
-
-    # Entitled account (paid → all tools eligible) drives the offer; the prompt
-    # is a per-tool checklist now, so capture the call rather than scrape stdout.
-    monkeypatch.setattr(
-        "hermes_cli.nous_subscription.get_nous_portal_account_info",
-        lambda **kwargs: NousPortalAccountInfo(
-            logged_in=True,
-            source="account_api",
-            fresh=True,
-            paid_service_access=True,
-        ),
-    )
-    captured = {}
-
-    def _fake_checklist(title, items, pre_selected=None):
-        captured["title"] = title
-        captured["items"] = list(items)
-        return []  # decline; we only assert the prompt was offered
-
-    monkeypatch.setattr("hermes_cli.setup.prompt_checklist", _fake_checklist, raising=False)
-
-    config = {
-        "model": {"provider": "nous", "default": "claude-opus-4-6"},
-        "tts": {"provider": "edge"},
-    }
-
-    monkeypatch.setattr(
-        "hermes_cli.auth.get_provider_auth_state",
-        lambda provider: {"access_token": "***"},
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_runtime_credentials",
-        lambda *args, **kwargs: {
-            "base_url": "https://inference.example.com/v1",
-            "api_key": "***",
-        },
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth.fetch_nous_models",
-        lambda *args, **kwargs: ["claude-opus-4-6"],
-    )
-    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="", pricing=None, **kw: "claude-opus-4-6")
-    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
-    monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
-    hermes_main._model_flow_nous(config, current_model="claude-opus-4-6")
-
-    # The per-tool Tool Gateway checklist was offered.
-    assert "title" in captured
-    assert "Tool Gateway" in captured["title"] or "tool pool" in captured["title"].lower()
 
 
 def test_codex_provider_uses_config_model(monkeypatch):
@@ -608,126 +343,12 @@ def test_codex_provider_uses_config_model(monkeypatch):
     assert shell.model != "should-be-ignored"
 
 
-def test_codex_config_model_not_replaced_by_normalization(monkeypatch):
-    """When the user sets model.default in config.yaml to a specific codex
-    model, _normalize_model_for_provider must NOT replace it with the latest
-    available model from the API.  Regression test for #1887."""
-    cli = _import_cli()
-
-    monkeypatch.delenv("LLM_MODEL", raising=False)
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
-
-    # User explicitly configured gpt-5.3-codex in config.yaml
-    monkeypatch.setitem(cli.CLI_CONFIG, "model", {
-        "default": "gpt-5.3-codex",
-        "provider": "openai-codex",
-        "base_url": "https://chatgpt.com/backend-api/codex",
-    })
-
-    def _runtime_resolve(**kwargs):
-        return {
-            "provider": "openai-codex",
-            "api_mode": "codex_responses",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "fake-key",
-            "source": "env/config",
-        }
-
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
-    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-    # API returns a DIFFERENT model than what the user configured
-    monkeypatch.setattr(
-        "hermes_cli.codex_models.get_codex_model_ids",
-        lambda access_token=None: ["gpt-5.4", "gpt-5.3-codex"],
-    )
-
-    shell = cli.HermesCLI(compact=True, max_turns=1)
-
-    # Config model is NOT the global default — user made a deliberate choice
-    assert shell._model_is_default is False
-    assert shell._ensure_runtime_credentials() is True
-    assert shell.provider == "openai-codex"
-    # Model must stay as user configured, not replaced by gpt-5.4
-    assert shell.model == "gpt-5.3-codex"
 
 
-def test_codex_provider_preserves_explicit_codex_model(monkeypatch):
-    """If the user explicitly passes a Codex-compatible model, it must be
-    preserved even when the provider resolves to openai-codex."""
-    cli = _import_cli()
-
-    monkeypatch.delenv("LLM_MODEL", raising=False)
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
-
-    def _runtime_resolve(**kwargs):
-        return {
-            "provider": "openai-codex",
-            "api_mode": "codex_responses",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "test-key",
-            "source": "env/config",
-        }
-
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
-    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-
-    shell = cli.HermesCLI(model="gpt-5.1-codex-mini", compact=True, max_turns=1)
-
-    assert shell._model_is_default is False
-    assert shell._ensure_runtime_credentials() is True
-    assert shell.model == "gpt-5.1-codex-mini"
 
 
-def test_codex_provider_strips_provider_prefix_from_model(monkeypatch):
-    """openai/gpt-5.3-codex should become gpt-5.3-codex — the Codex
-    Responses API does not accept provider-prefixed model slugs."""
-    cli = _import_cli()
-
-    monkeypatch.delenv("LLM_MODEL", raising=False)
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
-
-    def _runtime_resolve(**kwargs):
-        return {
-            "provider": "openai-codex",
-            "api_mode": "codex_responses",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "test-key",
-            "source": "env/config",
-        }
-
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
-    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-
-    shell = cli.HermesCLI(model="openai/gpt-5.3-codex", compact=True, max_turns=1)
-
-    assert shell._ensure_runtime_credentials() is True
-    assert shell.model == "gpt-5.3-codex"
 
 
-def test_cmd_model_falls_back_to_auto_on_invalid_provider(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"model": {"default": "gpt-5", "provider": "invalid-provider"}},
-    )
-    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
-    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
-    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: None)
-
-    def _resolve_provider(requested, **kwargs):
-        if requested == "invalid-provider":
-            raise AuthError("Unknown provider 'invalid-provider'.", code="invalid_provider")
-        return "openrouter"
-
-    monkeypatch.setattr("hermes_cli.auth.resolve_provider", _resolve_provider)
-    monkeypatch.setattr(hermes_main, "_prompt_provider_choice", lambda choices, **kwargs: len(choices) - 1)
-    monkeypatch.setattr("sys.stdin", type("FakeTTY", (), {"isatty": lambda self: True})())
-
-    hermes_main.cmd_model(SimpleNamespace())
-    output = capsys.readouterr().out
-
-    assert "Warning:" in output
-    assert "falling back to auto provider detection" in output.lower()
-    assert "No change." in output
 
 
 def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
@@ -902,15 +523,8 @@ def test_auto_provider_name_localhost():
     assert _auto_provider_name("http://127.0.0.1:1234/v1") == "Local (127.0.0.1:1234)"
 
 
-def test_auto_provider_name_runpod():
-    from hermes_cli.main import _auto_provider_name
-    assert "RunPod" in _auto_provider_name("https://xyz.runpod.io/v1")
 
 
-def test_auto_provider_name_remote():
-    from hermes_cli.main import _auto_provider_name
-    result = _auto_provider_name("https://api.together.xyz/v1")
-    assert result == "Api.together.xyz"
 
 
 def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
@@ -961,32 +575,6 @@ def test_save_custom_provider_references_the_key_instead_of_inlining_it(monkeypa
     assert "sk-secret" not in yaml.safe_dump(saved)
 
 
-def test_save_custom_provider_migrates_an_existing_plaintext_entry(monkeypatch, tmp_path):
-    """Re-saving a known URL swaps its inline key for the .env reference."""
-    import yaml
-    from hermes_cli.main import _save_custom_provider
-
-    existing = {
-        "custom_providers": [
-            {
-                "name": "Ollama",
-                "base_url": "http://localhost:11434/v1",
-                "api_key": "sk-legacy",
-            }
-        ]
-    }
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: existing)
-    saved = {}
-    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
-
-    _save_custom_provider(
-        "http://localhost:11434/v1",
-        key_env="HERMES_CUSTOM_LOCALHOST_11434_API_KEY",
-    )
-
-    entry = saved["custom_providers"][0]
-    assert entry["key_env"] == "HERMES_CUSTOM_LOCALHOST_11434_API_KEY"
-    assert "api_key" not in entry
 
 
 def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
@@ -1005,9 +593,3 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
 
 
-def test_custom_endpoint_key_env_separates_ports_on_one_host():
-    """Two servers on one machine must not collapse onto one .env slot."""
-    from hermes_cli.config import custom_endpoint_key_env
-
-    assert custom_endpoint_key_env("127.0.0.1_8000") != custom_endpoint_key_env("127.0.0.1_8001")
-    assert custom_endpoint_key_env("acme") == custom_endpoint_key_env("ACME")

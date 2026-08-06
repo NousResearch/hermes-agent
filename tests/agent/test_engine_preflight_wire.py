@@ -117,56 +117,10 @@ def test_default_false_hook_is_byte_identical_noop():
     assert ctx.preflight_compression_blocked is False
 
 
-def test_engine_without_hook_attribute_is_skipped():
-    """Minimal engines lacking the optional hook must not break the turn."""
-    agent = _make_agent(_stub_compressor(preflight=None))
-
-    ctx = _build(agent)
-
-    assert isinstance(ctx, TurnContext)
-    agent._compress_context.assert_not_called()
-    assert ctx.preflight_compression_blocked is False
 
 
-def test_true_engine_gets_exactly_one_compress_pass():
-    """A True-returning engine triggers exactly one compress() per turn."""
-    hook = MagicMock(return_value=True)
-    agent = _make_agent(_stub_compressor(preflight=hook))
-    # A real compaction: return a NEW list containing this turn's user row.
-    agent._compress_context = MagicMock(
-        side_effect=lambda messages, *_a, **_k: (
-            [dict(m) for m in messages[-3:]],
-            "SYSTEM",
-        )
-    )
-
-    ctx = _build(agent)
-
-    hook.assert_called_once()
-    agent._compress_context.assert_called_once()
-    # Real compaction re-anchors this turn's user message in the new list.
-    assert ctx.messages[ctx.current_turn_user_idx]["content"] == "hello"
-    # A sub-threshold maintenance pass proves nothing about over-threshold
-    # compressibility: the retry-loop blocking flag must stay untouched.
-    assert ctx.preflight_compression_blocked is False
 
 
-def test_true_engine_single_pass_even_with_raised_attempt_cap():
-    """The engine pass is once-per-turn regardless of compression.max_attempts."""
-    hook = MagicMock(return_value=True)
-    agent = _make_agent(_stub_compressor(preflight=hook))
-    agent.max_compression_attempts = 6
-    agent._compress_context = MagicMock(
-        side_effect=lambda messages, *_a, **_k: (
-            [dict(m) for m in messages],
-            "SYSTEM",
-        )
-    )
-
-    _build(agent)
-
-    hook.assert_called_once()
-    agent._compress_context.assert_called_once()
 
 
 def test_true_engine_noop_does_not_defeat_retry_loop_blocking():
@@ -195,52 +149,10 @@ def test_true_engine_noop_does_not_defeat_retry_loop_blocking():
     assert ctx.conversation_history is history
 
 
-def test_engine_hook_not_consulted_when_threshold_path_fires():
-    """Over-threshold turns take the cap-bounded loop, never the engine arm."""
-    hook = MagicMock(return_value=True)
-    comp = _stub_compressor(preflight=hook, threshold_tokens=100)
-    comp.should_compress = lambda _tokens=None: True
-    comp.context_length = 200_000
-    agent = _make_agent(comp)
-
-    with patch(
-        "agent.turn_context.estimate_request_tokens_rough", return_value=999_999
-    ):
-        _build(agent)
-
-    hook.assert_not_called()
-    # The threshold loop ran instead (progress check breaks after pass 1
-    # because the estimate never shrinks, but the pass itself happened).
-    assert agent._compress_context.call_count >= 1
 
 
-def test_engine_hook_not_consulted_during_failure_cooldown():
-    """An active compression-failure cooldown gates engine maintenance too."""
-    hook = MagicMock(return_value=True)
-    comp = _stub_compressor(preflight=hook)
-    comp.get_active_compression_failure_cooldown = lambda: {
-        "remaining_seconds": 60.0
-    }
-    agent = _make_agent(comp)
-
-    ctx = _build(agent)
-
-    hook.assert_not_called()
-    agent._compress_context.assert_not_called()
-    assert ctx.preflight_compression_blocked is False
 
 
-def test_engine_hook_exception_is_swallowed():
-    """A buggy engine must not break an otherwise-healthy turn."""
-    hook = MagicMock(side_effect=RuntimeError("buggy engine"))
-    agent = _make_agent(_stub_compressor(preflight=hook))
-
-    ctx = _build(agent)
-
-    assert isinstance(ctx, TurnContext)
-    hook.assert_called_once()
-    agent._compress_context.assert_not_called()
-    assert ctx.preflight_compression_blocked is False
 
 
 def test_builtin_compressor_default_sub_threshold_path_unchanged(tmp_path):

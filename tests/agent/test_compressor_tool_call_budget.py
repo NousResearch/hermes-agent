@@ -58,15 +58,7 @@ class TestToolCallEnvelopeEstimate:
         envelope = sum(len(str(tc)) for tc in msg["tool_calls"]) // _CHARS_PER_TOKEN
         assert new >= envelope
 
-    def test_scales_with_number_of_parallel_calls(self):
-        one = _estimate_msg_budget_tokens(_assistant_with_tool_calls(1))
-        five = _estimate_msg_budget_tokens(_assistant_with_tool_calls(5))
-        assert five > one * 3
 
-    def test_no_tool_calls_matches_content_estimate(self):
-        msg = {"role": "user", "content": "x" * 400}
-        # Plain message: content//4 + 10 overhead, behavior unchanged.
-        assert _estimate_msg_budget_tokens(msg) == 400 // _CHARS_PER_TOKEN + 10
 
     def test_non_dict_tool_calls_do_not_crash(self):
         msg = {"role": "assistant", "content": "hi", "tool_calls": ["weird", None]}

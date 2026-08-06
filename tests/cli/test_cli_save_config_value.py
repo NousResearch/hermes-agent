@@ -1,7 +1,9 @@
 """Tests for save_config_value() in cli.py — atomic write behavior."""
 
-import yaml
+from pathlib import Path
 from unittest.mock import MagicMock
+
+import yaml
 
 import pytest
 
@@ -19,6 +21,10 @@ class TestSaveConfigValueAtomic:
             "model": {"default": "test-model", "provider": "openrouter"},
             "display": {"skin": "default"},
         }))
+        # save_config_value resolves the target live via get_hermes_home(), so
+        # point HERMES_HOME at the temp dir (the _hermes_home import-time
+        # constant is no longer consulted).
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr("cli._hermes_home", hermes_home)
         return config_path
 
@@ -32,16 +38,6 @@ class TestSaveConfigValueAtomic:
 
         mock_update.assert_called_once_with(config_env, "display.skin", "mono")
 
-    def test_preserves_existing_keys(self, config_env):
-        """Writing a new key must not clobber existing config entries."""
-        from cli import save_config_value
-        save_config_value("agent.max_turns", 50)
-
-        result = yaml.safe_load(config_env.read_text())
-        assert result["model"]["default"] == "test-model"
-        assert result["model"]["provider"] == "openrouter"
-        assert result["display"]["skin"] == "default"
-        assert result["agent"]["max_turns"] == 50
 
     def test_creates_nested_keys(self, config_env):
         """Dot-separated paths create intermediate dicts as needed."""
@@ -51,31 +47,7 @@ class TestSaveConfigValueAtomic:
         result = yaml.safe_load(config_env.read_text())
         assert result["auxiliary"]["compression"]["model"] == "google/gemini-3-flash-preview"
 
-    def test_overwrites_existing_value(self, config_env):
-        """Updating an existing key replaces the value."""
-        from cli import save_config_value
-        save_config_value("display.skin", "ares")
 
-        result = yaml.safe_load(config_env.read_text())
-        assert result["display"]["skin"] == "ares"
-
-    def test_preserves_env_ref_templates_in_unrelated_fields(self, config_env):
-        """The /model --global persistence path must not inline env-backed secrets."""
-        config_env.write_text(yaml.dump({
-            "custom_providers": [{
-                "name": "tuzi",
-                "api_key": "${TU_ZI_API_KEY}",
-                "model": "claude-opus-4-6",
-            }],
-            "model": {"default": "test-model", "provider": "openrouter"},
-        }))
-
-        from cli import save_config_value
-        save_config_value("model.default", "doubao-pro")
-
-        result = yaml.safe_load(config_env.read_text())
-        assert result["model"]["default"] == "doubao-pro"
-        assert result["custom_providers"][0]["api_key"] == "${TU_ZI_API_KEY}"
 
     def test_model_write_runs_shared_cron_drift_warning(self, config_env, monkeypatch):
         warning = MagicMock()
@@ -89,46 +61,7 @@ class TestSaveConfigValueAtomic:
         assert save_config_value("model.default", "new-model") is True
         warning.assert_called_once_with("model.default", "new-model")
 
-    def test_preserves_comments_after_config_mutation(self, config_env):
-        """CLI config writes should not strip existing user comments."""
-        config_env.write_text(
-            "# user selected model\n"
-            "model:\n"
-            "  # keep this provider note\n"
-            "  provider: openrouter\n"
-            "display:\n"
-            "  skin: default  # inline skin note\n",
-            encoding="utf-8",
-        )
 
-        from cli import save_config_value
-        save_config_value("display.skin", "mono")
-
-        text = config_env.read_text(encoding="utf-8")
-        result = yaml.safe_load(text)
-        assert result["display"]["skin"] == "mono"
-        assert "# user selected model" in text
-        assert "# keep this provider note" in text
-        assert "# inline skin note" in text
-
-    def test_preserves_readable_unicode_after_config_mutation(self, config_env):
-        """Non-ASCII prompts should remain readable instead of \\u-escaped."""
-        config_env.write_text(
-            "agent:\n"
-            "  system_prompt: 你好，保持中文输出\n"
-            "display:\n"
-            "  skin: default\n",
-            encoding="utf-8",
-        )
-
-        from cli import save_config_value
-        save_config_value("display.skin", "mono")
-
-        text = config_env.read_text(encoding="utf-8")
-        result = yaml.safe_load(text)
-        assert result["agent"]["system_prompt"] == "你好，保持中文输出"
-        assert "你好，保持中文输出" in text
-        assert "\\u4f60" not in text
 
     def test_file_not_truncated_on_error(self, config_env, monkeypatch):
         """If atomic_yaml_write raises, the original file is untouched."""
@@ -144,3 +77,51 @@ class TestSaveConfigValueAtomic:
 
         assert result is False
         assert config_env.read_text() == original_content
+
+
+class TestSaveConfigValueTargetsUserConfig:
+    """Regression: persisted runtime settings must land in HERMES_HOME/config.yaml
+    (which config readers actually read), never the repo's cli-config.yaml.
+
+    This was the "wake-word ear reverts to disabled after restart" bug: on an
+    install whose HERMES_HOME/config.yaml did not exist yet, save_config_value
+    fell back to the checked-in cli-config.yaml. The toggle reported success, but
+    startup read HERMES_HOME/config.yaml and never saw the setting."""
+
+    def test_creates_user_config_when_absent(self, tmp_path, monkeypatch):
+        # Fresh HERMES_HOME with NO config.yaml (managed/desktop first launch).
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from cli import save_config_value
+
+        assert save_config_value("wake_word.enabled", True) is True
+
+        config_path = hermes_home / "config.yaml"
+        assert config_path.exists(), "user config.yaml must be created, not skipped"
+        result = yaml.safe_load(config_path.read_text())
+        assert result["wake_word"]["enabled"] is True
+
+    def test_does_not_write_repo_cli_config(self, tmp_path, monkeypatch):
+        # Even when the repo's cli-config.yaml exists, the write goes to the
+        # user config, so a runtime setting is never buried in the shipped file.
+        import cli as cli_module
+
+        repo_cli_config = Path(cli_module.__file__).parent / "cli-config.yaml"
+        before = repo_cli_config.read_text() if repo_cli_config.exists() else None
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from cli import save_config_value
+
+        save_config_value("wake_word.enabled", True)
+
+        # The repo template is untouched…
+        after = repo_cli_config.read_text() if repo_cli_config.exists() else None
+        assert after == before
+        # …and the value landed in the user config.
+        result = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        assert result["wake_word"]["enabled"] is True

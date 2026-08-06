@@ -1,11 +1,10 @@
 import { usageBarsText } from '../../../components/overlayPrimitives.js'
-import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
+import { introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
   ConfigSetResponse,
-  ImageAttachResponse,
   SessionBranchResponse,
   SessionCompressResponse,
   SessionUsageResponse,
@@ -104,10 +103,11 @@ export const sessionCommands: SlashCommand[] = [
     help: 'change or show model',
     name: 'model',
     run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('change models')) {
-        return
-      }
-
+      // No busy guard here (unlike session switching). A model change is a
+      // session-scoped config.set: idle it switches immediately; mid-turn the
+      // gateway QUEUES it and applies it at the next turn start (returning
+      // deferred:true) instead of rejecting. Either way the pick sticks without
+      // interrupting the stream or waiting on the swap.
       if (!arg.trim()) {
         return patchOverlayState({ modelPicker: true })
       }
@@ -145,7 +145,7 @@ export const sessionCommands: SlashCommand[] = [
                 return ctx.transcript.sys('error: invalid response: model switch')
               }
 
-              ctx.transcript.sys(`model → ${r.value}`)
+              ctx.transcript.sys(r.deferred ? `model → ${r.value} (applies next turn)` : `model → ${r.value}`)
               ctx.local.maybeWarn(r)
 
               patchUiState(state => ({
@@ -191,17 +191,7 @@ export const sessionCommands: SlashCommand[] = [
   {
     help: 'attach an image',
     name: 'image',
-    run: (arg, ctx) => {
-      ctx.gateway.rpc<ImageAttachResponse>('image.attach', { path: arg, session_id: ctx.sid }).then(
-        ctx.guarded<ImageAttachResponse>(r => {
-          ctx.transcript.sys(attachedImageNotice(r))
-
-          if (r.remainder) {
-            ctx.composer.setInput(r.remainder)
-          }
-        })
-      )
-    }
+    run: (arg, ctx) => ctx.composer.attachImagePath(arg)
   },
 
   {
@@ -380,6 +370,14 @@ export const sessionCommands: SlashCommand[] = [
             const tts = r.tts ? ' (TTS enabled)' : ''
             ctx.transcript.sys(`Voice mode enabled${tts}`)
             ctx.transcript.sys(`  ${recordKeyLabel} to start/stop recording`)
+
+            // Spoken-stop hint — backend-sourced from voice.stop_phrases so a
+            // custom phrase renders correctly; absent/empty means the feature
+            // is disabled (stop_phrases: []) and no hint is shown.
+            if (r.stop_hint) {
+              ctx.transcript.sys(`  ${r.stop_hint}`)
+            }
+
             ctx.transcript.sys('  /voice tts  to toggle speech output')
             ctx.transcript.sys('  /voice off  to disable voice mode')
           } else {

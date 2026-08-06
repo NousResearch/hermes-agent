@@ -1,10 +1,11 @@
-"""Streaming display force-flush: long partial lines must paint before the
-first newline arrives (TTFT-perception fix, July 2026).
+"""Streaming display: logical lines are emitted ONLY at real newlines.
 
-Previously ``_emit_stream_text`` only emitted on ``"\\n"``, so a response
-opening with a long paragraph stayed invisible until the model produced a
-newline — seconds of blank box on slow models. Now partial lines are
-force-flushed at terminal width (mirroring the reasoning box's 80-char rule).
+The July 2026 TTFT force-flush hard-wrapped long partial lines at
+terminal width, baking real '\\n's into every long paragraph — exactly
+what polluted highlight-copy/paste. Now paragraphs stay one logical
+line (the terminal soft-wraps them and rejoins on copy, matching the
+TUI's selection copy), and TTFT perception is served by mirroring the
+partial line's tail into the spinner status text instead.
 """
 import os
 import re
@@ -29,28 +30,41 @@ def cli_stub(monkeypatch):
     cli.final_response_markdown = "raw"
     cli.show_timestamps = False
     cli._reset_stream_state()
+    cli._spinner_text = ""
+    cli._invalidate = lambda *a, **kw: None
 
     emitted = []
     monkeypatch.setattr(climod, "_cprint", lambda s: emitted.append(s))
-    # Deterministic width regardless of the test runner's terminal
     monkeypatch.setattr(climod, "_terminal_width_for_streaming", lambda: 74)
     return cli, emitted
 
 
-class TestPartialLineForceFlush:
-    def test_long_paragraph_paints_before_first_newline(self, cli_stub):
+class TestLogicalLineStreaming:
+    def test_long_paragraph_not_hard_wrapped_before_newline(self, cli_stub):
         cli, emitted = cli_stub
         text = (
-            "This is a long opening paragraph that would previously sit "
-            "invisible in the buffer until the model finally produced a "
-            "newline character, which on a slow model could take seconds. "
+            "This is a long opening paragraph that previously got chopped "
+            "into terminal-width chunks with real newlines, which is what "
+            "made copy/paste come out full of broken lines. "
         ) * 3
         for i in range(0, len(text), 12):
             cli._stream_delta(text[i : i + 12])
-        # Box header + several wrapped lines painted with NO newline seen yet
-        assert len(emitted) > 3
+        # No newline seen yet → no content lines printed (box header only).
+        plain = _strip_ansi("\n".join(emitted))
+        assert "opening paragraph" not in plain
+        # The paragraph is still buffered as ONE logical line.
+        assert cli._stream_buf.startswith("This is a long opening")
 
-    def test_no_content_lost_across_wraps(self, cli_stub):
+    def test_partial_tail_mirrored_into_spinner(self, cli_stub):
+        cli, emitted = cli_stub
+        text = "A long paragraph streaming in without any newline " * 4
+        for i in range(0, len(text), 16):
+            cli._stream_delta(text[i : i + 16])
+        assert cli._spinner_text.startswith("…")
+        assert "newline" in cli._spinner_text
+
+
+    def test_no_content_lost_across_stream(self, cli_stub):
         cli, emitted = cli_stub
         words = [f"word{i}" for i in range(120)]
         text = " ".join(words)
@@ -59,24 +73,16 @@ class TestPartialLineForceFlush:
         cli._flush_stream()
         plain = " ".join(_strip_ansi("\n".join(emitted)).split())
         for w in words:
-            assert w in plain, f"lost {w} at a wrap boundary"
+            assert w in plain, f"lost {w}"
 
-    def test_short_partial_stays_buffered(self, cli_stub):
-        cli, emitted = cli_stub
-        cli._stream_delta("short line, no newline")
-        # Under wrap width: the box header may open, but the text itself
-        # stays buffered until a newline or the width threshold.
-        plain = _strip_ansi("\n".join(emitted))
-        assert "short line" not in plain
-        assert cli._stream_buf == "short line, no newline"
 
-    def test_table_rows_not_force_flushed(self, cli_stub):
+    def test_table_rows_not_previewed_in_spinner(self, cli_stub):
         cli, emitted = cli_stub
-        # A long partial table row must stay buffered for block realignment
         row = "| " + " | ".join(f"cell{i}" for i in range(20)) + " |"
         cli._stream_delta(row)  # no newline
         plain = _strip_ansi("\n".join(emitted))
         assert "cell19" not in plain
+        assert cli._spinner_text == ""
 
     def test_newline_lines_still_emit_normally(self, cli_stub):
         cli, emitted = cli_stub
@@ -85,10 +91,14 @@ class TestPartialLineForceFlush:
         assert "line one" in plain
         assert "line two" in plain
 
-    def test_unbreakable_run_hard_wraps(self, cli_stub):
+    def test_unbreakable_run_stays_single_line(self, cli_stub):
         cli, emitted = cli_stub
         blob = "x" * 300  # no spaces
         cli._stream_delta(blob)
         cli._flush_stream()
         plain = _strip_ansi("\n".join(emitted))
         assert plain.count("x") == 300
+        content = [
+            _strip_ansi(e) for e in emitted if "x" in _strip_ansi(e)
+        ]
+        assert len(content) == 1, "unbreakable run was hard-wrapped"

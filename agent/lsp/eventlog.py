@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Tuple
+from typing import List, Tuple
 
 # Dedicated logger name so the documented grep recipe survives a
 # ``logging.getLogger(__name__)`` rename of any internal module.
@@ -188,6 +188,25 @@ def log_spawn_failed(server_id: str, workspace_root: str, exc: BaseException) ->
     )
 
 
+def log_reaped(keys: List[Tuple[str, str]], idle_timeout: float) -> None:
+    """Idle clients were shut down by the reaper.  INFO — one line per
+    sweep so users can correlate memory drops with LSP activity.
+
+    Also clears the ``log_active`` announce cache for the reaped keys so
+    a later respawn re-announces at INFO instead of logging a misleading
+    DEBUG "reused client".
+    """
+    with _announce_lock:
+        for key in keys:
+            _announced_active.discard(key)
+    summary = ", ".join(f"{sid} ({root})" for sid, root in keys)
+    _emit(
+        "reaper",
+        logging.INFO,
+        f"reaped {len(keys)} idle client(s) after {idle_timeout:.0f}s: {summary}",
+    )
+
+
 def reset_announce_caches() -> None:
     """Test-only: clear the dedup caches.  Production code never calls this."""
     with _announce_lock:
@@ -209,5 +228,6 @@ __all__ = [
     "log_timeout",
     "log_server_error",
     "log_spawn_failed",
+    "log_reaped",
     "reset_announce_caches",
 ]

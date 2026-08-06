@@ -456,6 +456,10 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     realtime_model = os.environ.get("HERMES_MEET_REALTIME_MODEL", "gpt-realtime")
     realtime_voice = os.environ.get("HERMES_MEET_REALTIME_VOICE", "alloy")
     realtime_instructions = os.environ.get("HERMES_MEET_REALTIME_INSTRUCTIONS", "")
+    # HERMES_MEET_REALTIME_KEY is set explicitly by process_manager.start(),
+    # which resolves it through the parent's profile secret scope at spawn
+    # time. The bare OPENAI_API_KEY fallback only serves standalone
+    # `python -m plugins.google_meet.meet_bot` runs outside the gateway.
     realtime_api_key = os.environ.get("HERMES_MEET_REALTIME_KEY") or os.environ.get("OPENAI_API_KEY", "")
 
     if not url or not _is_safe_meet_url(url):

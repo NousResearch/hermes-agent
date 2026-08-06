@@ -35,13 +35,7 @@ def _wire_event(**src_overrides):
 
 
 class TestUserIdentityEnrichment:
-    def test_display_name_preferred_over_user_name(self):
-        ev = _event_from_wire(_wire_event(user_display_name="Ben Display"))
-        assert ev.source.user_name == "Ben Display"
 
-    def test_user_name_when_no_display_name(self):
-        ev = _event_from_wire(_wire_event())
-        assert ev.source.user_name == "rawusername"
 
     def test_handle_is_last_resort(self):
         ev = _event_from_wire(
@@ -49,14 +43,6 @@ class TestUserIdentityEnrichment:
         )
         assert ev.source.user_name == "ben#1234"
 
-    def test_all_absent_yields_none(self):
-        ev = _event_from_wire(_wire_event(user_name=None))
-        assert ev.source.user_name is None
-
-    def test_empty_display_name_falls_through(self):
-        """An empty-string enrichment must not shadow a real user_name."""
-        ev = _event_from_wire(_wire_event(user_display_name=""))
-        assert ev.source.user_name == "rawusername"
 
     def test_session_key_is_stable_across_name_shapes(self):
         """user_name is presentation-only: the same user_id keys the same

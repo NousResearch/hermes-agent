@@ -9,6 +9,12 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
   then `openviking-server doctor`)
 - OpenViking server running and reachable from Hermes
 
+OpenViking 0.2.10 or newer is recommended. For backward compatibility,
+Hermes can identify older servers that expose the legacy status-only health
+response, but only when anonymous OpenAPI metadata also identifies the service
+as OpenViking. OpenViking 0.2.6 and earlier are deprecated for this integration;
+upgrade them to receive the current health contract and compatibility fixes.
+
 ## Setup
 
 Prepare OpenViking first:

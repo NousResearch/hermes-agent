@@ -30,12 +30,12 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_constants import find_node_executable
 
 logger = logging.getLogger("agent.lsp.install")
 
@@ -124,10 +124,9 @@ def _is_windows() -> bool:
 
 def hermes_lsp_bin_dir() -> Path:
     """Return the Hermes-owned bin staging dir for LSP servers."""
-    home = os.environ.get("HERMES_HOME")
-    if home is None:
-        home = os.path.join(os.path.expanduser("~"), ".hermes")
-    p = Path(home) / "lsp" / "bin"
+    from hermes_constants import get_hermes_home
+
+    p = get_hermes_home() / "lsp" / "bin"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -251,9 +250,12 @@ def _install_npm(
     peer deps that npm doesn't auto-pull (typescript-language-server
     needs ``typescript`` next to it; intelephense ships standalone).
     """
-    npm = shutil.which("npm")
+    # Managed npm first: $HERMES_HOME/node is not on an arbitrary process's
+    # PATH, so a bare which() misses the Node that Hermes installed and
+    # reports "npm not on PATH" on a machine that has a perfectly good one.
+    npm = find_node_executable("npm")
     if npm is None:
-        logger.info("[install] cannot install %s: npm not on PATH", pkg)
+        logger.info("[install] cannot install %s: no usable npm found", pkg)
         return None
     staging = hermes_lsp_bin_dir().parent  # <HERMES_HOME>/lsp/
     install_targets = [pkg] + list(extra_pkgs or [])

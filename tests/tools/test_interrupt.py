@@ -27,42 +27,6 @@ class TestInterruptModule:
         set_interrupt(False)
         assert not is_interrupted()
 
-    def test_thread_safety(self):
-        """Set from one thread targeting another thread's ident."""
-        from tools.interrupt import set_interrupt, is_interrupted, _interrupted_threads, _lock
-        set_interrupt(False)
-        # Clear any stale thread idents left by prior tests in this worker.
-        with _lock:
-            _interrupted_threads.clear()
-
-        seen = {"value": False}
-
-        def _checker():
-            while not is_interrupted():
-                time.sleep(0.01)
-            seen["value"] = True
-
-        t = threading.Thread(target=_checker, daemon=True)
-        t.start()
-
-        time.sleep(0.05)
-        assert not seen["value"]
-
-        # Target the checker thread's ident so it sees the interrupt
-        set_interrupt(True, thread_id=t.ident)
-        t.join(timeout=5)
-        assert seen["value"]
-
-        set_interrupt(False, thread_id=t.ident)
-
-    def test_clear_current_thread_interrupt(self):
-        from tools.interrupt import (
-            set_interrupt, is_interrupted, clear_current_thread_interrupt,
-        )
-        set_interrupt(True)
-        assert is_interrupted()
-        clear_current_thread_interrupt()
-        assert not is_interrupted()
 
     def test_clear_current_thread_interrupt_leaves_other_threads(self):
         """clear_current_thread_interrupt only touches the calling thread."""

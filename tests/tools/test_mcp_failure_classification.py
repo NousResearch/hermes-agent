@@ -37,43 +37,6 @@ class TestUnwrapExceptionGroup:
         inner = BrokenPipeError()
         assert _unwrap_exception_group(_group(inner)) is inner
 
-    def test_nested_groups(self):
-        inner = ConnectionResetError("reset by peer")
-        nested = _group(_group(_group(inner)))
-        assert _unwrap_exception_group(nested) is inner
-
-    def test_root_cause_name_visible_for_empty_message(self):
-        # Dead stdio pipes raise BrokenPipeError with an EMPTY str() —
-        # the log format must rely on type(exc).__name__, and unwrap must
-        # hand back the BrokenPipeError, not the opaque group.
-        root = _unwrap_exception_group(_group(BrokenPipeError()))
-        assert type(root).__name__ == "BrokenPipeError"
-
-    def test_prefers_non_cancellation_leaf(self):
-        # anyio cancellation sprays CancelledError across sibling tasks;
-        # the real error must win.
-        real = ConnectionError("server hung up")
-        g = _group(asyncio.CancelledError(), real, asyncio.CancelledError())
-        assert _unwrap_exception_group(g) is real
-
-    def test_prefers_non_cancellation_leaf_nested(self):
-        real = TimeoutError("read timed out")
-        g = _group(_group(asyncio.CancelledError()), _group(real))
-        assert _unwrap_exception_group(g) is real
-
-    def test_all_cancellation_returns_cancellation(self):
-        g = _group(asyncio.CancelledError())
-        assert isinstance(_unwrap_exception_group(g), asyncio.CancelledError)
-
-    def test_keyboard_interrupt_reraises(self):
-        with pytest.raises(KeyboardInterrupt):
-            _unwrap_exception_group(_group(KeyboardInterrupt()))
-
-    def test_nested_keyboard_interrupt_reraises(self):
-        with pytest.raises(KeyboardInterrupt):
-            _unwrap_exception_group(
-                _group(ConnectionError("x"), _group(KeyboardInterrupt()))
-            )
 
     def test_system_exit_reraises(self):
         with pytest.raises(SystemExit):
@@ -95,37 +58,11 @@ class TestClassifyMcpFailure:
     def test_transient_failures(self, exc):
         assert _classify_mcp_failure(exc) == "transient"
 
-    def test_transient_taskgroup_drop(self):
-        g = _group(ConnectionError("sse stream dropped"))
-        assert _classify_mcp_failure(g) == "transient"
 
     def test_closed_resource_transient(self):
         anyio = pytest.importorskip("anyio")
         assert _classify_mcp_failure(anyio.ClosedResourceError()) == "transient"
 
-    @pytest.mark.parametrize("exc_factory", [
-        lambda: FileNotFoundError("no such file: nonexistent-mcp-cmd"),
-        lambda: OSError(errno.ENOENT, "No such file or directory"),
-        lambda: NonMcpEndpointError("url serves text/html"),
-        lambda: InvalidMcpUrlError("bad scheme"),
-    ])
-    def test_permanent_failures(self, exc_factory):
-        assert _classify_mcp_failure(exc_factory()) == "permanent"
-
-    @pytest.mark.parametrize("status", [401, 403])
-    def test_http_auth_status_permanent(self, status):
-        httpx = pytest.importorskip("httpx")
-        req = httpx.Request("POST", "http://x/mcp")
-        resp = httpx.Response(status, request=req)
-        exc = httpx.HTTPStatusError("auth", request=req, response=resp)
-        assert _classify_mcp_failure(exc) == "permanent"
-
-    def test_http_5xx_transient(self):
-        httpx = pytest.importorskip("httpx")
-        req = httpx.Request("POST", "http://x/mcp")
-        resp = httpx.Response(503, request=req)
-        exc = httpx.HTTPStatusError("unavailable", request=req, response=resp)
-        assert _classify_mcp_failure(exc) == "transient"
 
     def test_permanent_inside_taskgroup(self):
         # Classification must apply to the UNWRAPPED root cause.

@@ -119,8 +119,17 @@ export const cleanThinkingText = (reasoning: string) =>
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
+// cleanThinkingText runs several full-string regex passes (split/map/filter/join/replace).
+// reasoning grows on every streamed token, so without a pre-bound this re-cleans the whole
+// accumulated string on every chunk — O(n) work per token, O(n^2) over a stream. Only the
+// tail is ever displayed (boundedLiveRenderText caps it further downstream), so bound the
+// input here first. Headroom over LIVE_RENDER_MAX_CHARS keeps line-boundary trimming inside
+// cleanThinkingText accurate even after slicing mid-line.
+const THINKING_CLEAN_TAIL_BOUND = LIVE_RENDER_MAX_CHARS * 1.5
+
 export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: number = THINKING_COT_MAX) => {
-  const raw = cleanThinkingText(reasoning)
+  const bounded = reasoning.length > THINKING_CLEAN_TAIL_BOUND ? reasoning.slice(-THINKING_CLEAN_TAIL_BOUND) : reasoning
+  const raw = cleanThinkingText(bounded)
 
   return !raw || mode === 'collapsed' ? '' : mode === 'full' ? raw : compactPreview(raw.replace(WS_RE, ' '), max)
 }

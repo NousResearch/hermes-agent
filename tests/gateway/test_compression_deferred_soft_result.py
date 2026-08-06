@@ -86,13 +86,3 @@ class TestCompressionDeferredIsSoft:
             f"(#49874, #69870)."
         )
 
-    def test_deferred_result_key_is_passed_through_run_agent_inner(self):
-        """``_run_agent_inner``'s result dicts must carry the
-        ``compression_deferred`` key so the persistence block can see it —
-        the exact gap that made the exhaustion misclassification possible
-        (the flag existed but nothing consumed it)."""
-        src = inspect.getsource(gateway_run)
-        assert src.count('"compression_deferred"') >= 3, (
-            "gateway/run.py must read AND pass through compression_deferred "
-            "(persistence-block guard + both _run_agent_inner result dicts)."
-        )

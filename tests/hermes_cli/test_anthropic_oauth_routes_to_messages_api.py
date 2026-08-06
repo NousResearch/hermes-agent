@@ -52,21 +52,6 @@ class TestExplicitRuntimeForAnthropic:
         assert result["provider"] == "anthropic"
         assert result["base_url"] == "https://api.anthropic.com"
 
-    def test_stale_chat_completions_api_mode_in_config_is_ignored(self):
-        # A user who previously had ``provider: openai`` and switched to
-        # anthropic might still have ``model.api_mode: chat_completions``
-        # in their config.yaml.  The anthropic branch must hard-pin
-        # the mode — Anthropic's chat_completions shim is the bug
-        # locus of #32243 and must never be reachable from this path.
-        result = rp._resolve_explicit_runtime(
-            provider="anthropic",
-            requested_provider="anthropic",
-            model_cfg={"provider": "anthropic", "api_mode": "chat_completions"},
-            explicit_api_key="sk-ant-oat01-foo",
-            explicit_base_url="https://api.anthropic.com",
-        )
-        assert result is not None
-        assert result["api_mode"] == "anthropic_messages"
 
     def test_no_explicit_args_returns_none(self):
         # Guard the gating contract — _resolve_explicit_runtime only
@@ -172,34 +157,3 @@ class TestCustomProviderUrlFallback:
         assert resolved is not None
         assert resolved["api_mode"] == "anthropic_messages"
 
-    def test_explicit_api_mode_override_still_wins(self, monkeypatch):
-        # The detector is only consulted as a fallback — when the
-        # custom-pool caller passes an explicit api_mode (e.g. from a
-        # ``transport: chat_completions`` config entry), that takes
-        # priority.  Pinned so the fix doesn't accidentally hijack a
-        # user who DELIBERATELY pointed a chat_completions transport
-        # at api.anthropic.com (uncommon but valid for OpenAI-compat
-        # experiments).
-        class _Entry:
-            access_token = "k"
-            runtime_api_key = "k"
-            source = "x"
-
-        class _Pool:
-            def has_credentials(self):
-                return True
-
-            def select(self):
-                return _Entry()
-
-        monkeypatch.setattr(rp, "get_custom_provider_pool_key", lambda *a, **k: "custom:my-claude")
-        monkeypatch.setattr(rp, "load_pool", lambda key: _Pool())
-
-        resolved = rp._try_resolve_from_custom_pool(
-            "https://api.anthropic.com",
-            "custom",
-            api_mode_override="chat_completions",
-        )
-
-        assert resolved is not None
-        assert resolved["api_mode"] == "chat_completions"

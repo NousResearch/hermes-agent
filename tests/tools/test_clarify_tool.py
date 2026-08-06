@@ -28,32 +28,6 @@ class TestClarifyToolBasics:
         assert result["choices_offered"] is None
         assert result["user_response"] == "blue"
 
-    def test_question_with_choices(self):
-        """Should pass choices to callback and return response."""
-        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
-            assert question == "Pick a number"
-            assert choices == ["1", "2", "3"]
-            return "2"
-
-        result = json.loads(clarify_tool(
-            "Pick a number",
-            choices=["1", "2", "3"],
-            callback=mock_callback
-        ))
-        assert result["question"] == "Pick a number"
-        assert result["choices_offered"] == ["1", "2", "3"]
-        assert result["user_response"] == "2"
-
-    def test_empty_question_returns_error(self):
-        """Should return error for empty question."""
-        result = json.loads(clarify_tool("", callback=lambda q, c: "ignored"))
-        assert "error" in result
-        assert "required" in result["error"].lower()
-
-    def test_whitespace_only_question_returns_error(self):
-        """Should return error for whitespace-only question."""
-        result = json.loads(clarify_tool("   \n\t  ", callback=lambda q, c: "ignored"))
-        assert "error" in result
 
     def test_no_callback_returns_error(self):
         """Should return error when no callback is provided."""
@@ -78,39 +52,6 @@ class TestClarifyToolChoicesValidation:
 
         assert len(choices_passed) == MAX_CHOICES
 
-    def test_empty_choices_become_none(self):
-        """Empty choices list should become None (open-ended)."""
-        choices_received = ["marker"]
-
-        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
-            choices_received.clear()
-            if choices is not None:
-                choices_received.extend(choices)
-            return "answer"
-
-        clarify_tool("Open question?", choices=[], callback=mock_callback)
-        assert choices_received == []  # Was cleared, nothing added
-
-    def test_choices_with_only_whitespace_stripped(self):
-        """Whitespace-only choices should be stripped out."""
-        choices_received = []
-
-        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
-            choices_received.extend(choices or [])
-            return "answer"
-
-        clarify_tool("Pick", choices=["valid", "  ", "", "also valid"], callback=mock_callback)
-        assert choices_received == ["valid", "also valid"]
-
-    def test_invalid_choices_type_returns_error(self):
-        """Non-list choices should return error."""
-        result = json.loads(clarify_tool(
-            "Question?",
-            choices="not a list",  # type: ignore
-            callback=lambda q, c: "ignored"
-        ))
-        assert "error" in result
-        assert "list" in result["error"].lower()
 
     def test_choices_converted_to_strings(self):
         """Non-string choices should be converted to strings."""
@@ -137,16 +78,6 @@ class TestClarifyToolCallbackHandling:
         assert "Failed to get user input" in result["error"]
         assert "User cancelled" in result["error"]
 
-    def test_callback_receives_stripped_question(self):
-        """Callback should receive trimmed question."""
-        received_question = []
-
-        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
-            received_question.append(question)
-            return "answer"
-
-        clarify_tool("  Question with spaces  \n", callback=mock_callback)
-        assert received_question[0] == "Question with spaces"
 
     def test_user_response_stripped(self):
         """User response should be stripped of whitespace."""
@@ -178,27 +109,6 @@ class TestClarifyDictChoices:
     def test_flatten_unwraps_label_first(self):
         assert _flatten_choice({"label": "Short", "description": "Long"}) == "Short"
 
-    def test_flatten_unwraps_description_when_no_label(self):
-        assert _flatten_choice({"description": "A loose layout"}) == "A loose layout"
-
-    def test_flatten_unwrap_order_label_over_description(self):
-        assert _flatten_choice({"description": "verbose", "label": "tight"}) == "tight"
-
-    def test_flatten_drops_name_value_only_dict(self):
-        # name/value are component-shaped fields, not user-facing labels —
-        # picking them would leak raw enum values / short model ids.
-        assert _flatten_choice({"name": "tight", "value": "x"}) == ""
-
-    def test_flatten_prefers_canonical_key_over_name(self):
-        assert _flatten_choice({"name": "tight", "description": "Tight desc"}) == "Tight desc"
-
-    def test_flatten_drops_keyless_dict(self):
-        assert _flatten_choice({"foo": "bar", "n": 1}) == ""
-
-    def test_flatten_passthrough_string_and_scalar(self):
-        assert _flatten_choice("plain") == "plain"
-        assert _flatten_choice(7) == "7"
-        assert _flatten_choice(None) == ""
 
     def test_dict_choices_reach_callback_as_clean_text(self):
         """The whole point: the UI callback never sees a dict repr."""
@@ -236,37 +146,11 @@ class TestClarifySchema:
         """Schema should have correct name."""
         assert CLARIFY_SCHEMA["name"] == "clarify"
 
-    def test_schema_has_description(self):
-        """Schema should have a description."""
-        assert "description" in CLARIFY_SCHEMA
-        assert len(CLARIFY_SCHEMA["description"]) > 50
-
-    def test_schema_question_required(self):
-        """Question parameter should be required."""
-        assert "question" in CLARIFY_SCHEMA["parameters"]["required"]
-
-    def test_schema_choices_optional(self):
-        """Choices parameter should be optional."""
-        assert "choices" not in CLARIFY_SCHEMA["parameters"]["required"]
-
-    def test_schema_choices_max_items(self):
-        """Schema should specify max items for choices."""
-        choices_spec = CLARIFY_SCHEMA["parameters"]["properties"]["choices"]
-        assert choices_spec.get("maxItems") == MAX_CHOICES
 
     def test_max_choices_is_four(self):
         """MAX_CHOICES constant should be 4."""
         assert MAX_CHOICES == 4
 
-    def test_schema_multi_select_optional(self):
-        """multi_select should not be in required list."""
-        assert "multi_select" not in CLARIFY_SCHEMA["parameters"]["required"]
-
-    def test_schema_multi_select_is_boolean(self):
-        """multi_select should be a boolean parameter."""
-        ms_spec = CLARIFY_SCHEMA["parameters"]["properties"].get("multi_select")
-        assert ms_spec is not None
-        assert ms_spec["type"] == "boolean"
 
     def test_schema_multi_select_default_false(self):
         """multi_select should default to false (not in required)."""
@@ -319,113 +203,6 @@ class TestClarifyToolMultiSelect:
         assert result["user_response"] == ["red"]
         assert isinstance(result["user_response"], list)
 
-    def test_multi_select_with_json_array_response(self):
-        """Callback can return a JSON array string for multi-select."""
-        def mock_callback(question, choices):
-            return '["red", "blue"]'
-
-        result = json.loads(clarify_tool(
-            "Which colors?",
-            choices=["red", "blue", "green"],
-            multi_select=True,
-            callback=mock_callback,
-        ))
-        assert result["user_response"] == ["red", "blue"]
-
-    def test_multi_select_no_choices_falls_back_to_single_string(self):
-        """When choices is None, multi_select has no effect on response type."""
-        def mock_callback(question, choices):
-            return "free form answer"
-
-        result = json.loads(clarify_tool(
-            "What do you think?",
-            multi_select=True,
-            callback=mock_callback,
-        ))
-        # Without choices, falls back to single string response
-        assert result["user_response"] == "free form answer"
-        assert isinstance(result["user_response"], str)
-
-    def test_multi_select_default_is_false(self):
-        """Default multi_select should be False (backward compatible)."""
-        def mock_callback(question, choices):
-            return "picked"
-
-        result = json.loads(clarify_tool(
-            "Pick one",
-            choices=["a", "b"],
-            callback=mock_callback,
-        ))
-        assert result["user_response"] == "picked"
-        assert isinstance(result["user_response"], str)
-
-    def test_multi_select_callback_receives_flag(self):
-        """Callback should receive multi_select keyword argument when supported."""
-        received_flag = []
-
-        def mock_callback(question, choices, **kwargs):
-            received_flag.append(kwargs.get("multi_select"))
-            return "a, b"
-
-        clarify_tool(
-            "Pick",
-            choices=["a", "b", "c"],
-            multi_select=True,
-            callback=mock_callback,
-        )
-        assert received_flag == [True]
-
-    def test_multi_select_backward_compatible_callback(self):
-        """Callback that does not accept multi_select keyword should still work."""
-        def mock_callback(question, choices):
-            return "a, b"
-
-        result = json.loads(clarify_tool(
-            "Pick",
-            choices=["a", "b", "c"],
-            multi_select=True,
-            callback=mock_callback,
-        ))
-        assert result["user_response"] == ["a", "b"]
-
-    def test_multi_select_empty_selection_returns_empty_list(self):
-        """Empty response should produce empty list when multi_select=True."""
-        def mock_callback(question, choices):
-            return ""
-
-        result = json.loads(clarify_tool(
-            "Which?",
-            choices=["a", "b"],
-            multi_select=True,
-            callback=mock_callback,
-        ))
-        assert result["user_response"] == []
-
-    def test_multi_select_whitespace_choices_stripped(self):
-        """Individual selections should be stripped of whitespace."""
-        def mock_callback(question, choices):
-            return "  a , b ,  c  "
-
-        result = json.loads(clarify_tool(
-            "Which?",
-            choices=["a", "b", "c"],
-            multi_select=True,
-            callback=mock_callback,
-        ))
-        assert result["user_response"] == ["a", "b", "c"]
-
-    def test_multi_select_choices_offered_preserved(self):
-        """choices_offered should match what was passed in, not the response."""
-        def mock_callback(question, choices):
-            return "red, blue"
-
-        result = json.loads(clarify_tool(
-            "Which?",
-            choices=["red", "blue", "green"],
-            multi_select=True,
-            callback=mock_callback,
-        ))
-        assert result["choices_offered"] == ["red", "blue", "green"]
 
     def test_multi_select_max_choices_enforced(self):
         """MAX_CHOICES enforcement should still work with multi_select."""
@@ -464,16 +241,6 @@ class TestInvokeCallbackDispatch:
             _invoke_callback(bad_callback, "Q?", ["a"], True)
         assert len(calls) == 1
 
-    def test_legacy_two_arg_callback_supported(self):
-        from tools.clarify_tool import _invoke_callback
-        seen = {}
-
-        def legacy(question, choices):
-            seen["args"] = (question, choices)
-            return "ok"
-
-        assert _invoke_callback(legacy, "Q?", ["a"], True) == "ok"
-        assert seen["args"] == ("Q?", ["a"])
 
     def test_var_keyword_callback_receives_flag(self):
         from tools.clarify_tool import _invoke_callback

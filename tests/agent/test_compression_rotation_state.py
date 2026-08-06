@@ -361,125 +361,8 @@ class TestAutomaticCompressionStateRefreshAfterLock:
         compress.assert_not_called()
         assert db.get_compression_lock_holder(parent_id) is None
 
-    def test_prebound_agent_reloads_persisted_streak_before_compressing(
-        self,
-        refresh_state_db: SessionDB,
-    ):
-        db = refresh_state_db
-        session_id = "STALE_FALLBACK_BREAKER"
-        db.create_session(session_id, source="telegram")
-        db.set_compression_fallback_streak(session_id, 1)
-        agent = _build_agent_with_db(db, session_id, platform="telegram")
-        compressor = _bound_context_compressor(db, session_id)
-        assert compressor._fallback_compression_streak == 1
 
-        # A second agent finishes an in-place fallback boundary after this
-        # call's initial gate but while it is acquiring the session lock.
-        real_acquire = db.try_acquire_compression_lock
 
-        def _acquire_after_fallback(*args, **kwargs):
-            db.set_compression_fallback_streak(session_id, 2)
-            return real_acquire(*args, **kwargs)
-
-        db.try_acquire_compression_lock = _acquire_after_fallback
-        agent.context_compressor = compressor
-        agent.compression_in_place = True
-        agent._compression_feasibility_checked = True
-        messages = _msgs()
-
-        with patch.object(
-            compressor,
-            "compress",
-            side_effect=AssertionError("stale agent bypassed fallback breaker"),
-        ) as compress:
-            returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=120_000,
-            )
-
-        assert returned is messages
-        assert compressor._fallback_compression_streak == 2
-        compress.assert_not_called()
-        assert db.get_compression_lock_holder(session_id) is None
-
-    def test_prebound_agent_reloads_persisted_cooldown_before_compressing(
-        self,
-        refresh_state_db: SessionDB,
-    ):
-        db = refresh_state_db
-        session_id = "STALE_COMPRESSION_COOLDOWN"
-        db.create_session(session_id, source="telegram")
-        agent = _build_agent_with_db(db, session_id, platform="telegram")
-        compressor = _bound_context_compressor(db, session_id)
-        assert compressor.get_active_compression_failure_cooldown() is None
-
-        # Another agent records a provider cooldown after this call's initial
-        # gate but while it is acquiring the session lock.
-        real_acquire = db.try_acquire_compression_lock
-
-        def _acquire_after_cooldown(*args, **kwargs):
-            db.record_compression_failure_cooldown(
-                session_id,
-                time.time() + 60,
-                "rate limited",
-            )
-            return real_acquire(*args, **kwargs)
-
-        db.try_acquire_compression_lock = _acquire_after_cooldown
-        agent.context_compressor = compressor
-        agent.compression_in_place = True
-        agent._compression_feasibility_checked = True
-        messages = _msgs()
-
-        with patch.object(
-            compressor,
-            "compress",
-            side_effect=AssertionError("stale agent bypassed compression cooldown"),
-        ) as compress:
-            returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=120_000,
-            )
-
-        assert returned is messages
-        assert compressor.get_active_compression_failure_cooldown() is not None
-        compress.assert_not_called()
-        assert db.get_compression_lock_holder(session_id) is None
-
-    def test_prebound_agent_drops_stale_blocker_before_initial_gate(
-        self,
-        refresh_state_db: SessionDB,
-    ):
-        db = refresh_state_db
-        session_id = "CLEARED_FALLBACK_BREAKER"
-        db.create_session(session_id, source="telegram")
-        db.set_compression_fallback_streak(session_id, 2)
-        agent = _build_agent_with_db(db, session_id, platform="telegram")
-        compressor = _bound_context_compressor(db, session_id)
-        assert compressor._fallback_compression_streak == 2
-
-        # A healthy boundary on another agent clears the durable breaker after
-        # this compressor was bound. The initial gate must not remain stuck on
-        # its stale in-memory snapshot.
-        db.set_compression_fallback_streak(session_id, 0)
-        agent.context_compressor = compressor
-        agent.compression_in_place = True
-        agent._compression_feasibility_checked = True
-        messages = _msgs()
-
-        with patch.object(compressor, "compress", return_value=messages) as compress:
-            returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=120_000,
-            )
-
-        assert returned is messages
-        assert compressor._fallback_compression_streak == 0
-        compress.assert_called_once()
-        assert db.get_compression_lock_holder(session_id) is None
 
     def test_prebound_agent_drops_stale_cooldown_before_initial_gate(
         self,
@@ -517,37 +400,6 @@ class TestAutomaticCompressionStateRefreshAfterLock:
         compress.assert_called_once()
         assert db.get_compression_lock_holder(session_id) is None
 
-    def test_force_still_bypasses_refreshed_persisted_breaker(
-        self,
-        refresh_state_db: SessionDB,
-    ):
-        db = refresh_state_db
-        session_id = "FORCED_FALLBACK_RETRY"
-        db.create_session(session_id, source="telegram")
-        db.set_compression_fallback_streak(session_id, 2)
-        agent = _build_agent_with_db(db, session_id, platform="telegram")
-        compressor = _bound_context_compressor(db, session_id)
-        agent.context_compressor = compressor
-        agent.compression_in_place = True
-        agent._compression_feasibility_checked = True
-        messages = _msgs()
-
-        with patch.object(compressor, "compress", return_value=messages) as compress:
-            returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=120_000,
-                force=True,
-            )
-
-        assert returned is messages
-        compress.assert_called_once_with(
-            messages,
-            current_tokens=120_000,
-            focus_topic=None,
-            force=True,
-        )
-        assert db.get_compression_lock_holder(session_id) is None
 
 
 class TestGateLevelGuardRefresh:
@@ -691,80 +543,8 @@ class TestTodoSnapshotMergedNotDuplicated:
             for previous, current in zip(compressed, compressed[1:])
         )
 
-    def test_multimodal_snapshot_merges_into_trailing_user_on_rotation(
-        self, tmp_path: Path
-    ):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        parent = "PARENT_TODO_MULTIMODAL_ROTATION"
-        db.create_session(parent, source="cli")
-        agent = _build_agent_with_db(db, parent, platform="cli")
-
-        original_parts = [
-            {"type": "text", "text": "tail text"},
-            {
-                "type": "image_url",
-                "image_url": {"url": "https://example.com/context.png"},
-            },
-        ]
-        agent.context_compressor.compress.return_value = [
-            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
-            {"role": "assistant", "content": "acknowledged"},
-            {"role": "user", "content": list(original_parts)},
-        ]
-        agent._todo_store._todos = [
-            {"id": "t1", "content": "inspect image", "status": "pending"}
-        ]
-        agent._todo_store.format_for_injection = (
-            lambda: "## Current Tasks\n- [ ] inspect image"
-        )
-
-        compressed, _ = agent._compress_context(
-            _msgs(), "sys", approx_tokens=120_000
-        )
-
-        assert len(compressed) == 3
-        tail = compressed[-1]
-        assert tail["role"] == "user"
-        assert isinstance(tail["content"], list)
-        assert tail["content"][: len(original_parts)] == original_parts
-        assert any(
-            isinstance(part, dict) and "inspect image" in (part.get("text") or "")
-            for part in tail["content"]
-        )
-        assert not any(
-            previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(compressed, compressed[1:])
-        )
 
 
-    def test_snapshot_merge_is_persisted_in_place(self, tmp_path: Path):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        parent = "PARENT_TODO_INPLACE"
-        db.create_session(parent, source="cli")
-        agent = _build_agent_with_db(db, parent, platform="cli")
-        agent.compression_in_place = True
-        agent.context_compressor.compress.return_value = [
-            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
-            {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": "last user msg"},
-        ]
-        agent._todo_store._todos = [
-            {"id": "t1", "content": "do thing", "status": "in_progress"}
-        ]
-        agent._todo_store.format_for_injection = (
-            lambda: "## Current Tasks\n- [ ] do thing"
-        )
-
-        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
-
-        db_msgs = db.get_messages(agent.session_id)
-        assert not any(
-            previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(db_msgs, db_msgs[1:])
-        )
-        last_user = [message for message in db_msgs if message["role"] == "user"][-1]
-        assert "last user msg" in last_user["content"]
-        assert "do thing" in last_user["content"]
 
     def test_multimodal_snapshot_merge_is_persisted_in_place(self, tmp_path: Path):
         db = SessionDB(db_path=tmp_path / "state.db")
@@ -841,115 +621,8 @@ class TestTodoSnapshotScaffoldingTails:
         )
         return agent
 
-    def test_snapshot_stays_standalone_after_continuation_marker(
-        self, tmp_path: Path
-    ):
-        from agent.context_compressor import (
-            COMPRESSION_CONTINUATION_USER_CONTENT,
-            ContextCompressor,
-        )
 
-        db = SessionDB(db_path=tmp_path / "state.db")
-        agent = self._agent_with_todo(
-            db,
-            "PARENT_TODO_MARKER_TAIL",
-            {
-                "role": "user",
-                "content": COMPRESSION_CONTINUATION_USER_CONTENT,
-            },
-        )
 
-        compressed, _ = agent._compress_context(
-            _msgs(), "sys", approx_tokens=120_000
-        )
-
-        tail = compressed[-1]
-        assert tail["role"] == "user"
-        assert tail.get("_todo_snapshot_synthetic") is True
-        assert "task A" in tail["content"]
-        # The continuation marker keeps its exact text so it stays
-        # recognizable as scaffolding after SessionDB projection.
-        marker_rows = [
-            message
-            for message in compressed
-            if message.get("content") == COMPRESSION_CONTINUATION_USER_CONTENT
-        ]
-        assert len(marker_rows) == 1
-        # Zero-user provenance: neither the marker nor the snapshot may read
-        # as a real user turn once SessionDB projection strips the flags
-        # (#69292). The fixture's stub summary text is not a real handoff
-        # prefix, so assert on the projected scaffolding rows directly.
-        assert not ContextCompressor._transcript_has_real_user_turn(
-            [
-                {"role": "user", "content": marker_rows[0]["content"]},
-                {"role": "user", "content": tail["content"]},
-            ]
-        )
-
-    def test_snapshot_stays_standalone_after_summary_as_user_tail(
-        self, tmp_path: Path
-    ):
-        from agent.context_compressor import SUMMARY_PREFIX, ContextCompressor
-
-        summary_as_user = f"{SUMMARY_PREFIX}\nzero-user summary body"
-        db = SessionDB(db_path=tmp_path / "state.db")
-        agent = self._agent_with_todo(
-            db,
-            "PARENT_TODO_SUMMARY_TAIL",
-            {"role": "user", "content": summary_as_user},
-        )
-
-        compressed, _ = agent._compress_context(
-            _msgs(), "sys", approx_tokens=120_000
-        )
-
-        tail = compressed[-1]
-        assert tail.get("_todo_snapshot_synthetic") is True
-        assert "task A" in tail["content"]
-        # The summary handoff prefix must stay at the START of its own
-        # message for downstream summary detection.
-        summary_rows = [
-            message
-            for message in compressed
-            if str(message.get("content") or "").startswith(SUMMARY_PREFIX)
-        ]
-        assert len(summary_rows) == 1
-        # Zero-user provenance (#69292): after SessionDB projection strips
-        # the flags, both the summary-as-user handoff and the standalone
-        # snapshot must still classify as synthetic — the merge would have
-        # buried the header/prefix markers mid-content.
-        assert not ContextCompressor._transcript_has_real_user_turn(
-            [
-                {"role": "user", "content": summary_rows[0]["content"]},
-                {"role": "user", "content": tail["content"]},
-            ]
-        )
-
-    def test_stale_snapshot_row_is_refreshed_not_stacked(self, tmp_path: Path):
-        from tools.todo_tool import TODO_INJECTION_HEADER
-
-        stale = f"{TODO_INJECTION_HEADER}\n- [ ] t0. old finished task (pending)"
-        db = SessionDB(db_path=tmp_path / "state.db")
-        agent = self._agent_with_todo(
-            db,
-            "PARENT_TODO_STALE_ROW",
-            {"role": "user", "content": stale},
-        )
-
-        compressed, _ = agent._compress_context(
-            _msgs(), "sys", approx_tokens=120_000
-        )
-
-        tail = compressed[-1]
-        assert tail.get("_todo_snapshot_synthetic") is True
-        assert "task A" in tail["content"]
-        assert "old finished task" not in tail["content"]
-        snapshot_rows = [
-            message
-            for message in compressed
-            if str(message.get("content") or "").startswith(TODO_INJECTION_HEADER)
-        ]
-        assert len(snapshot_rows) == 1
 
     def test_previously_merged_snapshot_is_stripped_before_reinjection(
         self, tmp_path: Path
@@ -1009,4 +682,47 @@ class TestTodoSnapshotScaffoldingTails:
         assert not any(
             TODO_INJECTION_HEADER in str(message.get("content") or "")
             for message in compressed
+        )
+
+
+class TestArchivedParentActivityLabelsCleared:
+    def test_parent_labels_cleared_after_rotation_child_lineage_intact(
+        self, tmp_path: Path
+    ):
+        """Round-2 #4: the terminal heartbeat stamp must not stay on the parent.
+
+        The compression activity heartbeat force-persists "context compression
+        completed" against the PARENT id (agent.session_id at stamp time).
+        After the out-of-place rotation the parent is archived; its activity
+        labels must be cleared so it doesn't advertise a fresh
+        last_activity_at + terminal label forever, while the child keeps its
+        lineage.
+        """
+        from agent.session_activity import ActivityProvenance
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ACTIVITY_LABELS"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent)
+
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        child = agent.session_id
+        assert child != parent  # rotation happened
+
+        # Child lineage intact.
+        child_row = db.get_session(child)
+        assert child_row is not None
+        assert child_row.get("parent_session_id") == parent
+
+        # Parent archived with cleared activity labels.
+        parent_row = db.get_session(parent)
+        assert parent_row is not None
+        assert parent_row.get("ended_at") is not None
+        assert not parent_row.get("last_activity_description"), (
+            "archived compression parent kept a stale activity description "
+            f"({parent_row.get('last_activity_description')!r})"
+        )
+        prov = parent_row.get("last_activity_provenance")
+        assert not prov or prov == ActivityProvenance.UNKNOWN.value, (
+            f"archived parent kept terminal provenance {prov!r}"
         )

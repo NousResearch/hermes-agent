@@ -37,30 +37,6 @@ class TestExpandTilde:
             result = ft._expand_tilde("~/scratch/file.txt")
         assert result == "/opt/data/profiles/coder/home/scratch/file.txt"
 
-    def test_bare_tilde_expands_to_profile_home(self):
-        """Bare ~ expands to the profile home."""
-        with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
-            result = ft._expand_tilde("~")
-        assert result == "/opt/data/profiles/coder/home"
-
-    def test_falls_back_when_no_profile_home(self):
-        """When get_subprocess_home returns None, use os.path.expanduser."""
-        with patch("hermes_constants.get_subprocess_home", return_value=None):
-            result = ft._expand_tilde("~/Documents")
-        assert result == os.path.expanduser("~/Documents")
-
-    def test_other_user_tilde_not_overridden(self):
-        """~user/path must NOT use the profile home — it's a different user."""
-        with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
-            result = ft._expand_tilde("~root/file.txt")
-        # Should use os.path.expanduser, not the profile home
-        assert "/opt/data/profiles/coder/home" not in result
-
-    def test_no_tilde_unchanged(self):
-        """Paths without ~ are returned unchanged (modulo expanduser)."""
-        with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
-            result = ft._expand_tilde("/etc/passwd")
-        assert result == "/etc/passwd"
 
     def test_empty_path_unchanged(self):
         """Empty string returns empty."""

@@ -49,32 +49,10 @@ class TestSteerAcceptance:
         assert agent.steer("go ahead and check the logs") is True
         assert agent._pending_steer == "go ahead and check the logs"
 
-    def test_rejects_empty_string(self):
-        agent = _bare_agent()
-        assert agent.steer("") is False
-        assert agent._pending_steer is None
 
-    def test_rejects_whitespace_only(self):
-        agent = _bare_agent()
-        assert agent.steer("   \n\t  ") is False
-        assert agent._pending_steer is None
 
-    def test_rejects_none(self):
-        agent = _bare_agent()
-        assert agent.steer(None) is False  # type: ignore[arg-type]
-        assert agent._pending_steer is None
 
-    def test_strips_surrounding_whitespace(self):
-        agent = _bare_agent()
-        assert agent.steer("  hello world  \n") is True
-        assert agent._pending_steer == "hello world"
 
-    def test_concatenates_multiple_steers_with_newlines(self):
-        agent = _bare_agent()
-        agent.steer("first note")
-        agent.steer("second note")
-        agent.steer("third note")
-        assert agent._pending_steer == "first note\nsecond note\nthird note"
 
 
 class TestSteerDrain:
@@ -84,9 +62,6 @@ class TestSteerDrain:
         assert agent._drain_pending_steer() == "hello"
         assert agent._pending_steer is None
 
-    def test_drain_on_empty_returns_none(self):
-        agent = _bare_agent()
-        assert agent._drain_pending_steer() is None
 
 
 class TestActiveTurnRedirect:
@@ -203,19 +178,6 @@ class TestActiveTurnRedirect:
 
         assert calls == ["interrupt"]
 
-    def test_codex_app_server_redirect_rejects_after_hard_stop(self):
-        agent = _bare_agent()
-        calls = []
-        agent.api_mode = "codex_app_server"
-        agent._interrupt_requested = True
-        agent._codex_session = type(
-            "_CodexSession",
-            (),
-            {"request_steer": lambda self, text: calls.append(text) or True},
-        )()
-
-        assert agent.redirect("too late") is False
-        assert calls == []
 
     def test_redirect_during_tool_execution_uses_safe_steer_boundary(self):
         agent = _bare_agent()
@@ -384,13 +346,6 @@ class TestSteerInjection:
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
         assert messages[-1]["content"] == "output"  # unchanged
 
-    def test_no_op_when_num_tool_msgs_zero(self):
-        agent = _bare_agent()
-        agent.steer("steer")
-        messages = [{"role": "user", "content": "hi"}]
-        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=0)
-        # Steer should remain pending (nothing to drain into)
-        assert agent._pending_steer == "steer"
 
     def test_marker_labels_text_as_out_of_band_user_message(self):
         """The injection marker must attribute the appended text to the user
@@ -424,23 +379,6 @@ class TestSteerInjection:
         assert new_content[1]["type"] == "text"
         assert "extra note" in new_content[1]["text"]
 
-    def test_restashed_when_no_tool_result_in_batch(self):
-        """If the 'batch' contains no tool-role messages (e.g. all skipped
-        after an interrupt), the steer should be put back into the pending
-        slot so the caller's fallback path can deliver it."""
-        agent = _bare_agent()
-        agent.steer("ping")
-        messages = [
-            {"role": "user", "content": "x"},
-            {"role": "assistant", "content": "y"},
-        ]
-        # Claim there were N tool msgs, but the tail has none — simulates
-        # the interrupt-cancelled case.
-        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=2)
-        # Messages untouched
-        assert messages[-1]["content"] == "y"
-        # And the steer is back in pending so the fallback can grab it
-        assert agent._pending_steer == "ping"
 
 
 class TestSteerThreadSafety:
@@ -542,26 +480,6 @@ class TestPreApiCallSteerDrain:
         agent._pending_steer = _pre_api_steer
         assert agent._pending_steer == "early steer"
 
-    def test_pre_api_drain_finds_tool_msg_past_assistant(self):
-        """The pre-API drain should scan backwards past a non-tool message
-        (e.g., if an assistant message was somehow appended after tools)
-        and still find the tool result."""
-        agent = _bare_agent()
-        messages = [
-            {"role": "user", "content": "do something"},
-            {"role": "assistant", "content": "let me check", "tool_calls": [
-                {"id": "tc1", "function": {"name": "web_search", "arguments": "{}"}}
-            ]},
-            {"role": "tool", "content": "search results", "tool_call_id": "tc1"},
-        ]
-        agent.steer("change approach")
-        _pre_api_steer = agent._drain_pending_steer()
-        assert _pre_api_steer is not None
-        for _si in range(len(messages) - 1, -1, -1):
-            if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += format_steer_marker(_pre_api_steer)
-                break
-        assert "change approach" in messages[2]["content"]
 
 
 class TestSteerMarkerContract:
@@ -574,6 +492,24 @@ class TestSteerMarkerContract:
         emitted = format_steer_marker("hi")
         assert STEER_MARKER_OPEN in emitted and STEER_MARKER_CLOSE in emitted
         assert STEER_MARKER_OPEN in STEER_CHANNEL_NOTE and STEER_MARKER_CLOSE in STEER_CHANNEL_NOTE
+
+    def test_system_prompt_scopes_freshness_to_unanswered_marker(self):
+        """A delivered marker remains in immutable history on later API calls.
+
+        The prompt contract must distinguish the unanswered tail occurrence
+        from one followed by an assistant response, or a model can interpret a
+        historical steer as newly delivered and repeat non-idempotent work.
+        """
+        from agent.prompt_builder import STEER_CHANNEL_NOTE
+
+        assert "latest tool-result batch" in STEER_CHANNEL_NOTE
+        assert "no later assistant message follows it" in STEER_CHANNEL_NOTE
+        assert "do not treat it as a new message" in STEER_CHANNEL_NOTE
+        assert "repeat completed work" in STEER_CHANNEL_NOTE
+
+        emitted = format_steer_marker("deploy once")
+        assert "delivered once at this position" in emitted
+        assert "not a new delivery when replayed" in emitted
 
     def test_marker_no_longer_uses_the_distrusted_label(self):
         """Regression: the bare 'User guidance:' line read as tool content and

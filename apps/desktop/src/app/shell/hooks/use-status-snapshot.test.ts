@@ -158,7 +158,7 @@ describe('useStatusSnapshot', () => {
     })
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(14_999)
+      await vi.advanceTimersByTimeAsync(59_999)
     })
     expect(requestGatewayMock).toHaveBeenCalledTimes(2)
 

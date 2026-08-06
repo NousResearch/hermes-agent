@@ -98,9 +98,23 @@ jobs:
           if [ "$SUPPLY_CHAIN" = "true" ]; then args+=(--supply-chain); fi
           if [ "$LABEL_PRESENT" = "true" ]; then args+=(--label-present); fi
 
+          # Write to both $GITHUB_OUTPUT and review-status.json for the
+          # live comment poller to pick up as an artifact.
           python3 scripts/ci/emit_review_status.py "${args[@]}" \
             --repo-url "$REPO_URL" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" \
             --output "$GITHUB_OUTPUT"
+          grep '^review_status=' "$GITHUB_OUTPUT" > review-status.json
+
+      - name: Upload review status artifact
+        if: always() && steps.build-status.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: review-status-review-labels
+          path: review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
 
       - name: Fail on missing label
         if: steps.label-check.outputs.ci_reviewed != 'true'

@@ -1,6 +1,9 @@
+import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
+import { $onBattery, batteryPollInterval } from '@/store/power'
 import { refreshActiveProfile } from '@/store/profile'
 import { $activeSessionId, $currentCwd, setCurrentCwd } from '@/store/session'
 import {
@@ -14,10 +17,15 @@ import type { GatewayRequester } from '../types'
 
 // Cron sessions are written by a background scheduler tick, messaging turns by
 // the background gateway (Telegram, WeChat, Discord, …) — neither signals the
-// desktop websocket, so poll the bounded lists while the app is visible.
+// desktop websocket directly. Backends with the change watcher broadcast
+// `cron.changed` / `sessions.changed` when those on-disk writes land, so the
+// timers below become slow safety-net backstops; against an older backend
+// (no `change_events` on gateway.ready) they stay at the legacy cadence.
 const CRON_POLL_INTERVAL_MS = 30_000
+const CRON_BACKSTOP_INTERVAL_MS = 5 * 60_000
 const MESSAGING_POLL_INTERVAL_MS = 10_000
 const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
+const ACTIVE_MESSAGING_SESSION_BACKSTOP_INTERVAL_MS = 30_000
 // Match the TUI's live-session refresh cadence. Auto-compression can rotate a
 // stored session id while its turn keeps running; until the next snapshot the
 // sidebar row points at the new id while the renderer still knows the old one.
@@ -25,6 +33,15 @@ const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
 // alarming (and clicking the row appeared to "fix" it by touching the live
 // session). This snapshot is small and already polled at 1.5s by the TUI.
 const LIVE_SESSION_STATUS_POLL_INTERVAL_MS = 1_500
+// With change events the snapshot re-pulls on every sessions.changed tick, so
+// the interval only covers the degraded-socket edge the stream can't replay
+// (see rehydrateLiveSessionStatuses) — 30s is plenty for that.
+const LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS = 30_000
+// Coalesce tick-driven sidebar list refreshes: sessions.changed fires (floored
+// to 2s server-side) on every state.db write during a streaming turn, and the
+// full list refresh is heavier than the active_list snapshot. Trailing-edge
+// scheduled, so the burst's last write always lands.
+const SESSIONS_LIST_TICK_GAP_MS = 10_000
 
 interface LiveSessionStatusItem {
   id?: string
@@ -164,7 +181,10 @@ interface BackgroundSyncParams {
 }
 
 /** Poll a callback while the tab is visible, on `intervalMs`; re-checks on tab
- *  re-focus. Returns nothing — meant to live inside an effect. */
+ *  re-focus. On battery the cadence stretches (see store/power) — these are
+ *  safety-net refreshes, not the live path, so they're the right thing to slow
+ *  when the machine is spending its charge. Returns nothing — meant to live
+ *  inside an effect. */
 function visiblePoll(intervalMs: number, tick: () => void): () => void {
   const run = () => {
     if (document.visibilityState === 'visible') {
@@ -172,10 +192,17 @@ function visiblePoll(intervalMs: number, tick: () => void): () => void {
     }
   }
 
-  const intervalId = window.setInterval(run, intervalMs)
+  let intervalId = window.setInterval(run, batteryPollInterval(intervalMs, $onBattery.get()))
+
+  const unsubscribeBattery = $onBattery.listen(onBattery => {
+    window.clearInterval(intervalId)
+    intervalId = window.setInterval(run, batteryPollInterval(intervalMs, onBattery))
+  })
+
   document.addEventListener('visibilitychange', run)
 
   return () => {
+    unsubscribeBattery()
     window.clearInterval(intervalId)
     document.removeEventListener('visibilitychange', run)
   }
@@ -201,6 +228,10 @@ export function useBackgroundSync({
   refreshSessions,
   requestGateway
 }: BackgroundSyncParams): void {
+  const changeEventsAvailable = useStore($changeEventsAvailable)
+  const cronChangeTick = useStore($cronChangeTick)
+  const sessionsChangeTick = useStore($sessionsChangeTick)
+
   useEffect(() => {
     if (gatewayState !== 'open') {
       return
@@ -229,8 +260,9 @@ export function useBackgroundSync({
 
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session
-  // registry immediately, then cheaply poll while visible so a profile switch
-  // or missed reconnect edge cannot leave running rows dark until clicked.
+  // registry immediately, then re-pull on every sessions.changed broadcast; a
+  // slow visible poll remains as the backstop for the degraded-socket edge the
+  // stream cannot replay (legacy cadence against older backends).
   useEffect(() => {
     if (gatewayState !== 'open') {
       return
@@ -260,7 +292,10 @@ export function useBackgroundSync({
       }
     }
 
-    const dispose = visiblePoll(LIVE_SESSION_STATUS_POLL_INTERVAL_MS, () => void refreshLiveStatuses())
+    const dispose = visiblePoll(
+      changeEventsAvailable ? LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS : LIVE_SESSION_STATUS_POLL_INTERVAL_MS,
+      () => void refreshLiveStatuses()
+    )
 
     void refreshLiveStatuses()
 
@@ -268,44 +303,98 @@ export function useBackgroundSync({
       cancelled = true
       dispose()
     }
-  }, [activeGatewayProfile, gatewayState, requestGateway])
+    // sessionsChangeTick: each sessions.changed broadcast re-seeds immediately
+    // via the effect re-run (already coalesced to 2s server-side).
+  }, [activeGatewayProfile, changeEventsAvailable, gatewayState, requestGateway, sessionsChangeTick])
+
+  // sessions.changed also means the *stored* list may have new rows (a cron
+  // run's session, an inbound messaging turn creating a thread). The full list
+  // refresh is heavier than the active_list snapshot, so trail it on a gap
+  // instead of firing per tick. Direct atom subscription: the throttle state
+  // lives in the effect closure, not in refs synced from renders.
+  useEffect(() => {
+    if (gatewayState !== 'open' || !changeEventsAvailable) {
+      return
+    }
+
+    let lastRunAt = 0
+    let timer: null | number = null
+
+    const run = () => {
+      lastRunAt = Date.now()
+      void refreshSessions()
+      void refreshMessagingSessions()
+    }
+
+    const unsubscribe = $sessionsChangeTick.listen(() => {
+      const since = Date.now() - lastRunAt
+
+      if (since >= SESSIONS_LIST_TICK_GAP_MS) {
+        run()
+      } else if (timer === null) {
+        timer = window.setTimeout(() => {
+          timer = null
+          run()
+        }, SESSIONS_LIST_TICK_GAP_MS - since)
+      }
+    })
+
+    return () => {
+      unsubscribe()
+
+      if (timer !== null) {
+        window.clearTimeout(timer)
+      }
+    }
+  }, [changeEventsAvailable, gatewayState, refreshMessagingSessions, refreshSessions])
 
   // Keep the cron-jobs section live without a user action (scheduler ticks in
-  // the background); re-check on tab re-focus too.
+  // the background). cron.changed (jobs.json moved: CRUD or a scheduler tick's
+  // bookkeeping) drives the refresh; the visible poll is the backstop.
   useEffect(() => {
     if (gatewayState !== 'open') {
       return
     }
 
-    return visiblePoll(CRON_POLL_INTERVAL_MS, () => void refreshCronJobs())
-  }, [gatewayState, refreshCronJobs])
-
-  // Keep the messaging-platform session lists live (inbound turns are written
-  // by the gateway, not the desktop websocket).
-  useEffect(() => {
-    if (gatewayState !== 'open') {
-      return
+    if (cronChangeTick > 0) {
+      void refreshCronJobs()
     }
 
-    return visiblePoll(MESSAGING_POLL_INTERVAL_MS, () => void refreshMessagingSessions())
-  }, [gatewayState, refreshMessagingSessions])
+    return visiblePoll(
+      changeEventsAvailable ? CRON_BACKSTOP_INTERVAL_MS : CRON_POLL_INTERVAL_MS,
+      () => void refreshCronJobs()
+    )
+  }, [changeEventsAvailable, cronChangeTick, gatewayState, refreshCronJobs])
 
-  // Only the open messaging transcript needs its own poll — local chats are
-  // live over the websocket already.
+  // Only the open messaging transcript needs its own cadence — local chats are
+  // live over the websocket already. sessions.changed re-pulls it via the tick
+  // dep; the visible poll is the backstop.
   useEffect(() => {
     if (gatewayState !== 'open' || !activeIsMessaging) {
       return
     }
 
     const dispose = visiblePoll(
-      ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS,
+      changeEventsAvailable ? ACTIVE_MESSAGING_SESSION_BACKSTOP_INTERVAL_MS : ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS,
       () => void refreshActiveMessagingTranscript()
     )
 
     void refreshActiveMessagingTranscript()
 
     return dispose
-  }, [activeIsMessaging, gatewayState, refreshActiveMessagingTranscript])
+    // sessionsChangeTick: an inbound turn re-pulls the open transcript.
+  }, [activeIsMessaging, changeEventsAvailable, gatewayState, refreshActiveMessagingTranscript, sessionsChangeTick])
+
+  // Messaging session lists against an older backend: no sessions.changed, so
+  // keep the legacy visible poll. (Event-capable backends fold this into the
+  // trailing sessions.changed refresh above.)
+  useEffect(() => {
+    if (gatewayState !== 'open' || changeEventsAvailable) {
+      return
+    }
+
+    return visiblePoll(MESSAGING_POLL_INTERVAL_MS, () => void refreshMessagingSessions())
+  }, [changeEventsAvailable, gatewayState, refreshMessagingSessions])
 
   // A fresh new-session draft (gateway open, no active session) re-pulls the
   // model + config so the composer pill reflects the profile default.

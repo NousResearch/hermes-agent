@@ -2,18 +2,20 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
-import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
+import { displayPath, pathLeaf } from '@/lib/display-path'
 import { Activity, AlertCircle, Clock, Command, FolderOpen, Globe, Hash, Loader2, Terminal } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { resolveVersionStatus } from '@/lib/version-status'
 import { copyFilePath, revealFile } from '@/store/file-actions'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -28,6 +30,7 @@ import {
   $sessions,
   $sessionStartedAt,
   $turnStartedAt,
+  idsShareLineage,
   sessionMatchesStoredId,
   setCurrentUsage
 } from '@/store/session'
@@ -48,13 +51,6 @@ import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
 
 const EMPTY_USAGE = { calls: 0, input: 0, output: 0, total: 0 } as const
-
-function workspaceLabel(cwd: string): string {
-  const normalized = cwd.replace(/[\\/]+$/, '')
-  const leaf = normalized.split(/[\\/]/).filter(Boolean).pop()
-
-  return leaf || cwd
-}
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
@@ -91,15 +87,15 @@ export function useStatusbarItems({
   const fileMenu = t.fileMenu
   const primaryActiveSessionId = useStore($activeSessionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
-  const terminalTakeover = useStore($terminalTakeover)
+  // What the button paints and flips is whether the terminal is ON SCREEN —
+  // the takeover store alone stays true behind a stacked sibling tab or a
+  // minimized zone, which lit the button for a pane the user couldn't see.
+  const terminalShowing = useStore($paneVisible('terminal'))
   const primaryBusy = useStore($busy)
-  const currentCwd = useStore($currentCwd)
-  // Derive the workspace's project name from the already-cached project tree
-  // (backend truth via projects.*), so the status item labels by project without
-  // a second per-session copy of the same fact. Re-derives whenever the cwd or
-  // the tree changes; null (no named project) falls back to the cwd leaf below.
-  const projectTree = useStore($projectTree)
-  const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
+  // Draft / primary composer atom — used only while the focused surface is the
+  // primary (or a draft with no runtime slice yet). A focused TILE keeps its
+  // own cwd in `$sessionStates` and must not paint the primary's workspace.
+  const primaryCwd = useStore($currentCwd)
   const primaryUsage = useStore($currentUsage)
   const gatewayRestarting = useStore($gatewayRestarting)
   const primarySessionStartedAt = useStore($sessionStartedAt)
@@ -127,15 +123,14 @@ export function useStatusbarItems({
 
   // The FOCUSED session (interacted tile, else the primary — the same
   // derivation the titlebar title follows): every session-scoped readout
-  // below (context count, timers, busy pulse) tracks it, so clicking into a
-  // tile makes the statusbar describe THAT session.
+  // below (workspace cwd, context count, timers, busy pulse) tracks it, so
+  // clicking into a tile makes the statusbar describe THAT session.
   const focusedStoredSessionId = useStore($focusedStoredSessionId)
   const focusedRuntimeId = useStore($focusedRuntimeId)
   // `$focusedSessionState` is a projection of `$sessionStates`, which is
   // republished on EVERY message delta — tens of times a second during a turn.
-  // Only three fields are read off it here, so subscribing to the whole object
-  // re-ran this hook (and re-created all ~9 statusbar items) per token. Select
-  // each field individually so an unchanged readout bails out instead.
+  // Only the fields read here are selected, so an unchanged readout bails out
+  // instead of rebuilding all ~9 statusbar items per token.
   const focusedBusy = useStoreSelector($focusedSessionState, state => Boolean(state?.busy))
   const focusedTurnStartedAt = useStoreSelector($focusedSessionState, state => state?.turnStartedAt ?? null)
   // `usage` is an object, so it can't be compared as a scalar. It IS however
@@ -143,6 +138,14 @@ export function useStatusbarItems({
   // reports new usage — far rarer than a delta — so its reference is a valid
   // bail-out key on its own.
   const focusedUsage = useStoreSelector($focusedSessionState, state => state?.usage ?? null)
+  const focusedStateCwd = useStoreSelector($focusedSessionState, state => state?.cwd?.trim() || '')
+
+  // Runtime slices carry the stored id they were bound for. During a primary
+  // tab switch the runtime id can lag a frame behind the new selection — the
+  // slice still describes the PREVIOUS chat. Gate live cwd on ownership so we
+  // never paint session A's workspace while the tab already shows session B.
+  const focusedStateStoredId = useStoreSelector($focusedSessionState, state => state?.storedSessionId?.trim() || null)
+
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const primaryFocused = !focusedStoredSessionId || focusedStoredSessionId === selectedStoredSessionId
 
@@ -155,15 +158,64 @@ export function useStatusbarItems({
 
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : focusedTurnStartedAt
 
-  // A tile's session-start comes from its stored row (the cache only knows
-  // runtime state); seconds → ms. Only this ONE scalar is read off
-  // `$sessions`, so select it — a whole-list `useStore` re-ran the hook on
-  // every session-list write (title updates, poll refreshes, archives).
+  // A tile's session-start + cold cwd come from its stored row (the cache only
+  // knows runtime state). Only these scalars are read off `$sessions`, so
+  // select them — a whole-list `useStore` re-ran the hook on every session-list
+  // write (title updates, poll refreshes, archives).
   const focusedRowStartedAt = useStoreSelector($sessions, sessions =>
     focusedStoredSessionId
       ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.started_at ?? null)
       : null
   )
+
+  const focusedRowCwd = useStoreSelector($sessions, sessions => {
+    if (!focusedStoredSessionId) {
+      return ''
+    }
+
+    const row = sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))
+
+    return row?.cwd?.trim() || ''
+  })
+
+  // Live runtime cwd is authoritative once it belongs to the focused chat
+  // (agent can relocate mid-turn). Until then — cold tabs, mid-switch lag —
+  // the stored session row is the selection's project. Primary drafts fall
+  // through to `$currentCwd`. A focused TILE must never inherit the primary's
+  // workspace — an empty tile cwd stays empty rather than lying about another
+  // project's path.
+  //
+  // Lineage match is a pure derivation of ($sessions + the two ids). Select it
+  // so a session-list write only re-renders when the answer actually flips —
+  // not on every title/archive refresh of an unrelated row.
+  const liveCwdSharesFocusLineage = useStoreSelector($sessions, sessions => {
+    if (!focusedStoredSessionId || !focusedStateStoredId) {
+      return false
+    }
+
+    return idsShareLineage(focusedStoredSessionId, focusedStateStoredId, sessions)
+  })
+
+  const liveCwdBelongsToFocus =
+    Boolean(focusedStateCwd) &&
+    (!focusedStoredSessionId ||
+      !focusedStateStoredId ||
+      focusedStateStoredId === focusedStoredSessionId ||
+      liveCwdSharesFocusLineage)
+
+  const currentCwd = (
+    (liveCwdBelongsToFocus ? focusedStateCwd : '') ||
+    focusedRowCwd ||
+    (primaryFocused ? primaryCwd : '') ||
+    ''
+  ).trim()
+
+  // Derive the workspace's project name from the already-cached project tree
+  // (backend truth via projects.*), so the status item labels by project without
+  // a second per-session copy of the same fact. Re-derives whenever the cwd or
+  // the tree changes; null (no named project) falls back to the cwd leaf below.
+  const projectTree = useStore($projectTree)
+  const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
 
   const sessionStartedAt = primaryFocused
     ? primarySessionStartedAt
@@ -218,42 +270,33 @@ export function useStatusbarItems({
       : 'text-destructive hover:text-destructive'
 
   const clientVersionItem = useMemo<StatusbarItem>(() => {
-    const appVersion = desktopVersion?.appVersion
-    const sha = updateStatus?.currentSha?.slice(0, 7) ?? null
-    const behind = updateStatus?.behind ?? 0
     const applying = updateApply.applying || updateApply.stage === 'restart'
-    const remote = connection?.mode === 'remote'
 
-    const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
-    const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
-    const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
-
-    const label = applying
-      ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : `${base}${behindHint}`
-
-    const tooltip = [
-      applying ? updateApply.message || copy.updateInProgress : null,
-      !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
-      appVersion && copy.desktopVersion(appVersion),
-      sha && copy.commit(sha),
-      updateStatus?.branch && copy.branch(updateStatus.branch)
-    ]
-      .filter(Boolean)
-      .join(' · ')
+    const status = resolveVersionStatus({
+      applying,
+      applyMessage: updateApply.message,
+      behind: updateStatus?.behind ?? 0,
+      branch: updateStatus?.branch,
+      copy,
+      remote: connection?.mode === 'remote',
+      restarting: updateApply.stage === 'restart',
+      sha: updateStatus?.currentSha?.slice(0, 7) ?? null,
+      target: 'client',
+      version: desktopVersion?.appVersion
+    })
 
     return {
-      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
-      detail: appVersion && sha && !applying && !remote ? sha : undefined,
-      hidden: !appVersion && !sha,
+      className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
+      detail: status.detail,
+      hidden: status.unknown,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-client',
-      label,
+      label: status.label,
       // Update state is not a preference: hiding it is how a user misses that
       // their client is behind. Listed in the menu, but locked on.
       lockedVisible: true,
       onSelect: () => openUpdateOverlayFor('client'),
-      title: tooltip || undefined,
+      title: status.tooltip,
       toggleLabel: copy.toggleVersion,
       variant: 'action'
     }
@@ -274,38 +317,29 @@ export function useStatusbarItems({
       return null
     }
 
-    const backendVersion = statusSnapshot?.version
-    const behind = backendUpdateStatus?.behind ?? 0
-    const updateAvailable = backendUpdateStatus?.updateAvailable || behind > 0
     const applying = backendUpdateApply.applying || backendUpdateApply.stage === 'restart'
 
-    const base = copy.backendLabel(backendVersion ?? copy.unknown)
-
-    const behindHint =
-      !applying && behind > 0 ? ` (+${behind})` : !applying && updateAvailable ? ` (${copy.update})` : ''
-
-    const label = applying
-      ? `${base} · ${backendUpdateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : `${base}${behindHint}`
-
-    const tooltip = [
-      applying ? backendUpdateApply.message || copy.updateInProgress : null,
-      !applying && behind > 0 && copy.commitsBehind(behind, 'main'),
-      !applying && behind <= 0 && updateAvailable && copy.update,
-      backendVersion && copy.backendVersion(backendVersion)
-    ]
-      .filter(Boolean)
-      .join(' · ')
+    const status = resolveVersionStatus({
+      applying,
+      applyMessage: backendUpdateApply.message,
+      behind: backendUpdateStatus?.behind ?? 0,
+      copy,
+      remote: true,
+      restarting: backendUpdateApply.stage === 'restart',
+      target: 'backend',
+      updateAvailable: backendUpdateStatus?.updateAvailable,
+      version: statusSnapshot?.version
+    })
 
     return {
-      className: !applying && updateAvailable ? 'text-primary hover:text-primary' : undefined,
-      hidden: !backendVersion,
+      className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
+      hidden: status.unknown,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-backend',
-      label,
+      label: status.label,
       lockedVisible: true,
       onSelect: () => openUpdateOverlayFor('backend'),
-      title: tooltip || undefined,
+      title: status.tooltip,
       toggleLabel: copy.toggleBackendVersion,
       variant: 'action'
     }
@@ -383,33 +417,33 @@ export function useStatusbarItems({
         hidden: !currentCwd,
         icon: <FolderOpen className="size-3" />,
         id: 'workspace-cwd',
-        // Prefer the named project; fall back to the cwd leaf. The full cwd is
-        // always in the tooltip (`title` below), so hovering reveals where the
-        // session actually sits — the worktree/subfolder, not just the project.
-        label: projectName || (currentCwd ? workspaceLabel(currentCwd) : undefined),
+        // Prefer the named project; fall back to the cwd leaf. Hover tip uses
+        // the shared display formatter (home → ~) so statusbar and branch bar
+        // agree on how a path looks.
+        label: projectName || (currentCwd ? pathLeaf(currentCwd) : undefined),
         menuItems: currentCwd
           ? [
               {
                 id: 'copy-workspace-path',
                 label: fileMenu.copyPath,
                 onSelect: () => void copyFilePath(currentCwd),
-                title: currentCwd
+                title: displayPath(currentCwd)
               },
               {
                 id: 'reveal-workspace-finder',
                 label: fileMenu.revealFileManager,
                 onSelect: () => void revealFile(currentCwd),
-                title: currentCwd
+                title: displayPath(currentCwd)
               },
               {
                 id: 'reveal-workspace-sidebar',
                 label: fileMenu.revealInSidebar,
                 onSelect: () => revealFileInTree(currentCwd),
-                title: currentCwd
+                title: displayPath(currentCwd)
               }
             ]
           : undefined,
-        title: currentCwd || undefined,
+        title: currentCwd ? displayPath(currentCwd) : undefined,
         toggleLabel: copy.toggleWorkspace,
         variant: 'menu'
       },
@@ -523,12 +557,12 @@ export function useStatusbarItems({
       },
       {
         actionId: 'view.showTerminal',
-        className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
+        className: `w-7 justify-center px-0${terminalShowing ? ' bg-accent/55 text-foreground' : ''}`,
         hidden: !chatOpen,
         icon: <Terminal className="size-3.5" />,
         id: 'terminal',
-        onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
-        title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
+        onSelect: () => togglePaneVisible('terminal'),
+        title: terminalShowing ? copy.hideTerminal : copy.showTerminal,
         toggleLabel: copy.toggleTerminal,
         variant: 'action'
       },
@@ -550,7 +584,7 @@ export function useStatusbarItems({
       requestGateway,
       sessionStartedAt,
       gatewayState,
-      terminalTakeover,
+      terminalShowing,
       turnStartedAt
     ]
   )

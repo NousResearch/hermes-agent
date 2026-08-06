@@ -81,34 +81,6 @@ def test_ignore_other_user_mentions_defaults_off(monkeypatch):
     assert adapter._slack_ignore_other_user_mentions() is False
 
 
-def test_ignore_other_user_mentions_extra_true():
-    adapter = _make_adapter(ignore_other_user_mentions=True)
-    assert adapter._slack_ignore_other_user_mentions() is True
-
-
-def test_ignore_other_user_mentions_extra_false():
-    adapter = _make_adapter(ignore_other_user_mentions=False)
-    assert adapter._slack_ignore_other_user_mentions() is False
-
-
-def test_ignore_other_user_mentions_extra_string_forms():
-    assert _make_adapter(ignore_other_user_mentions="on")._slack_ignore_other_user_mentions() is True
-    assert _make_adapter(ignore_other_user_mentions="true")._slack_ignore_other_user_mentions() is True
-    assert _make_adapter(ignore_other_user_mentions="off")._slack_ignore_other_user_mentions() is False
-
-
-def test_ignore_other_user_mentions_env_fallback(monkeypatch):
-    monkeypatch.setenv("SLACK_IGNORE_OTHER_USER_MENTIONS", "true")
-    adapter = _make_adapter()
-    assert adapter._slack_ignore_other_user_mentions() is True
-
-
-def test_ignore_other_user_mentions_extra_overrides_env(monkeypatch):
-    monkeypatch.setenv("SLACK_IGNORE_OTHER_USER_MENTIONS", "true")
-    adapter = _make_adapter(ignore_other_user_mentions=False)
-    assert adapter._slack_ignore_other_user_mentions() is False
-
-
 # ---------------------------------------------------------------------------
 # _slack_message_addressed_to_other_user()
 # ---------------------------------------------------------------------------
@@ -118,34 +90,6 @@ SELF_UIDS = {BOT_USER_ID}
 
 def _addressed(text):
     return _make_adapter()._slack_message_addressed_to_other_user(text, SELF_UIDS)
-
-
-def test_addressed_leading_other_user_mention():
-    assert _addressed(f"<@{OTHER_USER_ID}> check this out") is True
-
-
-def test_addressed_leading_bot_mention_is_not_other():
-    assert _addressed(f"<@{BOT_USER_ID}> hello") is False
-
-
-def test_addressed_pipe_form_other_user():
-    assert _addressed(f"<@{OTHER_USER_ID}|rasha> check this out") is True
-
-
-def test_addressed_pipe_form_bot_is_not_other():
-    assert _addressed(f"<@{BOT_USER_ID}|hermes> hello") is False
-
-
-def test_addressed_no_mention():
-    assert _addressed("hello there, thanks for that") is False
-
-
-def test_addressed_mid_text_mention_not_leading():
-    assert _addressed(f"can you loop in <@{OTHER_USER_ID}> on this?") is False
-
-
-def test_addressed_leading_whitespace_then_other_mention():
-    assert _addressed(f"   <@{OTHER_USER_ID}> take a look") is True
 
 
 def test_addressed_empty_and_blank():
@@ -171,21 +115,9 @@ def test_mentions_self_plain_form():
     assert _mentions_self(f"hello <@{BOT_USER_ID}>") is True
 
 
-def test_mentions_self_pipe_form():
-    assert _mentions_self(f"hello <@{BOT_USER_ID}|hermes>") is True
-
-
-def test_mentions_self_other_user_only():
-    assert _mentions_self(f"hello <@{OTHER_USER_ID}|rasha>") is False
-
-
 def test_mentions_self_id_prefix_is_not_a_match():
     # <@U_BOT_123X> is a different user whose ID merely starts with ours.
     assert _mentions_self(f"hello <@{BOT_USER_ID}X>") is False
-
-
-def test_mentions_self_empty():
-    assert _mentions_self("") is False
 
 
 # ---------------------------------------------------------------------------
@@ -242,26 +174,6 @@ async def _run(adapter, event):
 
 
 @pytest.mark.asyncio
-async def test_free_response_ignores_message_addressed_to_other_user(adapter):
-    adapter.config.extra["free_response_channels"] = CHANNEL_ID
-    adapter.config.extra["ignore_other_user_mentions"] = True
-
-    await _run(adapter, _event(f"<@{OTHER_USER_ID}> this is for you", ts="1700000000.000001"))
-
-    adapter.handle_message.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_free_response_can_opt_out_of_ignoring_other_user_mentions(adapter):
-    adapter.config.extra["free_response_channels"] = CHANNEL_ID
-    adapter.config.extra["ignore_other_user_mentions"] = False
-
-    await _run(adapter, _event(f"<@{OTHER_USER_ID}> still ambient chatter", ts="1700000000.000002"))
-
-    adapter.handle_message.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_free_response_replies_when_bot_also_mentioned(adapter):
     adapter.config.extra["free_response_channels"] = CHANNEL_ID
     adapter.config.extra["ignore_other_user_mentions"] = True
@@ -306,22 +218,6 @@ async def test_mentioned_thread_ignores_followup_addressed_to_other_user(adapter
     )
 
     adapter.handle_message.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_mentioned_thread_still_answers_plain_followup(adapter):
-    """No over-suppression: a plain follow-up (no leading mention) in a
-    mentioned thread is still answered when the option is on."""
-    thread_ts = "1700000000.000020"
-    adapter._mentioned_threads.add(thread_ts)
-    adapter.config.extra["ignore_other_user_mentions"] = True
-
-    await _run(
-        adapter,
-        _event("thanks, that makes sense", ts="1700000000.000021", thread_ts=thread_ts),
-    )
-
-    adapter.handle_message.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

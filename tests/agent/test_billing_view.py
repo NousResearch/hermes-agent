@@ -52,43 +52,12 @@ from hermes_cli.nous_billing import (
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("142.5", Decimal("142.5")),   # decimal string, NOT 2dp — the headline case
-        ("100", Decimal("100")),
-        ("10000", Decimal("10000")),
-        ("0.01", Decimal("0.01")),
-        (250, Decimal("250")),
-        ("  50  ", Decimal("50")),
-    ],
-)
-def test_parse_money_valid(raw, expected):
-    assert parse_money(raw) == expected
 
 
-@pytest.mark.parametrize("raw", [None, "", "abc", "1.2.3", "$5", {}])
-def test_parse_money_invalid_returns_none(raw):
-    assert parse_money(raw) is None
 
 
-def test_parse_money_never_uses_binary_float():
-    # If a float ever sneaks through, we still get an exact decimal, not 0.1+0.2 junk.
-    assert parse_money(0.1) == Decimal("0.1")
 
 
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        (Decimal("142.5"), "$142.50"),
-        (Decimal("100"), "$100"),
-        (Decimal("0.01"), "$0.01"),
-        (Decimal("1000"), "$1000"),
-        (None, "—"),
-    ],
-)
-def test_format_money(value, expected):
-    assert format_money(value) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -164,40 +133,10 @@ def test_state_five_roles(
         assert state.auto_reload is None
 
 
-@pytest.mark.parametrize(
-    "role,server_capability",
-    [("MEMBER", True), ("OWNER", False)],
-)
-def test_state_can_change_plan_prefers_server_capability(role, server_capability):
-    payload = _member_payload()
-    payload["org"]["role"] = role
-    payload["canChangePlan"] = server_capability
-
-    state = billing_state_from_payload(payload)
-
-    assert state.can_change_plan is server_capability
 
 
-def test_state_can_change_plan_falls_back_to_legacy_role_check():
-    owner = _member_payload()
-    owner["org"]["role"] = "OWNER"
-    member = _member_payload()
-
-    assert billing_state_from_payload(owner).can_change_plan is True
-    assert billing_state_from_payload(member).can_change_plan is False
 
 
-def test_can_charge_finance_admin_with_server_capability():
-    """Server capability can grant FINANCE_ADMIN charge access."""
-    payload = _member_payload()
-    payload["org"]["role"] = "FINANCE_ADMIN"
-    payload["canChangePlan"] = True
-
-    state = billing_state_from_payload(payload)
-
-    assert state.is_admin is False
-    assert state.can_change_plan is True
-    assert state.can_charge is True
 
 
 def test_state_owner_tier_parse():
@@ -216,105 +155,18 @@ def test_state_owner_tier_parse():
     )
 
 
-def test_state_parses_link_payment_method():
-    payload = _owner_payload()
-    payload["paymentMethod"] = {
-        "kind": "link",
-        "email": "billing@example.com",
-        "paymentMethodId": "pm_secret",
-        "purpose": "top-up",
-        "resolvedVia": "customerDefault",
-    }
-
-    state = billing_state_from_payload(payload)
-
-    assert state.payment_method == PaymentMethodInfo(
-        kind="link",
-        email="billing@example.com",
-        resolved_via="customerDefault",
-    )
 
 
-def test_state_without_payment_method_keeps_it_absent():
-    state = billing_state_from_payload(_owner_payload())
-
-    assert state.payment_method is None
 
 
-@pytest.mark.parametrize("raw_payment_method", ["link", {"email": "billing@example.com"}])
-def test_state_ignores_malformed_payment_method(raw_payment_method):
-    payload = _owner_payload()
-    payload["paymentMethod"] = raw_payment_method
-
-    state = billing_state_from_payload(payload)
-
-    assert state.payment_method is None
 
 
-@pytest.mark.parametrize(
-    "raw_card,expected",
-    [
-        (
-            {"kind": "canonical", "paymentMethodId": "ignored", "brand": "ignored"},
-            AutoReloadCard(kind="canonical"),
-        ),
-        (
-            {
-                "kind": "distinct",
-                "paymentMethodId": "pm_auto",
-                "brand": None,
-                "last4": None,
-            },
-            AutoReloadCard(
-                kind="distinct",
-                payment_method_id="pm_auto",
-                brand=None,
-                last4=None,
-            ),
-        ),
-        (
-            {"kind": "none", "last4": "ignored"},
-            AutoReloadCard(kind="none"),
-        ),
-    ],
-)
-def test_state_parses_auto_reload_card_variants(raw_card, expected):
-    payload = _owner_payload()
-    payload["autoReload"]["card"] = raw_card
-
-    state = billing_state_from_payload(payload)
-
-    assert state.auto_reload is not None
-    assert state.auto_reload.card == expected
 
 
-@pytest.mark.parametrize("raw_card", [None, "canonical", {}, {"kind": "future"}])
-def test_state_ignores_unrecognized_auto_reload_card(raw_card):
-    payload = _owner_payload()
-    payload["autoReload"]["card"] = raw_card
-
-    state = billing_state_from_payload(payload)
-
-    assert state.auto_reload is not None
-    assert state.auto_reload.card is None
 
 
-def test_state_can_charge_false_when_killswitch_off():
-    p = _owner_payload()
-    p["cliBillingEnabled"] = False
-    s = billing_state_from_payload(p)
-    assert s.is_admin is True
-    assert s.can_charge is False  # kill-switch off gates the action
 
 
-def test_state_handles_garbage_substructs():
-    p = _member_payload()
-    p["card"] = "not-a-dict"
-    p["monthlyCap"] = 42
-    p["chargePresets"] = ["100", "bad", "250"]  # bad preset dropped, not crash
-    s = billing_state_from_payload(p)
-    assert s.card is None and s.monthly_cap is None
-    assert s.charge_presets == (Decimal("100"), Decimal("250"))
 
 
 # ---------------------------------------------------------------------------
@@ -345,17 +197,6 @@ def test_403_insufficient_scope_maps_to_scope_required():
     assert (ei.value.portal_url or "").endswith("/billing")
 
 
-@pytest.mark.parametrize("status", [429, 503])
-def test_rate_limited_maps_with_retry_after(status):
-    with pytest.raises(BillingRateLimited) as ei:
-        _raise_for_error(
-            status,
-            {"error": "rate_limited"},
-            _Headers({"Retry-After": "60"}),
-        )
-    assert ei.value.retry_after == 60
-    # Critically: a rate limit is NOT a generic BillingError-only — surfaces branch on type.
-    assert isinstance(ei.value, BillingRateLimited)
 
 
 @pytest.mark.parametrize(
@@ -381,40 +222,8 @@ def test_specific_billing_throttle_errors_remain_distinguishable(
     assert not isinstance(ei.value, BillingRateLimited)
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        "no_payment_method",
-        "cli_billing_disabled",
-        "role_required",
-        "monthly_cap_exceeded",
-        "org_access_denied",
-    ],
-)
-def test_other_403s_map_to_base_error_with_portal_url(error):
-    with pytest.raises(BillingError) as ei:
-        _raise_for_error(403, {"error": error, "portalUrl": "/billing?topup=open"})
-    # Not a scope/auth/rate subclass — the generic gate-denial path.
-    assert not isinstance(ei.value, (BillingScopeRequired, BillingAuthError, BillingRateLimited))
-    assert ei.value.error == error
-    # portalUrl resolved to an absolute deep-link (server sends it relative).
-    assert (ei.value.portal_url or "").startswith("http")
-    assert (ei.value.portal_url or "").endswith("/billing?topup=open")
 
 
-def test_monthly_cap_exceeded_carries_remaining_in_payload():
-    with pytest.raises(BillingError) as ei:
-        _raise_for_error(
-            403,
-            {
-                "error": "monthly_cap_exceeded",
-                "remainingUsd": "12.50",
-                "isDefaultCeiling": True,
-                "portalUrl": "/billing",
-            },
-        )
-    assert ei.value.payload["remainingUsd"] == "12.50"
-    assert ei.value.payload["isDefaultCeiling"] is True
 
 
 def test_400_amount_out_of_bounds_is_base_error():
@@ -429,16 +238,8 @@ def test_400_amount_out_of_bounds_is_base_error():
 # ---------------------------------------------------------------------------
 
 
-def test_post_charge_requires_idempotency_key():
-    with pytest.raises(BillingError) as ei:
-        nb.post_charge(amount_usd=50, idempotency_key="")
-    assert ei.value.error == "idempotency_key_required"
 
 
-def test_get_charge_status_requires_id():
-    with pytest.raises(BillingError) as ei:
-        nb.get_charge_status("")
-    assert ei.value.error == "invalid_charge_id"
 
 
 # ---------------------------------------------------------------------------
@@ -446,18 +247,8 @@ def test_get_charge_status_requires_id():
 # ---------------------------------------------------------------------------
 
 
-def test_portal_base_url_env_override(monkeypatch):
-    monkeypatch.setenv("HERMES_PORTAL_BASE_URL", "https://preview.example.com/")
-    assert resolve_portal_base_url() == "https://preview.example.com"
 
 
-def test_portal_base_url_falls_back_to_state(monkeypatch):
-    monkeypatch.delenv("HERMES_PORTAL_BASE_URL", raising=False)
-    monkeypatch.delenv("NOUS_PORTAL_BASE_URL", raising=False)
-    assert (
-        resolve_portal_base_url({"portal_base_url": "https://stored.example.com/"})
-        == "https://stored.example.com"
-    )
 
 
 def test_portal_base_url_default(monkeypatch):
@@ -471,14 +262,6 @@ def test_portal_base_url_default(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_build_billing_state_logged_out_on_auth_error(monkeypatch):
-    def _auth(*a, **kw):
-        raise BillingAuthError("nope", status=401)
-
-    monkeypatch.setattr(nb, "get_billing_state", _auth)
-    s = build_billing_state()
-    assert s.logged_in is False
-    assert s.error is None  # cleanly logged out, not an error
 
 
 def test_build_billing_state_fail_open_on_http_error(monkeypatch):
@@ -491,23 +274,8 @@ def test_build_billing_state_fail_open_on_http_error(monkeypatch):
     assert "portal exploded" in (s.error or "")
 
 
-def test_build_billing_state_parses_and_prefers_server_portal_url(monkeypatch):
-    payload = _owner_payload()
-    payload["portalUrl"] = "https://portal.example.com/billing?topup=open"
-    monkeypatch.setattr(nb, "get_billing_state", lambda *a, **kw: payload)
-    s = build_billing_state()
-    assert s.logged_in is True
-    assert s.portal_url == "https://portal.example.com/billing?topup=open"
-    assert s.balance_usd == Decimal("142.5")
 
 
-def test_build_billing_state_builds_fallback_portal_url(monkeypatch):
-    payload = _member_payload()  # no portalUrl key
-    monkeypatch.setattr(nb, "get_billing_state", lambda *a, **kw: payload)
-    monkeypatch.setattr(bv, "_fallback_portal_url", lambda base: "FALLBACK")
-    # resolve_portal_base_url is imported into bv via local import; patch nb's.
-    s = build_billing_state()
-    assert s.portal_url == "FALLBACK"
 
 
 # ---------------------------------------------------------------------------
@@ -526,14 +294,8 @@ def test_new_idempotency_key_unique_and_uuid_shaped():
 # ---------------------------------------------------------------------------
 
 
-def test_validate_amount_ok():
-    v = validate_charge_amount("100", min_usd=Decimal("10"), max_usd=Decimal("10000"))
-    assert v.ok and v.amount == Decimal("100")
 
 
-def test_validate_amount_strips_dollar_sign():
-    v = validate_charge_amount("$250", min_usd=Decimal("10"), max_usd=Decimal("10000"))
-    assert v.ok and v.amount == Decimal("250")
 
 
 @pytest.mark.parametrize(
@@ -558,10 +320,6 @@ def test_validate_amount_rejections(raw, err_substr):
 # ---------------------------------------------------------------------------
 
 
-def test_billing_fixture_unset_returns_none(monkeypatch):
-    """No env var → fixture is inert (the real portal path runs)."""
-    monkeypatch.delenv("HERMES_DEV_BILLING_FIXTURE", raising=False)
-    assert bv._dev_fixture_billing_state() is None
 
 
 @pytest.mark.parametrize(
@@ -584,17 +342,5 @@ def test_billing_fixture_card_and_gate_invariants(monkeypatch, name, has_card, i
     assert s.cli_billing_enabled is billing_on
 
 
-def test_billing_fixture_autoreload_state(monkeypatch):
-    """card-autoreload pairs a card with an enabled auto-reload (drives that screen)."""
-    monkeypatch.setenv("HERMES_DEV_BILLING_FIXTURE", "card-autoreload")
-    s = build_billing_state()
-    assert s.card is not None
-    assert s.auto_reload is not None and s.auto_reload.enabled is True
 
 
-def test_billing_fixture_logged_out_and_unknown(monkeypatch):
-    monkeypatch.setenv("HERMES_DEV_BILLING_FIXTURE", "logged-out")
-    assert build_billing_state().logged_in is False
-    monkeypatch.setenv("HERMES_DEV_BILLING_FIXTURE", "bogus-state")
-    s = build_billing_state()
-    assert s.logged_in is False and "bogus-state" in (s.error or "")

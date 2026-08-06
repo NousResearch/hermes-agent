@@ -608,7 +608,10 @@ def _list_projects(
     binary: Path, token: str, console: Console, *, server_url: str = ""
 ) -> Optional[List[dict]]:
     """Call ``bws project list`` and return the parsed list, or None on failure."""
-    env = os.environ.copy()
+    # Secret-manager CLI child: intentionally receives tokens — no scrub,
+    # no HOME rewrite (bws stores state under the real user home).
+    from tools.environments.local import build_subprocess_env
+    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     env["BWS_ACCESS_TOKEN"] = token
     env.setdefault("NO_COLOR", "1")
     if server_url:

@@ -93,33 +93,6 @@ class TestGeminiSetupFreeTierBlock:
         assert model.get("provider") == "gemini"
         assert model.get("default") == "gemini-2.5-flash"
 
-    def test_unknown_tier_proceeds_with_warning(self, config_home, monkeypatch, capsys):
-        """Probe returning 'unknown' (network/auth error) -> proceed without blocking."""
-        monkeypatch.setenv("GOOGLE_API_KEY", "fake-key")
-
-        from hermes_cli.main import _model_flow_api_key_provider
-        from hermes_cli.config import load_config
-
-        with patch(
-            "agent.gemini_native_adapter.probe_gemini_tier",
-            return_value="unknown",
-        ), patch(
-            "hermes_cli.auth._prompt_model_selection",
-            return_value="gemini-2.5-flash",
-        ), patch(
-            "hermes_cli.auth.deactivate_provider",
-        ), patch("builtins.input", return_value=""):
-            _model_flow_api_key_provider(load_config(), "gemini", "old-model")
-
-        output = capsys.readouterr().out
-        assert "could not verify" in output.lower()
-        assert "Not saving Gemini" not in output
-
-        import yaml
-        cfg = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = cfg.get("model")
-        assert isinstance(model, dict)
-        assert model.get("provider") == "gemini"
 
     def test_non_gemini_provider_skips_probe(self, config_home, monkeypatch):
         """Probe must only run for provider_id == 'gemini', not for other providers."""

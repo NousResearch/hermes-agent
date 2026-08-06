@@ -7,11 +7,13 @@ import { pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 import {
+  ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
   dataUrlReadMaxBytesFromMb,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
+  readFileDataUrlForIpc,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
@@ -33,6 +35,41 @@ test('clampDataUrlReadMaxMb defaults and bounds the attach size preference', () 
   assert.equal(clampDataUrlReadMaxMb(256), 256)
   assert.equal(clampDataUrlReadMaxMb(99999), 4096)
   assert.equal(dataUrlReadMaxBytesFromMb(16), 16 * 1024 * 1024)
+})
+
+test('attachment upload cap is bounded above the preview default', () => {
+  assert.equal(ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES, 256 * 1024 * 1024)
+  assert.ok(ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES > dataUrlReadMaxBytesFromMb(DATA_URL_READ_DEFAULT_MAX_MB))
+})
+
+test('attachment data URL helper reads bytes above the preview default without changing that limit', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-large-attachment-'))
+  const source = path.join(tempDir, 'large.bin')
+  const previewLimit = dataUrlReadMaxBytesFromMb(DATA_URL_READ_DEFAULT_MAX_MB)
+  const content = Buffer.alloc(previewLimit + 1024, 0x5a)
+
+  try {
+    fs.writeFileSync(source, content)
+
+    await assert.rejects(
+      resolveReadableFileForIpc(source, {
+        maxBytes: previewLimit,
+        purpose: 'File preview'
+      }),
+      /file is too large/
+    )
+
+    const dataUrl = await readFileDataUrlForIpc(source, {
+      maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+      mimeType: 'application/octet-stream',
+      purpose: 'Attachment upload'
+    })
+
+    assert.match(dataUrl, /^data:application\/octet-stream;base64,/)
+    assert.deepEqual(Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'), content)
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
 })
 
 test('resolveTimeoutMs falls back to defaults and accepts overrides', () => {

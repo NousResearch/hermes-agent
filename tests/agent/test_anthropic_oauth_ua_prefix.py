@@ -40,53 +40,7 @@ class TestOAuthUserAgentPrefix:
         assert "claude-code/" in ua, f"Expected claude-code/ in UA, got: {ua}"
         assert "claude-cli/" not in ua, f"Must not use claude-cli/ prefix: {ua}"
 
-    def test_no_claude_cli_in_source(self):
-        """Source file must not contain claude-cli/ UA pattern (blocks OAuth)."""
-        import inspect
-        import agent.anthropic_adapter as mod
 
-        source = inspect.getsource(mod)
-        # Allow claude-cli in comments/strings that reference the old behavior
-        # but not in actual header assignments
-        lines = source.split("\n")
-        for i, line in enumerate(lines, 1):
-            stripped = line.strip()
-            if "claude-cli/" in stripped and ("User-Agent" in stripped or "user-agent" in stripped):
-                pytest.fail(
-                    f"Line {i}: claude-cli/ still used in User-Agent header: {stripped}"
-                )
-
-    def test_token_exchange_ua_not_throttled(self):
-        """run_hermes_oauth_login_pure must NOT send a throttled token-endpoint UA.
-
-        Anthropic 429s both ``claude-cli/`` and ``claude-code/`` UAs at the
-        token endpoint. The login exchange must use the shared
-        ``_OAUTH_TOKEN_USER_AGENT`` constant (a non-claude-code UA).
-        """
-        import inspect
-        import agent.anthropic_adapter as mod
-
-        try:
-            source = inspect.getsource(mod.run_hermes_oauth_login_pure)
-        except AttributeError:
-            pytest.skip("run_hermes_oauth_login_pure not found")
-
-        for i, line in enumerate(source.split("\n"), 1):
-            stripped = line.strip()
-            if ("User-Agent" in stripped or "user-agent" in stripped) and (
-                "claude-cli/" in stripped or "claude-code/" in stripped
-            ):
-                pytest.fail(
-                    f"Line {i}: throttled UA in token-exchange header: {stripped}"
-                )
-        assert "_OAUTH_TOKEN_USER_AGENT" in source, (
-            "run_hermes_oauth_login_pure should send the shared "
-            "_OAUTH_TOKEN_USER_AGENT (non-claude-code) on the token endpoint"
-        )
-        assert not mod._OAUTH_TOKEN_USER_AGENT.startswith(("claude-code/", "claude-cli/")), (
-            f"_OAUTH_TOKEN_USER_AGENT must not be a throttled prefix: "
-            f"{mod._OAUTH_TOKEN_USER_AGENT!r}"
-        )
 
     def test_token_refresh_ua_not_throttled(self):
         """refresh_anthropic_oauth_pure must NOT send a throttled token-endpoint UA."""

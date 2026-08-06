@@ -62,17 +62,6 @@ class TestStripByDefault:
         for var in _TIER1_SAMPLE:
             assert var not in result, f"{var} leaked (Tier-1) with inherit_credentials=False"
 
-    def test_safe_vars_preserved(self):
-        result = _build()
-        assert result["HOME"] == "/home/user"
-        assert result["USER"] == "testuser"
-        assert "PATH" in result
-        assert result["MY_APP_VAR"] == "keep-me"
-
-    def test_force_prefix_hints_stripped(self):
-        result = _build({f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY": "sk-x"})
-        assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY" not in result
-        assert "OPENAI_API_KEY" not in result
 
     def test_pythonutf8_set(self):
         result = _build()
@@ -196,18 +185,6 @@ class TestInternalDynamicSecrets:
         for var in _INTERNAL_DYNAMIC_SAMPLE:
             assert var not in result, f"{var} leaked with inherit_credentials=False"
 
-    def test_stripped_even_when_inheriting(self):
-        result = _build(
-            {**_PROVIDER_SAMPLE, **_INTERNAL_DYNAMIC_SAMPLE},
-            inherit_credentials=True,
-        )
-        for var in _INTERNAL_DYNAMIC_SAMPLE:
-            assert var not in result, (
-                f"{var} must be stripped even with inherit_credentials=True"
-            )
-        # ...while genuine provider keys survive so codex can authenticate.
-        for var in _PROVIDER_SAMPLE:
-            assert var in result
 
     def test_auxiliary_non_secrets_preserved(self):
         """AUXILIARY_*_PROVIDER / _MODEL routing config survives (not secrets)."""

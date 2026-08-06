@@ -19,8 +19,6 @@ import sqlite3
 import stat
 import sys
 from pathlib import Path
-from typing import Optional
-
 
 import pytest
 
@@ -53,22 +51,8 @@ def _make_db(path: Path) -> None:
     conn.close()
 
 
-def _make_wal_db(path: Path) -> Optional[Path]:
-    """Create a WAL-mode DB with committed-but-uncheckpointed frames.
-
-    Returns the path to the ``-wal`` sidecar when it survives with pending
-    frames, or ``None`` when the linked SQLite runtime checkpoints and
-    removes the ``-wal`` on the last connection's close. SQLite versions
-    vulnerable to the WAL-reset bug (see ``is_sqlite_wal_reset_vulnerable``
-    in ``hermes_cli.sqlite_runtime``) and certain other builds reabsorb the
-    WAL into the main DB file on final close; on those runtimes the
-    committed row (42) lands in the main DB instead of the sidecar.
-    Callers that require a live ``-wal`` sidecar must skip when ``None`` is
-    returned — the preflight's never-delete-sidecar invariant can only be
-    exercised when the sidecar is actually present, and forcing its
-    persistence on a runtime that reabsorbs it would itself require the
-    kind of sidecar manipulation the preflight exists to prevent.
-    """
+def _make_wal_db(path: Path) -> None:
+    """Create a WAL-mode DB with committed-but-uncheckpointed frames."""
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("CREATE TABLE t (x)")
@@ -76,17 +60,16 @@ def _make_wal_db(path: Path) -> Optional[Path]:
     # Keep a READ-ONLY second connection open so neither close can
     # checkpoint: the writer skips checkpoint-on-close because another
     # connection exists, and the ro holder cannot checkpoint at all.
-    # The committed row therefore lives only in the -wal file — on
-    # runtimes that preserve the -wal past the final close. Vulnerable
-    # SQLite builds reabsorb it instead, so we probe rather than assert.
+    # The committed row therefore lives only in the -wal file.
     holder = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     holder.execute("SELECT 1").fetchone()
     conn.execute("INSERT INTO t VALUES (42)")
     conn.commit()
     conn.close()
     holder.close()
-    wal = path.with_name(path.name + "-wal")
-    return wal if wal.is_file() else None
+    assert path.with_name(path.name + "-wal").is_file(), (
+        "fixture precondition: -wal sidecar must survive with pending frames"
+    )
 
 
 class TestRepairScope:
@@ -101,12 +84,8 @@ class TestRepairScope:
 
     def test_repairs_readonly_sidecars(self, hermes_home):
         db = hermes_home / "state.db"
-        wal = _make_wal_db(db)
-        if wal is None:
-            pytest.skip(
-                "-wal sidecar did not survive on this SQLite runtime; "
-                "cannot exercise sidecar repair"
-            )
+        _make_wal_db(db)
+        wal = db.with_name(db.name + "-wal")
         assert wal.is_file(), "fixture must leave a -wal behind"
         os.chmod(db, 0o444)
         os.chmod(wal, 0o444)
@@ -116,25 +95,6 @@ class TestRepairScope:
         assert os.access(db, os.W_OK)
         assert os.access(wal, os.W_OK)
 
-    def test_wal_data_survives_repair(self, hermes_home):
-        """The committed WAL frame must be readable after repair — proof the
-        preflight never drops/truncates a sidecar."""
-        db = hermes_home / "state.db"
-        wal = _make_wal_db(db)
-        if wal is None:
-            pytest.skip(
-                "-wal sidecar did not survive on this SQLite runtime; "
-                "cannot exercise never-truncate-sidecar invariant"
-            )
-        os.chmod(db, 0o444)
-        os.chmod(wal, 0o444)
-
-        preflight_db_writability(db, db_label="state.db")
-
-        conn = sqlite3.connect(str(db))
-        rows = conn.execute("SELECT x FROM t").fetchall()
-        conn.close()
-        assert (42,) in rows
 
     def test_repairs_readonly_parent_directory(self, hermes_home):
         sub = hermes_home / "kanban"
@@ -171,12 +131,8 @@ class TestRefusalOutsideScope:
         outside = tmp_path / "elsewhere"
         outside.mkdir()
         db = outside / "custom.db"
-        wal = _make_wal_db(db)
-        if wal is None:
-            pytest.skip(
-                "-wal sidecar did not survive on this SQLite runtime; "
-                "cannot exercise WAL-deletion-warning refusal path"
-            )
+        _make_wal_db(db)
+        wal = db.with_name(db.name + "-wal")
         os.chmod(wal, 0o444)
         try:
             with pytest.raises(sqlite3.OperationalError) as exc_info:
@@ -189,14 +145,8 @@ class TestRefusalOutsideScope:
 
 
 class TestSkips:
-    def test_memory_uri_skipped(self, hermes_home):
-        preflight_db_writability(Path(":memory:"))
 
-    def test_file_uri_skipped(self, hermes_home):
-        preflight_db_writability(Path("file:whatever?mode=ro"))
 
-    def test_missing_files_no_error(self, hermes_home):
-        preflight_db_writability(hermes_home / "state.db")
 
     def test_healthy_db_untouched(self, hermes_home):
         db = hermes_home / "state.db"

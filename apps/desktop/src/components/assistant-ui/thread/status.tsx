@@ -9,6 +9,7 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
+import { StatusPulse } from '@/components/ui/status-pulse'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $backgroundResume } from '@/store/background-delegation'
@@ -130,7 +131,11 @@ export const ResponseLoadingIndicator: FC = () => {
 
   return (
     <StatusRow data-slot="aui_response-loading" label={hint || t.assistant.thread.loadingResponse}>
-      <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
+      <StatusPulse
+        aria-hidden="true"
+        className="dither inline-block size-3 rounded-[2px] text-midground/80"
+        kind="opacity"
+      />
       {hint && <HintText>{hint}</HintText>}
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
@@ -236,7 +241,11 @@ export const StreamStallIndicator: FC = () => {
 
   return (
     <StatusRow data-slot="aui_stream-stall" label={hint || 'Hermes is thinking'}>
-      <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
+      <StatusPulse
+        aria-hidden="true"
+        className="dither inline-block size-3 rounded-[2px] text-midground/80"
+        kind="opacity"
+      />
       {hint && <HintText>{hint}</HintText>}
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>

@@ -265,7 +265,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
         void reload(true)
       } catch (err) {
         await reload(true)
-        notifyError(err, w.toggleFailed(subName))
+        notifyError(err, w.toggleFailed(subName, nextEnabled))
       }
     },
     [queryClient, queryKey, reload, w]

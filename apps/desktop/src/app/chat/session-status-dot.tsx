@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 
+import { StatusPulse } from '@/components/ui/status-pulse'
 import { type Translations, useI18n } from '@/i18n'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $backgroundRunningSessionIds } from '@/store/composer-status'
 import { $unreadFinishedSessionIds } from '@/store/session'
@@ -16,18 +18,16 @@ import { type SessionDotState, sessionDotState } from './sidebar/session-row-sta
 type DotVariant = {
   ariaLabel?: (r: Translations['sidebar']['row']) => string
   className: string
+  pulse?: {
+    className: string
+    opacity: number
+  }
   role?: 'status'
   title?: (r: Translations['sidebar']['row']) => string
 }
 
 // Shared base for every active dot; idle is smaller and uses its own class.
 const DOT_BASE = 'relative size-1.5 rounded-full'
-
-// Pseudo-element ping ring that scales outward and fades — shared scaffold for
-// the two pulsing dots. The `before:bg-*` color is written inline per variant
-// (NOT interpolated here): Tailwind only generates utilities it can see as
-// complete static strings, so a `before:bg-${color}` template never emits.
-const PING = "before:absolute before:inset-0 before:animate-ping before:rounded-full before:content-['']"
 
 const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   // Amber steady — a clarify/approval is blocking the turn. Steady (not
@@ -41,14 +41,22 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   // Accent pulse — the LLM turn is actively running.
   working: {
     ariaLabel: r => r.sessionRunning,
-    className: `${DOT_BASE} bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] ${PING} before:bg-(--ui-accent) before:opacity-70`,
+    className: `${DOT_BASE} bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)]`,
+    pulse: {
+      className: 'absolute inset-0 rounded-full bg-(--ui-accent) opacity-0',
+      opacity: 0.7
+    },
     role: 'status'
   },
   // Quiet accent pulse — the turn is still authoritative-running, but no
   // stream activity has arrived for the watchdog window.
   stalled: {
     ariaLabel: r => r.sessionRunning,
-    className: `${DOT_BASE} bg-(--ui-accent) opacity-70 ${PING} before:bg-(--ui-accent) before:opacity-40`,
+    className: `${DOT_BASE} bg-(--ui-accent) opacity-70`,
+    pulse: {
+      className: 'absolute inset-0 rounded-full bg-(--ui-accent) opacity-0',
+      opacity: 0.4
+    },
     role: 'status',
     title: r => r.sessionRunning
   },
@@ -57,7 +65,11 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   // than muted-foreground so it's visible against the surface.
   background: {
     ariaLabel: r => r.backgroundRunning,
-    className: `${DOT_BASE} bg-muted-foreground/80 ${PING} before:bg-muted-foreground/80 before:opacity-60`,
+    className: `${DOT_BASE} bg-muted-foreground/80`,
+    pulse: {
+      className: 'absolute inset-0 rounded-full bg-muted-foreground/80 opacity-0',
+      opacity: 0.6
+    },
     role: 'status',
     title: r => r.backgroundRunning
   },
@@ -111,13 +123,18 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
   useStore($sessionColorById)
   const color = sessionColorFor(session) ?? null
 
-  const needsInput = useStore($attentionSessionIds).includes(storedSessionId)
-  const isWorking = useStore($workingSessionIds).includes(storedSessionId)
-  const isStalled = useStore($stalledSessionIds).includes(storedSessionId)
-  const isUnread = useStore($unreadFinishedSessionIds).includes(storedSessionId)
-  const hasBackground = useStore($backgroundRunningSessionIds).includes(storedSessionId)
+  // Per-session membership as booleans via useStoreSelector: these arrays tick
+  // on every stream delta (any session working/stalled/etc changes the array
+  // reference), but a given dot only repaints when ITS OWN membership flips.
+  // A plain useStore(array).includes(id) re-rendered every dot on every tick.
+  const needsInput = useStoreSelector($attentionSessionIds, ids => ids.includes(storedSessionId))
+  const isWorking = useStoreSelector($workingSessionIds, ids => ids.includes(storedSessionId))
+  const isStalled = useStoreSelector($stalledSessionIds, ids => ids.includes(storedSessionId))
+  const isUnread = useStoreSelector($unreadFinishedSessionIds, ids => ids.includes(storedSessionId))
+  const hasBackground = useStoreSelector($backgroundRunningSessionIds, ids => ids.includes(storedSessionId))
 
   const dotState = sessionDotState({ hasBackground, isStalled, isUnread, isWorking, needsInput })
+  const variant = DOT_VARIANTS[dotState]
 
   return (
     <span className={cn('flex items-center gap-0.5', className)}>
@@ -130,11 +147,20 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
         <span aria-hidden="true" className="size-1 rounded-full" style={{ backgroundColor: color }} />
       ) : (
         <span
-          aria-label={DOT_VARIANTS[dotState].ariaLabel?.(r)}
-          className={DOT_VARIANTS[dotState].className}
-          role={DOT_VARIANTS[dotState].role}
-          title={DOT_VARIANTS[dotState].title?.(r)}
-        />
+          aria-label={variant.ariaLabel?.(r)}
+          className={variant.className}
+          role={variant.role}
+          title={variant.title?.(r)}
+        >
+          {variant.pulse ? (
+            <StatusPulse
+              aria-hidden="true"
+              className={variant.pulse.className}
+              kind="ping"
+              opacity={variant.pulse.opacity}
+            />
+          ) : null}
+        </span>
       )}
     </span>
   )

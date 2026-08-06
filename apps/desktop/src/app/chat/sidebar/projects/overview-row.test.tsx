@@ -17,7 +17,7 @@ vi.mock('@/i18n', () => ({
         projects: {
           enter: (label: string) => `Enter ${label}`,
           reorder: (label: string) => `Reorder ${label}`,
-          toggle: (label: string) => `Toggle ${label} sessions`
+          toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`
         }
       }
     }
@@ -60,14 +60,15 @@ describe('ProjectOverviewRow', () => {
       />
     )
 
-    const button = screen.getByRole('button', { name: 'Toggle Test D sessions' })
+    // Collapsed by default, so the disclosure offers to show the sessions.
+    const button = screen.getByRole('button', { name: 'Show Test D sessions' })
     expect(tipTrigger(button)).toBeTruthy()
   })
 
   it('does not render the disclosure toggle when there is nothing to preview', () => {
     render(<ProjectOverviewRow project={project} />)
 
-    expect(screen.queryByRole('button', { name: 'Toggle Test D sessions' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Show Test D sessions' })).toBeNull()
   })
 
   it('drops the "new session" add button on Home, which has no folder to start in', () => {

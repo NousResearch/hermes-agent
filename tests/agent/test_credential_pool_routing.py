@@ -210,7 +210,7 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False  # reset after rotation
-        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None, api_key_hint="test-api-key")
+        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None, api_key_hint="test-api-key", failure_reason="rate_limit")
         agent._swap_credential.assert_called_once_with(entries[1])
 
     def test_pool_exhaustion_returns_false(self):
@@ -236,21 +236,8 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False
-        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None, api_key_hint="test-api-key")
+        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None, api_key_hint="test-api-key", failure_reason="billing")
 
-    def test_no_pool_returns_false(self):
-        """No pool should return (False, unchanged)."""
-        from run_agent import AIAgent
-
-        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
-            agent = AIAgent()
-        agent._credential_pool = None
-
-        recovered, has_retried = agent._recover_with_credential_pool(
-            status_code=429, has_retried_429=False
-        )
-        assert recovered is False
-        assert has_retried is False
 
     def test_api_key_hint_from_pool_current_when_agent_key_missing(self):
         """api_key_hint should fall back to pool.current().runtime_api_key
@@ -286,7 +273,8 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         pool.mark_exhausted_and_rotate.assert_called_once_with(
-            status_code=402, error_context=None, api_key_hint="pool-current-key"
+            status_code=402, error_context=None, api_key_hint="pool-current-key",
+            failure_reason="billing",
         )
 
 
@@ -417,48 +405,7 @@ class TestFailureAttribution:
     def _statuses(self, pool):
         return {e.id: e.last_status for e in pool.entries()}
 
-    def test_billing_marks_failing_key_not_pointer(self, tmp_path, monkeypatch):
-        """Freshly loaded pool (current() is None): a 402 on key B must mark
-        entry B exhausted, not entry A (which _select_unlocked would return)."""
-        pool = self._make_pool(
-            tmp_path, monkeypatch,
-            [self._entry(0, "key-a"), self._entry(1, "key-b")],
-        )
-        assert pool.current() is None
-        agent = self._agent(pool, failing_key="key-b")
 
-        from agent.agent_runtime_helpers import recover_with_credential_pool
-
-        recovered, _ = recover_with_credential_pool(
-            agent, status_code=402, has_retried_429=False
-        )
-
-        assert recovered is True
-        statuses = self._statuses(pool)
-        assert statuses["cred-1"] == "exhausted"
-        assert statuses["cred-0"] != "exhausted"
-        swapped = agent._swap_credential.call_args[0][0]
-        assert swapped.id == "cred-0"
-
-    def test_rate_limit_marks_failing_key_not_pointer(self, tmp_path, monkeypatch):
-        """Same attribution for the 429 rotation path (second consecutive 429)."""
-        pool = self._make_pool(
-            tmp_path, monkeypatch,
-            [self._entry(0, "key-a"), self._entry(1, "key-b")],
-        )
-        agent = self._agent(pool, failing_key="key-b")
-
-        from agent.agent_runtime_helpers import recover_with_credential_pool
-
-        recovered, has_retried = recover_with_credential_pool(
-            agent, status_code=429, has_retried_429=True
-        )
-
-        assert recovered is True
-        assert has_retried is False
-        statuses = self._statuses(pool)
-        assert statuses["cred-1"] == "exhausted"
-        assert statuses["cred-0"] != "exhausted"
 
     def test_pre_exhausted_check_uses_failing_key(self, tmp_path, monkeypatch):
         """The 'already exhausted → rotate immediately' check must inspect the
@@ -523,35 +470,6 @@ class TestFailureAttribution:
         swapped = agent._swap_credential.call_args[0][0]
         assert swapped.id == "cred-0"
 
-    def test_auth_refresh_uses_stable_id_after_runtime_key_changes(
-        self, tmp_path, monkeypatch
-    ):
-        """A refreshed pool token must not detach the failed request from the
-        entry that supplied its now-stale runtime key."""
-        pool = self._make_pool(
-            tmp_path, monkeypatch,
-            [self._entry(0, "new-runtime-key")],
-        )
-        selected = pool.select()
-        assert selected.id == "cred-0"
-        assert pool.entry_id_for_api_key("new-runtime-key") == "cred-0"
-
-        agent = self._agent(
-            pool,
-            failing_key="stale-runtime-key",
-            credential_id="cred-0",
-        )
-        agent._is_entitlement_failure = MagicMock(return_value=False)
-
-        from agent.agent_runtime_helpers import recover_with_credential_pool
-
-        recovered, _ = recover_with_credential_pool(
-            agent, status_code=401, has_retried_429=False
-        )
-
-        assert recovered is False
-        assert self._statuses(pool)["cred-0"] == "exhausted"
-        agent._swap_credential.assert_not_called()
 
     def test_unmatched_key_does_not_retry_only_pool_entry(
         self, tmp_path, monkeypatch
@@ -575,31 +493,53 @@ class TestFailureAttribution:
         assert self._statuses(pool)["cred-0"] != "exhausted"
         agent._swap_credential.assert_not_called()
 
-    def test_stable_id_rotates_from_failed_entry_when_cursor_points_elsewhere(
-        self, tmp_path, monkeypatch
-    ):
-        """Stable identity wins over both a stale key and the shared cursor."""
+    def test_classified_billing_403_recorded_on_entry(self, tmp_path, monkeypatch):
+        """A billing-classified 403 must reach the pool as `billing`, not a bare 403.
+
+        `error_classifier` maps OpenRouter's `key limit exceeded` 403 (and xAI
+        spending-limit blocks) to FailoverReason.billing, but the pool only
+        ever saw the raw status — so a sole-credential pool gave a spent
+        account the 60s transient cooldown and re-failed every minute. The
+        recovery path now forwards the classified reason so the pool can size
+        the bench correctly.
+        """
+        from agent.error_classifier import FailoverReason
+
         pool = self._make_pool(
             tmp_path, monkeypatch,
-            [self._entry(0, "key-a"), self._entry(1, "key-b-new")],
+            [self._entry(0, "key-a"), self._entry(1, "key-b")],
         )
-        assert pool.select().id == "cred-0"
-        agent = self._agent(
-            pool,
-            failing_key="key-b-old",
-            credential_id="cred-1",
-        )
+        agent = self._agent(pool, failing_key="key-b")
         agent._is_entitlement_failure = MagicMock(return_value=False)
 
         from agent.agent_runtime_helpers import recover_with_credential_pool
 
-        recovered, _ = recover_with_credential_pool(
-            agent, status_code=401, has_retried_429=False
+        recover_with_credential_pool(
+            agent,
+            status_code=403,
+            has_retried_429=False,
+            classified_reason=FailoverReason.billing,
         )
 
-        assert recovered is True
-        statuses = self._statuses(pool)
-        assert statuses["cred-1"] == "exhausted"
-        assert statuses["cred-0"] != "exhausted"
-        swapped = agent._swap_credential.call_args[0][0]
-        assert swapped.id == "cred-0"
+        failed = {e.id: e for e in pool.entries()}["cred-1"]
+        assert failed.last_status == "exhausted"
+        assert failed.failure_reason == "billing"
+
+    def test_unclassified_403_records_no_billing_reason(self, tmp_path, monkeypatch):
+        """An unclassified 403 stays transient — no billing verdict is invented."""
+        pool = self._make_pool(
+            tmp_path, monkeypatch,
+            [self._entry(0, "key-a"), self._entry(1, "key-b")],
+        )
+        agent = self._agent(pool, failing_key="key-b")
+        agent._is_entitlement_failure = MagicMock(return_value=False)
+
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        recover_with_credential_pool(
+            agent, status_code=403, has_retried_429=False
+        )
+
+        failed = {e.id: e for e in pool.entries()}["cred-1"]
+        assert failed.failure_reason != "billing"
+

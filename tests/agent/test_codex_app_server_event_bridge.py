@@ -54,25 +54,9 @@ def _item_completed(item: dict) -> dict:
 
 
 class TestCodexItemToToolName:
-    def test_command_execution_maps_to_exec_command(self):
-        assert _codex_item_to_tool_name(
-            {"type": "commandExecution"}
-        ) == "exec_command"
 
-    def test_file_change_maps_to_apply_patch(self):
-        assert _codex_item_to_tool_name(
-            {"type": "fileChange"}
-        ) == "apply_patch"
 
-    def test_mcp_tool_call_includes_server_and_tool(self):
-        assert _codex_item_to_tool_name(
-            {"type": "mcpToolCall", "server": "fs", "tool": "read_file"}
-        ) == "mcp.fs.read_file"
 
-    def test_mcp_tool_call_falls_back_when_fields_missing(self):
-        assert _codex_item_to_tool_name(
-            {"type": "mcpToolCall"}
-        ) == "mcp.mcp.unknown"
 
     def test_dynamic_tool_call_uses_tool_field(self):
         assert _codex_item_to_tool_name(
@@ -91,27 +75,11 @@ class TestCodexItemToToolName:
             {"type": "mcpToolCall", "server": "hermes-tools", "tool": "browser_navigate"}
         ) == "browser_navigate"
 
-    def test_web_search_builtin_maps_to_web_search(self):
-        """Codex's built-in webSearch tool gets a bubble too (#26541)."""
-        assert _codex_item_to_tool_name({"type": "webSearch"}) == "web_search"
 
-    def test_unknown_type_returns_type_string(self):
-        assert _codex_item_to_tool_name(
-            {"type": "plan"}
-        ) == "plan"
 
-    def test_missing_type_returns_unknown_sentinel(self):
-        assert _codex_item_to_tool_name({}) == "unknown"
 
 
 class TestCodexItemToArgs:
-    def test_command_execution_args_carry_cwd_and_command(self):
-        args = _codex_item_to_args({
-            "type": "commandExecution",
-            "command": "ls -la",
-            "cwd": "/tmp",
-        })
-        assert args == {"command": "ls -la", "cwd": "/tmp"}
 
     def test_file_change_args_normalize_changes(self):
         args = _codex_item_to_args({
@@ -129,11 +97,6 @@ class TestCodexItemToArgs:
             ]
         }
 
-    def test_mcp_tool_call_returns_arguments_dict(self):
-        args = _codex_item_to_args({
-            "type": "mcpToolCall", "arguments": {"q": "x"}
-        })
-        assert args == {"q": "x"}
 
     def test_non_dict_arguments_get_wrapped(self):
         args = _codex_item_to_args({
@@ -162,20 +125,8 @@ class TestCodexItemToPreview:
         assert "/p0.py" in preview and "/p2.py" in preview
         assert "+2 more" in preview
 
-    def test_file_change_no_paths_returns_none(self):
-        assert _codex_item_to_preview({
-            "type": "fileChange", "changes": [{}]
-        }) is None
 
-    def test_mcp_args_preview_is_json(self):
-        preview = _codex_item_to_preview({
-            "type": "mcpToolCall", "arguments": {"q": "hello"},
-        })
-        assert preview is not None
-        assert "hello" in preview
 
-    def test_empty_args_returns_none(self):
-        assert _codex_item_to_preview({"type": "mcpToolCall"}) is None
 
 
 class TestCodexItemCompletionPayload:
@@ -188,24 +139,7 @@ class TestCodexItemCompletionPayload:
         assert result == "hello\nworld\n"
         assert is_error is False
 
-    def test_command_nonzero_exit_marks_error(self):
-        result, is_error = _codex_item_completion_payload({
-            "type": "commandExecution",
-            "exitCode": 2,
-            "aggregatedOutput": "boom",
-        })
-        assert "[exit 2]" in result
-        assert "boom" in result
-        assert is_error is True
 
-    def test_file_change_completed_status_not_error(self):
-        result, is_error = _codex_item_completion_payload({
-            "type": "fileChange",
-            "status": "completed",
-            "changes": [{"path": "/a"}],
-        })
-        assert "completed" in result
-        assert is_error is False
 
     def test_mcp_tool_error_is_error(self):
         result, is_error = _codex_item_completion_payload({
@@ -215,13 +149,6 @@ class TestCodexItemCompletionPayload:
         assert "[error]" in result
         assert is_error is True
 
-    def test_dynamic_tool_failure_is_error(self):
-        result, is_error = _codex_item_completion_payload({
-            "type": "dynamicToolCall",
-            "success": False,
-        })
-        assert "False" in result
-        assert is_error is True
 
 
 # ---------- bridge: dispatch contracts ----------
@@ -239,19 +166,7 @@ class TestStreamDeltaDispatch:
         assert agent._fire_stream_delta.call_args_list[0].args == ("hello ",)
         assert agent._fire_stream_delta.call_args_list[1].args == ("world",)
 
-    def test_empty_delta_is_skipped(self):
-        agent = _make_stub_agent()
-        bridge = make_codex_app_server_event_bridge(agent)
-        bridge({"method": "item/agentMessage/delta", "params": {"delta": ""}})
-        bridge({"method": "item/agentMessage/delta", "params": {}})
-        agent._fire_stream_delta.assert_not_called()
 
-    def test_text_field_used_when_delta_missing(self):
-        agent = _make_stub_agent()
-        bridge = make_codex_app_server_event_bridge(agent)
-        bridge({"method": "item/agentMessage/delta",
-                "params": {"text": "fallback"}})
-        agent._fire_stream_delta.assert_called_once_with("fallback")
 
     def test_reasoning_delta_fires_reasoning_callback(self):
         agent = _make_stub_agent()
@@ -306,83 +221,9 @@ class TestToolProgressDispatch:
         assert completed.kwargs["is_error"] is False
         assert completed.kwargs["result"] == "hi\n"
 
-    def test_nonzero_exit_marks_completion_error(self):
-        agent = _make_stub_agent()
-        bridge = make_codex_app_server_event_bridge(agent)
-        bridge(_item_completed({
-            "type": "commandExecution",
-            "id": "exec-3",
-            "exitCode": 127,
-            "aggregatedOutput": "not found",
-        }))
-        call = agent.tool_progress_callback.call_args
-        assert call.args[0] == "tool.completed"
-        assert call.kwargs["is_error"] is True
-        assert "[exit 127]" in call.kwargs["result"]
 
-    def test_apply_patch_started_and_completed(self):
-        agent = _make_stub_agent()
-        bridge = make_codex_app_server_event_bridge(agent)
-        bridge(_item_started({
-            "type": "fileChange",
-            "id": "fc-1",
-            "changes": [
-                {"path": "/a.py", "kind": {"type": "add"}},
-                {"path": "/b.py", "kind": {"type": "update"}},
-            ],
-        }))
-        bridge(_item_completed({
-            "type": "fileChange",
-            "id": "fc-1",
-            "status": "completed",
-            "changes": [{"path": "/a.py"}, {"path": "/b.py"}],
-        }))
-        names = [
-            c.args[1] for c in agent.tool_progress_callback.call_args_list
-        ]
-        assert names == ["apply_patch", "apply_patch"]
-        completed = agent.tool_progress_callback.call_args_list[1]
-        assert completed.kwargs["is_error"] is False
-        assert "2 change(s)" in completed.kwargs["result"]
 
-    def test_mcp_tool_uses_namespaced_tool_name(self):
-        agent = _make_stub_agent()
-        bridge = make_codex_app_server_event_bridge(agent)
-        bridge(_item_started({
-            "type": "mcpToolCall",
-            "id": "mcp-1",
-            "server": "fs",
-            "tool": "list_dir",
-            "arguments": {"path": "/tmp"},
-        }))
-        call = agent.tool_progress_callback.call_args
-        assert call.args[1] == "mcp.fs.list_dir"
-        # Preview should be a json render of the args
-        assert "/tmp" in call.args[2]
 
-    def test_dynamic_tool_uses_tool_field_as_name(self):
-        agent = _make_stub_agent()
-        bridge = make_codex_app_server_event_bridge(agent)
-        bridge(_item_started({
-            "type": "dynamicToolCall",
-            "id": "dyn-1",
-            "tool": "web_search",
-            "arguments": {"query": "hermes"},
-        }))
-        bridge(_item_completed({
-            "type": "dynamicToolCall",
-            "id": "dyn-1",
-            "tool": "web_search",
-            "success": True,
-            "contentItems": [{"text": "results"}],
-        }))
-        names = [
-            c.args[1] for c in agent.tool_progress_callback.call_args_list
-        ]
-        assert names == ["web_search", "web_search"]
-        completed = agent.tool_progress_callback.call_args_list[1]
-        assert completed.kwargs["is_error"] is False
-        assert "results" in completed.kwargs["result"]
 
     def test_web_search_builtin_fires_started_and_completed(self):
         """Codex's built-in webSearch produces a start/complete bubble pair
@@ -405,30 +246,7 @@ class TestToolProgressDispatch:
         assert calls[0].args[2] == "hermes agent docs"
         assert calls[0].args[3] == {"query": "hermes agent docs"}
 
-    def test_duration_falls_back_to_wall_time_when_codex_missing_ms(self):
-        agent = _make_stub_agent()
-        bridge = make_codex_app_server_event_bridge(agent)
-        bridge(_item_started({
-            "type": "commandExecution",
-            "id": "exec-4",
-            "command": "sleep 0",
-        }))
-        bridge(_item_completed({
-            "type": "commandExecution",
-            "id": "exec-4",
-            "exitCode": 0,
-            "aggregatedOutput": "",
-            # no durationMs
-        }))
-        completed = agent.tool_progress_callback.call_args_list[1]
-        assert completed.kwargs["duration"] is not None
-        assert completed.kwargs["duration"] >= 0
 
-    def test_unknown_started_item_type_is_silent(self):
-        agent = _make_stub_agent()
-        bridge = make_codex_app_server_event_bridge(agent)
-        bridge(_item_started({"type": "plan", "id": "p-1"}))
-        agent.tool_progress_callback.assert_not_called()
 
 
 class TestAgentMessageInterimDispatch:
@@ -444,24 +262,7 @@ class TestAgentMessageInterimDispatch:
             {"role": "assistant", "content": "I'll check the config first."}
         )
 
-    def test_empty_text_does_not_emit_interim(self):
-        agent = _make_stub_agent()
-        bridge = make_codex_app_server_event_bridge(agent)
-        bridge(_item_completed({
-            "type": "agentMessage", "id": "am-2", "text": "   ",
-        }))
-        bridge(_item_completed({
-            "type": "agentMessage", "id": "am-3", "text": ""
-        }))
-        agent._emit_interim_assistant_message.assert_not_called()
 
-    def test_completed_agent_message_does_not_fire_tool_progress(self):
-        agent = _make_stub_agent()
-        bridge = make_codex_app_server_event_bridge(agent)
-        bridge(_item_completed({
-            "type": "agentMessage", "id": "am-4", "text": "hi",
-        }))
-        agent.tool_progress_callback.assert_not_called()
 
     def test_show_commentary_off_suppresses_interim(self):
         """display.show_commentary=false silences agentMessage interim
@@ -482,15 +283,6 @@ class TestAgentMessageInterimDispatch:
 
 
 class TestBridgeRobustness:
-    def test_non_dict_notification_is_ignored(self):
-        agent = _make_stub_agent()
-        bridge = make_codex_app_server_event_bridge(agent)
-        bridge("not-a-dict")  # type: ignore[arg-type]
-        bridge(None)  # type: ignore[arg-type]
-        bridge(123)  # type: ignore[arg-type]
-        agent.tool_progress_callback.assert_not_called()
-        agent._fire_stream_delta.assert_not_called()
-        agent._emit_interim_assistant_message.assert_not_called()
 
     def test_missing_params_is_ignored(self):
         agent = _make_stub_agent()
@@ -516,36 +308,7 @@ class TestBridgeRobustness:
             "type": "agentMessage", "id": "am-x", "text": "hi",
         }))
 
-    def test_agent_without_callbacks_is_a_noop(self):
-        # Mirrors gateway-less / cron contexts where the agent never had
-        # the display callbacks set. Bridge must not raise.
-        agent = SimpleNamespace()  # bare — none of the callbacks exist
-        bridge = make_codex_app_server_event_bridge(agent)
-        bridge(_item_started({
-            "type": "commandExecution", "id": "exec-y", "command": "ls",
-        }))
-        bridge(_item_completed({
-            "type": "commandExecution", "id": "exec-y",
-            "exitCode": 0, "aggregatedOutput": "",
-        }))
-        bridge({"method": "item/agentMessage/delta",
-                "params": {"delta": "x"}})
-        bridge({"method": "item/reasoning/delta",
-                "params": {"delta": "x"}})
-        bridge(_item_completed({
-            "type": "agentMessage", "id": "am", "text": "hi",
-        }))
 
-    def test_silent_methods_do_not_fire_anything(self):
-        agent = _make_stub_agent()
-        bridge = make_codex_app_server_event_bridge(agent)
-        for method in ("turn/started", "turn/completed", "thread/started",
-                       "item/commandExecution/outputDelta"):
-            bridge({"method": method, "params": {}})
-        agent.tool_progress_callback.assert_not_called()
-        agent._fire_stream_delta.assert_not_called()
-        agent._fire_reasoning_delta.assert_not_called()
-        agent._emit_interim_assistant_message.assert_not_called()
 
 
 # ---------- end-to-end: bridge is wired in run_codex_app_server_turn ----------

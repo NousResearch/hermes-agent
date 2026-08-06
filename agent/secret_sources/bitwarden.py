@@ -58,6 +58,7 @@ from agent.secret_sources._cache import (
     is_valid_env_name as _is_valid_env_name,
 )
 from agent.secret_sources.base import ErrorKind, SecretSource
+from agent.secret_sources.base import get_source_environment
 
 logger = logging.getLogger(__name__)
 
@@ -667,7 +668,15 @@ def _run_bws_list(
     bws: Path, access_token: str, project_id: str, server_url: str = ""
 ) -> Tuple[Dict[str, str], List[str]]:
     cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
-    env = os.environ.copy()
+    # bws child intentionally receives the access token.  Under a profile-local
+    # fetch it must not inherit sibling credentials from process-global env.
+    source_env = get_source_environment()
+    if source_env is os.environ:
+        from tools.environments.local import build_subprocess_env
+
+        env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+    else:
+        env = dict(source_env)
     env["BWS_ACCESS_TOKEN"] = access_token
     # Make sure we're not echoing telemetry / colour codes into json.
     env.setdefault("NO_COLOR", "1")
@@ -905,7 +914,7 @@ class BitwardenSource(SecretSource):
         result = FetchResult()
 
         access_token_env = str(cfg.get("access_token_env") or "BWS_ACCESS_TOKEN")
-        access_token = os.environ.get(access_token_env, "").strip()
+        access_token = get_source_environment().get(access_token_env, "").strip()
         if not access_token:
             result.error = (
                 f"secrets.bitwarden.enabled is true but {access_token_env} is "

@@ -62,7 +62,16 @@ def _get_jwk_client(jwks_url: str) -> Any:
         if client is None:
             from jwt import PyJWKClient
 
-            client = PyJWKClient(jwks_url)
+            # Explicit Accept + User-Agent so the JWKS fetch isn't blocked by the
+            # NAS portal's WAF, which 403s the default Python-urllib fingerprint
+            # (same fix as the dashboard-auth nous/self_hosted providers).
+            client = PyJWKClient(
+                jwks_url,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "HermesAgent/1.0",
+                },
+            )
             _JWK_CLIENTS[jwks_url] = client
         return client
 

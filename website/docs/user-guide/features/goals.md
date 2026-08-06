@@ -21,6 +21,24 @@ Use `/goal` for tasks where you want Hermes to iterate on its own without you re
 
 Tasks where the agent does one turn and stops don't need `/goal`. Tasks where *you'd otherwise have to say "keep going" three times* are where this shines.
 
+## Goals vs Kanban: which one do I want?
+
+`/goal` and [Kanban](./kanban) both keep Hermes working without you re-prompting, so it's tempting to assume one flows into the other. It doesn't — the boundary is sharp:
+
+- **`/goal` is single-session.** The loop feeds continuation prompts back into *this* conversation until the judge says done. Setting a goal never creates a kanban card, never assigns work to another profile, and never fans out. There is no handoff to the board, implicit or otherwise.
+- **Kanban is a board of many tasks.** Each card is dispatched to its own worker process with its own session. Cards, dependencies, assignees, and handoffs live on the board — not in `/goal`.
+- **The overlap is deliberate, and small.** A kanban card created with `--goal` runs the same Ralph-style continuation engine as `/goal` — but *inside that one card's worker session*. It borrows the engine, not the board. See [Goal-mode cards](./kanban#goal-mode-cards---goal).
+
+| You want | Reach for |
+|---|---|
+| Keep iterating on one task in this chat until it's done | `/goal <text>` |
+| Many independent tasks, with dependencies, handoffs, or multiple profiles | [Kanban](./kanban) — `hermes kanban create …` |
+| One card on the board that should keep iterating until its acceptance criteria are met | A kanban card with `--goal` |
+
+:::note
+If you want work on the board, put it there yourself (`hermes kanban create …`) — `/goal` won't do it for you. The reverse is also true: pausing, resuming, or clearing a goal in this chat never creates, claims, or moves a kanban card.
+:::
+
 ## Quick start
 
 ```
@@ -137,7 +155,7 @@ After every turn, Hermes calls an auxiliary model with:
 
 - The standing goal text
 - The agent's most recent final response (last ~4 KB of text)
-- A system prompt telling the judge to reply with strict JSON: `{"done": <bool>, "reason": "<one-sentence rationale>"}`
+- A system prompt telling the judge to reply with strict one-line JSON: `{"verdict": "done" | "continue" | "wait", "reason": "<one-sentence rationale>"}` (wait verdicts add `wait_on_session` / `wait_on_pid` / `wait_for_seconds`; the legacy `{"done": <bool>, "reason": "..."}` shape is still accepted)
 
 The judge is deliberately conservative: it marks a goal `done` only when the response **explicitly** confirms the goal is complete, when the final deliverable is clearly produced, or when the goal is unachievable/blocked (treated as DONE with a block reason so we don't burn budget on impossible tasks).
 

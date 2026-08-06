@@ -415,3 +415,38 @@ describe('countDiffLineStats', () => {
     expect(countDiffLineStats(`--- a/x\n+++ b/x\n@@\n-old\n+new\n context\n+another`)).toEqual({ added: 2, removed: 1 })
   })
 })
+
+describe('buildToolView memory status', () => {
+  const memory = (overrides: Partial<Parameters<typeof part>[0]> = {}) =>
+    buildToolView(part({ toolName: 'memory', ...overrides }), '')
+
+  it('treats an explicit success payload as success even with isError', () => {
+    const view = memory({
+      isError: true,
+      result: {
+        success: true,
+        entry_count: 13,
+        message: 'Applied 1 operation(s).',
+        duration_s: 0.003
+      }
+    })
+
+    expect(view.status).toBe('success')
+    expect(view.title).toBe('Saved to memory')
+    expect(view.countLabel).toBe('13 entries')
+    expect(view.subtitle).toBe('Applied 1 operation(s).')
+  })
+
+  it('uses soft warning copy for over-budget refusals, not "Saved"', () => {
+    const view = memory({
+      result: {
+        success: false,
+        error: 'Memory is full (2,200/2,200). Consolidate before adding more.'
+      }
+    })
+
+    expect(view.status).toBe('warning')
+    expect(view.title).toBe('Memory write noted')
+    expect(view.subtitle).toContain('Memory is full')
+  })
+})

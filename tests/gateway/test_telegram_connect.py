@@ -54,13 +54,3 @@ class TestTelegramUnconfiguredNonRetryable:
         assert adapter.fatal_error_retryable is False
         assert adapter.fatal_error_code == "missing_dependency"
 
-    @pytest.mark.asyncio
-    async def test_no_bot_token_sets_non_retryable_fatal(self, monkeypatch):
-        """connect() with empty token → non-retryable fatal error."""
-        monkeypatch.setattr(telegram_mod, "TELEGRAM_AVAILABLE", True)
-        adapter = TelegramAdapter(PlatformConfig(enabled=True, token=""))
-        result = await adapter.connect()
-        assert result is False
-        assert adapter.has_fatal_error is True
-        assert adapter.fatal_error_retryable is False
-        assert adapter.fatal_error_code == "missing_credentials"

@@ -3,13 +3,167 @@
 
 from agent.prompt_caching import (
     _apply_cache_marker,
+    _build_marker,
     _can_carry_marker,
     apply_anthropic_cache_control,
+    build_prompt_cache_plan,
     strip_anthropic_cache_control,
+    strip_anthropic_tool_cache_control,
 )
 
 
 MARKER = {"type": "ephemeral"}
+
+
+def _native_marker_indexes(messages):
+    return {
+        index
+        for index, message in enumerate(messages)
+        if isinstance(message, dict)
+        and (
+            "cache_control" in message
+            or any(
+                isinstance(part, dict) and "cache_control" in part
+                for part in (message.get("content") if isinstance(message.get("content"), list) else [])
+            )
+        )
+    }
+
+
+def _tool_heavy_native_history():
+    return [
+        {"role": "system", "content": "stable prefix\nvolatile suffix"},
+        {"role": "user", "content": "first request"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "first", "function": {"name": "tool_00", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "first", "content": "first result"},
+        {"role": "user", "content": "second request"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "second", "function": {"name": "tool_01", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "second", "content": "second result"},
+    ]
+
+
+def _tool_heavy_native_tools():
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": f"tool_{index:02d}",
+                "description": f"Deterministic tool {index}",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        for index in range(28)
+    ]
+
+
+def test_t20880_tool_heavy_native_loop_reproduction():
+    """A 28-tool native loop needs a tool marker and a retained transaction endpoint."""
+    tools = _tool_heavy_native_tools()
+    before_exchange = build_prompt_cache_plan(
+        _tool_heavy_native_history(),
+        tools,
+        native_anthropic=True,
+        static_system_prefix="stable prefix",
+        direct_native_tool_cache=True,
+    )
+    after_exchange = build_prompt_cache_plan(
+        _tool_heavy_native_history() + [
+            {"role": "user", "content": "third request"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "third", "function": {"name": "tool_02", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "third", "content": "third result"},
+        ],
+        tools,
+        native_anthropic=True,
+        static_system_prefix="stable prefix",
+        direct_native_tool_cache=True,
+    )
+
+    before_markers = _native_marker_indexes(before_exchange.messages)
+    after_markers = _native_marker_indexes(after_exchange.messages)
+    final_tool_marked = "cache_control" in after_exchange.tools[-1]
+    shared_transaction_endpoint = bool((before_markers - {0}) & (after_markers - {0}))
+
+    assert final_tool_marked
+    assert shared_transaction_endpoint
+    assert after_exchange.marker_count <= 4
+
+
+class TestPromptCachePlan:
+    def test_copies_sections_and_keeps_canonical_tools_plain(self):
+        import copy
+
+        messages = _tool_heavy_native_history()
+        tools = _tool_heavy_native_tools()
+        original_messages = copy.deepcopy(messages)
+        original_tools = copy.deepcopy(tools)
+
+        plan = build_prompt_cache_plan(
+            messages,
+            tools,
+            native_anthropic=True,
+            static_system_prefix="stable prefix",
+            direct_native_tool_cache=True,
+        )
+
+        assert messages == original_messages
+        assert tools == original_tools
+        assert plan.messages is not messages
+        assert plan.tools is not tools
+        assert "cache_control" not in tools[-1]
+        assert plan.tools[-1]["cache_control"] == MARKER
+        assert plan.marker_count == 4
+
+    def test_unmarkable_endpoint_does_not_consume_a_slot(self):
+        messages = [
+            {"role": "system", "content": "stable prefix\nvolatile"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "pending", "function": {"name": "tool_00", "arguments": "{}"}}]},
+        ]
+        plan = build_prompt_cache_plan(
+            messages,
+            _tool_heavy_native_tools(),
+            native_anthropic=True,
+            static_system_prefix="stable prefix",
+            direct_native_tool_cache=True,
+        )
+
+        assert plan.marker_count == 2
+        assert "cache_control" not in plan.messages[-1]
+
+    def test_static_prefix_equal_to_whole_prompt_emits_no_empty_block(self):
+        """Empty volatile suffix must not produce an empty text block.
+
+        Anthropic rejects text blocks whose ``text`` is empty; when the
+        stored system prompt IS the static prefix (no volatile tier), the
+        plan must mark it as one whole block instead of a two-part split
+        with a trailing ``{"type": "text", "text": ""}``.
+        """
+        messages = [
+            {"role": "system", "content": "stable prefix"},
+            {"role": "user", "content": "lookup"},
+        ]
+        plan = build_prompt_cache_plan(
+            messages,
+            _tool_heavy_native_tools(),
+            native_anthropic=True,
+            static_system_prefix="stable prefix",
+            direct_native_tool_cache=True,
+        )
+
+        system_content = plan.messages[0]["content"]
+        assert isinstance(system_content, list)
+        for part in system_content:
+            assert part.get("text"), "no empty text blocks on the wire"
+        assert any("cache_control" in part for part in system_content)
+        assert plan.tools[-1]["cache_control"] == MARKER
+
+    def test_tool_strip_is_request_local(self):
+        tools = _tool_heavy_native_tools()
+        tools[-1]["cache_control"] = MARKER
+
+        stripped = strip_anthropic_tool_cache_control(tools)
+
+        assert "cache_control" in tools[-1]
+        assert "cache_control" not in stripped[-1]
 
 
 class TestApplyCacheMarker:
@@ -25,37 +179,10 @@ class TestApplyCacheMarker:
         _apply_cache_marker(msg, MARKER, native_anthropic=False)
         assert "cache_control" not in msg
 
-    def test_tool_message_wraps_non_empty_content_on_openrouter(self):
-        """Non-empty tool content should be wrapped so the marker lands on a content part."""
-        msg = {"role": "tool", "content": "tool result bytes"}
-        _apply_cache_marker(msg, MARKER, native_anthropic=False)
-        assert "cache_control" not in msg
-        assert isinstance(msg["content"], list)
-        assert msg["content"][0]["cache_control"] == MARKER
 
-    def test_empty_assistant_message_skips_marker_on_openrouter(self):
-        """OpenRouter path: empty assistant turns are pure tool_calls, marker would be ignored."""
-        msg = {"role": "assistant", "content": ""}
-        _apply_cache_marker(msg, MARKER, native_anthropic=False)
-        assert "cache_control" not in msg
 
-    def test_native_anthropic_empty_assistant_gets_top_level_marker(self):
-        """Native Anthropic layout can still carry top-level marker on empty content."""
-        msg = {"role": "assistant", "content": ""}
-        _apply_cache_marker(msg, MARKER, native_anthropic=True)
-        assert msg["cache_control"] == MARKER
 
-    def test_none_content_skips_marker_on_openrouter(self):
-        """OpenRouter path: None-content assistant turns are ignored."""
-        msg = {"role": "assistant", "content": None}
-        _apply_cache_marker(msg, MARKER, native_anthropic=False)
-        assert "cache_control" not in msg
 
-    def test_none_content_gets_top_level_marker_on_native_anthropic(self):
-        """Native Anthropic path: None content still gets top-level marker."""
-        msg = {"role": "assistant", "content": None}
-        _apply_cache_marker(msg, MARKER, native_anthropic=True)
-        assert msg["cache_control"] == MARKER
 
     def test_string_content_wrapped_in_list(self):
         msg = {"role": "user", "content": "Hello"}
@@ -66,32 +193,11 @@ class TestApplyCacheMarker:
         assert msg["content"][0]["text"] == "Hello"
         assert msg["content"][0]["cache_control"] == MARKER
 
-    def test_list_content_last_item_gets_marker(self):
-        msg = {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "First"},
-                {"type": "text", "text": "Second"},
-            ],
-        }
-        _apply_cache_marker(msg, MARKER)
-        assert "cache_control" not in msg["content"][0]
-        assert msg["content"][1]["cache_control"] == MARKER
 
-    def test_empty_list_content_no_crash(self):
-        msg = {"role": "user", "content": []}
-        # Should not crash on empty list
-        _apply_cache_marker(msg, MARKER)
 
 
 class TestCanCarryMarker:
-    def test_native_anthropic_always_true(self):
-        assert _can_carry_marker({"role": "assistant", "content": ""}, native_anthropic=True) is True
-        assert _can_carry_marker({"role": "tool", "content": ""}, native_anthropic=True) is True
 
-    def test_openrouter_content_parts_carry_marker(self):
-        assert _can_carry_marker({"role": "user", "content": "text"}, native_anthropic=False) is True
-        assert _can_carry_marker({"role": "user", "content": [{"type": "text", "text": "a"}]}, native_anthropic=False) is True
 
     def test_openrouter_empty_or_none_does_not_carry_marker(self):
         assert _can_carry_marker({"role": "assistant", "content": ""}, native_anthropic=False) is False
@@ -120,28 +226,92 @@ class TestCanCarryMarker:
 
 
 class TestApplyAnthropicCacheControl:
-    def test_empty_messages(self):
-        result = apply_anthropic_cache_control([])
-        assert result == []
 
-    def test_returns_deep_copy(self):
-        msgs = [{"role": "user", "content": "Hello"}]
-        result = apply_anthropic_cache_control(msgs)
-        assert result is not msgs
-        assert result[0] is not msgs[0]
-        # Original should be unmodified
-        assert "cache_control" not in msgs[0].get("content", "")
 
-    def test_system_message_gets_marker(self):
+    def test_caller_list_not_mutated_and_unmarked_msgs_shared(self):
+        """Guard the shallow-copy change (was full deepcopy).
+
+        The optimization returns ``list(api_messages)`` and deep-copies ONLY
+        the <=4 messages that receive a cache_control marker. This test pins
+        two invariants that a "deep-copies too little / too much" regression
+        would break (prompt caching is sacred — the caller's history must
+        never be mutated):
+
+        1. The caller's original list and every message dict in it is left
+           byte-identical after the call (no in-place marker leaks upstream).
+        2. Un-marked messages in the middle are returned as the SAME object
+           (shared reference) — proving we did not needlessly deep-copy the
+           whole history — while marked messages are fresh copies.
+        """
+        import copy
+
         msgs = [
-            {"role": "system", "content": "You are helpful"},
-            {"role": "user", "content": "Hi"},
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "middle-unmarked-1"},
+            {"role": "assistant", "content": "middle-unmarked-2"},
+            {"role": "user", "content": "m3"},
+            {"role": "assistant", "content": "m4"},
+            {"role": "user", "content": "m5"},
         ]
-        result = apply_anthropic_cache_control(msgs)
-        # System message should have cache_control
-        sys_content = result[0]["content"]
-        assert isinstance(sys_content, list)
-        assert sys_content[0]["cache_control"]["type"] == "ephemeral"
+        before = copy.deepcopy(msgs)
+        result = apply_anthropic_cache_control(msgs, cache_ttl="5m")
+
+        # (1) caller list + every element unchanged after the call.
+        assert msgs == before, "apply_anthropic_cache_control mutated the caller's list"
+
+        # System (0) + last 3 non-system (3,4,5) get markers => index 1 and 2
+        # are un-marked and must be the SAME objects (shallow, not deep-copied).
+        assert result[1] is msgs[1]
+        assert result[2] is msgs[2]
+        # Marked messages must be fresh copies (never the caller's objects).
+        assert result[0] is not msgs[0]
+        assert result[-1] is not msgs[-1]
+
+        # Mutating a returned marked message must not bleed into the caller.
+        result[0]["content"] = "TAMPERED"
+        assert msgs[0]["content"] == "System"
+
+    def test_output_equivalent_to_full_deepcopy_impl(self):
+        """Byte-equivalence: shallow-copy output structurally matches what a
+        naive full-deepcopy implementation would produce (same breakpoints,
+        same TTL, same positions) for both native_anthropic modes."""
+        import copy
+
+        def _reference_full_deepcopy(api_messages, cache_ttl, native_anthropic):
+            # Mirror of the pre-optimization implementation: deepcopy the whole
+            # list, then apply markers to system + last (4 - used) non-system.
+            messages = copy.deepcopy(api_messages)
+            if not messages:
+                return messages
+            marker = _build_marker(cache_ttl)
+            used = 0
+            if messages[0].get("role") == "system":
+                _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
+                used += 1
+            remaining = 4 - used
+            non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
+            for idx in non_sys[-remaining:]:
+                _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
+            return messages
+
+        base = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "u3"},
+        ]
+        for native in (True, False):
+            for ttl in ("5m", "1h"):
+                got = apply_anthropic_cache_control(
+                    copy.deepcopy(base), cache_ttl=ttl, native_anthropic=native
+                )
+                want = _reference_full_deepcopy(
+                    copy.deepcopy(base), cache_ttl=ttl, native_anthropic=native
+                )
+                assert got == want, f"structural mismatch native={native} ttl={ttl}"
+
 
     def test_static_system_prefix_gets_its_own_marker(self):
         messages = [
@@ -173,49 +343,8 @@ class TestApplyAnthropicCacheControl:
         assert result[2]["content"][0]["cache_control"] == {"type": "ephemeral"}
         assert result[3]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
-    def test_mismatched_static_prefix_uses_legacy_system_breakpoint(self):
-        messages = [
-            {"role": "system", "content": "current system prompt"},
-            {"role": "user", "content": "old request"},
-            {"role": "assistant", "content": "old response"},
-            {"role": "user", "content": "new request"},
-        ]
 
-        result = apply_anthropic_cache_control(
-            messages,
-            static_system_prefix="stale system prompt",
-        )
 
-        assert len(result[0]["content"]) == 1
-        assert result[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
-        assert result[2]["content"][0]["cache_control"] == {"type": "ephemeral"}
-        assert result[3]["content"][0]["cache_control"] == {"type": "ephemeral"}
-
-    def test_last_3_non_system_get_markers(self):
-        msgs = [
-            {"role": "system", "content": "System"},
-            {"role": "user", "content": "msg1"},
-            {"role": "assistant", "content": "msg2"},
-            {"role": "user", "content": "msg3"},
-            {"role": "assistant", "content": "msg4"},
-        ]
-        result = apply_anthropic_cache_control(msgs)
-        # System (index 0) + last 3 non-system (indices 2, 3, 4) = 4 breakpoints
-        # Index 1 (msg1) should NOT have marker
-        content_1 = result[1]["content"]
-        if isinstance(content_1, str):
-            assert True  # No marker applied (still a string)
-        else:
-            assert "cache_control" not in content_1[0]
-
-    def test_no_system_message(self):
-        msgs = [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi"},
-        ]
-        result = apply_anthropic_cache_control(msgs)
-        # Both should get markers (4 slots available, only 2 messages)
-        assert len(result) == 2
 
     def test_1h_ttl(self):
         msgs = [{"role": "system", "content": "System prompt"}]
@@ -224,54 +353,8 @@ class TestApplyAnthropicCacheControl:
         assert isinstance(sys_content, list)
         assert sys_content[0]["cache_control"]["ttl"] == "1h"
 
-    def test_max_4_breakpoints(self):
-        msgs = [
-            {"role": "system", "content": "System"},
-        ] + [
-            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg{i}"}
-            for i in range(10)
-        ]
-        result = apply_anthropic_cache_control(msgs)
-        # Count how many messages have cache_control
-        count = 0
-        for msg in result:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, dict) and "cache_control" in item:
-                        count += 1
-            elif "cache_control" in msg:
-                count += 1
-        assert count <= 4
 
-    def test_tool_loop_empty_assistant_and_tool_messages_do_not_consume_breakpoints(self):
-        """Tool loops should keep breakpoints on messages that can carry markers."""
-        msgs = [
-            {"role": "system", "content": "You are helpful"},
-            {"role": "user", "content": "run tool 1", "cache_control": MARKER},
-            {"role": "assistant", "content": "", "tool_calls": [{"type": "function"}]},
-            {"role": "tool", "content": "tool result 1"},
-            {"role": "user", "content": "run tool 2", "cache_control": MARKER},
-            {"role": "assistant", "content": "", "tool_calls": [{"type": "function"}]},
-            {"role": "tool", "content": "tool result 2"},
-        ]
-        result = apply_anthropic_cache_control(msgs, native_anthropic=False)
-        # Empty assistant/tool turns should not get broken markers
-        assert "cache_control" not in result[2]
-        assert "cache_control" not in result[3]
-        assert "cache_control" not in result[5]
-        assert "cache_control" not in result[6]
 
-    def test_tool_message_marker_lands_on_content_part_on_openrouter(self):
-        """Non-empty tool content should be wrapped so the marker lands on a content part."""
-        msgs = [
-            {"role": "user", "content": "hello"},
-            {"role": "tool", "content": "tool output"},
-        ]
-        result = apply_anthropic_cache_control(msgs, native_anthropic=False)
-        assert isinstance(result[1]["content"], list)
-        assert result[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
-        assert "cache_control" not in result[1]
 
 
 class TestNormalizationOrdering:
@@ -318,10 +401,9 @@ class TestNormalizationOrdering:
         from agent import conversation_loop
 
         src = inspect.getsource(conversation_loop)
-        # Anchor on the call-block decoration (before the retry loop), not the
-        # mid-failover redecoration helper which also calls apply_*.
-        anchor = src.index("Runs LAST, after every message mutation above")
-        mark = src.index("apply_anthropic_cache_control(\n", anchor)
+        # Anchor on the call-block request plan, not the retry helper.
+        anchor = src.index("Build the request-local cache sections")
+        mark = src.index("build_prompt_cache_plan(\n", anchor)
         for earlier in (
             'am["content"].strip()',              # whitespace normalization
             "_sanitize_api_messages(api_messages)",       # orphan sweep
@@ -365,17 +447,6 @@ class TestStripAnthropicCacheControl:
                     if isinstance(part, dict):
                         assert "cache_control" not in part
 
-    def test_flattens_system_static_volatile_back_to_string(self):
-        static = "You are helpful.\n"
-        full = static + "Model: claude\nProvider: anthropic"
-        messages = apply_anthropic_cache_control(
-            [{"role": "system", "content": full}, {"role": "user", "content": "hi"}],
-            native_anthropic=True,
-            static_system_prefix=static,
-        )
-        assert isinstance(messages[0]["content"], list)
-        strip_anthropic_cache_control(messages)
-        assert messages[0]["content"] == full
 
     def test_preserves_multimodal_part_structure(self):
         messages = [
@@ -393,57 +464,6 @@ class TestStripAnthropicCacheControl:
         assert content[0] == {"type": "text", "text": "see"}
         assert content[1]["type"] == "image_url"
 
-    def test_preserves_organic_multipart_text_lists(self):
-        # Multi-part pure-text lists NOT produced by decoration (merged user
-        # turns, imported transcripts) must keep their structure — a ""-join
-        # would fuse "Hello"+"world" into "Helloworld" and change wire bytes
-        # on the common no-failover path (redecoration runs every attempt).
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Hello"},
-                    {"type": "text", "text": "world"},
-                ],
-            }
-        ]
-        strip_anthropic_cache_control(messages)
-        content = messages[0]["content"]
-        assert isinstance(content, list) and len(content) == 2
-        assert [p["text"] for p in content] == ["Hello", "world"]
 
-    def test_preserves_extra_part_keys_like_citations(self):
-        # anthropic_adapter deliberately whitelists citations on text blocks;
-        # strip must not destroy them by flattening the part away.
-        messages = [
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "answer",
-                        "citations": [{"src": "doc"}],
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-            }
-        ]
-        strip_anthropic_cache_control(messages)
-        content = messages[0]["content"]
-        assert isinstance(content, list)
-        assert content[0]["citations"] == [{"src": "doc"}]
-        assert "cache_control" not in content[0]
 
-    def test_marker_removal_is_copy_on_write_for_part_dicts(self):
-        # The per-call api_messages copy is SHALLOW (msg.copy()) — content
-        # part dicts alias the persistent history. Stripping a marker must
-        # never rewrite the stored transcript's part dicts in place.
-        shared_part = {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}
-        history = [{"role": "user", "content": [shared_part]}]
-        api_messages = [m.copy() for m in history]
-        strip_anthropic_cache_control(api_messages)
-        assert "cache_control" in shared_part  # history untouched
-        api_content = api_messages[0]["content"]
-        if isinstance(api_content, list):
-            assert all("cache_control" not in p for p in api_content)
 

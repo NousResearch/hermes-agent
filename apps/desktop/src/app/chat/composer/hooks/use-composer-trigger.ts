@@ -12,13 +12,58 @@ import {
   slashCommandToken
 } from '../composer-utils'
 import {
+  appendComposerContents,
+  caretOffsetInEditor,
   composerPlainText,
-  placeCaretEnd,
+  placeCaretAtOffset,
   refChipElement,
   renderComposerContents,
+  replaceBeforeCaret,
+  RICH_INPUT_SLOT,
   slashChipElement
 } from '../rich-editor'
 import { detectTrigger, textBeforeCaret, type TriggerState } from '../text-utils'
+
+/**
+ * Rebuild-from-text fallback for carets the range walk can't anchor (a
+ * non-collapsed selection, a caret not preceded by contiguous text). It
+ * re-renders the whole editor from serialized text, so it only runs when the
+ * in-place path reports failure — never as the default.
+ *
+ * The split is around the CARET, not the end of the draft. Slicing
+ * `length - tokenLength` off the end assumed the trigger token was the last
+ * thing in the editor: a completion picked mid-message chopped the trailing
+ * prose off and stranded a partial `folder:` in front of the chip, because the
+ * window it removed wasn't the token the user was typing.
+ */
+export function rebuildAroundCaret(editor: HTMLDivElement, tokenLength: number, insert: DocumentFragment | string) {
+  const current = composerPlainText(editor)
+  const caret = caretOffsetInEditor(editor)
+  const prefix = current.slice(0, Math.max(0, caret - tokenLength))
+  const suffix = current.slice(caret)
+
+  if (typeof insert === 'string') {
+    renderComposerContents(editor, `${prefix}${insert}${suffix}`)
+    placeCaretAtOffset(editor, prefix.length + insert.length)
+
+    return
+  }
+
+  // Measure before appending — moving a fragment empties it. Appending the
+  // element rather than re-serializing keeps mid-message slash pills alive:
+  // they have no text hydration, unlike `@` refs and the leading command.
+  const scratch = document.createElement('div')
+
+  scratch.dataset.slot = RICH_INPUT_SLOT
+  scratch.append(insert.cloneNode(true))
+
+  const inserted = composerPlainText(scratch)
+
+  renderComposerContents(editor, prefix)
+  editor.append(insert)
+  appendComposerContents(editor, suffix)
+  placeCaretAtOffset(editor, prefix.length + inserted.length)
+}
 
 interface CompletionSource {
   adapter: Unstable_TriggerAdapter | null
@@ -29,6 +74,10 @@ interface UseComposerTriggerOptions {
   at: CompletionSource
   draftRef: MutableRefObject<string>
   editorRef: RefObject<HTMLDivElement | null>
+  /** `:joy` emoji completions — inserts the emoji character, never a chip. */
+  emoji?: CompletionSource
+  /** Bank the pre-commit state so a popover pick is a single undo step. */
+  recordUndoPoint?: () => void
   requestMainFocus: () => void
   setComposerText: (text: string) => void
   slash: CompletionSource
@@ -47,6 +96,8 @@ export function useComposerTrigger({
   at,
   draftRef,
   editorRef,
+  emoji,
+  recordUndoPoint,
   requestMainFocus,
   setComposerText,
   slash
@@ -87,7 +138,7 @@ export function useComposerTrigger({
     // is present do we pay the cost of the full walk + DOM range work.
     const rawText = editor.textContent ?? ''
 
-    if (!rawText.includes('@') && !rawText.includes('/')) {
+    if (!rawText.includes('@') && !rawText.includes('/') && !rawText.includes(':')) {
       if (trigger) {
         setTrigger(null)
         resetTriggerActive()
@@ -124,7 +175,13 @@ export function useComposerTrigger({
   }, [editorRef, resetTriggerActive, trigger])
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
-    trigger?.kind === '@' ? at.adapter : trigger?.kind === '/' ? slash.adapter : null
+    trigger?.kind === '@'
+      ? at.adapter
+      : trigger?.kind === '/'
+        ? slash.adapter
+        : trigger?.kind === ':'
+          ? (emoji?.adapter ?? null)
+          : null
 
   useEffect(() => {
     if (!trigger || !triggerAdapter?.search) {
@@ -142,7 +199,14 @@ export function useComposerTrigger({
     setTriggerItems(trigger.inline ? items.filter(isSkillItem) : items)
   }, [trigger, triggerAdapter])
 
-  const triggerLoading = trigger?.kind === '@' ? at.loading : trigger?.kind === '/' ? slash.loading : false
+  const triggerLoading =
+    trigger?.kind === '@'
+      ? at.loading
+      : trigger?.kind === '/'
+        ? slash.loading
+        : trigger?.kind === ':'
+          ? (emoji?.loading ?? false)
+          : false
 
   // Suppress the "No matches" empty state once a slash command is past its name:
   // a no-arg command has nothing to offer, and a fully-typed arg commits on
@@ -214,17 +278,22 @@ export function useComposerTrigger({
       return
     }
 
+    // Bank the pre-commit state first — every path below mutates the editor,
+    // and a pick must be exactly one undo step.
+    recordUndoPoint?.()
+
+    const rebuildAround = (insert: DocumentFragment | string) => rebuildAroundCaret(editor, trigger.tokenLength, insert)
+
     // Action items (e.g. "Browse all sessions…") run a side effect instead of
     // inserting a chip: strip the typed trigger token, then fire the action.
     const completionAction = (item.metadata as { action?: unknown } | undefined)?.action
     const runAction = typeof completionAction === 'string' ? COMPLETION_ACTIONS[completionAction] : undefined
 
     if (runAction) {
-      const current = composerPlainText(editor)
-      const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
+      if (!replaceBeforeCaret(editor, trigger.tokenLength, document.createDocumentFragment())) {
+        rebuildAround('')
+      }
 
-      renderComposerContents(editor, prefix)
-      placeCaretEnd(editor)
       draftRef.current = composerPlainText(editor)
       setComposerText(draftRef.current)
       closeTrigger()
@@ -247,19 +316,29 @@ export function useComposerTrigger({
         ? String((item.metadata as { insertId?: unknown } | undefined)?.insertId ?? '')
         : ''
 
-    if (descendInto) {
-      const path = descendInto.endsWith('/') ? descendInto : `${descendInto}/`
-      const current = composerPlainText(editor)
-      const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
-
-      renderComposerContents(editor, `${prefix}@${path}`)
-      placeCaretEnd(editor)
+    const finish = (keepOpen: boolean) => {
       draftRef.current = composerPlainText(editor)
       setComposerText(draftRef.current)
       requestMainFocus()
-      window.setTimeout(refreshTrigger, 0)
+      keepOpen ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
+    }
 
-      return
+    if (descendInto) {
+      const path = descendInto.endsWith('/') ? descendInto : `${descendInto}/`
+      // Carry the browse scope down with the path. Dropping it turned an
+      // explicit `@folder:` browse into a bare `@apps/desktop/` token halfway
+      // through, so the next completion silently widened back to files and the
+      // committed chip had to re-guess the kind from a trailing slash.
+      const scope = trigger.scope ? `${trigger.scope}:` : ''
+      const fragment = document.createDocumentFragment()
+
+      fragment.append(document.createTextNode(`@${scope}${path}`))
+
+      if (!replaceBeforeCaret(editor, trigger.tokenLength, fragment)) {
+        rebuildAround(`@${scope}${path}`)
+      }
+
+      return finish(true)
     }
 
     // Picking a bare arg-taking command (e.g. `/personality`) shouldn't commit
@@ -280,90 +359,78 @@ export function useComposerTrigger({
     const slashKind = !expandsToArgs && trigger.kind === '/' ? slashChipKindForItem(item) : null
     const keepTriggerOpen = starter || (expandsToArgs && argumentMode !== 'text')
 
-    const finish = () => {
-      draftRef.current = composerPlainText(editor)
-      setComposerText(draftRef.current)
-      requestMainFocus()
-      keepTriggerOpen ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
-    }
-
-    const sel = window.getSelection()
-    const range = sel?.rangeCount ? sel.getRangeAt(0) : null
-    const node = range?.startContainer
-    const offset = range?.startOffset ?? 0
-
-    if (!sel || !range || node?.nodeType !== Node.TEXT_NODE || offset < trigger.tokenLength) {
-      const current = composerPlainText(editor)
-      const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
-
-      if (slashKind) {
-        // Two-step arg picks (e.g. `/handoff` pill already inserted, now picking
-        // the platform) land here because the caret sits past a contenteditable
-        // chip. Rebuild the prefix and re-emit a single pill for the full command.
-        renderComposerContents(editor, prefix)
-        editor.append(slashChipElement(serialized, slashKind), document.createTextNode(' '))
-        placeCaretEnd(editor)
-
-        return finish()
-      }
-
-      renderComposerContents(editor, `${prefix}${text}`)
-      placeCaretEnd(editor)
-
-      return finish()
-    }
-
-    const replaceRange = document.createRange()
-    replaceRange.setStart(node, offset - trigger.tokenLength)
-    replaceRange.setEnd(node, offset)
-    replaceRange.deleteContents()
-
     const chip = slashKind
       ? slashChipElement(serialized, slashKind)
       : directive
-        ? refChipElement(directive[1], directive[2])
+        ? // Carry the picked row's own label into the chip rather than letting
+          // it re-derive one from the value. Upstream's DirectiveNode does the
+          // same (`__label = item.label`), and it's what makes the list and the
+          // chip agree: you get the string you just read, not a second guess at
+          // it. Falls back to the shared deriver for callers with no label.
+          refChipElement(directive[1], directive[2], (item.metadata as { display?: string })?.display || item.label)
         : null
 
-    if (chip) {
-      const space = document.createTextNode(' ')
-      const fragment = document.createDocumentFragment()
-      fragment.append(chip, space)
-      replaceRange.insertNode(fragment)
+    // The trailing space is a convenience for "keep typing after the chip", so
+    // it's wrong when the caret already has whitespace in front of it — a pick
+    // made mid-sentence would leave a double space in the prose.
+    const followedBySpace = /^\s/.test(composerPlainText(editor).slice(caretOffsetInEditor(editor)))
+    const fragment = document.createDocumentFragment()
 
-      const caret = document.createRange()
-      caret.setStart(space, 1)
-      caret.collapse(true)
-      sel.removeAllRanges()
-      sel.addRange(caret)
+    chip
+      ? fragment.append(chip, ...(followedBySpace ? [] : [document.createTextNode(' ')]))
+      : fragment.append(document.createTextNode(followedBySpace ? text.trimEnd() : text))
 
-      return finish()
+    if (!replaceBeforeCaret(editor, trigger.tokenLength, fragment)) {
+      // The failed in-place attempt never consumed the fragment, so the chip +
+      // trailing space are re-inserted around the caret here. Moving the
+      // element (rather than re-serializing) keeps mid-message slash pills
+      // alive — they have no text hydration, unlike `@` refs and the leading
+      // command.
+      rebuildAround(chip ? fragment : text)
     }
 
-    document.execCommand('insertText', false, text)
-    finish()
+    finish(keepTriggerOpen)
   }
 
   /** Backspace inside an `@` path drops the last segment (`a/b/` → `a/`)
-   *  instead of one character. Descending is one Tab per level, so climbing
-   *  back out should cost one key too rather than a held delete. Returns
+   *  instead of one character, and once the path is empty it drops the browse
+   *  scope (`@folder:` → `@`) rather than nibbling `:`, `r`, `e`, `d`… back
+   *  through the directive syntax the user never typed. Descending is one Tab
+   *  per level, so climbing back out costs one key per level too. Returns
    *  false when the caret isn't in a path, so keydown falls through. */
   const ascendTriggerPath = () => {
     const editor = editorRef.current
 
-    if (!editor || trigger?.kind !== '@' || !trigger.query.includes('/')) {
+    if (!editor || trigger?.kind !== '@') {
+      return false
+    }
+
+    const scope = trigger.scope ? `${trigger.scope}:` : ''
+
+    if (!trigger.value.includes('/') && !scope) {
       return false
     }
 
     // Trailing slash means we're listing a folder's children: drop that
-    // folder. Otherwise a partial segment is typed — drop just that.
-    const trimmed = trigger.query.replace(/\/$/, '')
+    // folder. Otherwise a partial segment is typed — drop just that. With the
+    // value already empty, the only thing left to drop is the scope itself.
+    const trimmed = trigger.value.replace(/\/$/, '')
     const parent = trimmed.slice(0, trimmed.lastIndexOf('/') + 1)
+    const next = trigger.value ? `${scope}${parent}` : ''
 
-    const current = composerPlainText(editor)
-    const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
+    recordUndoPoint?.()
 
-    renderComposerContents(editor, `${prefix}@${parent}`)
-    placeCaretEnd(editor)
+    const fragment = document.createDocumentFragment()
+
+    fragment.append(document.createTextNode(`@${next}`))
+
+    // In place first: the destructive re-render fallback rebuilds the editor
+    // from text, which is exactly what used to demote a leading command pill
+    // to plaintext on every Backspace inside a path.
+    if (!replaceBeforeCaret(editor, trigger.tokenLength, fragment)) {
+      rebuildAroundCaret(editor, trigger.tokenLength, `@${next}`)
+    }
+
     draftRef.current = composerPlainText(editor)
     setComposerText(draftRef.current)
     window.setTimeout(refreshTrigger, 0)

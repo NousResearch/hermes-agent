@@ -56,7 +56,7 @@ except ImportError:  # pragma: no cover - dependency gate
     CRYPTO_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, greedy_pack_blocks
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -68,7 +68,25 @@ from gateway.platforms.base import (
 )
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
-from agent.secret_scope import get_secret
+from agent.secret_scope import UnscopedSecretError, get_secret
+
+
+def _wx_secret(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Scope-aware WEIXIN_* read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under
+    ``_profile_runtime_scope`` — the scope is authoritative and a scoped miss
+    returns ``default`` (no cross-profile borrow from ``os.environ``). The
+    DEFAULT profile's adapter constructs and sends *unscoped* under
+    multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash its Weixin path; there ``os.environ`` is
+    that profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and WhatsApp's ``_get_wsecret``.
+    """
+    try:
+        return get_secret(name, default)
+    except UnscopedSecretError:
+        return os.getenv(name, default)
 
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
 WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
@@ -670,12 +688,10 @@ def _mime_from_filename(filename: str) -> str:
 
 
 def _split_table_row(line: str) -> List[str]:
-    row = line.strip()
-    if row.startswith("|"):
-        row = row[1:]
-    if row.endswith("|"):
-        row = row[:-1]
-    return [cell.strip() for cell in row.split("|")]
+    """Delegate to the canonical table-row splitter in agent.markdown_tables."""
+    from agent.markdown_tables import split_table_row
+
+    return split_table_row(line)
 
 
 def _normalize_markdown_blocks(content: str) -> str:
@@ -868,24 +884,14 @@ def _should_split_short_chat_block_for_weixin(block: str) -> bool:
 def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]:
     if len(content) <= max_length:
         return [content]
-
-    packed: List[str] = []
-    current = ""
-    for block in _split_markdown_blocks(content):
-        candidate = block if not current else f"{current}\n\n{block}"
-        if len(candidate) <= max_length:
-            current = candidate
-            continue
-        if current:
-            packed.append(current)
-            current = ""
-        if len(block) <= max_length:
-            current = block
-            continue
-        packed.extend(BasePlatformAdapter.truncate_message(block, max_length))
-    if current:
-        packed.append(current)
-    return packed
+    # Block extraction stays weixin-local (_split_markdown_blocks uses the
+    # anchored _FENCE_RE + per-line rstrip semantics); the greedy packing
+    # loop is the shared core's.
+    return greedy_pack_blocks(
+        _split_markdown_blocks(content),
+        max_length,
+        overflow=lambda block: BasePlatformAdapter.truncate_message(block, max_length),
+    )
 
 
 def _split_text_for_weixin_delivery(
@@ -973,9 +979,25 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
             return text
     for item in item_list:
         if item.get("type") == ITEM_VOICE:
-            voice_text = str((item.get("voice_item") or {}).get("text") or "")
-            if voice_text:
-                return voice_text
+            # #27300: Tencent Cloud's `voice_item.text` is their STT output,
+            # which is wrong for any non-Chinese audio (the original report
+            # was a Russian voice message that came back as English
+            # gibberish). Return empty so the central STT pipeline in
+            # ``gateway/run.py`` produces the body from the downloaded
+            # audio instead.
+            voice_item = item.get("voice_item") or {}
+            if not (voice_item.get("media") or {}):
+                # No raw audio to download — Weixin supplied only its own
+                # speech-to-text result. Use it, but preserve the voice
+                # origin so the agent can distinguish this from text the
+                # user typed (#65022).
+                voice_text = str(voice_item.get("text") or "")
+                if voice_text:
+                    return (
+                        "[Voice transcription provided by Weixin]\n"
+                        f"{voice_text}"
+                    )
+            continue
     return ""
 
 
@@ -1171,11 +1193,11 @@ class WeixinAdapter(BasePlatformAdapter):
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
 
-        self._account_id = str(extra.get("account_id") or get_secret("WEIXIN_ACCOUNT_ID", "")).strip()
-        self._token = str(config.token or extra.get("token") or get_secret("WEIXIN_TOKEN", "")).strip()
-        self._base_url = str(extra.get("base_url") or get_secret("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
+        self._account_id = str(extra.get("account_id") or _wx_secret("WEIXIN_ACCOUNT_ID", "")).strip()
+        self._token = str(config.token or extra.get("token") or _wx_secret("WEIXIN_TOKEN", "")).strip()
+        self._base_url = str(extra.get("base_url") or _wx_secret("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
         self._cdn_base_url = str(
-            extra.get("cdn_base_url") or get_secret("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)
+            extra.get("cdn_base_url") or _wx_secret("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)
         ).strip().rstrip("/")
         self._send_chunk_delay_seconds = float(
             extra.get("send_chunk_delay_seconds") or os.getenv("WEIXIN_SEND_CHUNK_DELAY_SECONDS", "1.5")
@@ -1659,8 +1681,13 @@ class WeixinAdapter(BasePlatformAdapter):
     async def _download_voice(self, item: Dict[str, Any]) -> Optional[str]:
         voice_item = item.get("voice_item") or {}
         media = voice_item.get("media") or {}
-        if voice_item.get("text"):
-            return None
+        # #27300: previously short-circuited when ``voice_item.text`` was set
+        # on the assumption that Tencent Cloud's STT was good enough.
+        # For non-Chinese audio that text is garbage (e.g. a Russian
+        # message comes back as English phonemes) — we must always
+        # download the raw audio so ``gateway/run.py``'s central STT
+        # pipeline can re-transcribe with the user's configured
+        # mlx-whisper / whisper.cpp / faster-whisper backend.
         try:
             data = await _download_and_decrypt_media(
                 self._poll_session,
@@ -2304,10 +2331,10 @@ async def send_weixin_direct(
 
     This bypasses the long-poll adapter lifecycle and uses the raw API directly.
     """
-    account_id = str(extra.get("account_id") or get_secret("WEIXIN_ACCOUNT_ID", "")).strip()
-    base_url = str(extra.get("base_url") or get_secret("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
-    cdn_base_url = str(extra.get("cdn_base_url") or get_secret("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)).strip().rstrip("/")
-    resolved_token = str(token or extra.get("token") or get_secret("WEIXIN_TOKEN", "")).strip()
+    account_id = str(extra.get("account_id") or _wx_secret("WEIXIN_ACCOUNT_ID", "")).strip()
+    base_url = str(extra.get("base_url") or _wx_secret("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
+    cdn_base_url = str(extra.get("cdn_base_url") or _wx_secret("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)).strip().rstrip("/")
+    resolved_token = str(token or extra.get("token") or _wx_secret("WEIXIN_TOKEN", "")).strip()
     if not resolved_token:
         return {"error": "Weixin token missing. Configure WEIXIN_TOKEN or platforms.weixin.token."}
     if not account_id:

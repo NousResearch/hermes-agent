@@ -41,15 +41,13 @@ export function completionRequestForInput(
     return null
   }
 
-  if (isSlashCommand) {
-    return { method: 'complete.slash', params: { text: input }, replaceFrom: 1 }
-  }
-
-  // A `/token` mid-message is a skill reference dropped into prose. It's only
-  // reachable here because the path branch below would otherwise claim it: a
-  // bare `/cle` matches TAB_PATH_RE as an absolute path. Skills win that tie —
-  // the moment a second `/` is typed the inline trigger stops matching and
-  // path completion takes back over.
+  // A `/token` mid-message is a skill reference dropped into prose. Detected
+  // BEFORE the leading-command shape because only the first slash can be an
+  // invocation — `/help /cle` is a command whose argument names a skill, and
+  // routing the whole line to the backend's completer offered nothing at all.
+  // It only matches a whitespace-preceded slash sitting at the caret, so
+  // ordinary argument completion (`/cron ad`, `/personality alic`) is
+  // untouched.
   const inline = inlineSlashTrigger(input)
 
   if (inline) {
@@ -59,6 +57,10 @@ export function completionRequestForInput(
       replaceFrom: inline.start + 1,
       skillsOnly: true
     }
+  }
+
+  if (isSlashCommand) {
+    return { method: 'complete.slash', params: { text: input }, replaceFrom: 1 }
   }
 
   if (!pathWord) {

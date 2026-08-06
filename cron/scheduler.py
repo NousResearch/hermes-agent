@@ -48,6 +48,11 @@ from hermes_cli.config import (
 )
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
+from agent.interrupt_compat import request_hard_interrupt
+from agent.delegation_context import (
+    enter_non_dispatcher_owned_context,
+    exit_non_dispatcher_owned_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +286,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_runs, claim_dispatch, heartbeat_run_claim
 from cron.executions import create_execution, finish_execution, mark_execution_running
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
@@ -961,9 +966,19 @@ def _seed_cron_thread_session(
             except (ValueError, KeyError):
                 platform_enum = None
             if platform_enum is not None:
+                # Discord thread destinations must key on the thread's OWN id
+                # to match how the Discord adapter keys organic in-thread
+                # messages (chat_id == thread_id). Other platforms (Slack,
+                # Telegram) use chat_id == parent_channel for thread messages,
+                # so the parent chat_id is correct for them. See the matching
+                # guard in GatewayRunner._process_handoff.
+                if platform_enum == Platform.DISCORD:
+                    seed_chat_id = str(thread_id)
+                else:
+                    seed_chat_id = str(chat_id)
                 dest_source = SessionSource(
                     platform=platform_enum,
-                    chat_id=str(chat_id),
+                    chat_id=seed_chat_id,
                     chat_name=chat_name,
                     chat_type="thread",
                     user_id="system:cron",
@@ -2509,7 +2524,7 @@ def _run_job_script(
         argv = [python_exe, str(path)]
 
     try:
-        from tools.environments.local import _sanitize_subprocess_env
+        from tools.environments.local import build_subprocess_env
 
         popen_kwargs = {}
         if sys.platform == "win32":
@@ -2518,7 +2533,7 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace",
             }
-        env = _sanitize_subprocess_env(os.environ.copy())
+        env = build_subprocess_env()
         env.update(env_overlay)
         # Give wrappers a stable runtime-root contract.  This avoids embedding
         # checkout paths in scripts while preserving portable standalone use.
@@ -2834,7 +2849,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
         # Bump usage so the curator sees this skill as actively used.
         try:
-            bump_use(skill_name)
+            bump_use(skill_name, task_id=str(job.get("id") or "") or None)
         except Exception:
             logger.debug("Cron job: failed to bump skill usage for '%s'", skill_name, exc_info=True)
 
@@ -3230,18 +3245,12 @@ def run_job(
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
-    origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
     agent = None
-
-    # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
-    os.environ["HERMES_CRON_SESSION"] = "1"
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
     # don't clobber each other's targets (os.environ is process-global).
@@ -3345,7 +3354,35 @@ def run_job(
     # statement raises.  A leaked writer would deadlock the whole scheduler
     # (every future job blocks on acquire_*); a leaked reader blocks all
     # future writers.  Acquire itself can't leak (it either blocks or returns).
+    _cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
+    _cron_session_token = None
+    _non_dispatcher_token = None
     try:
+        # Scope cron approval policy to this job. Keep the token so the finally
+        # restores the pre-job state instead of pinning an explicit empty value,
+        # which would suppress the legacy os.environ fallback used by standalone
+        # cron entrypoints and tests.
+        _cron_session_token = _cron_session_var.set("1")
+
+        # Mark this job as NOT the dispatcher-owned kanban worker.
+        #
+        # A kanban worker is a normal `hermes chat -q` CLI agent whose default
+        # toolset includes `cronjob`, running with HERMES_KANBAN_TASK
+        # legitimately in its own env; `cronjob(action="run")` calls
+        # run_one_job() -> run_job() right here in that process.  Without this
+        # marker the cron agent is misread as that worker: the kanban toolset is
+        # force-added, the worker protocol is injected into its system prompt,
+        # and kanban_complete defaults task_id to $HERMES_KANBAN_TASK -- letting
+        # an unrelated cron job close the worker's task and overwrite real
+        # results.
+        #
+        # A ContextVar, NOT an os.environ clear: the env is process-global and
+        # shared with the worker's own claim heartbeat (run_agent._touch_activity
+        # -> heartbeat_current_worker_from_env, which would starve and let the
+        # dispatcher reclaim a live task), the gateway's kanban watchers, and
+        # concurrent cron jobs on the parallel pool.  contextvars.copy_context()
+        # at the run_conversation hop carries this into the agent thread.
+        _non_dispatcher_token = enter_non_dispatcher_owned_context()
         if _job_workdir:
             os.environ["TERMINAL_CWD"] = _job_workdir
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
@@ -3390,11 +3427,10 @@ def run_job(
         _cfg = {}
         _model_cfg = {}
         try:
-            import yaml
+            from hermes_cli.config import read_user_config_raw
             _cfg_path = str(_get_hermes_home() / "config.yaml")
             if os.path.exists(_cfg_path):
-                with open(_cfg_path, encoding="utf-8") as _f:
-                    _cfg = yaml.safe_load(_f) or {}
+                _cfg = read_user_config_raw(Path(_cfg_path))
                 # Managed scope: a scheduled job must honor administrator-pinned
                 # model / reasoning / toolsets / provider_routing too. This loader
                 # builds its own dict, so overlay managed values via the shared
@@ -3828,8 +3864,7 @@ def run_job(
                 _last_desc, _iter_n, _iter_max,
                 _cur_tool or "none",
             )
-            if hasattr(agent, "interrupt"):
-                agent.interrupt("Cron job timed out (inactivity)")
+            request_hard_interrupt(agent, "Cron job timed out (inactivity)")
             raise TimeoutError(
                 f"Cron job '{job_name}' idle for "
                 f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
@@ -3959,6 +3994,10 @@ def run_job(
         # clear_session_vars also clears _SESSION_CWD internally, so no
         # separate clear_session_cwd() call is needed.
         clear_session_vars(_ctx_tokens)
+        if _cron_session_token is not None:
+            _cron_session_var.reset(_cron_session_token)
+        if _non_dispatcher_token is not None:
+            exit_non_dispatcher_owned_context(_non_dispatcher_token)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
@@ -4480,6 +4519,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
+            unresolved_origin = False
             # Cron silence suppression — see _is_cron_silence_response.  Replaces the
             # old `SILENT_MARKER in ...upper()` substring check, which both leaked
             # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
@@ -4491,6 +4531,10 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 should_deliver = False
 
             if should_deliver:
+                unresolved_origin = (
+                    _normalize_deliver_value(job.get("deliver", "local")) == "origin"
+                    and not _resolve_delivery_targets(job)
+                )
                 try:
                     delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                 except Exception as de:
@@ -4515,14 +4559,53 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-        finish_execution(execution_id, success=success, error=error)
+        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+        if delivery_error:
+            delivery_outcome = "failed"
+        elif should_deliver and unresolved_origin:
+            delivery_outcome = "not_configured"
+        elif should_deliver and normalized_deliver != "local":
+            delivery_outcome = "delivered"
+        else:
+            delivery_outcome = "suppressed"
+        finish_execution(
+            execution_id,
+            success=success,
+            error=error,
+            delivery_outcome=delivery_outcome,
+        )
         return True
 
-    except Exception as e:
-        logger.error("Error processing job %s: %s", job['id'], e)
-        if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], False, str(e))
-        finish_execution(execution_id, success=False, error=str(e))
+    except BaseException as e:  # noqa: BLE001 — deliberate: see below
+        # BaseException, not Exception (#73973): the inner run_job handler
+        # re-raises CancelledError / KeyboardInterrupt / SystemExit after agent
+        # teardown, and none of those are Exception subclasses. If they escape
+        # without mark_job_run(False), a finite one-shot is left wedged —
+        # claim_dispatch() already consumed repeat.completed, but last_run_at
+        # is never written, so the job sits in state "scheduled" until the
+        # run-claim TTL expires and the dispatch-limit guard removes it with
+        # no output and no error. Record the failure first, then re-raise
+        # anything that isn't a plain Exception.
+        _err_text = str(e) or type(e).__name__
+        logger.error("Error processing job %s: %s", job['id'], _err_text)
+        try:
+            if not _consume_interrupted_flag(job["id"]):
+                mark_job_run(job["id"], False, _err_text)
+        except Exception as record_err:
+            # Never let bookkeeping mask the original interruption.
+            logger.error(
+                "Failed to record interrupted run for job %s: %s",
+                job["id"], record_err,
+            )
+        try:
+            finish_execution(execution_id, success=False, error=_err_text)
+        except Exception as record_err:
+            logger.error(
+                "Failed to finish execution record for job %s: %s",
+                job["id"], record_err,
+            )
+        if not isinstance(e, Exception):
+            raise
         return False
 
 
@@ -4594,8 +4677,20 @@ def tick(
 
         due_jobs = get_due_jobs()
 
-        if verbose and not due_jobs:
-            logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+        if not due_jobs:
+            # Idle tick: skip config load + pool partitioning entirely
+            # (#33612 — the gateway ticker calls tick(verbose=False) every
+            # 60s, so idle ticks previously fell through to load_config()).
+            # Still run the post-tick MCP orphan sweep: main intentionally
+            # sweeps on idle ticks so orphaned stdio children from crashed
+            # jobs are reaped even when nothing is due.
+            if verbose:
+                logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+            try:
+                from tools.mcp_tool import _kill_orphaned_mcp_children
+                _kill_orphaned_mcp_children()
+            except Exception as _e:
+                logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
             return 0
 
         if verbose:
@@ -4603,11 +4698,11 @@ def tick(
 
         # Advance next_run_at for all recurring jobs FIRST, under the file lock,
         # before any execution begins.  This preserves at-most-once semantics.
-        # For parallel jobs that are already running, advance_next_run keeps
+        # For parallel jobs that are already running, the advance keeps
         # bumping next_run_at forward so the grace window never expires.
         # mark_job_run() overwrites next_run_at on completion.
-        for job in due_jobs:
-            advance_next_run(job["id"])
+        # Batched: one load + one save for the whole due set, not one per job.
+        advance_next_runs([job["id"] for job in due_jobs])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.

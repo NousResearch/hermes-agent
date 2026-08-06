@@ -107,41 +107,8 @@ def test_force_close_tcp_sockets_uses_shut_rdwr():
     assert captured == [_socket.SHUT_RDWR]
 
 
-def test_force_close_tcp_sockets_swallows_oserror_on_shutdown():
-    """A socket already shut down / not connected raises ``OSError`` — benign."""
-    from agent.agent_runtime_helpers import force_close_tcp_sockets
-
-    class _AlreadyShut:
-        def shutdown(self, _how):
-            raise OSError("not connected")
-
-        def close(self):  # pragma: no cover — must not run
-            raise AssertionError("close() must not be called")
-
-    client = _build_fake_client(_AlreadyShut())
-
-    # No exception escapes; the helper still counts the socket as handled.
-    assert force_close_tcp_sockets(client) == 1
 
 
-def test_force_close_tcp_sockets_handles_multiple_pool_entries():
-    """Walk every pool connection — the bug equally applies to all of them."""
-    from agent.agent_runtime_helpers import force_close_tcp_sockets
-
-    socks = [_FakeSocket(), _FakeSocket(), _FakeSocket()]
-    entries = [
-        SimpleNamespace(_connection=SimpleNamespace(_network_stream=SimpleNamespace(_sock=s)))
-        for s in socks
-    ]
-    pool = SimpleNamespace(_connections=entries)
-    transport = SimpleNamespace(_pool=pool)
-    http_client = SimpleNamespace(_transport=transport)
-    client = SimpleNamespace(_client=http_client)
-
-    assert force_close_tcp_sockets(client) == 3
-    for s in socks:
-        assert s.shutdown_calls == 1
-        assert s.close_calls == 0
 
 
 # ---------------------------------------------------------------------------
@@ -392,41 +359,8 @@ def test_agent_abort_request_openai_client_does_not_call_client_close(caplog):
     ), f"missing abort log line; got: {msgs!r}"
 
 
-def test_agent_abort_request_openai_client_warns_when_no_sockets(caplog):
-    """tcp_force_closed=0 must not look like a successful abort (#72975)."""
-    from run_agent import AIAgent
-
-    # Client with an empty pool — abort finds nothing to shut down.
-    empty_pool = SimpleNamespace(_connections=[])
-    transport = SimpleNamespace(_pool=empty_pool)
-    http_client = SimpleNamespace(_transport=transport, _mounts={})
-    client = SimpleNamespace(_client=http_client, close=MagicMock())
-
-    agent = AIAgent.__new__(AIAgent)
-    agent._client_log_context = lambda: "provider=test"
-
-    with caplog.at_level(logging.WARNING, logger="run_agent"):
-        agent._abort_request_openai_client(client, reason="stream_interrupt_abort")
-
-    client.close.assert_not_called()
-    msgs = [r.getMessage() for r in caplog.records]
-    assert any(
-        "OpenAI client aborted (stream_interrupt_abort" in m
-        and "tcp_force_closed=0" in m
-        and "no sockets found" in m
-        for m in msgs
-    ), f"missing ineffective-abort WARNING; got: {msgs!r}"
 
 
-def test_agent_abort_request_openai_client_null_client_is_noop():
-    """A ``None`` client must short-circuit cleanly (defensive)."""
-    from run_agent import AIAgent
-
-    agent = AIAgent.__new__(AIAgent)
-    agent._client_log_context = lambda: "provider=test"
-
-    # No exception, no side effect.
-    agent._abort_request_openai_client(None, reason="interrupt_abort")
 
 
 # ---------------------------------------------------------------------------

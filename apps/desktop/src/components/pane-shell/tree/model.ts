@@ -134,17 +134,18 @@ export function normalize(node: LayoutNode): LayoutNode | null {
     }
 
     const active = node.panes.includes(node.active) ? node.active : node.panes[0]
-    // A zone down to one pane clears a redundant HIDDEN override (the lone-pane
-    // default is already headerless) but KEEPS an explicit SHOWN override —
-    // once a zone has ever had a tab bar, closing back to one tab leaves it
-    // shown (sticky bar; the off switch is "Hide tab bar"). `false` survives.
-    const headerHidden = node.panes.length <= 1 && node.headerHidden !== false ? undefined : node.headerHidden
 
-    if (active === node.active && headerHidden === node.headerHidden) {
+    // NOTE: `headerHidden` is deliberately untouched here. A zone down to one
+    // pane is headerless by default anyway, so a stored `true` is visually
+    // redundant *while it's alone* — but normalize used to DROP it, which threw
+    // away the user's standing choice: the bar came back the moment a pane
+    // rejoined (close a stacked tool panel, toggle it back on). `false` is
+    // sticky for the mirror reason — once a zone has had a tab bar, it keeps it.
+    if (active === node.active) {
       return node
     }
 
-    return { ...node, active, headerHidden }
+    return { ...node, active }
   }
 
   const children: LayoutNode[] = []
@@ -184,9 +185,9 @@ export function normalize(node: LayoutNode): LayoutNode | null {
   return { ...node, children, weights }
 }
 
-/** Remove a pane wherever it lives. Closing the ACTIVE tab activates its
- *  previous neighbor (the next one when it was first) — browser-tab feel,
- *  never a jump to the strip's start. */
+/** Remove a pane wherever it lives. Closing the ACTIVE tab leaves selection on
+ *  the neighbor that fills its slot (right; left when it was last) — same rule
+ *  as terminals and the preview rail. */
 export function removePane(node: LayoutNode, paneId: string): LayoutNode | null {
   const walk = (n: LayoutNode): LayoutNode => {
     if (n.type === 'group') {
@@ -198,7 +199,8 @@ export function removePane(node: LayoutNode, paneId: string): LayoutNode | null 
 
       const panes = n.panes.filter(p => p !== paneId)
 
-      return { ...n, panes, active: n.active === paneId ? panes[Math.max(0, at - 1)] : n.active }
+      // After splice, `at` indexes the old right neighbor (clamp left at end).
+      return { ...n, panes, active: n.active === paneId ? (panes[Math.min(at, panes.length - 1)] ?? '') : n.active }
     }
 
     return { ...n, children: n.children.map(walk) }
@@ -315,94 +317,69 @@ export function movePane(
   return shapeSignature(next) === shapeSignature(root) ? root : next
 }
 
+/**
+ * Move a SELECTION of panes together (multi-tab drag), preserving their strip
+ * order. The lead pane lands exactly like a single `movePane` (center joins at
+ * `before`, an edge opens the split); the rest stack in behind it. `activeId`
+ * (the pressed tab) fronts in the landing group. Same no-op guard as
+ * `movePane`: a drop that rebuilds the visible arrangement returns `root`.
+ */
+export function movePanes(
+  root: LayoutNode,
+  paneIds: readonly string[],
+  target: { groupId: string; pos: DropPosition; before?: null | string },
+  activeId: string = paneIds[0] ?? ''
+): LayoutNode {
+  if (paneIds.length <= 1) {
+    return paneIds.length === 1 ? movePane(root, paneIds[0], target) : root
+  }
+
+  let without: LayoutNode | null = root
+
+  for (const id of paneIds) {
+    without = without && removePane(without, id)
+  }
+
+  // The selection was the whole tree, or removal dissolved the target zone
+  // (the selection was its only occupancy) — nowhere left to land.
+  if (!without || !findGroup(without, target.groupId)) {
+    return root
+  }
+
+  // The lead insert decides geometry; the rest stack into the lead's group at
+  // the same slot (each lands before `before`, so the block keeps its order).
+  // Only the lead activates — `insertAtGroup(activate)` would otherwise front
+  // each follower in turn.
+  const lead = paneIds[0]
+  let next: LayoutNode | null = insertAtGroup(without, target.groupId, lead, target.pos, target.before)
+
+  for (let i = 1; next && i < paneIds.length; i++) {
+    const leadGroup = findGroupOfPane(next, lead)
+
+    if (!leadGroup) {
+      return root
+    }
+
+    const before = target.pos === 'center' ? (target.before ?? null) : null
+    next = insertAtGroup(next, leadGroup.id, paneIds[i], 'center', before, false)
+  }
+
+  if (!next) {
+    return root
+  }
+
+  const landed = findGroupOfPane(next, lead)
+
+  if (landed && landed.panes.includes(activeId)) {
+    next = setActivePane(next, landed.id, activeId)
+  }
+
+  return shapeSignature(next) === shapeSignature(root) ? root : next
+}
+
 /** Group ids of every leaf under a node, in tree order. */
 export function groupLeafIds(node: LayoutNode): string[] {
   return node.type === 'group' ? [node.id] : node.children.flatMap(groupLeafIds)
-}
-
-function pathToGroup(node: LayoutNode, groupId: string): LayoutNode[] | null {
-  if (node.type === 'group') {
-    return node.id === groupId ? [node] : null
-  }
-
-  for (const child of node.children) {
-    const sub = pathToGroup(child, groupId)
-
-    if (sub) {
-      return [node, ...sub]
-    }
-  }
-
-  return null
-}
-
-const OPPOSITE_EDGE: Record<RootEdge, RootEdge> = { bottom: 'top', left: 'right', right: 'left', top: 'bottom' }
-
-/** The viable group touching `edge` of this subtree. Along the edge's axis
- *  children are scanned edge-first — a non-viable zone is display:none, so the
- *  next sibling IS the visual edge; across it, every child touches the edge. */
-function edgeGroup(node: LayoutNode, edge: RootEdge, viable: (g: GroupNode) => boolean): GroupNode | null {
-  if (node.type === 'group') {
-    return viable(node) ? node : null
-  }
-
-  const along = (node.orientation === 'row') === (edge === 'left' || edge === 'right')
-  const children = along && (edge === 'right' || edge === 'bottom') ? [...node.children].reverse() : node.children
-
-  for (const child of children) {
-    const hit = edgeGroup(child, edge, viable)
-
-    if (hit) {
-      return hit
-    }
-  }
-
-  return null
-}
-
-/**
- * The viable zone VISUALLY adjacent to `groupId` on `side` (the target of the
- * zone menu's "Move left/right/up/down"). Walks up to the nearest ancestor
- * split running along that axis with a sibling on that side, then descends to
- * the sibling's closest viable leaf; subtrees whose every zone fails `viable`
- * (all panes hidden) are skipped, matching their collapsed rendering.
- */
-export function adjacentGroup(
-  root: LayoutNode,
-  groupId: string,
-  side: RootEdge,
-  viable: (g: GroupNode) => boolean
-): GroupNode | null {
-  const path = pathToGroup(root, groupId)
-
-  if (!path) {
-    return null
-  }
-
-  const orientation: Orientation = side === 'left' || side === 'right' ? 'row' : 'column'
-  const forward = side === 'right' || side === 'bottom'
-
-  for (let i = path.length - 2; i >= 0; i--) {
-    const parent = path[i]
-
-    if (parent.type !== 'split' || parent.orientation !== orientation) {
-      continue
-    }
-
-    const index = parent.children.indexOf(path[i + 1])
-
-    const siblings = forward ? parent.children.slice(index + 1) : parent.children.slice(0, index).reverse()
-
-    for (const sibling of siblings) {
-      const hit = edgeGroup(sibling, OPPOSITE_EDGE[side], viable)
-
-      if (hit) {
-        return hit
-      }
-    }
-  }
-
-  return null
 }
 
 function sameSet(ids: string[], set: Set<string>): boolean {
@@ -430,26 +407,32 @@ function findCover(node: LayoutNode, set: Set<string>): LayoutNode | null {
 }
 
 /**
- * FancyZones span: merge the highlighted zones into ONE group holding
- * `paneId`, absorbing any panes that lived in those zones as tabs. Only works
- * when the highlighted set forms a rectangular subtree (it always does for a
- * combined zone range on a guillotine tree); returns null otherwise so the
- * caller can fall back to a single-zone drop.
+ * FancyZones span: merge the highlighted zones into ONE group holding the
+ * dragged pane block (one pane, or a multi-tab selection in strip order),
+ * absorbing any panes that lived in those zones as tabs. Only works when the
+ * highlighted set forms a rectangular subtree (it always does for a combined
+ * zone range on a guillotine tree); returns null otherwise so the caller can
+ * fall back to a single-zone drop.
  */
-export function mergeZonesWithPane(root: LayoutNode, groupIds: string[], paneId: string): LayoutNode | null {
+export function mergeZonesWithPane(
+  root: LayoutNode,
+  groupIds: string[],
+  paneId: string | readonly string[]
+): LayoutNode | null {
+  const paneIds = typeof paneId === 'string' ? [paneId] : [...paneId]
   const set = new Set(groupIds)
 
   if (set.size <= 1 || !findCover(root, set)) {
     return null
   }
 
-  // Panes from the merged zones (tree order), minus the dragged one.
+  // Panes from the merged zones (tree order), minus the dragged block.
   const panesInSet: string[] = []
 
   const collect = (n: LayoutNode) => {
     if (n.type === 'group') {
       if (set.has(n.id)) {
-        panesInSet.push(...n.panes.filter(p => p !== paneId))
+        panesInSet.push(...n.panes.filter(p => !paneIds.includes(p)))
       }
     } else {
       n.children.forEach(collect)
@@ -458,16 +441,19 @@ export function mergeZonesWithPane(root: LayoutNode, groupIds: string[], paneId:
 
   collect(root)
 
-  // If the dragged pane lives OUTSIDE the merged set, pull it from its origin
+  // Any dragged pane living OUTSIDE the merged set is pulled from its origin
   // first (leaving that origin an empty zone). Inside the set it's absorbed.
-  const origin = findGroupOfPane(root, paneId)
   let working = root
 
-  if (origin && !set.has(origin.id)) {
-    working = removePane(root, paneId) ?? root
+  for (const id of paneIds) {
+    const origin = findGroupOfPane(working, id)
+
+    if (origin && !set.has(origin.id)) {
+      working = removePane(working, id) ?? working
+    }
   }
 
-  const merged = group([paneId, ...panesInSet])
+  const merged = group([...paneIds, ...panesInSet])
 
   const replace = (n: LayoutNode): LayoutNode => {
     if (sameSet(groupLeafIds(n), set)) {
@@ -492,16 +478,23 @@ export function setActivePane(root: LayoutNode, groupId: string, paneId: string)
   return mapGroups(root, g => (g.id === groupId && g.panes.includes(paneId) ? { ...g, active: paneId } : g))
 }
 
-/** Reorder a pane within its group's tab stack (browser-tab drag semantics). */
-export function reorderPaneInGroup(root: LayoutNode, groupId: string, paneId: string, toIndex: number): LayoutNode {
+/** Reorder a block of panes within a group as one unit (browser-tab drag
+ *  semantics; a single-tab drag is a one-id block): the block lands at
+ *  `toIndex` among the remaining tabs, keeping its own order. */
+export function reorderPanesInGroup(
+  root: LayoutNode,
+  groupId: string,
+  paneIds: readonly string[],
+  toIndex: number
+): LayoutNode {
   return mapGroups(root, g => {
-    if (g.id !== groupId || !g.panes.includes(paneId)) {
+    if (g.id !== groupId || !paneIds.every(p => g.panes.includes(p))) {
       return g
     }
 
-    const without = g.panes.filter(p => p !== paneId)
+    const without = g.panes.filter(p => !paneIds.includes(p))
     const index = Math.max(0, Math.min(without.length, toIndex))
-    const panes = [...without.slice(0, index), paneId, ...without.slice(index)]
+    const panes = [...without.slice(0, index), ...paneIds, ...without.slice(index)]
 
     return { ...g, panes }
   })
@@ -521,32 +514,6 @@ function replaceNode(node: LayoutNode, id: string, make: (g: GroupNode) => Layou
   }
 
   return { ...node, children: node.children.map(c => replaceNode(c, id, make)) }
-}
-
-/**
- * Split a zone: `movePaneId` (one of SEVERAL panes in the group) moves into
- * the new zone on `side` — VS Code "split right", split and move in one
- * gesture. A lone pane can't split away from itself: no-op (normalize prunes
- * the empty zone the split would have minted).
- */
-export function splitGroupZone(root: LayoutNode, groupId: string, side: RootEdge, movePaneId: string): LayoutNode {
-  const orientation: Orientation = side === 'left' || side === 'right' ? 'row' : 'column'
-  const before = side === 'left' || side === 'top'
-
-  return (
-    normalize(
-      replaceNode(root, groupId, g => {
-        if (g.panes.length < 2 || !g.panes.includes(movePaneId)) {
-          return g
-        }
-
-        const added = group([movePaneId])
-        const remaining = { ...g, panes: g.panes.filter(p => p !== movePaneId) }
-
-        return split(orientation, before ? [added, remaining] : [remaining, added], [1, 1])
-      })
-    ) ?? root
-  )
 }
 
 /** Mirror the layout HORIZONTALLY (the titlebar flip toggle / ⌘\): reverse

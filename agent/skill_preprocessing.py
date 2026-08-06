@@ -25,9 +25,9 @@ _INLINE_SHELL_MAX_OUTPUT = 4000
 def load_skills_config() -> dict:
     """Load the ``skills`` section of config.yaml (best-effort)."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
 
-        cfg = load_config() or {}
+        cfg = load_config_readonly() or {}
         skills_cfg = cfg.get("skills")
         if isinstance(skills_cfg, dict):
             return skills_cfg

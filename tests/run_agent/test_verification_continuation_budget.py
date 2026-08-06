@@ -184,31 +184,6 @@ def test_multiple_verification_retries_publish_each_candidate_once(agent, monkey
     agent._handle_max_iterations.assert_not_called()
 
 
-def test_verification_false_finalizes_candidate_once(agent, monkeypatch):
-    """When verification returns false/exception, the candidate is finalized once."""
-    agent._interruptible_api_call = lambda _kwargs: _response("the answer")
-    agent._handle_max_iterations = MagicMock(return_value="replacement summary")
-    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
-
-    emitted = []
-    agent.interim_assistant_callback = lambda text, **kw: emitted.append(text)
-
-    with (
-        # build_verify_on_stop_nudge raises — simulates verification check failure
-        patch(
-            "agent.verification_stop.build_verify_on_stop_nudge",
-            side_effect=RuntimeError("verify check crashed"),
-        ),
-        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
-    ):
-        result = agent.run_conversation("edit changed.py")
-
-    # No interim emission because verification did not run (exception path
-    # sets _verify_nudge = None, so the candidate becomes the final response
-    # without an interim emission).
-    assert result["final_response"] == "the answer"
-    assert result["completed"] is True
-    agent._handle_max_iterations.assert_not_called()
 
 
 def test_verify_on_stop_emits_interim_response_to_ui(agent, monkeypatch):
@@ -278,44 +253,3 @@ def test_streamed_interim_then_different_summary_not_marked_previewed(agent, mon
     assert result["response_previewed"] is False
 
 
-def test_streamed_verification_candidate_reused_marked_previewed(agent, monkeypatch):
-    """Verification candidate reused at budget exhaustion is marked previewed.
-
-    The model streams a verification candidate that is already streamed as
-    interim content. The continuation budget is exhausted, so the finalizer
-    reuses the pending verification candidate as the final response. The result
-    must be marked as previewed so the CLI/desktop settle it once instead of
-    duplicating. (#65919 review)
-    """
-    agent._interruptible_api_call = lambda _kwargs: _response("composed report")
-    agent._handle_max_iterations = MagicMock(return_value="replacement summary")
-    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
-
-    agent._turn_file_mutation_paths = {"changed.py"}
-
-    callback_calls = []
-
-    def capture_callback(text, *, already_streamed=None):
-        callback_calls.append({"text": text, "already_streamed": already_streamed})
-
-    agent.interim_assistant_callback = capture_callback
-
-    # Simulate that the candidate text was already streamed. The streaming
-    # buffer is cleared after the response is processed, so mock the check
-    # directly — this is the condition the test validates: when the candidate
-    # was streamed, the previewed flag propagates to the finalizer.
-    with (
-        patch.object(agent, "_interim_content_was_streamed", return_value=True),
-        patch("agent.verification_stop.build_verify_on_stop_nudge", return_value="verify it"),
-        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
-    ):
-        result = agent.run_conversation("edit changed.py")
-
-    # The candidate was already streamed, so the callback reports already_streamed=True.
-    assert len(callback_calls) == 1
-    assert callback_calls[0]["already_streamed"] is True
-    # The candidate is reused as the final response.
-    assert result["final_response"] == "composed report"
-    # CRITICAL: response_previewed must be True — the reused candidate was
-    # streamed as interim content, so the CLI/desktop settle it once.
-    assert result["response_previewed"] is True

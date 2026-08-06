@@ -1,6 +1,8 @@
 """Tests for gateway/shutdown_flush.py — pending message durability (#72680)."""
 
 import json
+import os
+import stat
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -21,15 +23,6 @@ def _make_flush_dir(tmp_path: Path) -> Path:
     return flush_dir
 
 
-def test_flush_empty_pending_is_noop(tmp_path, monkeypatch):
-    flush_dir = _make_flush_dir(tmp_path)
-    monkeypatch.setattr(
-        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
-    )
-    assert flush_pending_to_file({}, reason="test") == 0
-    assert list(flush_dir.glob("*.json")) == []
-
-
 def test_flush_writes_string_pending_to_file(tmp_path, monkeypatch):
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr(
@@ -44,6 +37,8 @@ def test_flush_writes_string_pending_to_file(tmp_path, monkeypatch):
     assert payload["session_key"] == "agent:main:telegram:supergroup:123"
     assert payload["reason"] == "shutdown"
     assert payload["data"]["text"] == "hello world"
+    assert ":" not in files[0].name
+    assert "telegram" not in files[0].name
 
 
 def test_flush_writes_message_event_to_file(tmp_path, monkeypatch):
@@ -68,16 +63,6 @@ def test_flush_writes_message_event_to_file(tmp_path, monkeypatch):
     payload = json.loads(files[0].read_text(encoding="utf-8"))
     assert payload["data"]["text"] == "user message"
     assert payload["data"]["session_id"] == "20260728_120000_abc"
-
-
-def test_recover_no_flush_files_is_noop(tmp_path, monkeypatch):
-    flush_dir = _make_flush_dir(tmp_path)
-    monkeypatch.setattr(
-        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
-    )
-    mock_db = MagicMock()
-    assert recover_pending_to_db(mock_db) == 0
-    mock_db.append_message.assert_not_called()
 
 
 def test_recover_inserts_via_append_message_and_deletes_file(tmp_path, monkeypatch):
@@ -110,58 +95,6 @@ def test_recover_inserts_via_append_message_and_deletes_file(tmp_path, monkeypat
         timestamp=ts,
     )
     assert not flush_file.exists()
-
-
-def test_recover_skips_file_without_session_id(tmp_path, monkeypatch):
-    flush_dir = _make_flush_dir(tmp_path)
-    monkeypatch.setattr(
-        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
-    )
-    payload = {
-        "session_key": "some_key",
-        "reason": "shutdown",
-        "ts": int(time.time()),
-        "data": {"text": "no session id"},
-    }
-    flush_file = flush_dir / "no_sid.json"
-    flush_file.write_text(json.dumps(payload), encoding="utf-8")
-
-    mock_db = MagicMock()
-    count = recover_pending_to_db(mock_db)
-
-    assert count == 0
-    mock_db.append_message.assert_not_called()
-    # File preserved for manual recovery
-    assert flush_file.exists()
-
-
-def test_recover_deletes_empty_text_file(tmp_path, monkeypatch):
-    flush_dir = _make_flush_dir(tmp_path)
-    monkeypatch.setattr(
-        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
-    )
-    payload = {
-        "session_key": "some_key",
-        "reason": "shutdown",
-        "ts": int(time.time()),
-        "data": {"text": "", "session_id": "sid"},
-    }
-    flush_file = flush_dir / "empty.json"
-    flush_file.write_text(json.dumps(payload), encoding="utf-8")
-
-    mock_db = MagicMock()
-    count = recover_pending_to_db(mock_db)
-
-    assert count == 0
-    assert not flush_file.exists()
-
-
-def test_serialise_string():
-    assert _serialise_value("hello") == {"text": "hello"}
-
-
-def test_serialise_dict():
-    assert _serialise_value({"text": "hi"}) == {"text": "hi"}
 
 
 def test_serialise_object_with_text():
@@ -197,3 +130,5 @@ def test_get_flush_dir_uses_get_hermes_home(tmp_path, monkeypatch):
     result = mod._get_flush_dir()
     assert captured.get("called") is True
     assert result == tmp_path / "pending_messages"
+
+

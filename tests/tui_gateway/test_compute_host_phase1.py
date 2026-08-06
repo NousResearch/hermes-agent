@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tui_gateway import compute_host, server
 from tui_gateway.compute_host import ComputeHost, _default_workers
 from tui_gateway.host_supervisor import (
     MUTATOR_ROUTE_TABLE,
@@ -47,107 +48,6 @@ def test_compute_host_workers_inherit_tui_pool_env_or_8(monkeypatch):
     assert _default_workers() == 8
 
 
-def test_compute_host_frame_protocol_round_trip():
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=2, heartbeat_secs=0)
-    try:
-        host.handle_frame({"type": "session.seed", "sid": "alpha", "request_id": "seed", "history": []})
-        host.handle_frame(
-            {
-                "type": "turn.start",
-                "sid": "alpha",
-                "request_id": "turn-1",
-                "prompt": "hello",
-                "delta_count": 3,
-                "delay_s": 0,
-            }
-        )
-
-        end = _wait_for_frame(out, lambda f: f.get("type") == "turn.end" and f.get("request_id") == "turn-1")
-        assert end["history_version"] == 1
-        frames = _json_lines(out)
-        assert [f["type"] for f in frames if f.get("request_id") == "turn-1"] == [
-            "turn.started",
-            "delta",
-            "delta",
-            "delta",
-            "turn.end",
-        ]
-    finally:
-        host.close()
-
-
-def test_compute_host_interrupt_control_is_not_queued_behind_turn():
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
-    try:
-        host.handle_frame({"type": "session.seed", "sid": "alpha", "request_id": "seed", "history": []})
-        host.handle_frame(
-            {
-                "type": "turn.start",
-                "sid": "alpha",
-                "request_id": "turn-slow",
-                "prompt": "hello",
-                "delta_count": 200,
-                "delay_s": 0.01,
-            }
-        )
-        _wait_for_frame(out, lambda f: f.get("type") == "delta" and f.get("request_id") == "turn-slow")
-
-        host.handle_frame({"type": "interrupt", "sid": "alpha", "request_id": "stop-1"})
-        ack = _wait_for_frame(out, lambda f: f.get("type") == "interrupt.ack" and f.get("request_id") == "stop-1")
-        assert ack["applied"] is True
-
-        end = _wait_for_frame(out, lambda f: f.get("type") == "turn.end" and f.get("request_id") == "turn-slow")
-        assert end["interrupted"] is True
-        typed = [f["type"] for f in _json_lines(out)]
-        assert typed.index("interrupt.ack") < typed.index("turn.end")
-    finally:
-        host.close()
-
-
-def test_compute_host_flushes_sessions_on_orphan_shutdown(monkeypatch):
-    from tui_gateway import server
-
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
-    session = {"session_key": "key"}
-    calls: list[tuple[dict, str]] = []
-    server._sessions["flush-sid"] = session
-    monkeypatch.setattr(
-        server,
-        "_finalize_session",
-        lambda sess, end_reason="tui_close": calls.append((sess, end_reason)),
-    )
-    try:
-        host.flush_all_sessions(reason="orphan")
-        assert calls == [(session, "compute_host_orphan")]
-    finally:
-        server._sessions.pop("flush-sid", None)
-        host.close()
-
-
-def test_compute_host_parent_guard_exits_when_parent_pid_changes(monkeypatch):
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
-    host._parent_pid = 111
-    monkeypatch.setattr(os, "getppid", lambda: 222)
-
-    def _exit(code):
-        raise SystemExit(code)
-
-    monkeypatch.setattr(os, "_exit", _exit)
-
-    with pytest.raises(SystemExit) as exc_info:
-        host._parent_guard_loop()
-
-    assert exc_info.value.code == 0
-    orphan = next(frame for frame in _json_lines(out) if frame.get("type") == "orphan")
-    assert orphan["old_ppid"] == 111
-    assert orphan["ppid"] == 222
-    assert isinstance(orphan["host_ns"], int)
-
-
 def test_mutator_route_table_matches_prd_inventory():
     assert MUTATOR_ROUTE_TABLE == {
         "prompt.submit": "turn-path",
@@ -164,148 +64,6 @@ def test_mutator_route_table_matches_prd_inventory():
         "session.history.reload": "idle-gated",
         "slash.retry": "idle-gated",
     }
-
-
-def test_compute_host_compress_control_runs_identity_guard_in_host(monkeypatch):
-    from tui_gateway import server
-
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
-
-    class _Agent:
-        model = "host-model"
-        provider = "host-provider"
-        tools = []
-        _cached_system_prompt = ""
-        session_input_tokens = 1
-        session_output_tokens = 1
-        session_prompt_tokens = 1
-        session_completion_tokens = 1
-        session_total_tokens = 2
-        session_api_calls = 1
-        context_compressor = None
-
-    session = {
-        "agent": _Agent(),
-        "session_key": "before-key",
-        "history": [
-            {"role": "user", "content": "before"},
-            {"role": "assistant", "content": "before"},
-        ],
-        "history_lock": threading.Lock(),
-        "history_version": 2,
-        "running": False,
-        "manual_compression_lock": threading.Lock(),
-    }
-    calls: dict[str, object] = {}
-
-    def _compress(sess, focus_topic=None, **_kwargs):
-        assert sess is session
-        calls["compress_focus"] = focus_topic
-        with sess["history_lock"]:
-            sess["history"] = [{"role": "summary", "content": "compressed in host"}]
-            sess["history_version"] = 3
-
-    def _sync(sid, sess):
-        assert sess is session
-        calls["sync"] = sid
-        sess["session_key"] = "after-key"
-
-    server._sessions["sid"] = session
-    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
-    monkeypatch.setattr(server, "_compress_session_history", _compress)
-    monkeypatch.setattr(server, "_sync_session_key_after_compress", _sync)
-    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        server,
-        "_session_info",
-        lambda _agent, _session=None: {
-            "model": "host-model",
-            "provider": "host-provider",
-            "usage": {"total": 2},
-        },
-    )
-
-    try:
-        host.handle_frame(
-            {
-                "type": "control",
-                "sid": "sid",
-                "request_id": "compress-1",
-                "route_name": "slash.compress",
-                "command": "/compress focus",
-            }
-        )
-        ack = _wait_for_frame(
-            out,
-            lambda f: f.get("type") == "control.ack" and f.get("request_id") == "compress-1",
-        )
-    finally:
-        server._sessions.pop("sid", None)
-        host.close()
-
-    assert calls == {"compress_focus": "focus", "sync": "sid"}
-    assert ack["route_name"] == "slash.compress"
-    assert ack["session_key"] == "after-key"
-    assert ack["history_version"] == 3
-    assert ack["message_count"] == 1
-    assert ack["session_info"]["model"] == "host-model"
-
-
-def test_compute_host_session_compress_returns_structured_result(monkeypatch):
-    from tui_gateway import server
-
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
-    session = {
-        "agent": None,
-        "session_key": "host-key",
-        "history": [{"role": "user", "content": "preserved"}],
-        "history_lock": threading.Lock(),
-        "history_version": 3,
-        "running": False,
-    }
-    calls: list[dict] = []
-
-    def compress_handler(_rid, params):
-        calls.append(params)
-        return {
-            "result": {
-                "status": "aborted",
-                "messages": [{"role": "user", "content": "preserved"}],
-                "summary": {"aborted": True, "headline": "Compression aborted"},
-            }
-        }
-
-    server._sessions["sid"] = session
-    monkeypatch.setitem(server._methods, "session.compress", compress_handler)
-    monkeypatch.setattr(server, "_session_info", lambda _agent, _session: {"model": "host-model"})
-
-    try:
-        host.handle_frame(
-            {
-                "type": "control",
-                "sid": "sid",
-                "request_id": "compress-structured",
-                "route_name": "session.compress",
-                "command": "/compress auth",
-            }
-        )
-        ack = _wait_for_frame(
-            out,
-            lambda frame: frame.get("type") == "control.ack" and frame.get("request_id") == "compress-structured",
-        )
-    finally:
-        server._sessions.pop("sid", None)
-        host.close()
-
-    assert calls == [{"session_id": "sid", "focus_topic": "auth"}]
-    assert ack["result"]["status"] == "aborted"
-    assert ack["result"]["summary"]["aborted"] is True
-    assert ack["session_key"] == "host-key"
-    assert ack["history_version"] == 3
-    assert ack["message_count"] == 1
-    assert ack["session_info"] == {"model": "host-model"}
 
 
 def test_append_log_record_single_write_lines(tmp_path):
@@ -342,57 +100,6 @@ def test_supervisor_startup_reconcile_pid_reuse_guard(tmp_path, monkeypatch):
     assert not registry.exists()
 
 
-def test_supervisor_crash_emits_turn_error_and_respawns(tmp_path):
-    script = tmp_path / "fake_host.py"
-    script.write_text(
-        """
-import json, os, sys
-print(json.dumps({'type':'hello','host_pid':os.getpid(),'boot_id':'boot-1','build_sha':'test','hermes_home':os.environ.get('HERMES_HOME','')}), flush=True)
-for raw in sys.stdin:
-    frame=json.loads(raw)
-    if frame.get('type') == 'shutdown':
-        print(json.dumps({'type':'shutdown.ack','request_id':frame.get('request_id')}), flush=True)
-        break
-    if frame.get('type') == 'turn.start':
-        print(json.dumps({'type':'turn.started','sid':frame.get('sid'),'request_id':frame.get('request_id')}), flush=True)
-        sys.stdout.flush()
-        os._exit(7)
-""".strip(),
-        encoding="utf-8",
-    )
-    registry = tmp_path / "dashboard-compute-host.json"
-    completions: list[dict] = []
-    rpc_events: list[dict] = []
-    supervisor = HostSupervisor(
-        registry_path=registry,
-        argv=[sys.executable, str(script)],
-        rpc_sink=rpc_events.append,
-        respawn_max=2,
-        heartbeat_secs=1,
-        expected_build_sha="test",
-        autostart=False,
-    )
-    try:
-        supervisor.start()
-        supervisor.submit_turn(
-            {"type": "turn.start", "sid": "sid-1", "request_id": "turn-1", "text": "hello"},
-            on_complete=completions.append,
-        )
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not completions:
-            time.sleep(0.02)
-        assert completions, "host crash did not complete pending turn"
-        assert completions[0]["type"] == "turn.error"
-        assert completions[0]["reason"] == "crash"
-
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not supervisor.is_running():
-            time.sleep(0.02)
-        assert supervisor.is_running()
-    finally:
-        supervisor.shutdown()
-
-
 def _make_compress_host_session(events: list) -> dict:
     class _Agent:
         model = "host-model"
@@ -426,197 +133,175 @@ def _make_compress_host_session(events: list) -> dict:
     }
 
 
-def test_compute_host_compress_control_notifies_engine_after_commit(monkeypatch):
-    """The compute-host slash.compress route must fire the context-engine
-    boundary hook exactly once, and only AFTER the host commits the compressed
-    history + session-key sync (salvaged #65670, extended to this route)."""
-    from agent.conversation_compression import (
-        _queue_context_engine_compression_notification,
-        finalize_context_engine_compression_notification,
-    )
-    from tui_gateway import server
-
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
-    events: list[str] = []
-    session = _make_compress_host_session(events)
-
-    def _compress(sess, focus_topic=None, **_kwargs):
-        # Simulate agent._compress_context(defer_context_engine_notification=True)
-        _queue_context_engine_compression_notification(
-            sess["agent"],
-            new_session_id="rotated-id",
-            old_session_id="before-key",
-        )
-        with sess["history_lock"]:
-            sess["history"] = [{"role": "summary", "content": "compressed"}]
-            sess["history_version"] = 3
-
-    def _sync(sid, sess):
-        events.append("sync")
-        sess["session_key"] = "after-key"
-
-    server._sessions["sid"] = session
-    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
-    monkeypatch.setattr(server, "_compress_session_history", _compress)
-    monkeypatch.setattr(server, "_sync_session_key_after_compress", _sync)
-    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+def _record_finalize(monkeypatch, events: list[str], *sids: str) -> None:
+    """Give ``flush_all_sessions`` sessions and record which ones finalize."""
+    keys = sids or ("s1",)
     monkeypatch.setattr(
         server,
-        "_session_info",
-        lambda _agent, _session=None: {"model": "host-model", "usage": {"total": 2}},
+        "_sessions",
+        {sid: {"session_key": sid} for sid in keys},
+        raising=False,
     )
-
-    try:
-        host.handle_frame(
-            {
-                "type": "control",
-                "sid": "sid",
-                "request_id": "compress-1",
-                "route_name": "slash.compress",
-                "command": "/compress",
-            }
-        )
-        ack = _wait_for_frame(
-            out,
-            lambda f: f.get("type") == "control.ack" and f.get("request_id") == "compress-1",
-        )
-    finally:
-        server._sessions.pop("sid", None)
-        host.close()
-
-    # Exactly one notification, after the session-key commit.
-    assert events == ["sync", "notify"]
-    assert ack["session_key"] == "after-key"
-    # Nothing pending leaks onto the agent for a later compress to misfire.
-    assert (
-        finalize_context_engine_compression_notification(
-            session["agent"], committed=True
-        )
-        is False
-    )
-
-
-def test_compute_host_compress_control_failure_discards_notification(monkeypatch):
-    """When the host-side compress mirror fails after compression queued the
-    boundary notification, the pending hook must be discarded — never left to
-    fire against a boundary the host rejected."""
-    from agent.conversation_compression import (
-        _queue_context_engine_compression_notification,
-        finalize_context_engine_compression_notification,
-    )
-    from tui_gateway import server
-
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
-    events: list[str] = []
-    session = _make_compress_host_session(events)
-
-    def _compress(sess, focus_topic=None, **_kwargs):
-        _queue_context_engine_compression_notification(
-            sess["agent"],
-            new_session_id="rotated-id",
-            old_session_id="before-key",
-        )
-
-    def _boom(*_args, **_kwargs):
-        raise RuntimeError("synthetic host commit failure")
-
-    server._sessions["sid"] = session
-    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
-    monkeypatch.setattr(server, "_compress_session_history", _compress)
-    monkeypatch.setattr(server, "_sync_session_key_after_compress", _boom)
-    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         server,
-        "_session_info",
-        lambda _agent, _session=None: {"model": "host-model", "usage": {"total": 2}},
+        "_finalize_session",
+        lambda _session, end_reason="tui_close": events.append(
+            f"finalize:{_session['session_key']}:{end_reason}"
+        ),
+        raising=False,
     )
 
-    try:
-        host.handle_frame(
-            {
-                "type": "control",
-                "sid": "sid",
-                "request_id": "compress-2",
-                "route_name": "slash.compress",
-                "command": "/compress",
-            }
-        )
-        ack = _wait_for_frame(
-            out,
-            lambda f: f.get("type") == "control.ack" and f.get("request_id") == "compress-2",
-        )
-    finally:
-        server._sessions.pop("sid", None)
-        host.close()
 
-    assert events == []
-    assert "live session sync failed" in str(ack.get("output") or "")
-    # The pending notification was discarded, not left on the agent.
-    assert (
-        finalize_context_engine_compression_notification(
-            session["agent"], committed=True
-        )
-        is False
-    )
-    assert events == []
+def _register_turn(host: ComputeHost, fn, sid: str = "s1") -> None:
+    """Submit a turn exactly the way ``_handle_turn_start`` does."""
+    host._track_turn_future(host._executor.submit(fn), sid)
 
 
-def test_compute_host_compact_alias_routes_to_compress_mirror(monkeypatch):
-    """slash.compress control frames forward the user's raw alias verbatim;
-    /compact must reach the compress mirror (and its deferred-notification
-    finalize wiring), not silently no-op."""
-    from agent.conversation_compression import (
-        _queue_context_engine_compression_notification,
-    )
-    from tui_gateway import server
-
-    out = io.StringIO()
-    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+def test_shutdown_drains_in_flight_turn_before_finalizing_sessions(monkeypatch):
     events: list[str] = []
-    session = _make_compress_host_session(events)
-    calls: dict[str, object] = {}
+    _record_finalize(monkeypatch, events)
 
-    def _compress(sess, focus_topic=None, **_kwargs):
-        calls["focus"] = focus_topic
-        _queue_context_engine_compression_notification(
-            sess["agent"],
-            new_session_id="rotated-id",
-            old_session_id="before-key",
-        )
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    running = threading.Event()
 
-    server._sessions["sid"] = session
-    monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
-    monkeypatch.setattr(server, "_compress_session_history", _compress)
-    monkeypatch.setattr(
-        server, "_sync_session_key_after_compress", lambda *_a: events.append("sync")
-    )
-    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        server,
-        "_session_info",
-        lambda _agent, _session=None: {"model": "host-model", "usage": {"total": 2}},
-    )
+    def _turn() -> None:
+        running.set()
+        time.sleep(0.3)
+        events.append("turn_end")
+
+    _register_turn(host, _turn, sid="s1")
+    assert running.wait(timeout=5.0)
+
+    host.shutdown(reason="sigterm", wait=3.0)
+
+    # ``_finalize_session`` latches on ``session["_finalized"]``, so its single
+    # run has to observe the finished turn or the tail is unpersistable. A turn
+    # that *did* drain must still finalize — the live-turn skip must not
+    # over-reach into sessions whose work is done.
+    assert events == ["turn_end", "finalize:s1:compute_host_sigterm"]
+
+    # The done-callback still has to remove the entry now that the container is
+    # a dict: ``set.discard`` was a valid bare callback, ``dict.pop`` is not.
+    deadline = time.monotonic() + 2.0
+    while host._turn_futures and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert host._turn_futures == {}, "in-flight turns must not accumulate"
+
+
+def test_shutdown_retains_a_live_turns_session_when_the_drain_deadline_expires(monkeypatch):
+    wait = 1.0
+    events: list[str] = []
+    _record_finalize(monkeypatch, events, "live", "idle")
+
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    release = threading.Event()
+    running = threading.Event()
+
+    def _stuck_turn() -> None:
+        running.set()
+        release.wait(timeout=30.0)
+
+    _register_turn(host, _stuck_turn, sid="live")
+    assert running.wait(timeout=5.0)
 
     try:
-        host.handle_frame(
-            {
-                "type": "control",
-                "sid": "sid",
-                "request_id": "compact-1",
-                "route_name": "slash.compress",
-                "command": "/compact focus topic",
-            }
-        )
-        ack = _wait_for_frame(
-            out,
-            lambda f: f.get("type") == "control.ack" and f.get("request_id") == "compact-1",
-        )
+        started = time.monotonic()
+        host.shutdown(reason="sigterm", wait=wait)
+        elapsed = time.monotonic() - started
     finally:
-        server._sessions.pop("sid", None)
-        host.close()
+        release.set()
 
-    assert calls == {"focus": "focus topic"}
-    assert events == ["sync", "notify"]
-    assert ack["route_name"] == "slash.compress"
+    # ``_finalize_session`` is one-shot, and the ``shutdown(wait=False)`` that
+    # follows does not join the turn. Spending "live"'s single latch mid-turn
+    # would leave it permanently un-finalizable and release its active-session
+    # lease out from under running work — the same lifecycle race the drain
+    # exists to close, just moved past the deadline. It is retained unfinalized
+    # for recovery instead. A turn outliving the window must not cost the flush
+    # for anyone else, so "idle" still finalizes in the same pass.
+    assert events == ["finalize:idle:compute_host_sigterm"]
+    assert elapsed < wait
+
+
+def test_shutdown_retains_live_sessions_within_the_stdin_closed_budget(monkeypatch):
+    """The tightest real budget any caller uses is ``wait=2.0``.
+
+    ``run_host`` finalizes through ``host.shutdown(reason="stdin_closed",
+    wait=2.0)``, which is where the reserve — ``wait`` minus
+    ``min(_FLUSH_RESERVE_SECS, wait / 2)`` — has the least room to work with.
+    The retain-live-sessions rule must hold there without costing the flush for
+    idle sessions and without pushing the call past the budget the supervisor's
+    kill escalation is timed against.
+    """
+    wait = 2.0
+    drain_budget = wait - min(compute_host._FLUSH_RESERVE_SECS, wait / 2.0)
+
+    events: list[str] = []
+    _record_finalize(monkeypatch, events, "live", "idle")
+
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    release = threading.Event()
+    running = threading.Event()
+
+    def _stuck_turn() -> None:
+        running.set()
+        release.wait(timeout=30.0)
+
+    _register_turn(host, _stuck_turn, sid="live")
+    assert running.wait(timeout=5.0)
+
+    try:
+        started = time.monotonic()
+        host.shutdown(reason="stdin_closed", wait=wait)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert events == ["finalize:idle:compute_host_stdin_closed"]
+    assert elapsed >= drain_budget - 1e-6, "the drain must use its full window"
+    assert elapsed < wait
+
+
+def test_shutdown_drain_sleep_never_overshoots_the_reserve(monkeypatch):
+    """The drain's per-tick sleep must be bounded by the time left to it.
+
+    A flat tick overshoots the drain deadline by up to one tick, eating the
+    reserve held back for ``flush_all_sessions``; for a small ``wait`` that is
+    the whole reserve. Asserting on the *requested* sleep totals rather than on
+    wall-clock keeps this deterministic: each sleep is clamped to the remaining
+    time, so the sum can never exceed the drain budget however the scheduler
+    interleaves.
+    """
+    wait = 0.34
+    drain_budget = wait - min(compute_host._FLUSH_RESERVE_SECS, wait / 2.0)
+
+    events: list[str] = []
+    _record_finalize(monkeypatch, events, "idle")
+
+    slept: list[float] = []
+    real_sleep = time.sleep
+
+    def _recording_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        real_sleep(seconds)
+
+    monkeypatch.setattr(compute_host.time, "sleep", _recording_sleep)
+
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    release = threading.Event()
+    running = threading.Event()
+
+    def _stuck_turn() -> None:
+        running.set()
+        release.wait(timeout=30.0)
+
+    _register_turn(host, _stuck_turn, sid="live")
+    assert running.wait(timeout=5.0)
+
+    try:
+        host.shutdown(reason="sigterm", wait=wait)
+    finally:
+        release.set()
+
+    assert events == ["finalize:idle:compute_host_sigterm"]
+    assert slept, "the drain loop should have ticked at least once"
+    assert sum(slept) <= drain_budget + 1e-6

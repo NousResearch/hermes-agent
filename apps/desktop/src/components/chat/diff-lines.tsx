@@ -498,7 +498,7 @@ function overviewRuns(lines: DiffLine[]): { kind: 'add' | 'remove'; sizePct: num
   const total = lines.length || 1
   const runs: { kind: 'add' | 'remove'; sizePct: number; startPct: number }[] = []
 
-  for (let i = 0; i < lines.length; ) {
+  for (let i = 0; i < lines.length;) {
     const kind = lines[i].kind
 
     if (kind === 'context') {

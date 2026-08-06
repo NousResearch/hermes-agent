@@ -10,9 +10,7 @@ import json
 import logging
 import os
 import re
-import ssl
 import time
-from email.utils import formatdate
 
 from agent.redact import redact_sensitive_text
 from agent.secret_scope import get_secret
@@ -44,6 +42,8 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# Photon DM chat GUID (mirrors _DM_CHAT_GUID_RE in the photon adapter).
+_PHOTON_DM_GUID_RE = re.compile(r"^any;-;\+\d{6,}$")
 # WhatsApp JIDs: group chats (<digits>@g.us), individual users
 # (<phone>@s.whatsapp.net), linked identities (<id>@lid), and broadcast /
 # newsletter chats. These are explicit native targets the bridge accepts
@@ -381,15 +381,15 @@ def _handle_send(args):
             if resolved:
                 chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
             else:
-                return json.dumps({
-                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                return tool_error(
+                    f"Could not resolve '{target_ref}' on {platform_name}. "
                     f"Use send_message(action='list') to see available targets."
-                })
+                )
         except Exception:
-            return json.dumps({
-                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+            return tool_error(
+                f"Could not resolve '{target_ref}' on {platform_name}. "
                 f"Try using a numeric channel ID instead."
-            })
+            )
 
     from tools.interrupt import is_interrupted
     if is_interrupted():
@@ -469,11 +469,11 @@ def _handle_send(args):
             home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(
                 platform_name, f"{platform_name.upper()}_HOME_CHANNEL"
             )
-            return json.dumps({
-                "error": f"No home channel set for {platform_name} to determine where to send the message. "
+            return tool_error(
+                f"No home channel set for {platform_name} to determine where to send the message. "
                 f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
                 f"or set a home channel via: hermes config set {home_env} <channel_id>"
-            })
+            )
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
@@ -613,6 +613,12 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match:
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
+            return target_ref.strip(), None, True
+    if platform_name == "photon":
+        # Photon DM chat GUIDs ('any;-;+1555...') are platform-native ids the
+        # adapter resolves itself — pass through verbatim instead of bouncing
+        # them off the channel directory (mirrors the react handler).
+        if _PHOTON_DM_GUID_RE.fullmatch(target_ref.strip()):
             return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
@@ -2011,10 +2017,15 @@ async def _send_qqbot(pconfig, chat_id, message):
     except ImportError:
         return _error("QQBot direct send requires httpx. Run: pip install httpx")
 
+    # Resolve credential fallbacks through the profile secret scope (with the
+    # plain-environ fallback for unscoped single-profile runs) so a multiplex
+    # profile's direct send never borrows another profile's QQ credentials.
+    from gateway.config import _getenv
+
     extra = pconfig.extra or {}
-    appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
+    appid = extra.get("app_id") or _getenv("QQ_APP_ID", "")
     secret = (pconfig.token or extra.get("client_secret")
-              or os.getenv("QQ_CLIENT_SECRET", ""))
+              or _getenv("QQ_CLIENT_SECRET", ""))
     if not appid or not secret:
         return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
 

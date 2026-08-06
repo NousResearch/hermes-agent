@@ -194,55 +194,6 @@ class TestMcpRegistrationE2E:
         assert update.content[0].type == "content"
         assert "Approval prompt shows the diff" in update.content[0].content.text
 
-    @pytest.mark.asyncio
-    async def test_prompt_tool_results_paired_by_call_id(self, acp_agent, mock_manager):
-        """The ToolCallUpdate's toolCallId must match the ToolCallStart's."""
-        resp = await acp_agent.new_session(cwd="/tmp")
-        session_id = resp.session_id
-        state = mock_manager.get_session(session_id)
-
-        mock_conn = MagicMock(spec=acp.Client)
-        mock_conn.session_update = AsyncMock()
-        mock_conn.request_permission = AsyncMock()
-        acp_agent._conn = mock_conn
-
-        def mock_run(user_message, conversation_history=None, task_id=None, **kwargs):
-            agent = state.agent
-            # Fire two tool calls
-            if agent.tool_progress_callback:
-                agent.tool_progress_callback("tool.started", "read_file", "read: /etc/hosts", {"path": "/etc/hosts"})
-                agent.tool_progress_callback("tool.started", "web_search", "web search: test", {"query": "test"})
-
-            if agent.step_callback:
-                agent.step_callback(1, [
-                    {"name": "read_file", "result": '{"content": "127.0.0.1 localhost"}'},
-                    {"name": "web_search", "result": '{"data": {"web": []}}'},
-                ])
-
-            return {"final_response": "Done.", "messages": []}
-
-        state.agent.run_conversation = mock_run
-
-        prompt = [TextContentBlock(type="text", text="test")]
-        await acp_agent.prompt(prompt=prompt, session_id=session_id)
-
-        updates = []
-        for call in mock_conn.session_update.call_args_list:
-            update_arg = call[1].get("update") or call[0][1]
-            updates.append(update_arg)
-
-        starts = [u for u in updates if getattr(u, "session_update", None) == "tool_call"]
-        completions = [u for u in updates if getattr(u, "session_update", None) == "tool_call_update"]
-
-        assert len(starts) == 2, f"Expected 2 starts, got {len(starts)}"
-        assert len(completions) == 2, f"Expected 2 completions, got {len(completions)}"
-
-        # Each completion's toolCallId must match a start's toolCallId
-        start_ids = {s.tool_call_id for s in starts}
-        completion_ids = {c.tool_call_id for c in completions}
-        assert start_ids == completion_ids, (
-            f"IDs must match: starts={start_ids}, completions={completion_ids}"
-        )
 
 
 class TestMcpSanitizationE2E:

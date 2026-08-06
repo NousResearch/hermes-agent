@@ -5,8 +5,7 @@ import { calendarBucket, HOUR, localeWeekStartDay, MINUTE, SECOND, type SessionB
 // entry. Interleaving these lets the flat list (and the virtualizer) render
 // date separators inline without a second layer of nesting.
 export type SidebarListRow =
-  | { bucket: SessionBucket; key: string; kind: 'divider' }
-  | { entry: SidebarSessionEntry; kind: 'session' }
+  { bucket: SessionBucket; key: string; kind: 'divider' } | { entry: SidebarSessionEntry; kind: 'session' }
 
 // The row's own age label reads from `last_active || started_at`; bucket off the
 // same value so a divider lines up with what the row actually shows.

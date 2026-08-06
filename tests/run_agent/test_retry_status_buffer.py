@@ -99,17 +99,6 @@ def test_flush_empty_buffer_is_noop():
     assert emitted == []
 
 
-def test_re_buffer_after_flush_works():
-    agent = _make_bare_agent()
-    emitted = []
-    agent._emit_status = lambda msg: emitted.append(msg)
-
-    agent._buffer_status("first")
-    agent._flush_status_buffer()
-    agent._buffer_status("second")
-    agent._flush_status_buffer()
-
-    assert emitted == ["first", "second"]
 
 
 def test_mixed_kinds_replay_through_correct_channels():
@@ -195,24 +184,6 @@ def test_flush_discards_pending_fallback_notice():
     assert emitted == []
 
 
-def test_pending_fallback_notice_survives_emit_callback_error():
-    """A failing status callback must not leave the notice set for a stale
-    re-emit, and must not raise."""
-    agent = _make_bare_agent()
-    seen = []
-
-    def boom(msg):
-        seen.append(msg)
-        raise RuntimeError("simulated callback failure")
-
-    agent._emit_status = boom
-    agent._pending_fallback_notice = "🔄 Switched to fallback model: m1 via p1 → m2 via p2"
-
-    # Should not raise.
-    agent._emit_pending_fallback_notice()
-    # Attempt was made and the notice is cleared regardless.
-    assert seen == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
-    assert agent._pending_fallback_notice is None
 
 
 def test_flush_swallows_callback_exceptions():

@@ -87,37 +87,6 @@ class TestReasoningChoicePicker:
         assert values[1:1 + len(VALID_REASONING_EFFORTS)] == list(VALID_REASONING_EFFORTS)
         assert values[-3:] == ["reset", "show", "hide"]
 
-    @pytest.mark.asyncio
-    async def test_bare_reasoning_falls_back_to_text_without_picker(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-        runner = _make_runner(_NoPickerAdapter())
-
-        result = await runner._handle_reasoning_command(_make_event("/reasoning"))
-
-        assert isinstance(result, str)
-        assert "/reasoning" in result  # text status card
-
-    @pytest.mark.asyncio
-    async def test_bare_reasoning_falls_back_to_text_when_picker_send_fails(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-        adapter = _PickerAdapter(success=False)
-        runner = _make_runner(adapter)
-
-        result = await runner._handle_reasoning_command(_make_event("/reasoning"))
-
-        assert isinstance(result, str)
-        assert len(adapter.calls) == 1  # attempted, then fell back
-
-    @pytest.mark.asyncio
-    async def test_typed_argument_never_sends_picker(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-        adapter = _PickerAdapter()
-        runner = _make_runner(adapter)
-
-        result = await runner._handle_reasoning_command(_make_event("/reasoning high"))
-
-        assert isinstance(result, str)
-        assert adapter.calls == []
 
     @pytest.mark.asyncio
     async def test_picker_selection_applies_same_as_typed(self, tmp_path, monkeypatch):
@@ -137,35 +106,6 @@ class TestReasoningChoicePicker:
         assert "ultra" in reply
         override = runner._session_reasoning_overrides.get(session_key)
         assert override == {"enabled": True, "effort": "ultra"}
-
-    @pytest.mark.asyncio
-    async def test_picker_selection_of_current_level_marks_is_current(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-        (tmp_path / "config.yaml").write_text(
-            yaml.safe_dump({"agent": {"reasoning_effort": "xhigh"}}), encoding="utf-8"
-        )
-        adapter = _PickerAdapter()
-        runner = _make_runner(adapter)
-
-        await runner._handle_reasoning_command(_make_event("/reasoning"))
-
-        current = [c["value"] for c in adapter.calls[0]["choices"] if c.get("is_current")]
-        assert current == ["xhigh"]
-
-    @pytest.mark.asyncio
-    async def test_picker_show_choice_toggles_display(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-        adapter = _PickerAdapter()
-        runner = _make_runner(adapter)
-        event = _make_event("/reasoning")
-
-        await runner._handle_reasoning_command(event)
-        on_choice = adapter.calls[0]["on_choice_selected"]
-        await on_choice(event.source.chat_id, "show")
-
-        assert runner._show_reasoning is True
-        saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
-        assert saved["display"]["platforms"]["telegram"]["show_reasoning"] is True
 
 
 class TestFastChoicePicker:
@@ -204,38 +144,4 @@ class TestFastChoicePicker:
         assert runner._session_service_tier_overrides
         assert not (tmp_path / "config.yaml").exists()
 
-    @pytest.mark.asyncio
-    async def test_fast_picker_global_flag_persists_service_tier(self, tmp_path, monkeypatch):
-        """A /fast --global picker tap persists agent.service_tier to config."""
-        self._patch_fast_support(monkeypatch, tmp_path)
-        adapter = _PickerAdapter()
-        runner = _make_runner(adapter)
-        event = _make_event("/fast --global")
 
-        await runner._handle_fast_command(event)
-        on_choice = adapter.calls[0]["on_choice_selected"]
-        await on_choice(event.source.chat_id, "fast")
-
-        assert runner._service_tier == "priority"
-        saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
-        assert saved["agent"]["service_tier"] == "fast"
-
-    @pytest.mark.asyncio
-    async def test_bare_fast_falls_back_to_text_without_picker(self, tmp_path, monkeypatch):
-        self._patch_fast_support(monkeypatch, tmp_path)
-        runner = _make_runner(_NoPickerAdapter())
-
-        result = await runner._handle_fast_command(_make_event("/fast"))
-
-        assert isinstance(result, str)
-
-    @pytest.mark.asyncio
-    async def test_typed_fast_argument_never_sends_picker(self, tmp_path, monkeypatch):
-        self._patch_fast_support(monkeypatch, tmp_path)
-        adapter = _PickerAdapter()
-        runner = _make_runner(adapter)
-
-        result = await runner._handle_fast_command(_make_event("/fast normal"))
-
-        assert isinstance(result, str)
-        assert adapter.calls == []

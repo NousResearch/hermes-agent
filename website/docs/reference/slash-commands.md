@@ -38,7 +38,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 |---------|-------------|
 | `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title — e.g. `/new my-experiment` opens a fresh session already titled `my-experiment` so it's easy to find later with `/resume` or `/sessions`. Append `now`, `--yes`, or `-y` to skip the confirmation modal — e.g. `/reset now`, `/new --yes my-experiment`. |
 | `/clear` | Clear screen and start a new session |
-| `/history` | Show conversation history |
+| `/history` | Show conversation history (respects `/timestamps`) |
 | `/save` | Save the current conversation |
 | `/prompt` (alias: `/compose`) | Compose your next prompt in `$EDITOR` (markdown) instead of the inline input — useful for long, multi-line, or carefully-formatted prompts. |
 | `/retry` | Retry the last message (resend to agent) |
@@ -63,29 +63,33 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/agents` (alias: `/tasks`) | Show active agents and running tasks across the current session. |
 | `/background <prompt>` (alias: `/bg`, `/btw`) | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/user-guide/cli#background-sessions). |
 | `/branch [name]` (alias: `/fork`) | Branch the current session (explore a different path) |
+| `/journey [list\|delete <id>\|edit <id>]` (aliases: `/learning`, `/memory-graph`) | **CLI only.** Open the learning journey timeline. |
 | `/handoff <platform>` | **CLI only.** Hand the current session off to a messaging platform (Telegram, Discord, Slack, WhatsApp, Signal, Matrix). The gateway picks it up immediately, creates a fresh thread on platforms that support threads (Telegram topics, Discord text-channel threads, Slack message-anchored threads), re-binds the destination to your CLI session_id so the full role-aware transcript replays, and forges a synthetic user turn so the agent confirms it's working in the new place. Your CLI exits cleanly on success with a `/resume` hint; resume locally any time with `/resume <title>`. Refused mid-turn. Requires the gateway to be running and a home channel configured for the target platform (`/sethome` from the destination chat). See [Cross-Platform Handoff](/user-guide/sessions#cross-platform-handoff). |
+| `/journey [list\|delete <id>\|edit <id>]` (aliases: `/learning`, `/memory-graph`) | Open the learning journey timeline of learned skills + memories. Works in the classic CLI, as a TUI overlay, and in the desktop app (Star Map panel). Not available on messaging platforms. See [Learning Journey](/user-guide/features/memory#learning-journey-journey). |
 
 ### Configuration
 
 | Command | Description |
 |---------|-------------|
 | `/config` | Show current configuration |
-| `/model [model-name]` | Show or change the current model. Supports: `/model claude-sonnet-4`, `/model provider:model` (switch providers), `/model custom:model` (custom endpoint), `/model custom:name:model` (named custom provider), `/model custom` (auto-detect from endpoint), and user-defined aliases (`/model fav`, `/model grok` — see [Custom model aliases](#custom-model-aliases)). Use `--global` to persist the change to config.yaml. **Note:** `/model` can only switch between already-configured providers. To add a new provider, exit the session and run `hermes model` from your terminal. **Cost note:** switching models mid-conversation resets the prompt cache — the cache key includes the model, so your next turn re-reads the entire conversation at full input price instead of the ~75%-discounted cached rate. Expected and unavoidable, but worth knowing on long sessions. |
+| `/model [model-name]` | Show or change the current model. Supports: `/model claude-sonnet-4`, `/model provider:model` (switch providers), `/model custom:model` (custom endpoint), `/model custom:name:model` (named custom provider), `/model custom` (auto-detect from endpoint), and user-defined aliases (`/model fav`, `/model grok` — see [Custom model aliases](#custom-model-aliases)). Flags: `--global` persists the change to config.yaml; `--session` forces session-only; `--once` applies to the next turn only; `--refresh` re-fetches the provider's model list; `--provider <name>` switches backend (session-only unless `--global`). A plain `/model <name>` is session-only unless `model.persist_switch_by_default: true` is set. **Note:** `/model` can only switch between already-configured providers. To add a new provider, exit the session and run `hermes model` from your terminal. **Cost note:** switching models mid-conversation resets the prompt cache — the cache key includes the model, so your next turn re-reads the entire conversation at full input price instead of the ~75%-discounted cached rate. Expected and unavoidable, but worth knowing on long sessions. |
 | `/codex-runtime [auto\|codex_app_server\|on\|off]` | Toggle the optional [Codex app-server runtime](../user-guide/features/codex-app-server-runtime) for OpenAI/Codex models. `auto` (default) uses Hermes' standard chat completions; `codex_app_server` hands turns to a `codex app-server` subprocess for native shell, apply_patch, ChatGPT subscription auth, and migrated Codex plugins. Effective on next session. |
-| `/personality` | Set a predefined personality |
+| `/personality` | Set a predefined personality. `/personality none` (or `default` / `neutral`) clears the overlay and returns to base behavior. |
 | `/verbose` | Cycle tool progress display: off → new → all → verbose. Can be [enabled for messaging](#notes) via config. |
 | `/focus [on\|off\|status]` | Toggle **focus view** — a display-only reduced-output mode showing just your prompt and the final response. Composes with `/verbose`: turning it on snaps tool progress to `off` and remembers your previous mode, and `/focus off` restores it. Each turn ends with a dim recovery line (`⋯ 7 tool lines hidden · /focus off to show`) and a persistent `◉ focus` badge sits in the status bar so you always know you're in the reduced view. Nothing is sent differently to the model — detail is hidden, never discarded. |
 | `/fast [normal\|fast\|status]` | Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode. Options: `normal`, `fast`, `status`. |
-| `/reasoning` | Manage reasoning effort and display (usage: /reasoning [level\|show\|hide]) |
+| `/reasoning [level\|show\|hide\|full\|clamp] [--global]` | Manage reasoning effort and display. Levels include `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`. `show` / `hide` (or `on` / `off`) toggle reasoning display; `full` and `clamp` adjust how reasoning is shown. `--global` persists effort to config. |
 | `/skin` | Show or change the display skin/theme |
 | `/statusbar` (alias: `/sb`) | Toggle the context/model status bar on or off |
 | `/battery [on\|off\|status]` | Toggle a color-coded battery read-out as the first status-bar element (off by default; no-op without a battery). |
 | `/voice [on\|off\|tts\|status]` | Toggle CLI voice mode and spoken playback. Recording uses `voice.record_key` (default: `Ctrl+B`). |
 | `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
+| `/approvals [manual\|smart\|off]` | Show or set the persistent dangerous-command approval mode. |
 | `/footer [on\|off\|status]` | Toggle the gateway runtime-metadata footer on final replies (shows model, context %, and cwd). |
 | `/busy [queue\|steer\|interrupt\|status]` | CLI-only: control what pressing Enter does while Hermes is working — queue the new message, steer mid-turn, or interrupt immediately. |
 | `/indicator [kaomoji\|emoji\|unicode\|ascii]` | CLI-only: pick the TUI busy-indicator style. |
 | `/timestamps [on\|off\|status]` | CLI-only: toggle `[HH:MM]` timestamps on messages and in `/history`. |
+| `/wake [on\|off\|status]` | CLI-only: toggle the "Hey Hermes" wake word listener. |
 
 ### Tools & Skills
 
@@ -117,15 +121,18 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 |---------|-------------|
 | `/help` | Show this help message |
 | `/version` | Show Hermes Agent version, build, and environment info. |
+| `/whoami` | Show your slash command access level (admin / user). |
 | `/usage` | Show token usage, cost breakdown, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits / plan usage pulled live from the provider's API. |
-| `/credits` | Show your Nous credit balance and a top-up handoff link. |
-| `/billing` | CLI Remote Spending flow for Nous — view balance, buy credits, and manage auto-reload / monthly limits. |
+| `/topup` | Show your Nous balance and manage billing on the portal (replaces the old `/credits` and `/billing` commands). |
+| `/subscription` (alias: `/upgrade`) | **CLI only.** View your Nous plan and change it in the browser. |
 | `/insights` | Show usage insights and analytics (last 30 days) |
+| `/update` | Update Hermes Agent to the latest version. |
 | `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status (CLI-only summary view). |
 | `/paste` | Attach a clipboard image |
 | `/copy [number]` | Copy the last assistant response to clipboard (or the Nth-from-last with a number). CLI-only. |
 | `/image <path>` | Attach a local image file for your next prompt. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. Also available in messaging. |
+| `/update` | Update Hermes Agent to the latest version. |
 | `/profile` | Show active profile name and home directory |
 
 ### Exit
@@ -219,7 +226,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/stop` | Kill all running background processes and interrupt the running agent. |
 | `/model [provider:model]` | Show or change the model. Supports provider switches (`/model zai:glm-5`), custom endpoints (`/model custom:model`), named custom providers (`/model custom:local:qwen`), auto-detect (`/model custom`), and user-defined aliases (`/model fav`, `/model grok` — see [Custom model aliases](#custom-model-aliases)). Use `--global` to persist the change to config.yaml. **Note:** `/model` can only switch between already-configured providers. To add a new provider or set up API keys, use `hermes model` from your terminal (outside the chat session). **Cost note:** a mid-session model switch resets the prompt cache (the cache key includes the model), so the next message re-reads the whole conversation at full input price. |
 | `/codex-runtime [auto\|codex_app_server\|on\|off]` | Toggle the optional [Codex app-server runtime](../user-guide/features/codex-app-server-runtime). Persists to `model.openai_runtime` in config.yaml and evicts the cached agent so the next message picks up the new runtime. Effective on next session. |
-| `/personality [name]` | Set a personality overlay for the session. |
+| `/personality [name]` | Set a personality overlay for the session. `/personality none` (or `default` / `neutral`) clears it. |
 | `/fast [normal\|fast\|status]` | Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode. |
 | `/retry` | Retry the last message. |
 | `/undo` | Remove the last exchange. |
@@ -228,10 +235,12 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/topic [off\|help\|session-id]` | **Telegram DM only.** Manage user-managed multi-session topic mode. `/topic` enables it or shows status; `/topic off` disables it and clears bindings; `/topic help` shows usage; `/topic <session-id>` inside a topic restores a previous session. See [Multi-session DM mode](/user-guide/messaging/telegram#multi-session-dm-mode-topic). |
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |
+| `/sessions [all] [search <query>]` | List previous sessions for this chat. `/sessions search <query>` filters by title/id match (most recently active first); `/sessions all` lists across origins (admin only). |
 | `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits pulled live from the provider's API. |
-| `/credits` | Show your Nous credit balance and a top-up link that opens the portal billing page in a browser. |
+| `/topup` | Show your Nous balance and manage billing on the portal. |
+| `/whoami` | Show your slash command access level (admin / user). |
 | `/insights [days]` | Show usage analytics. |
-| `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display. |
+| `/reasoning [level\|show\|hide\|full\|clamp] [--global]` | Change reasoning effort (levels up to `max` / `ultra`) or toggle reasoning display (`full` / `clamp` included). `--global` persists to config. |
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |
 | `/rollback [number]` | List or restore filesystem checkpoints. |
 | `/diff [staged\|all\|session] [--stat]` | Show git changes in the working directory (fenced and truncated to platform message limits). `session` shows the cumulative diff of everything Hermes changed; `--stat` shows just the summary. |
@@ -239,6 +248,17 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn without interrupting the current one. |
 | `/steer <prompt>` | Inject a message after the next tool call without interrupting — the model picks it up on its next iteration rather than as a new turn. |
 | `/goal <text>` | Set a standing goal Hermes works toward across turns — our take on the Ralph loop. A judge model checks after each turn; if not done, Hermes auto-continues until it is, you pause/clear it, or the turn budget (default 20) is hit. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Safe to run mid-agent for status/pause/clear; setting a new goal requires `/stop` first. See [Persistent Goals](/user-guide/features/goals). |
+| `/subgoal <text>` | Append criteria to the active `/goal` mid-loop (`/subgoal`, `/subgoal remove <N>`, `/subgoal clear`). |
+| `/moa <prompt>` | Run one prompt through the default [Mixture of Agents](/user-guide/features/mixture-of-agents) preset, then restore the session model. |
+| `/branch [name]` (alias: `/fork`) | Branch the current session (explore a different path). |
+| `/agents` (alias: `/tasks`) | Show active agents and running tasks. |
+| `/sessions` | Browse and resume previous sessions. |
+| `/context [all]` (alias: `/ctx`) | Context-window usage gauge and category breakdown (messaging-friendly text form). `/context all` adds per-skill / per-toolset cost detail. |
+| `/egress [status]` | Show Docker egress proxy status. |
+| `/init [notes]` | Generate or update `AGENTS.md` from a repo scan. |
+| `/learn <what to learn from>` | Distill a reusable skill from anything you describe. |
+| `/bundles` | List configured skill bundles (`/<name>` aliases that preload several skills). |
+| `/reload-skills` (alias: `/reload_skills`) | Re-scan `~/.hermes/skills/` for newly installed or removed skills. |
 | `/footer [on\|off\|status]` | Toggle the runtime-metadata footer on final replies (shows model, context %, and cwd). |
 | `/curator [status\|run\|pin\|archive]` | Background skill maintenance controls. |
 | `/suggestions [accept\|dismiss N\|catalog\|clear]` | Review suggested automations right in chat. `/suggestions` lists pending suggestions, `catalog` adds curated starter automations, and `clear` prunes resolved suggestion records. Accepted suggestions keep this chat/thread as the job delivery origin. |
@@ -248,6 +268,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/kanban <action>` | Drive the multi-profile, multi-project collaboration board from chat — identical argument surface to the CLI. Bypasses the running-agent guard, so `/kanban unblock t_abc`, `/kanban comment t_abc "…"`, `/kanban list --mine`, `/kanban boards switch <slug>`, etc. work mid-turn. `/kanban create …` auto-subscribes the originating chat to the new task's terminal events. See [Kanban slash command](/user-guide/features/kanban#kanban-slash-command). |
 | `/platform <list\|pause\|resume> [name]` | Operate a running gateway platform right from chat. `/platform list` shows every adapter and its state (running, paused-by-breaker, manually-paused); `/platform pause <name>` stops dispatching new messages to that adapter without unloading it; `/platform resume <name>` re-enables it and clears a tripped circuit breaker once the upstream is healthy. |
 | `/reload-mcp` (alias: `/reload_mcp`) | Reload MCP servers from config. |
+| `/verbose` | Cycle tool progress display. **Off by default on messaging** — enable with `display.tool_progress_command: true` in `config.yaml`. |
 | `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
 | `/commands [page]` | Browse all commands and skills (paginated). |
 | `/approve [session\|always]` | Approve and execute a pending dangerous command. `session` approves for this session only; `always` adds to permanent allowlist. |
@@ -260,13 +281,12 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 ## Notes
 
-- `/skin`, `/snapshot`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/battery`, `/focus`, `/plugins`, `/busy`, `/indicator`, `/redraw`, `/clear`, `/history`, `/save`, `/copy`, `/handoff`, `/billing`, and `/quit` are **CLI-only** commands.
+- `/skin`, `/snapshot`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/battery`, `/focus`, `/plugins`, `/busy`, `/indicator`, `/wake`, `/journey`, `/redraw`, `/clear`, `/history`, `/save`, `/copy`, `/handoff`, `/prompt`, `/pet`, `/hatch`, `/timestamps`, `/subscription`, and `/quit` are **CLI-only** commands.
 - `/skills` is **CLI-only for search/browse/install**; its write-approval review subcommands (`pending`, `approve`, `reject`, `diff`, `approval`) also work on messaging platforms when `skills.write_approval` is on. `/memory` works on **both** surfaces.
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
 - `/focus` and `/verbose` share one suppression path (`display.tool_progress`), so they can never contradict each other: `/focus on` pins tool progress to `off` and stashes your mode under `display.focus_saved_tool_progress`; `/focus off` restores it; cycling `/verbose` while focus is on takes the mode back and clears the focus badge. Focus view is display-only — it never changes conversation history, the system prompt, or anything sent to the model, so it has zero prompt-cache impact.
-- `/sethome`, `/update`, `/restart`, `/approve`, `/deny`, `/topic`, `/platform`, and `/commands` are **messaging-only** commands.
-- `/status`, `/egress`, `/version`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/credits`, `/suggestions`, `/blueprint`, `/learn`, `/init`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
-- `/status`, `/egress`, `/version`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/diff`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/credits`, `/suggestions`, `/blueprint`, `/learn`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
+- `/sethome`, `/restart`, `/approve`, `/deny`, `/topic`, `/platform`, and `/commands` are **messaging-only** commands.
+- `/status`, `/egress`, `/version`, `/whoami`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/diff`, `/debug`, `/fast`, `/approvals`, `/footer`, `/curator`, `/kanban`, `/topup`, `/suggestions`, `/blueprint`, `/learn`, `/init`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.
 - In the TUI, `/sessions` shows live sessions in the current TUI process. Use `/resume [name]` or `hermes --tui --resume <id-or-title>` for saved or closed transcripts.
 

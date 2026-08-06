@@ -173,10 +173,13 @@ If omitted, subagents use the same model as the parent.
 `delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
 
 Certain tools are blocked for subagents even when the parent has them:
-- `delegation` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
+- `delegate_task` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
 - `clarify` — subagents cannot interact with the user
 - `memory` — no writes to shared persistent memory
-- `code_execution` — children should reason step-by-step
+- `send_message` — no cross-platform side effects
+- `cronjob` — no scheduling more work in the parent's name
+
+Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work.
 
 ## Max Iterations
 
@@ -194,7 +197,7 @@ delegate_task(
 
 By default there is **no wall-clock timeout** on subagents. Children fail only from what they're actually doing — API errors, tool errors, or hitting their iteration budget — never from a delegation-level stopwatch. Earlier releases shipped a hard cap (300s, later 600s), which kept killing legitimately busy children mid-task: deep code reviews, large research fan-outs, and slow reasoning models routinely need more than 10 minutes while making steady progress the whole time.
 
-Genuinely stuck children are still detected: the heartbeat staleness monitor stops refreshing the parent's activity when a child makes no progress (no API calls, no tool starts), letting the gateway inactivity timeout fire on a truly wedged worker.
+Genuinely stuck children are still detected: the heartbeat staleness monitor stops refreshing the parent's activity when a child makes no progress (no API calls, no tool starts, and no activity-timestamp ticks), letting the gateway inactivity timeout fire on a truly wedged worker. An in-flight model wait still counts as progress — subagents refresh the activity clock while waiting on the provider, so a slow local / long-prefill completion is not treated as stalled.
 
 If you want a hard cap anyway (e.g. cost control on unattended cron-driven delegation), opt in per-install:
 

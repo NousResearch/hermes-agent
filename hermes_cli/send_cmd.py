@@ -164,6 +164,26 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
 
     platforms = dict(raw.get("platforms") or {})
 
+    # Merge in configured-but-undiscovered platforms so `--list` never hides
+    # a working send target. The directory only contains platforms the
+    # gateway has discovered channels for; a platform configured via env /
+    # config.yaml that has never run channel discovery (e.g. a fresh SimpleX
+    # setup used only for outbound `hermes send`) would otherwise be
+    # invisible, leaving users guessing at platform names.
+    try:
+        from gateway.config import load_gateway_config
+
+        gw_config = load_gateway_config()
+        for plat in gw_config.get_connected_platforms():
+            plat_name = getattr(plat, "value", str(plat))
+            if plat_name in ("local", "api_server", "webhook"):
+                continue
+            platforms.setdefault(plat_name, [])
+    except Exception:
+        # Directory contents alone are still useful; don't fail --list over
+        # a config parse problem.
+        pass
+
     if platform_filter:
         key = platform_filter.strip().lower()
         filtered = {k: v for k, v in platforms.items() if k.lower() == key}
@@ -180,16 +200,17 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
         print(json.dumps({"platforms": platforms}, indent=2, default=str))
         return _SUCCESS_EXIT
 
-    if not any(platforms.values()):
+    if not platforms:
         print("No messaging platforms configured or no channels discovered yet.")
         print("Set one up with `hermes gateway setup`, or run the gateway once so")
         print("channel discovery can populate ~/.hermes/channel_directory.json.")
         return _SUCCESS_EXIT
 
     # Human display — when unfiltered, reuse the shared formatter the agent
-    # already sees. When filtered, build a minimal view ourselves.
+    # already sees (passing the merged view so configured-but-undiscovered
+    # platforms are listed too). When filtered, build a minimal view ourselves.
     if platform_filter is None:
-        print(format_directory_for_display())
+        print(format_directory_for_display(platforms))
         return _SUCCESS_EXIT
 
     for plat_name in sorted(platforms):
@@ -260,13 +281,10 @@ def _load_hermes_env() -> None:
         return
 
     try:
-        import yaml  # type: ignore[import-not-found]
-    except Exception:
-        return
-
-    try:
-        with open(config_path, "r", encoding="utf-8") as fh:
-            raw = yaml.safe_load(fh) or {}
+        # Presence-sensitive env bridge: raw read is deliberate — only keys
+        # the user actually wrote get bridged. Overlay + expansion below.
+        from hermes_cli.config import read_user_config_raw
+        raw = read_user_config_raw(config_path)
     except Exception:
         return
 

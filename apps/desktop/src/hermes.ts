@@ -1,5 +1,6 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 
+import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import type {
   ActionResponse,
   ActionStatusResponse,
@@ -43,7 +44,10 @@ import type {
   OAuthStartResponse,
   OAuthSubmitResponse,
   PaginatedSessions,
+  PairingResponse,
+  PairingUser,
   ProfileCreatePayload,
+  ProfileDesktopOverlay,
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
@@ -180,7 +184,10 @@ export type {
   ModelOptionProvider,
   ModelOptionsResponse,
   PaginatedSessions,
+  PairingResponse,
+  PairingUser,
   ProfileCreatePayload,
+  ProfileDesktopOverlay,
   ProfileInfo,
   ProfileSetupCommand,
   ProfileSoul,
@@ -338,8 +345,12 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
       socket = null
 
       if (!disposed) {
+        // Full-jitter exponential backoff: same rationale as the gateway
+        // socket reconnect loops — an immediate-retry loop across many
+        // desktop clients floods the gateway with connection attempts
+        // during a restart.
+        window.setTimeout(() => void connect(), reconnectBackoffDelayMs(attempt, { baseDelayMs: 500, capMs: 30_000 }))
         attempt += 1
-        window.setTimeout(() => void connect(), Math.min(30_000, 1_000 * 2 ** attempt))
       }
     }
   }
@@ -949,7 +960,10 @@ export function editLearningNode(id: string, content: string): Promise<{ message
   })
 }
 
-export function toggleSkill(name: string, enabled: boolean): Promise<{ ok: boolean; name: string; enabled: boolean }> {
+export function setSkillEnabled(
+  name: string,
+  enabled: boolean
+): Promise<{ ok: boolean; name: string; enabled: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
     ...profileScoped(),
     path: '/api/skills/toggle',
@@ -1023,7 +1037,7 @@ export function getToolsets(): Promise<ToolsetInfo[]> {
   })
 }
 
-export function toggleToolset(
+export function setToolsetEnabled(
   name: string,
   enabled: boolean
 ): Promise<{ ok: boolean; name: string; enabled: boolean }> {
@@ -1152,6 +1166,40 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
   return window.hermesDesktop.api<MessagingPlatformTestResponse>({
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
+  })
+}
+
+// -- Pairing (who may DM the bot) --------------------------------------------
+// Unknown DMers get a one-time code and land in `pending` until an admin
+// approves them. Approval grants on the row's `request_id`, never on the code:
+// the code is the requester's proof that the channel is theirs and is never
+// returned by the API, while an authenticated admin is only ever identifying
+// a row they can already see.
+
+export function getPairing(): Promise<PairingResponse> {
+  return window.hermesDesktop.api<PairingResponse>({
+    ...profileScoped(),
+    path: '/api/pairing'
+  })
+}
+
+export function approvePairing(platform: string, requestId: string): Promise<{ ok: boolean; user: PairingUser }> {
+  return window.hermesDesktop.api<{ ok: boolean; user: PairingUser }>({
+    ...profileScoped(),
+    path: '/api/pairing/approve',
+    method: 'POST',
+    // These endpoints read the profile off the body, not the query string —
+    // `profileScoped()` alone would approve into the wrong profile's store.
+    body: { platform, request_id: requestId, ...profileScoped() }
+  })
+}
+
+export function revokePairing(platform: string, userId: string): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/pairing/revoke',
+    method: 'POST',
+    body: { platform, user_id: userId, ...profileScoped() }
   })
 }
 
@@ -1375,6 +1423,36 @@ export function updateProfileSoul(name: string, content: string): Promise<{ ok: 
 export function getProfileSetupCommand(name: string): Promise<ProfileSetupCommand> {
   return window.hermesDesktop.api<ProfileSetupCommand>({
     path: `/api/profiles/${encodeURIComponent(name)}/setup-command`
+  })
+}
+
+/** Export a profile to a shareable .tar.gz on the backend's filesystem.
+ *  `extraFiles` stages extra root-level files (desktop.json — the appearance/
+ *  interface overlay) into the archive alongside the profile's own artifacts. */
+export function exportProfileArchive(
+  name: string,
+  opts: { extraFiles?: Record<string, string>; output?: string } = {}
+): Promise<{ archive: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ archive: string; ok: boolean }>({
+    path: `/api/profiles/${encodeURIComponent(name)}/export`,
+    method: 'POST',
+    body: { extra_files: opts.extraFiles ?? {}, output: opts.output ?? '' },
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
+}
+
+/** Import a profile .tar.gz as a new profile. Returns the bundled desktop
+ *  appearance overlay too (when the archive carried one) so the caller can
+ *  apply theme/layout without another round-trip. */
+export function importProfileArchive(
+  archive: string,
+  name?: string
+): Promise<{ desktop: null | ProfileDesktopOverlay; name: string; ok: boolean; path: string }> {
+  return window.hermesDesktop.api<{ desktop: null | ProfileDesktopOverlay; name: string; ok: boolean; path: string }>({
+    path: '/api/profiles/import',
+    method: 'POST',
+    body: { archive, name: name || null },
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 

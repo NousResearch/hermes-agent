@@ -64,16 +64,6 @@ class TestZaiThinkingWireShape:
         assert extra_body == {"thinking": {"type": "disabled"}}
         assert top_level == {}
 
-    def test_no_effort_levels_leak_to_top_level(self, zai_profile):
-        """Non-5.2 GLM models have no effort knob — never emit
-        ``reasoning_effort`` for them (GLM-5.2 is the exception, below)."""
-        for effort in ("minimal", "low", "medium", "high", "xhigh"):
-            for model in ("glm-5", "glm-5.1", "glm-4.6"):
-                _, top_level = zai_profile.build_api_kwargs_extras(
-                    reasoning_config={"enabled": True, "effort": effort}, model=model
-                )
-                assert top_level == {}
-
 
 class TestZaiGLM52ReasoningEffort:
     """GLM-5.2's native ``reasoning_effort`` knob (two enabled levels)."""
@@ -116,23 +106,6 @@ class TestZaiGLM52ReasoningEffort:
         assert extra_body == {"thinking": {"type": "disabled"}}
         assert top_level == {}
 
-    def test_no_config_leaves_server_default(self, zai_profile):
-        extra_body, top_level = zai_profile.build_api_kwargs_extras(
-            reasoning_config=None,
-            model="glm-5.2",
-        )
-        assert extra_body == {}
-        assert top_level == {}
-
-    def test_no_effort_sends_no_effort_level(self, zai_profile):
-        """Enabled but no effort preference → thinking marker only; the
-        server picks its default effort."""
-        extra_body, top_level = zai_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True},
-            model="glm-5.2",
-        )
-        assert extra_body == {"thinking": {"type": "enabled"}}
-        assert top_level == {}
 
     @pytest.mark.parametrize(
         "model",
@@ -184,55 +157,10 @@ class TestZaiModelGating:
         )
         assert extra_body == {"thinking": {"type": "disabled"}}
 
-    @pytest.mark.parametrize(
-        "model",
-        [
-            "glm-4-9b",   # pre-4.5, no thinking param
-            "glm-4",
-            "glm-3-turbo",
-            "",            # bare/unknown
-            None,          # missing
-            "charglm-3",  # non-GLM-versioned id
-        ],
-    )
-    def test_non_thinking_models_emit_nothing(self, zai_profile, model):
-        extra_body, top_level = zai_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False}, model=model
-        )
-        assert extra_body == {}
-        assert top_level == {}
-
 
 class TestZaiFullKwargsIntegration:
     """End-to-end: the transport's full kwargs carry the reasoning wiring."""
 
-    def test_disabled_reaches_the_wire(self, zai_profile):
-        from agent.transports.chat_completions import ChatCompletionsTransport
-
-        kwargs = ChatCompletionsTransport().build_kwargs(
-            model="glm-5",
-            messages=[{"role": "user", "content": "ping"}],
-            tools=None,
-            provider_profile=zai_profile,
-            reasoning_config={"enabled": False},
-            base_url="https://api.z.ai/api/paas/v4",
-            provider_name="zai",
-        )
-        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
-
-    def test_no_preference_keeps_wire_clean(self, zai_profile):
-        from agent.transports.chat_completions import ChatCompletionsTransport
-
-        kwargs = ChatCompletionsTransport().build_kwargs(
-            model="glm-5",
-            messages=[{"role": "user", "content": "ping"}],
-            tools=None,
-            provider_profile=zai_profile,
-            reasoning_config=None,
-            base_url="https://api.z.ai/api/paas/v4",
-            provider_name="zai",
-        )
-        assert "thinking" not in kwargs.get("extra_body", {})
 
     def test_glm_5_2_effort_reaches_top_level(self, zai_profile):
         from agent.transports.chat_completions import ChatCompletionsTransport

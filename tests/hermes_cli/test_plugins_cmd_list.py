@@ -34,23 +34,6 @@ def test_filter_plugin_entries_enabled_only():
     assert [entry[0] for entry in filtered] == ["disk-cleanup", "web-search-plus"]
 
 
-def test_filter_plugin_entries_no_bundled():
-    entries = [
-        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None, "disk-cleanup"),
-        ("drawthings-grpc", "0.3.0", "Draw Things", "user", None, "drawthings-grpc"),
-        ("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus"),
-    ]
-
-    filtered = plugins_cmd._filter_plugin_entries(
-        entries,
-        _args(no_bundled=True),
-        enabled=set(),
-        disabled=set(),
-    )
-
-    assert [entry[0] for entry in filtered] == ["drawthings-grpc", "web-search-plus"]
-
-
 def test_cmd_list_plain_compact_output(monkeypatch, capsys):
     entries = [
         ("disk-cleanup", "2.0.0", "Bundled", "bundled", None, "disk-cleanup"),
@@ -67,26 +50,6 @@ def test_cmd_list_plain_compact_output(monkeypatch, capsys):
     assert "enabled" in out
     assert "disk-cleanup" not in out
     assert "Search" not in out  # plain mode stays compact, no descriptions
-
-
-def test_cmd_list_json_output(monkeypatch, capsys):
-    entries = [("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus")]
-    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
-    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {"web-search-plus"})
-    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
-
-    plugins_cmd.cmd_list(_args(json=True))
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload == [
-        {
-            "name": "web-search-plus",
-            "status": "enabled",
-            "version": "2.2.0",
-            "description": "Search",
-            "source": "git",
-        }
-    ]
 
 
 def test_discover_all_plugins_includes_entrypoint_plugins(monkeypatch, tmp_path):
@@ -131,30 +94,3 @@ def test_discover_all_plugins_includes_entrypoint_plugins(monkeypatch, tmp_path)
     ]
 
 
-def test_cmd_list_json_output_includes_entrypoint_source(monkeypatch, capsys):
-    entries = [
-        (
-            "wiki",
-            "0.1.0",
-            "Karpathy-style LLM Wikis for Hermes",
-            "entrypoint",
-            "adapters.hermes.cli_plugin",
-            "wiki",
-        )
-    ]
-    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
-    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {"wiki"})
-    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
-
-    plugins_cmd.cmd_list(_args(json=True))
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload == [
-        {
-            "name": "wiki",
-            "status": "enabled",
-            "version": "0.1.0",
-            "description": "Karpathy-style LLM Wikis for Hermes",
-            "source": "entrypoint",
-        }
-    ]

@@ -136,6 +136,41 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     return real_path
 
 
+def atomic_write_text(
+    path: Union[str, Path],
+    content: str,
+    *,
+    encoding: str = "utf-8",
+    tmp_prefix: str = ".tmp_",
+) -> None:
+    """Write *content* to *path* via temp file + fsync + atomic rename.
+
+    Ensures the target file is never left in a partially-written state if
+    the process crashes or is interrupted.  ``atomic_replace`` preserves
+    symlinks and handles cross-device / busy-file fallbacks.
+
+    Used by the memory store, skill manager, and agent importer so that
+    every destructive file rewrite in the codebase shares one implementation.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=tmp_prefix, suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        atomic_replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def atomic_json_write(
     path: Union[str, Path],
     data: Any,

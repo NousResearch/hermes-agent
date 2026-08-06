@@ -188,6 +188,13 @@
     --context-usage-subagents: color-mix(in srgb, var(--ui-blue) 70%, var(--ui-cyan));
     --context-usage-memory: color-mix(in srgb, var(--ui-orange) 80%, var(--ui-yellow));
     --context-usage-conversation: var(--ui-cyan);
+    /* Landed memory-write tool row — gold → purple, never amber warning. */
+    --tool-memory-legendary-from: color-mix(in srgb, var(--ui-yellow) 72%, #f5d08a);
+    --tool-memory-legendary-mid: color-mix(in srgb, var(--ui-orange) 55%, var(--ui-purple));
+    --tool-memory-legendary-to: color-mix(in srgb, var(--ui-purple) 82%, #c4b5fd);
+    --tool-memory-legendary-icon: color-mix(in srgb, var(--ui-yellow) 55%, var(--ui-purple));
+    --tool-memory-legendary-meta: color-mix(in srgb, var(--ui-purple) 58%, var(--ui-text-tertiary));
+    --tool-memory-legendary-glow: color-mix(in srgb, var(--ui-purple) 38%, transparent);
     /* Diff add/remove, derived from the semantic palette so every diff surface
        (tool cards, preview, review pane) tracks the theme's green/red. Only the
        foregrounds need a dark override — they mix toward the page instead of
@@ -320,6 +327,16 @@
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
     --ui-chat-surface-background: var(--ui-bg-chrome);
     --ui-editor-surface-background: var(--ui-bg-chrome);
+    /* The integrated terminal wears the transcript's background, not the
+       editor's — it reads as part of the conversation surface. Its own token so
+       the two can diverge without dragging the terminal along, and so a skin
+       gets one knob for it. xterm's canvas can't use a var, so the probe in
+       terminal/selection.ts resolves this same name to a concrete rgb. */
+    --ui-terminal-surface-background: var(--ui-chat-surface-background);
+    /* Inline chat widgets (clarify, artifact card) — the card fill in light
+       mode, nudged down in dark so a widget settles into the transcript
+       instead of glowing above it (see the `.dark` override). */
+    --ui-widget-surface-background: var(--ui-bg-editor);
     --ui-chat-bubble-background: color-mix(
       in srgb,
       var(--theme-bubble-seed) var(--theme-mix-bubble),
@@ -375,12 +392,12 @@
       'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     /* Key caps always use the native UI face — never theme typography overrides. */
     --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
-    /* JetBrains Mono first — the face we bundle (@font-face above) and the
-       terminal's primary — so code/diff match the terminal on every platform
-       instead of drifting to a system Cascadia Code where it's installed. */
+    /* Menlo/Monaco first — Apple's native monospace faces — so code/diff read
+       in the system mono on macOS, with SF Mono and bundled Courier Prime as
+       fallbacks. */
     --dt-font-mono:
-      'JetBrains Mono', 'Cascadia Code', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
-      'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+      Menlo, Monaco, 'SF Mono', 'Courier Prime', monospace, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+      'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
     --dt-letter-spacing: 0;
@@ -393,11 +410,11 @@
        to the value the app actually renders at. */
     --radius-scalar: 0.2;
 
-    /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx)
-       plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing.
-       These are the defaults; each chat surface re-declares the calc against its own measurements (see below). */
-    --status-stack-measured-height: 0px;
-    --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
+    /* Space under last message vs overlay composer — driven by the measured composer DOCK height (see
+       composer/index.tsx), which covers the micro-action strip, the status stack, the composer, and the
+       underside strip in one number.
+       This is the default; each chat surface re-declares the calc against its own measurement (see below). */
+    --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
 
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;
@@ -505,6 +522,11 @@
     --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 38%, transparent);
+    /* A dark card sits ABOVE the chrome (#161618 over #0d0d0e), so an inline
+       widget wearing the raw card fill reads as a lit panel. Take it down a
+       touch — still clearly a surface, no longer the brightest thing in the
+       transcript. Derived from the card so every skin follows its own seed. */
+    --ui-widget-surface-background: color-mix(in srgb, var(--ui-bg-editor) 88%, #000);
   }
 
   * {
@@ -567,36 +589,107 @@
   background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
 }
 
-/* Inline content links: color at rest, a tinted chip on hover, never an
-   underline. Tint is currentColor-relative (the old `decoration-current/20`
-   idiom), so text and fill share a hue on every theme from one `color`. */
-.link-chip {
-  /* The one knob: resting fill. 0% = color-only until hovered. */
-  --link-chip-tint: 0%;
+/* ─────────────────────────────────────────────────────────────────────────
+   INLINE REFERENCES — the one system for anything that points at something
+   from inside a run of text.
+
+   A pasted link, an `@file:` the user picked, a `/skill`, a `@session:` the
+   agent wrote: all the same species. They render the same way in the composer
+   and in a sent message, because they're the same thing before and after send.
+
+   A reference is TEXT, not a badge — colour and an optional icon, no fill, no
+   padding, no border. A pill turns every mention into a widget the eye has to
+   step over, and mid-sentence that's most of the sentence.
+
+   Usage: `class="ref"` plus `data-ref="<kind>"` for the accent. Kinds live in
+   `components/assistant-ui/reference-kinds.ts` (icon + label); their colour
+   lives here, so a theme restyles every reference at once and TS never ships a
+   hex. No `data-ref` = an ordinary link, which keeps the primary link colour.
+   ───────────────────────────────────────────────────────────────────────── */
+/* Kind → accent. Keyed on the attribute ALONE so anything can adopt a
+   reference's colour without also taking its inline-text layout (a completion
+   row's icon column wants the hue, not the margin). Grouped by what a
+   reference DOES, so the palette reads as meaning rather than decoration:
+     · things you point at (paths)          → neutral, they're the common case
+     · things you fetch (links, media)      → secondary
+     · things that act (commands, tools)    → accent
+     · things that change code (skills, git)→ warm */
+[data-ref] {
+  --ref-color: var(--dt-primary);
+}
+
+[data-ref='file'],
+[data-ref='folder'],
+[data-ref='line'],
+[data-ref='terminal'] {
+  --ref-color: var(--ui-text-secondary);
+}
+
+[data-ref='url'],
+[data-ref='image'],
+[data-ref='session'],
+[data-ref='theme'] {
+  --ref-color: color-mix(in srgb, var(--ui-accent-secondary) 82%, var(--foreground));
+}
+
+[data-ref='command'],
+[data-ref='tool'] {
+  --ref-color: color-mix(in srgb, var(--ui-accent) 82%, var(--foreground));
+}
+
+[data-ref='skill'],
+[data-ref='git'],
+[data-ref='diff'],
+[data-ref='staged'] {
+  --ref-color: color-mix(in srgb, var(--ui-warm) 82%, var(--foreground));
+}
+
+.ref {
+  --ref-color: var(--dt-primary);
 
   /* Prose links inherit the surrounding text's weight. `@tailwindcss/typography`
      sets `prose a { font-weight: 500 }`, which outranks a utility class on the
-     anchor — so the override belongs here, on the shared chip. */
+     anchor — so the override belongs here, on the shared class. */
   font-weight: inherit;
-
-  /* `ch`/`em` so the chip tracks the text at any size. Block padding is
-     asymmetric because an inline box's content area is ascent+descent — equal
-     padding paints the glyphs high. Keep it small: `padding-block` doesn't grow
-     the line box, so an over-padded chip creeps into the line above. */
-  padding: 0.05ch 0.5ch 0.2ch;
-  border-radius: 0.25rem;
-  color: var(--dt-primary);
-  background: color-mix(in srgb, currentColor var(--link-chip-tint), transparent);
+  color: var(--ref-color);
   /* Explicit: the base layer underlines every `a` (see the :where(a, …) reset). */
   text-decoration: none;
-  /* A wrapped link gets a chip per line fragment, not one ragged box. */
+  /* A wrapped reference breaks per line fragment, not as one ragged box. */
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
-  transition: background-color 0.12s ease;
 }
 
-.link-chip:hover {
-  --link-chip-tint: 15%;
+/* Affordance without chrome: only the ones you can actually activate respond,
+   and they do it with an underline rather than a background. */
+:where(a, button).ref:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+/* The leading glyph. Sized in `em` so it tracks the text at any scale, and
+   spaced with `margin` — not flex `gap` — so `.ref` stays an inline box whose
+   label can wrap mid-word (a long URL has to break across lines like the prose
+   around it, which a flex container would prevent).
+
+   The margin is unconditional. A `:not(:only-child)` guard looks right and is
+   silently wrong: CSS counts ELEMENT siblings, so an icon followed by a bare
+   text-node label still matches `:only-child` — which is exactly how every
+   chip lost its spacer. Icon-only users take the hue via `[data-ref]` instead
+   of this class. */
+.ref > :where(svg, i.codicon) {
+  margin-inline-end: 0.25em;
+  opacity: 0.8;
+}
+
+.ref > svg {
+  display: inline-block;
+  width: 0.875em;
+  height: 0.875em;
+  vertical-align: -0.1em;
+}
+
+.ref > i.codicon {
+  font-size: 0.875em;
 }
 
 /* Hover-reveal suppression — the shared, declarative escape hatch.
@@ -637,6 +730,40 @@
 
 :root[style*='--theme-asset-bg:'] .theme-default-filler {
   display: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Composer placeholder.
+
+   The prompt is a PAINTED HINT, never content. Rendering `::before` inline —
+   the obvious way — puts a box in the contenteditable's text flow, and the
+   caret sits after it: click an empty composer and the insertion point lands
+   at the right edge of the hint rather than the left edge of the field, and a
+   hint that wraps makes the empty composer two lines tall. Taking it out of
+   flow is what makes it a hint: the caret keeps the field's real origin, the
+   box keeps its real height, and no pointer or selection can reach the text.
+
+   `data-empty` carries emptiness because `:empty` can't: a cleared editor
+   keeps a scaffolding <br>. See markEditorEmptiness in rich-editor.ts.
+   ───────────────────────────────────────────────────────────────────────── */
+[data-slot='composer-rich-input'] {
+  position: relative;
+}
+
+[data-slot='composer-rich-input']:is(:empty, [data-empty])::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  inset: 0;
+  padding: inherit;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
+  /* One line, clipped — the hint states the field's purpose; it never reflows
+     the box it sits in. A narrow composer or a long locale string would
+     otherwise wrap and double the empty composer's height. */
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  user-select: none;
 }
 
 /* Primitive-level pointer cursor for every interactive control (buttons,
@@ -736,6 +863,29 @@
       0 0 0.3125rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 90%, transparent),
       0 0 0.875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 65%, transparent);
   }
+}
+
+/* Landed `memory` tool row — gold → purple on the brain glyph + title.
+   Pair with `text-transparent` so the scaffold label color can't win. */
+.tool-memory-legendary-title {
+  background-image: linear-gradient(
+    105deg,
+    var(--tool-memory-legendary-from) 0%,
+    var(--tool-memory-legendary-mid) 48%,
+    var(--tool-memory-legendary-to) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent !important;
+  font-weight: 600;
+}
+
+.tool-memory-legendary-glyph {
+  filter: drop-shadow(0 0 0.28rem var(--tool-memory-legendary-glow));
+}
+
+.tool-memory-legendary-meta {
+  color: var(--tool-memory-legendary-meta);
 }
 
 .quest-glow {
@@ -892,6 +1042,15 @@ button,
   user-select: none;
 }
 
+/* User bubbles are <button>s (click → edit), so the rule above would kill
+   drag-to-select and leave ⌘C with nothing to grab. Message text stays
+   selectable; chrome controls outside the bubble keep user-select: none. */
+[data-slot='aui_user-message-root'] button,
+[data-slot='aui_user-message-root'] [role='button'] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 img,
 picture,
 video,
@@ -917,8 +1076,9 @@ code {
 }
 
 /* Arc-style multicolor action surface (static, not animated). Reusable on any
-   Button via className. Unlayered so it beats Tailwind's bg-*/
-text-* variant utilities. */ .btn-arc {
+   Button via className. Unlayered so it beats Tailwind's bg- and text- variant
+   utilities. */
+.btn-arc {
   background-image: linear-gradient(110deg, #5b6cff 0%, #8b5cf6 28%, #d946ef 58%, #fb7185 82%, #fb923c 100%);
   color: #fff;
   border-color: transparent;
@@ -965,36 +1125,42 @@ text-* variant utilities. */ .btn-arc {
      thin on mac still looks chunky. Use webkit for real thin thumbs; gate the
      standard props so only non-webkit engines (Firefox) take that path.
      https://developer.chrome.com/docs/css-ui/scrollbar-styling
-     https://syntackle.com/blog/changes-to-scrollbar-styling-in-chrome-121/ */
+     https://syntackle.com/blog/changes-to-scrollbar-styling-in-chrome-121/
+
+     Any author rule on ::-webkit-scrollbar switches that scroller from
+     platform overlay (fade in on scroll, zero gutter) to classic always-on
+     gutters. `.scrollbar-overlay` opts a surface out of the themed rules so
+     Electron keeps native overlay — used by conversation code blocks where a
+     permanent 4px track eats the card and always draws a bar. */
 
   .scrollbar-dt::-webkit-scrollbar,
-  .scrollbar-dt *::-webkit-scrollbar {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar {
     width: 0.25rem;
     height: 0.25rem;
   }
 
   .scrollbar-dt::-webkit-scrollbar-track,
   .scrollbar-dt::-webkit-scrollbar-corner,
-  .scrollbar-dt *::-webkit-scrollbar-track,
-  .scrollbar-dt *::-webkit-scrollbar-corner {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-track,
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-corner {
     background: transparent;
   }
 
   .scrollbar-dt::-webkit-scrollbar-thumb,
-  .scrollbar-dt *::-webkit-scrollbar-thumb {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb {
     background: color-mix(in srgb, var(--dt-midground) 18%, transparent);
     border-radius: 9999rem;
     background-clip: padding-box;
   }
 
   .scrollbar-dt::-webkit-scrollbar-thumb:hover,
-  .scrollbar-dt *::-webkit-scrollbar-thumb:hover {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb:hover {
     background: color-mix(in srgb, var(--dt-midground) 40%, transparent);
     background-clip: padding-box;
   }
 
   .scrollbar-dt::-webkit-scrollbar-button,
-  .scrollbar-dt *::-webkit-scrollbar-button {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-button {
     display: none;
   }
 
@@ -1029,12 +1195,19 @@ text-* variant utilities. */ .btn-arc {
 
   @supports not selector(::-webkit-scrollbar) {
     .scrollbar-dt,
-    .scrollbar-dt * {
+    .scrollbar-dt *:not(.scrollbar-overlay) {
       scrollbar-width: thin;
       scrollbar-color: color-mix(in srgb, var(--dt-midground) 18%, transparent) transparent;
     }
 
     .dt-portal-scrollbar {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
+    }
+
+    /* Firefox has no real overlay mode; thin + transparent track is the closest
+       match to the Chromium overlay opt-out above. */
+    .scrollbar-overlay {
       scrollbar-width: thin;
       scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
     }
@@ -1234,21 +1407,29 @@ text-* variant utilities. */ .btn-arc {
   inherits: true;
 }
 
-[data-slot='composer-root'] {
-  /* +10px width compensates the 5px side padding so the visible surface keeps
-     its exact width/position — the inline padding is just transparent grab space
-     for the peel-out drag, matching the floating composer's 5px platform. */
+/* The dock column owns the composer's width; the composer keeps the 5px
+   transparent grab margin that the peel-out drag needs. +10px width compensates
+   that padding so the visible surface keeps its exact width/position. */
+[data-slot='composer-dock'] {
   width: calc(min(var(--composer-width), calc(100% - 2rem)) + 10px);
-  padding-inline: 5px;
   padding-bottom: var(--composer-shell-pad-block-end);
+}
+
+[data-slot='composer-root'] {
+  width: 100%;
+  padding-inline: 5px;
 }
 
 /* Popped-out (floating) composer: compact width + an even 5px transparent grab
    platform. The higher-specificity selector resets the base rule's padding-bottom
    so the inset is equal on all four sides (not 5px sides / shell-pad bottom). */
-[data-slot='composer-root'][data-popped-out] {
+[data-slot='composer-dock'][data-popped-out] {
   width: var(--composer-popout-width, 24rem);
   max-width: calc(100vw - 1.5rem);
+  padding-bottom: 0;
+}
+
+[data-slot='composer-root'][data-popped-out] {
   padding: 5px;
 }
 
@@ -1305,7 +1486,7 @@ text-* variant utilities. */ .btn-arc {
   font-size: 0.8125rem;
 }
 
-[data-slot='composer-rich-input']:empty::before {
+[data-slot='composer-rich-input']:is(:empty, [data-empty])::before {
   color: var(--ui-text-tertiary) !important;
 }
 
@@ -1418,6 +1599,13 @@ text-* variant utilities. */ .btn-arc {
   margin: 0 !important;
 }
 
+/* react-shiki nests its own `pre.shiki` inside our `.aui-shiki` Pre, so the
+   code card's `[&_pre]` padding lands on both and doubles the inset. The outer
+   Pre already carries the card's padding — zero the inner one. */
+[data-slot='aui_assistant-message-content'] .aui-md .aui-shiki .shiki {
+  padding: 0 !important;
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md .aui-md-table {
   border-spacing: 0;
 }
@@ -1434,7 +1622,7 @@ text-* variant utilities. */ .btn-arc {
 }
 
 [data-slot='aui_assistant-message-content'] .aui-md .aui-md-table thead {
-  border-bottom-color: var(--dt-border) !important;
+  border-bottom-color: var(--ui-stroke-tertiary) !important;
 }
 
 /* Tool / thinking blocks are scaffolding around the model's reply, so we
@@ -1595,18 +1783,21 @@ text-* variant utilities. */ .btn-arc {
    an open diff is excluded — it keeps the full gap, same as in-flow. */
 [data-slot='aui_turn-pair']
   > [data-slot='aui_assistant-message-root']:has(
-      > [data-slot='aui_assistant-message-content']
-        > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):last-child
-    ):not(:has([data-file-edit]))
+    > [data-slot='aui_assistant-message-content']
+      > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):last-child
+  ):not(:has([data-file-edit]))
   + [data-slot='aui_assistant-message-root']:has(
-      > [data-slot='aui_assistant-message-content']
-        > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):first-child
-    ):not(:has([data-file-edit])) {
+    > [data-slot='aui_assistant-message-content']
+      > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):first-child
+  ):not(:has([data-file-edit])) {
   margin-top: calc(var(--scaffold-block-gap) - var(--conversation-turn-gap));
 }
 
-/* Message action bars — flat icon hits with default dim; only the hovered/focused control is full-strength. */
-[data-slot='aui_msg-actions'] button {
+/* Message action bars — flat icon hits with default dim; only the hovered/focused control is full-strength.
+   The reaction slot lives OUTSIDE the bar (a landed emoji must not ride the
+   bar's hover fade) but is still one of these controls visually. */
+[data-slot='aui_msg-actions'] button,
+button[data-slot='aui_msg-reactions'] {
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1623,37 +1814,77 @@ text-* variant utilities. */ .btn-arc {
   opacity: 0.5;
 }
 
+/* A landed reaction is content, not a dimmed affordance — emoji render at
+   full strength everywhere, always (color dim would gray them anyway; they're
+   glyphs, not icons). */
+button[data-slot='aui_msg-reactions'][data-reacted] {
+  opacity: 1;
+  color: inherit;
+}
+
+/* The EMPTY slot is an affordance and follows its action-bar neighbors
+   exactly: hidden until the message is hovered, then the same 0.5 dim, full
+   strength under the pointer. Stylesheet-owned because the base rule above
+   outweighs Tailwind's opacity utilities (0,1,1 vs 0,1,0). */
+button[data-slot='aui_msg-reactions']:not([data-reacted]) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.group:hover button[data-slot='aui_msg-reactions']:not([data-reacted]),
+button[data-slot='aui_msg-reactions']:not([data-reacted]):focus-visible,
+button[data-slot='aui_msg-reactions']:not([data-reacted])[data-state='open'] {
+  opacity: 0.5;
+  pointer-events: auto;
+}
+
+.group:hover button[data-slot='aui_msg-reactions']:not([data-reacted]):hover,
+button[data-slot='aui_msg-reactions']:not([data-reacted])[data-state='open'] {
+  opacity: 1;
+}
+
+/* Emoji in ANY reaction surface (badge under a user bubble, footer slot,
+   picker rows) never inherit a translucent treatment from their container. */
+[data-slot='aui_msg-reactions'] .reaction-pop,
+span[data-slot='aui_msg-reactions'] {
+  opacity: 1;
+}
+
 [data-slot='aui_msg-actions'] button:disabled {
   cursor: default;
 }
 
-[data-slot='aui_msg-actions'] button:hover {
+[data-slot='aui_msg-actions'] button:hover,
+button[data-slot='aui_msg-reactions']:hover {
   background: transparent;
   color: var(--color-foreground);
   opacity: 1;
 }
 
-[data-slot='aui_msg-actions'] button:active {
+[data-slot='aui_msg-actions'] button:active,
+button[data-slot='aui_msg-reactions']:active {
   background: transparent;
 }
 
-[data-slot='aui_msg-actions'] button:focus-visible {
+[data-slot='aui_msg-actions'] button:focus-visible,
+button[data-slot='aui_msg-reactions']:focus-visible {
   opacity: 1;
 }
 
-[data-slot='aui_msg-actions'] button svg {
+[data-slot='aui_msg-actions'] button svg,
+button[data-slot='aui_msg-reactions'] svg {
   width: 0.875rem;
   height: 0.875rem;
 }
 
 /* Re-declare the clearance calc on every chat surface. `:root` computes it
-   once against the ROOT measurements, so scoping only the inputs would leave
+   once against the ROOT measurement, so scoping only the input would leave
    every thread reading the same substituted value. Redeclaring here makes each
-   surface resolve the calc against its own composer + status-stack heights,
-   falling back to the root defaults until this surface publishes its first
-   measurement. See surface-vars.ts. */
+   surface resolve the calc against its own dock height, falling back to the
+   root default until this surface publishes its first measurement. See
+   surface-vars.ts. */
 [data-chat-surface] {
-  --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
+  --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
 }
 
 /* A live tool run, shown as one line. `ToolRunTicker` stacks the run's rows
@@ -1971,11 +2202,34 @@ text-* variant utilities. */ .btn-arc {
   }
 }
 
+@keyframes reaction-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Landing a reaction should feel like something — same pop shape as
+   pet-reveal-pop, scaled down for an inline glyph. */
+.reaction-pop {
+  animation: reaction-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pet-egg,
   .pet-egg__glow,
   .pet-egg-shadow,
   .pet-reveal {
+    animation: none;
+  }
+  .reaction-pop {
     animation: none;
   }
   .pet-reveal {

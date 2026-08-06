@@ -16,6 +16,7 @@ import { DiffCount } from '@/components/ui/diff-count'
 import { Tip } from '@/components/ui/tooltip'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
+import { displayPath } from '@/lib/display-path'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
@@ -162,9 +163,9 @@ export function ReviewPane() {
           <div className="flex items-center gap-1 px-2.5 py-1.5" data-suppress-pane-reveal-side="">
             <span
               className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"
-              title={selectedFile.path}
+              title={displayPath(selectedFile.path)}
             >
-              {selectedFile.path}
+              {displayPath(selectedFile.path)}
             </span>
             <DiffCount added={selectedFile.added} className="text-[0.64rem] leading-4" removed={selectedFile.removed} />
             <Tip label={selectedFile.staged ? c.unstage : c.stage}>
@@ -217,9 +218,9 @@ export function ReviewPane() {
               {!revertingAll && revertTarget?.path && (
                 <span
                   className="mt-2 block truncate font-mono text-[0.7rem] text-(--ui-text-secondary)"
-                  title={revertTarget.path}
+                  title={displayPath(revertTarget.path)}
                 >
-                  {revertTarget.path}
+                  {displayPath(revertTarget.path)}
                 </span>
               )}
             </DialogDescription>

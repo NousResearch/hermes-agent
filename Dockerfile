@@ -41,14 +41,14 @@ RUN apt-get -o Acquire::Retries=3 update && \
     make install
 
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
-# Node 22 LTS source stage. Debian trixie's bundled nodejs is pinned to 20.x
-# which reached EOL in April 2026 — we copy node + npm + corepack from the
-# upstream node:22 image instead so we can stay on a supported LTS without
-# waiting for Debian 14 (forky, ~mid-2027).  Bookworm-based slim image used
-# so the produced binary links against glibc 2.36, which runs cleanly on
-# our Debian 13 (trixie, glibc 2.41) runtime.  Bumping to a new Node major
-# is a one-line ARG change; see #4977.
-FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
+# Node 26 source stage. Debian trixie's bundled nodejs is pinned to 20.x
+# which reached EOL in April 2026 — we copy node + npm from the upstream
+# node:26 image instead (Hermes pins its toolchain to Node 26 everywhere).
+# Bookworm-based slim image used so the produced binary links
+# against glibc 2.36, which runs cleanly on our Debian 13 (trixie, glibc
+# 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
+# #4977.
+FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS node_source
 FROM debian:13.4
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
@@ -70,7 +70,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # hermes process, the dashboard, and per-profile gateways.
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils && \
+    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
 # Prefer the fixed SQLite over Debian's vulnerable libsqlite3.so.0. Keep the
@@ -151,17 +151,20 @@ RUN useradd -u 10000 -m -d /opt/data hermes
 
 COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 
-# Node 22 LTS: copy the node binary plus the bundled npm + corepack JS
-# installs from the upstream image.  npm and npx are recreated as symlinks
-# because they're symlinks in the source image (and need to live on PATH).
+# Node 26: copy the node binary plus the bundled npm JS install from the
+# upstream image.  npm and npx are recreated as symlinks because they're
+# symlinks in the source image (and need to live on PATH).
+#
+# No corepack: Node unbundled it upstream, so node:26 ships only npm in
+# /usr/local/lib/node_modules.  Nothing here needs it — no package.json
+# declares a `packageManager`, and no build step shells out to yarn or pnpm.
+#
 # See node_source stage at the top of the file for the version-bump
 # rationale (#4977).
 COPY --chmod=0755 --from=node_source /usr/local/bin/node /usr/local/bin/
 COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
-COPY --from=node_source /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/corepack
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
-    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
-    ln -sf /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 WORKDIR /opt/hermes
 
@@ -200,6 +203,22 @@ RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
     done && \
     npm cache clean --force
 
+# ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
+# The photon plugin's Node sidecar needs its own node_modules
+# (spectrum-ts). The install tree is immutable at runtime, so a lazy
+# `npm ci` on first connect would hit EROFS — bake the deps here instead
+# (deterministic installs, NS-559). The patch script is copied alongside
+# the manifests because package.json's postinstall runs it, which also
+# means the spectrum-ts patch is applied at build time. Layer-cached:
+# only re-runs when the sidecar manifests/patch change.
+COPY plugins/platforms/photon/sidecar/package.json \
+     plugins/platforms/photon/sidecar/package-lock.json \
+     plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
+     plugins/platforms/photon/sidecar/
+RUN cd plugins/platforms/photon/sidecar && \
+    npm ci --no-audit --fetch-retries=5 && \
+    npm cache clean --force
+
 # ---------- Layer-cached Python dependency install ----------
 # Copy only pyproject.toml + uv.lock so the Python dep resolve + wheel
 # download + native-extension compile layer is cached unless those inputs
@@ -211,7 +230,7 @@ RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
 # frontend stats the readme path during dep resolution, so we `touch` an
 # empty placeholder — the real README is restored by `COPY . .` below.
 #
-# `uv sync --frozen --no-install-project --extra all --extra messaging`
+# `uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp`
 # installs the deps reachable through the composite `[all]` extra
 # (handpicked set intended for the production image — excludes `[dev]`),
 # plus gateway messaging adapters that should work in the published image
@@ -223,6 +242,10 @@ RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
 # Provider packages (anthropic, bedrock, azure-identity) are included
 # so Docker users can use these providers without requiring runtime
 # lazy-install access to PyPI (often blocked in containerized envs).
+#
+# The [otlp] extra contains the SDK/exporter imported by Hermes when Gateway
+# Health export is enabled. Collector and observability-backend dependencies
+# remain external and are not part of the Hermes production image.
 #
 # The hindsight memory provider's client (hindsight-client) is baked in
 # for the same reason: it lazy-installs into /opt/hermes/.venv at first
@@ -241,7 +264,7 @@ RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't
@@ -380,6 +403,8 @@ ENV HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
 # Recursion is impossible because the shim exec's the venv binary by
 # absolute path (/opt/hermes/.venv/bin/hermes). See the shim source for
 # the opt-out env var (HERMES_DOCKER_EXEC_AS_ROOT=1).
+COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hermes
+COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-dispatch.sh
 
 # Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported
 # the venv bin onto PATH; Architecture B's main-wrapper.sh does the
@@ -396,27 +421,37 @@ ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 
-# s6-overlay's /init is PID 1. It sets up the supervision tree, runs
-# /etc/cont-init.d/* (our stage2 hook), starts s6-rc services
-# declared in /etc/s6-overlay/s6-rc.d/, then exec's its remaining
-# argv as the container's "main program" with stdin/stdout/stderr
-# inherited (this is what makes interactive --tui work). When the
-# main program exits, /init begins stage 3 shutdown and the container
-# exits with the program's exit code. Replaces tini — see Phase 2 of
-# docs/plans/2026-05-07-s6-overlay-dynamic-subagent-gateways.md.
+# The image ENTRYPOINT is a tiny dispatcher rather than `/init` directly.
+# When the image really owns PID 1 (normal Docker / Podman), the dispatcher
+# execs `/init` and preserves the full s6 supervision tree. When a platform
+# wraps the image entrypoint under its own PID-1 init (Fly Machines,
+# `docker run --init`, some schedulers), `/init` would abort with
+# `can only run as pid 1`; in that case the dispatcher falls back to
+# `stage2-hook.sh` + `main-wrapper.sh` directly so foreground commands still
+# work. See #38349.
+#
+# On the PID-1 path, s6-overlay's /init sets up the supervision tree, runs
+# /etc/cont-init.d/* (our stage2 hook), starts s6-rc services declared in
+# /etc/s6-overlay/s6-rc.d/, then exec's its remaining argv as the container's
+# "main program" with stdin/stdout/stderr inherited (this is what makes
+# interactive --tui work). When the main program exits, /init begins stage 3
+# shutdown and the container exits with the program's exit code. Replaces
+# tini — see Phase 2 of docs/plans/2026-05-07-s6-overlay-dynamic-subagent-gateways.md.
 #
 # We use the ENTRYPOINT+CMD split rather than CMD alone so the
 # wrapper is prepended to user-supplied args automatically:
 #
-#   docker run <image>                  → /init main-wrapper.sh   (CMD default)
-#   docker run <image> chat -q "hi"     → /init main-wrapper.sh chat -q hi
-#   docker run <image> sleep infinity   → /init main-wrapper.sh sleep infinity
-#   docker run <image> --tui            → /init main-wrapper.sh --tui
+#   docker run <image>                  → entrypoint-dispatch.sh   (CMD default)
+#   docker run <image> chat -q "hi"     → entrypoint-dispatch.sh chat -q hi
+#   docker run <image> sleep infinity   → entrypoint-dispatch.sh sleep infinity
+#   docker run <image> --tui            → entrypoint-dispatch.sh --tui
 #
 # main-wrapper.sh handles arg routing (bare-exec vs. hermes
 # subcommand vs. no-args), drops to the hermes user via s6-setuidgid,
 # and exec's the final program so its exit code becomes the container
-# exit code. Without the wrapper-as-ENTRYPOINT, leading-dash args
-# like `--version` would be intercepted by /init's POSIX shell.
-ENTRYPOINT [ "/init", "/opt/hermes/docker/main-wrapper.sh" ]
+# exit code. The dispatcher preserves that contract across both the
+# supervised PID-1 path and the non-PID-1 fallback path. Without the
+# wrapper-as-ENTRYPOINT, leading-dash args like `--version` would be
+# intercepted by /init's POSIX shell.
+ENTRYPOINT [ "/opt/hermes/docker/entrypoint-dispatch.sh" ]
 CMD [ ]

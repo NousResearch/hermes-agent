@@ -4,31 +4,36 @@ import { closeActiveTab } from '@/app/chat/close-tab'
 import { openSession } from '@/app/open-session'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
-import { $activeGatewayProfile } from '@/store/profile'
+import { openFolderAsProject } from '@/store/projects'
 import {
-  $sessions,
   getRememberedRoute,
   getRememberedSessionId,
-  rememberedSessionProfile,
+  sessionBelongsToProfile,
   setRememberedRoute,
   setRememberedSessionId
 } from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isSecondaryWindow } from '@/store/windows'
+import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
-import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
+import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
+
+type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>
 
 interface DesktopIntegrationsParams {
+  activeProfile: string
   chatOpen: boolean
   hasPreview: boolean
   locationPathname: string
   navigate: (to: string, options?: { replace?: boolean }) => void
+  profileReady: boolean
   refreshSessions: () => Promise<unknown> | unknown
   resumeExhaustedSessionId: null | string
   routedSessionId: null | string
   runtimeIdByStoredSessionId: { readonly current: Map<string, string> }
+  sessions: readonly RememberedSession[]
 }
 
 /**
@@ -39,12 +44,15 @@ interface DesktopIntegrationsParams {
  * "talks to the desktop shell" surface reads as one unit.
  */
 export function useDesktopIntegrations({
+  activeProfile,
   locationPathname,
   navigate,
+  profileReady,
   refreshSessions,
   resumeExhaustedSessionId,
   routedSessionId,
-  runtimeIdByStoredSessionId
+  runtimeIdByStoredSessionId,
+  sessions
 }: DesktopIntegrationsParams): void {
   // Update polling — populates $desktopVersion/$updateStatus, which feed the
   // statusbar version pill and the update toasts. Also honors the main
@@ -66,71 +74,105 @@ export function useDesktopIntegrations({
     window.hermesDesktop?.setPreviewShortcutActive?.(true)
   }, [])
 
-  // Remember the open chat (session id for notifications/resume) AND the last
-  // non-overlay route (a page like /skills, or a session route) so a relaunch
-  // lands where you were. Overlays (settings/command-center/…) aren't stored —
-  // you don't want to boot into a modal.
-  useEffect(() => {
-    if (routedSessionId) {
-      setRememberedSessionId(
-        routedSessionId,
-        rememberedSessionProfile($sessions.get(), routedSessionId, $activeGatewayProfile.get())
-      )
-    }
-
-    if (!isOverlayView(appViewForPath(locationPathname))) {
-      setRememberedRoute(locationPathname)
-    }
-  }, [locationPathname, routedSessionId])
-
   const restoredRef = useRef(false)
 
-  // Restore once on cold start — only when the renderer booted at the default
-  // route (a hidden-then-shown window keeps its own route). Prefer the full
-  // remembered route (covers pages); fall back to the last session id.
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  // Wait until boot has adopted the primary profile, then restore that profile's
+  // navigation exactly once. The same effect owns subsequent writes so the
+  // initial `/` cannot overwrite remembered history before it is read.
+  // This ref is a one-time lifecycle latch, not a mirror of reactive atom state.
+  // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
-    if (restoredRef.current || locationPathname !== NEW_CHAT_ROUTE) {
-      restoredRef.current = true
-
+    if (!profileReady) {
       return
     }
 
-    restoredRef.current = true
-    const route = getRememberedRoute()
+    if (!restoredRef.current) {
+      // Only cold-start navigation at the default route is replaceable; a deep
+      // link or hidden-then-shown window keeps its explicit destination.
+      if (locationPathname === NEW_CHAT_ROUTE) {
+        const route = getRememberedRoute(activeProfile)
+        const routeSession = route ? routeSessionId(route) : null
+        const last = getRememberedSessionId(activeProfile)
 
-    if (route && route !== NEW_CHAT_ROUTE && !isOverlayView(appViewForPath(route))) {
-      navigate(route, { replace: true })
+        const restorableNonSessionRoute =
+          !!route && route !== NEW_CHAT_ROUTE && !routeSession && !isOverlayView(appViewForPath(route))
 
-      return
+        // Boot adoption can publish renderer.ready before its async session
+        // refresh completes. Keep the restore latch open until ownership can be
+        // decided; treating an unloaded list as authoritative would erase valid
+        // remembered navigation permanently.
+        if (sessions.length === 0 && !restorableNonSessionRoute && (routeSession || last)) {
+          return
+        }
+
+        restoredRef.current = true
+
+        if (
+          route &&
+          route !== NEW_CHAT_ROUTE &&
+          !isOverlayView(appViewForPath(route)) &&
+          (!routeSession || sessionBelongsToProfile(sessions, routeSession, activeProfile))
+        ) {
+          navigate(route, { replace: true })
+
+          return
+        }
+
+        // A remembered route carried a session id we can no longer validate —
+        // clear the stale entry so the next cold start won't re-try it.
+        if (routeSession) {
+          setRememberedRoute(null, activeProfile)
+        }
+
+        if (last && sessionBelongsToProfile(sessions, last, activeProfile)) {
+          navigate(sessionRoute(last), { replace: true })
+
+          return
+        }
+
+        if (last) {
+          setRememberedSessionId(null, activeProfile)
+        }
+      } else {
+        restoredRef.current = true
+      }
     }
 
-    const last = getRememberedSessionId($activeGatewayProfile.get())
-
-    if (last) {
-      navigate(sessionRoute(last), { replace: true })
+    // Remember the open chat (session id for notifications/resume) AND the last
+    // non-overlay route (a page like /skills, or a session route) per profile.
+    // Session-shaped routes require an explicit matching owner; unresolved and
+    // wrong-profile rows must not replace known-safe navigation.
+    if (routedSessionId && sessionBelongsToProfile(sessions, routedSessionId, activeProfile)) {
+      setRememberedSessionId(routedSessionId, activeProfile)
+      setRememberedRoute(locationPathname, activeProfile)
+    } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
+      setRememberedRoute(locationPathname, activeProfile)
     }
-  }, [locationPathname, navigate])
+  }, [activeProfile, locationPathname, navigate, profileReady, routedSessionId, sessions])
 
   useEffect(() => {
-    if (!resumeExhaustedSessionId) {
+    if (!profileReady || !resumeExhaustedSessionId) {
       return
     }
 
-    const owner = rememberedSessionProfile($sessions.get(), resumeExhaustedSessionId, $activeGatewayProfile.get())
-
-    if (getRememberedSessionId(owner) === resumeExhaustedSessionId) {
-      setRememberedSessionId(null, owner)
+    if (getRememberedSessionId(activeProfile) === resumeExhaustedSessionId) {
+      setRememberedSessionId(null, activeProfile)
     }
-  }, [resumeExhaustedSessionId])
+
+    if (routeSessionId(getRememberedRoute(activeProfile) ?? '') === resumeExhaustedSessionId) {
+      setRememberedRoute(null, activeProfile)
+    }
+  }, [activeProfile, profileReady, resumeExhaustedSessionId])
 
   // Native-notification click -> jump to the session WHERE IT ALREADY IS (open
-  // tile / main) instead of forcing main. Runtime id is translated to the
-  // stored id the chat route is keyed by; action buttons resolve in place.
+  // tile / main), else beside what's loaded rather than over it — the click
+  // came from outside the app and shouldn't cost the user the chat they left
+  // on screen. Runtime id is translated to the stored id the chat route is
+  // keyed by; action buttons resolve in place.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        openSession(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current), navigate)
+        openSession(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current), navigate, 'stack')
       }
     })
 
@@ -181,6 +223,13 @@ export function useDesktopIntegrations({
 
     return () => unsubscribe?.()
   }, [navigate])
+
+  // File > Open Folder… — same open-folder-as-project upsert as the ⌘O keybind.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onOpenFolderRequested?.(() => void openFolderAsProject())
+
+    return () => unsubscribe?.()
+  }, [])
 
   // Another window mutated the shared session list -> re-pull the sidebar.
   useEffect(() => {

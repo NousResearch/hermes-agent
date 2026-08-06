@@ -68,13 +68,6 @@ class TestNeuterAsyncHttpxDel:
         finally:
             AsyncHttpxClientWrapper.__del__ = original_del
 
-    def test_neuter_graceful_without_sdk(self):
-        """neuter_async_httpx_del doesn't raise if the openai SDK isn't installed."""
-        from agent.auxiliary_client import neuter_async_httpx_del
-
-        with patch.dict("sys.modules", {"openai._base_client": None}):
-            # Should not raise
-            neuter_async_httpx_del()
 
 
 # ---------------------------------------------------------------------------

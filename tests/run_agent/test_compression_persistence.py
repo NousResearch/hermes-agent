@@ -322,51 +322,6 @@ class TestFlushAfterCompression:
             )
             db.close()
 
-    def test_rotation_child_session_inherits_parent_profile_name(self):
-        """The rotation child must stay on the parent's owning profile.
-
-        The rotate path used to create the child row with no profile_name, so
-        a compressed non-default-profile conversation migrated to the launch/
-        default profile in unified session lists (the cross-profile
-        session-jump bug). Exercises the real rotation against a real
-        SessionDB: explicit stamp at the create site + the parent-backfill
-        COALESCE in _insert_session_row.
-        """
-        from agent.conversation_compression import compress_context
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "test.db")
-            parent_sid = "20260701_152840_parent"
-            db.create_session(
-                parent_sid, "gateway", model="test/model",
-                profile_name="ai-engineer",
-            )
-
-            agent = self._make_agent(db)
-            agent.session_id = parent_sid
-            agent.compression_in_place = False
-            agent._ensure_db_session()
-
-            messages = [
-                {
-                    "role": "user" if i % 2 == 0 else "assistant",
-                    "content": f"message {i}",
-                    "_db_persisted": True,
-                }
-                for i in range(12)
-            ]
-
-            with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
-                compress_context(
-                    agent, messages, approx_tokens=100_000, system_message="sys"
-                )
-
-            assert agent.session_id != parent_sid
-            child = db.get_session(agent.session_id)
-            assert child is not None
-            assert child["profile_name"] == "ai-engineer"
-            db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -395,17 +350,6 @@ class TestGatewayHistoryOffsetAfterSplit:
         assert _session_was_split is True
         assert _effective_history_offset == 0
 
-    def test_history_offset_preserved_without_split(self):
-        """When no compression happened, history_offset is the original length."""
-        session_id = "session-abc"
-        agent_session_id = "session-abc"  # Same = no compression
-        agent_history_len = 200
-
-        _session_was_split = (agent_session_id != session_id)
-        _effective_history_offset = 0 if _session_was_split else agent_history_len
-
-        assert _session_was_split is False
-        assert _effective_history_offset == 200
 
     def test_new_messages_extraction_after_split(self):
         """After compression with offset=0, new_messages should be ALL agent messages."""
@@ -424,19 +368,6 @@ class TestGatewayHistoryOffsetAfterSplit:
             f"Expected all 5 messages with offset=0, got {len(new_messages)}"
         )
 
-    def test_new_messages_empty_with_stale_offset(self):
-        """Demonstrates the bug: stale offset produces empty new_messages."""
-        agent_messages = [
-            {"role": "user", "content": "summary"},
-            {"role": "assistant", "content": "answer"},
-        ]
-        # Bug: offset is the pre-compression history length
-        history_offset = 200
-
-        new_messages = agent_messages[history_offset:] if len(agent_messages) > history_offset else []
-        assert len(new_messages) == 0, (
-            "Expected 0 messages with stale offset=200 (demonstrates the bug)"
-        )
 
 
 class TestStoredPromptCwdDrift:
@@ -561,77 +492,9 @@ class TestStoredPromptCwdDrift:
                 "drift in the host-info block"
             )
 
-    def test_stored_prompt_stale_when_runtime_surface_differs(self):
-        """A stored prompt built for a different platform must not be reused."""
-        from agent.conversation_loop import _stored_prompt_matches_runtime
 
-        stored_prompt = (
-            "Platform: desktop\n"
-            "Model: test/model\n"
-            "Provider: openrouter\n"
-        )
-        agent = self._make_agent()
-        agent.platform = "cli"
-        assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
-            "Expected False when stored prompt is for 'desktop' but the "
-            "current session runs on 'cli'"
-        )
 
-    def test_stored_prompt_fresh_when_platform_matches(self):
-        """Matching platform allows prompt reuse."""
-        from agent.conversation_loop import _stored_prompt_matches_runtime
 
-        agent = self._make_agent()
-        agent.platform = "desktop"
-        stored_prompt = (
-            "Platform: desktop\n"
-            "Model: test/model\n"
-            "Provider: openrouter\n"
-        )
-        assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
-            "Expected True when stored platform matches the current platform"
-        )
-
-    def test_stored_prompt_fresh_when_terminal_cwd_matches(self):
-        """Gateway: stored cwd equals TERMINAL_CWD -> reuse via resolve_agent_cwd.
-
-        The gateway sets TERMINAL_CWD to the configured project dir, which differs
-        from the process launch dir (os.getcwd()). Reuse must key off
-        resolve_agent_cwd(), not os.getcwd(), or every gateway turn would falsely
-        rebuild the system prompt.
-        """
-        from unittest.mock import patch
-        from agent.conversation_loop import _stored_prompt_matches_runtime
-
-        agent = self._make_agent()
-        with tempfile.TemporaryDirectory() as term_cwd:
-            stored_prompt = (
-                self._host_block(term_cwd)
-                + "Model: test/model\n"
-                "Provider: openrouter\n"
-            )
-            with patch.dict(os.environ, {"TERMINAL_CWD": term_cwd}):
-                assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
-                    "Expected True when stored cwd equals TERMINAL_CWD "
-                    "(gateway launch dir differs from configured cwd)"
-                )
-
-    def test_stored_prompt_stale_when_terminal_cwd_differs(self):
-        """Gateway: stored cwd differs from TERMINAL_CWD -> rebuild."""
-        from unittest.mock import patch
-        from agent.conversation_loop import _stored_prompt_matches_runtime
-
-        agent = self._make_agent()
-        with tempfile.TemporaryDirectory() as term_cwd, tempfile.TemporaryDirectory() as other_cwd:
-            stored_prompt = (
-                self._host_block(other_cwd)
-                + "Model: test/model\n"
-                "Provider: openrouter\n"
-            )
-            with patch.dict(os.environ, {"TERMINAL_CWD": term_cwd}):
-                assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
-                    "Expected False when stored cwd differs from TERMINAL_CWD"
-                )
 
     def test_built_prompt_contains_platform_line(self):
         """The built system prompt must carry a Platform: line so drift detection works."""

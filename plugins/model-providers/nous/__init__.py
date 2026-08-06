@@ -3,6 +3,7 @@
 from typing import Any
 
 from agent.portal_tags import get_conversation_context, nous_portal_tags
+from agent.transports.codex import _cache_scope_from_session_id
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -40,7 +41,7 @@ class NousProfile(ProviderProfile):
         # session id; the ambient root additionally keeps the key stable for
         # installs that opt back into rotating compaction, and across
         # delegate-subagent trees.
-        sticky_key = get_conversation_context() or session_id
+        sticky_key = _cache_scope_from_session_id(get_conversation_context() or session_id)
         if sticky_key:
             body["session_id"] = sticky_key
         provider_preferences = context.get("provider_preferences")

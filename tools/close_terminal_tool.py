@@ -13,7 +13,6 @@ the GUI.
 """
 
 import json
-import os
 
 from utils import env_var_enabled
 

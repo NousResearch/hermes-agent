@@ -458,6 +458,10 @@ def is_curation_eligible(skill_name: str, skill_path: Optional[Path] = None) -> 
     Agent-created skills are always eligible. Bundled built-ins become eligible
     only when ``curator.prune_builtins`` is enabled. Hub-installed and external
     skill-dir skills are NEVER eligible — they have an external upstream owner.
+    Org-shared skills ARE eligible for improvement (the curator may patch them
+    like any other skill; edits stay local until proposed) but are protected
+    from ARCHIVE/DELETE elsewhere — removing a shared skill is an org-admin
+    action, not a local curation decision.
     Protected built-ins (``PROTECTED_BUILTIN_SKILLS``) are NEVER eligible
     regardless of any flag — they back load-bearing UX and must never be
     archived or consolidated.
@@ -645,6 +649,8 @@ def _empty_record() -> Dict[str, Any]:
         "last_used_at": None,
         "last_viewed_at": None,
         "patch_count": 0,
+        "patch_generation": 0,
+        "last_reused_patch_generation": 0,
         "last_patched_at": None,
         "created_at": _now_iso(),
         "state": STATE_ACTIVE,
@@ -673,8 +679,8 @@ def load_usage() -> Dict[str, Dict[str, Any]]:
     return clean
 
 
-def save_usage(data: Dict[str, Dict[str, Any]]) -> None:
-    """Write the usage map atomically. Best-effort — errors are logged, not raised."""
+def save_usage(data: Dict[str, Dict[str, Any]]) -> bool:
+    """Write the usage map atomically and report whether it committed."""
     path = _usage_file()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -687,6 +693,7 @@ def save_usage(data: Dict[str, Dict[str, Any]]) -> None:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, path)
+            return True
         except BaseException:
             try:
                 os.unlink(tmp_path)
@@ -695,6 +702,7 @@ def save_usage(data: Dict[str, Dict[str, Any]]) -> None:
             raise
     except Exception as e:
         logger.debug("Failed to write %s: %s", path, e, exc_info=True)
+        return False
 
 
 def get_record(skill_name: str) -> Dict[str, Any]:
@@ -732,7 +740,7 @@ def seed_record_if_missing(skill_name: str) -> None:
         logger.debug("skill_usage.seed_record_if_missing(%s) failed: %s", skill_name, e, exc_info=True)
 
 
-def _mutate(skill_name: str, mutator, *, require_curation_eligible: bool = False) -> None:
+def _mutate(skill_name: str, mutator, *, require_curation_eligible: bool = False) -> Any:
     """Load, apply *mutator(record)* in place, save. Best-effort.
 
     By default this records telemetry for ANY skill — bundled, hub-installed,
@@ -744,20 +752,97 @@ def _mutate(skill_name: str, mutator, *, require_curation_eligible: bool = False
     hub-installed skill).
     """
     if not skill_name:
-        return
+        return None
     try:
         if require_curation_eligible and not is_curation_eligible(skill_name):
-            return
+            return None
         with _usage_file_lock():
             data = load_usage()
             rec = data.get(skill_name)
             if not isinstance(rec, dict):
                 rec = _empty_record()
-            mutator(rec)
+            result = mutator(rec)
             data[skill_name] = rec
-            save_usage(data)
+            if not save_usage(data):
+                return None
+            return result
     except Exception as e:
         logger.debug("skill_usage._mutate(%s) failed: %s", skill_name, e, exc_info=True)
+        return None
+
+
+def _non_negative_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def telemetry_provenance(
+    skill_name: str,
+    record: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return the bounded provenance used by shared skill metrics."""
+    if is_hub_installed(skill_name) or is_bundled(skill_name):
+        return "installed"
+    if ":" in skill_name:
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+
+            if get_plugin_manager().find_plugin_skill(skill_name) is not None:
+                return "installed"
+        except Exception:
+            pass
+    if isinstance(record, dict):
+        created_by = record.get("created_by")
+        if created_by == "installed":
+            return "installed"
+        if created_by == "agent":
+            return "agent_created"
+    if _find_external_skill_dir(skill_name) is not None:
+        return "external"
+    if _find_skill_dir(skill_name) is not None or isinstance(record, dict):
+        return "local"
+    return "unknown"
+
+
+def _emit_skill_lifecycle(
+    skill_name: str,
+    action: str,
+    *,
+    record: Optional[Dict[str, Any]] = None,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    use_count: Optional[int] = None,
+    reused: Optional[bool] = None,
+    reuse_after_patch: Optional[bool] = None,
+) -> None:
+    """Emit one best-effort lifecycle fact after authoritative state changes."""
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+
+        if not has_hook("on_skill_lifecycle"):
+            return
+        invoke_hook(
+            "on_skill_lifecycle",
+            action=action,
+            skill_name=skill_name,
+            provenance=telemetry_provenance(skill_name, record),
+            task_id=task_id or "",
+            session_id=session_id or "",
+            use_count=use_count,
+            reused=reused,
+            reuse_after_patch=reuse_after_patch,
+        )
+    except Exception:
+        logger.debug(
+            "skill_usage lifecycle hook failed for %s/%s",
+            skill_name,
+            action,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -771,32 +856,127 @@ def bump_view(skill_name: str) -> None:
     included. Usage telemetry is observability, not a curation signal.
     """
     def _apply(rec: Dict[str, Any]) -> None:
-        rec["view_count"] = int(rec.get("view_count") or 0) + 1
+        rec["view_count"] = _non_negative_int(rec.get("view_count")) + 1
         rec["last_viewed_at"] = _now_iso()
     _mutate(skill_name, _apply)
 
 
-def bump_use(skill_name: str) -> None:
+def bump_use(
+    skill_name: str,
+    *,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> None:
     """Bump use_count and last_used_at. Called when a skill is actively used
     (e.g. loaded into the prompt path or referenced from an assistant turn).
 
     Tracks every skill regardless of provenance.
     """
-    def _apply(rec: Dict[str, Any]) -> None:
-        rec["use_count"] = int(rec.get("use_count") or 0) + 1
+    def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
+        previous_use_count = _non_negative_int(rec.get("use_count"))
+        patch_generation = _non_negative_int(rec.get("patch_generation"))
+        last_reused_generation = min(
+            _non_negative_int(rec.get("last_reused_patch_generation")),
+            patch_generation,
+        )
+        reused = previous_use_count > 0
+        reuse_after_patch = reused and patch_generation > last_reused_generation
+        rec["use_count"] = previous_use_count + 1
         rec["last_used_at"] = _now_iso()
-    _mutate(skill_name, _apply)
+        rec["patch_generation"] = patch_generation
+        rec["last_reused_patch_generation"] = last_reused_generation
+        if reuse_after_patch:
+            rec["last_reused_patch_generation"] = patch_generation
+        return {
+            "created_by": rec.get("created_by"),
+            "use_count": rec["use_count"],
+            "reused": reused,
+            "reuse_after_patch": reuse_after_patch,
+        }
+
+    facts = _mutate(skill_name, _apply)
+    if isinstance(facts, dict):
+        _emit_skill_lifecycle(
+            skill_name,
+            "loaded",
+            record=facts,
+            task_id=task_id,
+            session_id=session_id,
+            use_count=facts["use_count"],
+            reused=facts["reused"],
+            reuse_after_patch=facts["reuse_after_patch"],
+        )
 
 
-def bump_patch(skill_name: str) -> None:
+def bump_patch(
+    skill_name: str,
+    *,
+    action: str = "patch",
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> None:
     """Bump patch_count and last_patched_at. Called from skill_manage (patch/edit).
 
     Tracks every skill regardless of provenance.
     """
-    def _apply(rec: Dict[str, Any]) -> None:
-        rec["patch_count"] = int(rec.get("patch_count") or 0) + 1
+    lifecycle_action = "patched" if action == "patch" else "edited"
+
+    def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
+        rec["patch_count"] = _non_negative_int(rec.get("patch_count")) + 1
+        rec["patch_generation"] = _non_negative_int(rec.get("patch_generation")) + 1
         rec["last_patched_at"] = _now_iso()
-    _mutate(skill_name, _apply)
+        return {"created_by": rec.get("created_by")}
+
+    facts = _mutate(skill_name, _apply)
+    if isinstance(facts, dict):
+        _emit_skill_lifecycle(
+            skill_name,
+            lifecycle_action,
+            record=facts,
+            task_id=task_id,
+            session_id=session_id,
+        )
+
+
+def record_created(
+    skill_name: str,
+    *,
+    agent_created: bool,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> None:
+    """Persist explicit creation provenance and emit a successful create fact."""
+    def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
+        # A successful create is a new logical skill even if stale sidecar
+        # state survived an earlier deletion or manual filesystem change.
+        rec.clear()
+        rec.update(_empty_record())
+        if agent_created:
+            rec["created_by"] = "agent"
+        return {"created_by": rec["created_by"]}
+
+    facts = _mutate(skill_name, _apply)
+    if isinstance(facts, dict):
+        _emit_skill_lifecycle(
+            skill_name,
+            "created",
+            record=facts,
+            task_id=task_id,
+            session_id=session_id,
+        )
+
+
+def record_installed(skill_name: str) -> None:
+    """Record a successful Skills Hub install without exporting its name."""
+    def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
+        rec["created_by"] = "installed"
+        rec["state"] = STATE_ACTIVE
+        rec["archived_at"] = None
+        return {"created_by": rec["created_by"]}
+
+    facts = _mutate(skill_name, _apply)
+    if isinstance(facts, dict):
+        _emit_skill_lifecycle(skill_name, "installed", record=facts)
 
 
 def mark_agent_created(skill_name: str) -> None:
@@ -816,19 +996,58 @@ def set_state(skill_name: str, state: str) -> None:
     if state not in _VALID_STATES:
         logger.debug("set_state: invalid state %r for %s", state, skill_name)
         return
-    def _apply(rec: Dict[str, Any]) -> None:
+    def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
+        previous_state = rec.get("state")
+        if previous_state == state:
+            return {"changed": False, "created_by": rec.get("created_by")}
         rec["state"] = state
         if state == STATE_ARCHIVED:
             rec["archived_at"] = _now_iso()
         elif state == STATE_ACTIVE:
             rec["archived_at"] = None
-    _mutate(skill_name, _apply, require_curation_eligible=True)
+        return {
+            "changed": True,
+            "created_by": rec.get("created_by"),
+            "previous_state": previous_state,
+        }
+
+    facts = _mutate(skill_name, _apply, require_curation_eligible=True)
+    if not isinstance(facts, dict) or not facts.get("changed"):
+        return
+    action = {
+        STATE_ARCHIVED: "archived",
+        STATE_STALE: "stale",
+    }.get(state)
+    if state == STATE_ACTIVE and facts.get("previous_state") == STATE_ARCHIVED:
+        action = "restored"
+    if action is not None:
+        _emit_skill_lifecycle(skill_name, action, record=facts)
 
 
 def set_pinned(skill_name: str, pinned: bool) -> None:
     def _apply(rec: Dict[str, Any]) -> None:
         rec["pinned"] = bool(pinned)
     _mutate(skill_name, _apply, require_curation_eligible=True)
+
+
+def set_sync(skill_name: str, sync: bool) -> None:
+    """Set the sync opt-in flag on a skill's usage record.
+
+    Sync is OPT-IN: nothing propagates to the sync plane unless the user marks
+    a skill with ``sync: true`` here. Sits alongside ``pinned``/``created_by``
+    on the ``.usage.json`` sidecar and is read by
+    ``tools.skills_sync_client.list_synced_skill_names``. Gated on curation
+    eligibility so bundled/hub/external skills (which never sync) can't be
+    marked. Provisional per the M1-D default.
+    """
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["sync"] = bool(sync)
+    _mutate(skill_name, _apply, require_curation_eligible=True)
+
+
+def is_sync_enabled(skill_name: str) -> bool:
+    """Whether a skill is opted into sync (``sync: true`` in its record)."""
+    return get_record(skill_name).get("sync") is True
 
 
 def forget(skill_name: str) -> None:
@@ -894,7 +1113,7 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
 
     try:
         skill_dir.rename(dest)
-    except OSError as e:
+    except OSError:
         # Cross-device — fall back to shutil.move
         import shutil
         try:
@@ -989,14 +1208,16 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
     """Locate the directory for a skill by its frontmatter `name:` field.
 
     Handles both flat (~/.hermes/skills/<skill>/SKILL.md) and category-nested
-    (~/.hermes/skills/<category>/<skill>/SKILL.md) layouts.
+    (~/.hermes/skills/<category>/<skill>/SKILL.md) layouts. Uses the gated
+    index iterator so M2 org mirrors resolve ONLY for the active org
+    (stale ``_org/<other>/`` trees never match).
     """
     base = _skills_dir()
     if not base.exists():
         return None
-    for skill_md in base.rglob("SKILL.md"):
-        if is_excluded_skill_path(skill_md):
-            continue
+    from agent.skill_utils import iter_skill_index_files
+
+    for skill_md in iter_skill_index_files(base, "SKILL.md"):
         if is_external_skill_path(skill_md):
             continue
         if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:

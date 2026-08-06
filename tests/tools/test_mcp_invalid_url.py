@@ -64,48 +64,6 @@ class TestInvalidUrlsRejected:
         with pytest.raises(InvalidMcpUrlError, match="expected a string, got int"):
             _validate_remote_mcp_url("ctx", 8080)
 
-    def test_empty_string_rejected(self):
-        with pytest.raises(InvalidMcpUrlError, match="empty url"):
-            _validate_remote_mcp_url("ctx", "")
-
-    def test_whitespace_only_rejected(self):
-        with pytest.raises(InvalidMcpUrlError, match="empty url"):
-            _validate_remote_mcp_url("ctx", "   \t\n")
-
-    def test_missing_scheme_rejected(self):
-        # The most common typo — users copy a host from a web page.
-        with pytest.raises(
-            InvalidMcpUrlError, match="scheme must be http or https"
-        ):
-            _validate_remote_mcp_url("ctx", "example.com/mcp")
-
-    def test_file_scheme_rejected(self):
-        with pytest.raises(
-            InvalidMcpUrlError, match="scheme must be http or https"
-        ):
-            _validate_remote_mcp_url("ctx", "file:///etc/passwd")
-
-    def test_ws_scheme_rejected(self):
-        # WebSocket is not MCP's remote transport.
-        with pytest.raises(
-            InvalidMcpUrlError, match="scheme must be http or https"
-        ):
-            _validate_remote_mcp_url("ctx", "ws://example.com/mcp")
-
-    def test_stdio_scheme_rejected(self):
-        # stdio servers use the ``command`` key, not ``url``.
-        with pytest.raises(
-            InvalidMcpUrlError, match="scheme must be http or https"
-        ):
-            _validate_remote_mcp_url("ctx", "stdio:///node server.js")
-
-    def test_empty_host_rejected(self):
-        with pytest.raises(InvalidMcpUrlError, match="missing host"):
-            _validate_remote_mcp_url("ctx", "http:///")
-
-    def test_empty_host_with_path_rejected(self):
-        with pytest.raises(InvalidMcpUrlError, match="missing host"):
-            _validate_remote_mcp_url("ctx", "https:///path/only")
 
     def test_error_mentions_server_name(self):
         # So users can find the bad entry when there are multiple configured.

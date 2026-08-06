@@ -31,6 +31,7 @@ from hermes_state import (
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 _CANONICAL_TABLES = (
+    "system_prompts",
     "sessions",
     "messages",
     "session_model_usage",
@@ -912,6 +913,8 @@ def _cleanup_partial_orphans(
     """
 
     result: dict[str, Any] = {
+        "session_prompt_refs_cleared": 0,
+        "system_prompts_removed": 0,
         "sessions_parent_cleared": 0,
         "sessions_reconstructed": 0,
         "messages_retained": 0,
@@ -946,6 +949,42 @@ def _cleanup_partial_orphans(
                 "WHERE parent.id = sessions.parent_session_id)"
             )
         result["sessions_parent_cleared"] = parent_count
+
+        prompt_ref_count = int(
+            destination.execute(
+                "SELECT COUNT(*) FROM sessions "
+                "WHERE system_prompt_hash IS NOT NULL "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM system_prompts "
+                "WHERE system_prompts.hash = sessions.system_prompt_hash)"
+            ).fetchone()[0]
+        )
+        if prompt_ref_count:
+            destination.execute(
+                "UPDATE sessions SET system_prompt_hash = NULL "
+                "WHERE system_prompt_hash IS NOT NULL "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM system_prompts "
+                "WHERE system_prompts.hash = sessions.system_prompt_hash)"
+            )
+        result["session_prompt_refs_cleared"] = prompt_ref_count
+
+        unreferenced_prompt_count = int(
+            destination.execute(
+                "SELECT COUNT(*) FROM system_prompts "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM sessions "
+                "WHERE sessions.system_prompt_hash = system_prompts.hash)"
+            ).fetchone()[0]
+        )
+        if unreferenced_prompt_count:
+            destination.execute(
+                "DELETE FROM system_prompts "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM sessions "
+                "WHERE sessions.system_prompt_hash = system_prompts.hash)"
+            )
+        result["system_prompts_removed"] = unreferenced_prompt_count
 
         dependent_tables = (
             ("messages", "messages_removed"),
@@ -983,7 +1022,8 @@ def _cleanup_partial_orphans(
     # reconstruction counters describe data RETAINED, so summing them here
     # would report saving the user's messages as if it were losing them.
     result["total_removed_or_relinked"] = (
-        int(result["sessions_parent_cleared"])
+        int(result["session_prompt_refs_cleared"])
+        + int(result["sessions_parent_cleared"])
         + int(result["messages_removed"])
         + int(result["session_model_usage_removed"])
         + int(result["compression_locks_removed"])

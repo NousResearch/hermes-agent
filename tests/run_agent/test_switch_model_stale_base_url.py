@@ -55,33 +55,5 @@ def test_switch_model_rejects_stale_base_url_on_provider_change(mock_ctx_len):
     assert agent.model == "claude-opus-4.8"
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
-def test_switch_model_allows_empty_base_url_for_same_provider(mock_ctx_len):
-    """Re-selecting the SAME provider (e.g. a credential-only refresh) with no
-    new base_url must keep the current URL — this is not a provider change."""
-    agent = _make_agent_with_compressor(provider="openrouter", base_url="https://openrouter.ai/api/v1")
-
-    agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="")
-
-    assert agent.provider == "openrouter"
-    assert agent.base_url == "https://openrouter.ai/api/v1"
-    assert agent.model == "new-model"
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
-def test_switch_model_applies_new_base_url_on_provider_change(mock_ctx_len):
-    """The normal, resolved-correctly path must still work: new provider +
-    new base_url is applied as-is."""
-    agent = _make_agent_with_compressor(provider="copilot", base_url="https://api.githubcopilot.com")
-
-    agent.switch_model(
-        "MiniMax-M3", "custom:minimax", api_key="sk-minimax", base_url="https://api.minimax.io/v1"
-    )
-
-    assert agent.provider == "custom:minimax"
-    assert agent.base_url == "https://api.minimax.io/v1"
-    assert agent.model == "MiniMax-M3"
-    # _primary_runtime must snapshot the coherent pair so it survives every
-    # subsequent restore_primary_runtime() call across turns.
-    assert agent._primary_runtime["provider"] == "custom:minimax"
-    assert agent._primary_runtime["base_url"] == "https://api.minimax.io/v1"

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -348,6 +349,29 @@ _BASE_SECURITY_ARGS = [
 # Default per-container PID limit. Applied as ``--pids-limit`` only when the
 # cgroup ``pids`` controller is available (see ``_cgroup_limits_available``).
 _DEFAULT_PIDS_LIMIT = "256"
+
+# Default /dev/shm size. Docker's built-in default is a tiny 64 MB, which
+# silently breaks shared-memory-hungry workloads inside the sandbox: Chromium /
+# Playwright renderers crash tabs, and PyTorch DataLoader workers die with
+# "bus error" / "insufficient shared memory" once they exceed it. tmpfs is
+# lazily allocated, so a 1g ceiling costs nothing until actually used (and
+# usage still counts against the container's --memory cgroup limit).
+# Configurable via ``terminal.docker_shm_size`` in config.yaml; an empty value
+# (or "0") omits the flag and falls back to Docker's 64 MB default.
+# Ported from nanocoai/nanoclaw#2748.
+_DEFAULT_SHM_SIZE = "1g"
+
+
+def _extra_args_set_shm_size(extra_args: list) -> bool:
+    """True when user-supplied docker_extra_args already set ``--shm-size``.
+
+    In that case we skip our default so the user's value is unambiguous
+    (rather than relying on flag-ordering / last-wins behavior).
+    """
+    return any(
+        isinstance(a, str) and (a == "--shm-size" or a.startswith("--shm-size="))
+        for a in (extra_args or [])
+    )
 
 # /run is split out from _BASE_SECURITY_ARGS because s6-overlay images need it
 # mounted ``exec``: s6 stage0 later runs ``exec /run/s6/basedir/bin/init``, which
@@ -820,6 +844,12 @@ class DockerEnvironment(BaseEnvironment):
     across container restarts.
     """
 
+    _profile_scoped_passthrough = True
+
+    def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
+        """Keep explicit docker_forward_env values out of shared snapshots."""
+        return tuple(self._forward_env)
+
     def __init__(
         self,
         image: str,
@@ -839,6 +869,7 @@ class DockerEnvironment(BaseEnvironment):
         run_as_host_user: bool = False,
         extra_args: list = None,
         persist_across_processes: bool = True,
+        shm_size: str = _DEFAULT_SHM_SIZE,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -848,16 +879,17 @@ class DockerEnvironment(BaseEnvironment):
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
+        self._init_unset_passthrough_names: tuple[str, ...] = ()
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
         self._image: str = ""
         self._container_name: str = ""
         self._image_uses_s6_init: bool = False
         self._all_run_args: list[str] = []
-        logger.info(f"DockerEnvironment volumes: {volumes}")
+        logger.info("DockerEnvironment volumes: %s", volumes)
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
-            logger.warning(f"docker_volumes config is not a list: {volumes!r}")
+            logger.warning("docker_volumes config is not a list: %r", volumes)
             volumes = []
 
         # Fail fast if Docker is not available.
@@ -874,6 +906,12 @@ class DockerEnvironment(BaseEnvironment):
             resource_args.extend(["--memory", f"{memory}m"])
         if _cgroup_limits_available(image):
             resource_args.extend(["--pids-limit", _DEFAULT_PIDS_LIMIT])
+        # /dev/shm size (not cgroup-gated: --shm-size is a tmpfs mount option,
+        # no controller delegation required). Skip when the user already sets
+        # it via docker_extra_args, or opted out with an empty/"0" value.
+        shm = str(shm_size or "").strip()
+        if shm and shm != "0" and not _extra_args_set_shm_size(extra_args):
+            resource_args.extend(["--shm-size", shm])
         if disk > 0 and sys.platform != "darwin":
             if self._storage_opt_supported():
                 resource_args.extend(["--storage-opt", f"size={disk}m"])
@@ -895,7 +933,7 @@ class DockerEnvironment(BaseEnvironment):
         workspace_explicitly_mounted = False
         for vol in (volumes or []):
             if not isinstance(vol, str):
-                logger.warning(f"Docker volume entry is not a string: {vol!r}")
+                logger.warning("Docker volume entry is not a string: %r", vol)
                 continue
             vol = vol.strip()
             if not vol:
@@ -905,7 +943,7 @@ class DockerEnvironment(BaseEnvironment):
                 if ":/workspace" in vol:
                     workspace_explicitly_mounted = True
             else:
-                logger.warning(f"Docker volume '{vol}' missing colon, skipping")
+                logger.warning("Docker volume '%s' missing colon, skipping", vol)
 
         host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
         bind_host_cwd = (
@@ -915,7 +953,7 @@ class DockerEnvironment(BaseEnvironment):
             and not workspace_explicitly_mounted
         )
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
-            logger.debug(f"Skipping docker cwd mount: host_cwd is not a valid directory: {host_cwd}")
+            logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
 
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
@@ -944,7 +982,7 @@ class DockerEnvironment(BaseEnvironment):
             ])
 
         if bind_host_cwd:
-            logger.info(f"Mounting configured host cwd to /workspace: {host_cwd_abs}")
+            logger.info("Mounting configured host cwd to /workspace: %s", host_cwd_abs)
             volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
@@ -1260,7 +1298,7 @@ class DockerEnvironment(BaseEnvironment):
             run_exec=image_uses_s6_init,
         )
 
-        logger.info(f"Docker volume_args: {volume_args}")
+        logger.info("Docker volume_args: %s", volume_args)
         # User-supplied extra docker run flags (docker_extra_args in config.yaml).
         # Appended last so they can override defaults if needed.
         validated_extra = []
@@ -1298,7 +1336,7 @@ class DockerEnvironment(BaseEnvironment):
             + env_args
             + validated_extra
         )
-        logger.info(f"Docker run_args: {all_run_args}")
+        logger.info("Docker run_args: %s", all_run_args)
 
         # Start the container directly via `docker run -d`.
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
@@ -1427,7 +1465,7 @@ class DockerEnvironment(BaseEnvironment):
                 image,
                 "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
             ]
-            logger.debug(f"Starting container: {' '.join(run_cmd)}")
+            logger.debug("Starting container: %s", ' '.join(run_cmd))
             try:
                 result = subprocess.run(
                     run_cmd,
@@ -1456,11 +1494,9 @@ class DockerEnvironment(BaseEnvironment):
                 )
                 raise
             self._container_id = result.stdout.strip()
-            logger.info(f"Started container {container_name} ({self._container_id[:12]})")
+            logger.info("Started container %s (%s)", container_name, self._container_id[:12])
 
-        # Build the init-time env forwarding args (used only by init_session
-        # to inject host env vars into the snapshot; subsequent commands get
-        # them from the snapshot file).
+        # Build the init-time env forwarding args used to seed the snapshot.
         self._init_env_args = self._build_init_env_args()
 
         # Initialize session snapshot inside the container
@@ -1469,15 +1505,41 @@ class DockerEnvironment(BaseEnvironment):
     def _build_init_env_args(self) -> list[str]:
         """Build -e KEY=VALUE args for injecting host env vars into init_session.
 
-        These are used once during init_session() so that export -p captures
-        them into the snapshot.  Subsequent execute() calls don't need -e flags.
+        These are used during init_session() so that export -p captures the
+        configured environment and the current profile's forwarded values.
         """
+        passthrough_env, unset_names = self._resolve_passthrough_env()
         exec_env: dict[str, str] = dict(self._env)
+        exec_env.update(passthrough_env)
+        for name in unset_names:
+            exec_env.pop(name, None)
+        self._init_unset_passthrough_names = tuple(sorted(unset_names))
 
+        args = []
+        for key in sorted(exec_env):
+            args.extend(["-e", f"{key}={exec_env[key]}"])
+        return args
+
+    def _build_passthrough_env(self) -> dict[str, str]:
+        """Resolve forwarded host variables through the active profile scope."""
+        return self._resolve_passthrough_env()[0]
+
+    def _resolve_passthrough_env(self) -> tuple[dict[str, str], set[str]]:
+        """Return forwarded values and scoped names that must be unset."""
+        exec_env: dict[str, str] = {}
         explicit_forward_keys = set(self._forward_env)
         passthrough_keys: set[str] = set()
+        resolve_passthrough_value = None
+        multiplex_active = False
+        is_global_env = lambda _name: False  # noqa: E731
         try:
-            from tools.env_passthrough import get_all_passthrough
+            from tools.env_passthrough import (
+                get_all_passthrough,
+                resolve_passthrough_value,
+            )
+            from agent.secret_scope import _is_global_env, is_multiplex_active as _is_multiplex_active
+            is_global_env = _is_global_env
+            multiplex_active = _is_multiplex_active()
             passthrough_keys = set(get_all_passthrough())
         except Exception:
             pass
@@ -1491,17 +1553,28 @@ class DockerEnvironment(BaseEnvironment):
         }
         forward_keys = explicit_forward_keys | (_implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
+        unset_names: set[str] = set()
         for key in sorted(forward_keys):
-            value = os.getenv(key)
-            if not value:
-                value = hermes_env.get(key)
-            if value:
+            value = os.getenv(key) or hermes_env.get(key)
+            if resolve_passthrough_value is not None:
+                value = resolve_passthrough_value(key, value)
+            if value is not None:
                 exec_env[key] = value
+            elif multiplex_active and not is_global_env(key) and _ENV_VAR_NAME_RE.fullmatch(key):
+                unset_names.add(key)
+        return exec_env, unset_names
 
+    def _build_runtime_env_args_with_unsets(self) -> tuple[list[str], tuple[str, ...]]:
+        """Build runtime forwarding args plus names absent from the active scope."""
+        passthrough_env, unset_names = self._resolve_passthrough_env()
         args = []
-        for key in sorted(exec_env):
-            args.extend(["-e", f"{key}={exec_env[key]}"])
-        return args
+        for key in sorted(passthrough_env):
+            args.extend(["-e", f"{key}={passthrough_env[key]}"])
+        return args, tuple(sorted(unset_names))
+
+    def _build_runtime_env_args(self) -> list[str]:
+        """Build only dynamic forwarded values for a non-login command."""
+        return self._build_runtime_env_args_with_unsets()[0]
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
@@ -1512,10 +1585,21 @@ class DockerEnvironment(BaseEnvironment):
         if stdin_data is not None:
             cmd.append("-i")
 
-        # Only inject -e env args during init_session (login=True).
-        # Subsequent commands get env vars from the snapshot.
+        # Init seeds the snapshot. Profile-scoped passthrough values are also
+        # injected on every later command because this container can be shared
+        # by multiple routed profiles in one gateway process.
+        unset_names: tuple[str, ...] = ()
         if login:
             cmd.extend(self._init_env_args)
+        elif self._profile_scoped_passthrough:
+            runtime_args, unset_names = self._build_runtime_env_args_with_unsets()
+            cmd.extend(runtime_args)
+
+        if login:
+            unset_names = getattr(self, "_init_unset_passthrough_names", ())
+        if unset_names:
+            quoted_names = " ".join(shlex.quote(name) for name in unset_names)
+            cmd_string = f"unset {quoted_names} 2>/dev/null || true\n{cmd_string}"
 
         cmd.extend([self._container_id])
 

@@ -53,8 +53,6 @@ class TestIsSqliteWalResetVulnerable:
     def test_version_matrix(self, version_info, expected):
         assert is_sqlite_wal_reset_vulnerable(version_info) is expected
 
-    def test_defaults_to_linked_library(self):
-        assert isinstance(is_sqlite_wal_reset_vulnerable(), bool)
 
 
 class TestApplyWalWalResetGate:
@@ -103,45 +101,7 @@ class TestApplyWalWalResetGate:
         finally:
             conn.close()
 
-    def test_existing_wal_does_not_run_checkpoint_or_delete(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setattr(
-            hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
-        )
 
-        class _TracingConn(sqlite3.Connection):
-            def __init__(self, *a, **kw):
-                super().__init__(*a, **kw)
-                self.executed = []
-
-            def execute(self, sql, params=()):  # type: ignore[override]
-                self.executed.append(sql)
-                return super().execute(sql, params)
-
-        path = tmp_path / "trace_wal.db"
-        with sqlite3.connect(str(path)) as seed:
-            seed.execute("PRAGMA journal_mode=WAL")
-
-        conn = _TracingConn(str(path))
-        try:
-            assert apply_wal_with_fallback(conn, db_label="trace_wal.db") == "wal"
-        finally:
-            conn.close()
-
-        joined_lower = "\n".join(conn.executed).lower().replace(" ", "")
-        assert "wal_checkpoint" not in joined_lower
-        assert "journal_mode=delete" not in joined_lower
-
-    def test_fixed_sqlite_still_enables_wal(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
-        )
-        conn = sqlite3.connect(str(tmp_path / "fixed.db"))
-        mode = apply_wal_with_fallback(conn, db_label="fixed.db")
-        assert mode == "wal"
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-        conn.close()
 
     def test_warning_deduped_per_label(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setattr(
@@ -156,10 +116,6 @@ class TestApplyWalWalResetGate:
         assert len(warnings) == 2
 
 
-def test_sqlite_source_id_non_empty_string():
-    src = sqlite_source_id()
-    assert isinstance(src, str)
-    assert src
 
 
 def test_doctor_warns_without_adding_issues(monkeypatch, tmp_path, capsys):

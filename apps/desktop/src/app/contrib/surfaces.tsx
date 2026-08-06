@@ -9,7 +9,7 @@
 
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useMemo } from 'react'
-import { Navigate, Route, Routes, useParams } from 'react-router-dom'
+import { Navigate, Route, Routes, useParams } from 'react-router'
 
 import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
@@ -56,7 +56,7 @@ export const SidebarSurface = memo(function SidebarSurface({
 
 export const TerminalSurface = memo(function TerminalSurface() {
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-(--ui-editor-surface-background)">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-(--ui-terminal-surface-background)">
       <TerminalPaneChrome />
     </div>
   )

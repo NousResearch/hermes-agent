@@ -2415,6 +2415,29 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Loop diagnostics: record each worker action as a graph node and
+        # causal/data/loop/retry dependency edges for failure diagnosis.
+        # When disabled (default) the plugin registers zero hooks and the
+        # recorder adds no per-tool overhead.  See
+        # docs/loop-diagnostics-design.md and
+        # hermes_cli/observability/schemas/hermes.loop_diagnostics.v1.schema.json.
+        "loop_diagnostics": {
+            # Master switch. False = the loop-diagnostics plugin registers
+            # no hooks and writes nothing.
+            "enabled": False,
+            # When True (and ``enabled``), a terminal attempt failure
+            # (crashed / timed_out / spawn_failed / blocked with an open
+            # run / gave_up) runs the diagnosis engine on the run's trace
+            # and attaches the report as a ``diagnosis`` task event +
+            # ``<run_id>.diagnosis.json``. When False, failure reporting is
+            # byte-identical to today (no event, no diagnosis file).
+            "diagnose_on_failure": True,
+            # Per-run cap on trace events (header/footer bypass the cap).
+            # Bounds memory + disk growth on long-running workers.
+            "max_events_per_run": 10000,
+            # How many run trace files to keep per task after pruning.
+            "retain_runs": 20,
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

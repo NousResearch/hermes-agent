@@ -1,0 +1,553 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hermes-agent:schema:loop-diagnostics:v1",
+  "title": "Hermes Loop Diagnostics v1",
+  "description": "Machine-readable contract for the loop-diagnostics subsystem: action-graph trace events emitted by the graph recorder and diagnosis results produced by the diagnosis engine. Bounded to failure diagnosis of Kanban worker runs; this is NOT a general observability schema. See docs/loop-diagnostics-design.md.",
+  "type": "object",
+  "description": "Union root: every trace record and every diagnosis result is exactly one of the six kinds below. Each kind declares its own additionalProperties:false surface. An unknown kind fails all branches and is rejected by validation.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/RunHeader"
+    },
+    {
+      "$ref": "#/$defs/RunFooter"
+    },
+    {
+      "$ref": "#/$defs/ActionStart"
+    },
+    {
+      "$ref": "#/$defs/ActionEnd"
+    },
+    {
+      "$ref": "#/$defs/DependencyEdge"
+    },
+    {
+      "$ref": "#/$defs/DiagnosisResult"
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "ts": {
+      "type": "integer",
+      "description": "Unix epoch seconds (UTC)."
+    },
+    "ActionStatus": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "error",
+        "blocked",
+        "cancelled",
+        "unknown"
+      ],
+      "description": "Observer-grade lifecycle outcome for a single action. Mirrors docs/observability/README.md status vocabulary: ok | error | blocked | cancelled, plus unknown for incomplete traces."
+    },
+    "ActionKind": {
+      "type": "string",
+      "enum": [
+        "tool_call",
+        "llm_call",
+        "loop_start",
+        "loop_iteration",
+        "checkpoint",
+        "subagent",
+        "other"
+      ],
+      "description": "Broad classifier for an action node. MVP records tool_call and loop_iteration; the rest are reserved extension kinds."
+    },
+    "InterventionKind": {
+      "type": "string",
+      "enum": [
+        "retry_from_checkpoint",
+        "alternative_tool",
+        "trajectory_repair",
+        "escalate",
+        "none"
+      ],
+      "description": "Targeted intervention categories from the AgentTether paper, mapped to actionable recommendations. The MVP RECOMMENDS interventions; it never executes them."
+    },
+    "FailureCategory": {
+      "type": "string",
+      "enum": [
+        "action_error",
+        "input_invalid",
+        "loop_repeated",
+        "retry_exhausted",
+        "timeout_propagation",
+        "cancellation_propagation",
+        "malformed_trace",
+        "unknown"
+      ],
+      "description": "Canonical failure taxonomy the diagnosis engine can return. See docs/loop-diagnostics-design.md §Failure categories."
+    },
+    "DiagnosisStatus": {
+      "type": "string",
+      "enum": [
+        "root_cause_found",
+        "candidates",
+        "unknown",
+        "malformed_trace"
+      ],
+      "description": "Engine-level confidence envelope. root_cause_found = single deterministic root cause; candidates = ranked set; unknown = no evidence; malformed_trace = trace unreadable."
+    },
+    "RunHeader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "task_id",
+        "run_id",
+        "attempt",
+        "ts"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "hermes.loop_diagnostics.v1"
+        },
+        "kind": {
+          "const": "run_header"
+        },
+        "task_id": {
+          "$ref": "#/$defs/task_id"
+        },
+        "run_id": {
+          "type": "integer",
+          "description": "task_runs.id for this attempt."
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-based attempt ordinal for the task across all runs."
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goal_mode": {
+          "type": "boolean",
+          "description": "True when the worker ran under HERMES_KANBAN_GOAL_MODE."
+        },
+        "ts": {
+          "$ref": "#/$defs/ts"
+        }
+      }
+    },
+    "RunFooter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "task_id",
+        "run_id",
+        "ts",
+        "outcome"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "hermes.loop_diagnostics.v1"
+        },
+        "kind": {
+          "const": "run_footer"
+        },
+        "task_id": {
+          "$ref": "#/$defs/task_id"
+        },
+        "run_id": {
+          "type": "integer"
+        },
+        "ts": {
+          "$ref": "#/$defs/ts"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "blocked",
+            "crashed",
+            "timed_out",
+            "spawn_failed",
+            "gave_up",
+            "reclaimed",
+            "rate_limited",
+            "review_requested",
+            "review_rejected"
+          ],
+          "description": "Mirrors task_runs.outcome vocabulary in hermes_cli/kanban_db.py."
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Redacted one-line run error when present."
+        },
+        "event_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of trace events written for this run (excluding header/footer)."
+        }
+      }
+    },
+    "ActionStart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "task_id",
+        "run_id",
+        "action_id",
+        "ts",
+        "action_kind"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "hermes.loop_diagnostics.v1"
+        },
+        "kind": {
+          "const": "action_start"
+        },
+        "task_id": {
+          "$ref": "#/$defs/task_id"
+        },
+        "run_id": {
+          "type": "integer"
+        },
+        "action_id": {
+          "type": "string",
+          "description": "Globally stable per-action id. Format: '<run_id>:<seq>' where seq is a monotonic counter within the run. Never reused across runs."
+        },
+        "parent_action_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "action_id of the action that spawned this one (subagent, nested loop). Null for top-level actions."
+        },
+        "loop_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Stable id of the loop instance this action belongs to, e.g. 'retry', 'goal', 'search', or '<parent_action_id>:loop'. Null for non-loop actions. Two actions belong to the same loop instance iff they share loop_id AND iteration differs."
+        },
+        "iteration": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "0-based ordinal within the loop_id instance. Null for non-loop actions. Repeated loop actions MUST NOT conflate iterations: each iteration of the same loop_id increments this."
+        },
+        "ts": {
+          "$ref": "#/$defs/ts"
+        },
+        "action_kind": {
+          "$ref": "#/$defs/ActionKind"
+        },
+        "tool_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Tool name when action_kind == tool_call, e.g. 'terminal', 'web_search', 'kanban_comment'. Null otherwise."
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Redacted, truncated human-readable summary of what the action is doing. NEVER raw tool args, prompts, file contents, or results. Cap: 512 chars at write time."
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Model id when action_kind == llm_call."
+        },
+        "turn_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Observer turn_id correlation when available (hermes.observer.v1)."
+        },
+        "api_request_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Opaque provider-attempt id when available. Do not parse."
+        },
+        "tool_call_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Provider-supplied tool call id when available."
+        }
+      }
+    },
+    "ActionEnd": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "task_id",
+        "run_id",
+        "action_id",
+        "ts",
+        "status"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "hermes.loop_diagnostics.v1"
+        },
+        "kind": {
+          "const": "action_end"
+        },
+        "task_id": {
+          "$ref": "#/$defs/task_id"
+        },
+        "run_id": {
+          "type": "integer"
+        },
+        "action_id": {
+          "type": "string"
+        },
+        "ts": {
+          "$ref": "#/$defs/ts"
+        },
+        "status": {
+          "$ref": "#/$defs/ActionStatus"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Redacted, truncated result summary. NEVER raw tool results, file contents, or prompts. Cap: 512 chars at write time."
+        },
+        "error_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Exception class or error code, e.g. 'ToolExecutionError', 'ExitCodeError', 'TimeoutError'. Cap: 128 chars."
+        },
+        "error_message": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Redacted, truncated error message. Cap: 1024 chars at write time."
+        },
+        "result_hash": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "SHA-256 of the redacted result text (hex). Lets the engine detect repeated identical failures WITHOUT storing the result body. Redacted inputs hash deterministically so equivalent traces hash identically."
+        }
+      }
+    },
+    "DependencyEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "task_id",
+        "run_id",
+        "from_action_id",
+        "to_action_id",
+        "edge_kind"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "hermes.loop_diagnostics.v1"
+        },
+        "kind": {
+          "const": "edge"
+        },
+        "task_id": {
+          "$ref": "#/$defs/task_id"
+        },
+        "run_id": {
+          "type": "integer"
+        },
+        "from_action_id": {
+          "type": "string",
+          "description": "Producer action. For data edges, the action whose output feeds to_action. For causal edges, the action that caused to_action to run."
+        },
+        "to_action_id": {
+          "type": "string",
+          "description": "Consumer action."
+        },
+        "edge_kind": {
+          "type": "string",
+          "enum": [
+            "data",
+            "causal",
+            "loop",
+            "retry"
+          ],
+          "description": "data: from's output is consumed by to (missing/invalid from-input propagation). causal: to ran because from completed. loop: to is the next iteration of the same loop as from. retry: to is a retry of from after a failure."
+        },
+        "ts": {
+          "$ref": "#/$defs/ts"
+        }
+      }
+    },
+    "Intervention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "action_id",
+        "rationale"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/InterventionKind"
+        },
+        "action_id": {
+          "type": "string",
+          "description": "The action the intervention targets (root cause or safe checkpoint)."
+        },
+        "rationale": {
+          "type": "string",
+          "description": "One-sentence, deterministic explanation of why this intervention applies. Cap: 512 chars."
+        },
+        "payload": {
+          "type": "object",
+          "description": "Optional machine-readable payload, e.g. {\"checkpoint_action_id\": \"...\"} for retry_from_checkpoint or {\"tool_name\": \"...\"} for alternative_tool. Contents are contract-specific and additive."
+        }
+      }
+    },
+    "PropagationPath": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Ordered action_id chain from the failed action back to the root cause, starting at the failed action and ending at the root cause action."
+    },
+    "DiagnosisResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "diagnosis_version",
+        "task_id",
+        "run_id",
+        "status",
+        "category",
+        "explanation",
+        "interventions"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "hermes.loop_diagnostics.v1"
+        },
+        "kind": {
+          "const": "diagnosis_result"
+        },
+        "diagnosis_version": {
+          "const": "hermes.loop_diagnostics.diagnosis.v1"
+        },
+        "task_id": {
+          "$ref": "#/$defs/task_id"
+        },
+        "run_id": {
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/DiagnosisStatus"
+        },
+        "root_cause_action_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Deterministic earliest actionable failure(s). Empty when status is unknown or malformed_trace."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Engine confidence. root_cause_found with a single unambiguous predecessor chain scores >= 0.8; candidates are ranked 0.1-0.7; unknown/malformed_trace score 0.0."
+        },
+        "category": {
+          "$ref": "#/$defs/FailureCategory"
+        },
+        "propagation_path": {
+          "$ref": "#/$defs/PropagationPath"
+        },
+        "explanation": {
+          "type": "string",
+          "description": "Concise deterministic explanation: what failed, why this is the root cause, and what evidence supports it. Cap: 2048 chars."
+        },
+        "interventions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Intervention"
+          },
+          "description": "Ranked recommendations. At least one entry unless status is unknown/malformed_trace, in which case this may be empty."
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "failed_action_id": {
+              "type": "string",
+              "description": "The action the diagnosis was requested for."
+            },
+            "trace_event_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "missing_action_ends": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "action_ids with action_start but no action_end — evidence of cancellation or process death."
+            },
+            "malformed_lines": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Line numbers of trace events that failed schema validation and were skipped."
+            },
+            "duplicate_hashes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "result_hash values seen on 2+ failed actions in the same loop — evidence for loop_repeated."
+            }
+          }
+        }
+      }
+    }
+  }
+}

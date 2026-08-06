@@ -1,0 +1,11 @@
+name: loop-diagnostics
+version: "0.1.0"
+description: "Loop-diagnostics action dependency graph recorder for Kanban workers. Captures worker actions as graph nodes with causal/data/loop/retry dependency edges for failure diagnosis. Opt-in via `kanban.loop_diagnostics.enabled=true` in config; when disabled the plugin registers zero hooks and adds zero per-tool overhead."
+author: "NousResearch"
+hooks:
+  - pre_tool_call
+  - post_tool_call
+  - subagent_start
+  - subagent_stop
+  - on_session_end
+  - on_session_finalize

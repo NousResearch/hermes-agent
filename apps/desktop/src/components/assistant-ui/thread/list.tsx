@@ -22,11 +22,18 @@ import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
+  getThreadScrollPosition,
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
   publishThreadAtBottom,
-  resetPublishedThreadScroll
+  resetPublishedThreadScroll,
+  planThreadScrollRestore,
+  saveThreadScrollPosition,
+  THREAD_SCROLL_BOTTOM,
+  type ThreadScrollState,
+  threadScrollStateFromMetrics,
+  threadScrollTargetTop
 } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
 
@@ -496,12 +503,20 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   // Record where the view should land once a prepend has grown the content,
   // measured from the BOTTOM so the added height doesn't invalidate it. Only a
-  // settled load has an offset the user chose; mid-load the answer is simply
-  // the bottom.
+  // settled load has an offset the user chose; while the settle loop is still
+  // running, scrollTop is a way-point of a load in progress (or a restored
+  // offset the loop is applying) — never anchor to it. Recording 0 here would
+  // make the restore effect clobber a restored offset with the bottom once the
+  // backfill lands; the settle loop re-writes its own target every frame, so
+  // skipping is safe.
   const anchorBeforePrepend = useCallback(() => {
     const el = scrollRef.current
 
-    restoreFromBottomRef.current = el && loadSettledRef.current ? el.scrollHeight - el.scrollTop : 0
+    if (!el || !loadSettledRef.current) {
+      return
+    }
+
+    restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
   }, [scrollRef])
 
   // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
@@ -653,12 +668,68 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
   })
 
-  // Reset the cap and pin to bottom on mount + every session switch (messages
-  // swap in place on a long-lived runtime, so sessionKey is the only signal).
+  // Live scroll state of the CURRENT session, updated on every scroll event
+  // AND on content height changes (ResizeObserver). The RO leg is what keeps
+  // the recorded distance-from-bottom honest: async relayout (images,
+  // highlight, the budget backfill) changes scrollHeight WITHOUT a scroll
+  // event, so a scroll-only cache records a stale offset (the gap #70478's
+  // review threads flagged). Both legs write stateFromMetrics(el).
+  const liveScrollStateRef = useRef<ThreadScrollState>(THREAD_SCROLL_BOTTOM)
+  // Key the restore loop has already applied to the current transcript — the
+  // record gate: an instance records only the state it actually showed under
+  // its own key (an empty-transcript instance still holds the PREVIOUS
+  // session's live state and must not file it under the new key).
+  const restoredContentKeyRef = useRef<string | null | undefined>(undefined)
+
+  // eslint-disable-next-line no-restricted-syntax -- DOM-event cache (scroll/ResizeObserver callbacks), not an atom mirror
+  useEffect(() => {
+    const el = scrollRef.current
+    const content = contentRef.current
+
+    if (!el || !content) {
+      return
+    }
+
+    const update = () => {
+      liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+    }
+
+    el.addEventListener('scroll', update, { passive: true })
+    const observer = new ResizeObserver(update)
+    observer.observe(content)
+
+    return () => {
+      el.removeEventListener('scroll', update)
+      observer.disconnect()
+    }
+  }, [contentRef, scrollRef])
+
+  // Persist the live position on app close, so a reading position survives a
+  // quit without a session switch (the switch cleanup below only runs on
+  // committed switches). Guarded by the same restored-content gate AND the
+  // settled gate — a close mid-settle must not persist transient clamped
+  // metrics.
+  useEffect(() => {
+    const flush = () => {
+      if (sessionKey && loadSettledRef.current && restoredContentKeyRef.current === sessionKey) {
+        saveThreadScrollPosition(sessionKey, liveScrollStateRef.current)
+      }
+    }
+
+    window.addEventListener('beforeunload', flush)
+
+    return () => window.removeEventListener('beforeunload', flush)
+  }, [sessionKey])
+
+  // Reset the cap and restore the remembered scroll state on mount + every
+  // session switch (messages swap in place on a long-lived runtime, so
+  // sessionKey is the only signal). Sessions the user left mid-read reapply
+  // their exact distance-from-bottom; sticky-bottom sessions pin to the bottom.
   // The swap is multi-step and lays out over many frames; letting the library
-  // follow re-pins every frame to a moving target — visible as ~10 scroll jumps.
-  // Instead: quiet it, glue to the true bottom until the height holds steady,
-  // then hand back locked. Live streaming afterward uses the normal resize follow.
+  // follow re-pins every frame to a moving target — visible as ~10 scroll
+  // jumps. Instead: quiet it, glue to the remembered target until the height
+  // holds steady, then hand back (locked at the bottom, escaped at an offset).
+  // Live streaming afterward uses the normal resize follow.
   //
   // `hasGroups` joins sessionKey as a dep because a COLD load changes the key
   // while the transcript is still empty and publishes messages hundreds of ms
@@ -668,7 +739,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // down once use-stick-to-bottom's ResizeObserver noticed, a full-viewport
   // lurch on every cold load. The empty→non-empty flip re-arms for the
   // transcript that actually arrived; being a boolean, it cannot re-fire on a
-  // streaming append.
+  // streaming append. The restore must re-run at first content too — that is
+  // what `restoredContentKeyRef` gates: one restore per key AFTER its
+  // transcript exists. The effect cleanup is the record point: it runs with
+  // the OLD session's closure, synchronously in the commit that swaps
+  // transcripts.
   useLayoutEffect(() => {
     const el = scrollRef.current
 
@@ -678,19 +753,57 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     const sessionSwitched = settleKeyRef.current !== sessionKey
 
-    if (sessionSwitched) {
-      settledNonEmptyRef.current = false
+    const plan = planThreadScrollRestore(restoredContentKeyRef.current, sessionKey, hasGroups, loadSettledRef.current)
+
+    restoredContentKeyRef.current = plan.gate
+
+    // Record only states that were actually shown under this key: the gate
+    // equals this closure's sessionKey exactly when this instance restored
+    // content (cleanups run before the next instance's effect, so a later
+    // cold-switch instance clearing the ref can't spoof it). An
+    // empty-transcript instance still holds the PREVIOUS session's live state,
+    // which must not be filed under this key. And only SETTLED states: mid-
+    // settle the ref holds transient clamped metrics (the loop writing targets
+    // into a still-arriving transcript), and persisting those would corrupt
+    // the session's real reading position.
+    const record = () => {
+      if (sessionKey && loadSettledRef.current && restoredContentKeyRef.current === sessionKey) {
+        saveThreadScrollPosition(sessionKey, liveScrollStateRef.current)
+      }
     }
 
-    // Same-session refresh (transcript briefly cleared and repopulated) must
-    // keep the reader's position. Run before stopScroll / scrollTop reset so
-    // a refresh neither yanks the view nor clears the settled flag.
-    if (!shouldRePinOnTranscriptReload({ sessionSwitched, settledNonEmpty: settledNonEmptyRef.current })) {
-      return
+    if (plan.cold) {
+      // Cold switch: transcript not landed yet (or emptied for a reload). The
+      // DOM collapse clamps scrollTop to garbage, so forget the restore gate —
+      // when content (re)arrives, reapply from memory. The previous session's
+      // real state was already recorded by its own cleanup just before this.
+      // An anchor captured for the OUTGOING transcript must not be applied to
+      // this one — a switch owns the position outright. The empty→non-empty
+      // re-arm is the SAME load, whose in-flight anchor is still correct.
+      loadSettledRef.current = false
+
+      if (settleKeyRef.current !== sessionKey) {
+        settleKeyRef.current = sessionKey
+        restoreFromBottomRef.current = null
+      }
+
+      return record
     }
+
+    if (!plan.restore) {
+      // Same key, already settled: the restore is done, keep recording only.
+      return record
+    }
+
+    const remembered = sessionKey ? getThreadScrollPosition(sessionKey) : undefined
+    const target = remembered ?? THREAD_SCROLL_BOTTOM
+
+    // The previous session's parting state must not leak into this one: from
+    // here every scroll/RO event describes the restored session.
+    liveScrollStateRef.current = target
 
     stopScroll()
-    el.scrollTop = el.scrollHeight
+    el.scrollTop = threadScrollTargetTop(target, el)
     loadSettledRef.current = false
 
     // An anchor captured for the OUTGOING transcript must not be applied to
@@ -714,17 +827,36 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
       const height = node.scrollHeight
 
-      stableFrames = height === lastHeight ? stableFrames + 1 : 0
+      // An offset deeper than the current scroll range means content is still
+      // arriving (the budget backfill prepends older turns) — a quiet frame in
+      // that state is not stability, keep waiting for the height.
+      const clamped = target.kind === 'offset' && target.fromBottom > Math.max(0, height - node.clientHeight)
+
+      stableFrames = height === lastHeight && !clamped ? stableFrames + 1 : 0
       lastHeight = height
-      node.scrollTop = height
+      node.scrollTop = threadScrollTargetTop(target, node)
 
       // Most session switches are synchronous and stabilize within 2 frames;
       // the old 90-frame ceiling was for slow async image loads. Cap at 15
       // frames to minimize the settle-loop racing markdown paint on every switch.
       if (stableFrames >= 2 || ++frame > 15) {
-        void scrollToBottom('instant')
-        settledNonEmptyRef.current = hasGroups
-        loadSettledRef.current = true
+        if (target.kind === 'bottom') {
+          // Hand back to use-stick-to-bottom locked, so late async growth
+          // (images, highlight) keeps following the bottom.
+          void scrollToBottom('instant')
+          loadSettledRef.current = true
+        } else if (clamped) {
+          // Content hasn't finished arriving (the backfill transition is still
+          // rendering). Park the offset in the anchor so the restore effect
+          // re-applies it the moment the taller tree lands — otherwise the
+          // view is stranded at the clamped position. Keep loadSettled false:
+          // anchorBeforePrepend skips while unsettled, so the parked offset
+          // can't be overwritten by a mid-load anchor measurement. The restore
+          // effect flips settled once it consumes the parked value.
+          restoreFromBottomRef.current = target.fromBottom
+        } else {
+          loadSettledRef.current = true
+        }
 
         return
       }
@@ -734,7 +866,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     let rafId = requestAnimationFrame(settle)
 
-    return () => cancelAnimationFrame(rafId)
+    return () => {
+      cancelAnimationFrame(rafId)
+      record()
+    }
   }, [hasGroups, scrollRef, scrollToBottom, sessionKey, stopScroll])
 
   // Prepend an older page while preserving the on-screen position. The user is
@@ -765,6 +900,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     if (el && restoreFromBottomRef.current != null) {
       el.scrollTop = el.scrollHeight - restoreFromBottomRef.current
       restoreFromBottomRef.current = null
+      // Consuming a parked offset (clamped-exit) means the view just landed at
+      // its real reading position — the load is settled from here on.
+      loadSettledRef.current = true
     }
     // renderBudget covers DOM pages; groups.length covers store-window expands.
   }, [scrollRef, renderBudget, groups.length])

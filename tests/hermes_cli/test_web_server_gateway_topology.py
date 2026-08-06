@@ -83,14 +83,15 @@ class TestCollectProfileGatewayTopology:
         # Independent per-profile gateways (gateway_mode == "multiple") each
         # write their own gateway_state.json; the collector surfaces every
         # LIVE profile's raw platform map for the /api/status merge (OOF-3).
-        # Entries must be fresh — written by the profile's current process.
+        # Entries must carry the current live process's writer identity.
         homes = [("default", tmp_path / "d"), ("coder", tmp_path / "c")]
         runtimes = {
             "default": {
                 "platforms": {
                     "telegram": {
                         "state": "connected",
-                        "updated_at": "2026-08-05T10:00:05+00:00",
+                        "writer_pid": 100,
+                        "writer_start_time": 111,
                     }
                 }
             },
@@ -99,7 +100,8 @@ class TestCollectProfileGatewayTopology:
                     "discord": {
                         "state": "fatal",
                         "error_code": "duplicate_credential",
-                        "updated_at": "2026-08-05T10:00:05+00:00",
+                        "writer_pid": 200,
+                        "writer_start_time": 222,
                     }
                 }
             },
@@ -107,12 +109,11 @@ class TestCollectProfileGatewayTopology:
         _patch_topology(
             monkeypatch, homes, running={"default", "coder"}, runtimes=runtimes
         )
-        # Both gateways' live processes started before the entries were
-        # written (epoch for 2026-08-05T10:00:00Z).
+        identities = {tmp_path / "d": (100, 111), tmp_path / "c": (200, 222)}
         monkeypatch.setattr(
             web_server,
-            "_profile_gateway_started_at",
-            lambda home, runtime: 1785924000.0,
+            "_profile_gateway_writer_identity",
+            lambda home, runtime: identities.get(home),
         )
         topo = _collect_profile_gateway_topology()
         assert topo["gateway_mode"] == "multiple"
@@ -120,14 +121,16 @@ class TestCollectProfileGatewayTopology:
             "default": {
                 "telegram": {
                     "state": "connected",
-                    "updated_at": "2026-08-05T10:00:05+00:00",
+                    "writer_pid": 100,
+                    "writer_start_time": 111,
                 }
             },
             "coder": {
                 "discord": {
                     "state": "fatal",
                     "error_code": "duplicate_credential",
-                    "updated_at": "2026-08-05T10:00:05+00:00",
+                    "writer_pid": 200,
+                    "writer_start_time": 222,
                 }
             },
         }
@@ -135,28 +138,40 @@ class TestCollectProfileGatewayTopology:
     def test_stale_platform_entries_are_not_aggregated(self, tmp_path, monkeypatch):
         # Gateway startup preserves plain platform entries across restarts;
         # if the operator removed/disabled the platform and restarted, its
-        # old fatal entry must not keep degrading fleet health.  Entries
-        # written before the live process started — or with no parseable
-        # updated_at — are excluded.
+        # old fatal entry must not keep degrading fleet health.  Ownership
+        # is exact (pid, start_time) equality with the live process — an
+        # entry written by the PREVIOUS process moments before a fast
+        # restart, a legacy entry with no writer identity, and a recycled
+        # PID with a different start-time fingerprint are all excluded.
         homes = [("default", tmp_path / "d"), ("coder", tmp_path / "c")]
         runtimes = {
             "coder": {
                 "platforms": {
-                    # Written by the PRIOR process (before restart).
+                    # Near-boundary: written by the PRIOR process (pid 199)
+                    # immediately before a fast restart. A wall-clock
+                    # freshness window would admit this; identity must not.
                     "telegram": {
                         "state": "fatal",
                         "error_code": "duplicate_credential",
-                        "updated_at": "2026-08-05T09:00:00+00:00",
+                        "updated_at": "2026-08-05T10:00:00.900000+00:00",
+                        "writer_pid": 199,
+                        "writer_start_time": 110,
                     },
-                    # No timestamp at all — fail closed.
+                    # Legacy entry, no writer identity — fail closed.
                     "discord": {"state": "fatal"},
-                    # Garbage timestamp — fail closed.
-                    "slack": {"state": "fatal", "updated_at": "not-a-time"},
+                    # Same PID recycled, different start-time fingerprint —
+                    # a different process, not the live writer.
+                    "slack": {
+                        "state": "fatal",
+                        "writer_pid": 200,
+                        "writer_start_time": 110,
+                    },
                     # Written by the current process — kept.
                     "signal": {
                         "state": "fatal",
                         "error_code": "duplicate_credential",
-                        "updated_at": "2026-08-05T10:00:05+00:00",
+                        "writer_pid": 200,
+                        "writer_start_time": 222,
                     },
                 }
             },
@@ -166,8 +181,8 @@ class TestCollectProfileGatewayTopology:
         )
         monkeypatch.setattr(
             web_server,
-            "_profile_gateway_started_at",
-            lambda home, runtime: 1785924000.0,  # 2026-08-05T10:00:00Z
+            "_profile_gateway_writer_identity",
+            lambda home, runtime: (200, 222),
         )
         topo = _collect_profile_gateway_topology()
         assert set(topo["profile_platforms"].get("coder", {})) == {"signal"}
@@ -181,14 +196,17 @@ class TestCollectProfileGatewayTopology:
                 "platforms": {
                     "telegram": {
                         "state": "fatal",
-                        "updated_at": "2026-08-05T10:00:05+00:00",
+                        "writer_pid": 200,
+                        "writer_start_time": 222,
                     }
                 }
             },
         }
         _patch_topology(monkeypatch, homes, running={"coder"}, runtimes=runtimes)
         monkeypatch.setattr(
-            web_server, "_profile_gateway_started_at", lambda home, runtime: None
+            web_server,
+            "_profile_gateway_writer_identity",
+            lambda home, runtime: None,
         )
         topo = _collect_profile_gateway_topology()
         assert topo["profile_platforms"] == {}
@@ -384,7 +402,13 @@ class TestStatusEndpointTopology:
             "read_runtime_status",
             lambda path=None: {
                 "gateway_state": "running",
-                "platforms": {"telegram": {"state": "connected"}},
+                "platforms": {
+                    "telegram": {
+                        "state": "connected",
+                        "writer_pid": 123,
+                        "writer_start_time": 456,
+                    }
+                },
             },
         )
         monkeypatch.setattr(
@@ -410,6 +434,8 @@ class TestStatusEndpointTopology:
                         "telegram": {
                             "state": "fatal",
                             "error_code": "duplicate_credential",
+                            "writer_pid": 789,
+                            "writer_start_time": 1011,
                         },
                         "bad key": {"state": "fatal"},
                     },
@@ -432,6 +458,12 @@ class TestStatusEndpointTopology:
         )
         # Keys that don't survive the grammar are dropped, not projected.
         assert not any("bad key" in key for key in platforms)
+        # Writer-identity stamps (process recon, same class as the auth-gated
+        # gateway_pid) never project onto the endpoint — neither on the active
+        # profile's own entries nor on merged cross-profile entries.
+        for entry in platforms.values():
+            assert "writer_pid" not in entry
+            assert "writer_start_time" not in entry
         # The platforms component rollup counts the merged failure.
         assert data["components"]["platforms"]["status"] == "degraded"
 

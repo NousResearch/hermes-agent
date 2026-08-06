@@ -3143,42 +3143,39 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> Dict
     return ports
 
 
-# Small grace for comparing a platform entry's wall-clock ``updated_at``
-# against the gateway process's psutil-derived create time (both come from
-# the host clock, but coarse rounding can skew them by a moment).
-_PROFILE_PLATFORM_FRESHNESS_SLACK_S = 2.0
-
-
-def _profile_gateway_started_at(
+def _profile_gateway_writer_identity(
     profile_home: Path, runtime: Optional[dict]
-) -> Optional[float]:
-    """Wall-clock create time of the profile's LIVE gateway process, or None.
+) -> Optional[tuple]:
+    """``(pid, start_time)`` identity of the profile's LIVE gateway, or None.
 
-    The record's own ``start_time`` field is a PID-reuse fingerprint, not a
-    timestamp (clock ticks since boot on Linux), so it cannot anchor a
-    freshness comparison.  Instead reuse the validated-liveness helper —
-    which checks the recorded PID against the live process table, the
-    fingerprint, and the profile's home — and ask psutil for that process's
-    epoch create time.  None when the record doesn't belong to a live
-    gateway (then nothing in it is current by definition).
+    Reuses the validated-liveness helper — recorded PID checked against the
+    live process table, the start-time PID-reuse fingerprint, and the
+    profile's home — then reads the live process's fingerprint via the same
+    ``_get_process_start_time`` that stamped it, so equality is exact (no
+    unit or clock-source mismatch).  None when the record doesn't belong to
+    a live gateway; nothing in it is current by definition then.
     """
     try:
-        from gateway.status import get_runtime_status_running_pid
+        from gateway.status import (
+            _get_process_start_time,
+            get_runtime_status_running_pid,
+        )
 
         pid = get_runtime_status_running_pid(runtime, expected_home=profile_home)
         if pid is None:
             return None
-        import psutil  # type: ignore
-
-        return float(psutil.Process(pid).create_time())
+        start_time = _get_process_start_time(pid)
+        if start_time is None:
+            return None
+        return (pid, start_time)
     except Exception:
         return None
 
 
-def _fresh_profile_platforms(
-    started_at: Optional[float], platforms: dict
+def _owned_profile_platforms(
+    writer_identity: Optional[tuple], platforms: dict
 ) -> dict:
-    """Keep only platform entries written by the profile's CURRENT process.
+    """Keep only platform entries the profile's CURRENT process wrote.
 
     Gateway startup deliberately preserves plain platform entries in
     ``gateway_state.json`` across restarts (the dashboard keeps showing
@@ -3186,34 +3183,32 @@ def _fresh_profile_platforms(
     endpoint compensates by filtering them against the current
     configuration.  The cross-profile aggregation has no equivalent config
     context (a profile's platform set depends on tokens in that profile's
-    ``.env`` behind its secret scope), so it uses freshness instead: an
-    entry is aggregatable only when its ``updated_at`` is at/after the live
-    gateway process's create time — i.e. the current process wrote it.  A
-    fatal entry left behind by a platform the operator has since
-    disabled/removed therefore stops degrading fleet health as soon as that
-    profile's gateway restarts (a config change requires that restart to
-    take effect anyway).  Fail closed: entries without a parseable
-    ``updated_at``, or records with no live process, are excluded —
-    aggregation is a supplement, and a false "degraded forever" is the
-    worse failure mode.
+    ``.env`` behind its secret scope), so it demands strict process
+    ownership instead: ``write_runtime_status`` stamps every platform write
+    with the writer's ``(pid, start_time)`` identity, and an entry is
+    aggregatable only when that identity equals the profile's live gateway
+    process — exact match, no clock heuristics, so an entry written moments
+    before a fast restart can never masquerade as current.  A fatal entry
+    left behind by a platform the operator has since disabled/removed thus
+    stops degrading fleet health as soon as that profile's gateway restarts
+    (a config change requires that restart to take effect anyway).  Fail
+    closed: entries without a writer identity (legacy records) or records
+    with no live process are excluded — aggregation is a supplement, and a
+    false "degraded forever" is the worse failure mode.
     """
-    if started_at is None:
+    if writer_identity is None:
         return {}
-    cutoff = float(started_at) - _PROFILE_PLATFORM_FRESHNESS_SLACK_S
-    fresh: Dict[str, dict] = {}
+    live_pid, live_start = writer_identity
+    owned: Dict[str, dict] = {}
     for key, value in platforms.items():
         if not isinstance(value, dict):
             continue
-        updated_at = value.get("updated_at")
-        if not isinstance(updated_at, str):
-            continue
-        try:
-            written = datetime.fromisoformat(updated_at).timestamp()
-        except (ValueError, TypeError):
-            continue
-        if written >= cutoff:
-            fresh[key] = value
-    return fresh
+        if (
+            value.get("writer_pid") == live_pid
+            and value.get("writer_start_time") == live_start
+        ):
+            owned[key] = value
+    return owned
 
 
 def _collect_profile_gateway_topology() -> Dict[str, Any]:
@@ -3232,9 +3227,9 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
       live gateway, ``"multiple"`` for independent per-profile gateways,
       ``"none"`` when nothing is running.
     * ``profile_platforms`` — ``{profile: platforms}`` runtime platform maps
-      for each LIVE gateway, freshness-filtered to entries written by that
+      for each LIVE gateway, ownership-filtered to entries stamped by that
       profile's current process (stale preserved entries for since-removed
-      platforms are excluded — see ``_fresh_profile_platforms``).  Internal
+      platforms are excluded — see ``_owned_profile_platforms``).  Internal
       aggregation input for ``/api/status`` (independent per-profile gateways
       write failures to their own ``gateway_state.json``, which the
       unparameterized endpoint would otherwise never see).  Never exposed
@@ -3272,16 +3267,17 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
             multiplex = True
         plats = (runtime or {}).get("platforms")
         if isinstance(plats, dict) and plats:
-            # Freshness filter: gateway startup preserves plain platform
+            # Ownership filter: gateway startup preserves plain platform
             # entries across restarts, so the raw map can carry fatal state
             # for platforms the operator has since disabled/removed.  Only
-            # entries written by the profile's current live process are
-            # aggregation candidates (see _fresh_profile_platforms).
-            fresh = _fresh_profile_platforms(
-                _profile_gateway_started_at(home, runtime), plats
+            # entries stamped with the profile's current live process's
+            # writer identity are aggregation candidates (see
+            # _owned_profile_platforms).
+            owned = _owned_profile_platforms(
+                _profile_gateway_writer_identity(home, runtime), plats
             )
-            if fresh:
-                profile_platforms[name] = fresh
+            if owned:
+                profile_platforms[name] = owned
         entry: Dict[str, Any] = {
             "profile": name,
             "ports": _profile_platform_ports(home, runtime),
@@ -3424,6 +3420,20 @@ def _status_platform_key_allowed(
     return configured is None or key in configured
 
 
+# Per-entry writer-identity stamps (added by gateway.status.write_runtime_status
+# for the aggregation ownership check) are process recon — the same class of
+# detail as the auth-gated top-level ``gateway_pid`` — and must not project
+# onto the public endpoint.
+_PRIVATE_PLATFORM_ENTRY_KEYS = frozenset({"writer_pid", "writer_start_time"})
+
+
+def _public_platform_entry(value: Any) -> Any:
+    """Strip writer-identity stamps from a platform entry before projection."""
+    if not isinstance(value, dict):
+        return value
+    return {k: v for k, v in value.items() if k not in _PRIVATE_PLATFORM_ENTRY_KEYS}
+
+
 def _merge_profile_gateway_platforms(
     gateway_platforms: dict, profile_platforms: dict
 ) -> dict:
@@ -3454,7 +3464,7 @@ def _merge_profile_gateway_platforms(
             namespaced = f"{prof}:{key}"
             if not _is_profile_platform_status_key(namespaced):
                 continue
-            merged.setdefault(namespaced, value)
+            merged.setdefault(namespaced, _public_platform_entry(value))
     return merged
 
 
@@ -3564,7 +3574,7 @@ async def get_status(profile: Optional[str] = None):
             # load must not fail open into projecting arbitrary keys from a
             # process-local JSON file onto this public endpoint.
             gateway_platforms = {
-                key: value
+                key: _public_platform_entry(value)
                 for key, value in gateway_platforms.items()
                 if _status_platform_key_allowed(key, configured_gateway_platforms)
             }

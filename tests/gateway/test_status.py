@@ -211,15 +211,30 @@ class TestGatewayRuntimeStatus:
             clear_profile_platforms=True,
         )
 
-        assert status.read_runtime_status()["platforms"] == {
-            "telegram": {"state": "connected"},
-            "reviewer:slack": {
-                "state": "connected",
-                "updated_at": status.read_runtime_status()["platforms"][
-                    "reviewer:slack"
-                ]["updated_at"],
-            },
-        }
+        platforms = status.read_runtime_status()["platforms"]
+        assert set(platforms) == {"telegram", "reviewer:slack"}
+        assert platforms["telegram"] == {"state": "connected"}
+        assert platforms["reviewer:slack"]["state"] == "connected"
+
+    def test_platform_writes_are_stamped_with_writer_identity(
+        self, tmp_path, monkeypatch
+    ):
+        # The /api/status cross-profile aggregation must distinguish entries
+        # written by the CURRENT process from entries preserved across a
+        # restart (a wall-clock freshness window admits stale failures
+        # written moments before a fast restart).  Every platform write is
+        # therefore stamped with the writer's (pid, start_time) identity —
+        # the same PID-reuse fingerprint the liveness checks use — so
+        # ownership is exact equality, not clock heuristics.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(platform="telegram", platform_state="connected")
+
+        entry = status.read_runtime_status()["platforms"]["telegram"]
+        assert entry["writer_pid"] == os.getpid()
+        assert entry["writer_start_time"] == status._get_process_start_time(
+            os.getpid()
+        )
 
     def test_clear_profile_platforms_repairs_malformed_platforms(
         self, tmp_path, monkeypatch

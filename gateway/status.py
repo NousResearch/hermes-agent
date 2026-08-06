@@ -1110,6 +1110,17 @@ def write_runtime_status(
             # continuous retry episode; None clears it on reconnect.
             platform_payload["retrying_since"] = retrying_since
         platform_payload["updated_at"] = _utc_now_iso()
+        # Writer identity: which PROCESS wrote this entry.  The top-level
+        # pid/start_time are refreshed on every write, so they only identify
+        # the file's most recent writer — per-entry provenance is what lets
+        # a reader (the /api/status cross-profile aggregation) distinguish
+        # "written by the current live process" from "preserved from a prior
+        # process" with exact (pid, start_time) equality instead of clock
+        # heuristics.  start_time is the same PID-reuse fingerprint the
+        # liveness checks use, so a recycled PID never masquerades as the
+        # original writer.
+        platform_payload["writer_pid"] = current_record["pid"]
+        platform_payload["writer_start_time"] = current_record["start_time"]
         payload["platforms"][platform] = platform_payload
 
     _write_json_file(path, payload)

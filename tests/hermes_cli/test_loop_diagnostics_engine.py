@@ -370,10 +370,50 @@ def test_chain_input_invalid(write_trace):
     assert result["propagation_path"] == ["42:2", "42:1"]
     assert result["confidence"] >= 0.8
     assert result["evidence"]["failed_action_id"] == "42:2"
-    # recommendation: retry_from_checkpoint (no earlier checkpoint in chain,
-    # so trajectory_repair or retry_from_checkpoint depending on path).
+    # No verified checkpoint precedes the failed producer in this 2-action
+    # chain — the only predecessor of the root IS the root. A checkpoint
+    # must be a completed (status=ok) producer, never the failure path.
+    # Recommending trajectory_repair here (not retry_from_checkpoint with
+    # a fabricated checkpoint) keeps the recommendation actionable.
     kinds = [i["kind"] for i in result["interventions"]]
-    assert kinds, "at least one intervention"
+    assert "trajectory_repair" in kinds
+    for i in result["interventions"]:
+        if i["kind"] == "retry_from_checkpoint":
+            cpid = i["payload"].get("checkpoint_action_id")
+            assert cpid not in ("42:2", "42:1"), (
+                "checkpoint must be a verified producer, not the failure path"
+            )
+
+
+def test_verified_checkpoint_used_when_producer_succeeded(write_trace):
+    """A verified (status=ok) data producer is a real retry checkpoint."""
+    run_id = 60
+    recs = [
+        _header(run_id),
+        _start(run_id, 1, "web_search", summary="find source"),
+        _end(run_id, 1, "ok", result_hash="hash-search-ok"),
+        _edge(run_id, 1, 2, "data"),
+        _start(run_id, 2, "web_extract", summary="extract page"),
+        _end(run_id, 2, "error", error_type="HTTPError",
+             error_message="404 not found", result_hash="hash-extract-404"),
+        _edge(run_id, 2, 3, "data"),
+        _start(run_id, 3, "read_file", summary="read extracted content"),
+        _end(run_id, 3, "error", error_type="FileNotFoundError",
+             error_message="no content file", result_hash="hash-read-missing"),
+        _footer(run_id),
+    ]
+    path = write_trace(run_id, recs)
+    result = diagnose("t_diag", run_id, trace_path=path)
+    assert result["status"] == "root_cause_found"
+    assert result["category"] == "input_invalid"
+    assert result["root_cause_action_ids"] == [f"{run_id}:2"]
+    kinds = [i["kind"] for i in result["interventions"]]
+    assert "retry_from_checkpoint" in kinds
+    for i in result["interventions"]:
+        if i["kind"] == "retry_from_checkpoint":
+            # the verified checkpoint is the successful web_search producer
+            assert i["payload"].get("checkpoint_action_id") == f"{run_id}:1"
+
 
 
 def test_chain_explicit_failed_action(write_trace):

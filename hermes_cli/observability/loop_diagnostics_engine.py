@@ -556,6 +556,19 @@ def _build_graph(records: Sequence[Dict[str, Any]]) -> _TraceGraph:
 # ---------------------------------------------------------------------------
 
 
+def _failure_rank(graph: _TraceGraph, action_id: str) -> int:
+    """Return the failure preference rank for an action.
+
+    0 = error, 1 = blocked, 2 = timed_out, 3 = cancelled, 4 = missing-end.
+    Lower is better (more actionable as the failure site).
+    """
+    node = graph.nodes.get(action_id)
+    if node is None or node.status is None:
+        return 4
+    status_order = {"error": 0, "blocked": 1, "timed_out": 2, "cancelled": 3}
+    return status_order.get(node.status, 4)
+
+
 def _failed_action_ids(graph: _TraceGraph) -> List[str]:
     """Return failed action ids in deterministic order.
 
@@ -675,10 +688,14 @@ def _classify(
             )
         return "unknown"
 
-    # Timeout propagation: a direct data producer is missing its action_end
-    # and the run footer says timed_out (interrupted state -> downstream fail).
-    producer = _failing_data_producer(graph, failed_id)
-    if producer is not None:
+    # Timeout/cancellation/input propagation: walk the propagation path and
+    # find the first data-edge producer failure. The failed action's DIRECT
+    # data producer may be absent (e.g. a causal final hop); the root cause
+    # is still the earliest failed data producer along the path.
+    for aid in path:
+        producer = _failing_data_producer(graph, aid)
+        if producer is None:
+            continue
         if producer.status == "cancelled":
             return "cancellation_propagation"
         if producer.status in FAILURE_STATUSES:
@@ -878,10 +895,15 @@ def _first_loop_failure(graph: _TraceGraph, path: List[str]) -> Optional[str]:
 def _connected_to_path(graph: _TraceGraph, action_id: str, path: List[str]) -> bool:
     """True when ``action_id`` is graph-connected to any node in ``path``.
 
-    Two actions are NOT independent when any edge path connects them — a
+    Two failures are NOT independent when any edge path connects them — a
     loop/retry lineage or a causal chain means the second failure is not a
-    separate root cause. Undirected BFS over ``incoming`` + ``outgoing``
-    with a visited set (cycle-safe).
+    separate root cause. BUT the traversal only flows *through failed
+    actions*: a healthy fan-out parent (e.g. delegate_task) is an
+    orchestration node, not a causal bridge between its independently-
+    failing children. Sibling failures under a healthy parent are separate
+    candidates; only a chain of failed actions propagates causation.
+    Undirected BFS over ``incoming`` + ``outgoing`` with a visited set
+    (cycle-safe).
     """
     if action_id in path:
         return True
@@ -893,9 +915,15 @@ def _connected_to_path(graph: _TraceGraph, action_id: str, path: List[str]) -> b
         if cur in path_nodes:
             return True
         for neighbor, _kind in _graph_neighbors(graph, cur):
-            if neighbor not in visited:
-                visited.add(neighbor)
-                queue.append(neighbor)
+            if neighbor in visited:
+                continue
+            # Only traverse through actions that actually failed. A healthy
+            # node (ok / no end) is not a causal bridge between failures.
+            nnode = graph.nodes.get(neighbor)
+            if nnode is None or nnode.status not in FAILURE_STATUSES:
+                continue
+            visited.add(neighbor)
+            queue.append(neighbor)
     return False
 
 
@@ -909,6 +937,56 @@ def _graph_neighbors(graph: _TraceGraph, action_id: str) -> List[Tuple[str, str]
     return out
 
 
+def _verified_checkpoint(graph: _TraceGraph, root_id: Optional[str]) -> Optional[str]:
+    """Return the nearest verified (status=ok) predecessor of ``root_id``.
+
+    A checkpoint is an action the worker can resume from — it must have
+    completed successfully (``status=ok``) AND be a direct data/causal
+    producer of the root (or the earliest such action in a chain of
+    successful producers). The propagation path is the *failure* chain, so
+    ``path[idx-1]`` is the failed consumer — never a checkpoint.
+
+    Returns the action_id, or None when no verified producer exists.
+    """
+    if root_id is None:
+        return None
+    node = graph.nodes.get(root_id)
+    if node is None:
+        return None
+    # Walk incoming data/causal edges to the nearest verified producer.
+    # Stop at the first non-ok action (a failed/unknown producer is not a
+    # safe resume point — it is the root cause itself).
+    seen: set = set()
+    frontier = [(root_id, 0)]
+    while frontier:
+        frontier.sort(key=lambda t: t[1])  # nearest first (deterministic)
+        cur, depth = frontier.pop(0)
+        if cur in seen:
+            continue
+        seen.add(cur)
+        cur_node = graph.nodes.get(cur)
+        if cur_node is None:
+            continue
+        if cur == root_id:
+            pass  # expand the root's producers below
+        elif cur_node.status == "ok" and cur_node.action_kind != "llm_call":
+            return cur
+        elif cur_node.status == "ok":
+            # A completed LLM turn is not a resumable checkpoint — it is a
+            # synthetic goal-loop anchor with no artifact. Expand through it
+            # to find a real tool checkpoint.
+            pass
+        elif cur_node.status in FAILURE_STATUSES or (
+            cur_node.status is None and cur in graph.missing_action_ends
+        ):
+            continue  # failed/interrupted — not a checkpoint, stop expanding
+        for from_id, kind in cur_node.incoming:
+            if kind not in PROPAGATION_EDGE_KINDS:
+                continue
+            frontier.append((from_id, depth + 1))
+    return None
+
+
 def _recommend_interventions(
     category: str,
     root_id: Optional[str],
@@ -920,12 +998,9 @@ def _recommend_interventions(
     root_node = graph.nodes.get(root_id) if root_id else None
     root_tool = root_node.tool_name if root_node else None
 
-    # checkpoint before root: last action before root along path
-    checkpoint_id: Optional[str] = None
-    if root_id in path:
-        idx = path.index(root_id)
-        if idx > 0:
-            checkpoint_id = path[idx - 1]
+    # Verified checkpoint before the root — only when a completed producer
+    # actually exists. Never fabricate a checkpoint from the failure path.
+    checkpoint_id = _verified_checkpoint(graph, root_id)
 
     interventions: List[Dict[str, Any]] = []
 
@@ -1144,7 +1219,18 @@ def diagnose(
     if failed_id is None:
         failed_ids = _failed_action_ids(graph)
         if failed_ids:
-            failed_id = failed_ids[-1]  # last failed action (prefer error)
+            # _failed_action_ids ranks by preference: error > blocked >
+            # timed_out > cancelled > missing-end. Within the highest-
+            # preference tier, prefer the last (chronologically latest)
+            # failure — the action whose error ended the run. NEVER pick a
+            # lower-preference entry (e.g. a missing-end in-flight span)
+            # over a real error.
+            best = failed_ids[0]
+            for aid in failed_ids[1:]:
+                if _failure_rank(graph, aid) != _failure_rank(graph, best):
+                    break
+                best = aid
+            failed_id = best
     if failed_id is None:
         # No failed actions at all: not a failure trace.
         result["status"] = "unknown"

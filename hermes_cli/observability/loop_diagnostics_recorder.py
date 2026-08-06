@@ -356,7 +356,7 @@ class LoopDiagnosticsRecorder:
         base_dir: Optional[Path] = None,
         max_events_per_run: int = DEFAULT_MAX_EVENTS_PER_RUN,
         retain_runs: int = DEFAULT_RETAIN_RUNS,
-        enabled: bool = True,
+        enabled: Optional[bool] = None,
     ):
         task_id = task_id or os.environ.get("HERMES_KANBAN_TASK", "").strip() or None
         raw_run = run_id
@@ -368,6 +368,14 @@ class LoopDiagnosticsRecorder:
         self.task_id = task_id
         self.run_id = raw_run
         self.board = board or os.environ.get("HERMES_KANBAN_BOARD", "") or None
+        # ``enabled`` default resolves from ``kanban.loop_diagnostics.enabled``
+        # so a recorder constructed with no explicit flag (plugin / worker)
+        # honours the operator's config instead of always defaulting True.
+        if enabled is None:
+            try:
+                enabled = bool(load_recorder_config().get("enabled", DEFAULT_ENABLED))
+            except Exception:
+                enabled = DEFAULT_ENABLED
         self.enabled = bool(enabled) and self.task_id is not None and self.run_id is not None
         self._max_events = max(1, int(max_events_per_run))
         self._retain = max(1, int(retain_runs))
@@ -657,6 +665,22 @@ class LoopDiagnosticsRecorder:
                 loop_id = node.get("loop_id")
                 turn_id = node.get("turn_id")
                 tool_name = node.get("tool_name")
+                # Subagent children spawned by an in-flight parent action
+                # (delegate_task) fan out from the PARENT, not from the
+                # previous sibling.  A child is an independent branch; the
+                # graph must show parent -> child edges, never a sequential
+                # sibling chain that would collapse concurrent failures into
+                # one causal lineage.
+                parent_id = node.get("parent_action_id")
+                if parent_id is not None and parent_id in self._nodes:
+                    edge_kind = self._classify_edge(parent_id, action_id)
+                    self._write_edge(parent_id, action_id, edge_kind)
+                    # Do NOT advance _last_by_turn / _last_global here: the
+                    # parent action (delegate_task) is still in flight and
+                    # must chain from ITS predecessor when it completes, not
+                    # from a child. Siblings fan out from the shared parent;
+                    # the parent remains the turn anchor.
+                    return
                 prev: Optional[str] = None
 
                 if loop_id is not None:
@@ -691,15 +715,14 @@ class LoopDiagnosticsRecorder:
             return "causal"
         f_tool = frm.get("tool_name")
         t_tool = to.get("tool_name")
-        # Retry: same tool, consecutive, previous errored.  Does NOT depend
-        # on loop_id so ordinary sequential same-tool calls after a failure
-        # are recognised as retries without being conflated into a loop.
-        if f_tool and f_tool == t_tool and frm.get("status") == "error":
-            return "retry"
         # Loop: same loop instance AND the target is a later iteration.  Two
         # actions with the same loop_id but the same iteration are steps of
         # one iteration, so they stay causal/data — never a loop edge.  This
-        # is the no-conflation rule from the contract.
+        # is the no-conflation rule from the contract.  Checked BEFORE retry:
+        # an explicit loop iteration is a loop edge even when the tool is
+        # unchanged and the previous iteration errored (a repeating search /
+        # retry-with-budget loop), so the engine can classify loop_repeated
+        # vs retry_exhausted from the edge kind.
         f_loop = frm.get("loop_id")
         f_iter = frm.get("iteration")
         t_iter = to.get("iteration")
@@ -711,6 +734,11 @@ class LoopDiagnosticsRecorder:
             and t_iter != f_iter
         ):
             return "loop"
+        # Retry: same tool, consecutive, previous errored.  Does NOT depend
+        # on loop_id so ordinary sequential same-tool calls after a failure
+        # are recognised as retries without being conflated into a loop.
+        if f_tool and f_tool == t_tool and frm.get("status") == "error":
+            return "retry"
         # Data: producer -> consumer pair.
         if f_tool in _PRODUCER_TOOLS and t_tool in _CONSUMER_TOOLS:
             return "data"
@@ -743,6 +771,7 @@ class LoopDiagnosticsRecorder:
                 tool_call_id=kwargs.get("tool_call_id"),
                 api_request_id=kwargs.get("api_request_id"),
                 loop_id=kwargs.get("loop_id"),
+                iteration=kwargs.get("iteration"),
             )
             if action_id is not None:
                 self._tool_action_ids[kwargs.get("tool_call_id") or ""] = action_id
@@ -828,6 +857,7 @@ class LoopDiagnosticsRecorder:
                 parent_action_id=parent_action_id,
                 turn_id=parent_turn_id,
                 loop_id=kwargs.get("loop_id"),
+                iteration=kwargs.get("iteration"),
             )
             if action_id is not None:
                 self._subagent_action_ids[kwargs.get("child_session_id") or ""] = action_id

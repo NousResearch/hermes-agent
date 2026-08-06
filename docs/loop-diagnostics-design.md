@@ -372,6 +372,11 @@ and is invoked from the dispatcher-side failure paths in `kanban_db.py`
 (`detect_crashed_workers` / `enforce_max_runtime` / `_record_task_failure`
 (spawn-failure + gave_up) / `block_task` / `_block_task_locked`).
 
+> **Operators:** the end-to-end usage guide — configuration, report fields,
+> interpretation, limitations, retention/redaction, and a worked recovery
+> example — lives in `docs/loop-diagnostics-ops-guide.md`. This section is
+> the integration contract; the ops guide is how to use it.
+
 ### 14.1 Behavior
 
 - On a **terminal attempt failure** (worker `crashed` / `timed_out` /

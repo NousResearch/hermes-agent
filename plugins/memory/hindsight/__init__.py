@@ -2393,6 +2393,19 @@ class HindsightMemoryProvider(MemoryProvider):
             self._session_id, self._parent_session_id, reset, self._document_id,
         )
 
+    def _force_stop_embedded_daemon(self) -> None:
+        """Stop an owned embedded daemon if the wrapper close left it alive."""
+        client = self._client
+        profile = self._embedded_profile_override
+        manager = getattr(client, "_manager", None) if client is not None else None
+        if manager is None or not profile:
+            return
+        try:
+            if manager.is_running(profile):
+                manager.stop(profile)
+        except Exception as exc:
+            logger.debug("Hindsight embedded manager stop fallback failed: %s", type(exc).__name__)
+
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
         # Stop accepting new retain jobs first so anyone still calling
@@ -2464,6 +2477,8 @@ class HindsightMemoryProvider(MemoryProvider):
                     self._run_sync(self._client.aclose())
             except Exception:
                 pass
+            if self._embedded_profile_override is not None:
+                self._force_stop_embedded_daemon()
             self._client = None
         if self._llm_bridge is not None:
             self._llm_bridge.close()

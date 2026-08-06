@@ -1340,6 +1340,7 @@ class TestShutdown:
 
         inner_client.aclose.assert_awaited_once()
         embedded.close.assert_called_once_with(stop_daemon=True)
+        embedded._manager.stop.assert_called_once_with("jarpis-hermes-test-instance")
         assert embedded._client is None
         assert provider._client is None
 

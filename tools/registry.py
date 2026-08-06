@@ -818,7 +818,10 @@ class ToolRegistry:
                 result = entry.handler(args, **kwargs)
             return self._normalize_handler_result(name, result)
         except Exception as e:
-            logger.exception("Tool %s dispatch error: %s", name, e)
+            # exc_info already renders the exception, so keep the message copy bounded.
+            logger.exception(
+                "Tool %s dispatch error: %s", name, _bound_error_text(str(e))
+            )
             # Route through the sanitizer so framing tokens / CDATA / fences
             # in exception strings don't reach the model as structural noise.
             # See model_tools._sanitize_tool_error for rationale.

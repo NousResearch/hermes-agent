@@ -237,6 +237,27 @@ class TestDispatchBoundsDirectErrorResults:
         assert reg.dispatch("nested", {}) == payload
 
 
+class TestDispatchExceptionLogging:
+    def test_raising_handler_logs_bounded_message(self, caplog):
+        import logging
+        body = "upstream said: " + "Q" * 200_000
+        reg = ToolRegistry()
+        reg.register(
+            name="boom",
+            toolset="core",
+            schema=_make_schema("boom"),
+            handler=lambda args, **kw: (_ for _ in ()).throw(RuntimeError(body)),
+        )
+        with caplog.at_level(logging.ERROR, logger="tools.registry"):
+            result = json.loads(reg.dispatch("boom", {}))
+        messages = [r.getMessage() for r in caplog.records]
+        assert messages, "dispatch should log the failure"
+        for message in messages:
+            assert len(message) < _MAX_LOGGED_ERROR_CHARS + 200
+            assert body not in message
+        assert len(result["error"]) < _MAX_TOOL_ERROR_CHARS + 200
+
+
 class TestToolsetAvailability:
     def test_no_check_fn_is_available(self):
         reg = ToolRegistry()

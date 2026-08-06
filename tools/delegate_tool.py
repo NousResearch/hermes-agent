@@ -313,7 +313,18 @@ def list_active_subagents() -> List[Dict[str, Any]]:
     """
     with _active_subagents_lock:
         return [
-            {k: v for k, v in r.items() if k != "agent"}
+            {
+                k: v
+                for k, v in r.items()
+                if k
+                not in {
+                    "agent",
+                    "owner_session_id",
+                    "owner_transport",
+                    "owner_session_record",
+                    "accepting_steer",
+                }
+            }
             for r in _active_subagents.values()
         ]
 
@@ -2582,6 +2593,20 @@ def _run_single_child(
             # is stuck on blocking I/O, wait=True would hang forever.
             _timeout_executor.shutdown(wait=False)
 
+        # Linearization boundary for registry steering. From this point on the
+        # child cannot consume another steer. Closing under the registry lock
+        # either rejects a concurrent caller or drains every previously accepted
+        # exact text into the result before callbacks/result assembly can run.
+        if _subagent_id:
+            _late_pending_steer = _close_subagent_steering(_subagent_id, child)
+            if _late_pending_steer:
+                _existing_pending = result.get("pending_steer")
+                result["pending_steer"] = (
+                    f"{_existing_pending}\n{_late_pending_steer}"
+                    if isinstance(_existing_pending, str) and _existing_pending
+                    else _late_pending_steer
+                )
+
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, "_flush"):
             try:
@@ -2707,6 +2732,21 @@ def _run_single_child(
             entry["error"] = sanitize_context(
                 str(result.get("error", "Subagent did not produce a response."))
             )
+
+        # A steer that queued after the child's final assistant turn had no
+        # tool batch left to drain into.  The finalizer hands the undelivered
+        # text back (turn_finalizer.py "pending_steer"); retain it here so the
+        # parent sees the steer was MISSED rather than silently absorbed —
+        # steer_subagent() returning True means "queued", and this is where a
+        # queued-but-never-delivered steer gets named.
+        _missed_steer = result.get("pending_steer")
+        if isinstance(_missed_steer, str) and _missed_steer.strip():
+            entry["missed_steer"] = _missed_steer
+            _miss_note = (
+                "[steer did not land — the subagent finished before it could "
+                f"be delivered: {_missed_steer}]"
+            )
+            entry["summary"] = f"{summary}\n\n{_miss_note}" if summary else _miss_note
 
         # Cross-agent file-state reminder.  If this subagent wrote any
         # files the parent had already read, surface it so the parent
@@ -2838,19 +2878,11 @@ def _run_single_child(
         if _heartbeat_thread.ident is not None:
             _heartbeat_thread.join(timeout=5)
 
-        # Linearization boundary for registry steering. From this point on the
-        # child cannot consume another steer. Closing under the registry lock
-        # either rejects a concurrent caller or drains every previously accepted
-        # exact text into the result before callbacks/result assembly can run.
+        # Drop the TUI-facing registry entry.  Safe to call even if the
+        # child was never registered (e.g. ID missing on test doubles).
+        # Steering was already closed + drained above (before the completion
+        # callback); this only removes the registry row.
         if _subagent_id:
-            _late_pending_steer = _close_subagent_steering(_subagent_id, child)
-            if _late_pending_steer and "result" in locals():
-                _existing_pending = result.get("pending_steer")
-                result["pending_steer"] = (
-                    f"{_existing_pending}\n{_late_pending_steer}"
-                    if isinstance(_existing_pending, str) and _existing_pending
-                    else _late_pending_steer
-                )
             _unregister_subagent(_subagent_id)
 
         if child_pool is not None and leased_cred_id is not None:

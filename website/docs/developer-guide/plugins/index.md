@@ -25,6 +25,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **video-generation backend** | [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) |
 | A **web-search / extract backend** | [Web Search Provider Plugins](/developer-guide/web-search-provider-plugin) |
 | A **cloud browser backend** (Browserbase-style CDP session provider) | [Browser Provider Plugins](/developer-guide/browser-provider-plugin) |
+| A **terminal execution backend** (cloud sandbox, remote runtime, or container service) | [Terminal Backend Plugins](/developer-guide/terminal-backend-plugin) |
 | A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](/developer-guide/secret-source-plugin) |
 | A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](/user-guide/features/web-dashboard#custom-providers) — `ctx.register_dashboard_auth_provider()` |
 | A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](/user-guide/features/tts#custom-command-providers) — config-driven, no Python needed |

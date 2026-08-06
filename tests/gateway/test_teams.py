@@ -299,6 +299,15 @@ class TestTeamsPluginRegistration:
         kwargs = ctx.register_platform.call_args[1]
         assert kwargs["name"] == "teams"
 
+    def test_register_check_fn_is_active_lazy_installer(self):
+        # create_adapter() gates on check_fn before connect() exists.
+        # Passive check_requirements would permanently block lazy install.
+        ctx = MagicMock()
+        register(ctx)
+        kwargs = ctx.register_platform.call_args[1]
+        assert kwargs["check_fn"] is check_teams_requirements
+        assert kwargs["check_fn"] is not check_requirements
+
     def test_register_auth_env_vars(self):
         ctx = MagicMock()
         register(ctx)

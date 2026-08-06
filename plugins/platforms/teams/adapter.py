@@ -642,11 +642,11 @@ async def _standalone_send(
 
 
 # Keep the old name as an alias so existing test imports don't break.
-# NOTE: ``check_requirements`` is the PASSIVE probe (used as the registry
-# ``check_fn`` and by ``gateway status``) — it must never trigger a pip
-# install. ``check_teams_requirements`` is the ACTIVE lazy-installer called
-# from ``connect()``; it installs ``platform.teams`` on demand and rebinds the
-# SDK globals, mirroring ``check_slack_requirements`` in gateway/platforms/slack.py.
+# NOTE: ``check_requirements`` is the PASSIVE probe (status / unit tests) —
+# it must never trigger a pip install. ``check_teams_requirements`` is the
+# ACTIVE lazy-installer and is the registry ``check_fn`` — same contract as
+# Discord/Slack/Telegram. ``create_adapter()`` gates on ``check_fn`` before
+# the adapter exists, so install MUST run there; ``connect()`` re-checks.
 @contextmanager
 def _suppress_third_party_dotenv() -> Iterator[None]:
     """No-op ``dotenv.load_dotenv`` while importing the Teams SDK (#62935).
@@ -1467,11 +1467,17 @@ def register(ctx) -> None:
         name="teams",
         label="Microsoft Teams",
         adapter_factory=lambda cfg: TeamsAdapter(cfg),
-        check_fn=check_requirements,
+        # Active lazy-installer — NOT the passive ``check_requirements``.
+        # Registry create_adapter() returns None when check_fn is False, so a
+        # passive probe permanently blocks connect() and the deps never install.
+        check_fn=check_teams_requirements,
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"],
-        install_hint="pip install microsoft-teams-apps aiohttp",
+        install_hint=(
+            "Teams SDK missing — restart the gateway to auto-install, or run: "
+            "~/.hermes/hermes-agent/venv/bin/pip install 'microsoft-teams-apps==2.0.13.4' 'aiohttp==3.14.1'"
+        ),
         setup_fn=interactive_setup,
         # Env-driven auto-configuration — seeds PlatformConfig.extra with
         # client_id/secret/tenant + port + home_channel so env-only setups

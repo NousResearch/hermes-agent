@@ -34,6 +34,10 @@ describe('decideRightClickAction', () => {
     })
   })
 
+  it('ignores a selected masked value instead of copying or pasting', () => {
+    expect(decideRightClickAction('secret', { end: 6, start: 0 }, false)).toEqual({ action: 'ignore' })
+  })
+
   it('copies a middle slice', () => {
     expect(decideRightClickAction('hello world', { end: 11, start: 6 })).toEqual({
       action: 'copy',

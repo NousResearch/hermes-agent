@@ -1417,7 +1417,7 @@ export function TextInput({
         // Right-click → copy active selection if any, otherwise paste.
         if (e.button === 2) {
           e.stopImmediatePropagation?.()
-          const decision = decideRightClickAction(vRef.current, selRange())
+          const decision = decideRightClickAction(vRef.current, selRange(), !mask)
 
           if (decision.action === 'copy') {
             void copyTextToClipboard(decision.text)
@@ -1425,7 +1425,9 @@ export function TextInput({
             return
           }
 
-          emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+          if (decision.action === 'paste') {
+            emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+          }
 
           return
         }
@@ -1507,11 +1509,12 @@ interface TextInputProps {
   voiceRecordKey?: ParsedVoiceRecordKey
 }
 
-export type RightClickDecision = { action: 'copy'; text: string } | { action: 'paste' }
+export type RightClickDecision = { action: 'copy'; text: string } | { action: 'ignore' } | { action: 'paste' }
 
 /**
  * Decide what right-click should do on the composer:
  *   - non-empty selection → copy that text to the clipboard
+ *   - non-empty masked selection → ignore it so plaintext cannot leave the input
  *   - no selection (or empty/collapsed range) → fall through to paste
  *
  * Mirrors terminal-native behavior (xterm, iTerm, gnome-terminal) where
@@ -1522,9 +1525,14 @@ export type RightClickDecision = { action: 'copy'; text: string } | { action: 'p
  */
 export function decideRightClickAction(
   value: string,
-  range: { end: number; start: number } | null
+  range: { end: number; start: number } | null,
+  copyable = true
 ): RightClickDecision {
   if (range && range.end > range.start) {
+    if (!copyable) {
+      return { action: 'ignore' }
+    }
+
     const text = value.slice(range.start, range.end)
 
     if (text) {

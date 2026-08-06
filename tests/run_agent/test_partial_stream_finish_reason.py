@@ -151,6 +151,62 @@ class TestCleanStreamEndMidToolCall:
 
 
 
+# ── Clean stream-end before any argument byte arrives (#80498) ─────────────
+
+class TestCleanStreamEndBeforeAnyToolArgs:
+    """The upstream closes the SSE stream cleanly right after delivering the
+    tool NAME — not a single byte of the arguments delta ever arrived, no
+    exception, no finish_reason, no [DONE].
+
+    Before the fix, an empty ``arguments`` string skipped the
+    truncated-JSON check entirely (it only ran when ``arguments and
+    arguments.strip()``), so ``has_truncated_tool_args`` stayed False. With
+    no other guard catching this shape, the stub-builder fell through to
+    ``effective_finish_reason = finish_reason or "stop"`` and returned a
+    normal "stop" turn carrying a tool call with ``arguments=""`` — which
+    the dispatch boundary silently coerces to "{}" and executes with no
+    retry (#80498, e.g. ``write_file`` running with no arguments).
+    """
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_empty_tool_args_routes_to_stub_not_silent_empty_object(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        def _clean_ending_stream():
+            # Tool name arrives, then the generator simply RETURNS
+            # (StopIteration) before any arguments delta chunk — no raise,
+            # no finish_reason chunk, no [DONE].
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_x", name="write_file"),
+            ])
+            # falls off the end — clean close, no terminator, zero args bytes
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _clean_ending_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID, (
+            "A tool call whose arguments never started streaming before a "
+            "clean stream end must be tagged as a partial-stream stub, not "
+            "silently returned as a completed 'stop' turn with empty "
+            "arguments (#80498)."
+        )
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response.choices[0].message.tool_calls is None, (
+            "A tool call with zero argument bytes delivered must never "
+            "auto-execute with a silently substituted empty object."
+        )
+        assert getattr(response, "_dropped_tool_names", None) == ["write_file"]
+
+
 # ── Length-continuation prompt branching ──────────────────────────────────
 
 class TestLengthContinuationPromptBranching:

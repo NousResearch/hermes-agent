@@ -4383,7 +4383,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
             self._target()
 
     class _FakeDB:
-        def replace_messages(self, key, messages):
+        def replace_messages(self, key, messages, active_only=False):
             replaced.append((key, list(messages)))
 
     history = [
@@ -9275,7 +9275,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def replace_messages(self, session_id, messages):
+        def replace_messages(self, session_id, messages, active_only=False):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -9331,7 +9331,7 @@ def test_prompt_submit_refuses_turn_when_truncate_persist_fails(monkeypatch):
     server._sessions["trunc-fail-sid"] = sess
 
     class _FailDb:
-        def replace_messages(self, session_id, messages):
+        def replace_messages(self, session_id, messages, active_only=False):
             raise OSError("disk full")
 
     monkeypatch.setattr(server, "_get_db", lambda: _FailDb())
@@ -9363,6 +9363,104 @@ def test_prompt_submit_refuses_turn_when_truncate_persist_fails(monkeypatch):
         assert sess.get("running") is not True
     finally:
         server._sessions.pop("trunc-fail-sid", None)
+
+
+def test_prompt_submit_truncation_preserves_archived_compaction_rows(
+    monkeypatch, tmp_path
+):
+    """Edit/regenerate truncation must not DELETE soft-archived compaction rows.
+
+    With compression.in_place (the default, #38763) archive_and_compact()
+    keeps the pre-compaction transcript on disk as active=0/compacted=1 rows
+    under the same session id the live transcript uses. session["history"]
+    only holds the live set, so a bare replace_messages() (default
+    active_only=False) DELETEs every row for the session and reinserts only
+    the truncated live tail: a routine desktop/TUI edit after a compaction
+    permanently wipes the archived history. The handler must probe
+    has_archived_messages() and pass active_only=True so only the live rows
+    are replaced, the same contract ACP _persist and gateway /compress
+    already honor (#61145). Runs against a real SessionDB so the archived
+    rows are physically verified, not mocked.
+    """
+    from hermes_state import SessionDB
+
+    compacted_live = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second reply"},
+    ]
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        db.create_session("session-key", source="tui")
+        db.append_message("session-key", "user", "old question")
+        db.append_message("session-key", "assistant", "old answer")
+        # In-place compaction: the two rows above are soft-archived and the
+        # compacted transcript becomes the live set under the same id.
+        db.archive_and_compact("session-key", compacted_live)
+        assert db.has_archived_messages("session-key") is True
+
+        class _Agent:
+            def run_conversation(
+                self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+            ):
+                return {
+                    "final_response": "edited reply",
+                    "messages": [
+                        *(conversation_history or []),
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": "edited reply"},
+                    ],
+                }
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        server._sessions["sid"] = _session(agent=_Agent(), history=list(compacted_live))
+        try:
+            monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+            monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+            monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+            monkeypatch.setattr(server, "_emit", lambda *a: None)
+            monkeypatch.setattr(server, "_get_db", lambda: db)
+
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": "sid",
+                        "text": "edited second",
+                        "truncate_before_user_ordinal": 1,
+                    },
+                }
+            )
+            assert resp.get("result"), f"got error: {resp.get('error')}"
+        finally:
+            server._sessions.pop("sid", None)
+
+        # The archived pre-compaction rows survive the rewrite untouched.
+        archived = [
+            m for m in db.get_messages("session-key", include_inactive=True)
+            if not m["active"]
+        ]
+        assert [(m["role"], m["content"]) for m in archived] == [
+            ("user", "old question"),
+            ("assistant", "old answer"),
+        ]
+        assert all(m["compacted"] == 1 for m in archived)
+        # The live set is exactly the truncated transcript.
+        live = db.get_messages("session-key")
+        assert [(m["role"], m["content"]) for m in live] == [
+            ("user", "first"),
+            ("assistant", "first reply"),
+        ]
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -9422,7 +9520,7 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def replace_messages(self, session_id, messages):
+        def replace_messages(self, session_id, messages, active_only=False):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()

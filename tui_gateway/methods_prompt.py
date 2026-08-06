@@ -219,8 +219,24 @@ def _(rid, params: dict) -> dict:
             # zombie history on resume, and the edit/regenerate never sticks.
             # Fail closed: refuse the turn and leave memory/DB unchanged.
             if (db := _get_db()) is not None:
+                # In-place compaction (compression.in_place, #38763) keeps the
+                # pre-compaction transcript on disk as soft-archived
+                # active=0/compacted=1 rows under this same session id, while
+                # session["history"] only holds the live set. A default
+                # replace_messages(active_only=False) would DELETE those
+                # archived rows and reinsert only the truncated live tail, so
+                # any edit/regenerate/rewind after a compaction permanently
+                # wipes the archived history (same class as #61145). Mirror
+                # the ACP adapter: replace only the live rows when archives
+                # exist on disk.
                 try:
-                    db.replace_messages(session["session_key"], truncated)
+                    has_archived = db.has_archived_messages(session["session_key"])
+                except Exception:
+                    has_archived = False
+                try:
+                    db.replace_messages(
+                        session["session_key"], truncated, active_only=has_archived
+                    )
                 except Exception as exc:
                     logger.error(
                         "prompt.submit: replace_messages failed for session %s "

@@ -59,7 +59,7 @@ describe('host.state focused-session atoms', () => {
   })
 
   it('follows the interacted tile while the primary-only atom stays put', async () => {
-    const { host, session } = await setup()
+    const { host, session, states } = await setup()
     const tree = await import('@/components/pane-shell/tree/store')
     const model = await import('@/components/pane-shell/tree/model')
     const { registry } = await import('@/contrib/registry')
@@ -85,9 +85,30 @@ describe('host.state focused-session atoms', () => {
     const primaryBefore = session.$activeSessionId.get()
     const primarySelection = session.$selectedStoredSessionId.get()
 
+    // Bind the tile to a live runtime with its own usage, so the readout
+    // atoms (focusedSessionId / focusedUsage) — not just the navigation id —
+    // are proven to follow the tile.
+    const tileUsage = {
+      calls: 3,
+      input: 1200,
+      output: 300,
+      total: 1500,
+      context_used: 42000,
+      context_max: 200000,
+      context_percent: 21,
+      cost_usd: 0.0123
+    }
+
+    states.$sessionTiles.set([{ storedSessionId: 'tile-a', runtimeId: 'runtime-tile-a' }])
+    states.$sessionStates.set({
+      'runtime-tile-a': { storedSessionId: 'tile-a', usage: tileUsage } as never
+    })
+
     // Focusing the tile zone moves the focused atoms onto the tile's session…
     tree.noteActiveTreeGroup('grp-side')
     expect(host.state.focusedStoredSessionId.get()).toBe('tile-a')
+    expect(host.state.focusedSessionId.get()).toBe('runtime-tile-a')
+    expect(host.state.focusedUsage.get()).toBe(tileUsage)
     // …while the primary-only atom a plugin used to rely on does not move.
     expect(host.state.activeSessionId.get()).toBe(primaryBefore)
 

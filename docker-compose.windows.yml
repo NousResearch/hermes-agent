@@ -11,7 +11,9 @@
 #
 services:
   gateway:
-    image: nousresearch/hermes-agent:latest
+    # Fork GHCR image — includes Weixin QR onboarding + dashboard auth fixes.
+    # Override with HERMES_FORK_IMAGE to use a different image (e.g. upstream Docker Hub).
+    image: ${HERMES_FORK_IMAGE:-ghcr.io/jzkk720/hermes-agent:latest}
     container_name: hermes
     restart: unless-stopped
     volumes:
@@ -19,10 +21,12 @@ services:
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
-    command: ["gateway", "run"]
+      - HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
+      - GATEWAY_ALLOW_ALL_USERS=true
+    command: ["sh", "-lc", "(/opt/hermes/.venv/bin/python3 -m pip show edge-tts >/dev/null 2>&1 && /opt/hermes/.venv/bin/python3 -m pip show piper-tts >/dev/null 2>&1) || /opt/hermes/.venv/bin/python3 -m pip install -q edge-tts==7.2.7 piper-tts==1.6.0; exec /opt/hermes/.venv/bin/hermes gateway run"]
 
   dashboard:
-    image: nousresearch/hermes-agent:latest
+    image: ${HERMES_FORK_IMAGE:-ghcr.io/jzkk720/hermes-agent:latest}
     container_name: hermes-dashboard
     restart: unless-stopped
     depends_on:
@@ -32,7 +36,8 @@ services:
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
+      - HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
       - HERMES_DASHBOARD_HOST=0.0.0.0
     ports:
       - "127.0.0.1:9119:9119"
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
+    command: ["sh", "-lc", "(/opt/hermes/.venv/bin/python3 -m pip show edge-tts >/dev/null 2>&1 && /opt/hermes/.venv/bin/python3 -m pip show piper-tts >/dev/null 2>&1) || /opt/hermes/.venv/bin/python3 -m pip install -q edge-tts==7.2.7 piper-tts==1.6.0; exec /opt/hermes/.venv/bin/hermes dashboard --host 0.0.0.0 --port 9119 --no-open --insecure"]

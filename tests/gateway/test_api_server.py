@@ -22,6 +22,7 @@ import types
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -314,6 +315,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+    app.router.add_post("/v1/audio/transcriptions", adapter._handle_audio_transcriptions)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -871,11 +873,150 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["model_options"] is True
+            assert data["features"]["audio_api"] is True
+            assert data["features"]["audio_transcriptions"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
+            assert data["endpoints"]["audio_transcriptions"] == {"method": "POST", "path": "/v1/audio/transcriptions"}
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+
+
+# ---------------------------------------------------------------------------
+# /v1/audio/transcriptions endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestAudioTranscriptionsEndpoint:
+    """POST /v1/audio/transcriptions — OpenAI-compatible STT.
+
+    The handler delegates to ``tools.transcription_tools.transcribe_audio``;
+    these tests mock the transcription entrypoint so they run without
+    faster-whisper weights or any provider credentials.
+    """
+
+    @pytest.mark.asyncio
+    async def test_transcribes_upload_and_returns_text(self, adapter):
+        """A multipart audio upload is spooled and transcribed; JSON text back."""
+        result = {"success": True, "transcript": "hello world", "provider": "local"}
+        with patch(
+            "tools.transcription_tools.transcribe_audio",
+            return_value=result,
+        ) as mock_transcribe:
+            # The handler imports transcribe_audio lazily from
+            # tools.transcription_tools, so patch that path.
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                form = aiohttp.FormData()
+                form.add_field(
+                    "file",
+                    b"fake-audio-bytes",
+                    filename="test.wav",
+                    content_type="audio/wav",
+                )
+                resp = await cli.post("/v1/audio/transcriptions", data=form)
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["text"] == "hello world"
+                assert data["provider"] == "local"
+                # transcribe_audio received a spooled temp path
+                assert mock_transcribe.call_count == 1
+                spool_path = mock_transcribe.call_args[0][0]
+                assert spool_path.endswith(".wav")
+                # spool is cleaned up after the handler returns
+                assert not os.path.exists(spool_path)
+
+    @pytest.mark.asyncio
+    async def test_response_format_text_returns_plain_text(self, adapter):
+        result = {"success": True, "transcript": "plain text reply", "provider": "local"}
+        with patch(
+            "tools.transcription_tools.transcribe_audio",
+            return_value=result,
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                form = aiohttp.FormData()
+                form.add_field(
+                    "file",
+                    b"fake-audio",
+                    filename="clip.mp3",
+                    content_type="audio/mpeg",
+                )
+                form.add_field("response_format", "text")
+                resp = await cli.post("/v1/audio/transcriptions", data=form)
+                assert resp.status == 200
+                assert resp.headers["Content-Type"].startswith("text/plain")
+                assert await resp.text() == "plain text reply"
+
+    @pytest.mark.asyncio
+    async def test_missing_file_field_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            form = aiohttp.FormData()
+            form.add_field("model", "whisper-1")
+            resp = await cli.post("/v1/audio/transcriptions", data=form)
+            assert resp.status == 400
+            data = await resp.json()
+            assert "file" in data["error"]["param"]
+
+    @pytest.mark.asyncio
+    async def test_transcription_failure_returns_500(self, adapter):
+        result = {"success": False, "transcript": "", "error": "model not found"}
+        with patch(
+            "tools.transcription_tools.transcribe_audio",
+            return_value=result,
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                form = aiohttp.FormData()
+                form.add_field(
+                    "file",
+                    b"audio",
+                    filename="a.wav",
+                    content_type="audio/wav",
+                )
+                resp = await cli.post("/v1/audio/transcriptions", data=form)
+                assert resp.status == 500
+                data = await resp.json()
+                assert "model not found" in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_requires_auth_when_key_set(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            form = aiohttp.FormData()
+            form.add_field(
+                "file",
+                b"audio",
+                filename="a.wav",
+                content_type="audio/wav",
+            )
+            resp = await cli.post("/v1/audio/transcriptions", data=form)
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_auth_passes_with_bearer(self, auth_adapter):
+        result = {"success": True, "transcript": "ok", "provider": "local"}
+        with patch(
+            "tools.transcription_tools.transcribe_audio",
+            return_value=result,
+        ):
+            app = _create_app(auth_adapter)
+            async with TestClient(TestServer(app)) as cli:
+                form = aiohttp.FormData()
+                form.add_field(
+                    "file",
+                    b"audio",
+                    filename="a.wav",
+                    content_type="audio/wav",
+                )
+                resp = await cli.post(
+                    "/v1/audio/transcriptions",
+                    data=form,
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert resp.status == 200
 
 
 # ---------------------------------------------------------------------------

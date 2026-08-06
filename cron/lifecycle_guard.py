@@ -77,7 +77,14 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # loop instead (#62891) — same foot-gun, indirect shape. Neutral-label
     # submissions that dodge this text anchor are caught separately by
     # `contains_launchctl_submit_command` (execution-aware, label-independent).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap)\b[^\n]*\bhermes[.\-]?gateway)"
+    # `bootout`/`remove`/`disable` sit alongside `unload`: Apple deprecated
+    # load/unload in favour of bootstrap/bootout, so `bootout` is the modern
+    # spelling of an already-listed verb, `remove` is its legacy sibling, and
+    # `disable` is what makes an unload durable across boots. Omitting them
+    # left the bypassable approval layer (tools/approval.py, skipped on
+    # force=True) as the only cover, while this hard block — documented as
+    # "force=True cannot help here" — let them through (#80260).
+    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap|bootout|remove|disable)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch C: systemctl ops on a hermes-gateway unit.
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both

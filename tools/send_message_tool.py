@@ -917,7 +917,17 @@ async def _send_live_adapter_media(
                     f"media file {index + 1}/{total} was not sent"
                 )
             }
-        last_result = await getattr(adapter, method_name)(chat_id, media_path, **kwargs)
+        try:
+            last_result = await getattr(adapter, method_name)(chat_id, media_path, **kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return {
+                "error": (
+                    f"Adapter media send failed after {index}/{total} files: "
+                    f"{_bounded_send_error(exc)}"
+                )
+            }
         if not last_result.success:
             detail = _bounded_send_error(last_result.error or "media send failed")
             return {
@@ -1456,7 +1466,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return last_result
 
     # --- Non-media platforms ---
-    if media_files and not message.strip():
+    # Buzz is a plugin platform with verified native media delivery through
+    # _send_via_adapter below, including valid media-only sends.
+    if media_files and not message.strip() and platform.value != "buzz":
         return {
             "error": (
                 f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack; "
@@ -1464,7 +1476,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             )
         }
     warning = None
-    if media_files:
+    if media_files and platform.value != "buzz":
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
             "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"

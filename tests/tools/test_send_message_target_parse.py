@@ -141,6 +141,78 @@ def test_live_buzz_media_failure_is_explicit_not_omitted(tmp_path) -> None:
     assert "media_delivered" not in result
 
 
+def test_live_buzz_media_only_send_reaches_adapter(tmp_path) -> None:
+    from gateway.platforms.base import SendResult
+
+    platform = Platform("buzz")
+    document = tmp_path / "report.txt"
+    document.write_text("report", encoding="utf-8")
+    media_calls = []
+
+    class Adapter:
+        async def send(self, **kwargs):
+            raise AssertionError("media-only send must not emit an empty text message")
+
+        async def send_document(self, chat_id, file_path, **kwargs):
+            media_calls.append((chat_id, file_path, kwargs))
+            return SendResult(success=True, message_id="evt-document")
+
+    runner = SimpleNamespace(adapters={platform: Adapter()})
+    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+        result = asyncio.run(
+            _send_to_platform(
+                platform,
+                SimpleNamespace(enabled=True, token=None, extra={}),
+                "31b543d5-80d4-4df5-8a5c-cefca1a58fdd",
+                "",
+                media_files=[(str(document), False)],
+            )
+        )
+
+    assert result == {
+        "success": True,
+        "message_id": "evt-document",
+        "media_delivered": True,
+    }
+    assert len(media_calls) == 1
+    assert media_calls[0][1] == str(document)
+
+
+def test_live_buzz_media_exception_reports_partial_delivery(tmp_path) -> None:
+    from gateway.platforms.base import SendResult
+
+    platform = Platform("buzz")
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+
+    class Adapter:
+        async def send(self, **kwargs):
+            return SendResult(success=True, message_id="evt-text")
+
+        async def send_document(self, chat_id, file_path, **kwargs):
+            if file_path == str(second):
+                raise RuntimeError("relay transport failed")
+            return SendResult(success=True, message_id="evt-first")
+
+    runner = SimpleNamespace(adapters={platform: Adapter()})
+    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+        result = asyncio.run(
+            _send_to_platform(
+                platform,
+                SimpleNamespace(enabled=True, token=None, extra={}),
+                "31b543d5-80d4-4df5-8a5c-cefca1a58fdd",
+                "attached files",
+                media_files=[(str(first), False), (str(second), False)],
+            )
+        )
+
+    assert "after 1/2 files" in result["error"]
+    assert "relay transport failed" in result["error"]
+    assert "media_delivered" not in result
+
+
 def test_live_adapter_inherited_media_fallback_is_not_claimed_as_delivery(tmp_path) -> None:
     from gateway.platforms.base import BasePlatformAdapter, SendResult
 

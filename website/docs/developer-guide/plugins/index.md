@@ -72,6 +72,9 @@ them. An enabled package may provide immediate `skills/*/SKILL.md` directories
 and stdio MCP servers from root `mcp.json`. Skills are read-only, namespaced,
 and loaded through `skills_list` plus `skill_view`. MCP commands are passed as
 one executable token with a separate argument list, never through a shell.
+Use `skills_list` to discover the full qualified skill name. Portable skill
+namespaces have the deterministic form `agent-plugin-<slug>-<hash>`, derived
+from the discovered plugin key so sanitized names cannot collide.
 
 Hermes validates `plugin.json`, Agent Skills frontmatter, fixed component
 locations, `mcp.json`, resolved paths, and symlink containment locally. It does

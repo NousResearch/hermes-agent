@@ -808,7 +808,13 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
 
             discover_plugins()
-            all_skills.extend(get_plugin_manager().list_plugin_skill_metadata())
+            for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
+                frontmatter = plugin_skill.pop("frontmatter", {})
+                if not skill_matches_platform(frontmatter):
+                    continue
+                if _is_skill_disabled(plugin_skill["name"]):
+                    continue
+                all_skills.append(plugin_skill)
         except Exception:
             logger.debug("Plugin skill listing failed", exc_info=True)
 
@@ -877,6 +883,40 @@ def _serve_plugin_skill(
             ensure_ascii=False,
         )
 
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+    except Exception as e:
+        return json.dumps(
+            {"success": False, "error": f"Failed to read skill '{namespace}:{bare}': {e}"},
+            ensure_ascii=False,
+        )
+
+    parsed_frontmatter: Dict[str, Any] = {}
+    try:
+        parsed_frontmatter, _ = _parse_frontmatter(content)
+    except Exception:
+        pass
+
+    qualified_name = f"{namespace}:{bare}"
+    if _is_skill_disabled(qualified_name):
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"Skill '{qualified_name}' is disabled.",
+            },
+            ensure_ascii=False,
+        )
+
+    if not skill_matches_platform(parsed_frontmatter):
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"Skill '{qualified_name}' is not supported on this platform.",
+                "readiness_status": SkillReadinessStatus.UNSUPPORTED.value,
+            },
+            ensure_ascii=False,
+        )
+
     if file_path:
         from tools.path_security import has_traversal_component, validate_within_dir
 
@@ -926,30 +966,6 @@ def _serve_plugin_skill(
                 "content": content,
                 "file_type": target.suffix,
                 "_source_path": str(target),
-            },
-            ensure_ascii=False,
-        )
-
-    try:
-        content = skill_md.read_text(encoding="utf-8")
-    except Exception as e:
-        return json.dumps(
-            {"success": False, "error": f"Failed to read skill '{namespace}:{bare}': {e}"},
-            ensure_ascii=False,
-        )
-
-    parsed_frontmatter: Dict[str, Any] = {}
-    try:
-        parsed_frontmatter, _ = _parse_frontmatter(content)
-    except Exception:
-        pass
-
-    if not skill_matches_platform(parsed_frontmatter):
-        return json.dumps(
-            {
-                "success": False,
-                "error": f"Skill '{namespace}:{bare}' is not supported on this platform.",
-                "readiness_status": SkillReadinessStatus.UNSUPPORTED.value,
             },
             ensure_ascii=False,
         )

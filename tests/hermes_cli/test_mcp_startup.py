@@ -147,7 +147,6 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
 
 
 def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
-    manager = types.SimpleNamespace(has_portable_mcp_servers=lambda: True)
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
@@ -155,10 +154,9 @@ def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.plugins",
+        "hermes_cli.agent_plugins",
         types.SimpleNamespace(
-            discover_plugins=lambda: None,
-            get_plugin_manager=lambda: manager,
+            has_enabled_agent_plugin_mcp=lambda _config: True,
         ),
     )
 
@@ -199,6 +197,5 @@ def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
             get_mcp_status=lambda: [{"connected": connected}],
         ),
     )
-
 
 

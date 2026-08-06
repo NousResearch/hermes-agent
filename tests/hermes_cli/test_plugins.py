@@ -22,6 +22,7 @@ from hermes_cli.plugins import (
     get_pre_verify_continue_message,
     has_middleware,
     resolve_plugin_command_result,
+    _portable_skill_namespace,
 )
 from hermes_cli.middleware import (
     VALID_MIDDLEWARE,
@@ -32,6 +33,15 @@ from hermes_cli.middleware import (
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
+
+
+def test_portable_skill_namespace_is_ascii_safe():
+    from agent.skill_utils import is_valid_namespace
+
+    namespace = _portable_skill_namespace("café/portable")
+
+    assert namespace.isascii()
+    assert is_valid_namespace(namespace)
 
 
 def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",

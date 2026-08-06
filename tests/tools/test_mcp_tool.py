@@ -141,6 +141,50 @@ class TestLoadMCPConfig:
         assert result["native"]["args"] == ["3000"]
         assert result["agent-plugin-demo__worker"]["args"] == ["${UNKNOWN}"]
 
+    def test_portable_server_resolves_through_real_plugin_discovery(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+        import yaml
+        from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
+        from hermes_cli import plugins as plugins_mod
+
+        home = tmp_path / "home"
+        plugin = home / "plugins" / "portable"
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.json").write_text(
+            json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "portable.test"})
+        )
+        (plugin / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "$schema": MCP_SCHEMA_V1,
+                    "mcpServers": {
+                        "worker": {"type": "stdio", "command": "python"}
+                    },
+                }
+            )
+        )
+        home.mkdir(exist_ok=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["portable.test"]}})
+        )
+        bundled = tmp_path / "bundled"
+        bundled.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", None)
+
+        from tools.mcp_tool import _load_mcp_config
+
+        result = _load_mcp_config()
+
+        [server] = result.values()
+        assert server["command"] == "python"
+        assert server["cwd"] == str(plugin.resolve())
+        assert server["env"]["PLUGIN_ROOT"] == str(plugin.resolve())
+        assert server["env"]["PLUGIN_DATA"].startswith(str(home / "plugin-data"))
+
 
 class TestMCPParallelSafetyProvenance:
     def test_parallel_safe_servers_keep_exact_raw_names(self, monkeypatch):
@@ -776,6 +820,23 @@ class TestMCPServerTask:
 
                 await server.shutdown()
                 assert server.session is None
+
+        asyncio.run(_test())
+
+    def test_start_preserves_native_default_cwd(self):
+        from tools.mcp_tool import MCPServerTask
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
+                server = MCPServerTask("native")
+                await server.start({"command": "npx", "args": ["-y", "test"]})
+                assert params.call_args.kwargs["cwd"] is None
+                await server.shutdown()
 
         asyncio.run(_test())
 

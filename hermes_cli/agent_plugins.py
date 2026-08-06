@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Tuple
 
-from agent.skill_utils import parse_frontmatter
+from agent.skill_utils import yaml_load
 
 
 PLUGIN_SCHEMA_V1 = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
@@ -52,7 +52,6 @@ class AgentPluginError(ValueError):
 class AgentPluginDiagnostic:
     scope: str
     message: str
-    fatal: bool = False
 
 
 @dataclass(frozen=True)
@@ -174,8 +173,8 @@ def _valid_skill_frontmatter(
         return "license must be a string"
     if "compatibility" in frontmatter:
         compatibility = frontmatter["compatibility"]
-        if not isinstance(compatibility, str) or len(compatibility) > 500:
-            return "compatibility must be a string of at most 500 characters"
+        if not isinstance(compatibility, str) or not 1 <= len(compatibility) <= 500:
+            return "compatibility must be a string of 1 to 500 characters"
     if "metadata" in frontmatter:
         metadata = frontmatter["metadata"]
         if not isinstance(metadata, dict) or any(
@@ -221,9 +220,19 @@ def _discover_skills(
             continue
         try:
             content = skill_md.read_text(encoding="utf-8")
-            if not content.lstrip("\ufeff").startswith("---"):
+            content = content.lstrip("\ufeff")
+            if not content.startswith("---"):
                 raise ValueError("missing YAML frontmatter")
-            frontmatter, _ = parse_frontmatter(content)
+            end_match = re.search(r"\n---\s*\n", content[3:])
+            if end_match is None:
+                raise ValueError("unterminated YAML frontmatter")
+            try:
+                parsed = yaml_load(content[3 : end_match.start() + 3])
+            except Exception as exc:
+                raise ValueError(f"invalid YAML frontmatter: {exc}") from exc
+            if not isinstance(parsed, dict):
+                raise ValueError("YAML frontmatter must be an object")
+            frontmatter = parsed
         except (OSError, UnicodeError, ValueError) as exc:
             diagnostics.append(AgentPluginDiagnostic(scope, f"invalid SKILL.md: {exc}"))
             continue
@@ -252,22 +261,21 @@ def _expand(value: str, plugin_root: Path, data_root: Path) -> str:
 
 
 def _resolve_scoped_path(value: str, plugin_root: Path, data_root: Path) -> Path:
+    expanded = _expand(value, plugin_root, data_root)
     if value.startswith("./"):
         base = plugin_root
-        candidate = base / value[2:]
+        candidate = base / expanded[2:]
     elif value == "${PLUGIN_ROOT}" or value.startswith("${PLUGIN_ROOT}/"):
         base = plugin_root
-        suffix = value[len("${PLUGIN_ROOT}") :].lstrip("/")
-        candidate = base / suffix
+        candidate = Path(expanded)
     elif value == "${PLUGIN_DATA}" or value.startswith("${PLUGIN_DATA}/"):
         base = data_root
-        suffix = value[len("${PLUGIN_DATA}") :].lstrip("/")
-        candidate = base / suffix
+        candidate = Path(expanded)
     else:
         raise ValueError("path must start with ./, ${PLUGIN_ROOT}, or ${PLUGIN_DATA}")
     resolved = candidate.resolve(strict=False)
     try:
-        resolved.relative_to(base.resolve(strict=True))
+        resolved.relative_to(base.resolve(strict=False))
     except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError("path escapes its resolved root") from exc
     return resolved
@@ -303,6 +311,8 @@ def _translate_stdio(
         raise ValueError("command must be a non-empty executable token")
     if command.startswith("./"):
         command_value = str(_resolve_scoped_path(command, plugin_root, data_root))
+    elif any(character.isspace() for character in command):
+        raise ValueError("command must contain one executable token")
     elif "/" in command or "\\" in command or command in {".", ".."}:
         raise ValueError("command must be a bare executable or begin with ./")
     else:
@@ -347,6 +357,8 @@ def _discover_mcp(
     root: Path,
     data_root: Path,
     diagnostics: list[AgentPluginDiagnostic],
+    *,
+    create_data: bool = True,
 ) -> Dict[str, Dict[str, Any]]:
     mcp_path = root / "mcp.json"
     if not mcp_path.exists() and not mcp_path.is_symlink():
@@ -387,7 +399,10 @@ def _discover_mcp(
         server_type = server.get("type")
         if server_type == "stdio":
             try:
-                translated[name] = _translate_stdio(server, root, data_root)
+                translated_server = _translate_stdio(server, root, data_root)
+                if create_data:
+                    data_root.mkdir(parents=True, exist_ok=True)
+                translated[name] = translated_server
             except (OSError, ValueError) as exc:
                 diagnostics.append(AgentPluginDiagnostic(scope, str(exc)))
         elif server_type in {"streamable-http", "sse"}:
@@ -422,8 +437,6 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
         raise AgentPluginError("plugin root must be a directory")
     manifest, diagnostics = _validate_manifest(root)
     resolved_data = Path(data_root).resolve(strict=False)
-    resolved_data.mkdir(parents=True, exist_ok=True)
-    resolved_data = resolved_data.resolve(strict=True)
     skills = _discover_skills(root, diagnostics)
     mcp_servers = _discover_mcp(root, resolved_data, diagnostics)
     return AgentPluginPackage(
@@ -447,3 +460,84 @@ def read_agent_plugin_manifest(plugin_root: Path) -> tuple[dict, tuple[AgentPlug
         raise AgentPluginError("plugin root must be a directory")
     manifest, diagnostics = _validate_manifest(root)
     return manifest, tuple(diagnostics)
+
+
+def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
+    """Cheaply detect an enabled portable package with a root ``mcp.json``.
+
+    This probe intentionally does not import or register native plugins. Full
+    validation remains in the background MCP discovery path.
+    """
+
+    plugins_config = raw_config.get("plugins")
+    if not isinstance(plugins_config, dict):
+        return False
+    enabled_value = plugins_config.get("enabled")
+    if not isinstance(enabled_value, list):
+        return False
+    enabled = {value for value in enabled_value if isinstance(value, str)}
+    disabled_value = plugins_config.get("disabled", [])
+    disabled = (
+        {value for value in disabled_value if isinstance(value, str)}
+        if isinstance(disabled_value, list)
+        else set()
+    )
+    if not enabled:
+        return False
+
+    from hermes_constants import get_hermes_home
+    from utils import env_var_enabled
+
+    if env_var_enabled("HERMES_SAFE_MODE"):
+        return False
+
+    bundled = Path(
+        os.getenv("HERMES_BUNDLED_PLUGINS", Path(__file__).resolve().parent.parent / "plugins")
+    )
+    search_roots: list[tuple[Path, set[str]]] = [
+        (
+            bundled,
+            {"memory", "context_engine", "platforms", "model-providers"},
+        ),
+        (bundled / "platforms", set()),
+        (get_hermes_home() / "plugins", set()),
+    ]
+    if env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+        search_roots.append((Path.cwd() / ".hermes" / "plugins", set()))
+
+    winners: dict[str, tuple[str, Path]] = {}
+
+    def scan(directory: Path, *, prefix: str, depth: int, skip: set[str]) -> None:
+        try:
+            children = sorted(directory.iterdir(), key=lambda path: path.name)
+        except OSError:
+            return
+        for child in children:
+            if not child.is_dir() or (depth == 0 and child.name in skip):
+                continue
+            if (child / "plugin.yaml").exists() or (child / "plugin.yml").exists():
+                continue
+            portable_file = child / "plugin.json"
+            if portable_file.exists() or portable_file.is_symlink():
+                try:
+                    manifest, _ = read_agent_plugin_manifest(child)
+                except (AgentPluginError, OSError, RuntimeError):
+                    continue
+                key = f"{prefix}/{child.name}" if prefix else manifest["name"]
+                winners[key] = (manifest["name"], child)
+                continue
+            if depth == 0:
+                nested_prefix = f"{prefix}/{child.name}" if prefix else child.name
+                scan(child, prefix=nested_prefix, depth=1, skip=set())
+
+    for search_root, skip_names in search_roots:
+        scan(search_root, prefix="", depth=0, skip=skip_names)
+
+    for key, (name, root) in winners.items():
+        if key in disabled or name in disabled:
+            continue
+        if key not in enabled and name not in enabled:
+            continue
+        if _discover_mcp(root, get_hermes_home() / "plugin-data" / name, [], create_data=False):
+            return True
+    return False

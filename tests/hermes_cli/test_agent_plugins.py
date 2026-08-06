@@ -11,6 +11,7 @@ from hermes_cli.agent_plugins import (
     MCP_SCHEMA_V1,
     PLUGIN_SCHEMA_V1,
     AgentPluginError,
+    has_enabled_agent_plugin_mcp,
     load_agent_plugin,
 )
 
@@ -100,7 +101,6 @@ def test_unknown_fields_and_non_object_extensions_are_nonfatal(tmp_path: Path) -
     )
     package = load_agent_plugin(tmp_path, tmp_path / "data")
     assert len(package.diagnostics) == 2
-    assert all(d.fatal is False for d in package.diagnostics)
 
 
 def test_invalid_skill_does_not_hide_valid_sibling(tmp_path: Path) -> None:
@@ -118,6 +118,7 @@ def test_invalid_skill_does_not_hide_valid_sibling(tmp_path: Path) -> None:
     ("field", "value"),
     [
         ("license", ["MIT"]),
+        ("compatibility", ""),
         ("compatibility", 1),
         ("metadata", []),
         ("allowed-tools", ["terminal"]),
@@ -168,6 +169,11 @@ def test_stdio_command_and_data_cwd_containment(tmp_path: Path) -> None:
                     "type": "stdio",
                     "command": "./../outside",
                 },
+                "mixed-root": {
+                    "type": "stdio",
+                    "command": "python",
+                    "cwd": "./${PLUGIN_DATA}/state",
+                },
             },
         },
     )
@@ -176,6 +182,50 @@ def test_stdio_command_and_data_cwd_containment(tmp_path: Path) -> None:
     assert package.mcp_servers["valid"]["cwd"] == str(
         (tmp_path / "data" / "state").resolve()
     )
+
+
+def test_malformed_skill_yaml_is_skipped(tmp_path: Path) -> None:
+    _write_json(tmp_path / "plugin.json", _manifest())
+    skill = tmp_path / "skills" / "broken"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: broken\ndescription: [unterminated\n---\nBody.\n",
+        encoding="utf-8",
+    )
+
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+
+    assert package.skills == ()
+    assert any(d.scope == "skill:broken" for d in package.diagnostics)
+
+
+def test_data_directory_failure_preserves_valid_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_json(tmp_path / "plugin.json", _manifest())
+    _write_skill(tmp_path)
+    _write_json(
+        tmp_path / "mcp.json",
+        {
+            "$schema": MCP_SCHEMA_V1,
+            "mcpServers": {"worker": {"type": "stdio", "command": "python"}},
+        },
+    )
+    data_root = tmp_path / "data"
+    original_mkdir = Path.mkdir
+
+    def fail_data_mkdir(path: Path, *args: object, **kwargs: object) -> None:
+        if path == data_root:
+            raise PermissionError("read-only profile")
+        original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fail_data_mkdir)
+
+    package = load_agent_plugin(tmp_path, data_root)
+
+    assert len(package.skills) == 1
+    assert package.mcp_servers == {}
+    assert any(d.scope == "mcp:worker" for d in package.diagnostics)
 
 
 def test_invalid_entries_and_unsupported_remote_preserve_valid_stdio(
@@ -189,6 +239,17 @@ def test_invalid_entries_and_unsupported_remote_preserve_valid_stdio(
             "mcpServers": {
                 "valid": {"type": "stdio", "command": "python"},
                 "invalid": {"type": "stdio", "command": "python", "extra": True},
+                "multi-token": {"type": "stdio", "command": "python -m worker"},
+                "reserved-root": {
+                    "type": "stdio",
+                    "command": "python",
+                    "env": {"PLUGIN_ROOT": "override"},
+                },
+                "reserved-data": {
+                    "type": "stdio",
+                    "command": "python",
+                    "env": {"PLUGIN_DATA": "override"},
+                },
                 "remote": {
                     "type": "streamable-http",
                     "url": "https://example.test/mcp",
@@ -200,6 +261,9 @@ def test_invalid_entries_and_unsupported_remote_preserve_valid_stdio(
     assert set(package.mcp_servers) == {"valid"}
     assert {d.scope for d in package.diagnostics} >= {
         "mcp:invalid",
+        "mcp:multi-token",
+        "mcp:reserved-root",
+        "mcp:reserved-data",
         "mcp:remote",
     }
 
@@ -214,3 +278,86 @@ def test_invalid_mcp_top_level_preserves_skills(tmp_path: Path) -> None:
     package = load_agent_plugin(tmp_path, tmp_path / "data")
     assert len(package.skills) == 1
     assert package.mcp_servers == {}
+
+
+def test_enabled_portable_mcp_probe_does_not_load_plugins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    plugin = home / "plugins" / "portable"
+    plugin.mkdir(parents=True)
+    _write_json(plugin / "plugin.json", _manifest())
+    _write_json(
+        plugin / "mcp.json",
+        {
+            "$schema": MCP_SCHEMA_V1,
+            "mcpServers": {"worker": {"type": "stdio", "command": "python"}},
+        },
+    )
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+
+    assert has_enabled_agent_plugin_mcp(
+        {"plugins": {"enabled": ["portable.test"]}}
+    )
+    assert not has_enabled_agent_plugin_mcp(
+        {
+            "plugins": {
+                "enabled": ["portable.test"],
+                "disabled": ["portable.test"],
+            }
+        }
+    )
+
+
+def test_portable_mcp_probe_ignores_unsupported_only_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    plugin = home / "plugins" / "portable"
+    plugin.mkdir(parents=True)
+    _write_json(plugin / "plugin.json", _manifest())
+    _write_json(
+        plugin / "mcp.json",
+        {
+            "$schema": MCP_SCHEMA_V1,
+            "mcpServers": {
+                "remote": {
+                    "type": "streamable-http",
+                    "url": "https://example.test/mcp",
+                }
+            },
+        },
+    )
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+
+    assert not has_enabled_agent_plugin_mcp(
+        {"plugins": {"enabled": ["portable.test"]}}
+    )
+
+
+def test_portable_mcp_probe_honors_native_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    plugin = home / "plugins" / "portable"
+    plugin.mkdir(parents=True)
+    _write_json(plugin / "plugin.json", _manifest())
+    (plugin / "plugin.yaml").write_text("name: native\n", encoding="utf-8")
+    _write_json(
+        plugin / "mcp.json",
+        {"$schema": MCP_SCHEMA_V1, "mcpServers": {}},
+    )
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+
+    assert not has_enabled_agent_plugin_mcp(
+        {"plugins": {"enabled": ["portable.test"]}}
+    )

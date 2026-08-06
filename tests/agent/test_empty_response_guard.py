@@ -129,15 +129,32 @@ class TestDeterministicEmpty:
         _record_streak(agent, [_response(), _response()])
         assert guard.deterministic_empty(agent) is False
 
-    def test_reasoning_tokens_count_as_generation(self, monkeypatch):
+    def test_reasoning_tokens_count_as_generation(self):
         """Reasoning-only responses are owned by the prefill path; the
-        guard must not classify them as deterministic empties."""
-        canonical = SimpleNamespace(output_tokens=0, reasoning_tokens=128)
-        monkeypatch.setattr(
-            guard, "_zero_output", lambda a, r: (True, (0 + 128) == 0)
-        )
+        guard must not classify them as deterministic empties.
+
+        Exercises the real _zero_output/normalize_usage path: a chat
+        completions response with completion_tokens == 0 but
+        completion_tokens_details.reasoning_tokens > 0 (hidden thinking,
+        no visible text) counts as generation."""
+
+        def _reasoning_only_response():
+            usage = SimpleNamespace(
+                prompt_tokens=25_900,
+                completion_tokens=0,
+                total_tokens=25_900,
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=128),
+            )
+            return SimpleNamespace(usage=usage)
+
         agent = _agent()
-        _record_streak(agent, [_response(), _response()])
+        present, zero = guard._zero_output(agent, _reasoning_only_response())
+        assert present is True
+        assert zero is False  # reasoning tokens are real generation
+
+        _record_streak(
+            agent, [_reasoning_only_response(), _reasoning_only_response()]
+        )
         assert guard.deterministic_empty(agent) is False
 
 
@@ -205,12 +222,9 @@ class TestEmptyRetryBudget:
             == guard.DEFAULT_EMPTY_RETRY_BUDGET
         )
 
-    def test_pricing_exception_fails_open(self, monkeypatch):
-        def _boom(a, r):
-            raise RuntimeError("pricing exploded")
-
-        # _estimate_attempt_cost itself catches internally; simulate at
-        # the normalize layer by feeding garbage usage.
+    def test_pricing_exception_fails_open(self):
+        # Garbage usage at the normalize layer must not tighten the budget;
+        # _estimate_attempt_cost catches internally and returns None.
         agent = _agent(model=None, provider=None)
         resp = SimpleNamespace(usage=object())
         assert (

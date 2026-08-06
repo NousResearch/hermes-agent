@@ -145,6 +145,47 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_fallback_entry_applies_and_restores_max_output_tokens(self):
+        fbs = [
+            {
+                "provider": "custom",
+                "model": "fallback-model",
+                "base_url": "https://fallback.example/v1",
+                "max_output_tokens": 2048,
+                "enabled_toolsets": ["terminal", "file"],
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        assert agent.max_tokens is None
+        primary_tools = agent.tools
+        fallback_tools = [
+            {"type": "function", "function": {"name": "terminal"}},
+            {"type": "function", "function": {"name": "read_file"}},
+        ]
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(
+                        base_url="https://fallback.example/v1",
+                        api_key="env-secret",
+                    ),
+                    "fallback-model",
+                ),
+            ),
+            patch("model_tools.get_tool_definitions", return_value=fallback_tools),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.max_tokens == 2048
+        assert agent.tools == fallback_tools
+        assert agent.valid_tool_names == {"terminal", "read_file"}
+        assert agent._restore_primary_runtime() is True
+        assert agent.max_tokens is None
+        assert agent.tools is primary_tools
+        assert agent.valid_tool_names == set()
+
 
     def test_nous_anthropic_fallback_uses_the_messages_wire(self):
         """Portal Claude fallbacks must not stay on chat_completions.

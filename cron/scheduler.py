@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import timedelta
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -55,6 +56,107 @@ from agent.delegation_context import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _positive_int(value: Any) -> int | None:
+    """Return a strictly positive integer, rejecting booleans and junk."""
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _in_weekly_final_window(now, policy: dict) -> bool:
+    """Whether *now* is inside the configured window before weekly reset."""
+    reset_weekday = policy.get("reset_weekday", 0)
+    if isinstance(reset_weekday, bool):
+        return False
+    try:
+        reset_weekday = int(reset_weekday)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if reset_weekday not in range(7):
+        return False
+
+    reset_time = str(policy.get("reset_time") or "00:00").strip()
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", reset_time)
+    if not match:
+        return False
+    hour, minute, second = (int(part or 0) for part in match.groups())
+    if hour > 23 or minute > 59 or second > 59:
+        return False
+
+    window_hours = policy.get("window_hours", 24)
+    if isinstance(window_hours, bool):
+        return False
+    try:
+        window_hours = float(window_hours)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not 0 < window_hours < 168:
+        return False
+
+    reset_today = now.replace(
+        hour=hour,
+        minute=minute,
+        second=second,
+        microsecond=0,
+    )
+    days_ahead = (reset_weekday - now.weekday()) % 7
+    next_reset = reset_today + timedelta(days=days_ahead)
+    if next_reset <= now:
+        next_reset += timedelta(days=7)
+    seconds_remaining = (next_reset - now).total_seconds()
+    return 0 < seconds_remaining <= window_hours * 3600
+
+
+def _resolve_cron_max_iterations(
+    job: dict,
+    cfg: dict,
+    *,
+    provider: str | None = None,
+    now=None,
+) -> int:
+    """Resolve the cron-only agent limit and optional final-day burst.
+
+    A per-job limit is the most precise control and must not be shadowed by
+    the interactive agent's ``agent.max_turns`` setting. The optional weekly
+    final-day policy raises (never lowers) that limit only for the configured
+    provider during the bounded window immediately before its reset.
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+
+    base = None
+    for candidate in (
+        job.get("max_iterations"),
+        cron_cfg.get("max_iterations"),
+        agent_cfg.get("max_turns"),
+        cfg.get("max_turns"),
+        500,
+    ):
+        base = _positive_int(candidate)
+        if base is not None:
+            break
+    assert base is not None
+
+    policy = cron_cfg.get("weekly_final_day")
+    if not isinstance(policy, dict) or not policy.get("enabled"):
+        return base
+    policy_provider = str(policy.get("provider") or "").strip().lower()
+    runtime_provider = str(provider or "").strip().lower()
+    if policy_provider and runtime_provider != policy_provider:
+        return base
+    final_limit = _positive_int(policy.get("max_iterations"))
+    if final_limit is None or final_limit <= base:
+        return base
+    if _in_weekly_final_window(now or _hermes_now(), policy):
+        return final_limit
+    return base
 
 
 def _set_cron_session_title(session_db, session_id, base_title):
@@ -3308,9 +3410,6 @@ def run_job(
                     logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
-        # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 500
-
         # Provider routing
         pr = _cfg.get("provider_routing") or {}
 
@@ -3486,6 +3585,11 @@ def run_job(
         fallback_model = get_fallback_chain(_cfg) or None
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
+        max_iterations = _resolve_cron_max_iterations(
+            job,
+            _cfg,
+            provider=runtime_provider,
+        )
         if runtime_provider:
             try:
                 from agent.credential_pool import load_pool

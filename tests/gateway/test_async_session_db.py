@@ -91,7 +91,17 @@ async def test_offload_goes_through_to_thread(monkeypatch):
 # Guard: no raw self._session_db.<method>( on the gateway loop
 # --------------------------------------------------------------------------
 
-_GATEWAY_FILES = ("gateway/run.py", "gateway/slash_commands.py")
+def _gateway_files():
+    root = Path(__file__).resolve().parents[2]
+    leaves = tuple(
+        str(path.relative_to(root))
+        for path in sorted((root / "gateway" / "slash_commands").glob("*.py"))
+    )
+    assert leaves, "gateway/slash_commands/*.py matched nothing"
+    return ("gateway/run.py", *leaves)
+
+
+_GATEWAY_FILES = _gateway_files()
 # The only legitimate non-loop paths:
 #   - SessionDB.sanitize_title: pure @staticmethod string cleaning, no DB.
 #   - self._session_db._db.<x>: the sync escape, allowed ONLY where the call is

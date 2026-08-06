@@ -22,9 +22,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+import textwrap
 
 from gateway import run as gateway_run
-from gateway import slash_commands as gateway_slash
 
 
 def _assigns_false(node: ast.AST, attr: str) -> bool:
@@ -79,7 +79,11 @@ def test_slash_command_model_path_consumes_was_auto_reset():
     `was_auto_reset` before storing the new model override, so a
     /model-first-after-auto-reset isn't wiped by the next message's cleanup
     (#48031)."""
-    src = inspect.getsource(gateway_slash)
+    from gateway.slash_commands import GatewaySlashCommandsMixin
+
+    src = textwrap.dedent(
+        inspect.getsource(GatewaySlashCommandsMixin._handle_model_command)
+    )
     tree = ast.parse(src)
     assert _assigns_false(tree, "was_auto_reset"), (
         "gateway/slash_commands.py model path must set "

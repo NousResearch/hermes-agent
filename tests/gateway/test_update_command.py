@@ -76,14 +76,12 @@ class TestHandleUpdateCommand:
                 pass
 
             # Actually, simplest: just patch the specific file attr.
-            # The _handle_update_command handler lives in gateway/slash_commands.py
-            # (extracted from run.py in the god-file decomposition); it resolves
-            # project_root via Path(__file__).parent.parent, so fake that file.
-            fake_file = str(fake_root / "gateway" / "slash_commands.py")
-            (fake_root / "gateway").mkdir(parents=True)
-            (fake_root / "gateway" / "slash_commands.py").touch()
+            # The leaf is one directory deeper than the former monolith.
+            fake_file = str(fake_root / "gateway" / "slash_commands" / "update.py")
+            (fake_root / "gateway" / "slash_commands").mkdir(parents=True)
+            (fake_root / "gateway" / "slash_commands" / "update.py").touch()
 
-            with patch("gateway.slash_commands.__file__", fake_file):
+            with patch("gateway.slash_commands.update.__file__", fake_file):
                 result = await runner._handle_update_command(event)
 
         assert "Not a git repository" in result
@@ -425,10 +423,36 @@ class TestUpdateInHelp:
 
 
     def test_update_is_known_command(self):
-        """The /update command is in the help text (proxy for _known_commands)."""
-        # _known_commands is local to _handle_message, so we verify by
-        # checking the help output includes it.
-        from gateway.run import GatewayRunner
-        import inspect
-        source = inspect.getsource(GatewayRunner._handle_message)
-        assert '"update"' in source
+        from gateway.slash_commands import GatewaySlashCommandsMixin
+        from gateway.slash_commands.registry import GATEWAY_SLASH_HANDLERS
+
+        assert GATEWAY_SLASH_HANDLERS["update"] == "_handle_update_command"
+        assert hasattr(GatewaySlashCommandsMixin, "_handle_update_command")
+
+
+def test_update_handler_resolves_real_repository_root():
+    """Moving the handler one directory deeper must preserve its effective root."""
+    import ast
+    import inspect
+    import textwrap
+
+    from gateway.slash_commands import GatewaySlashCommandsMixin
+    from gateway.slash_commands import update as update_module
+
+    source = textwrap.dedent(
+        inspect.getsource(GatewaySlashCommandsMixin._handle_update_command)
+    )
+    project_root_expr = next(
+        node.value
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "project_root"
+            for target in node.targets
+        )
+    )
+    resolved = eval(  # noqa: S307 - evaluates the handler's own fixed expression
+        compile(ast.Expression(project_root_expr), "<update-handler>", "eval"),
+        {"Path": Path, "__file__": update_module.__file__},
+    )
+    assert resolved == Path(__file__).resolve().parents[2]

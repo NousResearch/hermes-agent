@@ -23,7 +23,7 @@ import asyncio
 
 import pytest
 
-import gateway.slash_commands as slash_commands
+import gateway.slash_commands.model as slash_commands
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner

@@ -2376,6 +2376,7 @@ from gateway.session_state import (
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
+from gateway.slash_commands.registry import GATEWAY_SLASH_HANDLERS
 from gateway.turn_context import TurnContext
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -15074,56 +15075,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 execute=_do_reset,
             )
 
-        if canonical == "topic":
-            return await self._handle_topic_command(event)
-        
-        if canonical == "help":
-            return await self._handle_help_command(event)
-
         if canonical == "start":
             logger.info("Ignoring /start platform ping for session %s", _quick_key)
             return ""
-
-        if canonical == "commands":
-            return await self._handle_commands_command(event)
-        
-        if canonical == "profile":
-            return await self._handle_profile_command(event)
-
-        if canonical == "whoami":
-            return await self._handle_whoami_command(event)
-
-        if canonical == "status":
-            return await self._handle_status_command(event)
 
         if canonical == "egress":
             from hermes_cli.proxy_cli import format_status_text
 
             return format_status_text()
-
-        if canonical == "context":
-            return await self._handle_context_command(event)
-
-        if canonical == "agents":
-            return await self._handle_agents_command(event)
-
-        if canonical == "platform":
-            return await self._handle_platform_command(event)
-
-        if canonical == "restart":
-            return await self._handle_restart_command(event)
-        
-        if canonical == "stop":
-            return await self._handle_stop_command(event)
-        
-        if canonical == "reasoning":
-            return await self._handle_reasoning_command(event)
-
-        if canonical == "memory":
-            return await self._handle_memory_command(event)
-
-        if canonical == "skills":
-            return await self._handle_skills_command(event)
 
         if canonical == "learn":
             # Open-ended: rewrite the turn to a standards-guided prompt and fall
@@ -15181,33 +15140,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             event.text = _init_prompt
             # fall through to agent processing
 
-        if canonical == "fast":
-            return await self._handle_fast_command(event)
-
-        if canonical == "verbose":
-            return await self._handle_verbose_command(event)
-
-        if canonical == "footer":
-            return await self._handle_footer_command(event)
-
-        if canonical == "yolo":
-            return await self._handle_yolo_command(event)
-
-        if canonical == "approvals":
-            return await self._handle_approvals_command(event)
-
-        if canonical == "model":
-            return await self._handle_model_command(event)
-
-        if canonical == "codex-runtime":
-            return await self._handle_codex_runtime_command(event)
-
-        if canonical == "personality":
-            return await self._handle_personality_command(event)
-
-        if canonical == "kanban":
-            return await self._handle_kanban_command(event)
-
         if canonical == "suggestions":
             return await self._handle_suggestions_command(event)
 
@@ -15239,9 +15171,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 return getattr(_blueprint_result, "text", "") or None
 
-        if canonical == "retry":
-            return await self._handle_retry_command(event)
-        
         if canonical == "undo":
             async def _do_undo():
                 return await self._handle_undo_command(event)
@@ -15265,66 +15194,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 execute=_do_undo,
             )
         
-        if canonical == "sethome":
-            return await self._handle_set_home_command(event)
-
-        if canonical == "compress":
-            return await self._handle_compress_command(event)
-
-        if canonical == "usage":
-            return await self._handle_usage_command(event)
-
-        if canonical == "topup":
-            return await self._handle_topup_command(event)
-
-        if canonical == "insights":
-            return await self._handle_insights_command(event)
-
-        if canonical == "reload-mcp":
-            return await self._handle_reload_mcp_command(event)
-
-        if canonical == "reload-skills":
-            return await self._handle_reload_skills_command(event)
-
-        if canonical == "bundles":
-            return await self._handle_bundles_command(event)
-
-        if canonical == "approve":
-            return await self._handle_approve_command(event)
-
-        if canonical == "deny":
-            return await self._handle_deny_command(event)
-
-        if canonical == "update":
-            return await self._handle_update_command(event)
-
-        if canonical == "version":
-            return await self._handle_version_command(event)
-
-        if canonical == "debug":
-            return await self._handle_debug_command(event)
-
-        if canonical == "title":
-            return await self._handle_title_command(event)
-
-        if canonical == "resume":
-            return await self._handle_resume_command(event)
-
-        if canonical == "sessions":
-            return await self._handle_sessions_command(event)
-
-        if canonical == "branch":
-            return await self._handle_branch_command(event)
-
-        if canonical == "rollback":
-            return await self._handle_rollback_command(event)
-
-        if canonical == "diff":
-            return await self._handle_diff_command(event)
-
-        if canonical == "background":
-            return await self._handle_background_command(event)
-
         if canonical == "queue":
             queue_payload = event.get_command_args().strip()
             if not queue_payload:
@@ -15348,14 +15217,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Do NOT return — fall through to _handle_message_with_agent
             # at the end of this function so the rewritten text is sent
             # to the agent as a regular user turn.
-
-        if canonical == "goal":
-            return await self._handle_goal_command(event)
-
-        if canonical == "heartbeat":
-            return await self._handle_heartbeat_command(event)
-        if canonical == "refine":
-            return await self._handle_refine_command(event)
 
         if canonical == "moa":
             # /moa is one-shot sugar only: run a single prompt through the
@@ -15393,11 +15254,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 return "Failed to prepare MoA turn."
 
-        if canonical == "subgoal":
-            return await self._handle_subgoal_command(event)
-
-        if canonical == "voice":
-            return await self._handle_voice_command(event)
+        # Table dispatch for every plain
+        # ``canonical -> self._handle_x_command(event)`` binding. Keep this at
+        # the end of the chain so non-uniform commands above retain their exact
+        # ordering and fall-through behavior. Values are method names, so
+        # ``getattr`` still creates a bound method on this runner.
+        _handler_name = (
+            GATEWAY_SLASH_HANDLERS.get(canonical)
+            if isinstance(canonical, str)
+            else None
+        )
+        if _handler_name is not None:
+            return await getattr(self, _handler_name)(event)
 
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."

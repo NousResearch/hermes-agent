@@ -62,9 +62,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_LEASES = 512
 
 # Fallback wait (seconds) when the caller passes no positive timeout. The
-# gateway exposes this independently as HERMES_TURN_LEASE_TIMEOUT because lease
-# contention is not agent inactivity. A caller that reaches this bound must
-# reject the turn rather than run it concurrently with the holder.
+# gateway carries this independently through its internal
+# HERMES_TURN_LEASE_TIMEOUT bridge because lease contention is not agent
+# inactivity. A caller that reaches this bound must reject the turn rather than
+# run it concurrently with the holder.
 DEFAULT_LEASE_WAIT = 1800.0
 
 

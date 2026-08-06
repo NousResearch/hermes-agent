@@ -102,6 +102,7 @@ def test_timeout_fails_closed_instead_of_authorizing_an_unserialized_turn():
     The two turns could then load the same history base and interleave their
     transcript writes, defeating the serialization invariant this lease owns.
     """
+
     async def scenario():
         registry = SessionTurnLeaseRegistry()
         holder = await registry.acquire(
@@ -226,7 +227,9 @@ def test_rebind_moves_serialization_to_new_session_id():
 
     async def scenario():
         registry = SessionTurnLeaseRegistry()
-        token = await registry.acquire("parent", owner_key="key-a", generation=1, timeout=5)
+        token = await registry.acquire(
+            "parent", owner_key="key-a", generation=1, timeout=5
+        )
         assert registry.rebind(token, "child") is True
         assert token is not None and token.session_id == "child"
 

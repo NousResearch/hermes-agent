@@ -883,6 +883,24 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 The summary model **must** have a context window at least as large as your main agent model's. The compressor sends the full middle section of the conversation to the summary model — if that model's context window is smaller than the main model's, the summarization call will fail with a context length error. When this happens, the middle turns are **dropped without a summary**, losing conversation context silently. If you override the model, verify its context length meets or exceeds your main model's.
 :::
 
+## Gateway Turn Lease Timeout
+
+The gateway serializes turns by their resolved session ID so two routing keys
+cannot load and write the same transcript concurrently. Configure the maximum
+lease wait independently of the ordinary agent inactivity timeout:
+
+```yaml
+agent:
+  gateway_turn_lease_timeout: 1800
+```
+
+If another turn still holds the session lease when this budget expires, Hermes
+fails closed: it does not load the transcript or run the model for the waiting
+message. The user receives a rejection notice and must resend. Hermes does not
+automatically requeue the message because doing so without durable ordering and
+idempotency could process it twice. Non-positive values use the 1800-second
+default.
+
 ## Session Stall Watchdog
 
 The gateway runs a notify-only stall watchdog (`agent.session_stall_timeout`, default `300` seconds, `0` = disabled). When a busy session has a **pending inbound follow-up** and the agent's shared activity clock has been idle for at least this long, the gateway logs a WARNING and sends the user a one-shot notification:

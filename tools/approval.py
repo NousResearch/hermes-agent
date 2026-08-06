@@ -225,17 +225,17 @@ def _get_session_platform() -> str:
 
 
 def _is_cron_approval_context() -> bool:
-    """True when the current approval decision is running inside cron.
+    """True only when the active turn is an unattended cron execution.
 
-    Prefer the session ContextVar so one cron job cannot taint unrelated
-    gateway/API/TUI turns in the same process. If the session context layer is
-    not engaged or unavailable, fall back to the legacy process env var for CLI
-    tests and older entrypoints.
+    ``gateway.session_context`` binds this marker per turn. Its environment
+    fallback preserves compatibility for standalone/legacy cron processes,
+    while an explicitly bound live gateway turn suppresses any stale
+    process-global ``HERMES_CRON_SESSION`` value.
     """
     try:
-        from gateway.session_context import get_session_env
+        from gateway.session_context import cron_session_active
 
-        return is_truthy_value(get_session_env("HERMES_CRON_SESSION", ""))
+        return cron_session_active()
     except Exception:
         return env_var_enabled("HERMES_CRON_SESSION")
 

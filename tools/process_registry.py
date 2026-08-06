@@ -2241,14 +2241,47 @@ def _format_async_delegation(evt: dict) -> str:
     if evt.get("is_batch") or isinstance(batch_results, list):
         results = batch_results or []
         goals = evt.get("goals") or []
-        n = len(results) if results else len(goals)
+        # The goals are the dispatch intent and therefore the authoritative
+        # expected count.  Result cardinality cannot safely stand in for it:
+        # a dead child is precisely the case where that list is short.
+        expected_count = len(goals) if goals else len(results)
+        returned_count = len(results)
+        n = expected_count
+        index_counts = {}
+        invalid_index_results = []
+        non_success = []
+        empty_summaries = []
+        for result_position, result in enumerate(results, start=1):
+            idx = result.get("task_index")
+            if isinstance(idx, int) and not isinstance(idx, bool):
+                index_counts[idx] = index_counts.get(idx, 0) + 1
+                label = f"task {idx + 1}" if idx >= 0 else f"task_index {idx}"
+            else:
+                invalid_index_results.append(result_position)
+                label = f"result {result_position}"
+
+            result_status = result.get("status", "?")
+            if result_status not in ("completed", "success"):
+                non_success.append(f"{label}: {result_status}")
+            result_summary = result.get("summary")
+            if not isinstance(result_summary, str) or not result_summary.strip():
+                empty_summaries.append(label)
+
+        returned_indices = {
+            idx for idx in index_counts if 0 <= idx < expected_count
+        }
+        missing_indices = [i for i in range(expected_count) if i not in returned_indices]
+        duplicate_indices = sorted(idx for idx, count in index_counts.items() if count > 1)
+        out_of_range_indices = sorted(
+            idx for idx in index_counts if idx < 0 or idx >= expected_count
+        )
         total_dur = evt.get("total_duration_seconds", duration)
         lines = [
             f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
             f"A background fan-out of {n} subagent(s) you dispatched earlier "
-            "has finished. All ran in parallel and waited on each other; their "
-            "consolidated results are below. You may have moved on since "
-            "dispatching — act on these or re-dispatch if things have changed.",
+            "has reached its consolidation point. Reconciliation and available "
+            "results are below. You may have moved on since dispatching — act "
+            "on these or re-dispatch if things have changed.",
             "",
         ]
         if isinstance(dispatched_at, (int, float)):
@@ -2260,19 +2293,92 @@ def _format_async_delegation(evt: dict) -> str:
         if toolsets:
             lines.append(f"Toolsets: {', '.join(toolsets)}")
         lines.append(f"Role: {role}   Model: {model}   Total duration: {total_dur}s")
+        accounting_issues = []
+        if missing_indices:
+            missing_tasks = ", ".join(f"task {i + 1}" for i in missing_indices)
+            accounting_issues.append(
+                f"{len(missing_indices)} MISSING ({missing_tasks})"
+            )
+        if non_success:
+            accounting_issues.append(
+                f"{len(non_success)} NON-SUCCESS ({', '.join(non_success)})"
+            )
+        if empty_summaries:
+            accounting_issues.append(
+                f"{len(empty_summaries)} EMPTY SUMMARY "
+                f"({', '.join(empty_summaries)})"
+            )
+        if duplicate_indices:
+            duplicate_tasks = ", ".join(
+                (
+                    f"task {idx + 1} x{index_counts[idx]}"
+                    if idx >= 0
+                    else f"task_index {idx} x{index_counts[idx]}"
+                )
+                for idx in duplicate_indices
+            )
+            accounting_issues.append(
+                f"{len(duplicate_indices)} DUPLICATE TASK_INDEX ({duplicate_tasks})"
+            )
+        if out_of_range_indices:
+            out_of_range_tasks = ", ".join(
+                f"task {idx + 1}" if idx >= 0 else f"task_index {idx}"
+                for idx in out_of_range_indices
+            )
+            accounting_issues.append(
+                f"{len(out_of_range_indices)} OUT-OF-RANGE TASK_INDEX "
+                f"({out_of_range_tasks})"
+            )
+        if invalid_index_results:
+            invalid_results = ", ".join(
+                f"result {position}" for position in invalid_index_results
+            )
+            accounting_issues.append(
+                f"{len(invalid_index_results)} INVALID TASK_INDEX ({invalid_results})"
+            )
+        if error:
+            accounting_issues.append(f"BATCH ERROR ({error})")
+
+        if accounting_issues:
+            lines.append(
+                f"MERGE ACCOUNTING: {returned_count}/{expected_count} returned — "
+                + "; ".join(accounting_issues)
+            )
+        else:
+            lines.append(
+                f"MERGE ACCOUNTING: {returned_count}/{expected_count} returned, "
+                "all completed"
+            )
         if error and not results:
             lines.append("--- ERROR ---")
             lines.append(f"The batch did not complete successfully: {error}")
             return "\n".join(lines)
-        for r in sorted(results, key=lambda x: x.get("task_index", 0)):
-            idx = r.get("task_index", 0)
+        def _batch_result_sort_key(item):
+            item_index = item.get("task_index")
+            if isinstance(item_index, int) and not isinstance(item_index, bool):
+                return (0, item_index)
+            return (1, 0)
+
+        for result_position, r in enumerate(
+            sorted(results, key=_batch_result_sort_key), start=1
+        ):
+            idx = r.get("task_index")
+            valid_integer_index = isinstance(idx, int) and not isinstance(idx, bool)
             r_status = r.get("status", "?")
             r_summary = r.get("summary")
+            has_summary = isinstance(r_summary, str) and bool(r_summary.strip())
             r_error = r.get("error")
-            r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
+            r_goal = (
+                goals[idx]
+                if valid_integer_index and 0 <= idx < len(goals)
+                else r.get("goal", "")
+            )
             icon = "✓" if r_status in ("completed", "success") else "✗"
             lines.append("")
-            header = f"--- {icon} TASK {idx + 1}/{n}"
+            if valid_integer_index:
+                header = f"--- {icon} TASK {idx + 1}/{n}"
+            else:
+                header = f"--- {icon} RESULT {result_position}/{n} (invalid task_index)"
             if r_goal:
                 header += f": {r_goal}"
             header += f"  (status={r_status}"
@@ -2282,9 +2388,9 @@ def _format_async_delegation(evt: dict) -> str:
                 header += f", {r['duration_seconds']}s"
             header += ") ---"
             lines.append(header)
-            if r_status in ("completed", "success") and r_summary:
+            if r_status in ("completed", "success") and has_summary:
                 lines.append(r_summary)
-            elif r_summary:
+            elif has_summary:
                 if r_error:
                     lines.append(f"({r_status}: {r_error})")
                 lines.append("Partial output:")

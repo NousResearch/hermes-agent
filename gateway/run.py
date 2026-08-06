@@ -1845,9 +1845,23 @@ def _profile_runtime_scope(profile_home: "Path"):
     home_token = set_hermes_home_override(str(profile_home))
     hydrate_profile_secret_sources(Path(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+    # Credential Fabric P1: advertise vault path; do not change secret scope.
+    _prev_vault = os.environ.get("HERMES_VAULT")
+    try:
+        from hermes_vault.dual_run import inject_vault_env
+
+        _inj = inject_vault_env(hermes_home=str(profile_home))
+        if _inj.get("HERMES_VAULT"):
+            os.environ["HERMES_VAULT"] = _inj["HERMES_VAULT"]
+    except Exception:
+        pass
     try:
         yield
     finally:
+        if _prev_vault is None:
+            os.environ.pop("HERMES_VAULT", None)
+        else:
+            os.environ["HERMES_VAULT"] = _prev_vault
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
 

@@ -269,25 +269,81 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     return secrets
 
 
+_SHARED_PROVIDER_ENV_KEYS = frozenset(
+    {
+        "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "BRAVE_API_KEY",
+        "BRAVE_SEARCH_API_KEY", "CODEX_API_KEY", "COHERE_API_KEY",
+        "DEEPSEEK_API_KEY", "ELEVENLABS_API_KEY", "EXA_API_KEY", "FAL_KEY",
+        "FIRECRAWL_API_KEY", "FIREWORKS_API_KEY", "GEMINI_API_KEY",
+        "GOOGLE_API_KEY", "GROQ_API_KEY", "KIMI_API_KEY",
+        "KIMI_CODING_API_KEY", "MINIMAX_API_KEY", "MINIMAX_GROUP_ID",
+        "MISTRAL_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY",
+        "PARALLEL_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY",
+        "TAVILY_API_KEY", "TOGETHER_API_KEY", "XAI_API_KEY", "ZAI_API_KEY",
+        "Z_AI_API_KEY",
+    }
+)
+
+
+def _merge_shared_provider_fallback(
+    profile: Mapping[str, str], profile_home: Path
+) -> Dict[str, str]:
+    """Local fallback for deployments without the optional hermes_vault package."""
+    enabled = os.environ.get("HERMES_VAULT_SHARED_FALLBACK", "1").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        return dict(profile)
+    root = (
+        profile_home.parent.parent
+        if profile_home.parent.name == "profiles"
+        else profile_home
+    )
+    root_values = load_env_file(root / ".env")
+    shared = {
+        key: value
+        for key, value in root_values.items()
+        if key in _SHARED_PROVIDER_ENV_KEYS and str(value).strip()
+    }
+    return {**shared, **dict(profile)}
+
+
 def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     """Build a profile's secret mapping from its ``<home>/.env``.
 
     Returns a fresh dict (safe to install via ``set_secret_scope``). Genuinely
     global vars are intentionally NOT copied in — ``get_secret`` reads those
     from ``os.environ`` directly, so the scope holds only profile secrets.
-    """
-    home = Path(hermes_home)
-    secrets = load_env_file(home / ".env")
 
+    Credential Fabric P2: allowlisted *shared provider* API keys (Kimi,
+    OpenRouter, …) that live once on the canonical root ``.env`` are layered
+    underneath the profile map when missing. Profile values always win.
+    Platform bot tokens are never pulled from root (allowlist only). Disable
+    with ``HERMES_VAULT_SHARED_FALLBACK=0``.
+    """
+    profile_home = Path(hermes_home)
+    profile = load_env_file(profile_home / ".env")
+
+    # Secret-service/keychain values are authoritative over the .env mirror.
     try:
         from hermes_cli.env_loader import get_secret_source_values
-        external_secrets = get_secret_source_values(home)
+
+        external_secrets = get_secret_source_values(profile_home)
     except Exception:
         external_secrets = {}
-
     for key, value in external_secrets.items():
-        if _is_global_env(key):
-            continue
-        secrets[key] = value
+        if not _is_global_env(key):
+            profile[key] = value
 
-    return secrets
+    # Then layer canonical-root shared provider keys underneath the complete
+    # profile map.  Profile-local and external-secret values always win.
+    try:
+        from hermes_vault.shared_secrets import merge_profile_scope_with_shared
+
+        return merge_profile_scope_with_shared(
+            profile,
+            profile_home=profile_home,
+        )
+    except Exception:
+        # The vault package is optional in the upstream distribution. Preserve
+        # its allowlisted root fallback semantics without making it a hard
+        # runtime dependency.
+        return _merge_shared_provider_fallback(profile, profile_home)

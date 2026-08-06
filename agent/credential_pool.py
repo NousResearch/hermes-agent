@@ -119,9 +119,12 @@ SUPPORTED_POOL_STRATEGIES = {
 
 # Cooldown before retrying an exhausted credential.
 # Transient 401 auth failures cool down briefly so single-key setups can recover.
+# Anthropic OAuth's ambiguous HTTP 400 "out of extra usage" response also uses
+# a short cooldown because request-shape rejection can produce the same body.
 # 429 (rate-limited), 402 (billing/quota), and other failures cool down after 1 hour.
 # Provider-supplied reset_at timestamps override these defaults.
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
+EXHAUSTED_TTL_ANTHROPIC_EXTRA_USAGE_400_SECONDS = 5 * 60
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
@@ -298,6 +301,18 @@ def _exhausted_ttl(error_code: Optional[int]) -> int:
     return EXHAUSTED_TTL_DEFAULT_SECONDS
 
 
+def _exhausted_ttl_for_entry(entry: PooledCredential) -> int:
+    """Return a narrowly scoped cooldown for ambiguous Anthropic OAuth 400s."""
+    error_message = str(entry.last_error_message or "").lower()
+    if (
+        entry.provider.strip().lower() == "anthropic"
+        and entry.last_error_code == 400
+        and "out of extra usage" in error_message
+    ):
+        return EXHAUSTED_TTL_ANTHROPIC_EXTRA_USAGE_400_SECONDS
+    return _exhausted_ttl(entry.last_error_code)
+
+
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:
     """Best-effort parse for provider reset timestamps.
 
@@ -383,7 +398,7 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     if reset_at is not None:
         return reset_at
     if entry.last_status_at:
-        return entry.last_status_at + _exhausted_ttl(entry.last_error_code)
+        return entry.last_status_at + _exhausted_ttl_for_entry(entry)
     return None
 
 
@@ -926,9 +941,9 @@ class CredentialPool:
         if self.provider != "xai-oauth" or entry.source != "device_code":
             return entry
         try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                state = _load_provider_state(auth_store, "xai-oauth")
+            with auth_mod._xai_oauth_store_lock() as canonical_path:
+                auth_store = auth_mod._load_auth_store(canonical_path)
+                state = auth_mod._xai_oauth_state_from_store(auth_store)
             if not isinstance(state, dict):
                 return entry
             tokens = state.get("tokens")
@@ -1106,6 +1121,36 @@ class CredentialPool:
         # device-code sources (nous, openai-codex, xAI) use ``device_code``.
         if entry.source != "device_code":
             return
+        if self.provider == "xai-oauth":
+            try:
+                with auth_mod._xai_oauth_store_lock() as canonical_path:
+                    auth_store = auth_mod._load_auth_store(canonical_path)
+                    providers = auth_store.get("providers")
+                    if not isinstance(providers, dict):
+                        return
+                    state = providers.get("xai-oauth")
+                    if not isinstance(state, dict):
+                        return
+                    state = dict(state)
+                    tokens = state.get("tokens")
+                    if not isinstance(tokens, dict):
+                        return
+                    tokens = dict(tokens)
+                    tokens["access_token"] = entry.access_token
+                    if entry.refresh_token:
+                        tokens["refresh_token"] = entry.refresh_token
+                    state["tokens"] = tokens
+                    if entry.last_refresh:
+                        state["last_refresh"] = entry.last_refresh
+                    state.pop("last_auth_error", None)
+                    providers["xai-oauth"] = state
+                    auth_mod._derive_xai_pool_from_provider(
+                        auth_store, [entry.to_dict()], clear_errors=True
+                    )
+                    auth_mod._save_auth_store(auth_store, target_path=canonical_path)
+            except Exception as exc:
+                logger.debug("Failed to sync xAI pool entry to canonical store: %s", exc)
+            return
         try:
             with _auth_store_lock():
                 auth_store = _load_auth_store()
@@ -1236,28 +1281,40 @@ class CredentialPool:
         # resolve_codex_runtime_credentials()).  When a waiter finally acquires
         # the lock, the in-lock re-sync below picks up the rotated token the
         # winner persisted and skips the POST.
-        if self.provider in ("openai-codex", "xai-oauth"):
-            sync_entry = (
-                self._sync_codex_entry_from_auth_store
-                if self.provider == "openai-codex"
-                else self._sync_xai_oauth_entry_from_pool_store
-            )
+        if self.provider == "xai-oauth":
+            with auth_mod._xai_oauth_store_lock(
+                timeout_seconds=self._single_use_refresh_lock_timeout()
+            ):
+                prev_access = entry.access_token
+                prev_refresh = entry.refresh_token
+                synced = self._sync_xai_oauth_entry_from_pool_store(entry)
+                synced = self._sync_xai_oauth_entry_from_auth_store(synced)
+                # Single-use refresh: if another waiter already rotated while
+                # we blocked on the lock, adopt their tokens and never POST the
+                # spent refresh token (even when force=True after a 401).
+                rotated = bool(
+                    synced.access_token
+                    and synced.refresh_token
+                    and (
+                        synced.access_token != prev_access
+                        or synced.refresh_token != prev_refresh
+                    )
+                )
+                if rotated:
+                    return synced
+                if not force and not self._entry_needs_refresh(synced):
+                    return synced
+                return self._refresh_entry_impl(synced, force=force)
+        if self.provider == "openai-codex":
             with _auth_store_lock(
                 timeout_seconds=self._single_use_refresh_lock_timeout()
             ):
-                synced = sync_entry(entry)
-                if self.provider == "openai-codex":
-                    if synced is not entry:
-                        entry = synced
-                        if not force and not self._entry_needs_refresh(entry):
-                            return entry
-                    return self._refresh_entry_impl(entry, force=force)
-                if (
-                    synced.access_token != entry.access_token
-                    or synced.refresh_token != entry.refresh_token
-                ):
-                    return synced
-                return self._refresh_entry_impl(synced, force=force)
+                synced = self._sync_codex_entry_from_auth_store(entry)
+                if synced is not entry:
+                    entry = synced
+                    if not force and not self._entry_needs_refresh(entry):
+                        return entry
+                return self._refresh_entry_impl(entry, force=force)
         return self._refresh_entry_impl(entry, force=force)
 
     def _single_use_refresh_lock_timeout(self) -> float:
@@ -1333,9 +1390,23 @@ class CredentialPool:
                 # process (or another profile sharing the singleton) would
                 # otherwise trigger ``refresh_token_reused`` on the next
                 # POST.  Only meaningful for singleton-seeded entries.
+                prev_access = entry.access_token
+                prev_refresh = entry.refresh_token
                 synced = self._sync_xai_oauth_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
+                rotated = bool(
+                    entry.access_token
+                    and entry.refresh_token
+                    and (
+                        entry.access_token != prev_access
+                        or entry.refresh_token != prev_refresh
+                    )
+                )
+                if rotated:
+                    return entry
+                if not force and not self._entry_needs_refresh(entry):
+                    return entry
                 refreshed = auth_mod.refresh_xai_oauth_pure(
                     entry.access_token,
                     entry.refresh_token,
@@ -1428,16 +1499,27 @@ class CredentialPool:
                 # remove all singleton-seeded xAI entries from the in-memory
                 # pool. Mirrors the Nous quarantine path above.
                 if auth_mod._is_terminal_xai_oauth_refresh_error(exc):
-                    logger.debug(
-                        "xAI OAuth refresh token is terminally invalid; clearing local token state"
+                    logger.error(
+                        "xAI OAuth refresh token is terminally invalid; "
+                        "code=%s relogin_required=%s refresh_fingerprint=%s; "
+                        "clearing local token state",
+                        getattr(exc, "code", None) or "unknown",
+                        bool(getattr(exc, "relogin_required", False)),
+                        auth_mod._token_fingerprint(entry.refresh_token) or "none",
                     )
                     try:
-                        with _auth_store_lock():
-                            auth_store = _load_auth_store()
-                            state = _load_provider_state(auth_store, "xai-oauth") or {}
+                        with auth_mod._xai_oauth_store_lock() as canonical_path:
+                            auth_store = auth_mod._load_auth_store(canonical_path)
+                            providers = auth_store.get("providers")
+                            if not isinstance(providers, dict):
+                                providers = {}
+                                auth_store["providers"] = providers
+                            state = providers.get("xai-oauth")
                             if isinstance(state, dict):
+                                state = dict(state)
                                 tokens = state.get("tokens") or {}
                                 if isinstance(tokens, dict):
+                                    tokens = dict(tokens)
                                     store_refresh = str(tokens.get("refresh_token") or "").strip()
                                     entry_refresh = str(entry.refresh_token or "").strip()
                                     if not store_refresh or store_refresh == entry_refresh:
@@ -1452,8 +1534,28 @@ class CredentialPool:
                                             "relogin_required": True,
                                             "at": datetime.now(timezone.utc).isoformat(),
                                         }
-                                        _save_provider_state(auth_store, "xai-oauth", state)
-                                        _save_auth_store(auth_store)
+                                        providers["xai-oauth"] = state
+                                        # Drop only singleton-seeded pool rows.
+                                        # Manual/api_key entries must survive
+                                        # so operators keep non-OAuth keys.
+                                        pool_data = auth_store.get("credential_pool")
+                                        if isinstance(pool_data, dict):
+                                            rows = pool_data.get("xai-oauth")
+                                            if isinstance(rows, list):
+                                                kept = [
+                                                    row
+                                                    for row in rows
+                                                    if isinstance(row, dict)
+                                                    and str(row.get("source") or "")
+                                                    != "device_code"
+                                                ]
+                                                if kept:
+                                                    pool_data["xai-oauth"] = kept
+                                                else:
+                                                    pool_data.pop("xai-oauth", None)
+                                        auth_mod._save_auth_store(
+                                            auth_store, target_path=canonical_path
+                                        )
                     except Exception as clear_exc:
                         logger.debug(
                             "Failed to clear terminal xAI OAuth state: %s", clear_exc
@@ -2675,7 +2777,10 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # (``providers["xai-oauth"]``).  Surface them in the pool too so
         # ``hermes auth list`` reflects the logged-in state and so the pool
         # is the single source of truth for refresh during runtime resolution.
-        state = _load_provider_state(auth_store, "xai-oauth")
+        canonical_path = auth_mod._xai_oauth_auth_file_path()
+        with auth_mod._auth_store_lock(target_path=canonical_path):
+            canonical_store = auth_mod._load_auth_store(canonical_path)
+        state = auth_mod._xai_oauth_state_from_store(canonical_store)
         tokens = state.get("tokens") if isinstance(state, dict) else None
         if isinstance(tokens, dict) and tokens.get("access_token"):
             # Device code is the only supported xAI OAuth flow; the singleton is

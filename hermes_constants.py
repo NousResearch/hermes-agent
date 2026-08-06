@@ -158,6 +158,40 @@ def get_process_hermes_home() -> Path:
     return _hermes_home_from_env()
 
 
+def _looks_like_hermes_root(path: Path) -> bool:
+    """Return whether *path* contains a canonical root-level Hermes file."""
+    try:
+        return any((path / marker).is_file() for marker in ("config.yaml", "auth.json"))
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _find_profile_store_owner(profiles_path: Path) -> Path | None:
+    """Find the unique nearby Hermes root whose ``profiles`` points here."""
+    try:
+        resolved_profiles = profiles_path.resolve()
+        search_root = resolved_profiles.parent
+        candidates = (search_root, *search_root.iterdir())
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    owner = None
+    for candidate in candidates:
+        if not _looks_like_hermes_root(candidate):
+            continue
+        try:
+            if (candidate / "profiles").resolve() != resolved_profiles:
+                continue
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if owner is not None:
+            # An ambiguous reverse link is not enough evidence to change the
+            # existing literal-path fallback.
+            return None
+        owner = candidate
+    return owner
+
+
 def get_default_hermes_root() -> Path:
     """Return the root Hermes directory for profile-level operations.
 
@@ -184,13 +218,26 @@ def get_default_hermes_root() -> Path:
         env_path.resolve().relative_to(native_home.resolve())
         # HERMES_HOME is under ~/.hermes (normal or profile mode)
         return native_home
-    except ValueError:
+    except (OSError, RuntimeError, ValueError):
         pass
 
-    # Docker / custom deployment.
-    # Check if this is a profile path: <root>/profiles/<name>
-    # If the immediate parent dir is named "profiles", the root is
-    # the grandparent — this covers Docker profiles correctly.
+    # Prefer a literal profile root that contains canonical Hermes state.  In
+    # particular, do this before resolving symlinks: resolving
+    # <root>/profiles/<name> first can discard the root that owns the symlink.
+    if env_path.parent.name == "profiles":
+        literal_root = env_path.parent.parent
+        if _looks_like_hermes_root(literal_root):
+            return literal_root
+
+    # A profile store can also be reached by its physical path, whose directory
+    # need not itself be named "profiles".  Look only one level around that
+    # store for a unique Hermes root whose profiles entry resolves back to it.
+    linked_root = _find_profile_store_owner(env_path.parent)
+    if linked_root is not None:
+        return linked_root
+
+    # Preserve the existing Docker/custom fallback when no root marker or
+    # reverse symlink identifies a better profile root.
     if env_path.parent.name == "profiles":
         return env_path.parent.parent
 

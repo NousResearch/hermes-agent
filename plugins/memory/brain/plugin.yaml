@@ -1,0 +1,10 @@
+name: brain
+version: 0.1.0
+description: "Brain memory provider — wraps the existing brain-mcp engine (kuzu graph + sqlite, namespaced recall) as a Hermes MemoryProvider. Auto prefetch/sync/mirror across sessions."
+kind: exclusive          # memory providers are single-select, routed via memory.provider
+hooks:
+  - prefetch
+  - sync_turn
+  - on_memory_write
+  - on_pre_compress
+  - on_session_end

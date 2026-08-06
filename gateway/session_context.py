@@ -95,10 +95,10 @@ _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", defaul
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 
-# Per-session cron marker. Unlike the process-global legacy env var, this is
-# scoped to one cron job / inbound session. _UNSET preserves the legacy env
-# fallback for CLI/tests; "1" marks cron; "" explicitly marks non-cron and
-# masks any leaked process env value.
+# Whether the active turn is an unattended cron execution. This used to be a
+# process-global os.environ flag, which is unsafe in the long-lived gateway:
+# its in-process cron scheduler shares the process with live chat turns. Bind
+# it per turn so a cron run cannot poison a later/concurrent interactive turn.
 _CRON_SESSION: ContextVar = ContextVar("HERMES_CRON_SESSION", default=_UNSET)
 
 # Whether the current session's delivery channel can route an ASYNC completion
@@ -219,7 +219,7 @@ def set_session_vars(
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
-    cron_session: Any = _UNSET,
+    cron_session: bool = False,
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -259,7 +259,7 @@ def set_session_vars(
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
-        _CRON_SESSION.set(cron_session),
+        _CRON_SESSION.set(bool(cron_session)),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
     try:
@@ -299,6 +299,10 @@ def clear_session_vars(tokens: list) -> None:
         _CRON_SESSION,
     ):
         var.set("")
+    # Unlike identity strings, an inactive/cleared turn should restore legacy
+    # env fallback for standalone cron callers. Every active gateway turn binds
+    # this bool explicitly, so stale process env cannot leak into live work.
+    _CRON_SESSION.set(_UNSET)
     # Reset async-delivery capability to the "never set" sentinel rather than a
     # falsy value: a cleared context should fall back to the default-supported
     # behavior (CLI / unaware paths), not be mistaken for an opted-out
@@ -348,6 +352,7 @@ def reset_session_vars() -> None:
     """
     for var in _VAR_MAP.values():
         var.set(_UNSET)
+    _CRON_SESSION.set(_UNSET)
     # Reset the async-delivery capability to "never bound here" (_UNSET) for the
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
     # which resets this var on the handler-exit path for the symmetric concern.
@@ -436,6 +441,23 @@ def session_is_messaging_surface() -> bool:
         if identity and identity not in NON_MESSAGING_SESSION_SURFACES:
             return True
     return False
+
+
+def cron_session_active() -> bool:
+    """Whether this turn is unattended cron work.
+
+    Active gateway/cron turns bind a task-local bool via ``set_session_vars``.
+    Only callers that never bound turn context use the legacy process env.
+    """
+    value = _CRON_SESSION.get()
+    if value is not _UNSET:
+        return bool(value)
+
+    import os
+
+    return os.getenv("HERMES_CRON_SESSION", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def declare_stateless_channel() -> None:

@@ -237,3 +237,17 @@ suppress_platform_ver_console()
 # packages installed into the data volume on a previous run are importable
 # this run, before any backend module imports its SDK. No-op when unset.
 activate_durable_lazy_target()
+
+# Local Credential Fabric package (hermes-sandbox/packages/hermes_vault).
+# Sibling of current/; importable for dual-run observe without pip install.
+def _activate_hermes_vault_package() -> None:
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        pkg = os.path.abspath(os.path.join(here, "..", "packages", "hermes_vault"))
+        if os.path.isdir(pkg) and pkg not in sys.path:
+            sys.path.insert(0, pkg)
+    except Exception:
+        pass
+
+
+_activate_hermes_vault_package()

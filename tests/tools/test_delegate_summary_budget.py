@@ -76,3 +76,59 @@ def test_empty_results_is_noop():
         [{"task_index": 0, "status": "failed", "summary": None}],
         _FakeParent(131_000, 1_000, 8_000),
     )
+
+
+def test_semantic_reduce_keeps_decision_critical_middle_and_respects_cap(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    summary = "\n".join(
+        [
+            "# Background",
+            *(f"Routine exploration note {i}: " + "narration " * 12 for i in range(80)),
+            "## Blockers",
+            "BLOCKER: release cannot proceed until migration lock db-lock-847 is cleared.",
+            "## Verification",
+            "TEST RESULT: 47 passed, 2 failed in tests/tools/test_graph_reduce.py.",
+            "## Files Changed",
+            "- /srv/hermes/tools/delegate_tool.py",
+            "## Commands Run",
+            "- uv run python3 -m pytest tests/tools/test_graph_reduce.py -q",
+            *(f"Verbose execution log {i}: " + "noise " * 18 for i in range(80)),
+            "## Final Outcome",
+            "STATUS: PARTIAL — fix the two failing tests before merge.",
+        ]
+    )
+    cap = 2_200
+
+    reduced, spill_path = dt._trim_summary_with_footer(summary, cap, task_index=7)
+
+    assert len(reduced) <= cap
+    assert "BLOCKER: release cannot proceed" in reduced
+    assert "TEST RESULT: 47 passed, 2 failed" in reduced
+    assert "/srv/hermes/tools/delegate_tool.py" in reduced
+    assert "uv run python3 -m pytest" in reduced
+    assert "STATUS: PARTIAL" in reduced
+    assert "SEMANTIC REDUCE" in reduced
+    assert spill_path is not None
+    assert os.path.exists(spill_path)
+    with open(spill_path, encoding="utf-8") as fh:
+        assert fh.read() == summary
+    assert f'read_file path="{spill_path}" offset=1' in reduced
+
+
+def test_unstructured_summary_falls_back_to_bounded_head_tail(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    summary = "HEAD_MARKER\n" + ("ordinary prose " * 2_000) + "\nTAIL_MARKER"
+    cap = 2_000
+
+    reduced, spill_path = dt._trim_summary_with_footer(summary, cap, task_index=8)
+
+    assert len(reduced) <= cap
+    assert "HEAD_MARKER" in reduced
+    assert "TAIL_MARKER" in reduced
+    assert "chars (head)" in reduced
+    assert "chars (tail)" in reduced
+    assert "SEMANTIC REDUCE" not in reduced
+    assert spill_path is not None
+    assert f'read_file path="{spill_path}" offset=' in reduced

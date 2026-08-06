@@ -971,6 +971,447 @@ class TestProcessToolHandler:
 from tools.process_registry import format_process_notification
 
 
+def test_batch_merge_accounting_names_never_returned_task():
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_missing",
+        "is_batch": True,
+        "goals": ["first", "second", "third"],
+        "results": [
+            {"task_index": 0, "status": "completed", "summary": "done first"},
+            {"task_index": 2, "status": "completed", "summary": "done third"},
+        ],
+    }
+
+    rendered = format_process_notification(evt)
+
+    assert rendered is not None
+    assert "MERGE ACCOUNTING: 2/3 returned" in rendered
+    assert "MISSING (task 2)" in rendered
+    assert "TASK 1/3" in rendered
+    assert "TASK 3/3" in rendered
+    assert "fan-out of 3 subagent(s)" in rendered
+
+
+def test_batch_merge_accounting_flags_non_success_statuses():
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_status",
+        "is_batch": True,
+        "goals": ["first", "second"],
+        "results": [
+            {"task_index": 0, "status": "failed", "summary": "failure details"},
+            {"task_index": 1, "status": "partial", "summary": "partial details"},
+        ],
+    }
+
+    rendered = format_process_notification(evt)
+
+    assert rendered is not None
+    assert "MERGE ACCOUNTING: 2/2 returned" in rendered
+    assert "2 NON-SUCCESS (task 1: failed, task 2: partial)" in rendered
+    assert "all completed" not in rendered
+
+
+def test_batch_merge_accounting_flags_empty_summaries():
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_empty",
+        "is_batch": True,
+        "goals": ["first", "second"],
+        "results": [
+            {"task_index": 0, "status": "completed", "summary": None},
+            {"task_index": 1, "status": "success", "summary": "   "},
+        ],
+    }
+
+    rendered = format_process_notification(evt)
+
+    assert rendered is not None
+    assert "MERGE ACCOUNTING: 2/2 returned" in rendered
+    assert "2 EMPTY SUMMARY (task 1, task 2)" in rendered
+    assert "all completed" not in rendered
+
+
+def test_batch_merge_accounting_clean_path_is_explicit():
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_clean",
+        "is_batch": True,
+        "goals": ["first", "second"],
+        "results": [
+            {"task_index": 0, "status": "completed", "summary": "done"},
+            {"task_index": 1, "status": "success", "summary": "also done"},
+        ],
+    }
+
+    rendered = format_process_notification(evt)
+
+    assert rendered is not None
+    assert "MERGE ACCOUNTING: 2/2 returned, all completed" in rendered
+
+
+def test_batch_merge_accounting_flags_duplicate_and_out_of_range_indices():
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_bad_indices",
+        "is_batch": True,
+        "goals": ["first", "second"],
+        "results": [
+            {"task_index": 0, "status": "completed", "summary": "one"},
+            {"task_index": 0, "status": "completed", "summary": "duplicate"},
+            {"task_index": 3, "status": "completed", "summary": "outlier"},
+        ],
+    }
+
+    rendered = format_process_notification(evt)
+
+    assert rendered is not None
+    assert "MERGE ACCOUNTING: 3/2 returned" in rendered
+    assert "1 MISSING (task 2)" in rendered
+    assert "1 DUPLICATE TASK_INDEX (task 1 x2)" in rendered
+    assert "1 OUT-OF-RANGE TASK_INDEX (task 4)" in rendered
+    assert "all completed" not in rendered
+
+
+def test_format_completion_event():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_abc",
+        "command": "sleep 5",
+        "exit_code": 0,
+        "output": "done",
+    }
+    result = format_process_notification(evt)
+    assert "[IMPORTANT: Background process proc_abc completed normally" in result
+    assert "exit code 0" in result
+    assert "Command: sleep 5" in result
+    assert "Output:\ndone]" in result
+
+
+def test_format_killed_completion_event_names_source_and_signal():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_killed",
+        "command": "sleep 5",
+        "exit_code": -15,
+        "completion_reason": "killed",
+        "termination_source": "process.kill",
+        "output": "",
+    }
+    result = format_process_notification(evt)
+    assert "proc_killed terminated by process.kill" in result
+    assert "exit code -15, SIGTERM" in result
+
+
+def test_format_external_sigterm_does_not_claim_agent_kill():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_external",
+        "command": "sleep 5",
+        "exit_code": 143,
+        "output": "",
+    }
+    result = format_process_notification(evt)
+    assert "proc_external exited" in result
+    assert "terminated by" not in result
+    assert "exit code 143, SIGTERM" in result
+
+
+def test_format_watch_match_event():
+    evt = {
+        "type": "watch_match",
+        "session_id": "proc_xyz",
+        "command": "tail -f log",
+        "pattern": "ERROR",
+        "output": "ERROR: disk full",
+        "suppressed": 0,
+    }
+    result = format_process_notification(evt)
+    assert 'watch pattern "ERROR"' in result
+    assert "Matched output:\nERROR: disk full" in result
+
+
+def test_format_watch_match_with_suppressed():
+    evt = {
+        "type": "watch_match",
+        "session_id": "proc_xyz",
+        "command": "tail -f log",
+        "pattern": "WARN",
+        "output": "WARN: low mem",
+        "suppressed": 3,
+    }
+    result = format_process_notification(evt)
+    assert "3 earlier matches were suppressed" in result
+
+
+def test_format_watch_disabled_event():
+    evt = {
+        "type": "watch_disabled",
+        "message": "Watch disabled for proc_xyz: too many matches",
+    }
+    result = format_process_notification(evt)
+    assert "[IMPORTANT: Watch disabled for proc_xyz" in result
+
+
+def test_format_returns_none_for_empty_event():
+    evt = {}
+    result = format_process_notification(evt)
+    assert result is not None
+    assert "unknown" in result
+
+
+def test_drain_notifications_returns_pending_events():
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    process_registry.completion_queue.put({
+        "type": "completion",
+        "session_id": "proc_drain1",
+        "command": "echo hi",
+        "exit_code": 0,
+        "output": "hi",
+    })
+    process_registry.completion_queue.put({
+        "type": "watch_match",
+        "session_id": "proc_drain2",
+        "command": "tail -f x",
+        "pattern": "ERR",
+        "output": "ERR found",
+        "suppressed": 0,
+    })
+
+    try:
+        results = process_registry.drain_notifications()
+        assert len(results) == 2
+        assert results[0][0]["session_id"] == "proc_drain1"
+        assert "proc_drain1 completed normally" in results[0][1]
+        assert results[1][0]["session_id"] == "proc_drain2"
+        assert "watch pattern" in results[1][1]
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+        process_registry._completion_consumed.discard("proc_drain1")
+        process_registry._completion_consumed.discard("proc_drain2")
+
+
+def test_drain_notifications_skips_consumed():
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    process_registry._completion_consumed.add("proc_consumed")
+    process_registry.completion_queue.put({
+        "type": "completion",
+        "session_id": "proc_consumed",
+        "command": "echo done",
+        "exit_code": 0,
+        "output": "done",
+    })
+
+    try:
+        results = process_registry.drain_notifications()
+        assert len(results) == 0
+    finally:
+        process_registry._completion_consumed.discard("proc_consumed")
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_drain_notifications_can_deliver_poll_observed_for_gateway(registry):
+    event = {
+        "type": "completion",
+        "session_id": "proc_polled",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "observed but not consumed",
+    }
+    registry._poll_observed.add(event["session_id"])
+    registry.completion_queue.put(event)
+
+    try:
+        results = registry.drain_notifications(
+            session_key="session-a",
+            owns_event=lambda _event: True,
+            skip_poll_observed=False,
+        )
+
+        assert [raw for raw, _ in results] == [event]
+    finally:
+        registry._poll_observed.discard(event["session_id"])
+
+
+@pytest.mark.parametrize(
+    "skip_state", ["_poll_observed", "_completion_consumed"]
+)
+def test_drain_notifications_routes_foreign_before_local_skip(
+    registry, skip_state
+):
+    event = {
+        "type": "completion",
+        "session_id": f"proc_foreign_{skip_state}",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "foreign",
+    }
+    ownership_calls = []
+    getattr(registry, skip_state).add(event["session_id"])
+    registry.completion_queue.put(event)
+
+    def owns_event(checked_event):
+        ownership_calls.append(checked_event)
+        return False
+
+    try:
+        results = registry.drain_notifications(
+            session_key="session-b",
+            owns_event=owns_event,
+        )
+
+        assert results == []
+        assert ownership_calls == [event]
+        assert registry.completion_queue.get_nowait() == event
+        assert registry.completion_queue.empty()
+    finally:
+        getattr(registry, skip_state).discard(event["session_id"])
+
+
+def test_drain_notifications_empty_queue():
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    results = process_registry.drain_notifications()
+    assert results == []
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_drain_notifications_filters_addressed_completion_by_owns_event(
+    registry, exit_code
+):
+    owned = {
+        "type": "completion",
+        "session_id": f"proc_owned_{exit_code}",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": exit_code,
+        "output": "owned",
+    }
+    foreign = {
+        "type": "completion",
+        "session_id": f"proc_foreign_{exit_code}",
+        "session_key": "session-b",
+        "command": "safe-test-command",
+        "exit_code": exit_code,
+        "output": "foreign",
+    }
+    registry.completion_queue.put(owned)
+    registry.completion_queue.put(foreign)
+
+    results = registry.drain_notifications(
+        session_key="session-a",
+        owns_event=lambda event: event.get("session_key") == "session-a",
+    )
+
+    assert [event["session_id"] for event, _ in results] == [
+        f"proc_owned_{exit_code}"
+    ]
+    assert registry.completion_queue.get_nowait() == foreign
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_filters_addressed_completion_by_session_key(registry):
+    owned = {
+        "type": "completion",
+        "session_id": "proc_owned",
+        "session_key": "session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "owned",
+    }
+    foreign = {
+        "type": "completion",
+        "session_id": "proc_foreign",
+        "session_key": "session-b",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "foreign",
+    }
+    registry.completion_queue.put(owned)
+    registry.completion_queue.put(foreign)
+
+    results = registry.drain_notifications(session_key="session-a")
+
+    assert [event["session_id"] for event, _ in results] == ["proc_owned"]
+    assert registry.completion_queue.get_nowait() == foreign
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_session_key_filter_requeues_origin_only_event(registry):
+    event = {
+        "type": "completion",
+        "session_id": "proc_origin_only",
+        "origin_ui_session_id": "ui-session-a",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "done",
+    }
+    registry.completion_queue.put(event)
+
+    results = registry.drain_notifications(session_key="session-a")
+
+    assert results == []
+    assert registry.completion_queue.get_nowait() == event
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_ownerless_completion_preserves_legacy_delivery(registry):
+    event = {
+        "type": "completion",
+        "session_id": "proc_ownerless",
+        "command": "safe-test-command",
+        "exit_code": 0,
+        "output": "ownerless",
+    }
+    registry.completion_queue.put(event)
+
+    results = registry.drain_notifications(
+        session_key="session-a",
+        owns_event=lambda _event: False,
+    )
+
+    assert [raw for raw, _ in results] == [event]
+    assert registry.completion_queue.empty()
+
+
+def test_drain_notifications_ownerless_async_delegation_still_requires_proof(registry):
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_ownerless",
+        "goal": "task",
+        "status": "completed",
+        "summary": "done",
+        "api_calls": 1,
+        "duration_seconds": 0.1,
+    }
+    registry.completion_queue.put(event)
+
+    results = registry.drain_notifications(
+        session_key="session-a",
+        owns_event=lambda _event: False,
+    )
+
+    assert results == []
+    assert registry.completion_queue.get_nowait() == event
+    assert registry.completion_queue.empty()
+
+
 def test_drain_notifications_completion_callback_exception_fails_closed(registry):
     event = {
         "type": "completion",

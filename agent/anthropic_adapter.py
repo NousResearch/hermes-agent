@@ -2924,6 +2924,51 @@ def build_anthropic_kwargs(
                 return "mcp__" + name[len("mcp_"):]
             return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
 
+        # Map original local tool names -> OAuth wire names for system-text
+        # rewrites. Only snake_case names (contain ``_``) so one-word tools
+        # like ``terminal``/``memory``/``patch`` are not rewritten as English.
+        # Built before mutating tool definitions.
+        import re as _re
+
+        prompt_tool_name_map: Dict[str, str] = {}
+        local_tool_names: set[str] = set()
+        if anthropic_tools:
+            for tool in anthropic_tools:
+                local_name = tool.get("name")
+                if not isinstance(local_name, str):
+                    continue
+                local_tool_names.add(local_name)
+                if "_" not in local_name:
+                    continue
+                wire_name = _to_oauth_wire_name(local_name)
+                if wire_name != local_name:
+                    prompt_tool_name_map[local_name] = wire_name
+
+        # Tool Search keeps configured deferred tools active through its
+        # bridge even though their schemas are absent from ``anthropic_tools``.
+        # Include those bridge-reachable local names in the request-scoped map
+        # so system guidance cannot contradict the OAuth wire namespace.
+        try:
+            from tools.tool_search import (
+                BRIDGE_TOOL_NAMES as _TOOL_SEARCH_BRIDGE_NAMES,
+                load_config as _load_tool_search_config,
+            )
+
+            if local_tool_names.intersection(_TOOL_SEARCH_BRIDGE_NAMES):
+                for local_name in _load_tool_search_config().defer_tools:
+                    if not isinstance(local_name, str) or "_" not in local_name:
+                        continue
+                    wire_name = _to_oauth_wire_name(local_name)
+                    if wire_name != local_name:
+                        prompt_tool_name_map[local_name] = wire_name
+        except Exception as exc:
+            # Direct tool mappings remain safe and useful if optional Tool
+            # Search configuration cannot be loaded in a minimal runtime.
+            logger.debug(
+                "OAuth system-text deferred-tool mapping unavailable: %s",
+                exc,
+            )
+
         if anthropic_tools:
             for tool in anthropic_tools:
                 if "name" in tool:
@@ -2940,6 +2985,25 @@ def build_anthropic_kwargs(
                             block["name"] = _to_oauth_wire_name(block["name"])
                         elif block.get("type") == "tool_result" and "tool_use_id" in block:
                             pass  # tool_result uses ID, not name
+
+        # 5. Rewrite exact active snake_case tool-name references in system
+        #    text to the OAuth wire form. Identifier-safe boundaries keep
+        #    substrings (``skill_management``) and already-prefixed names
+        #    (``mcp__skill_manage``) unchanged. Idempotent under re-entry.
+        if prompt_tool_name_map and isinstance(system, list):
+            # Longer names first so a shorter name cannot rewrite a longer one.
+            for local_name in sorted(prompt_tool_name_map, key=len, reverse=True):
+                wire_name = prompt_tool_name_map[local_name]
+                pattern = _re.compile(
+                    r"(?<![A-Za-z0-9_])"
+                    + _re.escape(local_name)
+                    + r"(?![A-Za-z0-9_])"
+                )
+                for block in system:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text", "")
+                        if text:
+                            block["text"] = pattern.sub(wire_name, text)
 
     kwargs: Dict[str, Any] = {
         "model": model,

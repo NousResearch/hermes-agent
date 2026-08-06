@@ -3075,6 +3075,9 @@ def run_job(
         # See declare_stateless_channel(). Upstream: #53027, #63142.
         async_delivery=False,
         cwd=_job_workdir or "",
+        # The gateway runs cron and live chats in the same long-lived process.
+        # Approval policy must therefore use a per-job marker, not os.environ.
+        cron_session=True,
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",

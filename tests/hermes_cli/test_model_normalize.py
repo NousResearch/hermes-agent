@@ -89,6 +89,17 @@ class TestCustomProviderIsNotAVendorIdentity:
     """
 
 
+class TestXaiOauthModelNormalization:
+    """xAI OAuth's direct API requires bare model IDs."""
+
+    @pytest.mark.parametrize("model", [
+        "xai-oauth/grok-4.5",
+        "grok-4.5",
+    ])
+    def test_xai_oauth_uses_bare_model_id(self, model):
+        assert normalize_model_for_provider(model, "xai-oauth") == "grok-4.5"
+
+
 # ── detect_vendor ──────────────────────────────────────────────────────
 
 

@@ -1647,7 +1647,7 @@ def _resolve_explicit_runtime(
     return None
 
 
-def resolve_runtime_provider(
+def _resolve_runtime_provider_impl(
     *,
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
@@ -2251,6 +2251,36 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     runtime["requested_provider"] = requested_provider
+    return runtime
+
+
+
+def resolve_runtime_provider(
+    *,
+    requested: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve runtime provider credentials for agent execution.
+
+    P1 Credential Fabric: delegates to the legacy implementation, then dual-run
+    observes fingerprints against the canonical vault resolver. Behavior of the
+    returned dict is unchanged while HERMES_VAULT_CUTOVER is off.
+    """
+    runtime = _resolve_runtime_provider_impl(
+        requested=requested,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+        target_model=target_model,
+    )
+    try:
+        from hermes_vault.dual_run import observe_runtime
+
+        observe_runtime(runtime, site="resolve_runtime_provider")
+    except Exception:
+        # dual-run must never break credential resolution
+        pass
     return runtime
 
 

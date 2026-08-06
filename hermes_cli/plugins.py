@@ -1908,11 +1908,18 @@ class PluginManager:
     # Hook invocation
     # -----------------------------------------------------------------------
 
+    # Control-plane hooks must surface exceptions to the caller so policy
+    # failures are not misreported as "no plugin resolved this" (auth-looking
+    # noise). Observational hooks keep the swallow-and-warn behaviour.
+    _STRICT_HOOKS = frozenset({"resolve_delegation_capability"})
+
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all registered callbacks for *hook_name*.
 
         Each callback is wrapped in its own try/except so a misbehaving
-        plugin cannot break the core agent loop.
+        plugin cannot break the core agent loop — **except** for hooks in
+        ``_STRICT_HOOKS`` (capability resolution), which re-raise so the
+        original error text reaches ``delegate_task``.
 
         Returns a list of non-``None`` return values from callbacks.
 
@@ -1931,12 +1938,15 @@ class PluginManager:
         kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
+        strict = hook_name in self._STRICT_HOOKS
         for cb in callbacks:
             try:
                 ret = cb(**kwargs)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
+                if strict:
+                    raise
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",
                     hook_name,

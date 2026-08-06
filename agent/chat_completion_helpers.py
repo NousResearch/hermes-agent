@@ -1820,11 +1820,27 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 fb_model, fb_provider, _norm_err,
             )
 
-        # Determine api_mode from provider / base URL / model
-        fb_api_mode = "chat_completions"
+        # Determine api_mode from provider / base URL / model.
+        # Host-mandated mode MUST win first. Kimi Coding Plan
+        # (api.kimi.com/coding) speaks Anthropic Messages; defaulting to
+        # chat_completions POSTs /coding/chat/completions → HTTP 404 and
+        # burns the fallback slot (live 2026-08-05: 384× kimi-coding|HTTP 404).
+        # Same helper used by determine_api_mode() and model_switch.
         fb_base_url = str(fb_client.base_url)
+        try:
+            from hermes_cli.providers import host_mandated_api_mode
+
+            _mandated = host_mandated_api_mode(fb_base_url)
+        except Exception:
+            _mandated = None
+        fb_api_mode = _mandated or "chat_completions"
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        if fb_api_mode != "chat_completions":
+            # Host already mandated the wire protocol (kimi / anthropic /
+            # openai.com / bedrock). Do not let provider-name heuristics
+            # clobber it.
+            pass
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
             # Portal is dual-wire: anthropic/* must land on /v1/messages.

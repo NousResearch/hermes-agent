@@ -1,7 +1,9 @@
 """Tests for xAI Grok OAuth — tokens stored in Hermes auth store (~/.hermes/auth.json)."""
 
 import base64
+import hashlib
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -307,6 +309,7 @@ def _seed_xai_oauth_state(
 def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Terminal refresh failure (relogin_required=True, code=xai_refresh_failed)
     must clear access_token/refresh_token from auth.json and write a
@@ -327,8 +330,9 @@ def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure
 
     monkeypatch.setattr("hermes_cli.auth._refresh_xai_oauth_tokens", _terminal_refresh)
 
-    with pytest.raises(AuthError) as exc_info:
-        resolve_xai_oauth_runtime_credentials(force_refresh=True)
+    with caplog.at_level(logging.ERROR, logger="hermes_cli.auth"):
+        with pytest.raises(AuthError) as exc_info:
+            resolve_xai_oauth_runtime_credentials(force_refresh=True)
 
     assert exc_info.value.code == "xai_refresh_failed"
     assert exc_info.value.relogin_required is True
@@ -352,8 +356,72 @@ def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure
     assert err["relogin_required"] is True
     assert "at" in err
 
+    fingerprint = hashlib.sha256(b"dead-refresh-token").hexdigest()[:12]
+    error_logs = [record.getMessage() for record in caplog.records]
+    assert any(
+        "code=xai_refresh_failed" in message
+        and "relogin_required=True" in message
+        and f"refresh_fingerprint={fingerprint}" in message
+        for message in error_logs
+    )
+    assert all("dead-refresh-token" not in message for message in error_logs)
+
     # Active provider must be unchanged.
     assert raw["active_provider"] == "nous"
+
+
+def test_resolve_credentials_does_not_quarantine_on_transient_refresh_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transient refresh failure (relogin_required=False, e.g. 429 / 5xx) must
+    NOT trigger the quarantine path — tokens stay on disk for the next attempt.
+    """
+    hermes_home = tmp_path / "hermes"
+    _seed_xai_oauth_state(hermes_home, dict(_STALE_XAI_OAUTH_STATE))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _transient_refresh(tokens, **kwargs):
+        raise AuthError(
+            "xAI token refresh failed: connection error",
+            provider="xai-oauth",
+            code="xai_refresh_failed",
+            relogin_required=False,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_xai_oauth_tokens", _transient_refresh)
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_xai_oauth_runtime_credentials(force_refresh=True)
+
+    assert exc_info.value.relogin_required is False
+
+    # Tokens must be untouched — no quarantine on transient errors.
+    raw = json.loads((hermes_home / "auth.json").read_text())
+    tokens = raw["providers"]["xai-oauth"]["tokens"]
+    assert tokens["refresh_token"] == "dead-refresh-token"
+    assert tokens["access_token"] == "dead-access-token"
+    assert "last_auth_error" not in raw["providers"]["xai-oauth"]
+
+
+def test_read_xai_last_auth_error_survives_empty_tokens(tmp_path, monkeypatch):
+    from hermes_cli.auth import _read_xai_oauth_last_auth_error
+
+    hermes_home = tmp_path / "hermes"
+    state = {
+        "tokens": {},
+        "last_auth_error": {
+            "provider": "xai-oauth",
+            "code": "invalid_grant",
+            "message": "Refresh token was revoked",
+            "relogin_required": True,
+            "at": "2026-08-04T12:00:00+00:00",
+        },
+    }
+    _seed_xai_oauth_state(hermes_home, state)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    assert _read_xai_oauth_last_auth_error() == state["last_auth_error"]
 
 
 # ---------------------------------------------------------------------------
@@ -767,6 +835,314 @@ def test_runtime_provider_uses_pool_entry_for_xai_oauth(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # Token-expiry behavior on the pool path
 # ---------------------------------------------------------------------------
+
+
+def test_pool_entry_needs_refresh_when_jwt_within_skew(tmp_path, monkeypatch):
+    """The pool's proactive-refresh gate must trigger when the JWT exp claim
+    is within the XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS window — otherwise a
+    near-expired token will hit the API and 401 unnecessarily.  Mirrors the
+    Codex skew-window behavior."""
+    from agent.credential_pool import load_pool, AUTH_TYPE_OAUTH, PooledCredential
+    from hermes_cli.auth import XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS
+    import uuid
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Token expires in 30s — well inside the proactive refresh skew window.
+    near_expiry = _jwt_with_exp(int(time.time()) + 30)
+    pool = load_pool("xai-oauth")
+    entry = PooledCredential(
+        provider="xai-oauth",
+        id=uuid.uuid4().hex[:6],
+        label="test",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="manual:xai_pkce",
+        access_token=near_expiry,
+        refresh_token="rt",
+        base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    pool.add_entry(entry)
+    assert XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS > 30
+    assert pool._entry_needs_refresh(entry) is True
+
+
+def test_pool_entry_no_refresh_for_fresh_jwt(tmp_path, monkeypatch):
+    """A fresh JWT beyond the skew window must NOT trigger proactive refresh."""
+    from agent.credential_pool import load_pool, AUTH_TYPE_OAUTH, PooledCredential
+    import uuid
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
+    pool = load_pool("xai-oauth")
+    entry = PooledCredential(
+        provider="xai-oauth",
+        id=uuid.uuid4().hex[:6],
+        label="test",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="manual:xai_pkce",
+        access_token=fresh,
+        refresh_token="rt",
+        base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    pool.add_entry(entry)
+    assert pool._entry_needs_refresh(entry) is False
+
+
+def test_pool_select_proactively_refreshes_expiring_token(tmp_path, monkeypatch):
+    """End-to-end: pool.select() with refresh=True on an expiring entry must
+    return the refreshed token.  This is the proactive path that runs BEFORE
+    the API call — separate from the 401-reactive path."""
+    from agent.credential_pool import load_pool, AUTH_TYPE_OAUTH, PooledCredential
+    import uuid
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    near_expiry = _jwt_with_exp(int(time.time()) + 30)
+    new_access = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
+
+    refresh_calls = {"count": 0}
+
+    def _fake_refresh(access_token, refresh_token, **kwargs):
+        refresh_calls["count"] += 1
+        assert refresh_token == "rt-old"
+        return {
+            "access_token": new_access,
+            "refresh_token": "rt-new",
+            "id_token": "",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "last_refresh": "2026-05-15T01:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh)
+
+    pool = load_pool("xai-oauth")
+    pool.add_entry(
+        PooledCredential(
+            provider="xai-oauth",
+            id=uuid.uuid4().hex[:6],
+            label="test",
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source="manual:xai_pkce",
+            access_token=near_expiry,
+            refresh_token="rt-old",
+            base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+        )
+    )
+
+    selected = pool.select()
+    assert refresh_calls["count"] == 1
+    assert selected is not None
+    assert selected.access_token == new_access
+    assert selected.refresh_token == "rt-new"
+
+
+def test_pool_try_refresh_current_handles_xai_oauth(tmp_path, monkeypatch):
+    """The reactive 401-recovery path uses pool.try_refresh_current().  This
+    must work for xai-oauth alongside openai-codex — otherwise mid-call
+    expirations get propagated as hard failures instead of being retried with
+    fresh tokens."""
+    from agent.credential_pool import load_pool, AUTH_TYPE_OAUTH, PooledCredential
+    import uuid
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Even a "fresh-looking" token gets force-refreshed via try_refresh_current.
+    # We simulate the scenario where the server rejected the token (401)
+    # despite client-side expiry math saying it's still valid (e.g. clock
+    # skew, server-side revocation, token bound to a session that expired).
+    seemingly_fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
+    new_access = _jwt_with_exp(int(time.time()) + 7200)
+
+    def _fake_refresh(access_token, refresh_token, **kwargs):
+        return {
+            "access_token": new_access,
+            "refresh_token": "rt-rotated",
+            "id_token": "",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "last_refresh": "2026-05-15T02:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh)
+
+    pool = load_pool("xai-oauth")
+    pool.add_entry(
+        PooledCredential(
+            provider="xai-oauth",
+            id=uuid.uuid4().hex[:6],
+            label="test",
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source="manual:xai_pkce",
+            access_token=seemingly_fresh,
+            refresh_token="rt-old",
+            base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+        )
+    )
+    pool.select()
+    refreshed = pool.try_refresh_current()
+    assert refreshed is not None
+    assert refreshed.access_token == new_access
+    assert refreshed.refresh_token == "rt-rotated"
+
+
+def test_pool_refresh_marks_entry_exhausted_on_failure(tmp_path, monkeypatch):
+    """When the xAI refresh endpoint rejects the refresh_token (e.g. consumed
+    by another process, revoked), the pool must surface the failure cleanly
+    rather than silently retaining stale tokens.  This is critical for the
+    failover path — _recover_with_credential_pool rotates to the next entry
+    only if try_refresh_current returns None."""
+    from agent.credential_pool import load_pool, AUTH_TYPE_OAUTH, PooledCredential
+    from hermes_cli.auth import AuthError
+    import uuid
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _fake_refresh_fail(*args, **kwargs):
+        raise AuthError("refresh_token_reused", code="xai_refresh_failed", relogin_required=True)
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh_fail)
+
+    pool = load_pool("xai-oauth")
+    seemingly_fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
+    pool.add_entry(
+        PooledCredential(
+            provider="xai-oauth",
+            id=uuid.uuid4().hex[:6],
+            label="test",
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source="manual:xai_pkce",
+            access_token=seemingly_fresh,
+            refresh_token="rt-revoked",
+            base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+        )
+    )
+    pool.select()
+    refreshed = pool.try_refresh_current()
+    # Refresh failure must return None so the caller falls through to
+    # credential rotation / friendly error display.
+    assert refreshed is None
+
+
+def test_pool_seeded_entry_sync_back_after_refresh(tmp_path, monkeypatch):
+    """When an entry seeded from the singleton (source='device_code')
+    is refreshed by the pool, the new tokens must be written back so a
+    fresh process load doesn't re-seed the now-consumed refresh token."""
+    from agent.credential_pool import load_pool
+
+    hermes_home = tmp_path / "hermes"
+    near_expiry = _jwt_with_exp(int(time.time()) + 30)
+    _setup_hermes_auth(hermes_home, access_token=near_expiry, refresh_token="rt-singleton")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    new_access = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
+
+    def _fake_refresh(access_token, refresh_token, **kwargs):
+        assert refresh_token == "rt-singleton"
+        return {
+            "access_token": new_access,
+            "refresh_token": "rt-rotated",
+            "id_token": "",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "last_refresh": "2026-05-15T03:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh)
+
+    pool = load_pool("xai-oauth")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.access_token == new_access
+
+    raw = json.loads((hermes_home / "auth.json").read_text())
+    tokens = raw["providers"]["xai-oauth"]["tokens"]
+    assert tokens["access_token"] == new_access
+    assert tokens["refresh_token"] == "rt-rotated"
+
+
+def test_pool_refresh_adopts_singleton_tokens_when_consumed_elsewhere(tmp_path, monkeypatch):
+    """Multi-process race: another Hermes process refreshed the singleton
+    (rotating the refresh_token) while this process held a stale in-memory
+    pool entry.  ``_refresh_entry`` must adopt the fresher singleton tokens
+    BEFORE spending its own (now-consumed) refresh_token, otherwise the
+    refresh POST would replay the consumed token and fail with
+    ``refresh_token_reused``.
+
+    Mirrors the proactive sync codex/nous already perform for the same
+    reason, and is what makes the pool actually safe to share across
+    profiles + Hermes processes."""
+    from agent.credential_pool import load_pool
+
+    hermes_home = tmp_path / "hermes"
+    in_memory_at = _jwt_with_exp(int(time.time()) + 30)  # near-expiry
+    _setup_hermes_auth(hermes_home, access_token=in_memory_at, refresh_token="rt-stale")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Load the pool once so the in-memory entry is seeded with rt-stale.
+    pool = load_pool("xai-oauth")
+
+    # Now simulate "another process refreshed the tokens" by overwriting
+    # the singleton on disk WITHOUT touching this process's pool object.
+    other_process_at = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
+    raw = json.loads((hermes_home / "auth.json").read_text())
+    raw["providers"]["xai-oauth"]["tokens"] = {
+        "access_token": other_process_at,
+        "refresh_token": "rt-rotated-by-other-process",
+        "id_token": "",
+        "expires_in": 3600,
+        "token_type": "Bearer",
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(raw))
+
+    refresh_calls = {"refresh_token_seen": None}
+    final_at = _jwt_with_exp(int(time.time()) + 7200)
+
+    def _fake_refresh(access_token, refresh_token, **kwargs):
+        # The pool MUST have adopted the rotated token from auth.json before
+        # POSTing the refresh — otherwise it would replay the stale one.
+        refresh_calls["refresh_token_seen"] = refresh_token
+        return {
+            "access_token": final_at,
+            "refresh_token": "rt-final",
+            "id_token": "",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "last_refresh": "2026-05-15T05:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh)
+
+    selected = pool.select()
+    assert selected is not None
+    # Adopted the other process's still-fresh access token under the lock —
+    # no second single-use refresh POST is spent when the adopted JWT is not
+    # expiring. Older behavior always POSTed after adopt; that burned the
+    # just-rotated refresh token for no reason.
+    assert selected.access_token == other_process_at
+    assert selected.refresh_token == "rt-rotated-by-other-process"
+    assert refresh_calls["refresh_token_seen"] is None
 
 
 def test_pool_refresh_recovers_when_other_process_already_refreshed(tmp_path, monkeypatch):

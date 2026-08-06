@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -1685,6 +1687,232 @@ def _xai_auth_store(access_token: str, refresh_token: str) -> dict:
     }
 
 
+def test_is_terminal_xai_oauth_refresh_error():
+    from hermes_cli.auth import AuthError, _is_terminal_xai_oauth_refresh_error
+
+    assert _is_terminal_xai_oauth_refresh_error(
+        AuthError("Refresh failed", provider="xai-oauth", code="xai_refresh_failed", relogin_required=True)
+    )
+    assert _is_terminal_xai_oauth_refresh_error(
+        AuthError("No token", provider="xai-oauth", code="xai_auth_missing_refresh_token", relogin_required=True)
+    )
+    # transient 429/5xx: relogin_required=False → not terminal
+    assert not _is_terminal_xai_oauth_refresh_error(
+        AuthError("Rate limit", provider="xai-oauth", code="xai_refresh_failed", relogin_required=False)
+    )
+    # Nous error does not trigger xAI check
+    assert not _is_terminal_xai_oauth_refresh_error(
+        AuthError("Revoked", provider="nous", code="invalid_grant", relogin_required=True)
+    )
+    # Generic exception
+    assert not _is_terminal_xai_oauth_refresh_error(ValueError("oops"))
+
+
+def test_xai_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("XAI_OAUTH_ACCESS_TOKEN", raising=False)
+
+    _write_auth_store(tmp_path, _xai_auth_store("old-access-token", "old-refresh-token"))
+
+    from agent.credential_pool import PooledCredential, load_pool
+    import hermes_cli.auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    pool = load_pool("xai-oauth")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.source == "device_code"
+
+    # Add a manual API-key entry that must survive the quarantine.
+    pool.add_entry(PooledCredential.from_dict("xai-oauth", {
+        "id": "manual-key",
+        "source": "manual",
+        "auth_type": "api_key",
+        "access_token": "manual-xai-key",
+    }))
+
+    refresh_calls = {"count": 0}
+
+    def _terminal_refresh_failure(*_args, **_kwargs):
+        refresh_calls["count"] += 1
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="xai-oauth",
+            code="xai_refresh_failed",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_xai_oauth_pure", _terminal_refresh_failure)
+
+    assert pool.try_refresh_current() is None
+
+    # Only the manual entry survives.
+    assert [entry.id for entry in pool.entries()] == ["manual-key"]
+
+    # Auth.json tokens must be cleared.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    xai_state = auth_payload["providers"]["xai-oauth"]
+    tokens = xai_state.get("tokens", {})
+    assert not tokens.get("access_token")
+    assert not tokens.get("refresh_token")
+    assert xai_state["last_auth_error"]["code"] == "xai_refresh_failed"
+    assert xai_state["last_auth_error"]["relogin_required"] is True
+
+    # Persisted pool must also have only the manual entry.
+    assert [entry["id"] for entry in auth_payload["credential_pool"]["xai-oauth"]] == ["manual-key"]
+
+    # A second try_refresh_current must not call refresh_xai_oauth_pure again
+    # (pool is now empty of device-code entries and current is None).
+    assert pool.try_refresh_current() is None
+    assert refresh_calls["count"] == 1
+
+
+def test_xai_oauth_terminal_refresh_logs_safe_diagnostic(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("XAI_OAUTH_ACCESS_TOKEN", raising=False)
+    _write_auth_store(
+        tmp_path,
+        _xai_auth_store("diagnostic-access", "diagnostic-refresh"),
+    )
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    pool = load_pool("xai-oauth")
+    assert pool.select() is not None
+
+    def _terminal_refresh_failure(*_args, **_kwargs):
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="xai-oauth",
+            code="xai_refresh_failed",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_xai_oauth_pure", _terminal_refresh_failure)
+
+    with caplog.at_level(logging.ERROR, logger="agent.credential_pool"):
+        assert pool.try_refresh_current() is None
+
+    fingerprint = hashlib.sha256(b"diagnostic-refresh").hexdigest()[:12]
+    error_logs = [record.getMessage() for record in caplog.records]
+    assert any(
+        "code=xai_refresh_failed" in message
+        and "relogin_required=True" in message
+        and f"refresh_fingerprint={fingerprint}" in message
+        for message in error_logs
+    )
+    assert all("diagnostic-refresh" not in message for message in error_logs)
+
+
+def test_xai_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("XAI_OAUTH_ACCESS_TOKEN", raising=False)
+
+    _write_auth_store(tmp_path, _xai_auth_store("old-access-token", "old-refresh-token"))
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    pool = load_pool("xai-oauth")
+    assert pool.select() is not None
+
+    def _transient_failure(*_args, **_kwargs):
+        raise AuthError(
+            "Rate limited",
+            provider="xai-oauth",
+            code="xai_refresh_failed",
+            relogin_required=False,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_xai_oauth_pure", _transient_failure)
+    pool.try_refresh_current()
+
+    # Tokens must NOT be cleared from auth.json.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    tokens = auth_payload["providers"]["xai-oauth"].get("tokens", {})
+    assert tokens.get("access_token") == "old-access-token"
+    assert tokens.get("refresh_token") == "old-refresh-token"
+
+
+def test_xai_oauth_concurrent_pool_instances_refresh_single_use_token_once(
+    tmp_path, monkeypatch
+):
+    import threading
+    import time
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("XAI_OAUTH_ACCESS_TOKEN", raising=False)
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "xai-oauth": [{
+                "id": "manual-xai",
+                "label": "manual-xai",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:xai_pkce",
+                "access_token": "old-access-token",
+                "refresh_token": "one-time-refresh-token",
+                "base_url": "https://api.x.ai/v1",
+            }],
+        },
+    })
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+
+    pools = [load_pool("xai-oauth"), load_pool("xai-oauth")]
+    start = threading.Barrier(2)
+    refresh_calls: list[tuple[str, str]] = []
+
+    def _refresh(access_token, refresh_token, **_kwargs):
+        refresh_calls.append((access_token, refresh_token))
+        time.sleep(0.1)
+        return {
+            "access_token": "fresh-access-token",
+            "refresh_token": "fresh-refresh-token",
+            "last_refresh": "2026-07-12T00:00:00+00:00",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_xai_oauth_pure", _refresh)
+    results = []
+    errors = []
+
+    def _worker(pool):
+        try:
+            start.wait()
+            results.append(pool.try_refresh_matching("old-access-token"))
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker, args=(pool,)) for pool in pools]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    assert refresh_calls == [("old-access-token", "one-time-refresh-token")]
+    assert sorted(entry.access_token for entry in results) == [
+        "fresh-access-token",
+        "fresh-access-token",
+    ]
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    stored = persisted["credential_pool"]["xai-oauth"][0]
+    assert stored["access_token"] == "fresh-access-token"
+    assert stored["refresh_token"] == "fresh-refresh-token"
 
 
 

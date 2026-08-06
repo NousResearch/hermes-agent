@@ -42,6 +42,32 @@ class TestRequestToolApproval:
         res = request_tool_approval("write_file", "sensitive path", rule_key="ssh")
         assert res == {"approved": True, "message": None}
 
+    def test_external_send_allowlist_is_checked_before_cron_classification(
+        self, monkeypatch
+    ):
+        key = (
+            "plugin_rule:external-send:whatsapp:"
+            "120363409308740444@g.us"
+        )
+        monkeypatch.setattr(
+            approval,
+            "is_approved",
+            lambda _session_key, pattern_key: pattern_key == key,
+        )
+        monkeypatch.setattr(
+            approval,
+            "_is_cron_approval_context",
+            lambda: pytest.fail("allowlist must short-circuit before classification"),
+        )
+
+        res = request_tool_approval(
+            "send_message",
+            "External send requires explicit human confirmation",
+            rule_key="external-send:whatsapp:120363409308740444@g.us",
+        )
+
+        assert res == {"approved": True, "message": None}
+
     def test_cli_approve_once(self, monkeypatch):
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
         monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)

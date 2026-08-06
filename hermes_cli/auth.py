@@ -1503,9 +1503,18 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     ``hermes auth add <provider>`` inside the profile, profile entries
     fully shadow global for that provider on the next read.
 
-    Writes always go to the profile (``write_credential_pool`` is unchanged).
+    Writes normally go to the profile. ``xai-oauth`` is the exception: its
+    rotating grant is always read from the canonical root store.
     See issue #18594 follow-up.
     """
+    if provider_id == "xai-oauth":
+        canonical_path = _xai_oauth_auth_file_path()
+        with _auth_store_lock(target_path=canonical_path):
+            canonical = _load_auth_store(canonical_path)
+        canonical_pool = canonical.get("credential_pool")
+        entries = canonical_pool.get("xai-oauth") if isinstance(canonical_pool, dict) else None
+        return list(entries) if isinstance(entries, list) else []
+
     auth_store = _load_auth_store()
     pool = auth_store.get("credential_pool")
     if not isinstance(pool, dict):
@@ -1627,7 +1636,47 @@ def write_credential_pool(
 
     Pass ``removed_ids`` for entries the caller intentionally removed, so the
     merge does not resurrect them from the on-disk copy.
+
+    xAI OAuth is canonical-root-only. Pool rows are compatibility metadata and
+    their token pair is always derived from ``providers.xai-oauth.tokens`` in
+    the same atomic whole-file write.
     """
+    if provider_id == "xai-oauth":
+        canonical_path = _xai_oauth_auth_file_path()
+        with _auth_store_lock(target_path=canonical_path):
+            auth_store = _load_auth_store(canonical_path)
+            providers = auth_store.setdefault("providers", {})
+            state = providers.get("xai-oauth") if isinstance(providers, dict) else None
+            if not _xai_oauth_state_has_usable_tokens(state):
+                # Only promote a true device_code compatibility row into the
+                # singleton. Manual/api_key pool rows stay pool-only.
+                first = next(
+                    (
+                        row
+                        for row in entries
+                        if isinstance(row, dict)
+                        and str(row.get("source") or "") == "device_code"
+                        and row.get("access_token")
+                        and row.get("refresh_token")
+                    ),
+                    None,
+                )
+                if first:
+                    if not isinstance(providers, dict):
+                        providers = {}
+                        auth_store["providers"] = providers
+                    providers["xai-oauth"] = {
+                        "auth_mode": "oauth_device_code",
+                        "tokens": {
+                            "access_token": first["access_token"],
+                            "refresh_token": first["refresh_token"],
+                            "token_type": first.get("token_type", "Bearer"),
+                        },
+                        "last_refresh": first.get("last_refresh"),
+                    }
+            _derive_xai_pool_from_provider(auth_store, entries)
+            return _save_auth_store(auth_store, target_path=canonical_path)
+
     removed = {rid for rid in (removed_ids or ()) if rid}
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -4371,12 +4420,111 @@ def _pool_codex_access_token() -> str:
 
 
 # =============================================================================
-# xAI Grok OAuth — tokens stored in ~/.hermes/auth.json
+# xAI Grok OAuth — one canonical store, rooted at the global Hermes home
 # =============================================================================
 
+XAI_POOL_ERROR_FIELDS = frozenset({
+    "last_status", "last_status_at", "last_error_code", "last_error_reason",
+    "last_error_message", "last_error_reset_at",
+})
+
+
+def _xai_oauth_auth_file_path() -> Path:
+    """Return the sole authoritative xAI OAuth auth.json path."""
+    return _global_auth_file_path() or _auth_file_path()
+
+
+@contextmanager
+def _xai_oauth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    """Lock the canonical xAI store rather than a profile-local auth file."""
+    target = _xai_oauth_auth_file_path()
+    with _auth_store_lock(timeout_seconds=timeout_seconds, target_path=target):
+        yield target
+
+
+def _derive_xai_pool_from_provider(
+    auth_store: Dict[str, Any],
+    candidates: Optional[List[Dict[str, Any]]] = None,
+    *,
+    clear_errors: bool = False,
+) -> None:
+    """Derive the device_code compatibility pool row from providers.xai-oauth.tokens.
+
+    Manual/api_key pool rows are preserved alongside the singleton OAuth row.
+    When provider tokens are empty (terminal wipe), device_code rows are dropped
+    but non-device_code rows stay so operators keep independent keys.
+    """
+    providers = auth_store.get("providers")
+    state = providers.get("xai-oauth") if isinstance(providers, dict) else None
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    pool = auth_store.setdefault("credential_pool", {})
+    if not isinstance(pool, dict):
+        pool = {}
+        auth_store["credential_pool"] = pool
+    existing = pool.get("xai-oauth")
+    source_rows = candidates if candidates is not None else existing
+    rows = [row for row in source_rows or [] if isinstance(row, dict)]
+    manual_rows = [
+        dict(row)
+        for row in rows
+        if str(row.get("source") or "") != "device_code"
+    ]
+
+    # When the caller passes an explicit candidate list with no device_code
+    # row (e.g. ``hermes auth remove`` emptied the pool before clearing the
+    # singleton), do NOT recreate a device_code compatibility row from still-
+    # present provider tokens. That race left orphan pool rows that made
+    # removal look sticky-failed on the next load_pool().
+    if candidates is not None:
+        has_device = any(
+            str(row.get("source") or "") == "device_code" for row in rows
+        )
+        if not has_device:
+            if manual_rows:
+                pool["xai-oauth"] = manual_rows
+            else:
+                pool.pop("xai-oauth", None)
+            return
+
+    if not isinstance(tokens, dict):
+        if manual_rows:
+            pool["xai-oauth"] = manual_rows
+        else:
+            pool.pop("xai-oauth", None)
+        return
+
+    access = str(tokens.get("access_token", "") or "").strip()
+    refresh = str(tokens.get("refresh_token", "") or "").strip()
+    if not access or not refresh:
+        if manual_rows:
+            pool["xai-oauth"] = manual_rows
+        else:
+            pool.pop("xai-oauth", None)
+        return
+
+    device_rows = [row for row in rows if str(row.get("source") or "") == "device_code"]
+    row = dict(device_rows[0]) if device_rows else {
+        "id": "xai-oauth-canonical", "label": "device_code", "priority": 0,
+    }
+    old_pair = (row.get("access_token"), row.get("refresh_token"))
+    row.update({
+        "source": "device_code",
+        "auth_type": "oauth",
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": tokens.get("token_type", "Bearer"),
+        "last_refresh": state.get("last_refresh"),
+    })
+    if clear_errors or old_pair != (access, refresh):
+        for key in XAI_POOL_ERROR_FIELDS:
+            row.pop(key, None)
+    pool["xai-oauth"] = [row] + manual_rows
+
+
 def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Return usable xAI OAuth state from provider state or credential pool."""
-    state = _load_provider_state(auth_store, "xai-oauth")
+    """Return usable xAI OAuth state from provider state or a legacy pool row."""
+    providers = auth_store.get("providers")
+    state = providers.get("xai-oauth") if isinstance(providers, dict) else None
     tokens = state.get("tokens") if isinstance(state, dict) else None
     if isinstance(tokens, dict):
         access_token = str(tokens.get("access_token", "") or "").strip()
@@ -4393,6 +4541,11 @@ def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str
     if isinstance(entries, list):
         for entry in entries:
             if not isinstance(entry, dict):
+                continue
+            # Only legacy singleton/device_code pool rows may rehydrate the
+            # provider grant. Manual/api_key rows are independent credentials
+            # and must not be promoted into providers.xai-oauth.
+            if str(entry.get("source") or "") != "device_code":
                 continue
             access_token = str(entry.get("access_token", "") or "").strip()
             refresh_token = str(entry.get("refresh_token", "") or "").strip()
@@ -4422,16 +4575,13 @@ def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
 
 
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+    canonical_path = _xai_oauth_auth_file_path()
     if _lock:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
+        with _auth_store_lock(target_path=canonical_path):
+            auth_store = _load_auth_store(canonical_path)
     else:
-        auth_store = _load_auth_store()
+        auth_store = _load_auth_store(canonical_path)
     state = _xai_oauth_state_from_store(auth_store)
-    if not _xai_oauth_state_has_usable_tokens(state):
-        global_state = _xai_oauth_state_from_store(_load_global_auth_store())
-        if _xai_oauth_state_has_usable_tokens(global_state):
-            state = global_state
     if not state:
         raise AuthError(
             "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
@@ -4469,6 +4619,28 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
         "discovery": state.get("discovery") or {},
         "redirect_uri": state.get("redirect_uri"),
     }
+
+
+def _read_xai_oauth_last_auth_error() -> Optional[Dict[str, Any]]:
+    """Return providers.xai-oauth.last_auth_error even when tokens were wiped.
+
+    Terminal refresh failures clear access/refresh tokens but leave
+    ``last_auth_error`` so operators can see *why* the store is empty
+    (invalid_grant / relogin_required) instead of a bare "no token" message.
+    Never raises; returns None when absent or unreadable.
+    """
+    try:
+        canonical_path = _xai_oauth_auth_file_path()
+        with _auth_store_lock(target_path=canonical_path):
+            auth_store = _load_auth_store(canonical_path)
+        providers = auth_store.get("providers")
+        state = providers.get("xai-oauth") if isinstance(providers, dict) else None
+        if not isinstance(state, dict):
+            return None
+        err = state.get("last_auth_error")
+        return dict(err) if isinstance(err, dict) and err else None
+    except Exception:
+        return None
 
 
 def _profile_has_own_xai_oauth_state(auth_store: Dict[str, Any]) -> bool:
@@ -4534,58 +4706,35 @@ def _save_xai_oauth_tokens(
     auth_mode: str = "oauth_device_code",
     set_active: bool = True,
 ) -> None:
-    """Persist xAI OAuth tokens into the auth store.
+    """Atomically save one xAI token pair and pool mirror at canonical root.
 
-    When *set_active* is True (default), also promote ``xai-oauth`` to
-    ``active_provider`` — appropriate for intentional model/auth login.
-    Pass ``set_active=False`` for side-tool credential bootstrap (TTS/setup,
-    tools config, dashboard token save, token refresh) so inference routing
-    is unchanged.
+    ``set_active=False`` retains the upstream side-tool bootstrap contract:
+    refreshing or provisioning an auxiliary xAI credential must not silently
+    change the inference provider.
     """
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        # A profile that lacks its own xai-oauth block is reading the root
-        # grant through _load_provider_state's fallback. When such a profile
-        # refreshes the (rotating) grant, we must write the rotated chain back
-        # to root too, or root is left holding a revoked refresh token (#43589).
-        # #74339: the old key-presence check (_profile_has_own_xai_oauth_state)
-        # decided write-through based on whether the profile had a
-        # providers.xai-oauth key BEFORE the save — but _store_provider_state
-        # unconditionally creates that key below. Use
-        # _load_provider_state_with_source to learn where the grant was
-        # resolved from and write back only to that source.
-        state, source_path = _load_provider_state_with_source(
-            auth_store, "xai-oauth"
-        )
-        if state is None:
-            state = {}
-        state["tokens"] = tokens
+    with _xai_oauth_store_lock() as canonical_path:
+        auth_store = _load_auth_store(canonical_path)
+        providers = auth_store.setdefault("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
+            auth_store["providers"] = providers
+        current = providers.get("xai-oauth")
+        state = dict(current) if isinstance(current, dict) else {}
+        state["tokens"] = dict(tokens)
         state["last_refresh"] = last_refresh
         state["auth_mode"] = auth_mode
+        state.pop("last_auth_error", None)
         if discovery:
             state["discovery"] = discovery
         if redirect_uri:
             state["redirect_uri"] = redirect_uri
-        global_root = _global_auth_file_path()
-        is_from_root = bool(
-            source_path is not None
-            and global_root is not None
-            and _same_path(source_path, global_root)
-        )
-        if is_from_root:
-            # Grant was resolved from root — write back to root only.
-            # Do NOT call _store_provider_state on the profile auth_store
-            # (it would create a shadowing providers.xai-oauth key that
-            # disables write-through on the next refresh — #74339).
-            _write_through_xai_oauth_to_global_root(state)
-        else:
-            # Profile genuinely owns this — write to profile store.
-            _store_provider_state(
-                auth_store, "xai-oauth", state, set_active=set_active
-            )
-            _save_auth_store(auth_store)
+        providers["xai-oauth"] = state
+        if set_active:
+            auth_store["active_provider"] = "xai-oauth"
+        _derive_xai_pool_from_provider(auth_store, clear_errors=True)
+        _save_auth_store(auth_store, target_path=canonical_path)
 
 
 def _xai_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:
@@ -4895,7 +5044,8 @@ def _refresh_xai_oauth_tokens(
     # logins may still carry ``oauth_pkce``): the refresh hot path must not
     # relabel how the grant was originally obtained.
     try:
-        state = _load_provider_state(_load_auth_store(), "xai-oauth") or {}
+        canonical_path = _xai_oauth_auth_file_path()
+        state = _xai_oauth_state_from_store(_load_auth_store(canonical_path)) or {}
         auth_mode = str(state.get("auth_mode") or "oauth_device_code")
     except Exception:
         auth_mode = "oauth_device_code"
@@ -4950,7 +5100,10 @@ def resolve_xai_oauth_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
     if should_refresh:
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+        # Serialize read -> refresh POST -> atomic pair write on the one root lock.
+        with _xai_oauth_store_lock(
+            timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)
+        ):
             data = _read_xai_oauth_tokens(_lock=False)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()
@@ -4981,6 +5134,14 @@ def resolve_xai_oauth_runtime_credentials(
                         # Terminal failure (HTTP 400/401/403 — invalid_grant, token revoked).
                         # Clear dead tokens from auth.json so subsequent sessions fail fast
                         # without a network retry. Mirrors credential_pool.py quarantine.
+                        logger.error(
+                            "xAI OAuth refresh token is terminally invalid; "
+                            "code=%s relogin_required=%s refresh_fingerprint=%s; "
+                            "clearing local token state",
+                            exc.code or "xai_refresh_failed",
+                            bool(exc.relogin_required),
+                            _token_fingerprint(tokens.get("refresh_token")) or "none",
+                        )
                         try:
                             _q_store = _load_auth_store()
                             _q_state = _load_provider_state(_q_store, "xai-oauth") or {}

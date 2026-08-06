@@ -107,6 +107,7 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "custom",
     "gemini",
     "xai",
+    "xai-oauth",
 })
 
 # Providers whose APIs require lowercase model IDs.  Xiaomi's

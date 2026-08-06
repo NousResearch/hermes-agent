@@ -5931,9 +5931,29 @@ def resolve_provider_client(
     if provider == "xai-oauth":
         client, default = _build_xai_oauth_aux_client(model)
         if client is None:
+            detail = ""
+            try:
+                from hermes_cli.auth import _read_xai_oauth_last_auth_error
+
+                err = _read_xai_oauth_last_auth_error() or {}
+                if err.get("relogin_required") or err.get("code") or err.get("message"):
+                    parts = []
+                    if err.get("code"):
+                        parts.append(f"code={err.get('code')}")
+                    if err.get("message"):
+                        parts.append(str(err.get("message")))
+                    if err.get("at"):
+                        parts.append(f"at={err.get('at')}")
+                    if err.get("relogin_required"):
+                        parts.append("relogin_required=true")
+                    if parts:
+                        detail = " (" + "; ".join(parts) + ")"
+            except Exception:
+                detail = ""
             logger.warning(
                 "resolve_provider_client: xai-oauth requested but no xAI "
-                "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)"
+                "OAuth token found%s (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)",
+                detail,
             )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)

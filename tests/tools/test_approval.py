@@ -41,7 +41,37 @@ class TestApprovalModeParsing:
             assert _get_approval_mode() == "off"
 
 
+class TestApprovalSessionOrigin:
+    def test_live_gateway_context_wins_over_stale_process_global_cron_flag(
+        self, monkeypatch
+    ):
+        """A cron run in the shared gateway process must not poison a live turn."""
+        from gateway.session_context import reset_session_vars, set_session_vars
+
+        # Reproduce the long-lived gateway ordering: a cron job ran first and
+        # left the process-global marker set, then a WhatsApp message bound its
+        # actual per-turn origin.
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        tokens = set_session_vars(
+            platform="whatsapp",
+            chat_id="120363409308740444@g.us",
+            user_id="interactive-user",
+            session_key="whatsapp:live-session",
+        )
+        try:
+            assert approval_module._is_gateway_approval_context() is True
+        finally:
+            # pytest runs later cases in this same context; restore its pristine
+            # _UNSET state so their legacy env fallbacks remain meaningful.
+            reset_session_vars()
+
+
 class TestSmartApproval:
+    def test_smart_is_the_default_approval_mode(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["approvals"]["mode"] == "smart"
+
     def test_smart_approval_uses_call_llm(self):
         response = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]

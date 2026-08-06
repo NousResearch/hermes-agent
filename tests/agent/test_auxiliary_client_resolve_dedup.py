@@ -116,3 +116,33 @@ class TestUnsupportedOAuthDedup:
         assert len(recs) == 1
         assert recs[0].levelno == logging.DEBUG
         assert not any(r.levelno >= logging.WARNING for r in recs)
+
+
+def test_xai_empty_token_warning_surfaces_relogin_error(monkeypatch, caplog):
+    import hermes_cli.auth as auth
+
+    monkeypatch.setattr(ac, "_build_xai_oauth_aux_client", lambda _model: (None, None))
+    monkeypatch.setattr(
+        auth,
+        "_read_xai_oauth_last_auth_error",
+        lambda: {
+            "code": "invalid_grant",
+            "message": "Refresh token was revoked",
+            "relogin_required": True,
+            "at": "2026-08-04T12:00:00+00:00",
+        },
+        raising=False,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+        client, model = resolve_provider_client("xai-oauth", "grok-4.5")
+
+    assert (client, model) == (None, None)
+    warning = next(
+        record.getMessage()
+        for record in caplog.records
+        if "no xAI OAuth token found" in record.getMessage()
+    )
+    assert "code=invalid_grant" in warning
+    assert "Refresh token was revoked" in warning
+    assert "at=2026-08-04T12:00:00+00:00" in warning

@@ -39,11 +39,19 @@ class TestMultiplexActiveFailClosed:
         with pytest.raises(ss.UnscopedSecretError):
             ss.get_secret("ANTHROPIC_API_KEY")
 
+    def test_scoped_read_uses_scope_not_environ(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-other-profile")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"ANTHROPIC_API_KEY": "sk-mine"})
+        try:
+            assert ss.get_secret("ANTHROPIC_API_KEY") == "sk-mine"
+        finally:
+            ss.reset_secret_scope(token)
 
     def test_scoped_missing_key_returns_default_not_environ(self, monkeypatch):
         # Even though the value exists in os.environ, a scope is authoritative:
         # an absent scope key must NOT fall through to the (cross-profile) env.
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-other")
         ss.set_multiplex_active(True)
         token = ss.set_secret_scope({"ANTHROPIC_API_KEY": "sk-mine"})
         try:
@@ -250,6 +258,33 @@ class TestEnvFileParsing:
         )
 
         assert ss.build_profile_secret_scope(profile) == {}
+
+    def test_build_profile_secret_scope_shared_kimi_from_root(self, tmp_path, monkeypatch):
+        """Credential Fabric P2: root Kimi fills profile scope when missing."""
+        monkeypatch.delenv("HERMES_VAULT_SHARED_FALLBACK", raising=False)
+        root = tmp_path / "home"
+        prof = root / "profiles" / "youtube"
+        prof.mkdir(parents=True)
+        kimi = "kimi-from-root"
+        (root / ".env").write_text(
+            "KIMI_API_KEY=" + kimi + "\nTELEGRAM_BOT_TOKEN=root-tg\n"
+        )
+        (prof / ".env").write_text("TELEGRAM_BOT_TOKEN=profile-tg\n")
+        scope = ss.build_profile_secret_scope(prof)
+        assert scope.get("KIMI_API_KEY") == kimi
+        # platform token stays profile-local — root bot token must not win
+        assert scope.get("TELEGRAM_BOT_TOKEN") == "profile-tg"
+        assert "root-tg" not in scope.values()
+
+    def test_build_profile_secret_scope_shared_disabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_VAULT_SHARED_FALLBACK", "0")
+        root = tmp_path / "home"
+        prof = root / "profiles" / "youtube"
+        prof.mkdir(parents=True)
+        (root / ".env").write_text("KIMI_API_KEY=***MASKED***")
+        (prof / ".env").write_text("TELEGRAM_BOT_TOKEN=profile-tg\n")
+        scope = ss.build_profile_secret_scope(prof)
+        assert "KIMI_API_KEY" not in scope
 
 
 class TestApiServerListenerGlobals:

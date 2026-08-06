@@ -24,6 +24,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 import os
+import re
 import threading
 import time
 from concurrent.futures import (
@@ -1207,6 +1208,8 @@ def _build_child_agent(
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
     override_max_tokens: Optional[int] = None,
+    override_fallback_model: Optional[List[Dict[str, Any]]] = None,
+    trusted_toolset_elevation: bool = False,
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1226,6 +1229,18 @@ def _build_child_agent(
     """
     from run_agent import AIAgent
     import uuid as _uuid
+
+    # Credential Fabric P1: ensure HERMES_VAULT is visible to child work
+    # (tools/subprocesses) without changing credential selection.
+    try:
+        from hermes_vault.dual_run import inject_vault_env
+
+        injected = inject_vault_env()
+        vault_path = injected.get("HERMES_VAULT")
+        if vault_path and not (os.environ.get("HERMES_VAULT") or "").strip():
+            os.environ["HERMES_VAULT"] = vault_path
+    except Exception:
+        pass
 
     # ── Role resolution ─────────────────────────────────────────────────
     # Honor the caller's role only when BOTH the kill switch and the
@@ -1269,15 +1284,20 @@ def _build_child_agent(
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
     if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks.
-        # Expand composite toolsets (e.g. hermes-cli) so that individual
-        # toolset names (e.g. web, terminal) are recognised during intersection.
-        expanded_parent = _expand_parent_toolsets(parent_toolsets)
-        child_toolsets = [t for t in toolsets if t in expanded_parent]
-        if _get_inherit_mcp_toolsets():
-            child_toolsets = _preserve_parent_mcp_toolsets(
-                child_toolsets, parent_toolsets
-            )
+        if trusted_toolset_elevation:
+            # Only validated plugin capability output can set this flag. It
+            # may grant a vetted workload toolset the orchestrator lacks, but
+            # the universal delegate blocked-tool policy still applies below.
+            child_toolsets = list(dict.fromkeys(toolsets))
+        else:
+            # Intersect with parent — model-supplied delegation cannot gain
+            # tools the parent lacks. Expand composite toolsets first.
+            expanded_parent = _expand_parent_toolsets(parent_toolsets)
+            child_toolsets = [t for t in toolsets if t in expanded_parent]
+            if _get_inherit_mcp_toolsets():
+                child_toolsets = _preserve_parent_mcp_toolsets(
+                    child_toolsets, parent_toolsets
+                )
         child_toolsets = _strip_blocked_tools(child_toolsets)
     elif parent_agent and parent_enabled is not None:
         child_toolsets = _strip_blocked_tools(parent_enabled)
@@ -1460,7 +1480,11 @@ def _build_child_agent(
     # from rate-limits and credential exhaustion exactly like the top-level
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    parent_fallback = (
+        override_fallback_model
+        if override_fallback_model is not None
+        else (getattr(parent_agent, "_fallback_chain", None) or None)
+    )
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1795,7 +1819,7 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
     (Docker/Modal/SSH) via ``credential_files._CACHE_DIRS``, so the parent's
     terminal/``read_file`` tools can page through the complete text on any
     backend. Returns the absolute path, or None on failure (best-effort:
-    the trimmed head+tail is still returned to the parent regardless).
+    the bounded in-context reduction is still returned to the parent).
     """
     try:
         from hermes_constants import get_hermes_dir
@@ -1812,59 +1836,288 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
         return None
 
 
+_DECISION_SECTION_PRIORITIES = (
+    (("blocker", "failure", "failed", "error", "issue"), 120),
+    (("final", "outcome", "status", "conclusion"), 115),
+    (("verification", "test", "validation", "check"), 110),
+    (("file", "path", "artifact", "changed"), 100),
+    (("command", "run", "invocation"), 95),
+    (("next step", "recommendation", "action required"), 90),
+    (("result", "summary", "finding"), 85),
+)
+
+
+def _decision_section_priority(heading: str) -> int:
+    normalized = heading.lower()
+    for terms, priority in _DECISION_SECTION_PRIORITIES:
+        if any(term in normalized for term in terms):
+            return priority
+    return 0
+
+
+def _decision_line_priority(line: str) -> int:
+    """Score a standalone line by how likely it is to change the parent's next step."""
+    normalized = line.strip().lower()
+    if not normalized:
+        return 0
+    if any(term in normalized for term in ("blocker", "failed", "failure", "error:")):
+        return 120
+    if any(
+        term in normalized
+        for term in ("status:", "outcome:", "partial", "incomplete", "cannot proceed")
+    ):
+        return 115
+    if any(
+        term in normalized
+        for term in ("test result", "tests passed", "tests failed", " passed", " failed")
+    ):
+        return 110
+    if re.search(
+        r"(?:^|\s)(?:/[^\s`:,]+){2,}|(?:^|\s)[\w./-]+\.(?:py|js|ts|tsx|jsx|rs|go|java|md|json|ya?ml|toml)(?:\s|$|[:,`])",
+        line,
+    ):
+        return 100
+    if re.match(
+        r"^\s*(?:[-*]\s*)?(?:\$\s*|uv\s+run\b|python\d*\b|pytest\b|git\s+|npm\s+|pnpm\s+|yarn\s+|cargo\s+|go\s+test\b|make\b)",
+        line,
+        re.IGNORECASE,
+    ):
+        return 95
+    if re.search(r"\b(?:deleg|proc|subagent)_[A-Za-z0-9_-]+\b", line):
+        return 90
+    return 0
+
+
+def _clip_semantic_block(text: str, limit: int = 420) -> str:
+    """Bound one retained block without allowing it to crowd out all peers."""
+    if len(text) <= limit:
+        return text
+    head_budget = int(limit * 0.72)
+    tail_budget = limit - head_budget - len("\n[… block condensed …]\n")
+    head = text[:head_budget]
+    tail = text[-max(0, tail_budget):]
+    head_nl = head.rfind("\n")
+    if head_nl > head_budget // 2:
+        head = head[:head_nl]
+    tail_nl = tail.find("\n")
+    if 0 <= tail_nl < max(1, tail_budget // 2):
+        tail = tail[tail_nl + 1:]
+    return head + "\n[… block condensed …]\n" + tail
+
+
+def _semantic_summary_excerpts(summary: str, budget: int) -> Optional[str]:
+    """Select decision-critical sections/lines, or None if no structure is found."""
+    if budget <= 0:
+        return None
+
+    lines = summary.splitlines()
+    sections = []
+    current_heading = None
+    current_start = 0
+    current_body = []
+
+    def _finish_section() -> None:
+        if current_heading is not None:
+            sections.append((current_start, current_heading, list(current_body)))
+
+    for line_number, line in enumerate(lines):
+        match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
+        if match:
+            _finish_section()
+            current_heading = line
+            current_start = line_number
+            current_body = []
+        elif current_heading is not None:
+            current_body.append((line_number, line))
+    _finish_section()
+
+    candidates = []
+    covered_lines = set()
+    for start, heading, body in sections:
+        heading_text = re.sub(r"^\s*#+\s*", "", heading).strip()
+        priority = _decision_section_priority(heading_text)
+        if not priority:
+            continue
+        covered_lines.update(line_number for line_number, _ in body)
+        meaningful = [(line_number, line) for line_number, line in body if line.strip()]
+        signalled = [item for item in meaningful if _decision_line_priority(item[1])]
+        if signalled:
+            chosen = signalled[:6]
+        elif len(meaningful) <= 4:
+            chosen = meaningful
+        else:
+            chosen = meaningful[:3] + meaningful[-1:]
+        chosen.sort(key=lambda item: item[0])
+        block = "\n".join([heading] + [line for _, line in chosen])
+        candidates.append((priority, start, _clip_semantic_block(block)))
+
+    for line_number, line in enumerate(lines):
+        if line_number in covered_lines or re.match(r"^\s{0,3}#{1,6}\s+", line):
+            continue
+        priority = _decision_line_priority(line)
+        if priority:
+            candidates.append((priority, line_number, _clip_semantic_block(line, 300)))
+
+    if not candidates:
+        return None
+
+    selected = []
+    remaining = budget
+    for priority, start, text in sorted(candidates, key=lambda item: (-item[0], item[1])):
+        addition = text if not selected else "\n\n" + text
+        if len(addition) <= remaining:
+            selected.append((start, text))
+            remaining -= len(addition)
+
+    if not selected:
+        # A very small budget still gets the highest-value candidate rather
+        # than silently reverting to positional text.
+        _, start, text = max(candidates, key=lambda item: (item[0], -item[1]))
+        return text[:budget]
+
+    selected.sort(key=lambda item: item[0])
+    return "\n\n".join(text for _, text in selected)[:budget]
+
+
+def _summary_footer(
+    *,
+    original_len: int,
+    spill_path: Optional[str],
+    semantic: bool,
+    head_len: int = 0,
+    tail_len: int = 0,
+    middle_start_line: int = 1,
+    retained_len: int = 0,
+) -> str:
+    if semantic:
+        omitted_len = max(0, original_len - retained_len)
+        lines = [
+            "",
+            "─" * 8 + " [SUMMARY TRUNCATED — SEMANTIC REDUCE] " + "─" * 8,
+            f"Preserved decision-critical excerpts; omitted about {omitted_len:,} "
+            f"chars of narration/log detail from {original_len:,} total.",
+        ]
+    else:
+        lines = [
+            "",
+            "─" * 8 + " [SUMMARY TRUNCATED] " + "─" * 8,
+            f"Showing {head_len:,} chars (head) + {tail_len:,} chars (tail) "
+            f"of {original_len:,} total; the middle was omitted.",
+        ]
+
+    if spill_path:
+        lines.append(f"Full subagent output saved to: {spill_path}")
+        if semantic:
+            lines.append(
+                f'Recover all omitted content: read_file path="{spill_path}" '
+                "offset=1 limit=200 (page through the complete original summary)."
+            )
+        else:
+            lines.append(
+                f'Recover the omitted middle: read_file path="{spill_path}" '
+                f"offset={middle_start_line} limit=200 (page through the complete "
+                "original summary)."
+            )
+    else:
+        lines.append(
+            "Full output could not be stored to disk; only the retained text above "
+            "was preserved."
+        )
+    lines.append("─" * 37)
+    return "\n".join(lines)
+
+
 def _trim_summary_with_footer(
     summary: str, cap: int, task_index: int
 ) -> tuple[str, Optional[str]]:
-    """Return (model_text, spill_path) for one over-budget summary.
+    """Return a deterministic, bounded summary plus a lossless spill pointer.
 
-    Mirrors web_extract's ``_truncate_with_footer``: keep a head+tail window
-    (~75% head / ~25% tail, snapped to line boundaries) so the subagent's
-    opening AND its closing (outcomes / files-changed / issues, which live at
-    the end) both survive, spill the full text to disk, and append a footer
-    telling the parent exactly how much it's seeing and the precise
-    ``read_file offset=`` to page into the omitted middle. Deterministic.
+    Structured summaries are reduced by retaining decision-critical sections
+    and lines (blockers, outcomes, verification, paths, commands, identifiers).
+    When no such structure is recognisable, the historical 75/25 head+tail
+    behavior is retained.  The complete original is always spilled best-effort.
     """
     original_len = len(summary)
-    head_budget = int(cap * 0.75)
-    tail_budget = cap - head_budget
-
-    head = summary[:head_budget]
-    tail = summary[-tail_budget:]
-    # Snap the head cut back to the last newline so we don't slice mid-line.
-    nl = head.rfind("\n")
-    if nl > head_budget * 0.5:
-        head = head[:nl]
-    # Snap the tail cut forward to the next newline for the same reason.
-    nl = tail.find("\n")
-    if 0 <= nl < tail_budget * 0.5:
-        tail = tail[nl + 1:]
-
     spill_path = _spill_summary_to_file(task_index, summary)
 
-    footer_lines = [
-        "",
-        "─" * 8 + " [SUMMARY TRUNCATED] " + "─" * 8,
-        f"Showing {len(head):,} chars (head) + {len(tail):,} chars (tail) "
-        f"of {original_len:,} total — trimmed to protect the parent's context window.",
-    ]
-    if spill_path:
-        # read_file is 1-indexed; +2 moves past the last head line shown.
-        middle_start_line = head.count("\n") + 2
-        footer_lines.append(f"Full subagent output saved to: {spill_path}")
-        footer_lines.append(
-            f'To read the omitted middle: read_file path="{spill_path}" '
-            f"offset={middle_start_line} limit=200  (the file is the complete "
-            f"summary; raise/lower offset to page through it)."
+    semantic_marker = "\n\n[... narrative/log detail omitted — see footer ...]"
+    semantic_prefix = "Decision-critical excerpts (original order):\n"
+    provisional_footer = _summary_footer(
+        original_len=original_len,
+        spill_path=spill_path,
+        semantic=True,
+        retained_len=0,
+    )
+    # Keep slack for digit-count changes in the final omitted-char figure.
+    semantic_budget = max(
+        0,
+        cap
+        - len(semantic_prefix)
+        - len(semantic_marker)
+        - len(provisional_footer)
+        - 16,
+    )
+    excerpts = _semantic_summary_excerpts(summary, semantic_budget)
+    if excerpts:
+        footer = _summary_footer(
+            original_len=original_len,
+            spill_path=spill_path,
+            semantic=True,
+            retained_len=len(excerpts),
         )
-    else:
-        footer_lines.append(
-            "Full output could not be stored to disk; the head+tail above is "
-            "all that was preserved."
+        model_text = semantic_prefix + excerpts + semantic_marker + footer
+        if len(model_text) <= cap:
+            return model_text, spill_path
+        # Defensive bound for unexpectedly long paths/digit changes. Preserve
+        # the footer and the beginning of the highest-priority excerpt.
+        overflow = len(model_text) - cap
+        excerpts = excerpts[:max(0, len(excerpts) - overflow)]
+        footer = _summary_footer(
+            original_len=original_len,
+            spill_path=spill_path,
+            semantic=True,
+            retained_len=len(excerpts),
         )
-    footer_lines.append("─" * 37)
+        return (semantic_prefix + excerpts + semantic_marker + footer)[:cap], spill_path
 
-    model_text = head + "\n\n[... middle omitted — see footer ...]\n\n" + tail + "\n".join(footer_lines)
-    return model_text, spill_path
+    marker = "\n\n[... middle omitted — see footer ...]\n"
+    provisional_footer = _summary_footer(
+        original_len=original_len,
+        spill_path=spill_path,
+        semantic=False,
+    )
+    content_budget = max(0, cap - len(marker) - len(provisional_footer) - 16)
+    model_text = ""
+    for _ in range(4):
+        head_budget = int(content_budget * 0.75)
+        tail_budget = content_budget - head_budget
+        head = summary[:head_budget]
+        tail = summary[-tail_budget:] if tail_budget else ""
+
+        nl = head.rfind("\n")
+        if nl > head_budget * 0.5:
+            head = head[:nl]
+        nl = tail.find("\n")
+        if 0 <= nl < tail_budget * 0.5:
+            tail = tail[nl + 1:]
+
+        middle_start_line = head.count("\n") + 2
+        footer = _summary_footer(
+            original_len=original_len,
+            spill_path=spill_path,
+            semantic=False,
+            head_len=len(head),
+            tail_len=len(tail),
+            middle_start_line=middle_start_line,
+        )
+        model_text = head + marker + tail + footer
+        if len(model_text) <= cap:
+            return model_text, spill_path
+        content_budget = max(0, content_budget - (len(model_text) - cap))
+
+    # Caps below the normal 2,000-char floor are pathological; still honor the
+    # hard bound rather than leaking excess context.
+    return model_text[:cap], spill_path
 
 
 def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]:
@@ -1916,10 +2169,11 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
       - the static ``delegation.max_summary_chars`` ceiling (0 = disabled).
 
     When a summary exceeds the cap, its full text is written to a file and the
-    in-context summary becomes a head slice plus a pointer to that file. This
-    addresses issue/PR #9126: batch fan-out returned N full summaries verbatim,
-    blowing the parent context and (on rate-limited providers) triggering a
-    compression/429 death spiral.
+    in-context summary becomes a bounded semantic reduction (or head+tail
+    fallback) plus a pointer to that file. This addresses issue/PR #9126:
+    batch fan-out previously returned N full summaries verbatim, blowing the
+    parent context and (on rate-limited providers) triggering a compression/429
+    death spiral.
     """
     summaries = [
         r for r in results if isinstance(r, dict) and isinstance(r.get("summary"), str) and r["summary"]
@@ -2776,6 +3030,89 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _resolve_plugin_capability(capability: str, role: str) -> dict[str, Any]:
+    """Resolve one named capability through exactly one enabled plugin."""
+    from hermes_cli.plugins import invoke_hook
+
+    results = [
+        result
+        for result in invoke_hook(
+            "resolve_delegation_capability", capability=capability, role=role
+        )
+        if isinstance(result, dict)
+    ]
+    if not results:
+        raise ValueError(f"Capability {capability!r} was not resolved by an enabled plugin")
+    if len(results) != 1:
+        raise ValueError(
+            f"Capability {capability!r} must resolve through exactly one plugin; "
+            f"received {len(results)} results"
+        )
+    resolved = results[0]
+    required = ("provider", "model", "context", "fallback_models")
+    missing = [key for key in required if key not in resolved]
+    if missing:
+        raise ValueError(
+            f"Capability {capability!r} resolver omitted required controls: {missing}"
+        )
+    provider = resolved["provider"]
+    model = resolved["model"]
+    context = resolved["context"]
+    fallbacks = resolved["fallback_models"]
+    toolsets = resolved.get("toolsets")
+    workload = resolved.get("workload")
+    elevated = resolved.get("trusted_toolset_elevation", False)
+    valid_ref = lambda value: (
+        isinstance(value, str)
+        and value.count("/") == 1
+        and all(value.split("/", 1))
+    )
+    if (
+        not isinstance(provider, str)
+        or not provider
+        or not valid_ref(model)
+        or model.split("/", 1)[0] != provider
+        or not isinstance(context, str)
+        or not context
+        or len(context) > 128_000
+        or not isinstance(fallbacks, list)
+        or not all(valid_ref(value) for value in fallbacks)
+        or (toolsets is not None and (
+            not isinstance(toolsets, list)
+            or not all(isinstance(value, str) and value for value in toolsets)
+        ))
+        or not isinstance(workload, str)
+        or not workload
+        or not isinstance(elevated, bool)
+        or (elevated and workload != "coding")
+    ):
+        raise ValueError(f"Capability {capability!r} resolver returned invalid controls")
+    return resolved
+
+
+def _resolve_capability_fallbacks(
+    refs: List[str], config: Dict[str, Any], parent_agent
+) -> List[Dict[str, Any]]:
+    """Preflight every capability fallback provider before child creation."""
+    resolved: List[Dict[str, Any]] = []
+    for ref in refs:
+        provider, _model = ref.split("/", 1)
+        fallback_config = dict(config)
+        fallback_config["provider"] = provider
+        fallback_config["model"] = _bare_capability_model(ref, provider)
+        resolved.append(_resolve_delegation_credentials(fallback_config, parent_agent))
+    return resolved
+
+
+def _bare_capability_model(model: str, provider: str) -> str:
+    """Return a bare model ID when a capability ref matches its provider."""
+    if "/" in model:
+        prefix, bare = model.split("/", 1)
+        if prefix == provider and bare:
+            return bare
+    return model
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2783,6 +3120,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    capability: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2852,17 +3190,10 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
-    # Normalize to task list
+    # Normalize to task list BEFORE resolving default delegation credentials.
+    # Capability-routed tasks resolve their own provider creds later; requiring
+    # the global delegation.provider (often openai-codex) first produced
+    # Codex-missing errors for kimi-coder/debugger jobs (Fix2 / auth-looking noise).
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
     if tasks_error:
@@ -2896,6 +3227,18 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    # Default-chain credentials only when at least one task lacks a capability.
+    needs_default_creds = any(
+        not str(t.get("capability") or capability or "").strip()
+        for t in task_list
+    )
+    creds = None
+    if needs_default_creds:
+        try:
+            creds = _resolve_delegation_credentials(cfg, parent_agent)
+        except ValueError as exc:
+            return tool_error(str(exc))
 
     overall_start = time.monotonic()
     results = []
@@ -2941,32 +3284,92 @@ def delegate_task(
         # Per-task role beats top-level; normalise again so unknown
         # per-task values warn and degrade to leaf uniformly.
         effective_role = _normalize_role(t.get("role") or top_role)
+        capability_name = t.get("capability") or capability
+        capability_resolution = None
+        if capability_name:
+            try:
+                capability_resolution = _resolve_plugin_capability(
+                    capability_name, effective_role
+                )
+            except Exception as exc:
+                # Preserve strict resolver diagnostics instead of masking them
+                # as generic capability or provider-auth failures.
+                return tool_error(str(exc))
+
+        resolved_context = t.get("context")
+        if capability_resolution:
+            resolved_context = "\n\n".join(
+                part
+                for part in (resolved_context, capability_resolution["context"])
+                if part
+            )
+
+        child_creds = creds
+        capability_fallbacks = None
+        if capability_resolution:
+            capability_cfg = dict(cfg)
+            capability_cfg["provider"] = capability_resolution["provider"]
+            capability_cfg["model"] = _bare_capability_model(
+                capability_resolution["model"],
+                capability_resolution["provider"],
+            )
+            try:
+                child_creds = _resolve_delegation_credentials(
+                    capability_cfg, parent_agent
+                )
+                capability_fallbacks = _resolve_capability_fallbacks(
+                    capability_resolution.get("fallback_models", []),
+                    cfg,
+                    parent_agent,
+                )
+            except ValueError as exc:
+                return tool_error(str(exc))
+            try:
+                from hermes_vault.dual_run import observe_runtime
+
+                observe_runtime(
+                    {
+                        "provider": child_creds.get("provider"),
+                        "api_key": child_creds.get("api_key"),
+                        "base_url": child_creds.get("base_url"),
+                    },
+                    site="delegate_child_creds",
+                )
+            except Exception:
+                pass
+
+        if child_creds is None:
+            return tool_error(
+                "No delegation credentials resolved for this task. "
+                "Provide a named capability or configure delegation.provider."
+            )
+
         child = _build_child_preserving_parent_tools(
             task_index=i,
             goal=t["goal"],
-            context=t.get("context"),
-            # Subagents always inherit the parent's toolsets; the model
-            # cannot choose or narrow them (no model-facing toolsets arg).
-            toolsets=None,
-            model=creds["model"],
+            context=resolved_context,
+            toolsets=(capability_resolution or {}).get("toolsets"),
+            model=child_creds["model"],
             max_iterations=effective_max_iter,
             task_count=n_tasks,
             parent_agent=parent_agent,
-            override_provider=creds["provider"],
-            override_base_url=creds["base_url"],
-            override_api_key=creds["api_key"],
-            override_api_mode=creds["api_mode"],
-            override_request_overrides=creds.get("request_overrides"),
-            override_max_tokens=creds.get("max_output_tokens"),
-            override_acp_command=creds.get("command"),
-            override_acp_args=creds.get("args"),
+            override_provider=child_creds["provider"],
+            override_base_url=child_creds["base_url"],
+            override_api_key=child_creds["api_key"],
+            override_api_mode=child_creds["api_mode"],
+            override_request_overrides=child_creds.get("request_overrides"),
+            override_fallback_model=capability_fallbacks,
+            trusted_toolset_elevation=bool(
+                (capability_resolution or {}).get("trusted_toolset_elevation")
+            ),
+            override_max_tokens=child_creds.get("max_output_tokens"),
+            override_acp_command=child_creds.get("command"),
+            override_acp_args=child_creds.get("args"),
             role=effective_role,
         )
-        # Tee the child's progress events into its live transcript log.
-        # wrap_progress_callback preserves the inner callback contract
-        # (including the _flush attribute) and never lets writer failures
-        # reach the agent loop. When no parent display exists the inner
-        # callback is None and the wrapper still records events.
+
+        # Tee child progress into the live transcript without allowing writer
+        # failures to reach the agent loop.
         _writer = live_writers[i] if i < len(live_writers) else None
         if _writer is not None:
             child.tool_progress_callback = wrap_progress_callback(

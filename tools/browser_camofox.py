@@ -529,11 +529,16 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                     timeout=60,
                 )
             except requests.HTTPError as e:
-                if e.response is not None and e.response.status_code == 404:
+                # 404: tab GC'd by Camofox. 410 Gone: tab died with a previous
+                # server/container process (common after camofox-browser restart).
+                # Either way the cached tab_id is unusable — clear and recreate
+                # (#80276).
+                if e.response is not None and e.response.status_code in (404, 410):
                     logger.warning(
-                        "Camofox tab %s returned 404 — tab was garbage collected. "
+                        "Camofox tab %s returned %s — tab was garbage collected. "
                         "Creating a fresh tab.",
                         session["tab_id"],
+                        e.response.status_code,
                     )
                     session["tab_id"] = None
                     session = _ensure_tab(task_id, browser_url)

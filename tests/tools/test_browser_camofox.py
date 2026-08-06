@@ -1,6 +1,8 @@
 """Tests for the Camofox browser backend."""
 
 import json
+
+import requests
 from unittest.mock import MagicMock, patch
 
 
@@ -112,6 +114,47 @@ class TestCamofoxNavigate:
         result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))
         assert result["success"] is False
         assert "Cannot connect" in result["error"]
+
+    def test_stale_tab_410_recreates_tab(self, monkeypatch):
+        """HTTP 410 Gone after camofox-browser restart must recover like 404 (#80276)."""
+        import tools.browser_camofox as mod
+
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        with mod._sessions_lock:
+            mod._sessions["t_410"] = {
+                "user_id": "hermes_test",
+                "tab_id": "dead-tab",
+                "session_key": "task_t_410",
+                "managed": False,
+                "adopt_existing_tab": False,
+            }
+
+        gone = requests.HTTPError("410 Gone")
+        gone.response = MagicMock(status_code=410)
+        navigate_calls: list[str] = []
+
+        def _post_side_effect(path, body=None, **kwargs):
+            navigate_calls.append(path)
+            if path == "/tabs/dead-tab/navigate":
+                raise gone
+            return {"ok": True, "url": (body or {}).get("url", "")}
+
+        def _ensure_tab(task_id, url="about:blank"):
+            session = mod._get_session(task_id)
+            session["tab_id"] = "fresh-tab"
+            return session
+
+        with patch.object(mod, "_post", side_effect=_post_side_effect), \
+             patch.object(mod, "_get", return_value={"snapshot": "", "refsCount": 0}), \
+             patch.object(mod, "_ensure_tab", side_effect=_ensure_tab) as mock_ensure:
+            result = json.loads(camofox_navigate("https://example.com/next", task_id="t_410"))
+
+        assert result["success"] is True
+        assert "/tabs/dead-tab/navigate" in navigate_calls
+        mock_ensure.assert_called()
+        with mod._sessions_lock:
+            assert mod._sessions["t_410"]["tab_id"] == "fresh-tab"
+
 
 
 # ---------------------------------------------------------------------------

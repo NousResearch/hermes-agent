@@ -3587,7 +3587,10 @@ class APIServerAdapter(BasePlatformAdapter):
             conversation_history=history,
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
-            gateway_session_key=gateway_session_key,
+            # Persisted session IDs are stable, server-backed transcript
+            # scopes. Use one when the client did not provide a broader
+            # cross-transcript memory scope explicitly.
+            gateway_session_key=gateway_session_key or session_id,
             route=route,
             session_model=session_model,
             requested_runtime=runtime_request.get("requested") or {},
@@ -3752,7 +3755,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
-                    gateway_session_key=gateway_session_key,
+                    gateway_session_key=gateway_session_key or session_id,
                     route=route,
                     session_model=session_model,
                     requested_runtime=runtime_request.get("requested") or {},

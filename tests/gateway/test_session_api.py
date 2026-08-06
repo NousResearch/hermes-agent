@@ -127,6 +127,52 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path_suffix", "headers", "expected_scope"),
+    [
+        ("chat", {}, None),
+        ("chat", {"X-Hermes-Session-Key": "account-wide-scope"}, "account-wide-scope"),
+        ("chat/stream", {}, None),
+        (
+            "chat/stream",
+            {"X-Hermes-Session-Key": "account-wide-scope"},
+            "account-wide-scope",
+        ),
+    ],
+)
+async def test_session_chat_memory_scope(
+    auth_adapter,
+    session_db,
+    path_suffix,
+    headers,
+    expected_scope,
+):
+    """Persisted sessions provide the default memory scope on both chat paths."""
+    session_id = session_db.create_session("memory-scope-session", "api_server")
+    mock_run = AsyncMock(
+        return_value=(
+            {"final_response": "done", "session_id": session_id, "messages": []},
+            {"total_tokens": 1},
+        )
+    )
+    request_headers = {"Authorization": "Bearer sk-test", **headers}
+
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/api/sessions/{session_id}/{path_suffix}",
+                json={"message": "hello"},
+                headers=request_headers,
+            )
+            assert response.status == 200, await response.text()
+            await response.text()
+
+    _, kwargs = mock_run.call_args
+    assert kwargs["gateway_session_key"] == (expected_scope or session_id)
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter, session_db):
     """run.completed must include the full interleaved turn transcript so a
     client that lost intermediate (pre-tool-call) assistant text from the live
@@ -606,5 +652,4 @@ async def test_require_model_lock_hard_fails_when_global_default_would_be_used(a
             body = await resp.json()
             assert body["error"]["code"] in {"model_lock_unavailable", "invalid_model_lock", "missing_model"}
     mock_run.assert_not_called()
-
 

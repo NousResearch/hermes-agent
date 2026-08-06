@@ -720,20 +720,29 @@ def apply_wal_with_fallback(
 
     # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
     # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
-    try:
-        current_mode = conn.execute("PRAGMA journal_mode").fetchone()
-        if current_mode and current_mode[0] == "wal":
-            _apply_macos_checkpoint_barrier(conn)
-            _enforce_macos_synchronous_full(conn)
-            return "wal"
-    except sqlite3.OperationalError:
-        pass
+    current_mode = _on_disk_journal_mode(conn)
+    if current_mode == "wal":
+        _apply_macos_checkpoint_barrier(conn)
+        _enforce_macos_synchronous_full(conn)
+        return "wal"
 
     # #68545: honor the canonical database.journal_mode setting. Existing
     # on-disk WAL databases were returned above and are never live-downgraded.
     if configured == "delete":
-        row = conn.execute("PRAGMA journal_mode=DELETE").fetchone()
-        actual = str(row[0]).lower() if row else ""
+        if current_mode is None:
+            # The mode probe failed (database locked / busy): another
+            # process may hold this DB open in WAL. Ownership is not
+            # provably exclusive, so flipping journal modes here could
+            # destroy committed-but-uncheckpointed WAL transactions of a
+            # concurrent writer. Fail loudly instead of downgrading — the
+            # operator explicitly requested DELETE and we cannot verify it.
+            raise sqlite3.OperationalError(
+                "could not verify journal mode before applying configured "
+                "journal_mode=delete (database is locked — possible "
+                "concurrent openers); refusing to downgrade a database "
+                "this process does not exclusively own"
+            )
+        actual = _set_journal_mode_no_wait(conn, "DELETE")
         if actual != "delete":
             raise sqlite3.OperationalError(
                 f"could not set configured journal_mode=delete (got {actual or 'no result'})"
@@ -805,16 +814,54 @@ def apply_wal_with_fallback(
                     _enforce_macos_synchronous_full(conn)
                     return "wal"
                 break
-        # Don't downgrade if another process already set WAL on disk.
+        # Don't downgrade if another process already set WAL on disk, or if
+        # the mode cannot be verified at all (probe blocked by a concurrent
+        # opener's locks) — ownership is not provably exclusive either way.
         existing = _on_disk_journal_mode(conn)
-        if existing == "wal":
+        if existing == "wal" or existing is None:
             raise
         if require_wal:
             # Caller mandates WAL — fail loudly instead of degrading to DELETE.
             raise WalUnsupportedError(str(exc)) from exc
         _log_wal_fallback_once(db_label, exc)
-        conn.execute("PRAGMA journal_mode=DELETE")
+        _set_journal_mode_no_wait(conn, "DELETE")
         return "delete"
+
+
+def _set_journal_mode_no_wait(conn: sqlite3.Connection, mode: str) -> str:
+    """Execute ``PRAGMA journal_mode=<mode>`` without waiting on other openers.
+
+    This is the ONLY place a journal-mode switch pragma may be issued for a
+    non-WAL target.  It temporarily forces ``busy_timeout=0`` so SQLite's own
+    exclusivity requirement becomes a concurrent-opener detector: leaving WAL
+    mode requires exclusive access to the database, so if ANY other connection
+    (this process or another) holds the DB open, the pragma fails immediately
+    with ``database is locked`` instead of waiting out a busy timeout and
+    sneaking the flip in between a concurrent writer's transactions — which is
+    exactly how committed-but-uncheckpointed WAL transactions get destroyed.
+
+    Callers must treat a raised ``OperationalError`` as "not exclusively
+    owned: leave the journal mode alone", never as a retryable condition.
+
+    Returns the resulting journal mode as reported by SQLite (lowercase), or
+    ``""`` when SQLite returned no row.
+    """
+    previous_timeout = 0
+    try:
+        row = conn.execute("PRAGMA busy_timeout").fetchone()
+        if row and row[0] is not None:
+            previous_timeout = int(row[0])
+    except (sqlite3.OperationalError, TypeError, ValueError):
+        previous_timeout = 0
+    conn.execute("PRAGMA busy_timeout=0")
+    try:
+        row = conn.execute(f"PRAGMA journal_mode={mode}").fetchone()
+        return str(row[0]).strip().lower() if row and row[0] is not None else ""
+    finally:
+        try:
+            conn.execute(f"PRAGMA busy_timeout={previous_timeout}")
+        except sqlite3.OperationalError:
+            pass
 
 
 def _apply_delete_for_wal_reset_bug(
@@ -826,16 +873,17 @@ def _apply_delete_for_wal_reset_bug(
     """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
 
     - Already-WAL on disk: leave WAL alone (no live downgrade) and warn.
-    - Otherwise: set DELETE and warn.
+    - Mode unreadable (probe blocked by a concurrent opener's locks):
+      ownership is not provably exclusive — leave the journal mode alone
+      and warn.  Never treat "could not read the mode" as "not WAL": that
+      exact confusion let a vulnerable-SQLite process flip a live WAL
+      state.db to DELETE under a concurrent WAL writer, destroying its
+      committed-but-uncheckpointed transactions.
+    - Otherwise: set DELETE (refusing to wait out concurrent openers) and
+      warn.
     - For an explicit operator request, verify SQLite accepted DELETE.
     """
-    current = ""
-    try:
-        row = conn.execute("PRAGMA journal_mode").fetchone()
-        if row and row[0] is not None:
-            current = str(row[0]).strip().lower()
-    except sqlite3.OperationalError:
-        current = ""
+    current = _on_disk_journal_mode(conn)
 
     if current == "wal":
         # Do not TRUNCATE / journal_mode=DELETE while other processes may
@@ -845,14 +893,33 @@ def _apply_delete_for_wal_reset_bug(
         _enforce_macos_synchronous_full(conn)
         return "wal"
 
+    if current is None:
+        # The mode probe itself failed — another opener's locks are the
+        # most likely cause, and the DB may well be in WAL under a live
+        # writer.  Never flip a journal mode we cannot even read.
+        if require_delete:
+            raise sqlite3.OperationalError(
+                "could not verify journal mode before applying configured "
+                "journal_mode=delete (database is locked — possible "
+                "concurrent openers); refusing to downgrade a database "
+                "this process does not exclusively own"
+            )
+        _log_wal_reset_bug_once(db_label, kept_wal=True, indeterminate=True)
+        return "wal"
+
     actual = ""
     try:
-        row = conn.execute("PRAGMA journal_mode=DELETE").fetchone()
-        if row and row[0] is not None:
-            actual = str(row[0]).strip().lower()
-    except sqlite3.OperationalError:
+        actual = _set_journal_mode_no_wait(conn, "DELETE")
+    except sqlite3.OperationalError as exc:
         if require_delete:
             raise
+        lowered = str(exc).lower()
+        if "locked" in lowered or "busy" in lowered:
+            # A concurrent opener appeared between the probe and the flip
+            # (or already held the DB): SQLite refused the exclusive lock.
+            # Leave the journal mode exactly as it is.
+            _log_wal_reset_bug_once(db_label, kept_wal=True, indeterminate=True)
+            return current or "delete"
         # Best-effort for the automatic vulnerable-runtime fallback: DELETE is
         # normally already the default for new file-backed databases.
     if require_delete and actual != "delete":
@@ -896,18 +963,27 @@ def _log_wal_reset_bug_once(
     db_label: str,
     *,
     kept_wal: bool,
+    indeterminate: bool = False,
 ) -> None:
     """Log once per (process, db_label) about the WAL-reset vulnerability path."""
     with _wal_reset_bug_warned_lock:
         if db_label in _wal_reset_bug_warned_paths:
             return
         _wal_reset_bug_warned_paths.add(db_label)
-    action = (
-        "is already in WAL mode — leaving WAL in place (no live "
-        "downgrade under concurrent openers)"
-        if kept_wal
-        else "using journal_mode=DELETE instead of enabling WAL"
-    )
+    if indeterminate:
+        action = (
+            "journal mode could not be verified or exclusively switched "
+            "(database is locked — possible concurrent openers); leaving the "
+            "journal mode untouched (no live downgrade under concurrent "
+            "openers)"
+        )
+    elif kept_wal:
+        action = (
+            "is already in WAL mode — leaving WAL in place (no live "
+            "downgrade under concurrent openers)"
+        )
+    else:
+        action = "using journal_mode=DELETE instead of enabling WAL"
     # Check whether this is a Hermes-managed install (uv-managed venv)
     # so the warning doesn't promise a repair path that doesn't exist
     # for git/pip/system Python installs (#75153).

@@ -40,6 +40,7 @@ import subprocess
 import threading
 import time
 import uuid
+from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
@@ -99,6 +100,64 @@ _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 _SYSTEMD_SCOPE_PROBED_AT = 0.0
 _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
+_MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
+_DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
+_WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
+
+
+def _worker_memory_max_bytes() -> int:
+    """Return a finite per-worker cgroup limit without widening host risk.
+
+    An explicit byte override is useful for operators with known workload
+    requirements.  Otherwise retain the tighter of the gateway's current
+    cgroup-v2 ``memory.max`` and half of physical RAM, capped at 4 GiB.  This
+    keeps the sibling worker outside the gateway cgroup while ensuring the
+    worker cannot consume memory up to the enclosing user slice or host limit.
+    """
+    override = os.getenv("HERMES_WORKER_MEMORY_MAX_BYTES", "").strip()
+    if override:
+        try:
+            parsed = int(override)
+            if parsed >= _MIN_WORKER_MEMORY_MAX_BYTES:
+                return parsed
+        except ValueError:
+            pass
+        logger.warning(
+            "Ignoring invalid HERMES_WORKER_MEMORY_MAX_BYTES=%r; "
+            "expected an integer of at least %d bytes",
+            override,
+            _MIN_WORKER_MEMORY_MAX_BYTES,
+        )
+
+    candidates: List[int] = []
+    try:
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+            if line.startswith("0::"):
+                relative = line.partition("::")[2].lstrip("/")
+                raw_limit = (
+                    Path("/sys/fs/cgroup") / relative / "memory.max"
+                ).read_text(encoding="utf-8").strip()
+                if raw_limit.isdigit():
+                    cgroup_limit = int(raw_limit)
+                    if cgroup_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
+                        candidates.append(cgroup_limit)
+                break
+    except (OSError, ValueError):
+        pass
+
+    try:
+        physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
+            os.sysconf("SC_PAGE_SIZE")
+        )
+        physical_bound = min(
+            _WORKER_MEMORY_MAX_CAP_BYTES,
+            max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
+        )
+        candidates.append(physical_bound)
+    except (OSError, ValueError, TypeError):
+        pass
+
+    return min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
 
 
 def _systemd_run_user_scope_available() -> bool:
@@ -152,7 +211,11 @@ def _systemd_run_user_scope_available() -> bool:
                         [
                             binary, "--user", "--scope", "--quiet",
                             "--unit", probe_unit,
-                            "--collect", "--",
+                            "--collect",
+                            "--property", "MemoryAccounting=yes",
+                            "--property", f"MemoryMax={_worker_memory_max_bytes()}",
+                            "--property", "OOMPolicy=kill",
+                            "--",
                             "/bin/true",
                         ],
                         capture_output=True,
@@ -194,6 +257,7 @@ def _build_systemd_scope_argv(
         # guard anyway so we never pass None into Popen.
         return shell_argv
     unit_name = f"hermes-worker-{unit_suffix}"
+    memory_max = _worker_memory_max_bytes()
     return [
         binary,
         "--user",
@@ -202,6 +266,12 @@ def _build_systemd_scope_argv(
         "--unit",
         unit_name,
         "--collect",
+        "--property",
+        "MemoryAccounting=yes",
+        "--property",
+        f"MemoryMax={memory_max}",
+        "--property",
+        "OOMPolicy=kill",
         "--",
         *shell_argv,
     ]

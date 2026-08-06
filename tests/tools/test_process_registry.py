@@ -1651,6 +1651,17 @@ class TestSystemdCgroupIsolation:
         unit_idx = argv.index("--unit")
         assert argv[unit_idx + 1].startswith("hermes-worker-"), argv
         assert argv[unit_idx + 1] == f"hermes-worker-{session.id}", argv  # _build_systemd_scope_argv uses bare name
+        properties = [
+            argv[index + 1]
+            for index, value in enumerate(argv[:-1])
+            if value == "--property"
+        ]
+        assert "MemoryAccounting=yes" in properties
+        assert "OOMPolicy=kill" in properties
+        memory_max = next(
+            value for value in properties if value.startswith("MemoryMax=")
+        )
+        assert int(memory_max.split("=", 1)[1]) > 0
         # The original shell command must still be present at the tail,
         # after the ``--`` separator that prevents systemd-run from
         # interpreting command flags as its own.
@@ -1781,6 +1792,19 @@ class TestSystemdCgroupIsolation:
         assert "--" in argv
         assert argv[-3:] == ["/bin/bash", "-lic", "set +m; codex"]
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
+
+    def test_worker_memory_limit_accepts_valid_byte_override(self, monkeypatch):
+        import tools.process_registry as pr
+
+        monkeypatch.setenv("HERMES_WORKER_MEMORY_MAX_BYTES", "123456789")
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        argv = pr._build_systemd_scope_argv(
+            ["/bin/bash", "-lc", "true"],
+            unit_suffix="test",
+        )
+
+        assert "MemoryMax=123456789" in argv
 
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch

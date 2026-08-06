@@ -3072,8 +3072,8 @@ def run_conversation(
                 if finish_reason == "length":
                     if getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID:
                         agent._vprint(
-                            f"{agent.log_prefix}⚠️  Stream interrupted by network error "
-                            f"(finish_reason='length' on partial-stream-stub)",
+                            f"{agent.log_prefix}⚠️  Response truncated — stream "
+                            f"ended before completion",
                             force=True,
                         )
                     else:
@@ -3200,6 +3200,11 @@ def run_conversation(
                                 # gets a coherent continuation point.
                                 if truncated_response_parts:
                                     messages = agent._get_messages_up_to_last_assistant(messages)
+                                # Unmark survivors: their text left the stitched partial.
+                                for _frag in messages:
+                                    if isinstance(_frag, dict):
+                                        _frag.pop("_length_continuation_fragment", None)
+                                        _frag.pop("_length_continuation_nudge", None)
                                 agent._session_messages = messages
                                 length_continue_retries = 0
                                 truncated_response_parts = []
@@ -3236,6 +3241,8 @@ def run_conversation(
                             )
                             if not _is_empty_partial_stub:
                                 interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                                # Marked so the ceiling exit can drop the fragment trail.
+                                interim_msg["_length_continuation_fragment"] = True
                                 messages.append(interim_msg)
                                 if assistant_message.content:
                                     truncated_response_parts.append(assistant_message.content)
@@ -3274,6 +3281,7 @@ def run_conversation(
                                 continue_msg = {
                                     "role": "user",
                                     "content": _continue_content,
+                                    "_length_continuation_nudge": True,
                                 }
                                 messages.append(continue_msg)
                                 agent._session_messages = messages
@@ -3281,6 +3289,37 @@ def run_conversation(
                                 break
 
                             partial_response = agent._strip_think_blocks("".join(truncated_response_parts)).strip()
+                            if partial_response:
+                                agent._vprint(
+                                    f"{agent.log_prefix}⚠️  Response still truncated "
+                                    f"after 4 continuation attempts — keeping the "
+                                    f"partial response received so far.",
+                                    force=True,
+                                )
+                            # Unanswered continue nudges made every later turn re-truncate.
+                            _turn_start = (
+                                current_turn_user_idx + 1
+                                if isinstance(current_turn_user_idx, int)
+                                and current_turn_user_idx >= 0
+                                else 0
+                            )
+                            messages[_turn_start:] = [
+                                m for m in messages[_turn_start:]
+                                if not (
+                                    isinstance(m, dict)
+                                    and (
+                                        m.get("_length_continuation_fragment")
+                                        or m.get("_length_continuation_nudge")
+                                    )
+                                )
+                            ]
+                            if partial_response:
+                                messages.append({
+                                    "role": "assistant",
+                                    "content": partial_response,
+                                    "finish_reason": "length",
+                                })
+                            agent._session_messages = messages
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
@@ -7160,6 +7199,11 @@ def run_conversation(
                     final_response = "".join(truncated_response_parts) + final_response
                     truncated_response_parts = []
                     length_continue_retries = 0
+                    # The continuation recovered, so the fragments stay in the transcript.
+                    for _frag in messages:
+                        if isinstance(_frag, dict):
+                            _frag.pop("_length_continuation_fragment", None)
+                            _frag.pop("_length_continuation_nudge", None)
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
                 

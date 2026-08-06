@@ -8625,7 +8625,7 @@ def call_llm(
     if semaphore is not None:
         semaphore.acquire()
     try:
-        response = _call_llm_impl(
+        response = _call_llm_impl_with_aux(
             task=task,
             provider=provider,
             model=model,
@@ -8669,7 +8669,7 @@ def _release_sync_semaphore_after_stream(
             semaphore.release()
 
 
-def _call_llm_impl(
+def _call_llm_impl_with_aux(
     task: str = None,
     *,
     provider: str = None,
@@ -9499,7 +9499,7 @@ async def async_call_llm(
     if semaphore is not None:
         await semaphore.acquire()
     try:
-        return await _async_call_llm_impl(
+        return await _async_call_llm_impl_with_aux(
             task=task,
             provider=provider,
             model=model,
@@ -9517,6 +9517,49 @@ async def async_call_llm(
     finally:
         if semaphore is not None:
             semaphore.release()
+
+
+async def _async_call_llm_impl_with_aux(
+    task: str = None,
+    *,
+    provider: str = None,
+    model: str = None,
+    base_url: str = None,
+    api_key: str = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
+    messages: list,
+    temperature: Optional[float] = None,
+    max_tokens: int = None,
+    tools: list = None,
+    timeout: float = None,
+    extra_body: dict = None,
+    reasoning_config: Optional[dict] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
+    api_mode: str = None,
+    stream: bool = False,
+    stream_options: dict = None,
+) -> Any:
+    """Async wrapper that notifies auxiliary-LLM observers (start/end/error).
+
+    Covers the async call path (vision, etc.) so plugins such as
+    observability/langfuse can account for auxiliary token usage on async
+    calls too. Delegates to :func:`_async_call_llm_impl`.
+    """
+    _notify_aux_llm("start", task=task, provider=provider, model=model,
+                    api_mode=api_mode, messages=messages)
+    try:
+        response = await _async_call_llm_impl(
+            task=task, provider=provider, model=model, base_url=base_url,
+            api_key=api_key, main_runtime=main_runtime, messages=messages,
+            temperature=temperature, max_tokens=max_tokens, tools=tools,
+            timeout=timeout, extra_body=extra_body,
+            reasoning_config=reasoning_config,
+        )
+    except Exception as exc:
+        _notify_aux_llm("error", task=task, provider=provider, model=model, error=str(exc))
+        raise
+    _notify_aux_llm("end", task=task, provider=provider, model=model, response=response)
+    return response
 
 
 async def _async_call_llm_impl(

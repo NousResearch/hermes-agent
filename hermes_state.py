@@ -283,6 +283,109 @@ def _default_db_path() -> Path:
         return DEFAULT_DB_PATH
     return get_hermes_home() / "state.db"
 
+
+# ---------------------------------------------------------------------------
+# Live-DB test-isolation guard
+# ---------------------------------------------------------------------------
+# Forensic evidence (Aug 2026, live developer machine): the production
+# ~/.hermes/state.db accumulated pytest fixture rows — sessions with
+# chat_id='chat-1'/'123'/'wx-chat' and gateway_routing scopes literally under
+# /tmp/pytest-of-*/ — and a pytest-spawned process flipped the journal mode
+# out from under the WAL-mode gateway writer, destroying committed
+# transcripts ("Persisted transcript lagged live cached history ... possible
+# FTS write corruption").  The hermetic conftest redirects HERMES_HOME per
+# test, but any escape (a session-scoped fixture running before the autouse
+# fixture, a subprocess child launched without HERMES_HOME, a stale worktree
+# without the re-pin, or a developer shell that exports HERMES_HOME to the
+# real home so the conftest session sandbox is skipped) silently fell
+# through to the real database.
+#
+# This guard is the single choke point: EVERY ``SessionDB`` construction
+# resolves its path here, so under pytest a resolution that lands on a
+# production state.db fails hard instead of corrupting live data.  It is
+# env-based (``PYTEST_CURRENT_TEST`` / ``PYTEST_VERSION`` are set by pytest
+# and inherited by subprocess children), so it also protects children that
+# never import the test conftest.
+
+#: Escape hatch for the rare legitimate case (a test that genuinely needs
+#: the real DB).  The in-tree conftest sets this for tests marked
+#: ``@pytest.mark.live_system_guard_bypass``; scripts may set it explicitly.
+_STATE_DB_GUARD_BYPASS = False
+
+#: Additional production roots to refuse (beyond the platform default
+#: ``~/.hermes``).  The test conftest injects the pre-sandbox production
+#: root here so custom-``HERMES_HOME`` deployments are covered too.
+_STATE_DB_GUARD_EXTRA_DENY_ROOTS: Tuple[Path, ...] = ()
+
+
+def _running_under_pytest() -> bool:
+    """True when this process (or a parent test process) is a pytest run."""
+    return bool(
+        os.environ.get("PYTEST_CURRENT_TEST")
+        or os.environ.get("PYTEST_VERSION")
+    )
+
+
+def _production_state_roots() -> List[Path]:
+    roots: List[Path] = []
+    try:
+        from hermes_constants import _get_platform_default_hermes_home
+
+        roots.append(_get_platform_default_hermes_home().resolve())
+    except Exception:
+        pass
+    for extra in _STATE_DB_GUARD_EXTRA_DENY_ROOTS:
+        try:
+            roots.append(Path(extra).expanduser().resolve())
+        except Exception:
+            continue
+    return roots
+
+
+def _is_production_state_db(resolved: Path, root: Path) -> bool:
+    """True when *resolved* is a DB file of the real Hermes home *root*.
+
+    Matches files directly in the root (``<root>/state.db``) and profile
+    homes (``<root>/profiles/<name>/state.db``).  Deliberately does NOT
+    match deeper scratch paths (e.g. repo worktrees that happen to live
+    under ``~/.hermes/hermes-agent/...``) so hermetic tests using unusual
+    tempdirs cannot false-positive.
+    """
+    if resolved.parent == root:
+        return True
+    try:
+        rel = resolved.relative_to(root)
+    except ValueError:
+        return False
+    parts = rel.parts
+    return len(parts) == 3 and parts[0] == "profiles"
+
+
+def _ensure_test_isolation(db_path: Path) -> None:
+    """Fail hard when a pytest-context process resolves a production DB.
+
+    Raises ``RuntimeError`` before any connection, mkdir, journal-mode
+    pragma, or byte probe can touch the live database.  No-op outside
+    pytest and for hermetic (tmp ``HERMES_HOME``) paths.
+    """
+    if _STATE_DB_GUARD_BYPASS or not _running_under_pytest():
+        return
+    try:
+        resolved = Path(db_path).expanduser().resolve()
+    except Exception:
+        return
+    for root in _production_state_roots():
+        if _is_production_state_db(resolved, root):
+            raise RuntimeError(
+                "live-system guard: test attempted to open production "
+                f"state.db at {resolved} (under real Hermes root {root}). "
+                "Tests must run against a temporary HERMES_HOME — pass an "
+                "explicit tmp db_path or let the hermetic conftest redirect "
+                "HERMES_HOME. If this test genuinely needs the live "
+                "database, mark it with "
+                "@pytest.mark.live_system_guard_bypass."
+            )
+
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
 # ---------------------------------------------------------------------------
@@ -2080,6 +2183,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or _default_db_path()
+        # Fail hard (before any connection/pragma/mkdir) if a pytest-context
+        # process resolved the developer's production state.db — see the
+        # live-DB test-isolation guard block near _default_db_path().
+        _ensure_test_isolation(self.db_path)
         self.read_only = read_only
 
         self._lock = threading.Lock()

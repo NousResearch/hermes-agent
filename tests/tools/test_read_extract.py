@@ -134,6 +134,65 @@ class TestAnydocExtraction(unittest.TestCase):
         self.assertEqual(text, "hello\n")
 
 
+class TestAnydocSizeCap(unittest.TestCase):
+    """Oversized inputs must be rejected before anydoc converts them.
+    Uses a fake binding so it runs regardless of local install state."""
+
+    def setUp(self):
+        from tools import read_extract
+
+        self.rex = read_extract
+        self._saved_module = read_extract._anydoc_module
+        self._saved_cap = read_extract.MAX_ANYDOC_BYTES
+        self.tmp = tempfile.mkdtemp(prefix="rex_cap_")
+        self.calls = []
+
+        class _FakeAnydoc:
+            def to_markdown(_self, path):
+                self.calls.append(path)
+                return "converted\n"
+
+        read_extract._anydoc_module = _FakeAnydoc()
+
+    def tearDown(self):
+        import shutil
+
+        self.rex._anydoc_module = self._saved_module
+        self.rex.MAX_ANYDOC_BYTES = self._saved_cap
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name, size):
+        p = os.path.join(self.tmp, name)
+        with open(p, "wb") as fh:
+            fh.write(b"x" * size)
+        return p
+
+    def test_oversized_file_rejected_before_conversion(self):
+        from tools.read_extract import _extract_anydoc
+
+        self.rex.MAX_ANYDOC_BYTES = 10
+        p = self._write("big.pdf", 11)
+        with self.assertRaises(ExtractionError) as ctx:
+            _extract_anydoc(p)
+        self.assertIn("too large", str(ctx.exception))
+        self.assertEqual(self.calls, [])
+
+    def test_file_at_limit_converts(self):
+        from tools.read_extract import _extract_anydoc
+
+        self.rex.MAX_ANYDOC_BYTES = 10
+        p = self._write("ok.pdf", 10)
+        self.assertEqual(_extract_anydoc(p), "converted\n")
+        self.assertEqual(self.calls, [p])
+
+    def test_missing_file_raises_extraction_error(self):
+        from tools.read_extract import _extract_anydoc
+
+        with self.assertRaises(ExtractionError):
+            _extract_anydoc(os.path.join(self.tmp, "gone.pdf"))
+        self.assertEqual(self.calls, [])
+
+
 class TestAnydocAbsent(unittest.TestCase):
     """The absent-dep contract, verified regardless of local install state
     by forcing the cached module handle to None."""

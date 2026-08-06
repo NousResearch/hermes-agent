@@ -1793,6 +1793,61 @@ class TestSystemdCgroupIsolation:
         assert argv[-3:] == ["/bin/bash", "-lic", "set +m; codex"]
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
+    def test_pty_spawn_failure_reaps_scope_before_distinct_pipe_fallback(
+        self, registry, monkeypatch
+    ):
+        """A failed PTY scope must not collide with the pipe fallback scope."""
+        from ptyprocess import PtyProcess
+
+        events = []
+        fake_proc = MagicMock()
+        fake_proc.pid = 4321
+        fake_proc.stdout = iter([])
+        fake_proc.stdin = MagicMock()
+        fake_proc.poll.return_value = None
+
+        def fake_popen(argv, **_kwargs):
+            events.append(("pipe", list(argv)))
+            return fake_proc
+
+        def fake_stop(unit_name):
+            events.append(("stop", unit_name))
+            return True
+
+        def fail_pty(*_args, **_kwargs):
+            events.append(("pty", None))
+            raise RuntimeError("PTY wrapper failed after scope creation")
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch.object(PtyProcess, "spawn", side_effect=fail_pty), \
+            patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("tools.process_registry._stop_systemd_unit", side_effect=fake_stop), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        assert [event[0] for event in events] == ["pty", "stop", "pipe"]
+        stopped_unit = events[1][1]
+        fallback_argv = events[2][1]
+        assert stopped_unit == f"hermes-worker-{session.id}.scope"
+        unit_idx = fallback_argv.index("--unit")
+        assert fallback_argv[unit_idx + 1] == (
+            f"hermes-worker-{session.id}-pipe-fallback"
+        )
+        assert session.systemd_unit == (
+            f"hermes-worker-{session.id}-pipe-fallback.scope"
+        )
+
     def test_worker_memory_limit_honors_local_guard_mb_override(self, monkeypatch):
         import tools.process_registry as pr
 
@@ -1805,6 +1860,25 @@ class TestSystemdCgroupIsolation:
         )
 
         assert f"MemoryMax={123 * 1024 * 1024}" in argv
+
+    def test_worker_memory_limit_caps_oversized_local_guard_override(
+        self, monkeypatch
+    ):
+        import tools.process_registry as pr
+
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "999999")
+        monkeypatch.setattr(
+            pr.Path,
+            "read_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no cgroup")),
+        )
+        monkeypatch.setattr(
+            pr.os,
+            "sysconf",
+            lambda *_args: (_ for _ in ()).throw(OSError("no sysconf")),
+        )
+
+        assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
 
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch

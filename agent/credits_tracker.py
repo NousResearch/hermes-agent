@@ -171,6 +171,28 @@ CREDITS_USAGE_BANDS: tuple[tuple[float, str, int], ...] = (
 CREDITS_USAGE_KEY = "credits.usage"  # single key for the escalating usage notice
 GRANT_UNSPENT_MIN_MICROS = 10_000  # grant meaningfully unspent threshold (≥1¢)
 
+# Minimum subscription balance that counts as "grant not yet spent" for the
+# grant_spent crossing gate (see evaluate_credits_notices). 1¢: portal-seeded
+# states derive micros from float dollars and can carry sub-cent residue where
+# the inference headers report exactly 0 — without this floor such a seed
+# opens the gate and the first header re-creates the at-open nag.
+GRANT_UNSPENT_MIN_MICROS = 10_000
+
+
+def new_credits_latch() -> dict:
+    """Fresh notice latch in the shape :func:`evaluate_credits_notices` expects.
+
+    The policy owns this schema — every producer (agent build, lazy re-init,
+    tests) must build the latch through here so a new gate key lands everywhere
+    at once instead of drifting across hand-rolled literals.
+    """
+    return {
+        "active": set(),
+        "seen_below_90": False,
+        "usage_band": None,
+        "seen_grant_unspent": False,
+    }
+
 
 # ── AgentNotice (out-of-band notice payload; driver-agnostic) ────────────────
 

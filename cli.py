@@ -7907,10 +7907,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         
         # ``self.api_key`` may be a callable (Azure Foundry Entra ID bearer
         # provider). Never invoke it; just identify the auth surface.
+        # Display is always fully redacted — no prefix, suffix, or fragment
+        # of any key value is ever printed. Any non-empty string key counts
+        # as configured regardless of length (the old len()>12 threshold was
+        # a leftover from the partial-display era and mislabeled short keys).
         from agent.azure_identity_adapter import is_token_provider
         if is_token_provider(self.api_key):
             api_key_display = "Microsoft Entra ID"
-        elif isinstance(self.api_key, str) and len(self.api_key) > 12:
+        elif isinstance(self.api_key, str) and self.api_key.strip():
             api_key_display = "[set]"
         else:
             api_key_display = "Not set!"

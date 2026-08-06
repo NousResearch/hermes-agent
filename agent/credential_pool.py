@@ -2084,7 +2084,7 @@ class CredentialPool:
             self.provider in _TOR_PROXIED_PROVIDERS
             and status_code in _TOR_ROTATION_STATUS_CODES
         )
-        result = self._mark_exhausted_and_rotate_locked(status_code, error_context, api_key_hint, credential_id)
+        result = self._mark_exhausted_and_rotate_locked(status_code, error_context, api_key_hint, credential_id, failure_reason)
         if should_rotate_tor_exit:
             # Outside the lock — this shells out to pkill and must not block
             # other threads waiting on pool access.
@@ -2097,6 +2097,7 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]],
         api_key_hint: Optional[str],
         credential_id: Optional[str],
+        failure_reason: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             entry = None

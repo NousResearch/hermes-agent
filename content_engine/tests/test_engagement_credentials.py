@@ -25,16 +25,21 @@ def _set_xurl_env(monkeypatch):
         monkeypatch.setenv(name, value)
 
 
-def test_configure_xurl_success(monkeypatch, tmp_path):
-    """Writes config only from the four required environment variables."""
-    _set_xurl_env(monkeypatch)
-    xurl_path = tmp_path / ".xurl"
-
+def _mock_postiz_row(monkeypatch):
+    """Mock the Postiz docker psql query so configure_xurl_from_postiz
+    reaches the credential-resolution stage without a live DB."""
     import subprocess
 
     mock_result = MagicMock(returncode=0, stderr="")
     mock_result.stdout = "1|test-name|access-token:access-secret|rtok|Sahil_Saghir\n"
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: mock_result)
+
+
+def test_configure_xurl_success(monkeypatch, tmp_path):
+    """Writes config only from the four required environment variables."""
+    _set_xurl_env(monkeypatch)
+    xurl_path = tmp_path / ".xurl"
+    _mock_postiz_row(monkeypatch)
     monkeypatch.setattr("os.path.expanduser", lambda path: str(xurl_path))
 
     from engagement_suggester import configure_xurl_from_postiz
@@ -47,14 +52,50 @@ def test_configure_xurl_success(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("missing", tuple(XURL_ENV))
-def test_configure_xurl_fails_when_any_required_credential_is_missing(monkeypatch, missing):
-    """A missing credential must stop the config write cleanly."""
+def test_configure_xurl_raises_when_any_required_credential_is_missing(monkeypatch, missing):
+    """A missing credential must raise an explicit configuration error."""
     _set_xurl_env(monkeypatch)
     monkeypatch.delenv(missing)
+    _mock_postiz_row(monkeypatch)
+
+    from engagement_suggester import XUrlConfigurationError, configure_xurl_from_postiz
+
+    with pytest.raises(XUrlConfigurationError):
+        configure_xurl_from_postiz()
+
+
+def test_configure_xurl_error_message_lists_required_vars(monkeypatch):
+    """The raised error names every required variable, never a value."""
+    monkeypatch.delenv("XURL_CONSUMER_SECRET", raising=False)
+    _mock_postiz_row(monkeypatch)
+
+    from engagement_suggester import XUrlConfigurationError, configure_xurl_from_postiz
+
+    with pytest.raises(XUrlConfigurationError) as exc_info:
+        configure_xurl_from_postiz()
+    message = str(exc_info.value)
+    for var in ("XURL_CLIENT_ID", "XURL_CLIENT_SECRET", "XURL_CONSUMER_KEY", "XURL_CONSUMER_SECRET"):
+        assert var in message
+    for secret_value in XURL_ENV.values():
+        assert secret_value not in message
+
+
+def test_no_credential_values_leak_into_stdout_when_config_present(monkeypatch, tmp_path, capsys):
+    """Running configure-xurl with valid config must not print any credential value."""
+    _set_xurl_env(monkeypatch)
+    xurl_path = tmp_path / ".xurl"
+    _mock_postiz_row(monkeypatch)
+    monkeypatch.setattr("os.path.expanduser", lambda path: str(xurl_path))
 
     from engagement_suggester import configure_xurl_from_postiz
 
-    assert configure_xurl_from_postiz() is False
+    assert configure_xurl_from_postiz() is True
+    captured = capsys.readouterr().out
+    for secret_value in XURL_ENV.values():
+        assert secret_value not in captured
+    assert "access-token:access-secret" not in captured
+    assert "access-token" not in captured
+    assert "access-secret" not in captured
 
 
 def test_no_committed_xurl_credential_literals():
@@ -70,5 +111,11 @@ def test_no_committed_xurl_credential_literals():
         r'(?m)^\s*(?:client_id|client_secret|consumer_key|consumer_secret):'
         r'\s*[A-Za-z0-9_-]{6,}\s*$'
     )
+    # Also catch token-shaped literals that look like X OAuth pairs
+    # ('<id>-<token>:<secret>') anywhere in the source, including comments.
+    oauth_pair_literal = re.compile(
+        r"\d{6,}-[A-Za-z0-9]{10,}:[A-Za-z0-9]{10,}"
+    )
     assert assignment_literal.search(source) is None
     assert rendered_config_literal.search(source) is None
+    assert oauth_pair_literal.search(source) is None

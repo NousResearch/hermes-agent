@@ -68,6 +68,20 @@ def test_api_key_config_not_set_shows_not_set(capsys, monkeypatch):
     assert "Not set!" in captured.out
 
 
+def test_api_key_config_short_key_still_redacted(capsys, monkeypatch):
+    """Even a short non-empty key (<= 12 chars) must show as '[set]', never
+    the value or a fragment — regression for the old len()>12 threshold
+    which mislabeled short-but-real local keys as unset."""
+    obj = _make_minimal_hermes_cli(monkeypatch)
+    obj.api_key = "sk-short"
+    obj.show_config()
+    captured = capsys.readouterr()
+
+    assert "[set]" in captured.out, "A non-empty key must display as [set]"
+    assert "sk-short" not in captured.out, "No part of the API key should appear in output"
+    assert "Not set!" not in captured.out, "A configured key must not display as Not set!"
+
+
 def test_api_key_config_microsoft_entra_display(capsys, monkeypatch):
     """When api_key is a callable (Entra ID provider), show Microsoft Entra ID."""
     from cli import HermesCLI

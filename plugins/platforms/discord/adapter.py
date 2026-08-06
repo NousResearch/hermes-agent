@@ -3594,7 +3594,7 @@ class DiscordAdapter(BasePlatformAdapter):
         except NameError:
             return None
 
-    def _message_reference_from_ids(message_id, channel) -> "discord.MessageReference":
+    def _message_reference_from_ids(self, message_id, channel) -> "discord.MessageReference":
         """ids-built reply reference — no fetch_message round trip.
 
         Discord resolves message_reference from the ids alone, and

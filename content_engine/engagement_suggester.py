@@ -29,6 +29,15 @@ from typing import Dict, List, Optional, Tuple
 import requests
 
 # ──────────────────────────────────────────────────────────────────────
+# ERRORS
+# ──────────────────────────────────────────────────────────────────────
+
+
+class XUrlConfigurationError(RuntimeError):
+    """Raised when required XURL OAuth configuration is missing or unusable."""
+
+
+# ──────────────────────────────────────────────────────────────────────
 # X POSTER — browser automation via Playwright
 # ──────────────────────────────────────────────────────────────────────
 
@@ -1128,11 +1137,10 @@ def configure_xurl_from_postiz() -> bool:
     # Token format: 'internalId-accessToken:accessSecret'
     # The full string before ':' is the access token (includes internalId prefix)
     if ":" not in token:
-        print(f"[engagement] Unexpected token format for {profile}: {token[:30]}...")
+        print(f"[engagement] Unexpected token format for {profile} (missing ':' separator).")
         return False
 
     # Split on the last ':' to get access_token:access_secret
-    # Token looks like: 279754723-afsk5HbZy12k1ry3JE9l4Bl4ffnddbGmDw9rc9U0:ueBlojKdgtBS9N7MauZVO6N7O0fHtsMMaxkP6Y1OKF9AP
     colon_idx = token.rfind(":")
     access_token = token[:colon_idx]
     access_secret = token[colon_idx + 1:]
@@ -1143,11 +1151,11 @@ def configure_xurl_from_postiz() -> bool:
     consumer_key = os.getenv("XURL_CONSUMER_KEY", "")
     consumer_secret = os.getenv("XURL_CONSUMER_SECRET", "")
     if not all((client_id, client_secret, consumer_key, consumer_secret)):
-        print(
-            "[engagement] XURL_CLIENT_ID, XURL_CLIENT_SECRET, XURL_CONSUMER_KEY, "
-            "and XURL_CONSUMER_SECRET must be set. Skipping xurl config write."
+        raise XUrlConfigurationError(
+            "XURL OAuth configuration is incomplete. Set XURL_CLIENT_ID, "
+            "XURL_CLIENT_SECRET, XURL_CONSUMER_KEY and XURL_CONSUMER_SECRET "
+            "before running configure-xurl."
         )
-        return False
 
     # Write xurl config
     xurl_config = f"""apps:
@@ -1248,7 +1256,11 @@ def main() -> None:
             print(f"❌ {action} for {suggestion_id} failed.")
 
     elif command == "configure-xurl":
-        ok = configure_xurl_from_postiz()
+        try:
+            ok = configure_xurl_from_postiz()
+        except XUrlConfigurationError as exc:
+            print(f"❌ {exc}")
+            return
         if ok:
             print("✅ xurl configured from Postiz DB.")
         else:

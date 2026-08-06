@@ -22,20 +22,25 @@ restore SearXNG's HTML-only defaults:
 
 ```yaml
 ports:
-  - "127.0.0.1:8082:8080"
+  - "127.0.0.1:8084:8080"
 volumes:
   - ./settings.yml:/etc/searxng/settings.yml:ro
   - ./limiter.toml:/etc/searxng/limiter.toml:ro
 ```
 
-After changing SearXNG configuration, recreate the container and verify the
-same endpoint Hermes uses:
+The live KENSEI deployment runs on the rootless Docker daemon (user systemd
+service, linger enabled) from `/home/kensei/repos/searxng`:
 
 ```bash
-docker compose up -d --force-recreate
-curl -fsS 'http://127.0.0.1:8082/search?q=hermes&format=json' \
+docker compose -f docker-compose.rootless.yml up -d --force-recreate
+curl -fsS 'http://127.0.0.1:8084/search?q=hermes&format=json' \
   | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["results"]))'
 ```
+
+`SEARXNG_URL` in `~/.hermes/.env` must match the published host port (8084).
+The `web-backend-health` cron resolves the same URL and verifies the JSON
+format boundary, so a container that falls back to HTML-only defaults is
+flagged even if HTML search still returns 200.
 
 An HTTP 403 with an HTML response while ordinary HTML search succeeds usually
 means the effective container configuration does not enable JSON. A 403 behind

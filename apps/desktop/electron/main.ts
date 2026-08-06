@@ -6066,6 +6066,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
 
       try {
         if (win && !win.isDestroyed()) {
+
           const wc = win.webContents
           if (wc && !wc.isDestroyed()) {
             wc.removeListener('did-navigate', onNavigate)
@@ -6591,6 +6592,7 @@ function openPortalLoginWindow() {
 
       try {
         if (win && !win.isDestroyed()) {
+
           const wc = win.webContents
           if (wc && !wc.isDestroyed()) {
             wc.removeListener('did-navigate', onNavigate)

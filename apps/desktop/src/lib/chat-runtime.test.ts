@@ -13,6 +13,7 @@ import {
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
+const THUMB_URL = 'data:image/png;base64,dGh1bWI='
 
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'kind'>): ComposerAttachment {
   return { id: 'a', label: 'file.png', ...overrides }
@@ -25,6 +26,16 @@ describe('optimisticAttachmentRef', () => {
     // The raw data URL flows through extractEmbeddedImages → inline thumbnail,
     // dodging the remote /api/media 403 an @image:<localpath> ref would hit.
     expect(ref).toBe(DATA_URL)
+  })
+
+  it('prefers the downscaled thumbnail for the display ref when present', () => {
+    const ref = optimisticAttachmentRef(
+      attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: DATA_URL, thumbnailUrl: THUMB_URL })
+    )
+
+    // The bubble is a display-only thumbnail; full-res previewUrl stays for
+    // lightbox/download and the model gets bytes via the upload pipeline.
+    expect(ref).toBe(THUMB_URL)
   })
 
   it('falls back to an @image: path ref when no preview is available', () => {

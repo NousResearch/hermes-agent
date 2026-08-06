@@ -126,7 +126,7 @@ class TestShellExpansionPreserved:
     """Shell-expansion env values must not be masked or mangled (#79413).
 
     ``GH_TOKEN=$(cat /root/gh.tok)`` was over-redacted to
-    ``GH_TOKEN=*** /root/gh.tok)`` — the \S+ value match stopped at the
+    ``GH_TOKEN=*** /root/gh.tok)`` — the \\S+ value match stopped at the
     first space, stranding the rest of the substitution and producing
     invalid shell that the model later re-emitted from history.
     """

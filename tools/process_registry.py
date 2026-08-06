@@ -2493,7 +2493,12 @@ def _handle_process(args, **kw):
         except Exception:
             session_key = ""
         return json.dumps(
-            {"processes": process_registry.list_sessions(task_id=task_id, session_key=session_key or None)},
+            {
+                "processes": [
+                    _redact_process_result(p)
+                    for p in process_registry.list_sessions(task_id=task_id, session_key=session_key or None)
+                ]
+            },
             ensure_ascii=False,
         )
     elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:

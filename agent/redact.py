@@ -140,9 +140,25 @@ _PREFIX_PATTERNS = [
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.
 # Uppercase keys tolerate spaces around "=" (e.g. ``FOO_SECRET = bar``) because
 # an all-caps key is almost never prose/code.
-_SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
+# Bare ``KEY`` / ``PASS`` / ``PW`` suffixes are included (``FAL_KEY=…``,
+# ``MYSQL_PASS=…``, ``DB_PW=…``) — issue #77484. The regex is IGNORECASE so
+# lowercase env names (``openai_key=…``) are caught here too. The secret name
+# must sit at a word boundary (``_``-delimited or whole-word) so generic
+# prose words (``password=``, ``token=``, ``KEYBOARD=``, ``PASSAGE=``) do not
+# match — those are handled by the config/form/URL paths, and a bare
+# ``password=…`` in a form body must not be swallowed greedily by ``\S+``.
+_SECRET_ENV_NAMES = r"(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|PW|CREDENTIAL|AUTH)"
+# Uppercase keys keep the legacy embedded match (``MYTOKEN=…``, ``FOO_SECRET``)
+# — an all-caps key is almost never prose.
 _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
+)
+# Lowercase env names: only underscore-boundary forms (``openai_key=…``,
+# ``FAL_KEY=…``, ``db_pw=…``) — NOT bare ``password=``/``token=``/``secret=``,
+# which appear in prose, URLs, and form bodies (issue #77484).
+_ENV_ASSIGN_LOWER_RE = re.compile(
+    rf"([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))\s*=\s*(['\"]?)(\S+)\2",
+    re.IGNORECASE,
 )
 
 # Lowercase / dotted / hyphenated config keys from config files
@@ -236,8 +252,8 @@ _YAML_ASSIGN_RE = re.compile(
 # match. ALL-CAPS keys keep the legacy embedded matching (``MYTOKEN=…``) — an
 # all-caps key is almost never prose, the same rationale as _ENV_ASSIGN_RE.
 _KEY_KEYWORD_RE = re.compile(
-    r"(?:api|auth|access|refresh|session|secret)[ _.\-]?(?:key|token)"
-    r"|token|secret|passwd|password|credential|auth",
+    r"(?:api|auth|access|refresh|session|secret)[ _.\\-]?(?:key|token)"
+    r"|token|secret|passwd|password|pass|pw|credential|auth|key",
     re.IGNORECASE,
 )
 
@@ -283,7 +299,15 @@ def _key_has_secret_keyword(key: str) -> bool:
     """
     letters = [c for c in key if c.isalpha()]
     if letters and all(c.isupper() for c in letters):
-        return True  # legacy all-caps behavior (MYTOKEN=…)
+        # Legacy all-caps behavior (MYTOKEN=…): an all-caps key is almost
+        # never prose. Exception: a bare ``KEY``/``PASS``/``PW`` embedded in
+        # a longer all-caps word (``KEYBOARD``, ``PASSAGE``) is prose, not a
+        # credential — only a word-bounded compound (``API_KEY``,
+        # ``MYSQL_PASSWORD``, ``FAL_KEY``, ``DB_PW``) counts (issue #77484).
+        for m in _KEY_KEYWORD_RE.finditer(key):
+            if _is_word_start(key, m.start()) and _is_word_end(key, m.end()):
+                return True
+        return False
     for m in _KEY_KEYWORD_RE.finditer(key):
         if _is_word_start(key, m.start()) and _is_word_end(key, m.end()):
             return True
@@ -440,10 +464,61 @@ _FORM_BODY_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$"
 )
 
+# Control / zero-width characters that can split a token body: a secret
+# smuggled as ``sk-abc\x1bdef…`` or ``ghp_abc\n123…`` escapes the contiguous
+# prefix regexes (issue #77484). Used by _mask_control_split_tokens.
+_CONTROL_CHARS_RE = re.compile(
+    r"[\x00-\x1f\x7f\u200b-\u200f\u2028-\u202f\u2060\ufeff]"
+)
+
+# Union of every _PREFIX_PATTERNS body class — a control-stripped match may
+# only span original chars that are token-body or control chars (see
+# _mask_control_split_tokens). ``=`` is deliberately excluded: a KEY=value
+# assignment separator must never let a match span across unrelated text.
+_TOKEN_BODY_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-."
+)
+
 # Compile known prefix patterns into one alternation
 _PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
 )
+
+
+def _mask_control_split_tokens(text: str, mask_fn) -> str:
+    """Mask tokens whose body is split by control/zero-width characters.
+
+    A credential like ``sk-abc\\x1bdef456…`` or ``ghp_abc\\n123def…`` has its
+    token body interrupted, so the contiguous _PREFIX_RE cannot match it and
+    the secret leaks verbatim (issue #77484). Strategy: build a copy with all
+    control chars removed (the token is contiguous again, matching even when
+    each fragment alone is too short), match on that, then mask the
+    corresponding span in the *original* — but only when the original span
+    contains solely token-body and control chars (a match that crosses into a
+    different line's unrelated text, e.g. ``EXA_API_KEY=*** is rejected).
+    """
+    stripped = _CONTROL_CHARS_RE.sub("", text)
+    if stripped == text:
+        return text
+    orig_idx = [i for i, c in enumerate(text) if not _CONTROL_CHARS_RE.match(c)]
+    out = list(text)
+    matches = []
+    for m in _PREFIX_RE.finditer(stripped):
+        body = m.group(1)
+        start_orig = orig_idx[m.start(1)]
+        end_orig = orig_idx[m.end(1) - 1] + 1
+        # Reject matches whose original span crosses a non-token char
+        # (e.g. ``sk_abc…\nTAVILY_API_KEY=…`` — the ``=`` is not part of a
+        # token body, so the regex matched across unrelated lines). Also
+        # reject when the match runs into a ``KEY=`` name: a real token value
+        # is followed by a newline/space/end, not ``=``.
+        if (all(c in _TOKEN_BODY_CHARS or _CONTROL_CHARS_RE.match(c)
+                for c in text[start_orig:end_orig])
+                and (end_orig >= len(text) or text[end_orig] != "=")):
+            matches.append((start_orig, end_orig, mask_fn(body)))
+    for start_orig, end_orig, replacement in reversed(matches):
+        out[start_orig:end_orig] = list(replacement)
+    return "".join(out)
 
 
 def mask_secret(
@@ -725,6 +800,13 @@ def redact_sensitive_text(
     # Known prefixes (sk-, ghp_, etc.) — gate on substring presence
     if _has_known_prefix_substring(text):
         _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
+        # Control/zero-width chars (\\n, \\r, ESC, U+200B, …) split a token
+        # body so _PREFIX_RE cannot match across them — a secret smuggled as
+        # ``sk-abc\\x1bdef…`` leaks verbatim (issue #77484). Mask such runs by
+        # first matching on a control-stripped copy, then re-masking the
+        # corresponding span in the original (the stripped copy and the
+        # original are aligned 1:1 for non-control chars).
+        text = _mask_control_split_tokens(text, _prefix_sub)
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
     # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
@@ -746,6 +828,14 @@ def redact_sensitive_text(
                     return m.group(0)
                 return f"{name}={quote}{_mask_token(value)}{quote}"
             text = _ENV_ASSIGN_RE.sub(_redact_env, text)
+            # Lowercase env names (``openai_key=…``). Skip URLs — the query
+            # string may contain ``token=``/``key=`` params that are
+            # intentionally passed through (see note near the bottom of this
+            # function; _redact_strict_url_credentials handles the opt-in
+            # case). The uppercase regex above is all-caps-only, so it never
+            # matches URL params; the lowercase one would (issue #77484).
+            if "://" not in text:
+                text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
             # Lowercase/dotted config keys (issue #16413). Skip URLs entirely —
             # web-URL query params are intentionally passed through (see note
             # near the bottom of this function); _DB_CONNSTR_RE still guards

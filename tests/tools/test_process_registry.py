@@ -1417,6 +1417,24 @@ class TestHandleProcessRedaction:
         out = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
         assert "abc123def456" not in out["output_preview"]
 
+    def test_list_redacts_command_and_output(self, monkeypatch):
+        """`process(action=list)` redacts command + output_preview — issue #77484.
+
+        The list branch previously returned raw ``command[:200]`` and
+        ``output_preview[-200:]`` with no redaction wrap, leaking inline
+        secrets (unlike poll/log/wait/kill).
+        """
+        pr, sess = self._setup(
+            monkeypatch, "curl -H 'Authorization: Bearer sk-abc123def456ghi789jkl012345'",
+            "opaque token sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGG output",
+        )
+        out = json.loads(pr._handle_process({"action": "list"}))
+        assert len(out["processes"]) >= 1
+        entry = out["processes"][0]
+        assert "sk-abc123def456ghi789jkl012345" not in entry["command"]
+        assert "sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGG" not in entry["output_preview"]
+        assert "curl" in entry["command"]
+
     def test_disabled_passes_through(self, monkeypatch):
         import agent.redact as _r
         monkeypatch.setattr(_r, "_REDACT_ENABLED", False)

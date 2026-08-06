@@ -114,6 +114,68 @@ class TestEnvAssignments:
         assert "mypassword" not in result
 
 
+class TestBareSecretEnvSuffixes:
+    """Bare *_KEY / *_PASS / *_PW env suffixes mask, incl. lowercase — #77484."""
+
+    def test_upper_suffix_keys_mask(self):
+        for text in ("FAL_KEY=sk-abc123def456", "OPENAI_KEY=sk-abc123def456",
+                     "MYSQL_PASS=ghi789", "DB_PW=jkl012"):
+            result = redact_sensitive_text(text, force=True)
+            assert "=" in result and result.split("=", 1)[1] != text.split("=", 1)[1]
+
+    def test_lowercase_env_name_masks(self):
+        result = redact_sensitive_text("openai_key=sk-abc123def456", force=True)
+        assert "sk-abc123def456" not in result
+
+    def test_prose_words_with_keyword_unchanged(self):
+        # KEYBOARD / PASSAGE embed the bare keyword but are prose, not creds
+        for text in ("KEYBOARD=notsecret", "PASSAGE=notsecret"):
+            result = redact_sensitive_text(text, force=True)
+            assert result == text
+
+    def test_form_body_not_swallowed(self):
+        # A bare `password=`/`token=` in a form body must not be eaten greedily
+        text = "password=mysecret&username=bob&token=opaqueValue"
+        result = redact_sensitive_text(text, force=True)
+        assert "mysecret" not in result
+        assert "opaqueValue" not in result
+        assert "username=bob" in result
+
+
+class TestControlCharSplitTokens:
+    """Tokens split by control/zero-width chars must still mask — #77484."""
+
+    def test_newline_split_token_masks(self):
+        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        text = f"token={tok[:10]}\n{tok[10:]}"
+        result = redact_sensitive_text(text, force=True)
+        assert tok not in result
+
+    def test_esc_split_token_masks(self):
+        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        text = f"token={tok[:10]}\x1b{tok[10:]}"
+        result = redact_sensitive_text(text, force=True)
+        assert tok not in result
+
+    def test_zero_width_split_token_masks(self):
+        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        text = f"token={tok[:10]}\u200b{tok[10:]}"
+        result = redact_sensitive_text(text, force=True)
+        assert tok not in result
+
+    def test_env_dump_lines_not_joined(self):
+        # Control-stripping must not join unrelated env lines into one match
+        env_dump = (
+            "HOME=/home/user\n"
+            "ELEVENLABS_API_KEY=sk_abc123def456ghi789jkl\n"
+            "EXA_API_KEY=exa_XY789abcdef01234\n"
+            "SHELL=/bin/bash\n"
+        )
+        result = redact_sensitive_text(env_dump, force=True)
+        assert "SHELL=/bin/bash" in result
+        assert "HOME=/home/user" in result
+
+
 class TestEnvLookupPreserved:
     """Programmatic env var lookups must not be corrupted (issue #2852)."""
 

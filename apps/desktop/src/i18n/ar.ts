@@ -1659,6 +1659,17 @@ export const ar = defineLocale({
       ageDay: 'يوم',
       ageHour: 'ساعة',
       ageMin: 'دقيقة'
+    },
+    dateDivider: {
+      today: 'اليوم',
+      yesterday: 'أمس',
+      lastWeek: range => `الأسبوع الماضي · ${range}`,
+      week: range => `أسبوع ${range}`,
+      collapseAll: 'طي كل مجموعات التاريخ',
+      expandAll: 'توسيع كل مجموعات التاريخ',
+      actions: 'إجراءات مجموعات تاريخ الجلسات',
+      collapseGroup: label => `طي ${label}`,
+      expandGroup: label => `توسيع ${label}`
     }
   },
   composer: {

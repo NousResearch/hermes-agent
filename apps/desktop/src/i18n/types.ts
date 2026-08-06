@@ -1662,9 +1662,13 @@ export interface Translations {
     dateDivider: {
       today: string
       yesterday: string
-      thisWeek: string
-      lastWeek: string
-      thisMonth: string
+      lastWeek: (range: string) => string
+      week: (range: string) => string
+      collapseAll: string
+      expandAll: string
+      actions: string
+      collapseGroup: (label: string) => string
+      expandGroup: (label: string) => string
     }
   }
 

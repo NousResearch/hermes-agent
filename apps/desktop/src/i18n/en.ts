@@ -1966,11 +1966,15 @@ export const en: Translations = {
       ageMin: 'm'
     },
     dateDivider: {
-      today: 'Earlier today',
+      today: 'Today',
       yesterday: 'Yesterday',
-      thisWeek: 'Earlier this week',
-      lastWeek: 'Last week',
-      thisMonth: 'Earlier this month'
+      lastWeek: range => `Last week · ${range}`,
+      week: range => `Week of ${range}`,
+      collapseAll: 'Collapse all date groups',
+      expandAll: 'Expand all date groups',
+      actions: 'Session date group actions',
+      collapseGroup: label => `Collapse ${label}`,
+      expandGroup: label => `Expand ${label}`
     }
   },
 

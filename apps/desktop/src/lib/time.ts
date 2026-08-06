@@ -55,28 +55,25 @@ export function relativeTime(targetMs: number, nowMs = Date.now()): string {
   return rtf.format(sign * Math.round(abs / DAY), 'day')
 }
 
-// A dated divider bucket below the sidebar's unlabelled "recent" head cluster
-// (see session-date-groups.ts for the clustering). Buckets are coarse,
-// non-overlapping calendar ranges — one divider per *cluster* of activity,
-// never one per day, and never a rolling window like "previous 7 days" that
-// semantically overlaps the groups above it. `kind` drives the label; `at` is
-// the session's nominal day start (ms) for month formatting.
-export type SessionBucketKind = 'lastWeek' | 'month' | 'monthYear' | 'thisMonth' | 'thisWeek' | 'today' | 'yesterday'
+// Calendar groups used by the chronological sessions sidebar. Keys are
+// technical local-calendar identities: they never contain translated copy.
+export type SessionBucketKind = 'day' | 'lastWeek' | 'month' | 'today' | 'week' | 'yesterday'
 
 export interface SessionBucket {
   at: number
   key: string
   kind: SessionBucketKind
+  rangeEnd?: number
 }
 
-// Fixed divider labels, resolved from i18n (month labels come from Intl).
 export interface SessionBucketLabels {
-  lastWeek: string
-  thisMonth: string
-  thisWeek: string
+  lastWeek: (range: string) => string
   today: string
+  week: (range: string) => string
   yesterday: string
 }
+
+export const CALENDAR_WEEKS_BEFORE_MONTHS = 4
 
 export const startOfLocalDay = (ms: number): number => {
   const d = new Date(ms)
@@ -84,21 +81,16 @@ export const startOfLocalDay = (ms: number): number => {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 }
 
-// The human day doesn't end at midnight — it ends when you sleep. Sessions
-// from the small hours belong to the previous evening's run, so the day
-// boundary sits at 4 AM local (same trick activity/sleep trackers use).
-// A 12:30 AM session groups with 11:50 PM instead of splitting off.
+// The thread timeline deliberately retains its separate 4 AM "conversation
+// day" rule. Calendar sidebar groups use real local midnight instead.
 export const DAY_ROLLOVER_HOUR = 4
-
-// Start of the *nominal* local day a timestamp belongs to, honoring the 4 AM
-// rollover: Saturday 1 AM → start of Friday.
 export const nominalDayStart = (ms: number): number => startOfLocalDay(ms - DAY_ROLLOVER_HOUR * HOUR)
 
 // Locale-aware first day of week in JS getDay() convention (0=Sun … 6=Sat).
 // Intl.Locale weekInfo reports 1=Mon … 7=Sun; unsupported → Monday.
-export function localeWeekStartDay(): number {
+export function localeWeekStartDay(localeName = new Intl.DateTimeFormat().resolvedOptions().locale): number {
   try {
-    const locale = new Intl.Locale(new Intl.DateTimeFormat().resolvedOptions().locale)
+    const locale = new Intl.Locale(localeName)
     const withWeekInfo = locale as { getWeekInfo?: () => { firstDay?: number }; weekInfo?: { firstDay?: number } }
     const firstDay = (withWeekInfo.getWeekInfo?.() ?? withWeekInfo.weekInfo)?.firstDay
 
@@ -116,57 +108,91 @@ export function startOfLocalWeek(ms: number, weekStartsOn: number): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() - back).getTime()
 }
 
-// Coarse calendar bucket for a Unix-seconds timestamp. Granularity coarsens
-// with age: earlier today → yesterday → earlier this week → last week →
-// earlier this month → month → month + year. Empty ranges simply never emit a
-// bucket, so a sparse tail jumps straight to its month or month-year. The
-// newest run of sessions never reaches here (it is the unlabelled head — see
-// session-date-groups.ts), which is what makes "Earlier today" truthful.
+const endOfLocalWeek = (weekStart: number): number => {
+  const d = new Date(weekStart)
+
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 6).getTime()
+}
+
+const localCalendarOrdinal = (ms: number): number => {
+  const d = new Date(ms)
+
+  return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / DAY)
+}
+
+const localDateKey = (ms: number): string => {
+  const d = new Date(ms)
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+
+  return `${d.getFullYear()}-${month}-${day}`
+}
+
+// Today, yesterday, each remaining day of the current locale week, four full
+// calendar weeks (the first is "last week"), then exact calendar months.
 export function calendarBucket(
   seconds: number,
   nowMs = Date.now(),
   weekStartsOn = localeWeekStartDay()
 ): SessionBucket {
-  const nominal = nominalDayStart(seconds * SECOND)
-  const todayNominal = nominalDayStart(nowMs)
-  const dayDiff = Math.round((todayNominal - nominal) / DAY)
+  const activityDay = startOfLocalDay(seconds * SECOND)
+  const today = startOfLocalDay(nowMs)
+  const dayDiff = localCalendarOrdinal(today) - localCalendarOrdinal(activityDay)
 
   if (dayDiff <= 0) {
-    return { at: nominal, key: 'today', kind: 'today' }
+    return { at: today, key: `day:${localDateKey(today)}`, kind: 'today' }
   }
 
   if (dayDiff === 1) {
-    return { at: nominal, key: 'yesterday', kind: 'yesterday' }
+    return { at: activityDay, key: `day:${localDateKey(activityDay)}`, kind: 'yesterday' }
   }
 
-  const weekStart = startOfLocalWeek(todayNominal, weekStartsOn)
+  const currentWeekStart = startOfLocalWeek(today, weekStartsOn)
 
-  if (nominal >= weekStart) {
-    return { at: nominal, key: 'this-week', kind: 'thisWeek' }
+  if (activityDay >= currentWeekStart) {
+    return { at: activityDay, key: `day:${localDateKey(activityDay)}`, kind: 'day' }
   }
 
-  const ws = new Date(weekStart)
+  const activityWeekStart = startOfLocalWeek(activityDay, weekStartsOn)
+  const weeksBack = (localCalendarOrdinal(currentWeekStart) - localCalendarOrdinal(activityWeekStart)) / 7
 
-  if (nominal >= new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() - 7).getTime()) {
-    return { at: nominal, key: 'last-week', kind: 'lastWeek' }
+  if (weeksBack >= 1 && weeksBack <= CALENDAR_WEEKS_BEFORE_MONTHS) {
+    return {
+      at: activityWeekStart,
+      key: `week:${localDateKey(activityWeekStart)}`,
+      kind: weeksBack === 1 ? 'lastWeek' : 'week',
+      rangeEnd: endOfLocalWeek(activityWeekStart)
+    }
   }
 
-  const d = new Date(nominal)
-  const now = new Date(todayNominal)
-  const sameYear = d.getFullYear() === now.getFullYear()
+  const d = new Date(activityDay)
+  const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
 
-  if (sameYear && d.getMonth() === now.getMonth()) {
-    return { at: nominal, key: 'this-month', kind: 'thisMonth' }
-  }
-
-  const ym = `${d.getFullYear()}-${d.getMonth()}`
-
-  return sameYear ? { at: nominal, key: `m-${ym}`, kind: 'month' } : { at: nominal, key: `my-${ym}`, kind: 'monthYear' }
+  return { at: monthStart, key: `month:${d.getFullYear()}-${month}`, kind: 'month' }
 }
 
-// Localized divider label for a bucket: fixed relative strings from i18n,
-// Intl-formatted month / month-year for the rest.
-export function sessionBucketLabel(bucket: SessionBucket, labels: SessionBucketLabels): string {
+const formatCalendarRange = (start: number, end: number, locale: string, nowMs: number): string => {
+  const startDate = new Date(start)
+  const endDate = new Date(end)
+  const currentYear = new Date(nowMs).getFullYear()
+  const includeYear = startDate.getFullYear() !== endDate.getFullYear() || endDate.getFullYear() !== currentYear
+
+  const formatter = new Intl.DateTimeFormat(locale, {
+    day: 'numeric',
+    month: 'long',
+    ...(includeYear ? { year: 'numeric' as const } : {})
+  })
+
+  return formatter.formatRange(startDate, endDate)
+}
+
+export function sessionBucketLabel(
+  bucket: SessionBucket,
+  labels: SessionBucketLabels,
+  locale = new Intl.DateTimeFormat().resolvedOptions().locale,
+  nowMs = Date.now()
+): string {
   switch (bucket.kind) {
     case 'today':
       return labels.today
@@ -174,20 +200,17 @@ export function sessionBucketLabel(bucket: SessionBucket, labels: SessionBucketL
     case 'yesterday':
       return labels.yesterday
 
-    case 'thisWeek':
-      return labels.thisWeek
+    case 'day':
+      return new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'long', weekday: 'long' }).format(bucket.at)
 
     case 'lastWeek':
-      return labels.lastWeek
+      return labels.lastWeek(formatCalendarRange(bucket.at, bucket.rangeEnd ?? bucket.at, locale, nowMs))
 
-    case 'thisMonth':
-      return labels.thisMonth
+    case 'week':
+      return labels.week(formatCalendarRange(bucket.at, bucket.rangeEnd ?? bucket.at, locale, nowMs))
 
     case 'month':
-      return fmtMonth.format(bucket.at)
-
-    case 'monthYear':
-      return fmtMonthYear.format(bucket.at)
+      return new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' }).format(bucket.at)
   }
 }
 

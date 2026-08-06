@@ -1,6 +1,7 @@
 import type * as React from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { RowButton } from '@/components/ui/row-button'
 import { cn } from '@/lib/utils'
 
@@ -40,18 +41,38 @@ export function SidebarRowNest({ className, ...props }: React.ComponentProps<'di
 }
 
 /**
- * Chronological date-bucket separator ("Yesterday" / "Last week" / "June") for
- * the session list. One flat row — a small caption plus a hairline rule — so it
- * groups sessions by recency without adding a level of indentation.
+ * Chronological date-bucket disclosure ("Yesterday" / "Last week" / "June").
+ * The whole row is a native button: the caret, visible label, aria-expanded and
+ * focus target therefore remain one coherent keyboard interaction.
  */
-export function SidebarDateDivider({ className, label, ...props }: React.ComponentProps<'div'> & { label: string }) {
+export function SidebarDateDivider({
+  className,
+  label,
+  open,
+  onToggle,
+  ...props
+}: Omit<React.ComponentProps<'button'>, 'onClick'> & {
+  label: string
+  open: boolean
+  onToggle: () => void
+}) {
   return (
-    <div className={cn('flex select-none items-center gap-2 px-2 pb-0.5 pt-2', className)} {...props}>
+    <RowButton
+      aria-expanded={open}
+      className={cn(
+        'flex w-full select-none items-center gap-1.5 bg-transparent px-2 pb-0.5 pt-2 text-left focus-visible:ring-1 focus-visible:ring-(--ui-focus-ring)',
+        className
+      )}
+      onClick={onToggle}
+      type="button"
+      {...props}
+    >
+      <DisclosureCaret className="shrink-0 text-(--ui-text-quaternary)" open={open} />
       <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
         {label}
       </span>
       <span aria-hidden="true" className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
-    </div>
+    </RowButton>
   )
 }
 

@@ -11,10 +11,16 @@ afterEach(cleanup)
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
+    locale: 'en',
     t: {
       sidebar: {
         dateDivider: {
+          actions: 'Session date group actions',
+          collapseAll: 'Collapse all date groups',
+          collapseGroup: (label: string) => `Collapse ${label}`,
           earlierThisMonth: 'Earlier this month',
+          expandAll: 'Expand all date groups',
+          expandGroup: (label: string) => `Expand ${label}`,
           lastMonth: 'Last month',
           lastWeek: 'Last week',
           older: 'Older',

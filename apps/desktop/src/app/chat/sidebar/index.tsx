@@ -84,6 +84,7 @@ import {
 } from '@/store/projects'
 import { openRouteTile } from '@/store/route-tiles'
 import {
+  $connection,
   $cronSessions,
   $currentCwd,
   $gatewayState,
@@ -96,6 +97,7 @@ import {
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
+import { resolveSessionDateGroupProfile, sessionDateGroupScope } from '@/store/session-date-group-collapse'
 import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
 
 import {
@@ -306,6 +308,7 @@ export function ChatSidebar({
   const workingSessionIds = useStore($workingSessionIds)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
+  const connection = useStore($connection)
   // Only surface the profile switcher when more than one profile exists, so
   // single-profile users see the unchanged sidebar.
   const multiProfile = profiles.length > 1
@@ -313,6 +316,19 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
+
+  const recentsDateGroupScope = useMemo(
+    () =>
+      sessionDateGroupScope(
+        connection,
+        resolveSessionDateGroupProfile(connection, profileScope, {
+          allProfilesKey: ALL_PROFILES,
+          showAllProfiles
+        })
+      ),
+    [connection, profileScope, showAllProfiles]
+  )
+
   const agentOrderIds = useStore($sidebarSessionOrderIds)
   const agentOrderManual = useStore($sidebarSessionOrderManual)
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
@@ -1305,6 +1321,7 @@ export function ChatSidebar({
                   !recentsVirtualizes && COMPACT_FLAT
                 )}
                 dateGrouped={inProject || !agentOrderManual}
+                dateGroupScope={recentsDateGroupScope}
                 dndSensors={dndSensors}
                 emptyState={
                   showSessionSkeletons ? (

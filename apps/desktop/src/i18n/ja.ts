@@ -1798,11 +1798,15 @@ export const ja = defineLocale({
       ageMin: '分'
     },
     dateDivider: {
-      today: '今日の早い時間',
+      today: '今日',
       yesterday: '昨日',
-      thisWeek: '今週',
-      lastWeek: '先週',
-      thisMonth: '今月'
+      lastWeek: range => `先週 · ${range}`,
+      week: range => `${range}の週`,
+      collapseAll: 'すべての日付グループを折りたたむ',
+      expandAll: 'すべての日付グループを展開',
+      actions: 'セッションの日付グループ操作',
+      collapseGroup: label => `${label}を折りたたむ`,
+      expandGroup: label => `${label}を展開`
     }
   },
 

@@ -70,6 +70,7 @@ function ClickCounter() {
 }
 
 const plugin: HermesPlugin = {
+  defaultEnabled: false,
   id: 'example',
   name: 'Example Plugin',
   defaultEnabled: false,

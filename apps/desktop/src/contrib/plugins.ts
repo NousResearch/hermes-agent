@@ -3,8 +3,10 @@
  *
  *  - BUNDLED: every `src/plugins/<name>/plugin.{ts,tsx}` default-exporting a
  *    `HermesPlugin` registers automatically (vite glob — drop a folder in).
- *    None ship in-tree today; reference/demo plugins live in the companion
- *    `hermes-example-plugins` repo.
+ *    Bundled reference/demo modules that ship in-tree must set
+ *    `defaultEnabled: false` so production boots stay uncluttered unless the
+ *    user opts in. (Runtime-loader examples like `hello-runtime` are not
+ *    bundled modules and are exempt.)
  *  - RUNTIME: the on-disk door (`<hermes home>/desktop-plugins/<name>/plugin.js`)
  *    — the agent's/user's door, watched + hot-reloaded by the runtime loader.
  */

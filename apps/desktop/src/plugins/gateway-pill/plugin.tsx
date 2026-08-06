@@ -348,6 +348,7 @@ function PillLabel() {
 // ---------------------------------------------------------------------------
 
 const plugin: HermesPlugin = {
+  defaultEnabled: false,
   id: 'gateway-pill',
   name: 'Gateway Pill',
   register(ctx) {

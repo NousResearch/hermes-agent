@@ -16458,8 +16458,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 from agent.context_references import preprocess_context_references_async
                 from agent.model_metadata import get_model_context_length_async
+                from agent.runtime_cwd import get_session_cwd_override
 
-                _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
+                _msg_cwd = (
+                    get_session_cwd_override()
+                    or os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
+                )
                 _msg_config_ctx = None
                 _msg_cfg = None
                 _msg_model_cfg = {}
@@ -16571,6 +16575,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Run inbound preprocessing under the routed profile when multiplexed."""
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                # NOTE: _set_session_env() already binds the routed profile's cwd
+                # via the session ContextVar before this function is called.
+                # Binding and clearing here would wipe that value, breaking the
+                # runtime footer and any downstream cwd consumers.
                 return await self._prepare_inbound_message_text(
                     event=event,
                     source=source,
@@ -18227,6 +18235,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # text, so we fire a separate trailing send below.
             _footer_line = ""
             try:
+                from agent.runtime_cwd import get_session_cwd_override
                 from gateway.runtime_footer import build_footer_line as _bfl
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
@@ -18234,7 +18243,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
-                    cwd=os.environ.get("TERMINAL_CWD", ""),
+                    cwd=get_session_cwd_override() or os.environ.get("TERMINAL_CWD", ""),
                     turn_seconds=_turn_seconds,
                 )
             except Exception as _footer_err:
@@ -21882,6 +21891,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        _session_cwd = self._session_cwd_for_source(context.source)
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -21895,9 +21905,69 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            cwd=_session_cwd,
             async_delivery=_async_delivery,
             cron_session="",
         )
+
+    def _session_cwd_for_source(self, source: SessionSource) -> str:
+        """Resolve the logical cwd for one multiplexed profile session.
+
+        Gateway startup bridges only the active profile's ``terminal.cwd`` to
+        process-global ``TERMINAL_CWD``. A multiplexed secondary profile must
+        therefore bind its own cwd through the existing session ContextVar;
+        otherwise it silently inherits the gateway launch directory (or the
+        active profile's cwd).
+
+        Single-profile gateways deliberately return an empty override so their
+        existing process-level cwd behavior remains unchanged.
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return ""
+
+        profile_home = self._resolve_profile_home_for_source(source)
+        try:
+            with _profile_runtime_scope(profile_home):
+                profile_config = _load_gateway_runtime_config()
+        except Exception:
+            logger.warning(
+                "Failed to resolve terminal cwd for profile %s; using gateway cwd",
+                getattr(source, "profile", "") or "default",
+                exc_info=True,
+            )
+            return ""
+
+        terminal_config = profile_config.get("terminal") or {}
+        if not isinstance(terminal_config, dict):
+            terminal_config = {}
+        configured_cwd = str(
+            terminal_config.get("cwd", profile_config.get("cwd", "")) or ""
+        ).strip()
+        terminal_backend = str(
+            terminal_config.get(
+                "env_type",
+                terminal_config.get(
+                    "backend",
+                    profile_config.get("env_type", profile_config.get("backend", "local")),
+                ),
+            )
+            or "local"
+        ).strip()
+        if terminal_backend.lower() != "local":
+            return ""
+
+        from gateway.cwd_placeholder import resolve_placeholder_terminal_cwd
+
+        resolved = resolve_placeholder_terminal_cwd(
+            configured_cwd=configured_cwd,
+            terminal_backend=terminal_backend,
+            messaging_cwd=None,
+            docker_mount_cwd_to_workspace=False,
+            home_fallback=str(Path.home()),
+        )
+        if not resolved:
+            return ""
+        return str(Path(resolved).expanduser())
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""
@@ -24937,15 +25007,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
              adapter ownership, OR profile_routes matching at ``build_source`` time.
           2. ``_profile_name_for_source`` — re-run routing here as a defensive
              fallback for sources that bypass ``build_source``.
-          3. The active profile (the multiplexer's own home).
+          3. The gateway process's own home (the multiplexer's primary profile).
+
+        The final fallback must not call ``get_active_profile_name()`` or
+        ``get_hermes_home()``: both honor the context-local profile override. A
+        newly spawned task can temporarily inherit another routed turn's context,
+        which would otherwise make an unrouted/default message run under that
+        secondary profile.
         """
-        from hermes_cli.profiles import (
-            get_active_profile_name,
-            get_profile_dir,
-            profile_exists,
-        )
-        from hermes_constants import get_hermes_home
-        
+        from hermes_cli.profiles import get_profile_dir, profile_exists
+
         # Track whether a profile was explicitly requested (vs. falling back to default)
         explicit_profile = None
         try:
@@ -24957,8 +25028,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if name:
                     explicit_profile = name  # Routing explicitly set this profile
             if not name:
-                name = get_active_profile_name() or "default"
-            
+                return _hermes_home
+
             profile_dir = get_profile_dir(name)
             # Warn if an explicit profile doesn't exist on disk
             if explicit_profile and not profile_exists(name):
@@ -24970,7 +25041,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     source.chat_id,
                     getattr(source, "guild_id", None),
                 )
-                return get_hermes_home()
+                return _hermes_home
             return profile_dir
         except Exception:
             # Catch normalization errors, path errors, etc.
@@ -24983,7 +25054,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 explicit_profile or "(no profile)",
                 exc_info=True,
             )
-            return get_hermes_home()
+            return _hermes_home
 
     async def _run_agent_inner(
         self,

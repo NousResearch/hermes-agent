@@ -79,7 +79,9 @@ Parse the operator request into `brief.json` (schema in
 `references/prompt-schema.md`): the request, `render_mode` (`baked` default
 for short English copy, `overlay` for exact fonts / long / non-Latin text),
 `aspect`, `count` (1-8), `subject_mode` (`generic` or `placeholder`), and
-optional `exact_text`.
+optional `exact_text`. `subject_mode` is an exact JSON string enum and `count`
+is a JSON integer (booleans excluded); these controls are never coerced from
+other JSON types, alternate casing, whitespace, or numeric strings.
 
 ### 2. Select
 
@@ -114,9 +116,15 @@ exact sentinel + preservation directive in the schema; put placement/posture
 in `Composition/framing:`. Placeholder prompts use the schema's closed field grammar:
 every nonblank line is a documented field, with no duplicate fields or free-form
 suffix. The validator audits every non-Subject value for conservative
-identity/appearance vocabulary. Keep identity and physical traits out of every
-field; pose, camera, lighting, mood, style, palette, wardrobe, and expression
-remain available as scene direction.
+identity/appearance vocabulary. Mechanically, it applies Unicode NFKC and
+casefold, maps every Unicode punctuation/separator to a token boundary, and
+singularizes a limited set of English plurals before checking closed forbidden
+stems. This covers case, spacing, punctuation, hyphen, and common plural
+variants, including explicit `named`/`called` proper-name constructions. It
+does not semantically infer unseen synonyms, euphemisms, or unmarked proper
+names. Keep identity and physical traits out of every field; pose, camera,
+lighting, mood, style, palette, wardrobe, and expression remain available as
+scene direction.
 
 ### 5. Validate
 

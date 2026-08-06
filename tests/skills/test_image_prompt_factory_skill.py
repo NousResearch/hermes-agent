@@ -149,6 +149,12 @@ def test_placeholder_docs_match_mechanical_field_grammar(skill_text: str) -> Non
     for text in (skill_text, schema):
         assert "closed field grammar" in text
         assert "identity/appearance vocabulary" in text
+        assert "NFKC" in text
+        assert "casefold" in text
+        assert "Unicode punctuation" in text
+        assert "does not semantically infer" in text
+        assert "exact JSON string" in text
+        assert "never coerced" in text
 
 
 # ── pack_validate.py behavior ───────────────────────────────────────────────
@@ -201,6 +207,53 @@ def test_valid_grounded_pack_passes(pack_validate, tmp_path) -> None:
     assert summary["pack_valid"] is True
     assert summary["grounded"] is True
     assert summary["cited_case_ids"] == [101]
+
+
+@pytest.mark.parametrize(
+    "subject_mode",
+    [{}, [], True, False, 1, 1.0, None, "unknown", " Placeholder "],
+)
+def test_pack_validate_cli_rejects_non_string_or_unknown_subject_mode(
+    pack_validate, tmp_path, capsys, subject_mode
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    brief["subject_mode"] = subject_mode
+    _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    rc = pack_validate.main(["validate", "--workdir", str(tmp_path)])
+
+    assert rc == 1
+    assert (
+        "brief subject_mode must be one of: generic, placeholder"
+        in capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize("count", [{}, [], True, False, 1.0, None, "1", 0, -1, 9])
+def test_pack_validate_cli_rejects_coercive_or_out_of_range_brief_count(
+    pack_validate, tmp_path, capsys, count
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    brief["count"] = count
+    _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    rc = pack_validate.main(["validate", "--workdir", str(tmp_path)])
+
+    assert rc == 1
+    assert "brief count must be an integer from 1 to 8" in capsys.readouterr().err
+
+
+def test_pack_validate_cli_rejects_brief_pack_count_mismatch(
+    pack_validate, tmp_path, capsys
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    brief["count"] = 2
+    _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    rc = pack_validate.main(["validate", "--workdir", str(tmp_path)])
+
+    assert rc == 1
+    assert "brief count says 2 but pack prompt_count says 1" in capsys.readouterr().err
 
 
 def test_hollow_citation_rejected(pack_validate, tmp_path) -> None:
@@ -297,7 +350,7 @@ def test_matching_non_scalar_provenance_is_rejected(
     [
         (
             lambda _g, p: p.update(prompt_count=[]),
-            "pack prompt_count must be an integer",
+            "pack prompt_count must be an integer from 1 to 8",
         ),
         (
             lambda g, _p: g.update(unresolved_case_ids=[{}]),
@@ -495,6 +548,81 @@ def test_placeholder_audits_every_non_subject_prompt_field(
     )
 
 
+@pytest.mark.parametrize(
+    "probe",
+    [
+        "red haired",
+        "RED—HAIRED",
+        "blue‑eyed",
+        "eye colour",
+        "eye colour",
+        "eye color",
+        "fair complexions",
+        "listed ethnicities",
+        "noses and jawlines",
+        "facial features",
+        "jaw.lines",
+        "athletic builds",
+        "varied heights and weights",
+        "a named model",
+        "the individual appearance",
+        "middle-aged",
+        "young and elderly",
+        "tall and slim",
+        "brunette redhead with a beard",
+        "blondes",
+        "race-presenting",
+        "ethnicity presenting",
+        "masculine person",
+        "feminine character",
+        "feminine/characters",
+        "masculine protagonist",
+        "called Alice Example",
+    ],
+)
+@pytest.mark.parametrize(
+    "field",
+    sorted(
+        pack_validate_field
+        for pack_validate_field in [
+            "Use case",
+            "Template",
+            "Primary request",
+            "Input references",
+            "Scene/backdrop",
+            "Style/medium",
+            "Composition/framing",
+            "Lighting/mood",
+            "Color palette",
+            "Text handling",
+            "Constraints",
+            "Avoid",
+        ]
+    ),
+)
+def test_placeholder_rejects_normalized_identity_and_appearance_variants_in_every_field(
+    pack_validate, tmp_path, field, probe
+) -> None:
+    brief, grounding, pack = _valid_grounded_inputs()
+    brief["subject_mode"] = "placeholder"
+    subject = (
+        f"Subject: {pack_validate.SUBJECT_SENTINEL}; "
+        f"{pack_validate.SUBJECT_PRESERVATION_DIRECTIVE}"
+    )
+    prompt = f"{subject}\n{field}: {probe}"
+    pack["concepts"][0]["baked_prompt"] = prompt
+    pack["concepts"][0]["overlay_prompt"] = prompt
+    wd = _write_workdir(tmp_path, brief=brief, grounding=grounding, pack=pack)
+
+    with pytest.raises(pack_validate.PackInvalid) as exc:
+        pack_validate.validate_pack(wd)
+
+    assert any(
+        f"forbidden subject identity/appearance language in {field}" in violation
+        for violation in exc.value.violations
+    )
+
+
 def test_placeholder_allows_useful_scene_pose_camera_lighting_and_style(
     pack_validate, tmp_path
 ) -> None:
@@ -639,6 +767,18 @@ def test_alternate_pin_is_rejected_before_network(
         style_corpus.prime(pin="untrusted-pin", cache_dir=tmp_path)
 
 
+@pytest.mark.parametrize("force", [0, 1, "false", [], {}])
+def test_prime_rejects_coercive_force_before_network(
+    style_corpus, tmp_path, monkeypatch, force
+) -> None:
+    def network_must_not_run(_url):
+        raise AssertionError("malformed force must fail before fetching")
+
+    monkeypatch.setattr(style_corpus, "_http_get", network_must_not_run)
+    with pytest.raises(style_corpus.UsageError, match="force must be a boolean"):
+        style_corpus.prime(cache_dir=tmp_path, force=force)
+
+
 def test_provenance_hashes_materialized_cases_file(style_corpus, tmp_path) -> None:
     cases_bytes = json.dumps(
         {
@@ -741,6 +881,72 @@ def test_template_schema_nested_shapes_fail_deterministically(
                 "cases.json": b'{"cases": []}',
                 "style-library.json": json.dumps({"templates": templates}).encode(),
                 "templates.md": b'<a name="tpl-character"></a>\nBODY\n',
+                "LICENSE": b"fixture license",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("id", True, "id must be an integer"),
+        ("id", "7", "id must be an integer"),
+        ("title", {}, "title must be a string"),
+        ("prompt", ["prompt"], "prompt must be a string"),
+        ("category", [], "category must be a string"),
+        ("styles", {"studio": True}, "styles must be an array of strings"),
+        ("scenes", [[]], "scenes must be an array of strings"),
+        ("featured", 1, "featured must be a boolean"),
+        ("sourceUrl", {}, "sourceUrl must be a string"),
+    ],
+)
+def test_case_schema_rejects_values_previously_coerced_by_str_int_or_bool(
+    style_corpus, tmp_path, field, value, message
+) -> None:
+    case = {
+        "id": 7,
+        "title": "fixture",
+        "prompt": "fixture prompt",
+        "category": "fixture",
+        "styles": ["studio"],
+        "scenes": ["product"],
+        "featured": True,
+        "sourceUrl": "https://example.test/7",
+    }
+    case[field] = value
+
+    with pytest.raises(style_corpus.UsageError, match=message):
+        style_corpus._load(
+            tmp_path,
+            style_corpus.UPSTREAM_PIN,
+            {
+                "cases.json": json.dumps({"cases": [case]}).encode(),
+                "style-library.json": b'{"templates": []}',
+                "templates.md": b"",
+                "LICENSE": b"fixture license",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("cases_document", "message"),
+    [
+        ([], "cases.json must contain a JSON object"),
+        ({}, "cases.json cases must be an array"),
+        ({"cases": [[]]}, "case 1 must be a JSON object"),
+    ],
+)
+def test_case_document_shape_fails_deterministically(
+    style_corpus, tmp_path, cases_document, message
+) -> None:
+    with pytest.raises(style_corpus.UsageError, match=message):
+        style_corpus._load(
+            tmp_path,
+            style_corpus.UPSTREAM_PIN,
+            {
+                "cases.json": json.dumps(cases_document).encode(),
+                "style-library.json": b'{"templates": []}',
+                "templates.md": b"",
                 "LICENSE": b"fixture license",
             },
         )
@@ -950,6 +1156,23 @@ def test_select_unknown_template_raises(style_corpus) -> None:
     corpus = _fixture_corpus(style_corpus)
     with pytest.raises(style_corpus.UsageError):
         style_corpus.select(corpus, template_id="nope")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"k": True},
+        {"k": 1.0},
+        {"k": "1"},
+        {"k": 0},
+        {"case_ids": [True]},
+        {"case_ids": [1.0]},
+        {"case_ids": ["1"]},
+    ],
+)
+def test_select_rejects_coercive_numeric_inputs(style_corpus, kwargs) -> None:
+    with pytest.raises(style_corpus.UsageError):
+        style_corpus.select(_fixture_corpus(style_corpus), **kwargs)
 
 
 def test_ground_cli_reads_selection_offline(

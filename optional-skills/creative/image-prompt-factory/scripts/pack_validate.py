@@ -18,6 +18,7 @@ import argparse
 import json
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 # The literal token the pack must place in the Subject: field when the brief
@@ -45,21 +46,95 @@ _PROMPT_FIELDS = {
     "Avoid",
 }
 
-# Placeholder prompts use a closed field grammar, then every non-Subject value
-# is audited for subject-bearing nouns and physical-trait language. The list is
-# deliberately conservative but leaves scene direction (pose, framing, lens,
-# light, mood, style, palette, wardrobe and expression) available.
-_PLACEHOLDER_TRAIT_LANGUAGE = re.compile(
-    r"(?ix)"
-    r"\b(?:woman|women|man|men|girl|girls|boy|boys|lady|ladies|gentleman|"
-    r"gentlemen|person|people|human|child|children|teenagers?|adults?|male|"
-    r"female)\b|"
-    r"\b[\w]+-(?:eyed|haired)\b|"
-    r"\b(?:black|blond|blonde|blue|brown|gray|grey|green|hazel|red|silver|"
-    r"white)\s+(?:eyes|hair)\b|"
-    r"\b(?:hair|eyes|skin|complexion|ethnicity|race|facial features?|nose|"
-    r"lips|jawline|freckles|tattoos?|body type|build|height|weight)\b"
-)
+# Placeholder prompts use a closed line/field grammar. Non-Subject values then
+# pass through one mechanical lexical grammar: NFKC + casefold, every Unicode
+# punctuation/separator collapsed to a token boundary, and conservative
+# singular stems. This makes casing, plural and hyphen variants equivalent
+# without trying to infer arbitrary semantics.
+_PLACEHOLDER_IRREGULAR_STEMS = {
+    "children": "child",
+    "ethnicities": "ethnicity",
+    "gentlemen": "gentleman",
+    "identities": "identity",
+    "ladies": "lady",
+    "men": "man",
+    "people": "person",
+    "women": "woman",
+}
+_PLACEHOLDER_FORBIDDEN_STEMS = {
+    "adult",
+    "age",
+    "aged",
+    "appearance",
+    "beard",
+    "bearded",
+    "blond",
+    "blonde",
+    "boy",
+    "brunette",
+    "build",
+    "called",
+    "character",
+    "child",
+    "complexion",
+    "elderly",
+    "ethnic",
+    "ethnicity",
+    "eyed",
+    "eyes",
+    "female",
+    "feminine",
+    "freckle",
+    "gentleman",
+    "girl",
+    "hair",
+    "haired",
+    "height",
+    "human",
+    "identity",
+    "individual",
+    "jawline",
+    "lady",
+    "lips",
+    "male",
+    "man",
+    "masculine",
+    "model",
+    "named",
+    "nose",
+    "old",
+    "person",
+    "protagonist",
+    "race",
+    "racial",
+    "redhead",
+    "skin",
+    "slim",
+    "tattoo",
+    "teen",
+    "teenager",
+    "tall",
+    "weight",
+    "woman",
+    "young",
+    "youth",
+}
+_EYE_APPEARANCE_WORDS = {
+    "black",
+    "blond",
+    "blonde",
+    "blue",
+    "brown",
+    "color",
+    "colour",
+    "gray",
+    "green",
+    "grey",
+    "hazel",
+    "red",
+    "silver",
+    "white",
+}
 
 # Provenance keys that may exist ONLY on a grounded pack, and must match the
 # grounding artifact byte-for-byte when they do.
@@ -165,6 +240,48 @@ def _validate_grounding_shapes(grounding: dict, violations: list[str]) -> bool:
     return grounded
 
 
+def _placeholder_stem(token: str) -> str:
+    """Return the deliberately small singular stem used by the grammar."""
+    irregular = _PLACEHOLDER_IRREGULAR_STEMS.get(token)
+    if irregular is not None:
+        return irregular
+    if token.endswith("ies") and len(token) > 3:
+        return f"{token[:-3]}y"
+    if token.endswith("s") and not token.endswith("ss") and len(token) > 3:
+        return token[:-1]
+    return token
+
+
+def _placeholder_tokens(value: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    separated = "".join(
+        character if character.isalnum() else " " for character in normalized
+    )
+    return [_placeholder_stem(token) for token in separated.split()]
+
+
+def _contains_placeholder_identity_language(value: str) -> bool:
+    tokens = _placeholder_tokens(value)
+    if any(token in _PLACEHOLDER_FORBIDDEN_STEMS for token in tokens):
+        return True
+    if any(
+        pair in {("facial", "feature"), ("jaw", "line")}
+        for pair in zip(tokens, tokens[1:])
+    ):
+        return True
+    # Singular "eye" remains useful in camera craft ("eye-level"). It is
+    # appearance language only beside a colour term; "eyed" and plural
+    # "eyes" are always forbidden above.
+    return any(
+        token == "eye"
+        and (
+            (index > 0 and tokens[index - 1] in _EYE_APPEARANCE_WORDS)
+            or (index + 1 < len(tokens) and tokens[index + 1] in _EYE_APPEARANCE_WORDS)
+        )
+        for index, token in enumerate(tokens)
+    )
+
+
 def _validate_placeholder_prompt(
     text: str, concept_number: int, prompt_key: str, violations: list[str]
 ) -> None:
@@ -216,7 +333,9 @@ def _validate_placeholder_prompt(
 
     if grammar_ok:
         for field_name, value in fields.items():
-            if field_name != "Subject" and _PLACEHOLDER_TRAIT_LANGUAGE.search(value):
+            if field_name != "Subject" and _contains_placeholder_identity_language(
+                value
+            ):
                 violations.append(
                     f"concept {concept_number}: {prompt_key} contains forbidden "
                     "subject identity/appearance language in "
@@ -250,28 +369,40 @@ def validate_pack(workdir: Path) -> dict:
         )
 
     declared = pack.get("prompt_count")
-    if declared is not None and (
-        not isinstance(declared, int) or isinstance(declared, bool)
-    ):
-        violations.append("pack prompt_count must be an integer")
-    elif declared is not None and concepts and declared != len(concepts):
+    declared_valid = (
+        isinstance(declared, int)
+        and not isinstance(declared, bool)
+        and 1 <= declared <= _MAX_CONCEPTS
+    )
+    if not declared_valid:
+        violations.append(
+            f"pack prompt_count must be an integer from 1 to {_MAX_CONCEPTS}"
+        )
+    elif concepts and declared != len(concepts):
         violations.append(
             f"prompt_count says {declared} but pack has {len(concepts)} concepts"
         )
 
-    try:
-        brief_count = int(brief.get("count", 1))
-    except (TypeError, ValueError):
-        brief_count = 1
-        violations.append(f"brief count is not a number: {brief.get('count')!r}")
-    if brief_count > _MAX_CONCEPTS:
+    brief_count = brief.get("count")
+    brief_count_valid = (
+        isinstance(brief_count, int)
+        and not isinstance(brief_count, bool)
+        and 1 <= brief_count <= _MAX_CONCEPTS
+    )
+    if not brief_count_valid:
+        violations.append(f"brief count must be an integer from 1 to {_MAX_CONCEPTS}")
+    elif declared_valid and brief_count != declared:
         violations.append(
-            f"brief count={brief_count} exceeds the cap of {_MAX_CONCEPTS}"
+            f"brief count says {brief_count} but pack prompt_count says {declared}"
         )
 
-    placeholder = (
-        str(brief.get("subject_mode", "generic")).strip().lower() == "placeholder"
-    )
+    subject_mode = brief.get("subject_mode")
+    if not isinstance(subject_mode, str) or subject_mode not in {
+        "generic",
+        "placeholder",
+    }:
+        violations.append("brief subject_mode must be one of: generic, placeholder")
+    placeholder = subject_mode == "placeholder"
     for i, c in enumerate(concepts, start=1):
         if not isinstance(c, dict):
             violations.append(f"concept {i}: must be a JSON object")

@@ -39,9 +39,14 @@ Written by the agent after parsing the operator request:
 
 - `render_mode`: `baked` (text rendered inside the image — the default for
   short English ad copy) or `overlay` (text-free scene, copy composited later).
-- `subject_mode`: `generic` (invent a neutral subject) or `placeholder` (the
-  pack must NOT invent a subject — see the sentinel rule below).
-- `count`: 1-8 concepts.
+- `subject_mode`: an exact JSON string, either `generic` (invent a neutral
+  subject) or `placeholder` (the pack must NOT invent a subject — see the
+  sentinel rule below). It is never coerced or trimmed; alternate casing,
+  whitespace, null, booleans, numbers, arrays, objects, and unknown strings
+  fail validation.
+- `count`: a JSON integer from 1-8 (booleans are not integers here), equal to
+  `prompt_count` and the number of concepts. It is never coerced from strings
+  or floats; zero, negatives, and values above 8 fail validation.
 
 ## selection.json
 
@@ -127,9 +132,14 @@ variant from the pack.
   identity/appearance vocabulary (subject-bearing nouns, eye/hair descriptors,
   and physical-trait terms). Never put identity or physical traits in any
   field. Pose, framing, camera, lighting, mood, style, palette, wardrobe, and
-  expression remain valid scene direction. The lexical audit is an enforceable
-  boundary, not a claim that software can infer every possible synonym. A
-  downstream renderer replaces the token with its own reference-locked subject.
+  expression remain valid scene direction. The audit applies Unicode NFKC and
+  casefold, turns every Unicode punctuation/separator into a token boundary,
+  singularizes a limited set of English plurals, then checks closed forbidden
+  identity/appearance stems. It therefore covers case, whitespace, punctuation,
+  hyphen, and common plural variants plus explicit `named`/`called` proper-name
+  constructions. This precise lexical boundary does not semantically infer
+  unseen synonyms, euphemisms, or unmarked proper names. A downstream
+  renderer replaces the token with its own reference-locked subject.
   This exists because an
   appended identity LOSES to a pack's own invented `Subject:` line —
   reference images alone do not save you.

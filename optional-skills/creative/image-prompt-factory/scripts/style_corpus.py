@@ -234,6 +234,8 @@ def cache_root(explicit: "str | Path | None" = None) -> Path:
 
 
 def _resolve_pin(pin: "str | None") -> str:
+    if pin is not None and not isinstance(pin, str):
+        raise UsageError("corpus pin must be a string")
     resolved = pin or UPSTREAM_PIN
     if resolved != UPSTREAM_PIN:
         raise UsageError(
@@ -250,7 +252,10 @@ def corpus_dir(*, pin: "str | None" = None, cache_dir=None) -> Path:
 def prime(*, pin=None, cache_dir=None, force=None) -> Path:
     """ONLINE. Fetch, verify, and atomically install the corpus."""
     resolved_pin = _resolve_pin(pin)
-    force = bool(force)
+    if force is None:
+        force = False
+    elif not isinstance(force, bool):
+        raise UsageError("force must be a boolean")
     target = corpus_dir(pin=resolved_pin, cache_dir=cache_dir)
 
     if target.is_dir() and not force:
@@ -371,25 +376,59 @@ def _parse_template(value, index: int) -> Template:
     )
 
 
+def _parse_case(value, index: int) -> Case | None:
+    label = f"case {index}"
+    if not isinstance(value, dict):
+        raise UsageError(f"{label} must be a JSON object")
+
+    case_id = value.get("id")
+    if not isinstance(case_id, int) or isinstance(case_id, bool):
+        raise UsageError(f"{label} id must be an integer")
+    for key in ("title", "prompt", "category", "sourceUrl"):
+        if key in value and not isinstance(value[key], str):
+            raise UsageError(f"{label} {key} must be a string")
+    for key in ("styles", "scenes"):
+        items = value.get(key, [])
+        if not isinstance(items, list) or any(
+            not isinstance(item, str) for item in items
+        ):
+            raise UsageError(f"{label} {key} must be an array of strings")
+    featured = value.get("featured", False)
+    if not isinstance(featured, bool):
+        raise UsageError(f"{label} featured must be a boolean")
+
+    prompt = value.get("prompt", "")
+    if not prompt.strip():
+        return None  # a case with no prompt cannot ground a citation
+    return Case(
+        id=case_id,
+        title=value.get("title", ""),
+        prompt=prompt,
+        category=value.get("category", ""),
+        styles=tuple(value.get("styles", [])),
+        scenes=tuple(value.get("scenes", [])),
+        featured=featured,
+        source_url=value.get("sourceUrl", ""),
+    )
+
+
 def _load(root: Path, pin: str, verified_files: dict[str, bytes]) -> Corpus:
     """Parse only the immutable byte strings verified by ``require_corpus``."""
     cases_bytes = verified_files["cases.json"]
     raw_cases = json.loads(cases_bytes.decode("utf-8"))
+    if not isinstance(raw_cases, dict):
+        raise UsageError("cases.json must contain a JSON object")
+    raw_case_items = raw_cases.get("cases")
+    if not isinstance(raw_case_items, list):
+        raise UsageError("cases.json cases must be an array")
     cases: dict[int, Case] = {}
-    for c in raw_cases["cases"]:
-        prompt = str(c.get("prompt") or "")
-        if not prompt.strip():
-            continue  # a case with no prompt cannot ground a citation
-        cases[int(c["id"])] = Case(
-            id=int(c["id"]),
-            title=str(c.get("title") or ""),
-            prompt=prompt,
-            category=str(c.get("category") or ""),
-            styles=tuple(c.get("styles") or ()),
-            scenes=tuple(c.get("scenes") or ()),
-            featured=bool(c.get("featured")),
-            source_url=str(c.get("sourceUrl") or ""),
-        )
+    for index, raw_case in enumerate(raw_case_items, start=1):
+        case = _parse_case(raw_case, index)
+        if case is None:
+            continue
+        if case.id in cases:
+            raise UsageError(f"duplicate case id: {case.id}")
+        cases[case.id] = case
 
     raw_lib = json.loads(verified_files["style-library.json"].decode("utf-8"))
     if not isinstance(raw_lib, dict):
@@ -457,8 +496,29 @@ def select(
     Ranking follows the corpus's own documented selection order: category,
     then style tag, then scene tag, then the template's own example cases.
     """
-    k = _DEFAULT_K if k is None else int(k)
-    lang = (lang or "").lower() or None
+    if k is None:
+        k = _DEFAULT_K
+    elif not isinstance(k, int) or isinstance(k, bool) or k < 1:
+        raise UsageError("k must be a positive integer")
+    for label, value in (("template_id", template_id), ("category", category)):
+        if value is not None and not isinstance(value, str):
+            raise UsageError(f"{label} must be a string")
+    if lang is not None and (not isinstance(lang, str) or lang != "en"):
+        raise UsageError("lang must be 'en'")
+    for label, values in (("styles", styles), ("scenes", scenes)):
+        if values is not None and (
+            not isinstance(values, (list, tuple))
+            or any(not isinstance(value, str) for value in values)
+        ):
+            raise UsageError(f"{label} must be an array of strings")
+    if case_ids is not None and (
+        not isinstance(case_ids, (list, tuple))
+        or any(
+            not isinstance(case_id, int) or isinstance(case_id, bool)
+            for case_id in case_ids
+        )
+    ):
+        raise UsageError("case_ids must be an array of integers")
     want_styles = {s for s in (styles or ())}
     want_scenes = {s for s in (scenes or ())}
 
@@ -480,7 +540,6 @@ def select(
     anchors: list[Case] = []
     seen: set[int] = set()
     for cid in case_ids or ():
-        cid = int(cid)
         if cid in available and cid not in seen:
             anchors.append(corpus.cases[cid])
             seen.add(cid)
@@ -554,6 +613,16 @@ def _csv(value: "str | None") -> "list[str] | None":
     if not value:
         return None
     return [p.strip() for p in value.split(",") if p.strip()]
+
+
+def _csv_integers(value: "str | None") -> "list[int] | None":
+    parts = _csv(value)
+    if not parts:
+        return None
+    try:
+        return [int(part) for part in parts]
+    except ValueError as exc:
+        raise UsageError("cases must be comma-separated integers") from exc
 
 
 def _validate_selection(sel: dict) -> dict:
@@ -679,8 +748,8 @@ def _cmd_stats(args) -> int:
 
 
 def _cmd_select(args) -> int:
+    ids = _csv_integers(args.cases)
     corpus = require_corpus(cache_dir=args.cache_dir)
-    ids = [int(x) for x in (_csv(args.cases) or ())] or None
     grounding = select(
         corpus,
         template_id=args.template_id,

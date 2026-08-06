@@ -50,6 +50,26 @@ def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     return [item for item in normalized if item] or None
 
 
+def _normalize_skills(skills: object = None) -> list[str]:
+    """Normalize repeatable/comma-separated ``--skills`` values."""
+    if not skills:
+        return []
+
+    raw_items = [skills] if isinstance(skills, str) else skills
+    if not isinstance(raw_items, (list, tuple)):
+        raw_items = [raw_items]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        for identifier in str(item).split(","):
+            identifier = identifier.strip()
+            if identifier and identifier not in seen:
+                seen.add(identifier)
+                normalized.append(identifier)
+    return normalized
+
+
 def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
     normalized = _normalize_toolsets(toolsets)
     if normalized is None:
@@ -173,6 +193,7 @@ def run_oneshot(
     provider: Optional[str] = None,
     toolsets: object = None,
     usage_file: Optional[str] = None,
+    skills: object = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -248,6 +269,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    skills=skills,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -316,6 +338,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    skills: object = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -407,6 +430,24 @@ def _run_agent(
         # gateway sessions.
         _fb = get_fallback_chain(cfg)
 
+        skills_prompt = ""
+        loaded_skills: list[str] = []
+        skill_identifiers = _normalize_skills(skills)
+        if skill_identifiers:
+            from agent.skill_commands import build_preloaded_skills_prompt
+
+            skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
+                skill_identifiers,
+            )
+            if missing_skills and not loaded_skills:
+                raise ValueError(f"Unknown skill(s): {', '.join(missing_skills)}")
+            if missing_skills:
+                logging.warning(
+                    "Unknown skill(s) requested, skipping: %s. Continuing with: %s.",
+                    ", ".join(missing_skills),
+                    ", ".join(loaded_skills),
+                )
+
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
@@ -420,6 +461,7 @@ def _run_agent(
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
+            ephemeral_system_prompt=skills_prompt or None,
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction
@@ -433,6 +475,7 @@ def _run_agent(
             #   - skill secret capture → returns gracefully when no callback set
             clarify_callback=_oneshot_clarify_callback,
         )
+        agent.preloaded_skills = loaded_skills
 
         # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
         # display callbacks that would bypass our stdout capture.

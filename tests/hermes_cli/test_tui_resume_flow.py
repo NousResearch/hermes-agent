@@ -610,6 +610,8 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
             "web,terminal",
             "--usage-file",
             "usage.json",
+            "--skills",
+            "saju-social-content",
         ],
     )
     monkeypatch.setitem(
@@ -657,6 +659,7 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
         "provider": None,
         "toolsets": "web,terminal",
         "usage_file": "usage.json",
+        "skills": ["saju-social-content"],
     }
 
 

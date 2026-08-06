@@ -4116,6 +4116,13 @@ class AIAgent:
         """
         if interrupted:
             return
+        # Automated cron runs are read-only for external memory providers too:
+        # the scheduler now passes skip_memory=False so cron agents can READ
+        # memory context, but a completed cron turn must not be mirrored into
+        # provider stores (same policy as the memory() dispatch guards).
+        # Human follow-ups in a cron session (platform="tui") still sync.
+        if str(getattr(self, "session_id", "") or "").startswith("cron_") and getattr(self, "platform", "") == "cron":
+            return
         if not (self._memory_manager and final_response and original_user_message):
             return
         # Multimodal turns carry content as a list of typed parts; providers

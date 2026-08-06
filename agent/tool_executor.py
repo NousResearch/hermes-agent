@@ -1707,11 +1707,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
         elif function_name == "memory":
             def _execute(next_args: dict) -> Any:
-                target = next_args.get("target", "memory")
+                action = next_args.get("action")
                 operations = next_args.get("operations")
+                # Write-protect MEMORY.md/USER.md in cron context.
+                # Cron jobs inherit user context (system-prompt injection) but
+                # must not write automation artifacts into curated memory stores.
+                # memory_call_is_write covers both the single-op `action` form
+                # and the batch `operations` form, so a batch write cannot
+                # bypass it.
+                from agent.agent_runtime_helpers import memory_call_is_write
+                if agent.session_id.startswith("cron_") and agent.platform == "cron" and memory_call_is_write(action, operations):
+                    return json.dumps({"success": False, "error": (
+                        "Cron jobs have read-only access to MEMORY.md and USER.md. "
+                        "Write operations are not available in scheduled tasks."
+                    )})
+                target = next_args.get("target", "memory")
                 from tools.memory_tool import memory_tool as _memory_tool
                 result = _memory_tool(
-                    action=next_args.get("action"),
+                    action=action,
                     target=target,
                     content=next_args.get("content"),
                     old_text=next_args.get("old_text"),

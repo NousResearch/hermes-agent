@@ -244,6 +244,7 @@ class TestRoutingIntents:
         assert "matrix" not in platforms
 
 
+
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
 
@@ -480,6 +481,7 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["session_db"] is fake_db
         assert kwargs["platform"] == "cron"
+        assert kwargs["skip_memory"] is False
         assert kwargs["session_id"].startswith("cron_test-job_")
         original_session_id = kwargs["session_id"]
         fake_db.get_compression_tip.assert_called_once_with(original_session_id)

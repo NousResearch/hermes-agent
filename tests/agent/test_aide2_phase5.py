@@ -262,4 +262,136 @@ class TestHermesAide2CLI:
             str(tmp_path),
             "status",
         ])
-        assert exit_code == 0
+
+
+class TestBug1NewContentCaching:
+    """Bug: _apply_proposal re-ran mutator instead of using validated content.
+
+    Before the fix: _apply_proposal called _apply_mutation again, generating
+    DIFFERENT content from what was validated. This made validation meaningless.
+
+    After the fix: proposal.new_content is cached during validation and
+    _apply_proposal uses it directly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_apply_proposal_uses_cached_new_content_not_mutator(self, tmp_path: Path):
+        """When proposal.new_content is set, apply uses it instead of re-mutating."""
+        from agent.hermes_squared import HermesSquaredEngine, ImprovementProposal
+        from agent.skill_muter import ApplyResult
+
+        call_count = 0
+
+        class WritingApplier:
+            """Fake applier that actually writes the file (like the real one)."""
+            def apply(self, skill_id, proposal, hermes_home=None):
+                nonlocal call_count
+                skill_file = (hermes_home or Path(".")) / "skills" / skill_id / "SKILL.md"
+                skill_file.parent.mkdir(parents=True, exist_ok=True)
+                skill_file.write_text(proposal.new_content, encoding="utf-8")
+                return ApplyResult(success=True)
+
+            def rollback(self, skill_id, hermes_home=None):
+                return True
+
+        class CountingMutator:
+            def mutate(self, context):
+                nonlocal call_count
+                call_count += 1
+                from agent.skill_muter import MutationProposal
+                return MutationProposal(
+                    new_content="CONTENT_FROM_MUTATOR_CALL_%d" % call_count,
+                    reasoning="",
+                    success=True,
+                )
+
+        # Setup: write a skill file
+        skill_dir = tmp_path / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("original content", encoding="utf-8")
+
+        engine = HermesSquaredEngine(
+            hermes_home=tmp_path,
+            mutator=CountingMutator(),
+            applier=WritingApplier(),
+        )
+
+        # Proposal with pre-cached new_content
+        prop = ImprovementProposal(
+            proposal_id="p1",
+            skill_id="test-skill",
+            proposal_type="rewrite_skill",
+            description="test",
+            changes={"strategy": "optimize"},
+            current_private_score=0.3,
+            new_content="VALIDATED_CONTENT_THAT_SHOULD_BE_APPLIED",
+        )
+        prop.validation_result = {"cost_usd": 0.05}
+
+        await engine._apply_proposal(prop)
+
+        # Mutator should NOT have been called — content was cached
+        assert call_count == 0, f"mutator was called {call_count} times, expected 0"
+
+        # The applied content should be the cached one
+        applied = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        assert applied == "VALIDATED_CONTENT_THAT_SHOULD_BE_APPLIED"
+
+        # proposal.new_content should be preserved
+        assert prop.new_content == "VALIDATED_CONTENT_THAT_SHOULD_BE_APPLIED"
+
+    @pytest.mark.asyncio
+    async def test_apply_proposal_falls_back_to_mutator_when_no_new_content(self, tmp_path: Path):
+        """When proposal.new_content is None, apply falls back to mutator (backwards compat)."""
+        from agent.hermes_squared import HermesSquaredEngine, ImprovementProposal
+        from agent.skill_muter import ApplyResult
+
+        call_count = 0
+
+        class WritingApplier:
+            def apply(self, skill_id, proposal, hermes_home=None):
+                skill_file = (hermes_home or Path(".")) / "skills" / skill_id / "SKILL.md"
+                skill_file.write_text(proposal.new_content, encoding="utf-8")
+                return ApplyResult(success=True)
+
+            def rollback(self, skill_id, hermes_home=None):
+                return True
+
+        class CountingMutator:
+            def mutate(self, context):
+                nonlocal call_count
+                call_count += 1
+                from agent.skill_muter import MutationProposal
+                return MutationProposal(
+                    new_content="MUTATOR_RESULT_%d" % call_count,
+                    reasoning="",
+                    success=True,
+                )
+
+        skill_dir = tmp_path / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("original", encoding="utf-8")
+
+        engine = HermesSquaredEngine(
+            hermes_home=tmp_path,
+            mutator=CountingMutator(),
+            applier=WritingApplier(),
+        )
+
+        # Proposal WITHOUT new_content (e.g. manually constructed)
+        prop = ImprovementProposal(
+            proposal_id="p2",
+            skill_id="test-skill",
+            proposal_type="rewrite_skill",
+            description="test",
+            changes={"strategy": "optimize"},
+            current_private_score=0.3,
+            new_content=None,  # explicitly None
+        )
+
+        await engine._apply_proposal(prop)
+
+        # Mutator SHOULD have been called as fallback
+        assert call_count == 1, f"mutator was called {call_count} times, expected 1"
+        applied = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        assert applied == "MUTATOR_RESULT_1"

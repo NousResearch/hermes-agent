@@ -68,6 +68,12 @@ class ImprovementProposal:
     status: str = "proposed"  # proposed/validating/accepted/rejected
     validation_result: Optional[Dict[str, Any]] = None
     created_at: float = field(default_factory=time.time)
+    # Cached new content from the validation pass. Set by
+    # _validate_proposal when the mutation succeeds. Used by
+    # _apply_proposal to avoid re-running the LLM mutator — the
+    # validated content is already measured, so we apply exactly
+    # what we tested.
+    new_content: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -81,6 +87,7 @@ class ImprovementProposal:
             "status": self.status,
             "validation_result": self.validation_result,
             "created_at": self.created_at,
+            "new_content": self.new_content,
         }
 
 
@@ -462,6 +469,10 @@ class HermesSquaredEngine:
 
             improved = result.get("private_score", 0.0) > proposal.current_private_score
 
+            # Cache the validated content on the proposal so _apply_proposal
+            # applies exactly what we measured (avoids re-running the LLM).
+            proposal.new_content = mutated_content
+
             return {
                 "improved": improved,
                 "original_private_score": proposal.current_private_score,
@@ -594,11 +605,9 @@ class HermesSquaredEngine:
         is known to be an improvement.
 
         This implementation intentionally avoids re-running the
-        mutator: the validation step has already generated the
-        ``new_content`` (passed implicitly via the eval result) but
-        the new design keeps the proposal stateless. Future work can
-        cache the validated proposal in ``proposal.validation_result``
-        to skip regeneration here.
+        mutator: ``proposal.new_content`` was cached during validation.
+        Future work can extend this to support "re-mutate on apply" for
+        cases where the skill's ledger has been updated since validation.
         """
         skill_dir = self.hermes_home / "skills" / proposal.skill_id
         skill_file = skill_dir / "SKILL.md"
@@ -607,14 +616,21 @@ class HermesSquaredEngine:
             return
 
         try:
-            content = skill_file.read_text(encoding="utf-8")
-            summary = self.ledger.get_summary(proposal.skill_id)
-            mutated = self._apply_mutation(
-                content,
-                proposal.changes.get("strategy", "optimize"),
-                proposal.skill_id,
-                summary=summary,
-            )
+            # Use the content we validated — never re-call the mutator.
+            # If new_content is missing (e.g. manually constructed proposal),
+            # fall back to calling the mutator.
+            if proposal.new_content is not None:
+                mutated = proposal.new_content
+            else:
+                content = skill_file.read_text(encoding="utf-8")
+                summary = self.ledger.get_summary(proposal.skill_id)
+                mutated = self._apply_mutation(
+                    content,
+                    proposal.changes.get("strategy", "optimize"),
+                    proposal.skill_id,
+                    summary=summary,
+                )
+
             proposal_obj = MutationProposal(
                 new_content=mutated,
                 reasoning="(permanent mutation)",
@@ -664,12 +680,6 @@ class HermesSquaredEngine:
                 e,
             )
             proposal.status = "apply_failed"
-            logger.error(
-                "Hermes²: failed to apply proposal %s for skill %s: %s",
-                proposal.proposal_id,
-                proposal.skill_id,
-                e,
-            )
 
     def _generate_summary(self, report: EvolutionReport) -> str:
         """Generate a human-readable summary of the cycle."""

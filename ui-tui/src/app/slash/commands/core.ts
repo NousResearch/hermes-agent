@@ -16,6 +16,7 @@ import type {
 } from '../../../gatewayTypes.js'
 import { t } from '../../../i18n/runtime.js'
 import { copyTextToClipboard } from '../../../lib/clipboard.js'
+import { resolveCopyOnSelect } from '../../../lib/platform.js'
 import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
@@ -165,6 +166,37 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.mouse.tracking', next)))
+    }
+  },
+
+  {
+    help: 'set copy on select [on|off|auto|status]',
+    name: 'copy-on-select',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const current = ctx.ui.copyOnSelect
+
+      if (!mode || mode === 'status') {
+        const status =
+          current === null
+            ? t('slashCmd.core.copyOnSelect.auto', resolveCopyOnSelect(current) ? 'on' : 'off')
+            : current
+              ? 'on'
+              : 'off'
+
+        return ctx.transcript.sys(t('slashCmd.core.copyOnSelect.state', status))
+      }
+
+      const next = mode === 'on' ? true : mode === 'off' ? false : mode === 'auto' ? null : undefined
+
+      if (next === undefined) {
+        return ctx.transcript.sys(t('slashCmd.core.copyOnSelect.usage'))
+      }
+
+      patchUiState({ copyOnSelect: next })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'copy-on-select', value: mode }).catch(() => {})
+
+      queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.copyOnSelect.state', mode)))
     }
   },
 

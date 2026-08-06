@@ -8,6 +8,7 @@ import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import { applyLocale, resetLocale, t } from '../i18n/runtime.js'
 import * as ClipboardModule from '../lib/clipboard.js'
+import { resolveCopyOnSelect } from '../lib/platform.js'
 
 // DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
 // so toggling process.env in a test body can't move it. Mock just that one
@@ -87,6 +88,38 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/redraw')).toBe(true)
     expect(gatewayWork(ctx)).toEqual([])
+  })
+
+  it.each([
+    [true, '/copy-on-select on', 'on'],
+    [false, '/copy-on-select off', 'off'],
+    [null, '/copy-on-select auto', 'auto']
+  ] as const)('applies and persists copy-on-select mode %s', (expected, command, value) => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)(command)).toBe(true)
+    expect(getUiState().copyOnSelect).toBe(expected)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', { key: 'copy-on-select', value })
+    expect(gatewayWork(ctx)).toEqual([])
+  })
+
+  it('reports copy-on-select status without persisting it', () => {
+    patchUiState({ copyOnSelect: null })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/copy-on-select status')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(
+      `copy on select: auto (currently ${resolveCopyOnSelect(null) ? 'on' : 'off'})`
+    )
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('rejects an invalid copy-on-select mode', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/copy-on-select maybe')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /copy-on-select [on|off|auto|status]')
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
   it('opens the editor locally for /prompt without slash worker fallback', () => {

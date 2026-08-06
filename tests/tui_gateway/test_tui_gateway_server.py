@@ -1714,6 +1714,46 @@ def test_config_set_battery_explicit_off(monkeypatch):
     assert writes == {"display.battery": False}
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("on", True), ("off", False), ("auto", None)],
+)
+def test_config_set_copy_on_select_persists_tri_state(monkeypatch, value, expected):
+    writes: dict[str, object] = {}
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
+    )
+
+    resp = server.dispatch(
+        {
+            "id": "copy-on-select",
+            "method": "config.set",
+            "params": {"key": "copy-on-select", "value": value},
+        }
+    )
+
+    assert resp is not None
+    assert resp["result"] == {"key": "copy-on-select", "value": value}
+    assert writes == {"display.tui_copy_on_select": expected}
+
+
+def test_config_set_copy_on_select_rejects_unknown_mode(monkeypatch):
+    write = Mock()
+    monkeypatch.setattr(server, "_write_config_key", write)
+
+    resp = server.dispatch(
+        {
+            "id": "copy-on-select",
+            "method": "config.set",
+            "params": {"key": "copy-on-select", "value": "maybe"},
+        }
+    )
+
+    assert resp is not None
+    assert resp["error"]["code"] == 4002
+    write.assert_not_called()
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,
@@ -9227,6 +9267,27 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
     assert saved["display"]["tui_statusbar"] == "bottom"
 
 
+def test_config_set_copy_on_select_auto_persists_null(tmp_path, monkeypatch):
+    import hermes_yaml as yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump({"display": {"tui_copy_on_select": True}}))
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "copy-on-select", "value": "auto"},
+        }
+    )
+
+    assert resp is not None
+    assert resp["result"] == {"key": "copy-on-select", "value": "auto"}
+    saved = yaml.safe_load(cfg_path.read_text())
+    assert saved["display"]["tui_copy_on_select"] is None
+
+
 def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
     import hermes_yaml as yaml
 
@@ -9778,6 +9839,17 @@ def test_complete_slash_returns_plain_string_fields():
 
 
 
+
+
+def test_complete_slash_includes_tui_copy_on_select_command():
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/copy-on"}}
+    )
+
+    assert resp is not None
+    assert any(
+        item["text"] == "/copy-on-select" for item in resp["result"]["items"]
+    )
 
 
 def test_complete_slash_details_args():
@@ -12111,6 +12183,17 @@ def test_commands_catalog_survives_an_unreadable_usage_sidecar(monkeypatch):
     )
 
 
+def test_commands_catalog_includes_copy_on_select():
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    pairs = dict(resp["result"]["pairs"])
+    tui_cat = next(c for c in resp["result"]["categories"] if c["name"] == "TUI")
+    tui_pairs = dict(tui_cat["pairs"])
+
+    assert "/copy-on-select" in pairs
+    assert "/copy-on-select" in tui_pairs
 
 
 def test_commands_catalog_has_no_duplicate_or_alias_colliding_names():

@@ -15,6 +15,7 @@ _AT_DIRECTIVE_HINTS = [
     ("@diff", "git diff"), ("@staged", "staged diff"), ("@file:", "attach file"),
     ("@folder:", "attach folder"), ("@url:", "fetch url"), ("@git:", "git log")]
 _SLASH_EXTRAS = [
+    ("/copy-on-select", "Set copy on select [on|off|auto|status]"),
     ("/density", "Toggle compact display mode"), ("/details", "Control agent detail visibility"),
     ("/logs", "Show recent gateway log lines"),
     ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]")]

@@ -3,7 +3,7 @@
  *
  * Pure, dependency-injected pieces of Windows `hermes` resolution pulled out
  * of main.ts's findOnPath(), handOffWindowsBootstrapRecovery(), and
- * unwrapWindowsVenvHermesCommand(). Each of the three functions here pins one
+ * unwrapWindowsVenvHermesCommand(). Each of the four functions here pins one
  * of the Windows resolution bugs that caused desktop reinstall loops:
  *
  *   1. buildPathExtCandidates() — findOnPath() tried the empty extension
@@ -23,6 +23,10 @@
  *      python-dotenv) was re-selected forever: Retry / "Repair install"
  *      resolved the same dead interpreter instead of falling through to the
  *      bootstrap installer. The fix: probe-before-trust.
+ *   4. venvBaseInterpreterPresent() — a Windows uv venv can retain its
+ *      Scripts\\python.exe trampoline after the base interpreter recorded in
+ *      pyvenv.cfg has been removed. The fix: force --repair for that concrete
+ *      broken-base state instead of sending the updater down --update.
  *
  * Kept in a standalone ts module (no Electron imports, dependencies passed
  * as parameters) so it can be unit-tested with `node --test` without
@@ -78,6 +82,50 @@ export function buildPathExtCandidates(pathext: string | undefined, isWindows: b
  */
 export function chooseUpdaterArgs(haveRealInstall: boolean, branch: string): string[] {
   return haveRealInstall ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+}
+
+/**
+ * Return whether the base interpreter recorded by a venv still exists.
+ *
+ * A missing or unreadable config remains an unknown-but-acceptable state so
+ * bootstrap recovery only forces --repair for a concrete missing-base signal.
+ * Dependencies are injectable to keep the Windows decision behavior-testable.
+ */
+export function venvBaseInterpreterPresent(
+  venvRoot: string | undefined | null,
+  opts: {
+    isWindows?: boolean
+    fileExists?: (filePath: string) => boolean
+    joinPath?: (...segments: string[]) => string
+    readFile?: (filePath: string) => string | undefined
+  } = {}
+): boolean {
+  if (!venvRoot) {
+    return true
+  }
+
+  const joinPath = opts.joinPath ?? path.join
+  const readFile =
+    opts.readFile ??
+    ((filePath: string) => {
+      try {
+        return fs.readFileSync(filePath, 'utf8')
+      } catch {
+        return undefined
+      }
+    })
+  const fileExists = opts.fileExists ?? fs.existsSync
+  const cfg = readFile(joinPath(venvRoot, 'pyvenv.cfg'))
+  const home = cfg
+    ?.split(/\r?\n/)
+    .map(line => line.match(/^\s*home\s*=\s*(.+?)\s*$/i)?.[1])
+    .find((value): value is string => Boolean(value))
+
+  if (!home) {
+    return true
+  }
+
+  return fileExists(joinPath(home, opts.isWindows ? 'python.exe' : 'python'))
 }
 
 /**

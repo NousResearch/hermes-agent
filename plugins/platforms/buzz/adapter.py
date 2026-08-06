@@ -2054,17 +2054,19 @@ class BuzzAdapter(BasePlatformAdapter):
             self._save_cursors()
 
     @staticmethod
-    def _imeta_attachments(event: dict) -> List[dict]:
-        """Return bounded, structurally valid NIP-94 attachment metadata."""
+    def _parse_imeta_attachments(event: dict) -> Tuple[List[dict], int]:
+        """Return accepted NIP-94 metadata and the rejected ``imeta`` count."""
         tags = event.get("tags")
         if not isinstance(tags, list):
-            return []
+            return [], 0
         attachments: List[dict] = []
+        rejected = 0
         total_declared_bytes = 0
         for tag in tags:
-            if len(attachments) >= _MAX_INBOUND_ATTACHMENTS:
-                break
             if not isinstance(tag, (list, tuple)) or not tag or tag[0] != "imeta":
+                continue
+            if len(attachments) >= _MAX_INBOUND_ATTACHMENTS:
+                rejected += 1
                 continue
             fields: Dict[str, str] = {}
             for raw_field in tag[1:]:
@@ -2079,15 +2081,13 @@ class BuzzAdapter(BasePlatformAdapter):
             mime_type = fields.get("m", "")
             try:
                 size = int(fields.get("size", ""))
-            except (TypeError, ValueError):
-                continue
-            try:
                 parsed = urlsplit(url)
                 parsed_hostname = parsed.hostname
                 # Access validates malformed/non-numeric ports even though exact
                 # origin authorization occurs immediately before downloading.
                 parsed.port
-            except ValueError:
+            except (TypeError, ValueError):
+                rejected += 1
                 continue
             if (
                 parsed.scheme != "https"
@@ -2099,6 +2099,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 or not 0 < size <= _MAX_INBOUND_ATTACHMENT_BYTES
                 or total_declared_bytes + size > _MAX_INBOUND_ATTACHMENT_BYTES
             ):
+                rejected += 1
                 continue
             total_declared_bytes += size
             attachments.append(
@@ -2110,7 +2111,19 @@ class BuzzAdapter(BasePlatformAdapter):
                     "mime_type": mime_type[:255],
                 }
             )
+        return attachments, rejected
+
+    @staticmethod
+    def _imeta_attachments(event: dict) -> List[dict]:
+        """Return bounded, structurally valid NIP-94 attachment metadata."""
+        attachments, _rejected = BuzzAdapter._parse_imeta_attachments(event)
         return attachments
+
+    @staticmethod
+    def _attachment_rejection_note(rejected: int) -> str:
+        """Return a fixed-width diagnostic for malformed or excess metadata."""
+        shown = str(rejected) if rejected <= 999 else "999+"
+        return f"[{shown} Buzz attachment(s) rejected as malformed or over limits.]"
 
     async def _download_attachment(self, metadata: dict) -> Optional[CachedMedia]:
         """Download, integrity-check, and cache one authorized Buzz attachment."""
@@ -2212,11 +2225,12 @@ class BuzzAdapter(BasePlatformAdapter):
             return
         pubkey = str(event.get("pubkey") or "").lower()
         content = event.get("content")
-        attachment_metadata = self._imeta_attachments(event)
+        attachment_metadata, rejected_attachments = self._parse_imeta_attachments(event)
+        has_imeta = bool(attachment_metadata or rejected_attachments)
         if (
             not pubkey
             or not isinstance(content, str)
-            or (not content.strip() and not attachment_metadata)
+            or (not content.strip() and not has_imeta)
         ):
             return
 
@@ -2285,10 +2299,28 @@ class BuzzAdapter(BasePlatformAdapter):
         # Remember where this message sits in the thread graph so our reply
         # can join the SAME thread rather than nesting a new one under it.
         self._record_thread_root(event_id, event)
-        # Network and cache access deliberately happen only after self-echo,
-        # addressing, and sender allow-list authorization have all passed.
-        attachments = await self._cache_inbound_attachments(attachment_metadata)
-        if attachment_metadata and len(attachments) < len(attachment_metadata):
+        # Attachment fetch/cache is a security-sensitive side effect. Only the
+        # gateway's authoritative callback can permit it, and only an explicit
+        # True is permission: false, absent, or failed checks all fail closed.
+        # The message still dispatches so GatewayRunner can apply denial/pairing.
+        chat_type = "dm" if is_dm else "group"
+        attachment_fetch_allowed = bool(attachment_metadata) and (
+            self._is_sender_authorized(pubkey, chat_type, channel_id) is True
+        )
+        attachments = (
+            await self._cache_inbound_attachments(attachment_metadata)
+            if attachment_fetch_allowed
+            else []
+        )
+        if rejected_attachments:
+            dispatch_text = (
+                f"{dispatch_text}\n"
+                f"{self._attachment_rejection_note(rejected_attachments)}"
+            ).strip()
+        if (
+            attachment_fetch_allowed
+            and len(attachments) < len(attachment_metadata)
+        ):
             failed = len(attachment_metadata) - len(attachments)
             dispatch_text = (
                 f"{dispatch_text}\n"
@@ -2313,7 +2345,7 @@ class BuzzAdapter(BasePlatformAdapter):
         await self._dispatch_message(
             text=dispatch_text,
             chat_id=channel_id,
-            chat_type="dm" if is_dm else "group",
+            chat_type=chat_type,
             user_id=pubkey,
             user_name=await self._resolve_user_name(pubkey),
             message_id=event_id,

@@ -88,6 +88,9 @@ def _make_adapter(extra=None):
     adapter._self_npub = SELF_NPUB
     adapter._display_name = "Chip"
     adapter._private_key = "nsec1test"
+    # GatewayRunner installs this callback before intake starts. Attachment
+    # tests are authorized by default and override the callback at the boundary.
+    adapter.set_authorization_check(lambda *_args: True)
     return adapter
 
 
@@ -857,6 +860,9 @@ class TestInboundAttachments:
     @pytest.mark.asyncio
     async def test_unaddressed_channel_attachment_is_not_downloaded(self):
         adapter = _make_adapter()
+        authorization_check = MagicMock(return_value=True)
+        adapter.set_authorization_check(authorization_check)
+        adapter._cache_inbound_attachments = AsyncMock()
         adapter._download_attachment = AsyncMock()
         adapter._channel_state[CHANNEL] = {
             "chat_type": "group",
@@ -875,6 +881,8 @@ class TestInboundAttachments:
 
         await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
 
+        authorization_check.assert_not_called()
+        adapter._cache_inbound_attachments.assert_not_awaited()
         adapter._download_attachment.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1009,6 +1017,70 @@ class TestInboundAttachments:
         adapter._download_attachment.assert_awaited_once()
         assert dispatched[-1]["media_urls"] == [attachment.path]
         assert dispatched[-1]["message_type"] is MessageType.DOCUMENT
+
+    @pytest.mark.asyncio
+    async def test_malformed_attachment_only_dm_dispatches_once_with_bounded_note(self):
+        adapter = _make_adapter()
+        adapter._download_attachment = AsyncMock()
+        adapter._user_names[OTHER_PUBKEY] = "Other"
+        adapter._channel_state[DM_CHANNEL] = {
+            "chat_type": "dm",
+            "last_ts": 0,
+            "seen": {},
+        }
+        adapter._dispatch_message = AsyncMock()
+        event = _event("malformed-attachment-only", content="")
+        event["tags"].append(["imeta", "url definitely-not-a-url"])
+
+        await adapter._handle_event(DM_CHANNEL, adapter._channel_state[DM_CHANNEL], event)
+        await adapter._handle_event(DM_CHANNEL, adapter._channel_state[DM_CHANNEL], event)
+
+        adapter._download_attachment.assert_not_awaited()
+        adapter._dispatch_message.assert_awaited_once()
+        call = adapter._dispatch_message.await_args
+        assert call is not None
+        dispatched = call.kwargs
+        assert "1 Buzz attachment(s) rejected" in dispatched["text"]
+        assert len(dispatched["text"]) <= 80
+        assert dispatched["media_urls"] == []
+
+    @pytest.mark.asyncio
+    async def test_excess_imeta_is_reported_while_accepted_files_remain_attached(self):
+        adapter = _make_adapter()
+        adapter._user_names[OTHER_PUBKEY] = "Other"
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        adapter._download_attachment = AsyncMock(
+            side_effect=lambda metadata: CachedMedia(
+                f"/cache/{metadata['filename']}",
+                metadata["mime_type"],
+                "document",
+                metadata["filename"],
+            )
+        )
+        adapter._dispatch_message = AsyncMock()
+        event = _event("excess-imeta", content="@Chip inspect")
+        for index in range(5):
+            event["tags"].append([
+                "imeta",
+                f"url https://test.relay/media/{index}.bin",
+                "m application/octet-stream",
+                "x " + format(index + 1, "064x"),
+                "size 1",
+                f"filename {index}.bin",
+            ])
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+
+        assert adapter._download_attachment.await_count == 4
+        call = adapter._dispatch_message.await_args
+        assert call is not None
+        dispatched = call.kwargs
+        assert "1 Buzz attachment(s) rejected" in dispatched["text"]
+        assert len(dispatched["media_urls"]) == 4
 
     def test_imeta_bounds_filename_to_filesystem_safe_utf8_length(self):
         event = _event("long-name", content="@Chip file")
@@ -1210,9 +1282,40 @@ class TestInboundAttachments:
         assert all("@" not in item["url"] and "#" not in item["url"] for item in attachments)
 
     @pytest.mark.asyncio
+    async def test_self_attachment_stops_before_authorization_or_cache(self):
+        adapter = _make_adapter()
+        authorization_check = MagicMock(return_value=True)
+        adapter.set_authorization_check(authorization_check)
+        adapter._cache_inbound_attachments = AsyncMock()
+        adapter._dispatch_message = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        event = _event("self-attachment", pubkey=SELF_PUBKEY, content="@Chip inspect")
+        event["tags"].append([
+            "imeta",
+            "url https://test.relay/media/file.bin",
+            "m application/octet-stream",
+            "x " + "a" * 64,
+            "size 1",
+            "filename file.bin",
+        ])
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+
+        authorization_check.assert_not_called()
+        adapter._cache_inbound_attachments.assert_not_awaited()
+        adapter._dispatch_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_unauthorized_sender_attachment_is_not_downloaded(self):
         adapter = _make_adapter()
         adapter._allowed_pubkeys = {"f" * 64}
+        authorization_check = MagicMock(return_value=True)
+        adapter.set_authorization_check(authorization_check)
+        adapter._cache_inbound_attachments = AsyncMock()
         adapter._download_attachment = AsyncMock()
         adapter._channel_state[CHANNEL] = {
             "chat_type": "group",
@@ -1231,7 +1334,129 @@ class TestInboundAttachments:
 
         await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
 
+        authorization_check.assert_not_called()
+        adapter._cache_inbound_attachments.assert_not_awaited()
         adapter._download_attachment.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("authorization", [False, None, "raise"])
+    async def test_non_true_gateway_authority_never_caches_even_for_locally_allowed_sender(
+        self,
+        authorization,
+    ):
+        adapter = _make_adapter()
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        if authorization is None:
+            adapter.set_authorization_check(None)
+        elif authorization == "raise":
+            def raise_unknown(*_args):
+                raise RuntimeError("authorization backend unavailable")
+
+            adapter.set_authorization_check(raise_unknown)
+        else:
+            adapter.set_authorization_check(lambda *_args: False)
+        adapter._cache_inbound_attachments = AsyncMock()
+        adapter._dispatch_message = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        event = _event(f"gateway-{authorization}-attachment", content="@Chip inspect")
+        event["tags"].append([
+            "imeta",
+            "url https://test.relay/media/file.bin",
+            "m application/octet-stream",
+            "x " + "a" * 64,
+            "size 1",
+            "filename file.bin",
+        ])
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+
+        adapter._cache_inbound_attachments.assert_not_awaited()
+        adapter._dispatch_message.assert_awaited_once()
+        call = adapter._dispatch_message.await_args
+        assert call is not None
+        assert call.kwargs["media_urls"] == []
+
+    @pytest.mark.asyncio
+    async def test_explicit_true_gateway_authority_caches_attachment(self):
+        adapter = _make_adapter()
+        authorization_check = MagicMock(return_value=True)
+        adapter.set_authorization_check(authorization_check)
+        cached = CachedMedia(
+            "/cache/authorized.bin",
+            "application/octet-stream",
+            "document",
+            "authorized.bin",
+        )
+        adapter._cache_inbound_attachments = AsyncMock(return_value=[cached])
+        adapter._dispatch_message = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        event = _event("gateway-authorized-attachment", content="@Chip inspect")
+        event["tags"].append([
+            "imeta",
+            "url https://test.relay/media/file.bin",
+            "m application/octet-stream",
+            "x " + "a" * 64,
+            "size 1",
+            "filename file.bin",
+        ])
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+
+        authorization_check.assert_called_once_with(OTHER_PUBKEY, "group", CHANNEL)
+        adapter._cache_inbound_attachments.assert_awaited_once()
+        call = adapter._dispatch_message.await_args
+        assert call is not None
+        assert call.kwargs["media_urls"] == [cached.path]
+
+    @pytest.mark.asyncio
+    async def test_real_gateway_auth_callback_defaults_to_no_attachment_side_effects(
+        self,
+        monkeypatch,
+    ):
+        from gateway.config import GatewayConfig
+        from gateway.run import GatewayRunner
+
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
+        runner.adapters = {}
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved.return_value = False
+
+        adapter = _make_adapter()
+        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+        adapter.set_authorization_check(runner._make_adapter_auth_check(adapter.platform))
+        adapter._cache_inbound_attachments = AsyncMock()
+        adapter._dispatch_message = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        event = _event("gateway-default-denied-attachment", content="@Chip inspect")
+        event["tags"].append([
+            "imeta",
+            "url https://test.relay/media/file.bin",
+            "m application/octet-stream",
+            "x " + "a" * 64,
+            "size 1",
+            "filename file.bin",
+        ])
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+
+        runner.pairing_store.is_approved.assert_called_once_with("buzz", OTHER_PUBKEY)
+        adapter._cache_inbound_attachments.assert_not_awaited()
+        adapter._dispatch_message.assert_awaited_once()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

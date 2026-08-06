@@ -45,19 +45,44 @@ def _http_probe(url, timeout):
         return None, "", str(exc)
 
 
+def _searxng_base_url() -> str:
+    """Resolve the SearXNG base URL the same way the Hermes provider does.
+
+    Priority: process env (SEARXNG_URL), then Hermes config-aware env lookup
+    (~/.hermes/.env), matching agent/web_search_provider._searxng_url().
+    """
+    url = os.environ.get("SEARXNG_URL", "")
+    if not url:
+        try:
+            from hermes_cli.config import get_env_value
+            url = get_env_value("SEARXNG_URL") or ""
+        except Exception:
+            pass
+    return url.strip().rstrip("/")
+
+
 def check_searxng():
-    """Check the effective SearXNG HTML search boundary."""
+    """Check the effective SearXNG JSON search boundary."""
     if _DRY_RUN:
         return True, "dry-run: probes skipped"
-    # The deployed instance deliberately rejects format=json with HTTP 403.
+    base_url = _searxng_base_url()
+    if not base_url:
+        return False, "SEARXNG_URL is not configured"
+    # The provider calls /search?q=...&format=json&pageno=1. Verify JSON
+    # returns 200 and parses so a config regression (e.g. HTML-only
+    # container) is caught the same way Hermes would hit it.
     status, body, error = _http_probe(
-        "http://127.0.0.1:8082/search?q=health+check", timeout=5
+        f"{base_url}/search?q=health+check&format=json", timeout=5
     )
     if status != 200:
         return False, f"API status {status}" if status is not None else (error or "API not responding")
-    if 'class="result' not in body:
-        return False, "search returned no result markup"
-    return True, "HTML search returned results"
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return False, "search returned non-JSON body (JSON format not enabled?)"
+    if not isinstance(data, dict) or "results" not in data:
+        return False, "search JSON missing results key"
+    return True, f"JSON search returned {len(data['results'])} results"
 
 
 def check_groktoCrawl():

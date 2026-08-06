@@ -1811,11 +1811,20 @@ class PluginManager:
         if not manifest.provides_tools:
             return
 
+        lookup_key = manifest.key or manifest.name
         plugin_dir = Path(manifest.path) if manifest.path else None
         if plugin_dir is None or not (plugin_dir / "tools.py").is_file():
+            # Declared but undeliverable. Staying quiet here reproduces the
+            # exact symptom this path exists to fix — tools the manifest
+            # promises, silently absent from the session (#78050) — so say so.
+            logger.warning(
+                "Plugin '%s' declares provides_tools %s but has no tools.py; "
+                "those tools will not be available in CLI/TUI sessions.",
+                lookup_key,
+                list(manifest.provides_tools),
+            )
             return
 
-        lookup_key = manifest.key or manifest.name
         try:
             module = self._load_directory_module(manifest)
             # Record the module even if nothing below registers: the package
@@ -1827,6 +1836,13 @@ class PluginManager:
             tools_module = importlib.import_module(f"{module.__name__}.tools")
             register_tools = getattr(tools_module, "register_tools", None)
             if register_tools is None:
+                logger.warning(
+                    "Plugin '%s' declares provides_tools %s but its tools.py "
+                    "has no register_tools(ctx); those tools will not be "
+                    "available in CLI/TUI sessions.",
+                    lookup_key,
+                    list(manifest.provides_tools),
+                )
                 return
 
             before = set(self._plugin_tool_names)
@@ -1843,13 +1859,18 @@ class PluginManager:
                 len(registered),
                 registered,
             )
-        except Exception:
+        except Exception as exc:
             # Never let a client-tool import break discovery — the platform
-            # stays deferred and behaves exactly as it did before.
-            logger.debug(
-                "Deferred platform '%s': client-tool pre-registration failed",
+            # stays deferred and behaves exactly as it did before. But a
+            # broken tools.py produces the #78050 symptom itself (declared
+            # tools missing from the session), so this has to be visible
+            # without turning on debug logging to find it.
+            logger.warning(
+                "Plugin '%s': client-tool pre-registration failed (%s); the "
+                "tools it declares will be missing from CLI/TUI sessions.",
                 lookup_key,
-                exc_info=True,
+                exc,
+                exc_info=_PLUGINS_DEBUG,
             )
 
     def _load_plugin(self, manifest: PluginManifest) -> None:

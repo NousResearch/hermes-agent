@@ -16,6 +16,7 @@ discovery time; the adapter stays deferred.
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -152,7 +153,7 @@ def clean_registry():
     yield
     for name in set(registry._tools) - before_tools:
         registry._tools.pop(name, None)
-    for platform in ("probeplat", "barefoot", "quietplat"):
+    for platform in ("probeplat", "barefoot", "quietplat", "promiseplat"):
         platform_registry.unregister(platform)
     for name in set(sys.modules) - before_modules:
         if name.startswith("hermes_plugins."):
@@ -343,9 +344,14 @@ class TestDeferredPlatformToolPreregistration:
         assert loaded.enabled is True
 
     def test_broken_tools_module_does_not_break_discovery(
-        self, tmp_path, probe, clean_registry
+        self, tmp_path, probe, clean_registry, caplog
     ):
-        """A plugin whose ``tools.py`` raises degrades to the old behaviour."""
+        """A plugin whose ``tools.py`` raises degrades to the old behaviour.
+
+        Degrading quietly is not enough: the degraded state IS the #78050
+        symptom (declared tools absent from the session), so it has to be
+        visible without enabling debug logging to find it.
+        """
         from hermes_cli.plugins import PluginManager
 
         manifest = _write_platform_plugin(tmp_path, "probeplat", with_tools_module=True)
@@ -354,7 +360,40 @@ class TestDeferredPlatformToolPreregistration:
         )
 
         mgr = PluginManager()
-        mgr._register_deferred_platform(manifest)  # must not raise
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr._register_deferred_platform(manifest)  # must not raise
 
         assert mgr._plugins["probeplat-platform"].deferred is True
         assert mgr._plugins["probeplat-platform"].tools_registered == []
+        assert any(
+            "probeplat-platform" in r.message and r.levelno == logging.WARNING
+            for r in caplog.records
+        ), caplog.text
+
+    def test_declared_tools_with_no_tools_module_warns(
+        self, tmp_path, probe, clean_registry, caplog
+    ):
+        """A manifest promising tools it cannot deliver must say so.
+
+        Returning silently here leaves the operator with exactly the bug this
+        path fixes and no thread to pull on.
+        """
+        from hermes_cli.plugins import PluginManager
+
+        manifest = _write_platform_plugin(
+            tmp_path,
+            "promiseplat",
+            with_tools_module=False,
+            declares_provides_tools=True,
+        )
+
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr._register_deferred_platform(manifest)
+
+        assert probe.package_execs == 0
+        assert mgr._plugins["promiseplat-platform"].tools_registered == []
+        assert any(
+            "promiseplat-platform" in r.message and "provides_tools" in r.message
+            for r in caplog.records
+        ), caplog.text

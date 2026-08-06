@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { flattenSessionsWithBranches } from './session-branch-tree'
+import { clusterEntriesByTopic, flattenSessionsWithBranches } from './session-branch-tree'
 
 const session = (id: string, overrides: Partial<SessionInfo> = {}): SessionInfo =>
   ({
@@ -79,5 +79,57 @@ describe('flattenSessionsWithBranches', () => {
       { id: 'branch', stem: '└─ ' },
       { id: 'background', stem: undefined }
     ])
+  })
+})
+
+describe('clusterEntriesByTopic', () => {
+  const entry = (id: string, title: string, overrides: Partial<SessionInfo> = {}): { session: SessionInfo } => ({
+    session: session(id, { title, ...overrides })
+  })
+
+  it('keeps unprefixed entries in their original order', () => {
+    const entries = [entry('a', '普通会话'), entry('b', '另一会话')]
+
+    expect(clusterEntriesByTopic(entries)).toEqual(entries)
+  })
+
+  it('pulls same-topic entries together after a recency re-sort scattered them', () => {
+    const entries = [
+      entry('v1', '[凭证]打印', { last_active: 30 }),
+      entry('x', '普通会话', { last_active: 25 }),
+      entry('v2', '[凭证]录入', { last_active: 20 }),
+      entry('d1', '[部署]新服务器', { last_active: 15 }),
+      entry('v3', '[凭证]导入', { last_active: 10 })
+    ]
+
+    expect(clusterEntriesByTopic(entries).map(e => e.session.id)).toEqual([
+      'v1',
+      'v2',
+      'v3',
+      'x',
+      'd1'
+    ])
+  })
+
+  it('moves a parent together with its branch children', () => {
+    const entries = [
+      { session: session('p1', { title: '[业务]流水', last_active: 30 }) },
+      { branchStem: '└─ ', session: session('b1', { title: '[业务]流水分支', last_active: 28, parent_session_id: 'p1' }) },
+      { session: session('mid', { title: '中间会话', last_active: 20 }) },
+      { session: session('p2', { title: '[业务]代账', last_active: 10 }) }
+    ]
+
+    expect(clusterEntriesByTopic(entries).map(e => e.session.id)).toEqual([
+      'p1',
+      'b1',
+      'p2',
+      'mid'
+    ])
+  })
+
+  it('returns a single-entry list untouched', () => {
+    const entries = [entry('only', '[业务]唯一')]
+
+    expect(clusterEntriesByTopic(entries)).toEqual(entries)
   })
 })

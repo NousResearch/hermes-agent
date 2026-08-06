@@ -110,7 +110,7 @@ import type { SidebarNavItem } from '../../types'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
-import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
+import { clusterByTopic, orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
 import {
@@ -388,9 +388,16 @@ export function ChatSidebar({
   )
 
   // Recents by activity (last_active || started_at). User send stamps
-  // last_active immediately; manual drag order still wins below.
+  // last_active immediately; manual drag order still wins below. Sessions
+  // whose titles carry a [Topic] prefix are clustered together (adjacent,
+  // siblings still recency-sorted) so e.g. [凭证] rows stay in one block.
   const sortedSessions = useMemo(
-    () => [...visibleSessions].sort((a, b) => sessionTime(b) - sessionTime(a)),
+    () =>
+      clusterByTopic(
+        [...visibleSessions].sort((a, b) => sessionTime(b) - sessionTime(a)),
+        session => session.id,
+        session => session.title
+      ),
     [visibleSessions]
   )
 
@@ -520,7 +527,14 @@ export function ChatSidebar({
   }, [agentOrderIds, agentOrderManual, unpinnedAgentSessions])
 
   const agentSessions = useMemo(
-    () => (agentOrderManual ? orderByIds(unpinnedAgentSessions, s => s.id, agentOrderIds) : unpinnedAgentSessions),
+    () =>
+      agentOrderManual
+        ? clusterByTopic(
+            orderByIds(unpinnedAgentSessions, s => s.id, agentOrderIds),
+            s => s.id,
+            s => s.title
+          )
+        : unpinnedAgentSessions,
     [unpinnedAgentSessions, agentOrderIds, agentOrderManual]
   )
 

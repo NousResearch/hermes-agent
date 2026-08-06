@@ -148,6 +148,69 @@ class TestContinuationCeilingWedge:
             "The user-facing message must name the truncation."
         )
 
+    def test_continuation_requests_carry_no_marks(self, loop_agent):
+        """The scaffolding marks are Hermes bookkeeping. The centrally
+        sanitized api_messages must never carry them — only the
+        chat-completions transport strips underscore keys, so anthropic
+        and bedrock requests would otherwise send them to the provider."""
+        from tests.run_agent.test_run_agent import _mock_response
+
+        seen_api_messages = []
+        original = loop_agent._build_api_kwargs
+
+        def _spy(api_messages, tools_for_api=None):
+            seen_api_messages.append([dict(m) for m in api_messages if isinstance(m, dict)])
+            return original(api_messages, tools_for_api=tools_for_api)
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            _stub("part one "), _stub("part two "),
+            _mock_response(content="the rest.", finish_reason="stop"),
+        ]
+        with patch.object(loop_agent, "_build_api_kwargs", side_effect=_spy):
+            result = _run(loop_agent, "write me a long report")
+
+        assert result["completed"] is True
+        assert len(seen_api_messages) >= 3, "Expected continuation attempts 2+."
+        marked = [
+            (idx, key)
+            for idx, batch in enumerate(seen_api_messages)
+            for m in batch
+            for key in m
+            if str(key).startswith("_length_continuation")
+        ]
+        assert marked == [], (
+            f"Continuation marks leaked into outgoing api_messages: {marked!r}"
+        )
+
+    def test_prior_turn_marked_message_survives_later_ceiling(self, loop_agent):
+        """A mark that reached disk mid-crash and got reloaded on a PRIOR
+        turn's message must never be deleted by a later turn's ceiling
+        cleanup — the cleanup is scoped to the current turn."""
+        reloaded_history = [
+            {"role": "user", "content": "earlier question"},
+            {
+                "role": "assistant",
+                "content": "earlier answer fragment",
+                "_length_continuation_fragment": True,
+            },
+        ]
+        loop_agent.client.chat.completions.create.side_effect = [
+            _stub("wedge one "), _stub("wedge two "),
+            _stub("wedge three "), _stub("wedge four."),
+        ]
+        result = _run(loop_agent, "another long report", history=reloaded_history)
+
+        assert "truncated after 4 continuation attempts" in (result.get("error") or "")
+        prior = [
+            m for m in result["messages"]
+            if m.get("role") == "assistant"
+            and "earlier answer fragment" in (m.get("content") or "")
+        ]
+        assert len(prior) == 1, (
+            "The prior turn's reloaded message must survive the later "
+            "turn's ceiling cleanup."
+        )
+
     def test_new_turn_does_not_inherit_continuation_counter(self, loop_agent):
         """A single truncation on the turn AFTER the ceiling must get its
         own full 4-attempt budget, not the exhausted counter."""

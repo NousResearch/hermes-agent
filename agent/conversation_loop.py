@@ -1798,6 +1798,9 @@ def run_conversation(
                 api_msg.pop("finish_reason")
             # Strip internal thinking-prefill marker
             api_msg.pop("_thinking_prefill", None)
+            # Strip length-continuation marks; not every transport drops underscore keys.
+            api_msg.pop("_length_continuation_fragment", None)
+            api_msg.pop("_length_continuation_nudge", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields

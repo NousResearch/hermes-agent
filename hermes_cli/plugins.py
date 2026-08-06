@@ -964,12 +964,20 @@ class PluginContext:
         """Register a gateway platform adapter.
 
         The adapter_factory receives a ``PlatformConfig`` and returns a
-        ``BasePlatformAdapter`` subclass instance.  The gateway calls
-        ``check_fn()`` before instantiation to verify dependencies.
+        ``BasePlatformAdapter`` subclass instance.
+
+        ``check_fn`` is a PASSIVE dependency probe — "are deps importable
+        right now?".  It must never install anything: status displays and
+        config loading call it freely.  If your platform's SDK is
+        lazy-installable, pass the ACTIVE installer separately as
+        ``ensure_deps_fn`` (forwarded via ``entry_kwargs``); the gateway
+        calls it from ``create_adapter()`` when ``check_fn`` is False,
+        right before connecting the platform.
 
         Extra keyword arguments are forwarded to ``PlatformEntry`` (e.g.
-        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``).
-        Unknown keys raise TypeError from the dataclass constructor.
+        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``,
+        ``ensure_deps_fn``).  Unknown keys raise TypeError from the
+        dataclass constructor.
 
         Example::
 

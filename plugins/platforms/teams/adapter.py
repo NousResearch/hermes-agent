@@ -642,11 +642,12 @@ async def _standalone_send(
 
 
 # Keep the old name as an alias so existing test imports don't break.
-# NOTE: ``check_requirements`` is the PASSIVE probe (status / unit tests) —
-# it must never trigger a pip install. ``check_teams_requirements`` is the
-# ACTIVE lazy-installer and is the registry ``check_fn`` — same contract as
-# Discord/Slack/Telegram. ``create_adapter()`` gates on ``check_fn`` before
-# the adapter exists, so install MUST run there; ``connect()`` re-checks.
+# NOTE: ``check_requirements`` is the PASSIVE probe (registry ``check_fn``,
+# status / unit tests) — it must never trigger a pip install.
+# ``check_teams_requirements`` is the ACTIVE lazy-installer, registered as
+# ``ensure_deps_fn``: the registry's ``create_adapter()`` runs it when the
+# passive probe fails, right before the gateway connects Teams (#79812).
+# ``connect()`` re-checks defensively.
 @contextmanager
 def _suppress_third_party_dotenv() -> Iterator[None]:
     """No-op ``dotenv.load_dotenv`` while importing the Teams SDK (#62935).
@@ -1467,10 +1468,12 @@ def register(ctx) -> None:
         name="teams",
         label="Microsoft Teams",
         adapter_factory=lambda cfg: TeamsAdapter(cfg),
-        # Active lazy-installer — NOT the passive ``check_requirements``.
-        # Registry create_adapter() returns None when check_fn is False, so a
-        # passive probe permanently blocks connect() and the deps never install.
-        check_fn=check_teams_requirements,
+        # PASSIVE probe — deps importable right now?  Never installs, so
+        # status displays / config loading can call it freely.
+        check_fn=check_requirements,
+        # ACTIVE lazy-installer — create_adapter() calls this when check_fn
+        # is False, right before the gateway connects Teams (#79812).
+        ensure_deps_fn=check_teams_requirements,
         validate_config=validate_config,
         is_connected=is_connected,
         required_env=["TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"],

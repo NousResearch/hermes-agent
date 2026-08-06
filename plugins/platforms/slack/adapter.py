@@ -283,6 +283,17 @@ class _ThreadContextCache:
     messages: List[Dict[str, Any]] = field(default_factory=list)
 
 
+def slack_deps_present() -> bool:
+    """PASSIVE probe: are slack-bolt/slack-sdk importable right now?
+
+    Registry ``check_fn`` — called from status displays and config loading,
+    so it must never install anything.  The ACTIVE lazy-installer
+    (``check_slack_requirements``) is registered as ``ensure_deps_fn``
+    and runs from ``create_adapter()`` when this returns False (#79812).
+    """
+    return SLACK_AVAILABLE
+
+
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
@@ -9055,7 +9066,8 @@ def register(ctx) -> None:
         name="slack",
         label="Slack",
         adapter_factory=_build_adapter,
-        check_fn=check_slack_requirements,
+        check_fn=slack_deps_present,
+        ensure_deps_fn=check_slack_requirements,
         is_connected=_is_connected,
         required_env=["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
         install_hint="Run `hermes setup` to install Slack support.",

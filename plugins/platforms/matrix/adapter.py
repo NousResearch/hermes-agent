@@ -888,6 +888,22 @@ def _startup_env_secret(name: str) -> str:
         return os.getenv(name, "").strip()
 
 
+def matrix_deps_present() -> bool:
+    """PASSIVE probe: are the ``platform.matrix`` packages installed?
+
+    Registry ``check_fn`` — called from status displays and config loading,
+    so it must never install anything.  ``feature_missing`` is cheap
+    (per-spec importlib.metadata lookups).  The ACTIVE lazy-installer
+    (``check_matrix_requirements``) is registered as ``ensure_deps_fn``
+    and runs from ``create_adapter()`` when this returns False (#79812).
+    """
+    try:
+        from tools.lazy_deps import feature_missing
+        return not feature_missing("platform.matrix")
+    except Exception:  # pragma: no cover — defensive
+        return False
+
+
 def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used.
 
@@ -5276,7 +5292,8 @@ def register(ctx) -> None:
         name="matrix",
         label="Matrix",
         adapter_factory=_build_adapter,
-        check_fn=check_matrix_requirements,
+        check_fn=matrix_deps_present,
+        ensure_deps_fn=check_matrix_requirements,
         is_connected=_is_connected,
         required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"],
         install_hint="pip install 'mautrix[encryption]'",

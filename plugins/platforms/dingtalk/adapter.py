@@ -162,6 +162,18 @@ EXT_MAP = {
 }
 
 
+def dingtalk_deps_present() -> bool:
+    """PASSIVE probe: are dingtalk-stream/httpx importable right now?
+
+    Registry ``check_fn`` — called from status displays and config loading,
+    so it must never install anything.  The ACTIVE lazy-installer
+    (``check_dingtalk_requirements``) is registered as ``ensure_deps_fn``
+    and runs from ``create_adapter()`` when this returns False (#79812).
+    Credentials are gated separately via ``is_connected``/``validate_config``.
+    """
+    return DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE
+
+
 def check_dingtalk_requirements() -> bool:
     """Check if DingTalk dependencies are available and configured.
 
@@ -1881,7 +1893,8 @@ def register(ctx) -> None:
         name="dingtalk",
         label="DingTalk",
         adapter_factory=_build_adapter,
-        check_fn=check_dingtalk_requirements,
+        check_fn=dingtalk_deps_present,
+        ensure_deps_fn=check_dingtalk_requirements,
         is_connected=_is_connected,
         validate_config=_is_connected,
         required_env=["DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"],

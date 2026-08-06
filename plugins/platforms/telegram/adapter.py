@@ -392,6 +392,17 @@ def _probe_voice_duration_seconds(path: str) -> Optional[int]:
     return None
 
 
+def telegram_deps_present() -> bool:
+    """PASSIVE probe: is python-telegram-bot importable right now?
+
+    Registry ``check_fn`` — called from status displays and config loading,
+    so it must never install anything.  The ACTIVE lazy-installer
+    (``check_telegram_requirements``) is registered as ``ensure_deps_fn``
+    and runs from ``create_adapter()`` when this returns False (#79812).
+    """
+    return TELEGRAM_AVAILABLE
+
+
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
 
@@ -10131,7 +10142,8 @@ def register(ctx) -> None:
         name="telegram",
         label="Telegram",
         adapter_factory=_build_adapter,
-        check_fn=check_telegram_requirements,
+        check_fn=telegram_deps_present,
+        ensure_deps_fn=check_telegram_requirements,
         is_connected=_is_connected,
         required_env=["TELEGRAM_BOT_TOKEN"],
         install_hint="Run `hermes setup` to install Telegram support.",

@@ -211,6 +211,55 @@ def _strip_reply_fallback(body: str) -> str:
                 continue
         stripped.append(line)
     return "\n".join(stripped) if stripped else body
+# Auth errcodes that genuinely require re-authentication (never retried).
+_MATRIX_PERMANENT_ERRCODES = frozenset({
+    "m_unknown_token",
+    "m_missing_token",
+    "m_forbidden",
+})
+# Leading HTTP status on error strings formatted as ``"<status>: <body>"``.
+_MATRIX_LEADING_STATUS_RE = re.compile(r"^\s*(\d{3})\b")
+
+
+def _is_permanent_matrix_auth_error(exc: object) -> bool:
+    """Return True only for genuine auth failures that must stop the sync loop.
+
+    A transient homeserver outage surfaces as a 5xx whose body may be an HTML
+    error page (Umbrel's app-proxy returns one). Naive substring checks like
+    ``"403" in str(exc)`` false-positive on digits embedded in that HTML (an SVG
+    coordinate such as ``40.4302`` contains ``403``), which previously stopped
+    the sync loop permanently on a passing blip. Classify on the real HTTP
+    status / errcode instead, and retry everything that is not 401/403.
+    """
+    # Prefer structured attributes when the exception carries them.
+    errcode = getattr(exc, "errcode", None)
+    if (
+        isinstance(errcode, str)
+        and errcode.strip().lower() in _MATRIX_PERMANENT_ERRCODES
+    ):
+        return True
+    for attr in ("http_status", "status", "status_code", "code"):
+        val = getattr(exc, attr, None)
+        if isinstance(val, int):
+            return val in (401, 403)
+
+    # Fall back to parsing a leading status code off the string form
+    # (e.g. ``"502: <!DOCTYPE html>..."``). A known status is authoritative:
+    # only 401/403 are permanent; 5xx/429/etc. must retry regardless of body.
+    text = str(exc)
+    m = _MATRIX_LEADING_STATUS_RE.match(text)
+    if m:
+        return int(m.group(1)) in (401, 403)
+
+    # No status available: trust only whole-word auth errcodes/keywords found in
+    # a bounded prefix, so a large HTML body cannot smuggle a false positive.
+    head = text[:200].lower()
+    return bool(
+        re.search(
+            r"\b(m_unknown_token|m_missing_token|m_forbidden|unauthorized|forbidden)\b",
+            head,
+        )
+    )
 
 
 class _MatrixHtmlSanitizer(HTMLParser):
@@ -1756,8 +1805,9 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
-                if any(k in str(exc).lower() for k in ("401", "403", "unauthorized", "forbidden")):
-                    logger.error("Matrix: permanent auth error: %s — stopping sync", exc)
+                # Detect permanent auth/permission failures. Transient 5xx outages must retry.
+                if _is_permanent_matrix_auth_error(exc):
+                    logger.error("Matrix: permanent auth error, stopping sync: %s", exc)
                     return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)

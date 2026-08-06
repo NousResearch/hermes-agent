@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from tools.registry import (
     ToolRegistry,
+    _MAX_LOGGED_ERROR_CHARS,
     _MAX_TOOL_ERROR_CHARS,
     _module_registers_tools,
     discover_builtin_tools,
@@ -164,12 +165,23 @@ class TestToolErrorBounding:
         result = json.loads(tool_error(msg))
         assert result["error"] == msg
 
-    def test_full_body_preserved_in_logs_when_truncated(self, caplog):
+    def test_longer_prefix_reaches_logs_than_context(self, caplog):
         import logging
         body = "boom: " + "Z" * 5000
         with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+            result = json.loads(tool_error(body))
+        logged = "\n".join(rec.getMessage() for rec in caplog.records)
+        assert body[:5000] in logged
+        assert len(result["error"]) < 5000
+
+    def test_log_line_is_bounded_for_huge_bodies(self, caplog):
+        import logging
+        body = "boom: " + "Z" * 500_000
+        with caplog.at_level(logging.DEBUG, logger="tools.registry"):
             json.loads(tool_error(body))
-        assert any(body in rec.getMessage() for rec in caplog.records)
+        for record in caplog.records:
+            assert len(record.getMessage()) < _MAX_LOGGED_ERROR_CHARS + 200
+        assert body not in "\n".join(r.getMessage() for r in caplog.records)
 
 
 class TestDispatchBoundsDirectErrorResults:

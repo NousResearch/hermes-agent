@@ -29,13 +29,19 @@ logger = logging.getLogger(__name__)
 # Cap on a tool error body; only trims runaway interpolated exceptions (static msgs are ~115 chars).
 _MAX_TOOL_ERROR_CHARS = 2048
 _TOOL_ERROR_TRUNCATION_MARKER = "… [truncated]"
+# Logs keep more of the body than the model sees, but still a bounded amount.
+_MAX_LOGGED_ERROR_CHARS = 8192
 
 
 def _bound_error_text(text: str) -> str:
-    """Bound an error body destined for model context; full body stays in logs."""
+    """Bound an error body destined for model context; logs keep a longer prefix."""
     if len(text) <= _MAX_TOOL_ERROR_CHARS:
         return text
-    logger.debug("tool error body truncated for context (%d chars): %s", len(text), text)
+    logger.debug(
+        "tool error body truncated for context (%d chars): %s",
+        len(text),
+        text[:_MAX_LOGGED_ERROR_CHARS],
+    )
     return text[:_MAX_TOOL_ERROR_CHARS] + _TOOL_ERROR_TRUNCATION_MARKER
 
 

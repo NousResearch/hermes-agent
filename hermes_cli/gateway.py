@@ -308,6 +308,32 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     return False
 
 
+def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
+    """Wait up to ``timeout`` seconds for ``pid`` to leave the process table.
+
+    ``launchctl bootstrap`` of a label whose previous instance is still draining
+    fails with EIO ("already loaded"), so callers that tear the gateway down
+    must wait for the old process to actually exit before re-bootstrapping.
+
+    Returns True once the PID is gone (or was never alive), False on timeout.
+    """
+    if pid <= 0:
+        return True
+
+    import time as _time
+
+    # ``os.kill(pid, 0)`` hard-kills on Windows — use the cross-platform helper.
+    from gateway.status import _pid_exists
+
+    deadline = _time.monotonic() + max(timeout, 0.0)
+    while True:
+        if not _pid_exists(pid):
+            return True
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(0.5)
+
+
 def _get_ancestor_pids() -> set[int]:
     """Return the set of PIDs in the current process's ancestor chain.
 
@@ -4199,9 +4225,21 @@ def refresh_launchd_plist_if_needed() -> bool:
     except Exception:
         gateway_pid = None
 
+    # NOTE: POSIX ancestry is NOT a reliable test for "the bootout will kill us".
+    # What bootout tears down is the launchd job's process *coalition*, and
+    # coalition membership is inherited at spawn — it survives reparenting. A
+    # process the gateway spawned whose intermediate parent has since exited is
+    # reparented to PID 1, so the gateway is no longer an ancestor, yet the
+    # process is still in the coalition and still dies with it. That
+    # misclassification stranded the job on 2026-08-05: the in-process retry loop
+    # below was killed mid-bootstrap (4 attempts, rc=5, no exhaustion line) and
+    # nothing was left to re-register the label, so KeepAlive could not revive it.
+    #
+    # Since the detached helper is also correct when we are genuinely outside the
+    # coalition (just asynchronous), always prefer it and keep the in-process path
+    # only as the fallback for when the helper cannot be spawned.
     if (
         gateway_pid is not None
-        and _is_pid_ancestor_of_current_process(gateway_pid)
         and hasattr(os, "setsid")  # POSIX-only; launchd is macOS so always true here
     ):
         # Delegate to a new session: `start_new_session=True` detaches the
@@ -4239,6 +4277,20 @@ def refresh_launchd_plist_if_needed() -> bool:
         reload_script = (
             f"sleep 2; "
             f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
+            # Wait for the OLD gateway to actually exit before bootstrapping.
+            # bootout only sends SIGTERM; the gateway then drains in-flight agent
+            # runs (up to agent.restart_drain_timeout), and every bootstrap issued
+            # while it is still draining fails EIO ("already loaded"). Racing the
+            # drain is what burned the retry budget on 2026-08-05.
+            f"_wait_deadline=$(($(date +%s) + {_reload_budget})); "
+            f"while kill -0 {gateway_pid} 2>/dev/null; do "
+            f"  if [ $(date +%s) -ge $_wait_deadline ]; then "
+            f"    echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] old gateway pid {gateway_pid} still alive after {_reload_budget}s drain wait — bootstrapping anyway\" >> {shlex.quote(str(reload_log_path))}; "
+            f"    break; "
+            f"  fi; "
+            f"  sleep 1; "
+            f"done; "
+            # Let launchd finish unregistering the label after the process exits.
             f"sleep 1; "
             f"_deadline=$(($(date +%s) + {_reload_budget})); "
             f"while :; do "
@@ -4282,16 +4334,21 @@ def refresh_launchd_plist_if_needed() -> bool:
                 stderr=subprocess.DEVNULL,
             )
         except Exception as e:
+            # Don't give up — fall through to the in-process bootout/bootstrap
+            # below. It risks being killed mid-reload if we share the gateway's
+            # coalition, but an attempt beats leaving the plist updated and the
+            # service never reloaded.
             logger.warning("Deferred launchd reload could not be spawned: %s", e)
             _append_launchd_reload_log(
-                f"FAILED to spawn launchd reload helper for {target}: {e}"
+                f"FAILED to spawn launchd reload helper for {target}: {e} — "
+                f"falling back to in-process bootout/bootstrap"
             )
-            return False
-        print(
-            "↻ Updated gateway launchd service definition; reload deferred to a "
-            "transient launchd job (refresh ran inside the gateway process tree)"
-        )
-        return True
+        else:
+            print(
+                "↻ Updated gateway launchd service definition; reload deferred to "
+                "a transient launchd job (survives the bootout of this process)"
+            )
+            return True
 
     # Bootout/bootstrap so launchd picks up the new definition. The reported
     # incident (2026-06-26) happened when bootout succeeded but bootstrap
@@ -4310,6 +4367,16 @@ def refresh_launchd_plist_if_needed() -> bool:
     # fixed ~10s: the failure mode occurs while the old gateway is still
     # draining, so a short window can exhaust before launchd settles.
     _reload_budget = max(30.0, _get_restart_drain_timeout())
+    # Wait out the old gateway's drain first, so the retry budget is spent on
+    # real bootstrap failures rather than on EIO ("already loaded") responses
+    # that are guaranteed while the previous instance is still shutting down.
+    if gateway_pid is not None and not _wait_for_pid_exit(
+        gateway_pid, _reload_budget
+    ):
+        _append_launchd_reload_log(
+            f"old gateway pid {gateway_pid} still alive after "
+            f"{int(_reload_budget)}s drain wait — bootstrapping {target} anyway"
+        )
     _deadline = time.monotonic() + _reload_budget
     if not _retry_launchctl_bootstrap_until_registered(
         domain, plist_path, label, deadline=_deadline

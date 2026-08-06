@@ -17,25 +17,39 @@ let cachedDistro: null | string = null
 let cachedUncBase: null | string = null
 
 /**
- * Whether WSL path bridging is active. The bridge only makes sense when the
- * desktop runs on Windows AND the gateway is a *local* backend (e.g. running
- * inside WSL on the same machine). When the gateway is a remote host, the
- * POSIX paths it reports belong to a machine the Windows host cannot open via
- * `wsl.exe` — bridging them only spawns `wsl.exe` (and on WSL-less machines,
- * the interactive "Install WSL" console prompt) for paths that can never be
- * resolved locally. main.ts toggles this off once it resolves a remote
- * backend. Defaults to active so a local Windows+WSL boot is unaffected.
+ * WSL path eligibility belongs to the backend profile that produced the path.
+ * A single desktop process can keep a local primary backend and a remote pool
+ * backend alive simultaneously, so a process-global boolean can bleed between
+ * them. Unknown profiles retain the historical local default until Electron
+ * resolves and records their actual backend mode.
  */
-let wslBridgeActive = true
+const DEFAULT_WSL_BRIDGE_PROFILE = 'default'
+const wslBridgeProfiles = new Map<string, boolean>()
+let activeWslBridgeProfile = DEFAULT_WSL_BRIDGE_PROFILE
 
-/** Enable/disable WSL path bridging at runtime (called by main.ts). */
-export function setWslBridgeActive(active: boolean): void {
-  wslBridgeActive = active
+function normalizeWslBridgeProfile(profile?: null | string): string {
+  return String(profile || '').trim() || DEFAULT_WSL_BRIDGE_PROFILE
 }
 
-/** Test seam: is the bridge currently active? */
-export function isWslBridgeActive(): boolean {
-  return wslBridgeActive
+/** Select the profile used by legacy callers that cannot pass one explicitly. */
+export function setActiveGatewayProfile(profile?: null | string): void {
+  activeWslBridgeProfile = normalizeWslBridgeProfile(profile)
+}
+
+/** Record whether paths returned by one profile belong to this host's WSL. */
+export function setWslBridgeProfileState(profile: null | string, active: boolean): void {
+  wslBridgeProfiles.set(normalizeWslBridgeProfile(profile), Boolean(active))
+}
+
+/** Backward-compatible toggle: update only the current fallback profile. */
+export function setWslBridgeActive(active: boolean): void {
+  setWslBridgeProfileState(activeWslBridgeProfile, active)
+}
+
+export function isWslBridgeActive(profile?: null | string): boolean {
+  const key = profile == null ? activeWslBridgeProfile : normalizeWslBridgeProfile(profile)
+
+  return wslBridgeProfiles.get(key) ?? true
 }
 
 /**
@@ -138,7 +152,8 @@ export function wslPosixToWindowsAccessible(posixPath: string, distro: string = 
 /** Native folder dialog `defaultPath`: open a WSL cwd in the Windows picker. */
 export function resolvePickerDefaultPath(
   defaultPath: string | undefined,
-  distro?: string
+  distro?: string,
+  profile?: null | string
 ): string | undefined {
   if (!defaultPath) {
     return undefined
@@ -147,7 +162,7 @@ export function resolvePickerDefaultPath(
   // Remote-gateway POSIX paths can't be opened via wsl.exe — no-op the bridge
   // so the native dialog gets the raw path (it falls back gracefully) instead
   // of triggering a wsl.exe spawn / install prompt. (#66433)
-  if (!wslBridgeActive) {
+  if (!isWslBridgeActive(profile)) {
     return defaultPath
   }
 
@@ -159,14 +174,14 @@ export function resolvePickerDefaultPath(
 }
 
 /** fs read path: on Windows, make a WSL cwd readable via its UNC / drive form. */
-export function resolveLocalReadPath(dirPath: string, distro?: string): string {
+export function resolveLocalReadPath(dirPath: string, distro?: string, profile?: null | string): string {
   const value = String(dirPath || '').trim()
 
   // In remote-gateway mode the POSIX paths belong to a host the Windows
   // desktop cannot open locally — skip the WSL bridge entirely (no distro
   // probe, no wsl.exe) so the file panel never spawns the install prompt on
   // WSL-less machines. (#66433)
-  if (!wslBridgeActive) {
+  if (!isWslBridgeActive(profile)) {
     return value
   }
 

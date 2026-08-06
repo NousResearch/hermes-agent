@@ -1567,7 +1567,18 @@ class SessionStore:
                             "gateway.session: state.db routing save failed: %s", exc
                         )
             if getattr(self, "_write_sessions_json", True) or not db_saved:
-                self._save_sessions_json(data)
+                try:
+                    self._save_sessions_json(data)
+                except Exception as exc:
+                    if not db_saved:
+                        raise
+                    # state.db is authoritative. A failed legacy mirror must not
+                    # report the already-committed primary write as failed.
+                    logger.warning(
+                        "gateway.session: sessions.json mirror save failed "
+                        "after state.db commit: %s",
+                        exc,
+                    )
             self._persisted_routing_generation = generation
             # This rewrite supersedes fast records at or below its
             # generation; newer ones stay for the next delayed full writer.
@@ -1624,7 +1635,13 @@ class SessionStore:
             data, generation = self._snapshot_routing_locked()
         self._persist_routing_data(data, generation)
 
-    def _save_entry(self, session_key: str) -> None:
+    def _save_entry(
+        self,
+        session_key: str,
+        *,
+        entry_data: Optional[Dict[str, Any]] = None,
+        lock_held: bool = False,
+    ) -> None:
         """Persist ONE routing entry via UPSERT — the per-turn fast path.
 
         The steady-state turn only bumps ``updated_at`` /
@@ -1665,13 +1682,38 @@ class SessionStore:
         - No DB, or a failed upsert, falls back to the full rewrite so
           DB-less installs keep sessions.json — their primary store —
           durable every turn.
+
+        ``entry_data`` lets a failure-atomic metadata transition persist a
+        candidate before publishing it to the live entry.  Its full-save
+        fallback carries the same candidate instead of re-snapshotting the
+        unchanged live value.
         """
-        with self._lock:
+        def _capture() -> Optional[tuple[str, int, Optional[Dict[str, Any]]]]:
             entry = self._entries.get(session_key)
             if entry is None:
-                return
-            entry_json = json.dumps(entry.to_dict())
+                return None
+            serialized_entry = (
+                dict(entry_data) if entry_data is not None else entry.to_dict()
+            )
+            entry_json = json.dumps(serialized_entry)
             revision = self._next_routing_generation_locked()
+            fallback_data: Optional[Dict[str, Any]] = None
+            if entry_data is not None:
+                fallback_data = {
+                    key: current.to_dict()
+                    for key, current in self._entries.items()
+                }
+                fallback_data[session_key] = serialized_entry
+            return entry_json, revision, fallback_data
+
+        if lock_held:
+            captured = _capture()
+        else:
+            with self._lock:
+                captured = _capture()
+        if captured is None:
+            return
+        entry_json, revision, fallback_data = captured
         _db = getattr(self, "_db", None)
         saver = getattr(_db, "save_gateway_routing_entry", None) if _db else None
         if callable(saver):
@@ -1699,7 +1741,10 @@ class SessionStore:
                     "(%s); falling back to full index rewrite",
                     session_key, exc,
                 )
-        self._save_entries()
+        if fallback_data is not None:
+            self._persist_routing_data(fallback_data, revision)
+        else:
+            self._save_entries()
 
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Return the profile namespace for session keys, or None when off.
@@ -2799,16 +2844,24 @@ class SessionStore:
             if entry is None:
                 return None
             now = _now()
-            entry.active_turn_token = token
-            entry.active_turn_started_at = now
+            candidate = entry.to_dict()
+            candidate["active_turn_token"] = token
+            candidate["active_turn_started_at"] = now.isoformat()
             # Keep the legacy 120-second startup heuristic effective during a
             # rolling downgrade/upgrade window where an older binary cannot
             # understand the exact marker fields.
-            entry.updated_at = now
+            candidate["updated_at"] = now.isoformat()
 
-        # This is a per-turn metadata update, so use the existing durable
-        # single-entry fast path rather than rewriting the full routing index.
-        self._save_entry(session_key)
+            # Persist before publishing the marker in memory.  If the durable
+            # write raises, a later unrelated save cannot leak an unowned token.
+            self._save_entry(
+                session_key,
+                entry_data=candidate,
+                lock_held=True,
+            )
+            entry.active_turn_token = token
+            entry.active_turn_started_at = now
+            entry.updated_at = now
         return token
 
     def clear_turn_active(self, session_key: str, token: str) -> bool:
@@ -2821,10 +2874,19 @@ class SessionStore:
             entry = self._entries.get(session_key)
             if entry is None or entry.active_turn_token != token:
                 return False
+            candidate = entry.to_dict()
+            candidate["active_turn_token"] = None
+            candidate["active_turn_started_at"] = None
+
+            # Keep the live token until the clear is durable.  A failed write
+            # therefore remains retryable instead of becoming a false mismatch.
+            self._save_entry(
+                session_key,
+                entry_data=candidate,
+                lock_held=True,
+            )
             entry.active_turn_token = None
             entry.active_turn_started_at = None
-
-        self._save_entry(session_key)
         return True
 
     def recover_interrupted_turns(

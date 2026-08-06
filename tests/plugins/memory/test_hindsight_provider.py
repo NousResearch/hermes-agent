@@ -355,6 +355,52 @@ class TestConfig:
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
 
+    def test_get_client_serializes_background_start_race(self, monkeypatch):
+        import threading
+
+        created = []
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                time.sleep(0.05)
+                created.append(kwargs)
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        p = HindsightMemoryProvider(SimpleNamespace(llm=SimpleNamespace()))
+        p._mode = "local_embedded"
+        p._config = {
+            "profile": "jarpis",
+            "llm_provider": "hermes",
+            "llm_model": "ignored",
+            "bank_id": "jarpis",
+            "idle_timeout": 0,
+        }
+        p._bank_id = "jarpis"
+        results = []
+        errors = []
+
+        def get_client():
+            try:
+                results.append(p._get_client())
+            except Exception as exc:  # pragma: no cover - assertion below reports it
+                errors.append(exc)
+
+        threads = [threading.Thread(target=get_client) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=2.0)
+
+        try:
+            assert not errors
+            assert len(results) == 2
+            assert results[0] is results[1]
+            assert len(created) == 1
+        finally:
+            p.shutdown()
+
     def test_hermes_inheritance_uses_stable_database_independent_of_daemon_profile(self):
         provider = HindsightMemoryProvider()
         assert provider._effective_embedded_database_url(

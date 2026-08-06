@@ -809,6 +809,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = ""
         self._turn_index = 0
         self._client = None
+        self._client_lock = threading.RLock()
         self._daemon_thread: threading.Thread | None = None
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
@@ -1250,6 +1251,10 @@ class HindsightMemoryProvider(MemoryProvider):
         return f"pg0://hindsight-embed-{logical_profile}"
 
     def _get_client(self):
+        with self._client_lock:
+            return self._get_client_unlocked()
+
+    def _get_client_unlocked(self):
         """Return the cached Hindsight client (created once, reused)."""
         if self._client is None:
             config = self._config or {}

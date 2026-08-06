@@ -2503,6 +2503,7 @@ def terminal_tool(
         # but applies unconditionally (force=True cannot help here).
         if os.environ.get("_HERMES_GATEWAY") == "1":
             from cron.lifecycle_guard import (
+                _MAX_REFERENCED_SCRIPT_BYTES,
                 contains_gateway_lifecycle_command_or_referenced_script,
                 contains_launchctl_submit_command,
             )
@@ -2542,9 +2543,9 @@ def terminal_tool(
                         local_path = Path(guard_cwd) / local_path
                     if local_path.is_file():
                         metadata = local_path.stat()
-                        if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= 1024 * 1024:
+                        if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= _MAX_REFERENCED_SCRIPT_BYTES:
                             data = local_path.read_bytes()
-                            if len(data) <= 1024 * 1024:
+                            if len(data) <= _MAX_REFERENCED_SCRIPT_BYTES:
                                 if b"\x00" in data:
                                     # Binary (ELF/Mach-O/PE), not a shell script:
                                     # feeding its decoded bytes back into the guard
@@ -2561,12 +2562,15 @@ def terminal_tool(
                 # file (e.g. a 166MB ELF invoked by absolute path) never
                 # crosses the wire — `cat` of such a binary previously pinned
                 # the gateway's tool thread on a superlinear shlex scan for
-                # 30+ minutes. One byte over the guard's 1 MiB budget is
-                # enough for lifecycle_guard's sanitizer to fail the
-                # oversized case closed, mirroring the local-read semantics.
+                # 30+ minutes. One byte over the guard's budget is enough for
+                # lifecycle_guard's sanitizer to fail the oversized case
+                # closed, mirroring the local-read semantics. The `< path`
+                # redirect keeps leading-dash paths out of argv (same form as
+                # tools/image_source.py).
                 try:
                     result = env.execute(
-                        f"head -c 1048577 {shlex.quote(script_path)}"
+                        f"head -c {_MAX_REFERENCED_SCRIPT_BYTES + 1} "
+                        f"< {shlex.quote(script_path)}"
                     )
                     if result.get("returncode", -1) == 0:
                         output = result.get("output", "")

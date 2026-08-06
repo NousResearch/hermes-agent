@@ -1106,23 +1106,50 @@ describe('preserveLocalPendingTurnMessages', () => {
   // the committed row and the optimistic duplicate — so the duplicate's
   // role-ordinal shifts past the committed user onto a LATER user (e.g. a
   // background process notice), and neither the newest-user check nor ordinal
-  // pairing can see it anymore. It must still be dropped.
+  // pairing can see it anymore. It must still be dropped: its send time (from
+  // the optimistic id) matches the committed row's timestamp within the commit
+  // window.
   it('drops a stale optimistic user row when ordinal pairing lands on a later user', () => {
     const taskText = '任务：BM 设计卡批 2——D 卡'
     const history = [msg('1-user-stored', 'user', 'earlier question')]
-    const committedTask = msg('2-user-stored', 'user', taskText)
-    const laterUser = msg('3-user-stored', 'user', '[IMPORTANT: background process done]')
+    const committedTask = msg('2-user-stored', 'user', taskText, { timestamp: 1000 })
+    const laterUser = msg('3-user-stored', 'user', '[IMPORTANT: background process done]', { timestamp: 1010 })
     const next = [...history, committedTask, laterUser]
 
     // The warm cache already carries the committed row AND the optimistic
-    // duplicate — the duplicate pairs with the LATER user by ordinal now.
-    const optimisticStale = msg('user-runtime-1', 'user', taskText)
+    // duplicate — the duplicate pairs with the LATER user by ordinal now. Its
+    // optimistic id embeds the same send time as the committed row (1000 s).
+    const optimisticStale = msg('user-1000000-abc123', 'user', taskText)
     const previous = [...history, committedTask, optimisticStale, laterUser]
 
     const preserved = preserveLocalPendingTurnMessages(next, previous)
 
-    expect(preserved.map(message => message.id)).not.toContain('user-runtime-1')
+    expect(preserved.map(message => message.id)).not.toContain('user-1000000-abc123')
     expect(preserved.filter(message => chatMessageText(message).includes(taskText))).toHaveLength(1)
+  })
+
+  // A genuinely NEW re-send of the same text (e.g. the user re-sends an OLDER
+  // prompt after a disconnect — the earlier committed copy is minutes old and
+  // a later user message has since arrived) must NOT be suppressed by the
+  // stale-row guard: its send time is well outside the commit window of the
+  // older committed row, so it is preserved and rendered.
+  it('preserves a fresh re-send of the same text sent well after the committed copy', () => {
+    const promptText = 'retry this prompt'
+    const committedFirst = msg('1-user-stored', 'user', promptText, { timestamp: 1000 })
+    const committedSecond = msg('2-user-stored', 'user', 'something else', { timestamp: 1100 })
+    const next = [committedFirst, committedSecond]
+
+    // The user re-sends the OLDER prompt 5 minutes later — a fresh optimistic
+    // row whose send time (1300 s) is far outside the commit window, and whose
+    // text matches a non-latest user (so the pre-existing newest-user gate does
+    // not see it either).
+    const optimisticResend = msg('user-1300000-abc123', 'user', promptText)
+    const previous = [committedFirst, committedSecond, optimisticResend]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).toContain('user-1300000-abc123')
+    expect(preserved.filter(message => chatMessageText(message).includes(promptText))).toHaveLength(2)
   })
 })
 

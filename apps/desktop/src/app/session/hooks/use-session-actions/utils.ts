@@ -31,6 +31,20 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, Session
 
 import type { ClientSessionState } from '../../../types'
 
+// Optimistic user ids embed the send time as `user-<Date.now() ms>-<random>`.
+// A stale copy whose committed counterpart already sits in the authoritative
+// transcript shares that send time (within the commit window); a genuinely
+// new re-send of the same text (e.g. after a disconnect) was sent later.
+const OPTIMISTIC_COMMIT_WINDOW_S = 60
+
+function optimisticUserSentSeconds(id: string): number | undefined {
+  if (!id.startsWith('user-')) {
+    return undefined
+  }
+  const ms = Number(id.split('-')[1])
+  return Number.isFinite(ms) && ms > 0 ? ms / 1000 : undefined
+}
+
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false
 
@@ -590,21 +604,30 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
-    // A live optimistic user row whose text already exists ANYWHERE in the
-    // authoritative transcript was already committed — the backend has since
-    // moved on to a later user, so the newest-user check above can no longer
-    // recognise it. Re-appending the row paints the same message twice (#78499
-    // follow-up: stale optimistic user rows after the turn advances).
-    if (
-      isOptimisticUser &&
-      nextMessages.some(
-        candidate =>
-          candidate.role === 'user' &&
-          textWithoutReferenceLines(chatMessageText(candidate)) ===
-            textWithoutReferenceLines(chatMessageText(message))
-      )
-    ) {
-      continue
+    // A live optimistic user row whose committed counterpart already sits in
+    // the authoritative transcript is stale — the backend has since moved on
+    // to a later user, so the newest-user check above can no longer recognise
+    // it. Re-appending the row paints the same message twice (#78499
+    // follow-up). Match by send time, not just text: the stale copy shares
+    // the committed row's send time (within the commit window), while a
+    // genuinely new re-send of the same text (e.g. after a disconnect) was
+    // sent later and must survive.
+    if (isOptimisticUser) {
+      const optimisticSent = optimisticUserSentSeconds(message.id)
+      if (
+        optimisticSent !== undefined &&
+        nextMessages.some(
+          candidate =>
+            candidate.role === 'user' &&
+            typeof candidate.timestamp === 'number' &&
+            Math.abs(optimisticSent - candidate.timestamp) <
+              OPTIMISTIC_COMMIT_WINDOW_S &&
+            textWithoutReferenceLines(chatMessageText(candidate)) ===
+              textWithoutReferenceLines(chatMessageText(message))
+        )
+      ) {
+        continue
+      }
     }
 
     const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)

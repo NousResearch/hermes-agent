@@ -3362,11 +3362,41 @@ class SessionStore:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
 
-    def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> bool:
+    def has_archived_messages(self, session_id: str) -> bool:
+        """Check if a session has any soft-archived (``active = 0``) rows.
+
+        Thin wrapper over SessionDB.has_archived_messages(). Returns False
+        when no DB is available (in-memory sessions). Used by transcript
+        rewrite callers (e.g. /retry) to decide whether the rewrite must
+        pass ``active_only=True`` so archived compaction history survives.
+        """
+        if not self._db:
+            return False
+        try:
+            return self._db.has_archived_messages(session_id)
+        except Exception:
+            logger.debug("has_archived_messages lookup failed", exc_info=True)
+            return False
+
+    def rewrite_transcript(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        active_only: bool = False,
+    ) -> bool:
         """Replace the entire transcript for a session with new messages.
 
-        Used by /retry, /undo, and /compress to persist modified conversation
-        history. state.db is the canonical store.
+        Used by /retry and /compress to persist modified conversation
+        history. state.db is the canonical store. (/undo is not a caller:
+        it soft-archives rows via rewind_session / rewind_to_message.)
+
+        DESTRUCTIVE by default: ``replace_messages(active_only=False)``
+        DELETEs every row for the session, including the soft-archived
+        compaction history that archive_and_compact() keeps on disk
+        (#38763). Callers rewriting the live transcript of a session that
+        may carry archived rows must pass ``active_only=True`` so only the
+        live rows are replaced; callers that mean to purge (e.g. yuanbao
+        recall redaction) keep the default.
 
         Returns ``True`` when the write lands (or there is no DB to write to)
         and ``False`` when the canonical write fails. Most callers can ignore
@@ -3379,7 +3409,7 @@ class SessionStore:
             return True
         self._clear_dirty_transcript(session_id)
         try:
-            self._db.replace_messages(session_id, messages)
+            self._db.replace_messages(session_id, messages, active_only=active_only)
             return True
         except Exception as e:
             logger.debug("Failed to rewrite transcript in DB: %s", e)

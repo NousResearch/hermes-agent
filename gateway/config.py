@@ -2512,10 +2512,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             pass
 
     # Registry-driven enable for plugin platforms.  Built-ins have explicit
-    # blocks above; plugins expose check_fn() which is the single source of
-    # truth for "are my env vars set?".  When it returns True, ensure the
-    # platform is enabled so start() will create its adapter.  Plugins that
-    # need to seed ``PlatformConfig.extra`` from env vars (e.g. Google Chat's
+    # blocks above.  A plugin platform is enabled when its credentials are
+    # configured (``is_connected``) and its dependencies are either present
+    # (passive ``check_fn``) or installable on demand (``ensure_deps_fn``,
+    # run later by ``create_adapter()`` — never here).  Plugins that need to
+    # seed ``PlatformConfig.extra`` from env vars (e.g. Google Chat's
     # project_id / subscription_name) can supply ``env_enablement_fn`` on
     # their PlatformEntry — called here BEFORE adapter construction.
     #

@@ -299,7 +299,7 @@ class TestTeamsPluginRegistration:
         kwargs = ctx.register_platform.call_args[1]
         assert kwargs["name"] == "teams"
 
-    def test_register_check_fn_is_active_lazy_installer(self):
+    def test_register_splits_passive_probe_from_active_installer(self):
         # check_fn is the PASSIVE probe (status displays call it freely);
         # the ACTIVE lazy-installer rides on ensure_deps_fn, which
         # create_adapter() invokes when the passive probe fails (#79812).

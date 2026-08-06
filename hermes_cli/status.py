@@ -505,7 +505,13 @@ def show_status(args):
     try:
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
-            configured = entry.check_fn()
+            # Per-entry guard: one raising probe must not abort the listing
+            # of every remaining plugin platform (matches the other three
+            # check_fn call sites).
+            try:
+                configured = bool(entry.check_fn())
+            except Exception:
+                configured = False
             status_str = "configured" if configured else "not configured"
             label = entry.label
             print(f"  {label:<12}  {check_mark(configured)} {status_str} (plugin)")

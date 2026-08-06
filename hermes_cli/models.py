@@ -125,6 +125,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("stepfun/step-3.7-flash",                 ""),
     # NVIDIA
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
+    # Meta
+    ("meta/muse-spark-1.2",                    ""),
     # Sakana
     ("sakana/fugu-ultra",                      ""),
     # OpenRouter routers

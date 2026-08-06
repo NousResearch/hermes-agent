@@ -110,6 +110,72 @@ class TestCreateSession:
 
         assert state.agent.session_cwd == "/tmp/project"
 
+    def test_make_agent_honors_platform_toolsets_acp(self, monkeypatch):
+        """platform_toolsets.acp scopes the ACP agent's enabled toolsets (#79516)."""
+        captured = {}
+
+        class FakeAgent:
+            model = "fake-model"
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                captured["kwargs"] = kwargs
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        base_cfg = {
+            "model": {"default": "fake-model", "provider": "fake-provider"},
+            "mcp_servers": {},
+            "platform_toolsets": {"acp": ["web", "file", "memory"]},
+        }
+        monkeypatch.setattr("acp_adapter.session.load_config", lambda: base_cfg, raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: base_cfg)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {"provider": "fake", "api_mode": "chat_completions"},
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+        SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        enabled = captured["kwargs"]["enabled_toolsets"]
+        # The explicit acp list wins: no terminal/execute_code, no hermes-acp.
+        assert "hermes-acp" not in enabled
+        assert "terminal" not in enabled
+        assert "web" in enabled
+        assert "file" in enabled
+
+    def test_make_agent_honors_agent_disabled_toolsets(self, monkeypatch):
+        """agent.disabled_toolsets strips toolsets for ACP sessions too (#79516)."""
+        captured = {}
+
+        class FakeAgent:
+            model = "fake-model"
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                captured["kwargs"] = kwargs
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        base_cfg = {
+            "model": {"default": "fake-model", "provider": "fake-provider"},
+            "mcp_servers": {},
+            "agent": {"disabled_toolsets": ["terminal", "process", "execute_code"]},
+        }
+        monkeypatch.setattr("acp_adapter.session.load_config", lambda: base_cfg, raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: base_cfg)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {"provider": "fake", "api_mode": "chat_completions"},
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+        SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        kwargs = captured["kwargs"]
+        assert kwargs["disabled_toolsets"] == ["terminal", "process", "execute_code"]
+        # Default ACP toolset is still hermes-acp (unconfigured platform).
+        assert "hermes-acp" in kwargs["enabled_toolsets"]
+
 
 
 

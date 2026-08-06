@@ -158,3 +158,58 @@ def test_non_assistant_messages_ignored():
 
     assert repaired == 0
     assert messages == original
+
+
+def test_single_element_array_unwrapped_to_dict():
+    """Regression: a single-element array wrapping the intended object is
+    unwrapped rather than being sent as-is to strict providers (#58057)."""
+    messages = [
+        _assistant_message(_tool_call(arguments='[{"path": "/tmp/foo"}]')),
+    ]
+
+    repaired = AIAgent._sanitize_tool_call_arguments(messages)
+
+    assert repaired == 0
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == '{"path": "/tmp/foo"}'
+
+
+def test_multi_element_array_replaced_with_empty_object(caplog):
+    """Multi-element arrays cannot be unwrapped unambiguously (#58057)."""
+    messages = [
+        _assistant_message(_tool_call(arguments='[{"path": "/tmp/foo"}, {"path": "/tmp/bar"}]')),
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="run_agent"):
+        repaired = AIAgent._sanitize_tool_call_arguments(
+            messages,
+            logger=logging.getLogger("run_agent"),
+            session_id="session-123",
+        )
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+    assert any(
+        "Corrupted tool_call arguments repaired" in record.message
+        for record in caplog.records
+    )
+
+
+def test_scalar_argument_replaced_with_empty_object(caplog):
+    """Non-dict, non-list JSON values are not valid tool_call arguments (#58057)."""
+    messages = [
+        _assistant_message(_tool_call(arguments='"just a string"')),
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="run_agent"):
+        repaired = AIAgent._sanitize_tool_call_arguments(
+            messages,
+            logger=logging.getLogger("run_agent"),
+            session_id="session-123",
+        )
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+    assert any(
+        "Corrupted tool_call arguments repaired" in record.message
+        for record in caplog.records
+    )

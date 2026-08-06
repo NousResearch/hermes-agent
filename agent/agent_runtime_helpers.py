@@ -375,15 +375,9 @@ def sanitize_tool_call_arguments(
             if not isinstance(arguments, str):
                 continue
 
-            try:
-                json.loads(arguments)
-            except json.JSONDecodeError:
-                # Use the canonical ``call_id || id`` precedence so both the
-                # scan for an existing tool result and any inserted stub key
-                # on the same id the rest of the pipeline uses. Keying on bare
-                # ``id`` here would fail to find a result built with ``call_id``
-                # (Codex Responses format) and insert a duplicate stub that
-                # itself becomes an orphan (#58168).
+            def _mark_corrupted(function, tool_call, insert_at):
+                """Replace arguments with {} and inject the corruption marker."""
+                nonlocal repaired
                 tool_call_id = _ra().AIAgent._get_tool_call_id_static(tool_call) or None
                 function_name = function.get("name", "?")
                 # Log the FULL original argument string (bounded), not an
@@ -432,6 +426,26 @@ def sanitize_tool_call_arguments(
                     _prepend_marker(existing_tool_msg)
 
                 repaired += 1
+                return insert_at
+
+            try:
+                parsed = json.loads(arguments)
+            except json.JSONDecodeError:
+                insert_at = _mark_corrupted(function, tool_call, insert_at)
+                continue
+
+            if isinstance(parsed, dict):
+                continue
+            if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
+                # Some models emit a single-element array wrapping the intended
+                # argument object. Unwrap it instead of sending the array to
+                # strict OpenAI-compatible endpoints, which reject it (#58057).
+                stripped = arguments.strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    function["arguments"] = stripped[1:-1].strip()
+                    continue
+
+            insert_at = _mark_corrupted(function, tool_call, insert_at)
 
         message_index += 1
 

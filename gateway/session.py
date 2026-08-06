@@ -3362,22 +3362,6 @@ class SessionStore:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
 
-    def has_archived_messages(self, session_id: str) -> bool:
-        """Check if a session has any soft-archived (``active = 0``) rows.
-
-        Thin wrapper over SessionDB.has_archived_messages(). Returns False
-        when no DB is available (in-memory sessions). Used by transcript
-        rewrite callers (e.g. /retry) to decide whether the rewrite must
-        pass ``active_only=True`` so archived compaction history survives.
-        """
-        if not self._db:
-            return False
-        try:
-            return self._db.has_archived_messages(session_id)
-        except Exception:
-            logger.debug("has_archived_messages lookup failed", exc_info=True)
-            return False
-
     def rewrite_transcript(
         self,
         session_id: str,

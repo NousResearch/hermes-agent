@@ -68,8 +68,10 @@ async def test_gateway_retry_replaces_last_user_turn_in_transcript(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_gateway_retry_preserves_archived_compaction_rows(tmp_path, monkeypatch):
-    """/retry must not DELETE soft-archived compaction history.
+async def test_gateway_retry_preserves_archived_compaction_rows_when_probe_fails(
+    tmp_path, monkeypatch
+):
+    """/retry must not DELETE archives when an existence probe would fail.
 
     With compression.in_place (the default, #38763) archive_and_compact()
     keeps the pre-compaction transcript on disk as active=0/compacted=1 rows
@@ -77,9 +79,9 @@ async def test_gateway_retry_preserves_archived_compaction_rows(tmp_path, monkey
     bare rewrite_transcript(), whose replace_messages(active_only=False)
     DELETEs every row for the session and reinserts only the truncated live
     tail, wiping the archived history permanently (same class as #61145;
-    #57803 named this call site as a residual gap). The handler must probe
-    has_archived_messages() and pass active_only=True so only the live rows
-    are replaced.
+    #57803 named this call site as a residual gap). /retry never intends to
+    purge archived history, so it must pass active_only=True unconditionally:
+    a separate existence probe can fail open or race with the rewrite.
     """
     import hermes_state
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
@@ -104,6 +106,11 @@ async def test_gateway_retry_preserves_archived_compaction_rows(tmp_path, monkey
     )
     assert store._db.has_archived_messages(session_id) is True
 
+    # A failed preflight lookup must not turn this data-preservation path back
+    # into a destructive full-history rewrite. The write itself still works.
+    archived_probe = MagicMock(side_effect=OSError("transient archive lookup failure"))
+    monkeypatch.setattr(store._db, "has_archived_messages", archived_probe)
+
     gw = GatewayRunner.__new__(GatewayRunner)
     gw.config = config
     gw.session_store = store
@@ -125,6 +132,7 @@ async def test_gateway_retry_preserves_archived_compaction_rows(tmp_path, monkey
     )
 
     assert result == "new answer"
+    archived_probe.assert_not_called()
     # The archived pre-compaction rows survive the rewrite untouched.
     archived = [
         m for m in store._db.get_messages(session_id, include_inactive=True)
@@ -141,5 +149,3 @@ async def test_gateway_retry_preserves_archived_compaction_rows(tmp_path, monkey
         "first question",
         "retry me",
     ]
-
-

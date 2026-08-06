@@ -318,6 +318,32 @@ _STATE_DB_GUARD_BYPASS = False
 _STATE_DB_GUARD_EXTRA_DENY_ROOTS: Tuple[Path, ...] = ()
 
 
+def _real_platform_state_root() -> Optional[Path]:
+    """Resolve the REAL platform-default Hermes root for the guard.
+
+    Deliberately avoids ``Path.home()`` / ``hermes_constants``: tests
+    routinely monkeypatch ``Path.home`` to a tempdir, and ``hermes_state``
+    is often imported lazily *while* such a patch is active — resolving
+    through the patched callable would misidentify the test's own hermetic
+    home as "production" (false positive) or, worse, miss the real one
+    (false negative).  ``os.path.expanduser`` reads the HOME environment
+    variable / passwd entry, which the hermetic conftest never rewrites.
+    """
+    try:
+        if sys.platform == "win32":
+            base = os.environ.get("LOCALAPPDATA", "").strip()
+            root = (
+                Path(base) / "hermes"
+                if base
+                else Path(os.path.expanduser("~")) / "AppData" / "Local" / "hermes"
+            )
+        else:
+            root = Path(os.path.expanduser("~")) / ".hermes"
+        return root.resolve()
+    except Exception:
+        return None
+
+
 def _running_under_pytest() -> bool:
     """True when this process (or a parent test process) is a pytest run."""
     return bool(
@@ -328,12 +354,9 @@ def _running_under_pytest() -> bool:
 
 def _production_state_roots() -> List[Path]:
     roots: List[Path] = []
-    try:
-        from hermes_constants import _get_platform_default_hermes_home
-
-        roots.append(_get_platform_default_hermes_home().resolve())
-    except Exception:
-        pass
+    real_root = _real_platform_state_root()
+    if real_root is not None:
+        roots.append(real_root)
     for extra in _STATE_DB_GUARD_EXTRA_DENY_ROOTS:
         try:
             roots.append(Path(extra).expanduser().resolve())

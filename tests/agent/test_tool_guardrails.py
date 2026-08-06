@@ -213,9 +213,54 @@ def test_read_only_classification_covers_common_inspection_commands():
     assert shell_command_is_read_only("cd ~/repo && git status")
     assert shell_command_is_read_only("ls -la /tmp")
     assert shell_command_is_read_only("  GH_PAGER=cat gh pr view 1 ")
+    assert shell_command_is_read_only("git ls-files | wc -l")
+    assert shell_command_is_read_only("ls -la /tmp 2>/dev/null")
 
     assert not shell_command_is_read_only("gh pr merge 1 --merge")
     assert not shell_command_is_read_only("cd ~/repo && git push")
     assert not shell_command_is_read_only("rm -rf /tmp/x")
     assert not shell_command_is_read_only("git status && git commit -m x")
+    assert not shell_command_is_read_only("git diff > patch.txt")
+    assert not shell_command_is_read_only("ls $(rm -rf /tmp/x)")
     assert not shell_command_is_read_only("")
+    assert not shell_command_is_read_only(None)
+
+
+def test_write_flags_are_scoped_per_command_not_global():
+    # A global mutating-flag list conflates unrelated meanings: `-f` is
+    # `--field` to gh but `--file` to grep, `-x` is `--method` to gh but
+    # `--exclude-type` to df. Scoping per command keeps readers readable.
+    from agent.tool_guardrails import shell_command_is_read_only
+
+    assert shell_command_is_read_only("grep -f patterns.txt file")
+    assert shell_command_is_read_only("df -x tmpfs")
+    assert shell_command_is_read_only("test -f /tmp/x")
+    assert shell_command_is_read_only("ps -f")
+
+    assert not shell_command_is_read_only("gh api -f key=value repos/o/r")
+    assert not shell_command_is_read_only("gh api -X POST repos/o/r/issues")
+
+
+def test_read_only_subcommands_do_not_leak_their_write_siblings():
+    # An allowlisted noun is not enough: `git config --get` reads while
+    # `git config k v` writes, `gh label list` reads while `gh label create`
+    # does not, and `find` writes when told to `-delete` or `-exec`.
+    from agent.tool_guardrails import shell_command_is_read_only
+
+    assert shell_command_is_read_only("git config --get user.name")
+    assert shell_command_is_read_only("git config --list")
+    assert shell_command_is_read_only("git branch")
+    assert shell_command_is_read_only("git branch --contains HEAD")
+    assert shell_command_is_read_only("git tag --list 'v1*'")
+    assert shell_command_is_read_only("gh label list")
+    assert shell_command_is_read_only("sort in.txt")
+
+    assert not shell_command_is_read_only("git config user.name someone")
+    assert not shell_command_is_read_only("git config --unset user.name")
+    assert not shell_command_is_read_only("git branch newbranch")
+    assert not shell_command_is_read_only("git branch -D feature")
+    assert not shell_command_is_read_only("git tag v1.0")
+    assert not shell_command_is_read_only("gh label create bug")
+    assert not shell_command_is_read_only("find . -delete")
+    assert not shell_command_is_read_only("find . -exec rm {} ;")
+    assert not shell_command_is_read_only("sort -o out.txt in.txt")

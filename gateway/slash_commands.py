@@ -471,9 +471,19 @@ class GatewaySlashCommandsMixin:
                 logger.exception("Failed to persist profile override")
                 return f"❌ Could not save profile pin: {exc}"
             scope = "thread" if thread_id else "chat"
+            # Immediately reset the session so the new profile takes effect now
+            try:
+                session_key = self._session_key_for_source(source)
+                self._invalidate_session_run_generation(session_key, reason="profile_switch")
+                self._release_running_agent_state(session_key)
+                self._evict_cached_agent(session_key)
+                self._clear_conversation_scope(session_key, reason="profile_switch")
+                await self.async_session_store.reset_session(session_key)
+            except Exception:
+                logger.debug("Session reset after profile switch failed", exc_info=True)
             return (
                 f"✅ This {scope} now serves profile **{canon}** "
-                "(live — no restart needed). Next message runs under it.\n"
+                "(live — session reset, next message runs under it).\n"
                 "To revert: `/profile clear`"
             )
 
@@ -547,9 +557,19 @@ class GatewaySlashCommandsMixin:
                         logger.exception("Failed to persist profile override")
                         return f"❌ Could not save profile pin: {exc}"
                     scope = "thread" if thread_id else "chat"
+                    # Immediately reset the session so the new profile takes effect now
+                    try:
+                        session_key = self._session_key_for_source(source)
+                        self._invalidate_session_run_generation(session_key, reason="profile_switch")
+                        self._release_running_agent_state(session_key)
+                        self._evict_cached_agent(session_key)
+                        self._clear_conversation_scope(session_key, reason="profile_switch")
+                        await self.async_session_store.reset_session(session_key)
+                    except Exception:
+                        logger.debug("Session reset after profile switch failed", exc_info=True)
                     return (
                         f"✅ This {scope} now serves profile **{canon}** "
-                        "(live — no restart needed). Next message runs under it.\n"
+                        "(live — session reset, next message runs under it).\n"
                         "To revert: `/profile clear`"
                     )
 

@@ -40,19 +40,36 @@ def _write_platform_plugin(
     platform: str,
     *,
     with_tools_module: bool,
+    declares_provides_tools: "bool | None" = None,
 ) -> "object":
     """Create a bundled-style platform plugin and return its manifest.
 
     The adapter import is the expensive thing we must NOT trigger: it is
     modelled as ``adapter.py`` setting a module-level sentinel, imported from
     inside ``register()`` exactly as the real a2a plugin does.
+
+    ``declares_provides_tools`` controls the manifest opt-in independently of
+    whether a ``tools.py`` exists on disk, so a test can pin what actually
+    triggers pre-registration. Defaults to following ``with_tools_module``,
+    which is the shape a real plugin ships.
     """
     from hermes_cli.plugins import PluginManifest
 
+    if declares_provides_tools is None:
+        declares_provides_tools = with_tools_module
+    provides_tools = [f"{platform}_call"] if declares_provides_tools else []
+
     plugin_dir = root / platform
     plugin_dir.mkdir(parents=True, exist_ok=True)
+    manifest_data = {
+        "name": f"{platform}-platform",
+        "kind": "platform",
+        "version": "1.0.0",
+    }
+    if provides_tools:
+        manifest_data["provides_tools"] = provides_tools
     (plugin_dir / "plugin.yaml").write_text(
-        yaml.dump({"name": f"{platform}-platform", "kind": "platform", "version": "1.0.0"}),
+        yaml.dump(manifest_data),
         encoding="utf-8",
     )
 
@@ -101,6 +118,7 @@ def _write_platform_plugin(
         source="bundled",
         path=str(plugin_dir),
         key=f"{platform}-platform",
+        provides_tools=provides_tools,
     )
 
 
@@ -134,7 +152,7 @@ def clean_registry():
     yield
     for name in set(registry._tools) - before_tools:
         registry._tools.pop(name, None)
-    for platform in ("probeplat", "barefoot"):
+    for platform in ("probeplat", "barefoot", "quietplat"):
         platform_registry.unregister(platform)
     for name in set(sys.modules) - before_modules:
         if name.startswith("hermes_plugins."):
@@ -146,6 +164,21 @@ def clean_registry():
 
 class TestA2AClientToolsInCliProcess:
     """The issue's exact repro: a CLI/TUI process, no gateway startup."""
+
+    def test_manifest_declares_the_client_tools(self):
+        """The opt-in lives in the manifest, so it is pinned like any contract.
+
+        Dropping ``provides_tools`` from plugin.yaml silently reverts a2a to
+        the deferred-and-invisible behaviour of #78050, with every other test
+        here still passing on the synthetic plugins — so assert it directly.
+        """
+        manifest_path = (
+            Path(__file__).resolve().parents[2]
+            / "plugins" / "platforms" / "a2a" / "plugin.yaml"
+        )
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+        assert set(manifest.get("provides_tools") or []) == A2A_CLIENT_TOOLS
 
     def test_a2a_toolset_resolves_without_materializing_the_platform(self):
         from hermes_cli.plugins import PluginManager
@@ -231,6 +264,35 @@ class TestDeferredPlatformToolPreregistration:
         assert probe.package_execs == 0
         assert probe.adapter_imports == 0
         assert mgr._plugins["barefoot-platform"].tools_registered == []
+
+    def test_tools_module_alone_does_not_opt_a_platform_in(
+        self, tmp_path, probe, clean_registry
+    ):
+        """``provides_tools`` is the trigger, not the presence of a file.
+
+        A platform is free to keep internal helpers in ``tools.py``; without
+        the manifest declaring what it publishes, discovery must not import
+        the package at all. Otherwise a plugin opts into an eager import by
+        naming a file, and the contract is invisible to anyone reading the
+        manifest.
+        """
+        from hermes_cli.plugins import PluginManager
+
+        manifest = _write_platform_plugin(
+            tmp_path,
+            "quietplat",
+            with_tools_module=True,
+            declares_provides_tools=False,
+        )
+
+        mgr = PluginManager()
+        mgr._register_deferred_platform(manifest)
+
+        assert probe.package_execs == 0
+        assert probe.tools_execs == 0
+        assert probe.adapter_imports == 0
+        assert mgr._plugins["quietplat-platform"].deferred is True
+        assert mgr._plugins["quietplat-platform"].tools_registered == []
 
     def test_package_body_runs_once_across_discovery_and_materialization(
         self, tmp_path, probe, clean_registry

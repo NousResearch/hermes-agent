@@ -1797,9 +1797,20 @@ class PluginManager:
         does not import the adapter, so the SDK stays unloaded and startup
         stays cheap. A plugin taking this path must therefore keep its package
         ``__init__`` import-light and pull the adapter in from inside
-        ``register()`` (as ``plugins/platforms/a2a`` does). Plugins with no
-        ``tools.py`` are untouched and stay fully deferred.
+        ``register()`` (as ``plugins/platforms/a2a`` does).
+
+        Opting in is explicit: the manifest must declare ``provides_tools``
+        (the field the plugin list and web server already read to name a
+        plugin's tools, per #78538). Keying off the mere presence of a
+        ``tools.py`` would opt a plugin in by accident — a platform is free to
+        put internal helpers there — and would leave the contract invisible to
+        anyone reading the manifest. ``tools.py`` remains where the code is
+        imported from; ``provides_tools`` is what asks for it. A platform that
+        does not declare the field is untouched and stays fully deferred.
         """
+        if not manifest.provides_tools:
+            return
+
         plugin_dir = Path(manifest.path) if manifest.path else None
         if plugin_dir is None or not (plugin_dir / "tools.py").is_file():
             return

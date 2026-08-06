@@ -114,16 +114,18 @@ _AUTHORIZATION_GATE_LOCK_TIMEOUT_S = 360.0
 def _authorization_gate_lock_timeout() -> float:
     """Bound for the authorization serialization lock: approval timeout + margin.
 
-    Long enough that serialization is never broken while a legitimate approval
-    prompt is still answerable; short enough that a wedged holder (hanging
-    ``pre_tool_call`` plugin, dead approval client) cannot park other workers
-    forever (#79719). Resolved once per gate (per batch), so a mid-process
-    ``approvals.timeout`` change applies from the next batch.
+    Delegates to ``tools.approval.human_wait_ceiling`` — the same bound that
+    clamps a human-wait window's deadline contribution — so the two can't
+    drift. Long enough that serialization is never broken while a legitimate
+    approval prompt is still answerable; short enough that a wedged holder
+    (hanging ``pre_tool_call`` plugin, dead approval client) cannot park other
+    workers forever (#79719). Resolved once per gate (per batch), so a
+    mid-process ``approvals.timeout`` change applies from the next batch.
     """
     try:
-        from tools.approval import HUMAN_WAIT_MARGIN_S, _get_approval_timeout
+        from tools.approval import human_wait_ceiling
 
-        return float(_get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
+        return human_wait_ceiling()
     except Exception:
         return _AUTHORIZATION_GATE_LOCK_TIMEOUT_S
 
@@ -401,27 +403,33 @@ class _ConcurrentToolAuthorizationGate:
     (which can legitimately exceed any fixed bound) is still excluded in full.
     """
 
-    def __init__(self, *, lock_timeout: float | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        lock_timeout: float | None = None,
+        session_key: str | None = None,
+    ) -> None:
         self._serialization_lock = threading.Lock()
         self._lock_timeout = (
             _authorization_gate_lock_timeout()
             if lock_timeout is None
             else lock_timeout
         )
-        self._session_key: str | None = None
-        try:
-            from tools.approval import get_current_session_key
+        self._session_key = session_key
+        if self._session_key is None:
+            try:
+                from tools.approval import get_current_session_key
 
-            # Snapshot the batch's session identity on the SUBMITTING thread:
-            # excluded_seconds() is polled from the batch wait loop, whose
-            # context may differ from the workers'.
-            self._session_key = get_current_session_key()
-        except Exception:
-            logger.debug(
-                "authorization gate could not snapshot the session key; "
-                "human-wait exclusion will re-resolve it at poll time",
-                exc_info=True,
-            )
+                # Snapshot the batch's session identity on the SUBMITTING
+                # thread: excluded_seconds() is polled from the batch wait
+                # loop, whose context may differ from the workers'.
+                self._session_key = get_current_session_key()
+            except Exception:
+                logger.debug(
+                    "authorization gate could not snapshot the session key; "
+                    "human-wait exclusion will re-resolve it at poll time",
+                    exc_info=True,
+                )
         self._baseline_wait_seconds = self._human_wait_seconds()
 
     def _human_wait_seconds(self) -> float:

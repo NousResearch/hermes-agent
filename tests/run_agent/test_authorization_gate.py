@@ -41,12 +41,9 @@ SESSION = "test-session-79719"
 
 
 def _make_gate(**kwargs) -> _ConcurrentToolAuthorizationGate:
-    gate = _ConcurrentToolAuthorizationGate(**kwargs)
     # Pin the session key so contextvar/env noise from other tests can't
     # change which wait state the gate reads.
-    gate._session_key = SESSION
-    gate._baseline_wait_seconds = gate._human_wait_seconds()
-    return gate
+    return _ConcurrentToolAuthorizationGate(session_key=SESSION, **kwargs)
 
 
 class TestHumanWaitTracker:
@@ -293,11 +290,8 @@ class TestApprovalPathsRecordHumanWait:
         try:
             assert approval_mod.human_wait_seconds(SESSION) > 0.0
         finally:
-            # Resolve the pending entry so the worker unwinds.
-            with approval_mod._lock:
-                for entry in approval_mod._gateway_queues.get(SESSION, []):
-                    entry.result = "deny"
-                    entry.event.set()
+            # Resolve the pending entry via the real production path.
+            approval_mod.resolve_gateway_approval(SESSION, "deny", resolve_all=True)
             t.join(timeout=5)
         assert not t.is_alive()
         # Window closed once the wait resolved.

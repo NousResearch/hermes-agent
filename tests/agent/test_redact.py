@@ -162,6 +162,31 @@ class TestShellExpansionPreserved:
         assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef" not in result
         assert "GH_TOKEN=" in result
 
+    def test_literal_before_substitution_not_stranded(self):
+        """Review F1: literal prefix + ``$(...)`` must mask the literal but
+        preserve the substitution (no `` f)`` strand)."""
+        text = "GH_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef$(cat f)"
+        result = redact_sensitive_text(text, force=True)
+        assert "$(cat f)" in result
+        assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef" not in result
+
+    def test_quoted_literal_before_substitution(self):
+        """Review F2: quoted RHS with literal + ``$(...)``."""
+        text = 'GH_TOKEN="ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef$(cat f)"'
+        result = redact_sensitive_text(text, force=True)
+        assert "$(cat f)" in result
+        assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef" not in result
+
+    def test_braced_var_with_suffix_preserved(self):
+        """Review F3: ``${VAR}x`` (braced var + literal suffix) preserved."""
+        text = "GH_TOKEN=${VAR}x"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_positional_param_preserved(self):
+        """Review F4: ``$1`` positional param preserved."""
+        text = "GH_TOKEN=$1"
+        assert redact_sensitive_text(text, force=True) == text
+
 
 
 

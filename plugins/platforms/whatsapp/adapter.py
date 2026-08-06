@@ -952,7 +952,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             raise
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Start (or adopt) the Node.js bridge and wait for it to be ready."""
+        """Start (or adopt) the Node.js bridge and wait for it to be ready.
+
+        On a reconnect, first try a matching live bridge before cold startup.
+        """
         if find_node_executable("node") is None:
             import pm
 
@@ -977,6 +980,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not await asyncio.to_thread(self._preflight):
             return False
         bridge_path = Path(self._bridge_script)
+        # Fast path: on a reconnect, a previously started bridge may still be
+        # alive. Probe /health before touching npm, pidfiles, or ports to avoid
+        # the full cold-start cost (#80094).
+        if is_reconnect:
+            if await self._reuse_running_bridge(bridge_path):
+                return True
         lock_acquired = False
         try:
             if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), 'WhatsApp session'):

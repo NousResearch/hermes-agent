@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { DEFAULT_COMPLETION_SOUND_VOLUME, resolveCompletionSoundVolume } from './completion-sound'
 
@@ -25,5 +25,14 @@ describe('resolveCompletionSoundVolume', () => {
     expect(resolveCompletionSoundVolume(1)).toBe(1)
     expect(resolveCompletionSoundVolume(2.5)).toBe(2.5)
     expect(resolveCompletionSoundVolume(3)).toBe(3)
+  })
+
+  it('falls back to the default when nothing is persisted', async () => {
+    window.localStorage.clear()
+    vi.resetModules()
+
+    const { $completionSoundVolume } = await import('./completion-sound')
+
+    expect($completionSoundVolume.get()).toBe(DEFAULT_COMPLETION_SOUND_VOLUME)
   })
 })

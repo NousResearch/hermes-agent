@@ -15,6 +15,7 @@ import type {
   SystemBatteryResponse
 } from '../../../gatewayTypes.js'
 import { copyTextToClipboard } from '../../../lib/clipboard.js'
+import { resolveCopyOnSelect } from '../../../lib/platform.js'
 import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
@@ -186,7 +187,7 @@ export const coreCommands: SlashCommand[] = [
 
       if (!mode || mode === 'status') {
         const status =
-          current === null ? `auto (currently ${process.platform === 'darwin' ? 'on' : 'off'})` : current ? 'on' : 'off'
+          current === null ? `auto (currently ${resolveCopyOnSelect(current) ? 'on' : 'off'})` : current ? 'on' : 'off'
 
         return ctx.transcript.sys(`copy on select: ${status}`)
       }

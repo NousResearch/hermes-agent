@@ -7,6 +7,7 @@ import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import * as ClipboardModule from '../lib/clipboard.js'
+import { resolveCopyOnSelect } from '../lib/platform.js'
 
 // DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
 // so toggling process.env in a test body can't move it. Mock just that one
@@ -116,7 +117,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/copy-on-select status')).toBe(true)
     expect(ctx.transcript.sys).toHaveBeenCalledWith(
-      `copy on select: auto (currently ${process.platform === 'darwin' ? 'on' : 'off'})`
+      `copy on select: auto (currently ${resolveCopyOnSelect(null) ? 'on' : 'off'})`
     )
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })

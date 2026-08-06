@@ -1873,6 +1873,81 @@ class TestFallbackModelInheritance(unittest.TestCase):
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
 
+    def test_pinned_provider_disables_parent_fallback_chain(self):
+        """An explicit delegation.provider pin must NOT inherit the parent
+        fallback chain — a mid-run failure on the pin would otherwise silently
+        reroute the quiet-mode child onto parent fallback models (#80450)."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [
+            {"provider": "openrouter", "model": "gpt-4o-mini", "api_key": "sk-or-x"}
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test pinned provider",
+                context=None,
+                toolsets=None,
+                model="minimax/m2",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="minimax",
+                override_base_url="https://api.minimax.example/v1",
+                override_api_key="sk-mm-x",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIsNone(kwargs["fallback_model"])
+
+    def test_pinned_acp_command_missing_raises(self):
+        """A pinned delegation command absent from PATH must refuse the spawn
+        loudly instead of silently falling back to the default transport
+        (#80450)."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = None
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            with patch("shutil.which", return_value=None):
+                with self.assertRaises(ValueError) as ctx:
+                    _build_child_agent(
+                        task_index=0,
+                        goal="test pinned acp command",
+                        context=None,
+                        toolsets=None,
+                        model=None,
+                        max_iterations=10,
+                        parent_agent=parent,
+                        task_count=1,
+                        override_acp_command="definitely-not-a-real-binary",
+                    )
+        self.assertIn("definitely-not-a-real-binary", str(ctx.exception))
+        self.assertIn("not", str(ctx.exception).lower())
+
+    def test_resolve_credentials_rejects_missing_pinned_command(self):
+        """_resolve_delegation_credentials refuses a provider whose pinned
+        command is not installed (#80450)."""
+        cfg = {"provider": "acp-provider", "model": "some-model"}
+        parent = _make_mock_parent(depth=0)
+        runtime = {
+            "api_key": "sk-x",
+            "base_url": "https://api.example/v1",
+            "api_mode": "chat_completions",
+            "provider": "acp-provider",
+            "command": "missing-acp-binary",
+            "args": [],
+        }
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=runtime,
+        ):
+            with patch("shutil.which", return_value=None):
+                with self.assertRaises(ValueError) as ctx:
+                    _resolve_delegation_credentials(cfg, parent)
+        self.assertIn("missing-acp-binary", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

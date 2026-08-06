@@ -1670,19 +1670,20 @@ def _build_child_agent(
     else:
         effective_api_mode = getattr(parent_agent, "api_mode", None)
     # Defensive: validate trusted delegation.command exists on PATH before
-    # honoring it. Stale config should not force a child onto the ACP transport
-    # and then fail at subprocess startup.
+    # honoring it. An explicitly pinned transport that cannot run must fail
+    # the spawn loudly (#80450) — silently falling back to the default
+    # transport would run the child somewhere the user explicitly routed it
+    # away from. Normally unreachable via delegate_task, which pre-validates
+    # the command in _resolve_delegation_credentials.
     if override_acp_command:
         import shutil as _shutil
 
         if not _shutil.which(override_acp_command):
-            logger.warning(
-                "Ignoring acp_command=%r: binary not found on PATH; "
-                "falling back to default transport.",
-                override_acp_command,
+            raise ValueError(
+                f"Pinned delegation command '{override_acp_command}' was not "
+                f"found on PATH. Install it or remove delegation.command from "
+                f"config.yaml."
             )
-            override_acp_command = None
-            override_acp_args = None
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
     )
@@ -1732,7 +1733,19 @@ def _build_child_agent(
     # from rate-limits and credential exhaustion exactly like the top-level
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    #
+    # EXCEPT when the user pinned delegation.provider: an explicit pin means
+    # "children run on THIS provider".  Inheriting the parent chain would let
+    # a mid-run auth/429 failure silently reroute the quiet-mode child onto
+    # the parent's fallback models with no surfaced signal (#80450) — the
+    # same class of silent-drag the override_provider filter-clearing below
+    # already prevents for OpenRouter routing preferences.  Predictability >
+    # liveness for explicit pins: the pinned child fails loudly instead.
+    parent_fallback = (
+        None
+        if override_provider
+        else (getattr(parent_agent, "_fallback_chain", None) or None)
+    )
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -3668,27 +3681,32 @@ def delegate_task(
             from tools.delegation_output_schema import append_output_contract
 
             _child_context = append_output_contract(_child_context, _task_schema)
-        child = _build_child_preserving_parent_tools(
-            task_index=i,
-            goal=t["goal"],
-            context=_child_context,
-            # Subagents always inherit the parent's toolsets; the model
-            # cannot choose or narrow them (no model-facing toolsets arg).
-            toolsets=None,
-            model=creds["model"],
-            max_iterations=effective_max_iter,
-            task_count=n_tasks,
-            parent_agent=parent_agent,
-            override_provider=creds["provider"],
-            override_base_url=creds["base_url"],
-            override_api_key=creds["api_key"],
-            override_api_mode=creds["api_mode"],
-            override_request_overrides=creds.get("request_overrides"),
-            override_max_tokens=creds.get("max_output_tokens"),
-            override_acp_command=creds.get("command"),
-            override_acp_args=creds.get("args"),
-            role=effective_role,
-        )
+        try:
+            child = _build_child_preserving_parent_tools(
+                task_index=i,
+                goal=t["goal"],
+                context=_child_context,
+                # Subagents always inherit the parent's toolsets; the model
+                # cannot choose or narrow them (no model-facing toolsets arg).
+                toolsets=None,
+                model=creds["model"],
+                max_iterations=effective_max_iter,
+                task_count=n_tasks,
+                parent_agent=parent_agent,
+                override_provider=creds["provider"],
+                override_base_url=creds["base_url"],
+                override_api_key=creds["api_key"],
+                override_api_mode=creds["api_mode"],
+                override_request_overrides=creds.get("request_overrides"),
+                override_max_tokens=creds.get("max_output_tokens"),
+                override_acp_command=creds.get("command"),
+                override_acp_args=creds.get("args"),
+                role=effective_role,
+            )
+        except ValueError as exc:
+            # Explicit-pin preflight failures (e.g. pinned delegation.command
+            # missing from PATH) refuse the spawn loudly (#80450).
+            return tool_error(str(exc))
         # Attach the validated schema for the completion-side validation
         # hook in _run_single_child. Absent (None) on schema-less tasks.
         if _task_schema is not None:
@@ -4350,6 +4368,20 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
             f"Set the appropriate environment variable or run 'hermes auth'."
         )
+
+    # A pinned ACP transport command must exist — refuse the spawn loudly
+    # rather than letting the child silently fall back to another transport
+    # (#80450).
+    pinned_command = runtime.get("command")
+    if pinned_command:
+        import shutil as _shutil
+
+        if not _shutil.which(pinned_command):
+            raise ValueError(
+                f"Delegation provider '{configured_provider}' is pinned to the "
+                f"'{pinned_command}' command, which was not found on PATH. "
+                f"Install it or choose a different delegation provider."
+            )
 
     return {
         "model": configured_model or runtime.get("model") or None,

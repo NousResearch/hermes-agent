@@ -55,10 +55,10 @@ from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# Upper bound on tracked per-session leases. Idle entries (no holder, no
-# waiter) are evicted oldest-first once the cap is reached; live leases are
-# never evicted, so a burst of distinct sessions can transiently exceed the
-# cap rather than break serialization.
+# Upper bound on tracked per-session leases. Idle entries (no holder or
+# pending acquire) are evicted oldest-first once the cap is reached; live
+# leases are never evicted, so a burst of distinct sessions can transiently
+# exceed the cap rather than break serialization.
 DEFAULT_MAX_LEASES = 512
 
 # Fallback wait (seconds) when the caller passes no positive timeout. The
@@ -127,18 +127,29 @@ class TurnLeaseToken:
 
 
 class _SessionLease:
-    __slots__ = ("lock", "holder", "acquired_at", "last_used")
+    __slots__ = (
+        "lock",
+        "holder",
+        "acquired_at",
+        "last_used",
+        "pending_acquires",
+    )
 
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self.holder: Optional[TurnLeaseToken] = None
         self.acquired_at = 0.0
         self.last_used = time.time()
+        self.pending_acquires = 0
 
     @property
     def idle(self) -> bool:
         """True when this lease can be evicted: nobody holds or awaits it."""
-        return self.holder is None and not self.lock.locked()
+        return (
+            self.holder is None
+            and not self.lock.locked()
+            and self.pending_acquires == 0
+        )
 
 
 class SessionTurnLeaseRegistry:
@@ -217,6 +228,12 @@ class SessionTurnLeaseRegistry:
                 time.time() - lease.acquired_at if lease.acquired_at else -1.0,
             )
 
+        # Lock.release() wakes a waiter while leaving the lock momentarily
+        # unlocked. Track every in-progress acquire across that handoff so
+        # eviction cannot orphan the old lock and create a second lock for the
+        # same session. Count even apparently-uncontended acquires: wait_for()
+        # may schedule them before the underlying lock coroutine runs.
+        lease.pending_acquires += 1
         try:
             await asyncio.wait_for(lease.lock.acquire(), timeout=wait)
         except asyncio.TimeoutError:
@@ -239,7 +256,11 @@ class SessionTurnLeaseRegistry:
                 generation=generation,
                 wait_seconds=wait,
             ) from None
+        finally:
+            lease.pending_acquires -= 1
 
+        # The lock is held and there is no await before holder publication, so
+        # the lease cannot become evictable after the pending count is cleared.
         lease.holder = token
         lease.acquired_at = time.time()
         lease.last_used = lease.acquired_at

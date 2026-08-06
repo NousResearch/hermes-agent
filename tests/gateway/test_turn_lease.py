@@ -14,7 +14,8 @@ Covers:
 - timeout fail-closed: a timed-out waiter never enters the transcript region,
   and outer dispatch returns a visible rejection/resend notice without invoking
   goal continuation
-- registry stays bounded; live leases are never evicted
+- registry stays bounded; live and pending leases are never evicted
+- timed-out and cancelled acquire attempts do not pin idle registry entries
 - GatewayRunner._release_turn_lease wiring (bare-runner safe, token-scoped)
 """
 
@@ -216,6 +217,172 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
 # ---------------------------------------------------------------------------
 
 
+class _ObservedLock:
+    """Forwarding lock that signals when an acquire has to wait."""
+
+    def __init__(self, lock):
+        self._lock = lock
+        self.blocked = asyncio.Queue()
+
+    async def acquire(self):
+        if self._lock.locked():
+            self.blocked.put_nowait(None)
+        return await self._lock.acquire()
+
+    def locked(self):
+        return self._lock.locked()
+
+    def release(self):
+        self._lock.release()
+
+
+class _GatedLock:
+    """Forwarding lock that pauses an otherwise-uncontended acquire."""
+
+    def __init__(self, lock):
+        self._lock = lock
+        self.started = asyncio.Event()
+        self.proceed = asyncio.Event()
+
+    async def acquire(self):
+        self.started.set()
+        await self.proceed.wait()
+        return await self._lock.acquire()
+
+    def locked(self):
+        return self._lock.locked()
+
+    def release(self):
+        self._lock.release()
+
+
+def test_registry_does_not_evict_lease_during_waiter_handoff():
+    """A woken waiter must stay in the original serialization domain.
+
+    ``asyncio.Lock.release()`` unlocks before the selected waiter resumes.
+    Capacity eviction in that handoff window must not orphan the old lock and
+    let a later acquire for the same session take a second lock concurrently.
+    """
+
+    async def scenario():
+        registry = SessionTurnLeaseRegistry(max_entries=1)
+        first = await registry.acquire(
+            "shared", owner_key="first", generation=1, timeout=1
+        )
+        lease = registry._leases["shared"]
+        observed = _ObservedLock(lease.lock)
+        lease.lock = observed
+
+        waking_task = asyncio.create_task(
+            registry.acquire("shared", owner_key="waking", generation=1, timeout=1)
+        )
+        await asyncio.wait_for(observed.blocked.get(), timeout=1)
+
+        assert registry.release(first) is True
+        # _get_or_create("other") runs before this acquire first yields, in
+        # the unlocked handoff window before waking_task resumes.
+        other = await registry.acquire(
+            "other", owner_key="other", generation=1, timeout=1
+        )
+        waking = await waking_task
+
+        assert registry._leases.get("shared") is lease
+
+        successor_task = asyncio.create_task(
+            registry.acquire("shared", owner_key="successor", generation=2, timeout=1)
+        )
+        await asyncio.wait_for(observed.blocked.get(), timeout=1)
+        assert not successor_task.done()
+
+        assert registry.release(waking) is True
+        successor = await successor_task
+        assert registry.release(successor) is True
+        assert registry.release(other) is True
+
+    _run(scenario())
+
+
+def test_registry_does_not_evict_an_uncontended_acquire_before_it_locks():
+    """Every pending acquire is protected, even if the lock looked free."""
+
+    async def scenario():
+        registry = SessionTurnLeaseRegistry(max_entries=1)
+        seed = await registry.acquire(
+            "shared", owner_key="seed", generation=1, timeout=1
+        )
+        assert registry.release(seed) is True
+
+        lease = registry._leases["shared"]
+        gated = _GatedLock(lease.lock)
+        lease.lock = gated
+        pending_task = asyncio.create_task(
+            registry.acquire("shared", owner_key="pending", generation=2, timeout=1)
+        )
+        await asyncio.wait_for(gated.started.wait(), timeout=1)
+
+        other = await registry.acquire(
+            "other", owner_key="other", generation=1, timeout=1
+        )
+        assert registry._leases.get("shared") is lease
+
+        gated.proceed.set()
+        pending = await pending_task
+        assert registry.release(pending) is True
+        assert registry.release(other) is True
+
+    _run(scenario())
+
+
+def test_timed_out_acquire_does_not_pin_idle_registry_entry():
+    async def scenario():
+        registry = SessionTurnLeaseRegistry(max_entries=1)
+        holder = await registry.acquire(
+            "shared", owner_key="holder", generation=1, timeout=1
+        )
+
+        with pytest.raises(TurnLeaseTimeoutError):
+            await registry.acquire(
+                "shared", owner_key="timeout", generation=2, timeout=0.02
+            )
+
+        assert registry.release(holder) is True
+        other = await registry.acquire(
+            "other", owner_key="other", generation=1, timeout=1
+        )
+        assert set(registry._leases) == {"other"}
+        assert registry.release(other) is True
+
+    _run(scenario())
+
+
+def test_cancelled_acquire_does_not_pin_idle_registry_entry():
+    async def scenario():
+        registry = SessionTurnLeaseRegistry(max_entries=1)
+        holder = await registry.acquire(
+            "shared", owner_key="holder", generation=1, timeout=1
+        )
+        lease = registry._leases["shared"]
+        observed = _ObservedLock(lease.lock)
+        lease.lock = observed
+
+        cancelled_task = asyncio.create_task(
+            registry.acquire("shared", owner_key="cancelled", generation=2, timeout=1)
+        )
+        await asyncio.wait_for(observed.blocked.get(), timeout=1)
+        cancelled_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled_task
+
+        assert registry.release(holder) is True
+        other = await registry.acquire(
+            "other", owner_key="other", generation=1, timeout=1
+        )
+        assert set(registry._leases) == {"other"}
+        assert registry.release(other) is True
+
+    _run(scenario())
+
+
 # ---------------------------------------------------------------------------
 # Mid-turn rotation rebind
 # ---------------------------------------------------------------------------
@@ -244,6 +411,41 @@ def test_rebind_moves_serialization_to_new_session_id():
         t2 = await waiter
         assert t2 is not None and not t2.degraded
         registry.release(t2)
+
+    _run(scenario())
+
+
+def test_rebind_does_not_replace_target_during_waiter_handoff():
+    """A target with a waking waiter is still a live lease domain."""
+
+    async def scenario():
+        registry = SessionTurnLeaseRegistry()
+        target_holder = await registry.acquire(
+            "target", owner_key="target-holder", generation=1, timeout=1
+        )
+        target_lease = registry._leases["target"]
+        observed = _ObservedLock(target_lease.lock)
+        target_lease.lock = observed
+        target_waiter_task = asyncio.create_task(
+            registry.acquire(
+                "target", owner_key="target-waiter", generation=2, timeout=1
+            )
+        )
+        await asyncio.wait_for(observed.blocked.get(), timeout=1)
+
+        source_holder = await registry.acquire(
+            "source", owner_key="source-holder", generation=1, timeout=1
+        )
+        assert registry.release(target_holder) is True
+
+        # The target lock is briefly unlocked, but its selected waiter has
+        # not resumed. Rebind must not replace that serialization domain.
+        assert registry.rebind(source_holder, "target") is False
+        target_waiter = await target_waiter_task
+        assert registry._leases["target"] is target_lease
+
+        assert registry.release(target_waiter) is True
+        assert registry.release(source_holder) is True
 
     _run(scenario())
 

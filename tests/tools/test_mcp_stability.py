@@ -544,6 +544,53 @@ class TestFailureFingerprint:
 class TestColdStartParking:
     """5 identical failures park cold; a different error resets the streak."""
 
+    def _make_task(self, name):
+        from tools.mcp_tool import MCPServerTask
+
+        return MCPServerTask(name)
+
+    def test_permanent_failure_never_advances_identical_streak(self):
+        """A permanent initial failure parks on attempt 1 (no retry ladder)
+        and must NOT advance the identical-error streak — the 5th permanent
+        revival would otherwise cold-park with a misleading message."""
+        from tools.mcp_tool import MCPServerTask, _PARKED_RETRY_INTERVAL
+
+        async def _run():
+            server = self._make_task("test-perm")
+            attempts = {"n": 0}
+            waits: list = []
+
+            async def fake_run_stdio(self_inner, config):
+                attempts["n"] += 1
+                # ENOENT-class permanent failure (classifies permanent)
+                raise FileNotFoundError("No such file or directory: /nope/mcp.js")
+
+            async def fake_wait(self_inner, timeout=None):
+                waits.append(timeout)
+                # Give the main coroutine a chance to run (the real wait
+                # blocks on events; a zero-delay fake would CPU-spin).
+                await asyncio.sleep(0.01)
+                return "shutdown" if self_inner._shutdown_event.is_set() else "reconnect"
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio), \
+                 patch.object(MCPServerTask, '_wait_for_reconnect_or_shutdown', fake_wait), \
+                 patch('tools.mcp_tool._jittered', lambda s: 0.001):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await server._ready.wait()
+                # Let several permanent revivals run, then stop.
+                await asyncio.sleep(0.2)
+                server._shutdown_event.set()
+                await task
+
+            # Permanent error parks on EVERY attempt (attempt 1 immediately,
+            # then every revival) — never burns a retry ladder, and the
+            # identical streak never reaches 5 (no cold park / no None wait).
+            assert attempts["n"] >= 4
+            assert server._identical_failures < 5
+            assert all(t == _PARKED_RETRY_INTERVAL for t in waits)
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
     def test_identical_failures_park_without_self_probe(self):
         from tools.mcp_tool import MCPServerTask, _COLD_START_IDENTICAL_FAILURES
 

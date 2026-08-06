@@ -1,4 +1,4 @@
-"""Route-local filters and script transforms for the webhook adapter."""
+"""Route-local filters and lifecycle scripts for the webhook adapter."""
 
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ _FIELD_OPERATORS: tuple[tuple[str, Callable[[Any, Any], bool]], ...] = (
 
 
 class WebhookRouteProcessor:
-    """Evaluate declarative filters and optional script transforms."""
+    """Evaluate route filters and run optional lifecycle scripts."""
 
     def __init__(self, *, script_timeout_seconds: int = DEFAULT_SCRIPT_TIMEOUT_SECONDS) -> None:
         self.script_timeout_seconds = max(1, int(script_timeout_seconds))
@@ -166,44 +166,67 @@ class WebhookRouteProcessor:
             return False
         return all(self.filter_matches(spec, payload, event_type, headers) for spec in filters)
 
+    @staticmethod
+    def snapshot_script_value(script_value: Any) -> Any:
+        """Snapshot environment expansion without resolving the profile-relative path."""
+        return os.path.expandvars(script_value.strip()) if isinstance(script_value, str) else script_value
+
+    def _run_script(self, script_value: Any, payload: dict, *, purpose: str,
+                    capture_output: bool = True) -> tuple[Optional[int], str, str, Optional[Path]]:
+        """Run a confined webhook script; returns (returncode, stdout, stderr, path).
+
+        ``returncode is None`` means the script never ran (unresolvable path, missing bash, timeout,
+        spawn failure), which callers must distinguish from a script that ran and exited non-zero.
+        ``capture_output=False`` discards the pipes for fire-and-forget lifecycle scripts.
+        """
+        path, error = _resolve_script_path(script_value)
+        if error or path is None:
+            logger.warning("[webhook] %s script unavailable: %s", purpose, error)
+            return None, "", "", path
+        is_shell = path.suffix.lower() in {".sh", ".bash"}
+        interpreter = (shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)) if is_shell else sys.executable
+        if interpreter is None:
+            logger.warning("[webhook] %s script unavailable: bash not found", purpose)
+            return None, "", "", path
+        try:
+            from tools.environments.local import build_subprocess_env
+            popen_kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+            result = subprocess.run(
+                [interpreter, str(path)], input=json.dumps(payload),
+                stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+                stderr=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=self.script_timeout_seconds, cwd=str(path.parent), env=build_subprocess_env(), **popen_kwargs,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("[webhook] %s script timed out: %s", purpose, path.name)
+            return None, "", "", path
+        except Exception as exc:
+            logger.warning("[webhook] %s script execution failed: %s", purpose, exc)
+            return None, "", "", path
+        if not capture_output:
+            return result.returncode, "", "", path
+        stdout, stderr = (result.stdout or "").strip(), (result.stderr or "").strip()
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout, stderr = redact_sensitive_text(stdout), redact_sensitive_text(stderr)
+        except Exception as exc:
+            logger.warning("[webhook] Failed to redact %s script output: %s", purpose, exc)
+            stdout = stderr = "[REDACTED - redaction failed]"
+        return result.returncode, stdout, stderr, path
+
     def run_route_script(self, script_value: Any, payload: dict) -> tuple[bool, Optional[dict]]:
         """Run a route script and return (should_continue, transformed_payload).
 
         Non-zero exit, empty/``[SILENT]`` stdout, or a ``[SILENT]``/``__hermes_ignore__`` flag drops the
         webhook; JSON-object stdout replaces the payload, other text is attached as ``script_output``.
         """
-        path, error = _resolve_script_path(script_value)
-        if error or path is None:
-            logger.warning("[webhook] script ignored webhook: %s", error)
+        returncode, stdout, stderr, path = self._run_script(script_value, payload, purpose="route")
+        if returncode is None or path is None:
             return False, None
-        is_shell = path.suffix.lower() in {".sh", ".bash"}
-        interpreter = (shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)) if is_shell else sys.executable
-        if interpreter is None:
-            logger.warning("[webhook] script ignored webhook: bash not found")
-            return False, None
-        try:
-            from tools.environments.local import build_subprocess_env
-            popen_kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
-            result = subprocess.run(
-                [interpreter, str(path)], input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=self.script_timeout_seconds, cwd=str(path.parent), env=build_subprocess_env(), **popen_kwargs,
-            )
-        except subprocess.TimeoutExpired:
-            logger.warning("[webhook] script timed out: %s", path)
-            return False, None
-        except Exception as exc:
-            logger.warning("[webhook] script execution failed: %s", exc)
-            return False, None
-        stdout, stderr = (result.stdout or "").strip(), (result.stderr or "").strip()
-        try:
-            from agent.redact import redact_sensitive_text
-            stdout, stderr = redact_sensitive_text(stdout), redact_sensitive_text(stderr)
-        except Exception as exc:
-            logger.warning("[webhook] Failed to redact script output: %s", exc)
-            stdout = stderr = "[REDACTED - redaction failed]"
-        if result.returncode != 0:
-            logger.info("[webhook] script ignored webhook path=%s code=%s stderr=%s", path.name, result.returncode, stderr[:200])
-        if result.returncode != 0 or not stdout or stdout == "[SILENT]":
+        if returncode != 0:
+            logger.info("[webhook] script ignored webhook path=%s code=%s stderr=%s", path.name, returncode, stderr[:200])
+        if returncode != 0 or not stdout or stdout == "[SILENT]":
             return False, None
         try:
             transformed = json.loads(stdout)
@@ -214,3 +237,14 @@ class WebhookRouteProcessor:
             return False, None
         silenced = transformed.get("[SILENT]") is True or transformed.get("__hermes_ignore__") is True
         return (False, None) if silenced else (True, transformed)
+
+    def run_completion_script(self, script_value: Any, envelope: dict) -> bool:
+        """Run a best-effort route completion script; True only when it ran and exited zero."""
+        returncode, _stdout, _stderr, path = self._run_script(
+            script_value, envelope, purpose="completion", capture_output=False)
+        if returncode is None or path is None:
+            return False
+        if returncode != 0:
+            logger.warning("[webhook] completion script failed path=%s code=%s", path.name, returncode)
+            return False
+        return True

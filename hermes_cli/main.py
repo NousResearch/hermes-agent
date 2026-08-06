@@ -152,8 +152,8 @@ def _cleanup_oneshot_runtime() -> None:
     except Exception:
         pass
     try:
-        from tools.async_delegation import interrupt_all
-        interrupt_all(reason="oneshot shutdown")
+        from tools.async_delegation import begin_shutdown
+        begin_shutdown(reason="oneshot shutdown")
     except Exception:
         pass
     try:

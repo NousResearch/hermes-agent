@@ -137,7 +137,9 @@ retry.
 
 This does not resume child execution after a crash. A delegation whose owner
 process disappears while it is still running is recorded as `unknown`, because
-Hermes cannot prove whether its external side effects happened. Pending and
+Hermes cannot prove whether its external side effects happened. A delegation
+that was still `queued` (never started) is recorded as `interrupted` —
+"cancelled before start" — since Hermes can prove it never ran. Pending and
 delivered records are bounded and profile-local.
 
 ## Model Override
@@ -205,6 +207,28 @@ non-timeout errors.
 :::tip Diagnostic dump on zero-call timeout
 With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, any early error messages, and stack traces for **all** live threads (not just the child's own) — a child parked waiting on a nested helper thread is indistinguishable from a slow provider without the full picture.
 :::
+
+## Background Admission Queue
+
+Background delegations share a process-wide child-slot budget. A batch reserves
+one slot per child; when it cannot reserve every required slot immediately, the
+whole call enters a bounded FIFO rather than running synchronously and bypassing
+the limit. Optional memory-headroom and Linux memory-PSI gates can also hold
+work in the same queue. On Linux, the headroom probe uses the smaller of host
+`MemAvailable` and the current cgroup's `memory.high`/`memory.max` headroom.
+Separate stop and resume thresholds provide hysteresis after resource pressure.
+
+Queued work starts automatically when it reaches the head, all required child
+slots are free, and the configured resource gates are satisfied. `/stop`, session reset, and
+gateway shutdown cancel matching queued work before its runner starts. Queue
+expiry produces a terminal `timeout` completion. A full queue rejects new work;
+it never falls back to synchronous execution.
+
+The queue is process-local execution state, not a durable job runner. After a
+process restart, a queued-but-never-started entry is reported as `interrupted`
+("cancelled before start"), while a running one is reported with an `unknown`
+outcome. Use `cronjob` or a bounded background terminal process for work that
+must survive process restarts.
 
 ## Stall Detection for Background Subagents
 
@@ -330,7 +354,7 @@ Top-level model-facing `delegate_task` calls run in the background automatically
 
 - Normal follow-up messages do not cancel background children. `/stop` cancels running background delegations, and closing or resetting the owning session discards its active children.
 - Explicit session close/reset interrupts that session's background children. Closing a TUI viewer of a gateway-owned session does not kill the gateway's work.
-- A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
+- A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened. A child that was still queued (never started) becomes `interrupted` — "cancelled before start".
 - A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
 - Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
 
@@ -370,7 +394,13 @@ For **durable execution** that must survive session closure or process restart, 
 # In ~/.hermes/config.yaml
 delegation:
   max_iterations: 50                        # Max turns per child (default: 50)
-  # max_concurrent_children: 3              # Parallel children per batch (default: 3)
+  # max_concurrent_children: 3              # Total running child slots shared by singles and batches
+  # max_queued_delegations: 8               # Bounded FIFO length; 0 rejects when work cannot start
+  # queue_timeout_seconds: 3600             # Maximum FIFO wait; 0 disables expiry
+  # min_available_memory_mb: 0              # Host/cgroup headroom stop floor; 0 disables
+  # resume_available_memory_mb: 0           # Higher recovery floor after blocking; 0 follows stop floor
+  # max_memory_psi_avg10: 0                 # Linux PSI some/avg10 stop ceiling; 0 disables
+  # resume_memory_psi_avg10: 0              # Lower recovery ceiling; 0 follows stop ceiling
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override

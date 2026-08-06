@@ -1383,6 +1383,26 @@ class GatewaySlashCommandsMixin:
             )
             return EphemeralReply(t("gateway.stop.stopped"))
 
+        # Detached delegations outlive the foreground turn, so an otherwise
+        # idle session can still own queued/running work. /stop must cancel it.
+        try:
+            from tools.async_delegation import interrupt_for_session
+
+            _async_stopped = interrupt_for_session(
+                session_key=session_key,
+                parent_session_id=str(getattr(session_entry, "session_id", "") or ""),
+                reason="stop_command_idle",
+            )
+        except Exception:
+            logger.debug(
+                "Failed to interrupt idle-session delegations for %s",
+                session_key,
+                exc_info=True,
+            )
+            _async_stopped = 0
+        if _async_stopped:
+            return EphemeralReply(t("gateway.stop.stopped"))
+
         # No run under the caller's own session key.  In a per-user thread
         # (thread_sessions_per_user=True) each participant is isolated even
         # inside one shared thread, so a run another user started lives under

@@ -3143,6 +3143,79 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> Dict
     return ports
 
 
+# Small grace for comparing a platform entry's wall-clock ``updated_at``
+# against the gateway process's psutil-derived create time (both come from
+# the host clock, but coarse rounding can skew them by a moment).
+_PROFILE_PLATFORM_FRESHNESS_SLACK_S = 2.0
+
+
+def _profile_gateway_started_at(
+    profile_home: Path, runtime: Optional[dict]
+) -> Optional[float]:
+    """Wall-clock create time of the profile's LIVE gateway process, or None.
+
+    The record's own ``start_time`` field is a PID-reuse fingerprint, not a
+    timestamp (clock ticks since boot on Linux), so it cannot anchor a
+    freshness comparison.  Instead reuse the validated-liveness helper —
+    which checks the recorded PID against the live process table, the
+    fingerprint, and the profile's home — and ask psutil for that process's
+    epoch create time.  None when the record doesn't belong to a live
+    gateway (then nothing in it is current by definition).
+    """
+    try:
+        from gateway.status import get_runtime_status_running_pid
+
+        pid = get_runtime_status_running_pid(runtime, expected_home=profile_home)
+        if pid is None:
+            return None
+        import psutil  # type: ignore
+
+        return float(psutil.Process(pid).create_time())
+    except Exception:
+        return None
+
+
+def _fresh_profile_platforms(
+    started_at: Optional[float], platforms: dict
+) -> dict:
+    """Keep only platform entries written by the profile's CURRENT process.
+
+    Gateway startup deliberately preserves plain platform entries in
+    ``gateway_state.json`` across restarts (the dashboard keeps showing
+    last-known state while adapters reconnect), and the active-profile
+    endpoint compensates by filtering them against the current
+    configuration.  The cross-profile aggregation has no equivalent config
+    context (a profile's platform set depends on tokens in that profile's
+    ``.env`` behind its secret scope), so it uses freshness instead: an
+    entry is aggregatable only when its ``updated_at`` is at/after the live
+    gateway process's create time — i.e. the current process wrote it.  A
+    fatal entry left behind by a platform the operator has since
+    disabled/removed therefore stops degrading fleet health as soon as that
+    profile's gateway restarts (a config change requires that restart to
+    take effect anyway).  Fail closed: entries without a parseable
+    ``updated_at``, or records with no live process, are excluded —
+    aggregation is a supplement, and a false "degraded forever" is the
+    worse failure mode.
+    """
+    if started_at is None:
+        return {}
+    cutoff = float(started_at) - _PROFILE_PLATFORM_FRESHNESS_SLACK_S
+    fresh: Dict[str, dict] = {}
+    for key, value in platforms.items():
+        if not isinstance(value, dict):
+            continue
+        updated_at = value.get("updated_at")
+        if not isinstance(updated_at, str):
+            continue
+        try:
+            written = datetime.fromisoformat(updated_at).timestamp()
+        except (ValueError, TypeError):
+            continue
+        if written >= cutoff:
+            fresh[key] = value
+    return fresh
+
+
 def _collect_profile_gateway_topology() -> Dict[str, Any]:
     """Enumerate profiles and the gateways serving them for ``/api/status``.
 
@@ -3158,11 +3231,14 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
       multiple profiles (gateway.multiplex_profiles), ``"single"`` for one
       live gateway, ``"multiple"`` for independent per-profile gateways,
       ``"none"`` when nothing is running.
-    * ``profile_platforms`` — ``{profile: platforms}`` raw runtime platform
-      maps for each LIVE gateway.  Internal aggregation input for
-      ``/api/status`` (independent per-profile gateways write failures to
-      their own ``gateway_state.json``, which the unparameterized endpoint
-      would otherwise never see).  Never exposed directly.
+    * ``profile_platforms`` — ``{profile: platforms}`` runtime platform maps
+      for each LIVE gateway, freshness-filtered to entries written by that
+      profile's current process (stale preserved entries for since-removed
+      platforms are excluded — see ``_fresh_profile_platforms``).  Internal
+      aggregation input for ``/api/status`` (independent per-profile gateways
+      write failures to their own ``gateway_state.json``, which the
+      unparameterized endpoint would otherwise never see).  Never exposed
+      directly.
     """
     try:
         from hermes_cli.profiles import _check_gateway_running, profiles_to_serve
@@ -3196,7 +3272,16 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
             multiplex = True
         plats = (runtime or {}).get("platforms")
         if isinstance(plats, dict) and plats:
-            profile_platforms[name] = plats
+            # Freshness filter: gateway startup preserves plain platform
+            # entries across restarts, so the raw map can carry fatal state
+            # for platforms the operator has since disabled/removed.  Only
+            # entries written by the profile's current live process are
+            # aggregation candidates (see _fresh_profile_platforms).
+            fresh = _fresh_profile_platforms(
+                _profile_gateway_started_at(home, runtime), plats
+            )
+            if fresh:
+                profile_platforms[name] = fresh
         entry: Dict[str, Any] = {
             "profile": name,
             "ports": _profile_platform_ports(home, runtime),

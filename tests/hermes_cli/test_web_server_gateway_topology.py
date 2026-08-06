@@ -83,14 +83,23 @@ class TestCollectProfileGatewayTopology:
         # Independent per-profile gateways (gateway_mode == "multiple") each
         # write their own gateway_state.json; the collector surfaces every
         # LIVE profile's raw platform map for the /api/status merge (OOF-3).
+        # Entries must be fresh — written by the profile's current process.
         homes = [("default", tmp_path / "d"), ("coder", tmp_path / "c")]
         runtimes = {
-            "default": {"platforms": {"telegram": {"state": "connected"}}},
+            "default": {
+                "platforms": {
+                    "telegram": {
+                        "state": "connected",
+                        "updated_at": "2026-08-05T10:00:05+00:00",
+                    }
+                }
+            },
             "coder": {
                 "platforms": {
                     "discord": {
                         "state": "fatal",
                         "error_code": "duplicate_credential",
+                        "updated_at": "2026-08-05T10:00:05+00:00",
                     }
                 }
             },
@@ -98,14 +107,91 @@ class TestCollectProfileGatewayTopology:
         _patch_topology(
             monkeypatch, homes, running={"default", "coder"}, runtimes=runtimes
         )
+        # Both gateways' live processes started before the entries were
+        # written (epoch for 2026-08-05T10:00:00Z).
+        monkeypatch.setattr(
+            web_server,
+            "_profile_gateway_started_at",
+            lambda home, runtime: 1785924000.0,
+        )
         topo = _collect_profile_gateway_topology()
         assert topo["gateway_mode"] == "multiple"
         assert topo["profile_platforms"] == {
-            "default": {"telegram": {"state": "connected"}},
+            "default": {
+                "telegram": {
+                    "state": "connected",
+                    "updated_at": "2026-08-05T10:00:05+00:00",
+                }
+            },
             "coder": {
-                "discord": {"state": "fatal", "error_code": "duplicate_credential"}
+                "discord": {
+                    "state": "fatal",
+                    "error_code": "duplicate_credential",
+                    "updated_at": "2026-08-05T10:00:05+00:00",
+                }
             },
         }
+
+    def test_stale_platform_entries_are_not_aggregated(self, tmp_path, monkeypatch):
+        # Gateway startup preserves plain platform entries across restarts;
+        # if the operator removed/disabled the platform and restarted, its
+        # old fatal entry must not keep degrading fleet health.  Entries
+        # written before the live process started — or with no parseable
+        # updated_at — are excluded.
+        homes = [("default", tmp_path / "d"), ("coder", tmp_path / "c")]
+        runtimes = {
+            "coder": {
+                "platforms": {
+                    # Written by the PRIOR process (before restart).
+                    "telegram": {
+                        "state": "fatal",
+                        "error_code": "duplicate_credential",
+                        "updated_at": "2026-08-05T09:00:00+00:00",
+                    },
+                    # No timestamp at all — fail closed.
+                    "discord": {"state": "fatal"},
+                    # Garbage timestamp — fail closed.
+                    "slack": {"state": "fatal", "updated_at": "not-a-time"},
+                    # Written by the current process — kept.
+                    "signal": {
+                        "state": "fatal",
+                        "error_code": "duplicate_credential",
+                        "updated_at": "2026-08-05T10:00:05+00:00",
+                    },
+                }
+            },
+        }
+        _patch_topology(
+            monkeypatch, homes, running={"coder"}, runtimes=runtimes
+        )
+        monkeypatch.setattr(
+            web_server,
+            "_profile_gateway_started_at",
+            lambda home, runtime: 1785924000.0,  # 2026-08-05T10:00:00Z
+        )
+        topo = _collect_profile_gateway_topology()
+        assert set(topo["profile_platforms"].get("coder", {})) == {"signal"}
+
+    def test_no_live_process_means_no_aggregation(self, tmp_path, monkeypatch):
+        # When the record's PID doesn't validate against a live gateway
+        # process, nothing in it is current — the whole map is excluded.
+        homes = [("coder", tmp_path / "c")]
+        runtimes = {
+            "coder": {
+                "platforms": {
+                    "telegram": {
+                        "state": "fatal",
+                        "updated_at": "2026-08-05T10:00:05+00:00",
+                    }
+                }
+            },
+        }
+        _patch_topology(monkeypatch, homes, running={"coder"}, runtimes=runtimes)
+        monkeypatch.setattr(
+            web_server, "_profile_gateway_started_at", lambda home, runtime: None
+        )
+        topo = _collect_profile_gateway_topology()
+        assert topo["profile_platforms"] == {}
 
 
 

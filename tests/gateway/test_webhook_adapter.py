@@ -483,6 +483,41 @@ class TestPayloadFilters:
         assert captured[0].text == "Task: PAY BILLS"
         assert captured[0].raw_message["body"] == "PAY BILLS"
 
+    @pytest.mark.asyncio
+    async def test_completion_script_is_snapshotted_at_dispatch(self, monkeypatch):
+        """The finalizer runs the env-expanded script captured at admission, not a later route reload."""
+        from types import SimpleNamespace
+
+        from gateway import session_authorities
+        from gateway.platforms import webhook_ingress
+
+        monkeypatch.setenv("COMPLETION_SCRIPT_NAME", "first.py")
+        route = {"secret": _INSECURE_NO_AUTH, "prompt": "Task: {body}",
+                 "completion_script": "${COMPLETION_SCRIPT_NAME}"}
+        adapter = _make_adapter(routes={"todoist": route})
+        adapter._message_handler = SimpleNamespace(__self__=object())
+        finalized = []
+
+        async def _admit(_adapter, _event):
+            return SimpleNamespace(ref=SimpleNamespace(profile_id="default"))
+
+        async def _finalize(event, authority, receipt, **snapshot):
+            finalized.append(snapshot)
+
+        monkeypatch.setattr(webhook_ingress, "admit_producer", _admit)
+        monkeypatch.setattr(session_authorities, "authority_for_profile_id", lambda *_: object())
+        monkeypatch.setattr(adapter, "_finalize_delivery", _finalize)
+
+        outcome = await adapter._admit_agent_run({"body": "pay bills"}, "Task: pay bills", "completion-snapshot-1",
+                                                 100.0, route_config=route, route_name="todoist", profile=None,
+                                                 event_type="push")
+        assert outcome == "accepted"
+        route["completion_script"] = "second.py"
+        monkeypatch.setenv("COMPLETION_SCRIPT_NAME", "second.py")
+        await asyncio.gather(*adapter._background_tasks)
+
+        assert finalized == [{"route_name": "todoist", "profile": None, "completion_script": "first.py"}]
+
 
 # ===================================================================
 # HTTP handling

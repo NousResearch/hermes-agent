@@ -84,6 +84,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
 | `script` | No | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
+| `completion_script` | No | Best-effort finalizer script under `~/.hermes/scripts/` for agent-backed routes. Runs after the agent run settles as a success or failure and receives a versioned JSON envelope on stdin; interrupted or cancelled runs, `deliver_only` routes, and `cron_job` routes never run it. See [Completion scripts](#completion-scripts). |
 | `skills` | No | List of skill names to load for the agent run. |
 | `toolsets` | No | List of toolset keys (e.g. `["terminal", "file", "web"]`) that **replaces** the platform-level webhook toolset for runs triggered by this route only. Manual config edit only — not settable via `hermes webhook subscribe`, so agent-created subscriptions cannot self-grant elevated tools. Names are validated the same way as `platform_toolsets` entries (unknown or platform-restricted names are dropped). See [Per-route toolsets](#per-route-toolsets). |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant` (plugin), `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
@@ -115,6 +116,7 @@ platforms:
             Diff URL: {pull_request.diff_url}
             Action: {action}
           skills: ["github-code-review"]
+          completion_script: "record-review-result.py"
           deliver: "github_comment"
           deliver_extra:
             repo: "{repository.full_name}"
@@ -227,6 +229,37 @@ Script outcomes:
 - JSON object stdout replaces the payload used by `prompt` and `deliver_extra`.
 - Non-JSON text stdout is added to the payload as `script_output`.
 - Empty stdout, exact `[SILENT]`, `{"__hermes_ignore__": true}`, timeout, missing script, or nonzero exit code returns HTTP 200 with `{"status":"ignored","reason":"script"}`.
+
+### Completion scripts
+
+Use `completion_script` when an external workflow needs a definite signal that an agent-backed route has finished. It shares the filter/transform `script` interpreter selection, `~/.hermes/scripts/` path confinement, subprocess environment, and `script_timeout_seconds` setting.
+
+Once the agent run settles as a success or a failure, Hermes passes a JSON envelope on stdin:
+
+```json
+{
+  "version": 1,
+  "route": "github-pr",
+  "outcome": "success",
+  "delivery_id": "delivery-123",
+  "payload": {
+    "action": "opened",
+    "number": 42
+  }
+}
+```
+
+`outcome` is `success` or `failure`. `payload` is the payload after any filter/transform `script` has run. Hermes expands environment variables and snapshots the route and script setting when it accepts the delivery; a relative path is resolved at run time against the route's profile, so a later in-memory route reload does not change the finalizer used for that run.
+
+Completion scripts are deliberately best effort:
+
+- Exit code 0 means the finalizer succeeded; stdout and stderr are discarded.
+- A missing script, timeout, execution error, or nonzero exit code is logged without the script's output. It never changes the agent's original outcome and never blocks the one-shot session cleanup.
+- Hermes does not retry completion scripts and offers no crash-safe, exactly-once delivery. A delivery that settles after a gateway restart or a profile authority handoff does not run the script. Make scripts idempotent if the webhook provider may redeliver events.
+- Interrupted or cancelled runs, including expected cancellation during gateway shutdown or restart, are not terminal results and never run the script.
+- `deliver_only` routes bypass the agent lifecycle, and `cron_job` routes hand the run to the cron job, so neither runs a completion script.
+
+As with preprocessing scripts, payload values reach the script only as JSON data on stdin and are never interpolated into a shell command.
 
 ### Prompt Templates
 
@@ -485,7 +518,7 @@ The job reference is validated when you create the subscription, so typos surfac
 ### Notes
 
 - `cron_job` and `deliver_only` are mutually exclusive (the adapter refuses to start if a route sets both). A cron job handles its own delivery.
-- The route-level `deliver`, `deliver_extra`, and `skills` fields are ignored on `cron_job` routes — the job's own settings apply.
+- The route-level `deliver`, `deliver_extra`, `skills`, and `completion_script` fields are ignored on `cron_job` routes — the job's own settings apply.
 - Paused/disabled jobs are not fired; the event is logged and dropped.
 - The POST returns `202 Accepted` immediately; the job runs in the background.
 

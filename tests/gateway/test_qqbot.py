@@ -8,7 +8,7 @@ from unittest import mock
 import httpx
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +65,273 @@ class TestQQAdapterInit:
     def test_markdown_support_default(self):
         adapter = self._make(app_id="a", client_secret="b")
         assert adapter._markdown_support is True
+
+
+class TestQQGroupSenderAttribution:
+    @staticmethod
+    def _attachment_result():
+        return {
+            "image_urls": [],
+            "image_media_types": [],
+            "voice_transcripts": [],
+            "attachment_info": "",
+        }
+
+    def _make(self, identity_path, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        from gateway.platforms.qqbot.identity import QQIdentityStore
+
+        adapter = QQAdapter(
+            _make_config(
+                app_id="a",
+                client_secret="b",
+                group_policy="allowlist",
+                group_allow_from=["group-1"],
+                **extra,
+            )
+        )
+        adapter._identity_store = QQIdentityStore(identity_path)
+        adapter._process_attachments = mock.AsyncMock(return_value=self._attachment_result())
+        adapter._process_quoted_context = mock.AsyncMock(
+            return_value={"quote_block": "", "image_urls": [], "image_media_types": []}
+        )
+        adapter.handle_message = mock.AsyncMock()
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_group_message_uses_event_native_username(self, tmp_path):
+        adapter = self._make(tmp_path / "identities.json")
+
+        await adapter._handle_group_message(
+            {"group_openid": "group-1"},
+            "msg-1",
+            "hello",
+            {"member_openid": "member-1", "username": "Alice"},
+            "",
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.user_id == "member-1"
+        assert event.source.user_name.startswith("QQ sender id=")
+        assert "群昵称=Alice" in event.source.user_name
+
+    @pytest.mark.asyncio
+    async def test_group_message_falls_back_to_stable_member_label(self, tmp_path):
+        adapter = self._make(tmp_path / "identities.json")
+
+        await adapter._handle_group_message(
+            {"group_openid": "group-1"},
+            "msg-1",
+            "hello",
+            {"member_openid": "member-2"},
+            "",
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.user_name.startswith("QQ sender id=")
+        assert "群昵称=" not in event.source.user_name
+
+    @pytest.mark.asyncio
+    async def test_group_message_includes_event_group_nickname(self, tmp_path):
+        adapter = self._make(tmp_path / "identities.json")
+        await adapter._handle_group_message(
+            {"group_openid": "group-1"},
+            "msg-1",
+            "hello",
+            {"member_openid": "member-1", "username": "Alice Group"},
+            "",
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert "群昵称=Alice Group" in event.source.user_name
+
+
+class TestQQFullGroupMessages:
+    class FakeSessionStore:
+        def __init__(self):
+            self.entries = []
+
+        def get_or_create_session(self, source):
+            self.source = source
+            return SimpleNamespace(session_id="session-1")
+
+        def append_to_transcript(self, session_id, entry):
+            self.entries.append((session_id, entry))
+
+    def _make(self, tmp_path):
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = QQAdapter(
+            _make_config(
+                app_id="bot-app",
+                client_secret="secret",
+                group_policy="allowlist",
+                group_allow_from=["group-1"],
+                group_sessions_per_user=False,
+                observe_unmentioned_group_messages=True,
+                identity_store_path=str(tmp_path / "identities.json"),
+            )
+        )
+        adapter._process_attachments = mock.AsyncMock(return_value={
+            "image_urls": [],
+            "image_media_types": [],
+            "voice_transcripts": [],
+            "attachment_info": "",
+        })
+        adapter._process_quoted_context = mock.AsyncMock(return_value={
+            "quote_block": "",
+            "image_urls": [],
+            "image_media_types": [],
+        })
+        adapter.handle_message = mock.AsyncMock()
+        adapter._session_store = self.FakeSessionStore()
+        return adapter
+
+    @staticmethod
+    def _payload(msg_id="msg-1", mentions=None):
+        return {
+            "id": msg_id,
+            "group_openid": "group-1",
+            "content": "ordinary group chatter",
+            "timestamp": "2026-07-30T17:00:00+08:00",
+            "author": {"member_openid": "member-1", "username": "Alice"},
+            "mentions": mentions or [],
+        }
+
+    def test_dispatch_accepts_group_message_create(self, tmp_path):
+        adapter = self._make(tmp_path)
+        adapter._on_message = mock.Mock(return_value=mock.MagicMock())
+        with mock.patch("asyncio.create_task") as create_task:
+            adapter._dispatch_payload({
+                "op": 0,
+                "t": "GROUP_MESSAGE_CREATE",
+                "s": 1,
+                "d": self._payload(),
+            })
+
+        adapter._on_message.assert_called_once_with(
+            "GROUP_MESSAGE_CREATE",
+            self._payload(),
+        )
+        create_task.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_full_message_is_observed_without_agent(self, tmp_path):
+        adapter = self._make(tmp_path)
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", self._payload())
+
+        adapter.handle_message.assert_not_awaited()
+        assert len(adapter._session_store.entries) == 1
+        session_id, entry = adapter._session_store.entries[0]
+        assert session_id == "session-1"
+        assert entry["observed"] is True
+        assert entry["message_id"] == "msg-1"
+        assert "QQ sender id=" in entry["content"]
+        assert "群昵称=Alice" in entry["content"]
+        assert entry["content"].endswith("ordinary group chatter")
+
+    @pytest.mark.asyncio
+    async def test_full_message_from_non_allowlisted_group_is_not_saved(self, tmp_path):
+        adapter = self._make(tmp_path)
+        payload = self._payload()
+        payload["group_openid"] = "group-2"
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload)
+
+        adapter.handle_message.assert_not_awaited()
+        assert adapter._session_store.entries == []
+
+    @pytest.mark.asyncio
+    async def test_bot_mention_dispatches_agent_instead_of_observing(self, tmp_path):
+        adapter = self._make(tmp_path)
+        adapter._bot_openids = {"bot-openid"}
+        payload = self._payload(mentions=[{"id": "bot-openid", "bot": True}])
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload)
+
+        adapter.handle_message.assert_awaited_once()
+        assert adapter._session_store.entries == []
+        event = adapter.handle_message.await_args.args[0]
+        assert "observed QQ group context" in event.channel_prompt
+
+    @pytest.mark.asyncio
+    async def test_mentioning_another_bot_remains_passive(self, tmp_path):
+        adapter = self._make(tmp_path)
+        adapter._bot_openids = {"our-bot-openid"}
+        payload = self._payload(mentions=[{"id": "other-bot-openid", "bot": True}])
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload)
+
+        adapter.handle_message.assert_not_awaited()
+        assert len(adapter._session_store.entries) == 1
+        assert adapter._session_store.entries[0][1]["observed"] is True
+
+    @pytest.mark.asyncio
+    async def test_observed_event_is_replaced_before_addressed_dispatch_with_real_store(
+        self, tmp_path
+    ):
+        from gateway.session import SessionStore
+        from hermes_state import SessionDB
+
+        adapter = self._make(tmp_path)
+        db = SessionDB(tmp_path / "state.db")
+        with mock.patch("hermes_state.SessionDB", return_value=db):
+            store = SessionStore(
+                sessions_dir=tmp_path / "sessions",
+                config=GatewayConfig(
+                    platforms={
+                        Platform.QQBOT: PlatformConfig(
+                            enabled=True,
+                            extra={"group_sessions_per_user": False},
+                        )
+                    }
+                ),
+            )
+        adapter._session_store = store
+
+        async def persist_addressed(event):
+            session = store.get_or_create_session(event.source)
+            store.append_to_transcript(
+                session.session_id,
+                {
+                    "role": "user",
+                    "content": event.text,
+                    "message_id": event.message_id,
+                    "observed": False,
+                },
+            )
+
+        adapter.handle_message = mock.AsyncMock(side_effect=persist_addressed)
+        payload = self._payload(msg_id="msg-upgrade")
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload)
+        session = next(iter(store._entries.values()))
+        observed = store.load_transcript(session.session_id)
+        assert len(observed) == 1
+        assert observed[0]["observed"] is True
+
+        await adapter._on_message("GROUP_AT_MESSAGE_CREATE", payload)
+
+        adapter.handle_message.assert_awaited_once()
+        transcript = store.load_transcript(session.session_id)
+        matching = [
+            row
+            for row in transcript
+            if row.get("message_id") == "msg-upgrade"
+        ]
+        assert len(matching) == 1
+        assert matching[0].get("observed", False) is False
+        assert db.get_session(session.session_id)["message_count"] == 1
+        db.close()
+
+    def test_addressed_duplicate_upgrades_prior_observation(self, tmp_path):
+        adapter = self._make(tmp_path)
+
+        assert adapter._is_duplicate("msg-1", mode="observed") is False
+        assert adapter._is_duplicate("msg-1", mode="observed") is True
+        assert adapter._is_duplicate("msg-1", mode="addressed") is False
+        assert adapter._is_duplicate("msg-1", mode="addressed") is True
 
 
 # ---------------------------------------------------------------------------

@@ -61,6 +61,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from hermes_constants import get_hermes_home
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -72,6 +73,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import strip_markdown
 from gateway.platforms.media_cache import ext_for_mime
+from gateway.platforms.qqbot.identity import QQIdentityStore
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +246,20 @@ class QQAdapter(BasePlatformAdapter):
         self._group_allow_from = _coerce_list(
             extra.get("group_allow_from") or extra.get("groupAllowFrom")
         )
+        observe_unmentioned = extra.get("observe_unmentioned_group_messages", False)
+        self._observe_unmentioned_group_messages = (
+            observe_unmentioned.strip().lower() in {"true", "1", "yes", "on"}
+            if isinstance(observe_unmentioned, str)
+            else bool(observe_unmentioned)
+        )
+        identity_store_path = extra.get("identity_store_path")
+        self._identity_store = QQIdentityStore(
+            Path(identity_store_path).expanduser()
+            if identity_store_path
+            else get_hermes_home() / "platform_data" / "qqbot" / "identities.json"
+        )
+        self._identity_probe = bool(extra.get("identity_probe", False))
+        self._identity_probe_shapes: set[Tuple[str, ...]] = set()
 
         # Connection state
         self._session: Optional[aiohttp.ClientSession] = None
@@ -259,6 +275,8 @@ class QQAdapter(BasePlatformAdapter):
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
+        self._seen_message_modes: Dict[str, str] = {}
+        self._bot_openids: set[str] = set()
 
         # Last inbound message ID per chat — used by send_typing
         self._last_msg_id: Dict[str, str] = {}
@@ -775,7 +793,7 @@ class QQAdapter(BasePlatformAdapter):
                 "intents": (1 << 25)
                            | (1 << 30)
                            | (1 << 12)
-                           | (1 << 26),  # C2C_GROUP_AT_MESSAGES + PUBLIC_GUILD_MESSAGES + DIRECT_MESSAGE + INTERACTION
+                           | (1 << 26),  # GROUP_AND_C2C_EVENT + PUBLIC_GUILD_MESSAGES + DIRECT_MESSAGE + INTERACTION
                 "shard": [0, 1],
                 "properties": {
                     "$os": "macOS",
@@ -878,6 +896,7 @@ class QQAdapter(BasePlatformAdapter):
                 logger.info("[%s] Session resumed", self._log_tag)
             elif t in {
                     "C2C_MESSAGE_CREATE",
+                    "GROUP_MESSAGE_CREATE",
                     "GROUP_AT_MESSAGE_CREATE",
                     "DIRECT_MESSAGE_CREATE",
                     "GUILD_MESSAGE_CREATE",
@@ -926,6 +945,10 @@ class QQAdapter(BasePlatformAdapter):
         """Handle the READY event — store session_id for resume."""
         if isinstance(d, dict):
             self._session_id = d.get("session_id")
+            user = d.get("user") if isinstance(d.get("user"), dict) else {}
+            for key in ("id", "member_openid", "user_openid", "union_openid"):
+                if user.get(key):
+                    self._bot_openids.add(str(user[key]))
             logger.info("[%s] Ready, session_id=%s", self._log_tag, self._session_id)
 
     # ------------------------------------------------------------------
@@ -965,7 +988,21 @@ class QQAdapter(BasePlatformAdapter):
 
         # Extract common fields
         msg_id = str(d.get("id", ""))
-        if not msg_id or self._is_duplicate(msg_id):
+        author = d.get("author") if isinstance(d.get("author"), dict) else {}
+        if event_type == "GROUP_MESSAGE_CREATE" and self._bot_openids:
+            author_openids = {
+                str(author[key])
+                for key in ("id", "member_openid", "user_openid", "union_openid")
+                if author.get(key)
+            }
+            if self._bot_openids.intersection(author_openids):
+                return
+        addressed = (
+            event_type != "GROUP_MESSAGE_CREATE"
+            or self._group_message_mentions_bot(d)
+        )
+        mode = "addressed" if addressed else "observed"
+        if not msg_id or self._is_duplicate(msg_id, mode=mode):
             logger.debug(
                 "[%s] Duplicate or missing message id: %s", self._log_tag, msg_id
             )
@@ -973,13 +1010,19 @@ class QQAdapter(BasePlatformAdapter):
 
         timestamp = str(d.get("timestamp", ""))
         content = str(d.get("content", "")).strip()
-        author = d.get("author") if isinstance(d.get("author"), dict) else {}
-
         # Route by event type
         if event_type == "C2C_MESSAGE_CREATE":
             await self._handle_c2c_message(d, msg_id, content, author, timestamp)
-        elif event_type in {"GROUP_AT_MESSAGE_CREATE",}:
-            await self._handle_group_message(d, msg_id, content, author, timestamp)
+        elif event_type in {"GROUP_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE"}:
+            if addressed or self._observe_unmentioned_group_messages:
+                await self._handle_group_message(
+                    d,
+                    msg_id,
+                    content,
+                    author,
+                    timestamp,
+                    addressed=addressed,
+                )
         elif event_type in {"GUILD_MESSAGE_CREATE", "GUILD_AT_MESSAGE_CREATE"}:
             await self._handle_guild_message(d, msg_id, content, author, timestamp)
         elif event_type == "DIRECT_MESSAGE_CREATE":
@@ -1334,6 +1377,135 @@ class QQAdapter(BasePlatformAdapter):
         )
         await self.handle_message(event)
 
+    def _log_group_identity_probe(
+            self,
+            sender_id: str,
+            author: Dict[str, Any],
+    ) -> None:
+        """Log one safe sample per QQ author shape for field discovery."""
+        if not self._identity_probe:
+            return
+        shape = tuple(sorted(str(key) for key in author))
+        if shape in self._identity_probe_shapes:
+            return
+        self._identity_probe_shapes.add(shape)
+        candidate_keys = (
+            "username",
+            "nickname",
+            "qq_nickname",
+            "nick",
+            "card",
+            "member_name",
+        )
+        name_fields = {
+            key: " ".join(str(author[key]).split())[:80]
+            for key in candidate_keys
+            if author.get(key) not in (None, "")
+        }
+        logger.info(
+            "[%s] Group sender identity probe: sender_id=%s author_keys=%s name_fields=%s",
+            self._log_tag,
+            sender_id,
+            list(shape),
+            name_fields,
+        )
+
+    def _group_message_mentions_bot(self, d: Dict[str, Any]) -> bool:
+        """Return True when a full-group event explicitly mentions this bot."""
+        mentions = d.get("mentions")
+        if not isinstance(mentions, list):
+            return False
+        bot_openids = getattr(self, "_bot_openids", set())
+        for mention in mentions:
+            if not isinstance(mention, dict):
+                continue
+            mention_ids = {
+                str(mention[key])
+                for key in ("id", "member_openid", "user_openid", "union_openid")
+                if mention.get(key)
+            }
+            if bot_openids:
+                if bot_openids.intersection(mention_ids):
+                    return True
+                continue
+            # READY should normally provide the bot OpenID before message
+            # dispatch starts. Fall back to the official User.bot field only
+            # if that identity was absent from the READY payload.
+            bot_flag = mention.get("bot")
+            if bot_flag is True or (
+                isinstance(bot_flag, str) and bot_flag.strip().lower() == "true"
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _qq_group_observe_channel_prompt() -> str:
+        return (
+            "You are handling a QQ group chat message.\n"
+            "- observed QQ group context may be provided in a separate context-only "
+            "block before the current message; it was not necessarily addressed to you.\n"
+            "- Treat only the current addressed message as a request, and use observed "
+            "context only when it helps answer that current message."
+        )
+
+    def _observe_group_message(self, event: MessageEvent) -> None:
+        """Persist unaddressed QQ group chatter without invoking the agent."""
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        try:
+            session_entry = store.get_or_create_session(event.source)
+            sender = event.source.user_name or event.source.user_id or "unknown"
+            content = f"[{sender}] {event.text or ''}".strip()
+            if event.media_urls:
+                media_notes = [
+                    f"[Observed QQ media saved at: {path}]"
+                    for path in event.media_urls
+                ]
+                content = f"{content}\n\n" + "\n".join(media_notes)
+            entry: Dict[str, Any] = {
+                "role": "user",
+                "content": content,
+                "timestamp": event.timestamp.isoformat(),
+                "observed": True,
+            }
+            if event.message_id:
+                entry["message_id"] = str(event.message_id)
+            store.append_to_transcript(session_entry.session_id, entry)
+            logger.info(
+                "[%s] QQ group message observed (no bot mention): chat=%s sender=%s",
+                self._log_tag,
+                event.source.chat_id,
+                event.source.user_id or "unknown",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to observe QQ group message: %s",
+                self._log_tag,
+                exc,
+            )
+
+    def _discard_prior_group_observation(self, event: MessageEvent) -> bool:
+        """Remove a passive copy before dispatching the same message as addressed."""
+        if not event.message_id:
+            return True
+        store = getattr(self, "_session_store", None)
+        discard = getattr(store, "discard_observed_platform_message", None)
+        if not store or not callable(discard):
+            return True
+        try:
+            session_entry = store.get_or_create_session(event.source)
+            return bool(discard(session_entry.session_id, str(event.message_id)))
+        except Exception:
+            logger.warning(
+                "[%s] Failed to discard prior QQ group observation: chat=%s msg=%s",
+                self._log_tag,
+                event.source.chat_id,
+                event.message_id,
+                exc_info=True,
+            )
+            return False
+
     async def _handle_group_message(
             self,
             d: Dict[str, Any],
@@ -1341,18 +1513,20 @@ class QQAdapter(BasePlatformAdapter):
             content: str,
             author: Dict[str, Any],
             timestamp: str,
+            *,
+            addressed: bool = True,
     ) -> None:
-        """Handle a group @-message event."""
+        """Handle an addressed or passively observed QQ group message."""
         group_openid = str(d.get("group_openid", ""))
         if not group_openid:
             return
-        if not self._is_group_allowed(
-                group_openid, str(author.get("member_openid", ""))
-        ):
+        member_openid = str(author.get("member_openid", ""))
+        if not self._is_group_allowed(group_openid, member_openid):
             return
 
-        # Strip the @bot mention prefix from content
-        text = self._strip_at_mention(content)
+        # Full-group events can start with an @mention of another human; only
+        # strip the legacy prefix when the message addresses this bot.
+        text = self._strip_at_mention(content) if addressed else content
         att_result = await self._process_attachments(d.get("attachments"))
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]
@@ -1383,21 +1557,34 @@ class QQAdapter(BasePlatformAdapter):
             return
 
         self._chat_type_map[group_openid] = "group"
+        identity = self._identity_store.resolve(group_openid, author)
+        self._log_group_identity_probe(identity.stable_id, author)
         event = MessageEvent(
             source=self.build_source(
                 chat_id=group_openid,
-                user_id=str(author.get("member_openid", "")),
+                user_id=member_openid,
+                user_name=identity.label,
                 chat_type="group",
             ),
             text=text,
             message_type=self._detect_message_type(image_urls, image_media_types),
             raw_message=d,
             message_id=msg_id,
+            channel_prompt=(
+                self._qq_group_observe_channel_prompt()
+                if self._observe_unmentioned_group_messages
+                else None
+            ),
             media_urls=image_urls,
             media_types=image_media_types,
             timestamp=self._parse_qq_timestamp(timestamp),
         )
-        await self.handle_message(event)
+        if addressed:
+            if not self._discard_prior_group_observation(event):
+                return
+            await self.handle_message(event)
+        else:
+            self._observe_group_message(event)
 
     async def _handle_guild_message(
             self,
@@ -3260,14 +3447,26 @@ class QQAdapter(BasePlatformAdapter):
             pass
         return datetime.now(tz=timezone.utc)
 
-    def _is_duplicate(self, msg_id: str) -> bool:
+    def _is_duplicate(self, msg_id: str, *, mode: str = "addressed") -> bool:
+        """Deduplicate QQ events while allowing observed→addressed upgrades."""
         now = time.time()
         if len(self._seen_messages) > DEDUP_MAX_SIZE:
             cutoff = now - DEDUP_WINDOW_SECONDS
             self._seen_messages = {
                 key: ts for key, ts in self._seen_messages.items() if ts > cutoff
             }
+            self._seen_message_modes = {
+                key: prior_mode
+                for key, prior_mode in self._seen_message_modes.items()
+                if key in self._seen_messages
+            }
         if msg_id in self._seen_messages:
+            prior_mode = self._seen_message_modes.get(msg_id, "addressed")
+            if prior_mode == "observed" and mode == "addressed":
+                self._seen_messages[msg_id] = now
+                self._seen_message_modes[msg_id] = "addressed"
+                return False
             return True
         self._seen_messages[msg_id] = now
+        self._seen_message_modes[msg_id] = mode
         return False

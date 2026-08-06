@@ -66,6 +66,9 @@ def profile_and_root(tmp_path, monkeypatch):
 
     monkeypatch.setattr(A, "_auth_file_path", lambda: profile_path)
     monkeypatch.setattr(A, "_global_auth_file_path", lambda: root_path)
+    # credential_pool imports these helpers by name, so patch its bindings too.
+    monkeypatch.setattr(CP, "_global_auth_file_path", lambda: root_path)
+    monkeypatch.setattr(CP, "_same_path", lambda a, b: a == b)
     monkeypatch.setenv("HOME", str(tmp_path / "not-the-root"))
     return profile_path, root_path
 
@@ -101,11 +104,9 @@ def test_pool_refresh_writes_through_to_root_when_profile_reads_root(
         _entry(provider, id="e1", access_token="new-access", refresh_token="new-refresh")
     )
 
-    # Profile got the rotated chain (existing behavior).
+    # A root-backed profile must not create a shadowing local provider block.
     profile = _read_store(profile_path)
-    assert (
-        profile["providers"][provider]["tokens"]["refresh_token"] == "new-refresh"
-    )
+    assert provider not in profile.get("providers", {})
 
     # AND the global root no longer holds the revoked refresh token (#48415).
     root = _read_store(root_path)
@@ -426,3 +427,101 @@ def test_write_through_fires_on_every_refresh_not_just_first(
         "The old code self-disabled here (#74339)"
     )
 
+
+def test_codex_pool_refresh_from_root_holds_root_lock_across_post(
+    profile_and_root, monkeypatch
+):
+    """Profiles sharing root must serialize the single-use refresh POST at root."""
+    profile_path, root_path = profile_and_root
+    _write_store(profile_path, {"version": 1, "providers": {}})
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "root-access",
+                        "refresh_token": "root-refresh",
+                    }
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(CP, "_global_auth_file_path", lambda: root_path)
+    monkeypatch.setattr(CP, "_same_path", lambda a, b: a == b)
+
+    root_lock_held = {"during_post": False}
+
+    def fake_refresh(access_token, refresh_token, **kwargs):
+        holder = A._auth_lock_holder_for(root_path)
+        root_lock_held["during_post"] = getattr(holder, "depth", 0) > 0
+        return {
+            "access_token": "rotated-access",
+            "refresh_token": "rotated-refresh",
+            "last_refresh": "2026-08-06T00:00:00Z",
+        }
+
+    monkeypatch.setattr(A, "refresh_codex_oauth_pure", fake_refresh)
+    entry = _entry(
+        "openai-codex",
+        id="shared-root",
+        access_token="root-access",
+        refresh_token="root-refresh",
+    )
+
+    refreshed = CredentialPool("openai-codex", [entry])._refresh_entry(
+        entry, force=True
+    )
+
+    assert refreshed is not None
+    assert root_lock_held["during_post"] is True
+
+
+def test_codex_runtime_refresh_from_root_stays_canonical_and_holds_root_lock(
+    profile_and_root, monkeypatch
+):
+    """The singleton resolver must rotate the root grant without profile shadowing."""
+    profile_path, root_path = profile_and_root
+    _write_store(profile_path, {"version": 1, "providers": {}})
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "root-access",
+                        "refresh_token": "root-refresh",
+                    },
+                    "last_refresh": "2026-08-01T00:00:00Z",
+                }
+            },
+        },
+    )
+
+    root_lock_held = {"during_post": False}
+
+    def fake_refresh(access_token, refresh_token, **kwargs):
+        holder = A._auth_lock_holder_for(root_path)
+        root_lock_held["during_post"] = getattr(holder, "depth", 0) > 0
+        return {
+            "access_token": "rotated-access",
+            "refresh_token": "rotated-refresh",
+            "last_refresh": "2026-08-06T00:00:00Z",
+        }
+
+    monkeypatch.setattr(A, "refresh_codex_oauth_pure", fake_refresh)
+    monkeypatch.setattr(A, "_codex_access_token_is_expiring", lambda *args: True)
+
+    resolved = A.resolve_codex_runtime_credentials()
+
+    assert resolved["api_key"] == "rotated-access"
+    assert root_lock_held["during_post"] is True
+    root = _read_store(root_path)
+    assert (
+        root["providers"]["openai-codex"]["tokens"]["refresh_token"]
+        == "rotated-refresh"
+    )
+    profile = _read_store(profile_path)
+    assert "openai-codex" not in profile.get("providers", {})

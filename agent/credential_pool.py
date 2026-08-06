@@ -32,6 +32,7 @@ from hermes_cli.auth import (
     _load_auth_store,
     _load_provider_state,
     _load_provider_state_with_source,
+    _provider_state_transaction,
     _resolve_kimi_base_url,
     _resolve_zai_base_url,
     _same_path,
@@ -1175,8 +1176,13 @@ class CredentialPool:
                 if self.provider == "openai-codex"
                 else self._sync_xai_oauth_entry_from_pool_store
             )
-            with _auth_store_lock(
-                timeout_seconds=self._single_use_refresh_lock_timeout()
+            # Lock both the active profile store and the provider state source.
+            # In profile mode the source may be the shared global root, so the
+            # profile-local auth lock alone does not serialize single-use token
+            # refreshes across profiles.
+            with _provider_state_transaction(
+                self.provider,
+                timeout_seconds=self._single_use_refresh_lock_timeout(),
             ):
                 synced = sync_entry(entry)
                 if self.provider == "openai-codex":

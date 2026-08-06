@@ -1244,7 +1244,11 @@ def _load_provider_state_with_source(
 
 
 @contextmanager
-def _provider_state_transaction(provider_id: str):
+def _provider_state_transaction(
+    provider_id: str,
+    *,
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+):
     """Lock the active auth store and any global fallback source in order.
 
     Profile-backed refresh paths must take the global auth-store lock before
@@ -1252,7 +1256,7 @@ def _provider_state_transaction(provider_id: str):
     target lock is acquired prevents both stale refreshes and whole-file lost
     updates without inverting the documented auth -> shared lock order.
     """
-    with _auth_store_lock():
+    with _auth_store_lock(timeout_seconds=timeout_seconds):
         auth_store = _load_auth_store()
         state, source_path = _load_provider_state_with_source(
             auth_store,
@@ -1263,7 +1267,10 @@ def _provider_state_transaction(provider_id: str):
             yield auth_store, state, source_path
             return
 
-        with _auth_store_lock(target_path=source_path):
+        with _auth_store_lock(
+            timeout_seconds=timeout_seconds,
+            target_path=source_path,
+        ):
             source_store = _load_auth_store(source_path)
             source_providers = source_store.get("providers")
             source_state = None
@@ -3591,12 +3598,18 @@ def _sync_codex_pool_entries(
         entry["last_error_reset_at"] = None
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
-    """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
+def _save_codex_tokens(
+    tokens: Dict[str, str],
+    last_refresh: Optional[str] = None,
+    label: Optional[str] = None,
+    *,
+    target_path: Optional[Path] = None,
+) -> None:
+    """Save Codex OAuth tokens to the selected Hermes auth store."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+    with _auth_store_lock(target_path=target_path):
+        auth_store = _load_auth_store(target_path)
         state = _load_provider_state(auth_store, "openai-codex") or {}
         # Capture the previous singleton tokens BEFORE overwriting them.  The
         # pool-sync step uses this to distinguish legacy singleton-aliases
@@ -3616,11 +3629,15 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
             last_refresh,
             previous_singleton_tokens=previous_singleton_tokens,
         )
-        _save_auth_store(auth_store)
+        _save_auth_store(auth_store, target_path=target_path)
 
 
-def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
-    """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
+def _recover_codex_tokens_from_cli(
+    reason: str,
+    *,
+    target_path: Optional[Path] = None,
+) -> Optional[Dict[str, str]]:
+    """Adopt a valid Codex CLI token pair into the selected Hermes auth store."""
     imported = _import_codex_cli_tokens()
     # Require BOTH tokens before adopting: persisting a payload without a
     # usable refresh_token would only break the next refresh cycle.
@@ -3631,7 +3648,7 @@ def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
     ):
         return None
     logger.info("Codex auth recovered from Codex CLI auth.json (%s).", reason)
-    _save_codex_tokens(imported)
+    _save_codex_tokens(imported, target_path=target_path)
     return dict(imported)
 
 
@@ -3772,6 +3789,8 @@ def refresh_codex_oauth_pure(
 def _refresh_codex_auth_tokens(
     tokens: Dict[str, str],
     timeout_seconds: float,
+    *,
+    target_path: Optional[Path] = None,
 ) -> Dict[str, str]:
     """Refresh Codex access token using the refresh token.
     
@@ -3799,7 +3818,8 @@ def _refresh_codex_auth_tokens(
         if not getattr(exc, "relogin_required", False):
             raise
         imported = _recover_codex_tokens_from_cli(
-            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
+            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}",
+            target_path=target_path,
         )
         if not imported:
             raise
@@ -3809,7 +3829,7 @@ def _refresh_codex_auth_tokens(
     updated_tokens["access_token"] = refreshed["access_token"]
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
-    _save_codex_tokens(updated_tokens)
+    _save_codex_tokens(updated_tokens, target_path=target_path)
     return updated_tokens
 
 
@@ -3962,8 +3982,18 @@ def resolve_codex_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
-        # Re-read under lock to avoid racing with other Hermes processes
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+        # Lock the active profile store and the actual provider-state source.
+        # Named profiles commonly resolve Codex from the global root; using
+        # only the profile lock lets two profiles spend the same single-use
+        # refresh token concurrently.
+        transaction_timeout = max(
+            float(AUTH_LOCK_TIMEOUT_SECONDS),
+            refresh_timeout_seconds + 5.0,
+        )
+        with _provider_state_transaction(
+            "openai-codex",
+            timeout_seconds=transaction_timeout,
+        ) as (_auth_store, _state, state_source_path):
             data = _read_codex_tokens(_lock=False)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()
@@ -3973,7 +4003,11 @@ def resolve_codex_runtime_credentials(
                 should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
 
             if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                tokens = _refresh_codex_auth_tokens(
+                    tokens,
+                    refresh_timeout_seconds,
+                    target_path=state_source_path,
+                )
                 access_token = str(tokens.get("access_token", "") or "").strip()
 
     base_url = (

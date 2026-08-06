@@ -10172,14 +10172,6 @@ async function startHermes() {
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
 
-    // Mutual exclusion with an in-app update (#50238). If this instance was
-    // relaunched while the Tauri updater is still applying an update, spawning
-    // a local backend now re-locks the venv shim and gets killed by the
-    // updater's straggler cleanup — looping. Park until the update finishes (or
-    // is detected stale), THEN start the backend. Local backends only; remote
-    // connections returned above and never touch the install tree.
-    await waitForUpdateToFinish()
-
     // GUI launches (Finder/Dock, desktop launchers) inherit a minimal PATH
     // that skips the user's shell profiles. Merge the login-shell PATH into
     // process.env BEFORE resolving the runtime or spawning the backend, so

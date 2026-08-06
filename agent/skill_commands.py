@@ -39,6 +39,7 @@ _publish_lock = threading.Lock()
 # applied by hermes_cli/commands_platforms.py, not here.
 _SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_SKILL_TRIGGER_WORD = re.compile(r"^\w[\w\s-]*\w$|^\w$")
 
 # Skill-scaffolding markers. A /skill (or /bundle) turn is expanded into a
 # model-facing message embedding the full skill body; memory providers storing
@@ -248,6 +249,79 @@ def _resolve_skill_commands_project() -> Optional[str]:
     from agent.skill_utils import find_project_root
     root = find_project_root()
     return str(root) if root is not None else None
+
+
+def _extract_skill_triggers(frontmatter: dict[str, Any]) -> list[str]:
+    """Return normalized auto-trigger phrases declared in skill frontmatter."""
+    metadata = frontmatter.get("metadata")
+    hermes_meta = metadata.get("hermes") if isinstance(metadata, dict) else None
+    raw_triggers = None
+    if isinstance(hermes_meta, dict):
+        raw_triggers = hermes_meta.get("triggers")
+    if raw_triggers is None:
+        raw_triggers = frontmatter.get("triggers")
+
+    if raw_triggers is None:
+        return []
+    if not isinstance(raw_triggers, list):
+        raw_triggers = [raw_triggers]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in raw_triggers:
+        trigger = re.sub(r"\s+", " ", str(value or "").strip())
+        if not trigger:
+            continue
+        dedupe_key = trigger.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(trigger)
+    return normalized
+
+
+def _compile_skill_trigger_pattern(trigger: str) -> re.Pattern[str]:
+    """Build a boundary-aware regex for a skill trigger phrase."""
+    normalized = re.sub(r"\s+", " ", trigger.strip())
+    body = r"\s+".join(re.escape(part) for part in normalized.split(" "))
+    if _SKILL_TRIGGER_WORD.fullmatch(normalized):
+        pattern = rf"\b{body}\b"
+    else:
+        pattern = rf"(?<!\w){body}(?!\w)"
+    return re.compile(pattern, re.IGNORECASE)
+
+
+def find_triggered_skill_command(
+    user_message: str,
+) -> tuple[str, dict[str, Any], str] | None:
+    """Return the best matching skill command for a plain user message."""
+    if not isinstance(user_message, str):
+        return None
+
+    text = user_message.strip()
+    if not text or text.startswith("/"):
+        return None
+
+    best_match: tuple[int, int, str, str, dict[str, Any]] | None = None
+    for cmd_key, skill_info in get_skill_commands().items():
+        for trigger in skill_info.get("triggers") or []:
+            if not _compile_skill_trigger_pattern(trigger).search(text):
+                continue
+            candidate = (
+                len(trigger),
+                len(skill_info.get("name") or ""),
+                cmd_key,
+                trigger,
+                skill_info,
+            )
+            if best_match is None or candidate > best_match:
+                best_match = candidate
+
+    if best_match is None:
+        return None
+
+    _, _, cmd_key, trigger, skill_info = best_match
+    return cmd_key, skill_info, trigger
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
@@ -510,7 +584,8 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dic
                        name, cmd_key, commands[cmd_key]["name"])
         return
     commands[cmd_key] = {"name": name, "description": description or f"Invoke the {name} skill",
-                         "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent)}
+                         "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent),
+                         "triggers": _extract_skill_triggers(frontmatter)}
 
 
 def scan_skill_commands() -> dict[str, dict[str, Any]]:

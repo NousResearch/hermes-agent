@@ -23,6 +23,24 @@ from agent.i18n import t
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 
+def _resolve_skill_trigger_message(message, session_id):
+    """Expand a plain turn matching a skill's trigger phrase into that skill's invocation message."""
+    from agent.skill_commands import build_skill_invocation_message, find_triggered_skill_command
+    from cli import _DIM, _RST, _cprint
+    matched = find_triggered_skill_command(message)
+    if not matched:
+        return message
+    cmd_key, skill_info, trigger = matched
+    expanded = build_skill_invocation_message(
+        cmd_key, user_instruction=message, task_id=session_id,
+        runtime_note=f'Auto-activated from skill trigger "{trigger}".',
+    )
+    if not expanded:
+        return message
+    _cprint(f"  {_DIM}⚡ Auto-loading skill: {skill_info.get('name') or cmd_key.lstrip('/')} (trigger: {trigger}){_RST}")
+    return expanded
+
+
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
@@ -312,7 +330,8 @@ class CLIChatTurnMixin:
         except Exception:
             reset_current_session_key = None  # type: ignore[assignment]
             _approval_session_token = None
-        agent_message = turn.voice_prefix + message if turn.voice_prefix else message
+        agent_message = _resolve_skill_trigger_message(message, self.session_id)
+        agent_message = turn.voice_prefix + agent_message if turn.voice_prefix else agent_message
         self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).

@@ -666,14 +666,21 @@ async def _exec_buzz(
 _MAX_CLI_MESSAGE_CHARS = 900
 
 
-def _bounded_cli_message(message: str) -> str:
+def _bounded_cli_message(message: str, redact_path: Optional[Path] = None) -> str:
     """Keep untrusted CLI detail useful without exposing unbounded output."""
+    if redact_path is not None:
+        message = message.replace(str(redact_path), redact_path.name)
     if len(message) <= _MAX_CLI_MESSAGE_CHARS:
         return message
     return f"{message[: _MAX_CLI_MESSAGE_CHARS - 3]}..."
 
 
-def _cli_error_message(stderr: str, returncode: int) -> str:
+def _cli_error_message(
+    stderr: str,
+    returncode: int,
+    *,
+    redact_path: Optional[Path] = None,
+) -> str:
     """Extract a bounded human-readable message from the CLI error contract."""
     text = (stderr or "").strip()
     try:
@@ -684,11 +691,15 @@ def _cli_error_message(stderr: str, returncode: int) -> str:
             if isinstance(detail, str) and detail.strip():
                 label = category.strip() if isinstance(category, str) and category.strip() else "error"
                 return _bounded_cli_message(
-                    f"{label}: {detail.strip()} (exit {returncode})"
+                    f"{label}: {detail.strip()} (exit {returncode})",
+                    redact_path,
                 )
     except ValueError:
         pass
-    return _bounded_cli_message(text or f"buzz CLI failed with exit code {returncode}")
+    return _bounded_cli_message(
+        text or f"buzz CLI failed with exit code {returncode}",
+        redact_path,
+    )
 
 
 def _parse_send_receipt(stdout: str) -> Tuple[Optional[str], Optional[str]]:
@@ -1501,7 +1512,7 @@ class BuzzAdapter(BasePlatformAdapter):
         if code != 0:
             return SendResult(
                 success=False,
-                error=_cli_error_message(err, code),
+                error=_cli_error_message(err, code, redact_path=local),
                 retryable=code == 2,
             )
         event_id, receipt_error = _parse_send_receipt(out)

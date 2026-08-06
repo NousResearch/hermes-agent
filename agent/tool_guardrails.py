@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -37,6 +38,154 @@ IDEMPOTENT_TOOL_NAMES = frozenset(
         "mcp_filesystem_search_files",
     }
 )
+
+# Shell commands that only inspect state. `terminal` is a mutating tool by
+# name, but most of what agents run through it is a read. A loop that reruns
+# `gh api .../reviews` 500 times with a byte-identical `[]` reply and exit 0
+# escapes both loop detectors: the no-progress one only looked at tools in
+# IDEMPOTENT_TOOL_NAMES, and the failure one only counts non-zero exits. So we
+# classify the *command*, not just the tool.
+#
+# The allowlist is deliberately conservative: an unrecognised command is
+# treated as mutating, so a miss costs a later block (the mutating threshold
+# still applies), never a wrongly-blocked write.
+READ_ONLY_SHELL_COMMANDS = frozenset(
+    {
+        "basename", "cat", "column", "cut", "date", "df", "dirname", "du",
+        "echo", "egrep", "env", "false", "fgrep", "file", "find", "grep",
+        "head", "hostname", "id", "jq", "less", "ls", "nl", "od", "printenv",
+        "printf", "ps", "pwd", "readlink", "realpath", "rg", "sleep", "sort",
+        "stat", "tail", "test", "tr", "true", "uname", "uniq", "wc", "whoami",
+        "yq",
+    }
+)
+
+# Commands whose first argument decides whether the call reads or writes.
+READ_ONLY_SHELL_SUBCOMMANDS = {
+    "cargo": frozenset({"tree", "metadata"}),
+    "docker": frozenset({"images", "info", "inspect", "logs", "ps", "version"}),
+    "gh": frozenset({"api", "browse", "label", "search", "status", "version"}),
+    "git": frozenset(
+        {
+            "blame", "branch", "cat-file", "config", "count-objects",
+            "describe", "diff", "for-each-ref", "log", "ls-files",
+            "ls-remote", "ls-tree", "rev-list", "rev-parse", "shortlog",
+            "show", "show-ref", "status", "symbolic-ref", "tag", "var",
+            "whatchanged",
+        }
+    ),
+    "kubectl": frozenset({"describe", "get", "logs", "version"}),
+    "npm": frozenset({"ls", "outdated", "view"}),
+    "pnpm": frozenset({"list", "ls", "outdated", "why"}),
+    "systemctl": frozenset({"is-active", "is-enabled", "show", "status"}),
+    "yarn": frozenset({"info", "list", "why"}),
+}
+
+# `gh <noun> <verb>` and `git <sub>` verbs that read. Kept separate from the
+# noun allowlist above so `gh pr view` reads while `gh pr merge` does not.
+READ_ONLY_SHELL_NOUN_VERBS = {
+    "gh": frozenset({"diff", "list", "checks", "view"}),
+}
+
+# Flags that turn an otherwise-read subcommand into a write. `gh api -X POST`
+# and `git config --unset` are mutations wearing a reader's name.
+_MUTATING_SHELL_FLAGS = frozenset(
+    {
+        "-x", "--method", "-f", "--field", "-f-", "--raw-field", "-input",
+        "--input", "--unset", "--unset-all", "--replace-all", "--add",
+        "--edit", "--delete", "--remove", "--set", "--write", "--fix",
+    }
+)
+
+# Shell operators that separate commands. Every segment must read for the whole
+# line to read. Redirections that create or append to a file are writes, so
+# `>` / `>>` disqualify — but `2>&1` and `2>/dev/null` are diagnostics, not
+# state changes, and appear in almost every real read command.
+_SHELL_SPLIT_TOKENS = ("&&", "||", ";", "|", "\n")
+
+
+def _segment_writes_to_file(segment: str) -> bool:
+    """True when a segment redirects output into a file (not a std stream)."""
+    rest = segment
+    while True:
+        idx = rest.find(">")
+        if idx == -1:
+            return False
+        after = rest[idx:].lstrip(">").strip()
+        # `2>&1`, `>&2` — duplicating a descriptor, not writing a file.
+        if after.startswith("&"):
+            rest = rest[idx + 1:]
+            continue
+        target = after.split()[0] if after.split() else ""
+        if target in {"/dev/null", "/dev/stdout", "/dev/stderr"}:
+            rest = rest[idx + 1:]
+            continue
+        return True
+
+
+def shell_command_is_read_only(command: Any) -> bool:
+    """True when every segment of a shell command only inspects state.
+
+    Conservative by design: unknown commands, file redirections and mutating
+    flags all return False. Used to decide whether a repeated `terminal` call
+    deserves the tight read-only no-progress threshold.
+    """
+    if not isinstance(command, str):
+        return False
+    text = command.strip()
+    if not text:
+        return False
+    # Command substitution and subshells can hide anything.
+    if "$(" in text or "`" in text:
+        return False
+
+    segments = [text]
+    for token in _SHELL_SPLIT_TOKENS:
+        segments = [part for seg in segments for part in seg.split(token)]
+
+    saw_command = False
+    for segment in segments:
+        segment = segment.strip()
+        if not segment:
+            continue
+        if _segment_writes_to_file(segment):
+            return False
+        words = segment.split()
+        # Strip leading `VAR=value` assignments (`GH_PAGER=cat gh pr view`).
+        while words and "=" in words[0] and not words[0].startswith("-"):
+            words = words[1:]
+        if not words:
+            continue
+        name = posixpath.basename(words[0])
+        args = words[1:]
+        lowered = {a.split("=", 1)[0].lower() for a in args if a.startswith("-")}
+        if lowered & _MUTATING_SHELL_FLAGS:
+            return False
+
+        # `cd somewhere` is positional setup, not a state change we care about.
+        if name == "cd":
+            saw_command = True
+            continue
+        if name in READ_ONLY_SHELL_COMMANDS:
+            saw_command = True
+            continue
+        subs = READ_ONLY_SHELL_SUBCOMMANDS.get(name)
+        if subs is None:
+            return False
+        positional = [a for a in args if not a.startswith("-")]
+        if not positional:
+            return False
+        if positional[0] in subs:
+            saw_command = True
+            continue
+        verbs = READ_ONLY_SHELL_NOUN_VERBS.get(name)
+        if verbs and len(positional) >= 2 and positional[1] in verbs:
+            saw_command = True
+            continue
+        return False
+
+    return saw_command
+
 
 MUTATING_TOOL_NAMES = frozenset(
     {
@@ -123,8 +272,18 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    # A mutating call repeating byte-identical args AND output is also making no
+    # progress, just with a weaker signal than a read (a write can legitimately
+    # be retried while waiting on something external). Same detector, looser
+    # ceiling, so a runaway `gh pr merge` loop still terminates.
+    mutating_no_progress_warn_after: int = 4
+    mutating_no_progress_block_after: int = 12
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
+    # Tools whose read-only-ness depends on their arguments rather than name.
+    command_classified_tools: frozenset[str] = field(
+        default_factory=lambda: frozenset({"terminal"})
+    )
     loop_caps: "LoopCapConfig" = field(default_factory=lambda: LoopCapConfig())
 
     @classmethod
@@ -167,6 +326,16 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            mutating_no_progress_warn_after=_positive_int(
+                warn_after.get("mutating_no_progress", data.get("mutating_no_progress_warn_after")),
+                defaults.mutating_no_progress_warn_after,
+            ),
+            mutating_no_progress_block_after=_positive_int(
+                hard_stop_after.get(
+                    "mutating_no_progress", data.get("mutating_no_progress_block_after")
+                ),
+                defaults.mutating_no_progress_block_after,
             ),
             loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")),
         )
@@ -406,25 +575,32 @@ class ToolCallGuardrailController:
             self._halt_decision = decision
             return decision
 
-        if self._is_idempotent(tool_name):
-            record = self._no_progress.get(signature)
-            if record is not None:
-                _result_hash, repeat_count = record
-                if repeat_count >= self.config.no_progress_block_after:
-                    decision = ToolGuardrailDecision(
-                        action="block",
-                        code="idempotent_no_progress_block",
-                        message=(
-                            f"Blocked {tool_name}: this read-only call returned the same "
-                            f"result {repeat_count} times. Stop repeating it unchanged; "
-                            "use the result already provided or try a different query."
-                        ),
-                        tool_name=tool_name,
-                        count=repeat_count,
-                        signature=signature,
-                    )
-                    self._halt_decision = decision
-                    return decision
+        record = self._no_progress.get(signature)
+        if record is not None:
+            _seen_hash, repeat_count = record
+            read_only = self._is_idempotent(tool_name, args)
+            limit, code, kind = (
+                (self.config.no_progress_block_after,
+                 "idempotent_no_progress_block", "read-only")
+                if read_only
+                else (self.config.mutating_no_progress_block_after,
+                      "repeated_identical_result_block", "unchanged")
+            )
+            if limit and repeat_count >= limit:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code=code,
+                    message=(
+                        f"Blocked {tool_name}: this {kind} call returned the same "
+                        f"result {repeat_count} times. Stop repeating it unchanged; "
+                        "use the result already provided or try a different query."
+                    ),
+                    tool_name=tool_name,
+                    count=repeat_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
 
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -493,10 +669,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        if not self._is_idempotent(tool_name):
-            self._no_progress.pop(signature, None)
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
-
+        read_only = self._is_idempotent(tool_name, args)
         result_hash = _result_hash(result)
         previous = self._no_progress.get(signature)
         repeat_count = 1
@@ -504,7 +677,12 @@ class ToolCallGuardrailController:
             repeat_count = previous[1] + 1
         self._no_progress[signature] = (result_hash, repeat_count)
 
-        if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
+        warn_after = (
+            self.config.no_progress_warn_after
+            if read_only
+            else self.config.mutating_no_progress_warn_after
+        )
+        if self.config.warnings_enabled and warn_after and repeat_count >= warn_after:
             return ToolGuardrailDecision(
                 action="warn",
                 code="idempotent_no_progress_warning",
@@ -520,7 +698,17 @@ class ToolCallGuardrailController:
 
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
-    def _is_idempotent(self, tool_name: str) -> bool:
+    def _is_idempotent(
+        self, tool_name: str, args: Mapping[str, Any] | None = None
+    ) -> bool:
+        """True when this specific call only reads state.
+
+        For tools in ``command_classified_tools`` the answer depends on the
+        arguments, not the tool name: `terminal` running `git status` reads,
+        `terminal` running `git push` writes.
+        """
+        if tool_name in self.config.command_classified_tools:
+            return shell_command_is_read_only(_coerce_args(args).get("command"))
         if tool_name in self.config.mutating_tools:
             return False
         return tool_name in self.config.idempotent_tools

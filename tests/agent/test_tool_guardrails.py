@@ -169,11 +169,53 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.should_halt is True
 
 
+# ── Read-only shell commands must be loop-detected (#loop-517) ──────────────
+# A session repeated `gh api .../reviews` 517 times, each returning an identical
+# empty `[]` with exit 0. `terminal` is in MUTATING_TOOL_NAMES, so the
+# no-progress detector never looked at it, and exit 0 meant the failure
+# detector never fired either. Nothing stopped it until max_iterations.
 
 
+def test_read_only_shell_command_repeating_identical_output_is_blocked():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3)
+    )
+    args = {"command": "cd ~/repo && gh api repos/o/r/pulls/1/reviews 2>&1", "timeout": 15}
+    result = '{"output": "[]", "exit_code": 0, "error": null}'
+
+    for _ in range(3):
+        assert controller.before_call("terminal", args).allows_execution
+        controller.after_call("terminal", args, result, failed=False)
+
+    decision = controller.before_call("terminal", args)
+    assert decision.action == "block"
+    assert decision.code == "idempotent_no_progress_block"
 
 
+def test_mutating_shell_command_repeating_identical_output_is_not_blocked():
+    # `git push` succeeding identically twice is not evidence of a loop, and
+    # blocking a write would be worse than letting it through.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=2)
+    )
+    args = {"command": "git push origin main", "timeout": 30}
+    result = '{"output": "Everything up-to-date", "exit_code": 0, "error": null}'
+
+    for _ in range(4):
+        assert controller.before_call("terminal", args).allows_execution
+        controller.after_call("terminal", args, result, failed=False)
 
 
+def test_read_only_classification_covers_common_inspection_commands():
+    from agent.tool_guardrails import shell_command_is_read_only
 
+    assert shell_command_is_read_only("gh api repos/o/r/pulls/1/reviews 2>&1")
+    assert shell_command_is_read_only("cd ~/repo && git status")
+    assert shell_command_is_read_only("ls -la /tmp")
+    assert shell_command_is_read_only("  GH_PAGER=cat gh pr view 1 ")
 
+    assert not shell_command_is_read_only("gh pr merge 1 --merge")
+    assert not shell_command_is_read_only("cd ~/repo && git push")
+    assert not shell_command_is_read_only("rm -rf /tmp/x")
+    assert not shell_command_is_read_only("git status && git commit -m x")
+    assert not shell_command_is_read_only("")

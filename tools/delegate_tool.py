@@ -172,13 +172,40 @@ def _register_subagent(record: Dict[str, Any]) -> None:
     sid = record.get("subagent_id")
     if not sid:
         return
+    record.setdefault("accepting_steer", True)
     with _active_subagents_lock:
         _active_subagents[sid] = record
 
 
-def _unregister_subagent(subagent_id: str) -> None:
+def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
     with _active_subagents_lock:
-        _active_subagents.pop(subagent_id, None)
+        record = _active_subagents.get(subagent_id)
+        if record is not None and (agent is None or record.get("agent") is agent):
+            _active_subagents.pop(subagent_id, None)
+
+
+def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
+    """Atomically close steer acceptance and drain its final durable artifact.
+
+    ``steer_subagent`` holds the same registry lock through ``agent.steer``.
+    Therefore either acceptance wins and this drain sees its exact text, or
+    closure wins and the caller is rejected. Exact agent identity prevents a
+    finishing child with a recycled public id from closing its replacement.
+    """
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if record is None or record.get("agent") is not agent:
+            return None
+        record["accepting_steer"] = False
+        drain = getattr(agent, "_drain_pending_steer", None)
+        if not callable(drain):
+            return None
+        try:
+            pending = drain()
+        except Exception as exc:
+            logger.debug("final steer drain for %s failed: %s", subagent_id, exc)
+            return None
+        return pending if isinstance(pending, str) and pending.strip() else None
 
 
 def interrupt_subagent(subagent_id: str) -> bool:
@@ -205,36 +232,43 @@ def interrupt_subagent(subagent_id: str) -> bool:
     return True
 
 
-def steer_subagent(subagent_id: str, text: str) -> bool:
+def steer_subagent(
+    subagent_id: str,
+    text: str,
+    *,
+    owner_session_id: Optional[str] = None,
+) -> bool:
     """Queue steering text into a single running subagent without stopping it.
 
     The redirection-side mirror of interrupt_subagent(): resolves the live
     child in the registry and calls AIAgent.steer(), which appends the text
     to the child's last tool result at its next iteration boundary — the
     current tool call is never cut. Returns True if a matching subagent
-    QUEUED the text; False for an unknown id, a record with no live agent,
-    or empty text.
+    QUEUED the text while the child was still accepting work; False for an
+    unknown/closed id, an ownership mismatch, a record with no live agent, or
+    empty text. ``owner_session_id=None`` deliberately preserves the internal
+    in-process helper contract; gateway callers must pass exact authority.
 
-    Queued is not delivered: a child already past its final tool batch has
-    no boundary left to drain into.  That race is surfaced, not swallowed —
-    the finalizer returns the undelivered text as ``pending_steer`` and
-    ``_run_single_child`` retains it in the completion entry as
-    ``missed_steer`` with a note appended to the summary.
+    Acceptance and completion are linearized by the registry lock. If
+    acceptance wins but no delivery boundary remains, ``_run_single_child``
+    drains the exact text into the completion entry as ``missed_steer``.
     """
     if not text or not text.strip():
         return False
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id)
-    if not record:
-        return False
-    agent = record.get("agent")
-    if agent is None:
-        return False
-    try:
-        return bool(agent.steer(text))
-    except Exception as exc:
-        logger.debug("steer_subagent(%s) failed: %s", subagent_id, exc)
-        return False
+        if not record or not record.get("accepting_steer", False):
+            return False
+        if owner_session_id is not None and record.get("owner_session_id") != owner_session_id:
+            return False
+        agent = record.get("agent")
+        if agent is None:
+            return False
+        try:
+            return bool(agent.steer(text))
+        except Exception as exc:
+            logger.debug("steer_subagent(%s) failed: %s", subagent_id, exc)
+            return False
 
 
 def list_active_subagents() -> List[Dict[str, Any]]:
@@ -245,7 +279,11 @@ def list_active_subagents() -> List[Dict[str, Any]]:
     """
     with _active_subagents_lock:
         return [
-            {k: v for k, v in r.items() if k != "agent"}
+            {
+                k: v
+                for k, v in r.items()
+                if k not in {"agent", "owner_session_id", "accepting_steer"}
+            }
             for r in _active_subagents.values()
         ]
 
@@ -2005,6 +2043,8 @@ def _run_single_child(
     goal: str,
     child=None,
     parent_agent=None,
+    *,
+    owner_session_id: Optional[str] = None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
@@ -2139,6 +2179,13 @@ def _run_single_child(
     _raw_sid = getattr(child, "_subagent_id", None)
     _subagent_id = _raw_sid if isinstance(_raw_sid, str) else None
     if _subagent_id:
+        if owner_session_id is None:
+            try:
+                from gateway.session_context import get_session_env
+
+                owner_session_id = get_session_env("HERMES_UI_SESSION_ID", "") or None
+            except Exception:
+                owner_session_id = None
         _raw_depth = getattr(child, "_delegate_depth", 1)
         _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
         _parent_sid = getattr(child, "_parent_subagent_id", None)
@@ -2157,6 +2204,9 @@ def _run_single_child(
                 "status": "running",
                 "tool_count": 0,
                 "agent": child,
+                # Immutable live gateway/TUI session that commissioned this
+                # child. Empty outside those hosts; RPC authority fails closed.
+                "owner_session_id": owner_session_id,
             }
         )
 
@@ -2244,6 +2294,12 @@ def _run_single_child(
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
+            # No consumer boundary remains once this owner stops waiting for
+            # the child. Close acceptance before any completion callback and
+            # retain steer text that won the race with this failure/timeout.
+            _late_pending_steer = (
+                _close_subagent_steering(_subagent_id, child) if _subagent_id else None
+            )
             # Signal the child to stop so its thread can exit cleanly.
             try:
                 interrupted = child is not None and request_hard_interrupt(child)
@@ -2327,7 +2383,7 @@ def _run_single_child(
             else:
                 _err = str(_timeout_exc)
 
-            return {
+            _error_entry = {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
                 "summary": None,
@@ -2345,10 +2401,32 @@ def _run_single_child(
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
             }
+            if _late_pending_steer:
+                _error_entry["missed_steer"] = _late_pending_steer
+                _error_entry["error"] += (
+                    " [steer did not land before the subagent stopped: "
+                    f"{_late_pending_steer}]"
+                )
+            return _error_entry
         finally:
             # Shut down executor without waiting — if the child thread
             # is stuck on blocking I/O, wait=True would hang forever.
             _timeout_executor.shutdown(wait=False)
+
+        # Linearization boundary for registry steering. From this point on the
+        # child cannot consume another steer. Closing under the registry lock
+        # either rejects a concurrent caller or drains every previously accepted
+        # exact text into the result before callbacks/result assembly can run.
+        _late_pending_steer = (
+            _close_subagent_steering(_subagent_id, child) if _subagent_id else None
+        )
+        if _late_pending_steer:
+            _existing_pending = result.get("pending_steer")
+            result["pending_steer"] = (
+                f"{_existing_pending}\n{_late_pending_steer}"
+                if isinstance(_existing_pending, str) and _existing_pending
+                else _late_pending_steer
+            )
 
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, "_flush"):
@@ -2582,6 +2660,9 @@ def _run_single_child(
         return entry
 
     except Exception as exc:
+        _late_pending_steer = (
+            _close_subagent_steering(_subagent_id, child) if _subagent_id else None
+        )
         duration = round(time.monotonic() - child_start, 2)
         logging.exception(f"[subagent-{task_index}] failed")
         if child_progress_cb:
@@ -2595,7 +2676,7 @@ def _run_single_child(
                 )
             except Exception as e:
                 logger.debug("Progress callback failure relay failed: %s", e)
-        return {
+        _error_entry = {
             "task_index": task_index,
             "status": "error",
             "summary": None,
@@ -2604,6 +2685,13 @@ def _run_single_child(
             "duration_seconds": duration,
             "_child_role": getattr(child, "_delegate_role", None),
         }
+        if _late_pending_steer:
+            _error_entry["missed_steer"] = _late_pending_steer
+            _error_entry["error"] += (
+                " [steer did not land before the subagent stopped: "
+                f"{_late_pending_steer}]"
+            )
+        return _error_entry
 
     finally:
         # Stop the heartbeat thread so it doesn't keep touching parent activity
@@ -2618,7 +2706,7 @@ def _run_single_child(
         # Drop the TUI-facing registry entry.  Safe to call even if the
         # child was never registered (e.g. ID missing on test doubles).
         if _subagent_id:
-            _unregister_subagent(_subagent_id)
+            _unregister_subagent(_subagent_id, agent=child)
 
         if child_pool is not None and leased_cred_id is not None:
             try:
@@ -2996,6 +3084,12 @@ def delegate_task(
     from tools.async_delegation import _current_origin_session_id
 
     _origin_wake_sid = _current_origin_session_id()
+    try:
+        from gateway.session_context import get_session_env
+
+        _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
+    except Exception:
+        _origin_ui_session_id = ""
 
     # Build all child agents on the main thread (thread-safe construction).
     # _build_child_preserving_parent_tools saves/restores the parent's
@@ -3054,7 +3148,13 @@ def delegate_task(
         if n_tasks == 1:
             # Single task -- run directly (no thread pool overhead)
             _i, _t, child = children[0]
-            result = _run_single_child(_i, _t["goal"], child, parent_agent)
+            result = _run_single_child(
+                _i,
+                _t["goal"],
+                child,
+                parent_agent,
+                owner_session_id=_origin_ui_session_id or None,
+            )
             results.append(result)
         else:
             # Batch -- run in parallel with per-task progress lines
@@ -3076,6 +3176,7 @@ def delegate_task(
                         goal=t["goal"],
                         child=child,
                         parent_agent=parent_agent,
+                        owner_session_id=_origin_ui_session_id or None,
                     )
                     futures[future] = i
 
@@ -3283,12 +3384,15 @@ def delegate_task(
             return json.dumps(_sync_result, ensure_ascii=False)
 
         _session_key = get_current_session_key(default="")
-        _origin_ui_session_id = ""
         try:
             from gateway.session_context import get_session_env
 
             _source = get_session_env("HERMES_SESSION_SOURCE", "")
-            _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
+            # Refresh from the same task-local source when available, but retain
+            # the immutable value captured before child construction otherwise.
+            _origin_ui_session_id = (
+                get_session_env("HERMES_UI_SESSION_ID", "") or _origin_ui_session_id
+            )
             # In desktop/TUI, the routable session key is the durable
             # AIAgent.session_id. Context compression can rotate that id during
             # the same turn before the TUI-side session dict is re-anchored;
@@ -3301,7 +3405,7 @@ def delegate_task(
                 if _agent_session_id:
                     _session_key = _agent_session_id
         except Exception:
-            _origin_ui_session_id = ""
+            _source = ""
         if not _session_key:
             # CLI (single-process) path: the approval contextvar is only bound
             # during gateway/TUI turns and HERMES_SESSION_KEY is not in the CLI

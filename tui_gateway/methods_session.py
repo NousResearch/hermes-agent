@@ -2954,7 +2954,15 @@ def _(rid, params: dict) -> dict:
     text = (params.get("text") or "").strip()
     if not text:
         return _err(rid, 4002, "text is required")
-    queued = steer_subagent(subagent_id, text)
+    _session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    invoking_session_id = str(params.get("session_id") or "").strip()
+    queued = steer_subagent(
+        subagent_id,
+        text,
+        owner_session_id=invoking_session_id,
+    )
     return _ok(
         rid,
         {

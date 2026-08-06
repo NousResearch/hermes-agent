@@ -33,6 +33,7 @@ from tools.environments.local import (
     _quote_bash_path,
     _resolve_safe_cwd,
     _sanitize_subprocess_env,
+    _win32_tool_path,
     _windows_to_msys_path,
     hermes_subprocess_env,
 )
@@ -94,6 +95,26 @@ class TestBashSafePath:
         )
         assert "/c/Users/Alexander/AppData/Local/Temp/hermes-snap-abc.sh" in quoted
         assert "\\" not in quoted
+
+
+class TestWin32ToolPath:
+    def test_msys_drive_becomes_forward_slash_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _win32_tool_path("/c/workspace/hermes-agent/tools") == (
+            "C:/workspace/hermes-agent/tools"
+        )
+
+    def test_native_backslash_becomes_forward_slash(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _win32_tool_path(r"C:\workspace\tools") == "C:/workspace/tools"
+
+    def test_relative_path_unchanged(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _win32_tool_path("tools") == "tools"
+
+    def test_noop_off_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert _win32_tool_path("/c/workspace/tools") == "/c/workspace/tools"
 
 
 # ---------------------------------------------------------------------------

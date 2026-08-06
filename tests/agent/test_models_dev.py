@@ -390,3 +390,69 @@ class TestGetModelCapabilities:
         assert caps is not None
         assert caps.supports_vision is False
 
+
+KIMI_REGISTRY = {
+    "kimi-for-coding": {
+        "id": "kimi-for-coding",
+        "name": "Kimi for Coding",
+        "models": {
+            "k3": {
+                "id": "k3",
+                "limit": {"context": 1048576, "output": 8192},
+                "modalities": {"input": ["text", "image", "video"]},
+                "tool_call": True,
+                "reasoning": True,
+            },
+            "k3-256k": {
+                "id": "k3-256k",
+                "limit": {"context": 262144, "output": 8192},
+                "modalities": {"input": ["text", "image"]},
+                "tool_call": True,
+                "reasoning": True,
+            },
+        },
+    },
+}
+
+
+class TestKimiPrefixMatching:
+    """models.dev keys kimi-for-coding models with bare slugs (``k3``) while
+    the Kimi Coding API is configured with ``kimi-``-prefixed slugs
+    (``kimi-k3``).  Without the prefix strip, multimodal kimi-k3 resolves as
+    "capability unknown" and image routing treats it as text-only."""
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_capabilities_prefixed_slug(self, mock_fetch):
+        mock_fetch.return_value = KIMI_REGISTRY
+        caps = get_model_capabilities("kimi-coding", "kimi-k3")
+        assert caps is not None
+        assert caps.supports_vision is True
+        assert caps.context_window == 1048576
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_capabilities_case_insensitive_prefixed(self, mock_fetch):
+        mock_fetch.return_value = KIMI_REGISTRY
+        caps = get_model_capabilities("kimi-coding", "Kimi-K3-256K")
+        assert caps is not None
+        assert caps.supports_vision is True
+        assert caps.context_window == 262144
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_context_lookup_prefixed_slug(self, mock_fetch):
+        mock_fetch.return_value = KIMI_REGISTRY
+        assert lookup_models_dev_context("kimi-coding", "kimi-k3") == 1048576
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_unknown_kimi_model_still_none(self, mock_fetch):
+        mock_fetch.return_value = KIMI_REGISTRY
+        assert get_model_capabilities("kimi-coding", "kimi-k2") is None
+        assert lookup_models_dev_context("kimi-coding", "kimi-k2") is None
+
+    def test_find_model_entry_strips_only_kimi_prefix(self):
+        from agent.models_dev import _find_model_entry
+
+        models = KIMI_REGISTRY["kimi-for-coding"]["models"]
+        assert _find_model_entry(models, "kimi-k3") is models["k3"]
+        # Other prefixes must NOT be stripped — no false matches.
+        assert _find_model_entry(models, "gpt-k3") is None
+

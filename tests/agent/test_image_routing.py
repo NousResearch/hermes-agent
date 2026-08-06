@@ -506,3 +506,56 @@ class TestCustomProviderVisionAlias:
             ]
         }
         assert _supports_vision_override(cfg, "custom:my-vllm", "other") is None
+
+
+# ─── kimi-coding native vision routing ───────────────────────────────────────
+
+_KIMI_REGISTRY = {
+    "kimi-for-coding": {
+        "id": "kimi-for-coding",
+        "models": {
+            "k3": {
+                "id": "k3",
+                "limit": {"context": 1048576, "output": 8192},
+                "modalities": {"input": ["text", "image", "video"]},
+            },
+        },
+    },
+}
+
+
+class TestKimiCodingVisionRouting:
+    """kimi-k3 is multimodal on the Kimi Coding endpoint (verified live
+    2026-08-05); auto mode must attach images natively once the models.dev
+    slug match (bare ``k3`` vs configured ``kimi-k3``) resolves."""
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_kimi_k3_routes_native(self, mock_fetch):
+        mock_fetch.return_value = _KIMI_REGISTRY
+        assert (
+            decide_image_input_mode(
+                "kimi-coding", "kimi-k3", None, requested_provider="kimi-coding"
+            )
+            == "native"
+        )
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_lookup_supports_vision_prefixed_slug(self, mock_fetch):
+        mock_fetch.return_value = _KIMI_REGISTRY
+        assert (
+            _lookup_supports_vision(
+                "kimi-coding", "kimi-k3", None, requested_provider="kimi-coding"
+            )
+            is True
+        )
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_unknown_kimi_model_stays_text(self, mock_fetch):
+        mock_fetch.return_value = _KIMI_REGISTRY
+        assert (
+            decide_image_input_mode(
+                "kimi-coding", "kimi-k2", None, requested_provider="kimi-coding"
+            )
+            == "text"
+        )
+

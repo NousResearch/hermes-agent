@@ -164,12 +164,13 @@ Platform event → Adapter.on_message() → MessageEvent
 ### Cron Job
 
 ```text
-Scheduler tick → load due jobs from jobs.json
+Scheduler tick → load due jobs (definitions from jobs.json + runtime state from runtime.db)
+  → claim the fire (durable ownership token)
   → create fresh AIAgent (no history)
   → inject attached skills as context
   → run job prompt
   → deliver response to target platform
-  → update job state and next_run
+  → update runtime state and next_run in runtime.db (jobs.json stays declarative)
 ```
 
 ## Recommended Reading Order

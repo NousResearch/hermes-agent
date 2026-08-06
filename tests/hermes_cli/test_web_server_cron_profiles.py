@@ -164,7 +164,15 @@ def test_profile_call_cannot_retarget_ticker_store_mid_write(
     worker_saved = json.loads(worker_file.read_text(encoding="utf-8"))["jobs"]
     assert [job["id"] for job in worker_saved] == ["worker-job"]
     assert [job["id"] for job in default_saved] == ["default-job"]
-    assert default_saved[0]["next_run_at"] == "2026-07-10T00:00:00+00:00"
+    assert "next_run_at" not in default_saved[0]
+
+    with cron_jobs.use_cron_store(isolated_profiles["default"]):
+        default_loaded = cron_jobs.load_jobs()
+    with cron_jobs.use_cron_store(isolated_profiles["worker_alpha"]):
+        worker_loaded = cron_jobs.load_jobs()
+
+    assert default_loaded[0]["next_run_at"] == "2026-07-10T00:00:00+00:00"
+    assert worker_loaded[0]["next_run_at"] == "2026-07-09T00:00:00+00:00"
 
 
 

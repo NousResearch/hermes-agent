@@ -21,6 +21,7 @@ from cron.jobs import (
     advance_next_run,
     claim_dispatch,
     heartbeat_run_claim,
+    release_run_claim,
     get_due_jobs,
     save_job_output,
 )
@@ -327,7 +328,10 @@ class TestMarkJobRun:
         """A finished one-shot must stay inspectable, not vanish from the store."""
         job = create_job(prompt="Once", schedule="30m", repeat=1)
         mark_job_run(job["id"], success=True)
-        updated = get_job(job["id"])
+        # Retained as a runtime_tombstone (not the legacy bare state=="completed"
+        # shape), so a live-only lookup must opt in with include_terminal.
+        assert get_job(job["id"]) is None
+        updated = get_job(job["id"], include_terminal=True)
         assert updated is not None, "completed one-shot was deleted from jobs.json"
         assert updated["state"] == "completed"
         assert updated["enabled"] is False
@@ -341,21 +345,25 @@ class TestMarkJobRun:
             job["id"], success=True,
             delivery_error="platform 'telegram' not configured",
         )
-        updated = get_job(job["id"])
+        updated = get_job(job["id"], include_terminal=True)
         assert updated is not None
         assert updated["state"] == "completed"
         assert updated["last_delivery_error"] == "platform 'telegram' not configured"
 
     def test_completed_oneshot_visible_in_list(self, tmp_cron_dir):
-        """list_jobs(include_disabled=True) surfaces the completed record."""
+        """list_jobs(include_terminal=True) surfaces the completed record."""
         job = create_job(prompt="Once", schedule="30m", repeat=1)
         mark_job_run(job["id"], success=True, delivery_error="send failed: 502")
-        listed = {j["id"]: j for j in list_jobs(include_disabled=True)}
+        listed = {
+            j["id"]: j
+            for j in list_jobs(include_disabled=True, include_terminal=True)
+        }
         assert job["id"] in listed
         assert listed[job["id"]]["state"] == "completed"
         assert listed[job["id"]]["last_delivery_error"] == "send failed: 502"
-        # Default (enabled-only) listing hides it, matching paused/disabled jobs.
+        # Default listing hides a tombstoned record, matching paused/disabled jobs.
         assert job["id"] not in {j["id"] for j in list_jobs()}
+        assert job["id"] not in {j["id"] for j in list_jobs(include_disabled=True)}
 
     def test_completed_oneshot_not_due(self, tmp_cron_dir):
         """A retained completed one-shot must never be dispatched again."""
@@ -379,6 +387,30 @@ class TestMarkJobRun:
         assert updated["last_status"] == "ok"
         assert updated["last_error"] is None
         assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+
+    def test_stale_run_claim_cannot_finalize_or_clear_replacement(
+        self,
+        tmp_cron_dir,
+    ):
+        job = create_job(prompt="Fenced completion", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["fire_claim"] = {"id": "fire-a", "at": "now"}
+        jobs[0]["run_claim"] = {"id": "run-b", "by": "replacement", "at": "now"}
+        save_jobs(jobs)
+
+        finalized = mark_job_run(
+            job["id"],
+            success=True,
+            expected_fire_claim_id="fire-a",
+            expected_run_claim_id="run-a",
+        )
+
+        assert finalized is False
+        current = get_job(job["id"])
+        assert current is not None
+        assert current["fire_claim"]["id"] == "fire-a"
+        assert current["run_claim"]["id"] == "run-b"
+        assert current["last_run_at"] is None
 
 
     def test_recurring_cron_not_disabled_when_croniter_missing(self, tmp_cron_dir, monkeypatch):
@@ -661,8 +693,13 @@ class TestGetDueJobs:
         # Mid-run heartbeat before the TTL horizon refreshes the claim.
         monkeypatch.setattr("cron.jobs._hermes_now",
                             lambda: t0 + timedelta(seconds=ttl - 60))
-        owner = get_job("slowrun")["run_claim"]["by"]
-        assert heartbeat_run_claim("slowrun", expected_owner=owner) is True
+        slowrun = get_job("slowrun")
+        assert slowrun is not None
+        claim_id = slowrun["run_claim"]["id"]
+        assert heartbeat_run_claim(
+            "slowrun",
+            expected_claim_id=claim_id,
+        ) is True
 
         # Past the ORIGINAL claim's TTL horizon: without the heartbeat this
         # tick would stale-remove the maxed one-shot; with it the claim is
@@ -676,7 +713,7 @@ class TestGetDueJobs:
         # (times=1 reached, so mark_job_run retires the job as a terminal
         # completed record instead of deleting it).
         mark_job_run("slowrun", True)
-        retired = get_job("slowrun")
+        retired = get_job("slowrun", include_terminal=True)
         assert retired is not None
         assert retired["state"] == "completed"
         assert retired["enabled"] is False
@@ -699,6 +736,55 @@ class TestGetDueJobs:
             "at": original_at,
             "by": "new-owner",
         }
+
+    def test_tokenized_run_claim_rejects_owner_only_and_stale_token(
+        self,
+        tmp_cron_dir,
+    ):
+        """Owner labels cannot bypass the exact token fence on new claims."""
+        run_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        save_jobs(
+            [
+                {
+                    "id": "tokenized",
+                    "name": "Tokenized",
+                    "prompt": "x",
+                    "schedule": {"kind": "once", "run_at": run_at},
+                    "next_run_at": run_at,
+                    "enabled": True,
+                    "state": "scheduled",
+                }
+            ]
+        )
+
+        assert [job["id"] for job in get_due_jobs()] == ["tokenized"]
+        tokenized = get_job("tokenized")
+        assert tokenized is not None
+        claim = tokenized["run_claim"]
+        assert claim["id"]
+        assert heartbeat_run_claim(
+            "tokenized",
+            expected_owner=claim["by"],
+        ) is False
+        assert heartbeat_run_claim(
+            "tokenized",
+            expected_claim_id="stale-token",
+        ) is False
+        assert heartbeat_run_claim(
+            "tokenized",
+            expected_claim_id=claim["id"],
+        ) is True
+        assert release_run_claim(
+            "tokenized",
+            expected_claim_id="stale-token",
+        ) is False
+        assert release_run_claim(
+            "tokenized",
+            expected_claim_id=claim["id"],
+        ) is True
+        released = get_job("tokenized")
+        assert released is not None
+        assert released["run_claim"] is None
 
 
 class TestEnabledToolsets:
@@ -934,7 +1020,8 @@ class TestClaimDispatch:
         # could remove the job.  The next claim must refuse AND clean up.
         save_jobs([self._oneshot(times=1, completed=1)])
         assert claim_dispatch("os1") is False
-        assert load_jobs() == []  # removed, will not re-fire
+        assert get_job("os1") is None  # hidden, will not re-fire
+        assert load_jobs()[0]["runtime_tombstone"]
 
 
     def test_mark_job_run_does_not_double_count_preclaimed_oneshot(self, tmp_cron_dir):
@@ -948,8 +1035,8 @@ class TestClaimDispatch:
         retired = load_jobs()
         assert len(retired) == 1  # completed once, retired — not fired twice
         assert retired[0]["repeat"]["completed"] == 1  # no double count
-        assert retired[0]["state"] == "completed"
-        assert retired[0]["enabled"] is False
+        assert get_job("os1") is None  # completed once, hidden — not fired twice
+        assert retired[0]["runtime_tombstone"]
 
 
     def test_get_due_jobs_removes_stale_maxed_oneshot(self, tmp_cron_dir):
@@ -967,7 +1054,8 @@ class TestClaimDispatch:
         }])
         due = get_due_jobs()
         assert due == []
-        assert load_jobs() == []  # cleaned up
+        assert get_job("os1") is None  # cleaned up from public runtime surfaces
+        assert load_jobs()[0]["runtime_tombstone"]
 
 
 class TestLateEnvRepointScopesStore:
@@ -1214,7 +1302,7 @@ class TestCompletedOneshotRetentionSweep:
     def test_sweep_keeps_recent_completed_oneshot(self, tmp_cron_dir):
         recent_id = self._completed_oneshot(age_days=1)
         get_due_jobs()
-        kept = get_job(recent_id)
+        kept = get_job(recent_id, include_terminal=True)
         assert kept is not None
         assert kept["state"] == "completed"
         assert kept["last_delivery_error"] == "boom"
@@ -1239,7 +1327,7 @@ class TestCompletedOneshotRetentionSweep:
         )
         old_id = self._completed_oneshot(age_days=30)
         get_due_jobs()
-        assert get_job(old_id) is not None
+        assert get_job(old_id, include_terminal=True) is not None
 
     def test_recurring_jobs_unaffected_by_retention_change(self, tmp_cron_dir):
         """A recurring job still cycles normally alongside retained one-shots."""

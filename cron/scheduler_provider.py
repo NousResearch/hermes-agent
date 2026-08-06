@@ -100,16 +100,23 @@ class CronScheduler(ABC):
         Returns True if THIS caller claimed and ran the job, False if the claim
         was lost (another machine/retry won it) or the job no longer exists.
         """
-        from cron.jobs import claim_job_for_fire, get_job
+        from cron.jobs import claim_job_for_fire_token, get_job, release_fire_claim
         from cron.executions import create_execution
         from cron.scheduler import run_one_job
 
-        if not claim_job_for_fire(job_id):
+        claim_id = claim_job_for_fire_token(job_id)
+        if claim_id is None:
             return False  # another machine already claimed this fire
         job = get_job(job_id)
         if job is None:
-            return False  # job removed (e.g. repeat-N exhausted) between arm and fire
-        job["execution_id"] = create_execution(job_id, source=self.name)["id"]
+            release_fire_claim(job_id, expected_claim_id=claim_id)
+            return False  # job removed between arm and fire
+        job["_fire_claim_id"] = claim_id
+        try:
+            job["execution_id"] = create_execution(job_id, source=self.name)["id"]
+        except Exception:
+            release_fire_claim(job_id, expected_claim_id=claim_id)
+            raise
         return run_one_job(job, adapters=adapters, loop=loop)
 
     def reconcile(self) -> None:

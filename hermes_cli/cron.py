@@ -97,10 +97,10 @@ def _warn_if_gateway_not_running() -> None:
 
 
 def cron_list(show_all: bool = False):
-    """List all scheduled jobs."""
+    """List all scheduled jobs; ``show_all`` includes disabled and completed."""
     from cron.jobs import list_jobs
 
-    jobs = list_jobs(include_disabled=show_all)
+    jobs = list_jobs(include_disabled=show_all, include_terminal=show_all)
 
     if not jobs:
         print(color("No scheduled jobs.", Colors.DIM))
@@ -119,6 +119,14 @@ def cron_list(show_all: bool = False):
         schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
         state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
         next_run = job.get("next_run_at", "?")
+        # A runtime-tombstoned job's stored next_run_at predates its
+        # completion; showing it as an upcoming run would be misleading.
+        tombstone = job.get("runtime_tombstone")
+        if isinstance(tombstone, dict):
+            next_run = (
+                f"— completed {tombstone.get('at', '?')} "
+                f"({tombstone.get('reason', '?')})"
+            )
 
         # `repeat` may be present-but-null in the job record (e.g. a one-shot
         # job persisted with "repeat": null), so coalesce to {} rather than
@@ -377,7 +385,12 @@ def cron_edit(args):
     from cron.jobs import AmbiguousJobReference, resolve_job_ref
 
     try:
+        # Live-first, terminal fallback: a live job always wins a name tie
+        # with a retained completed namesake, while a completed job stays
+        # editable (the documented revive path) when nothing shadows it.
         job = resolve_job_ref(args.job_id)
+        if not job:
+            job = resolve_job_ref(args.job_id, include_terminal=True)
     except AmbiguousJobReference as exc:
         print(color(str(exc), Colors.RED))
         for m in exc.matches:

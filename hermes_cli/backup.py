@@ -8,6 +8,7 @@ Backup and import commands for hermes CLI.
 HERMES_HOME root.
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -141,6 +142,17 @@ class BackupInProgressError(RuntimeError):
 
 class _SQLiteSnapshotError(RuntimeError):
     pass
+
+
+class _CronPairArchiveError(RuntimeError):
+    """Raised when a cron jobs.json/runtime.db pair member fails to archive.
+
+    Must propagate out of the ``_atomic_output_path`` write block (never be
+    swallowed into a flag+break) so the atomic publisher's own exception path
+    discards the hidden partial and leaves any previously-published archive
+    at the final path untouched — the same reason ``_SQLiteSnapshotError``
+    is raised rather than flagged.
+    """
 
 
 @contextmanager
@@ -583,6 +595,104 @@ def _format_size(nbytes: int) -> str:
     return f"{nbytes:.1f} TB"
 
 
+def _is_cron_pair_archive_path(path: Path) -> bool:
+    """Return whether a path is a root or named-profile cron pair member."""
+    parts = path.parts
+    return (
+        len(parts) == 2
+        and parts[0] == "cron"
+        and parts[1] in {"jobs.json", "runtime.db"}
+    ) or (
+        len(parts) == 4
+        and parts[0] == "profiles"
+        and parts[2] == "cron"
+        and parts[3] in {"jobs.json", "runtime.db"}
+    )
+
+
+def _prepare_full_backup_cron_pair(
+    *,
+    home: Path,
+    files_to_add: list[tuple[Path, Path]],
+    staging_parent: Path,
+) -> tuple[list[tuple[Path, Path]], Optional[tempfile.TemporaryDirectory]]:
+    """Stage coherent cron pairs for the root profile and named profiles.
+
+    The returned temporary directory must remain alive until all returned paths
+    have been written to the archive. The caller owns and cleans it up.
+    """
+    pair_names = {"jobs.json", "runtime.db"}
+    profile_homes: set[Path] = set()
+    pair_archive_paths: set[Path] = set()
+    for _src, rel in files_to_add:
+        parts = rel.parts
+        if len(parts) == 2 and parts[0] == "cron" and parts[1] in pair_names:
+            profile_home = Path(".")
+        elif (
+            len(parts) == 4
+            and parts[0] == "profiles"
+            and parts[2] == "cron"
+            and parts[3] in pair_names
+        ):
+            profile_home = Path("profiles") / parts[1]
+        else:
+            continue
+        profile_homes.add(profile_home)
+        pair_archive_paths.add(rel)
+
+    if not profile_homes:
+        return files_to_add, None
+
+    stage = tempfile.TemporaryDirectory(
+        prefix="hermes-cron-backup-",
+        dir=str(staging_parent),
+    )
+    stage_root = Path(stage.name)
+    staged_pair_paths: list[tuple[Path, Path]] = []
+    try:
+        for relative_home in sorted(profile_homes, key=str):
+            profile_home = home if relative_home == Path(".") else home / relative_home
+            profile_stage = (
+                stage_root
+                if relative_home == Path(".")
+                else stage_root / relative_home
+            )
+            manifest: Dict[str, int] = {}
+            failed_dbs: list[str] = []
+            oversized_skipped: list[str] = []
+            with _quick_cron_store_lock(profile_home):
+                captured = _snapshot_cron_pair(
+                    home=profile_home,
+                    snap_dir=profile_stage,
+                    max_file_size=None,
+                    manifest=manifest,
+                    failed_dbs=failed_dbs,
+                    oversized_skipped=oversized_skipped,
+                )
+            if not captured:
+                detail = ", ".join(failed_dbs) or "unknown cron snapshot failure"
+                raise RuntimeError(f"{relative_home}: {detail}")
+            for rel_text in ("cron/jobs.json", "cron/runtime.db"):
+                if rel_text not in manifest:
+                    continue
+                archive_path = (
+                    Path(rel_text)
+                    if relative_home == Path(".")
+                    else relative_home / rel_text
+                )
+                pair_archive_paths.add(archive_path)
+                staged_pair_paths.append((stage_root / archive_path, archive_path))
+    except Exception:
+        stage.cleanup()
+        raise
+
+    staged_files = [
+        (src, rel) for src, rel in files_to_add if rel not in pair_archive_paths
+    ]
+    staged_files.extend(staged_pair_paths)
+    return staged_files, stage
+
+
 def run_backup(args) -> None:
     """Create a zip backup of the Hermes home directory."""
     hermes_root = get_default_hermes_root()
@@ -684,6 +794,22 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
         print("No files to back up.")
         return
 
+    cron_stage = None
+    try:
+        files_to_add, cron_stage = _prepare_full_backup_cron_pair(
+            home=hermes_root,
+            files_to_add=files_to_add,
+            staging_parent=out_path.parent,
+        )
+    except (OSError, RuntimeError) as exc:
+        # Nothing has been written to out_path yet (the atomic publisher
+        # below hasn't been entered) — a pre-existing valid backup at a
+        # user-supplied --output path must not be deleted just because this
+        # run's cron snapshot failed.
+        logger.error("Backup aborted: coherent cron snapshot failed: %s", exc)
+        print(f"Backup aborted: could not snapshot coherent cron state ({exc})")
+        return
+
     # Create the zip
     file_count = len(files_to_add) + len(external_to_add)
     logger.info(
@@ -698,55 +824,77 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     errors = []
     t0 = time.monotonic()
 
-    with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
-        archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6
-    ) as zf:
-        for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
-            try:
-                # Safe copy for SQLite databases (handles WAL mode)
-                if abs_path.suffix == ".db":
-                    # Stage the snapshot alongside the output zip so that the
-                    # temp file lives on the same filesystem.  The system
-                    # default (/tmp) may be a small tmpfs that cannot hold
-                    # large databases, causing silent backup incompleteness.
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".db", delete=False, dir=str(out_path.parent)
-                    ) as tmp:
-                        tmp_db = Path(tmp.name)
-                    if _safe_copy_db(abs_path, tmp_db):
-                        zf.write(tmp_db, arcname=str(rel_path))
-                        total_bytes += tmp_db.stat().st_size
-                        tmp_db.unlink(missing_ok=True)
+    try:
+        with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
+            archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6
+        ) as zf:
+            for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
+                try:
+                    # Safe copy for SQLite databases (handles WAL mode)
+                    if abs_path.suffix == ".db":
+                        # Stage the snapshot alongside the output zip so that the
+                        # temp file lives on the same filesystem.  The system
+                        # default (/tmp) may be a small tmpfs that cannot hold
+                        # large databases, causing silent backup incompleteness.
+                        with tempfile.NamedTemporaryFile(
+                            suffix=".db", delete=False, dir=str(out_path.parent)
+                        ) as tmp:
+                            tmp_db = Path(tmp.name)
+                        if _safe_copy_db(abs_path, tmp_db):
+                            try:
+                                zf.write(tmp_db, arcname=str(rel_path))
+                                total_bytes += tmp_db.stat().st_size
+                            finally:
+                                tmp_db.unlink(missing_ok=True)
+                        else:
+                            tmp_db.unlink(missing_ok=True)
+                            errors.append(f"  {rel_path}: SQLite safe copy failed")
+                            if _is_cron_pair_archive_path(rel_path):
+                                # Raise (not flag+break): must propagate out of
+                                # the atomic-output-path block so its exception
+                                # path discards the hidden partial instead of
+                                # the `with` exiting "cleanly" and publishing
+                                # an archive missing half the cron pair.
+                                raise _CronPairArchiveError(str(rel_path))
+                            continue
                     else:
-                        tmp_db.unlink(missing_ok=True)
-                        errors.append(f"  {rel_path}: SQLite safe copy failed")
-                        continue
-                else:
-                    zf.write(abs_path, arcname=str(rel_path))
+                        zf.write(abs_path, arcname=str(rel_path))
+                        total_bytes += abs_path.stat().st_size
+                except (PermissionError, OSError, ValueError) as exc:
+                    errors.append(f"  {rel_path}: {exc}")
+                    if _is_cron_pair_archive_path(rel_path):
+                        raise _CronPairArchiveError(str(rel_path)) from exc
+                    continue
+
+                # Progress every 500 files
+                if i % 500 == 0:
+                    print(f"  {i}/{file_count} files ...")
+                    logger.info(
+                        "backup phase=archive status=progress completed=%d total=%d",
+                        i,
+                        file_count,
+                    )
+
+            # External memory-provider state, stored under the ``_external/``
+            # arc prefix. These never include ``.db`` files in practice
+            # (config/env blobs), so a straight zf.write is fine.
+            for abs_path, arcname in external_to_add:
+                try:
+                    zf.write(abs_path, arcname=arcname)
                     total_bytes += abs_path.stat().st_size
-            except (PermissionError, OSError, ValueError) as exc:
-                errors.append(f"  {rel_path}: {exc}")
-                continue
-
-            # Progress every 500 files
-            if i % 500 == 0:
-                print(f"  {i}/{file_count} files ...")
-                logger.info(
-                    "backup phase=archive status=progress completed=%d total=%d",
-                    i,
-                    file_count,
-                )
-
-        # External memory-provider state, stored under the ``_external/`` arc
-        # prefix. These never include ``.db`` files in practice (config/env
-        # blobs), so a straight zf.write is fine.
-        for abs_path, arcname in external_to_add:
-            try:
-                zf.write(abs_path, arcname=arcname)
-                total_bytes += abs_path.stat().st_size
-            except (PermissionError, OSError, ValueError) as exc:
-                errors.append(f"  {arcname}: {exc}")
-                continue
+                except (PermissionError, OSError, ValueError) as exc:
+                    errors.append(f"  {arcname}: {exc}")
+                    continue
+    except _CronPairArchiveError as exc:
+        logger.warning("Backup aborted: cron pair write failed: %s", exc)
+        # ``_atomic_output_path`` already removed the hidden partial. Do not
+        # unlink ``out_path`` here: it may be a previous valid backup that the
+        # atomic publisher deliberately preserved.
+        print("Backup aborted: a coherent cron pair could not be archived.")
+        return
+    finally:
+        if cron_stage is not None:
+            cron_stage.cleanup()
 
     elapsed = time.monotonic() - t0
     zip_size = out_path.stat().st_size
@@ -1093,6 +1241,7 @@ _QUICK_STATE_FILES = (
     ".env",
     "auth.json",
     "cron/jobs.json",
+    "cron/runtime.db",
     "cron/executions.db",
     "gateway_state.json",
     "channel_directory.json",
@@ -1120,6 +1269,161 @@ _QUICK_STATE_FILES = (
 
 _QUICK_SNAPSHOTS_DIR = "state-snapshots"
 _QUICK_DEFAULT_KEEP = 20
+
+
+@contextlib.contextmanager
+def _quick_cron_store_lock(home: Path):
+    """Hold the profile-local cron lock across paired snapshot operations."""
+    from cron.jobs import _jobs_lock, use_cron_store
+
+    with use_cron_store(home):
+        with _jobs_lock(strict=True):
+            yield
+
+
+def _copy_quick_state_file(
+    *,
+    src: Path,
+    dst: Path,
+    rel: str,
+    max_file_size: Optional[int],
+    manifest: Dict[str, int],
+    failed_dbs: list[str],
+    oversized_skipped: list[str],
+) -> bool:
+    """Copy one quick-snapshot file and update its manifest bookkeeping."""
+    if not src.is_file():
+        return False
+    try:
+        size = src.stat().st_size
+    except OSError:
+        size = 0
+    if max_file_size is not None and size > max_file_size:
+        print(
+            f"  ⚠ Snapshot: skipping {rel} "
+            f"({_format_size(size)} exceeds {_format_size(max_file_size)} limit)"
+        )
+        if src.suffix == ".db":
+            oversized_skipped.append(rel)
+        return False
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if src.suffix == ".db":
+            if not _safe_copy_db(src, dst):
+                failed_dbs.append(rel)
+                print(
+                    f"  ⚠ Snapshot: SQLite safe copy FAILED for {rel} "
+                    "— file may be locked or corrupted"
+                )
+                return False
+        else:
+            shutil.copy2(src, dst)
+        manifest[rel] = dst.stat().st_size
+        return True
+    except (OSError, PermissionError) as exc:
+        logger.warning("Could not snapshot %s: %s", rel, exc)
+        return False
+
+
+def _snapshot_cron_pair(
+    *,
+    home: Path,
+    snap_dir: Path,
+    max_file_size: Optional[int],
+    manifest: Dict[str, int],
+    failed_dbs: list[str],
+    oversized_skipped: list[str],
+) -> bool:
+    """Capture one coherent definition/runtime generation, or neither file."""
+    from cron.runtime_state import (
+        load_pending_definitions,
+        replace_runtime_states,
+    )
+    from hermes_time import now
+
+    jobs_rel = "cron/jobs.json"
+    runtime_rel = "cron/runtime.db"
+    jobs_src = home / jobs_rel
+    runtime_src = home / runtime_rel
+    pending = load_pending_definitions(home / "cron") if runtime_src.is_file() else None
+
+    if not jobs_src.is_file() and not runtime_src.is_file():
+        return False
+    if not jobs_src.is_file() and pending is None:
+        logger.error(
+            "Cron snapshot skipped: runtime.db exists but jobs.json is missing "
+            "and no definition journal can recover it"
+        )
+        failed_dbs.append("cron/jobs.json + cron/runtime.db")
+        return False
+
+    jobs_dst = snap_dir / jobs_rel
+    runtime_dst = snap_dir / runtime_rel
+    jobs_ok = False
+    runtime_ok = False
+    try:
+        if pending is not None:
+            payload = json.dumps(
+                {"jobs": pending, "updated_at": now().isoformat()},
+                ensure_ascii=False,
+                indent=2,
+            ).encode("utf-8")
+            if max_file_size is not None and len(payload) > max_file_size:
+                print(
+                    f"  ⚠ Snapshot: skipping {jobs_rel} "
+                    f"({_format_size(len(payload))} exceeds "
+                    f"{_format_size(max_file_size)} limit)"
+                )
+            else:
+                jobs_dst.parent.mkdir(parents=True, exist_ok=True)
+                jobs_dst.write_bytes(payload)
+                manifest[jobs_rel] = jobs_dst.stat().st_size
+                jobs_ok = True
+        else:
+            jobs_ok = _copy_quick_state_file(
+                src=jobs_src,
+                dst=jobs_dst,
+                rel=jobs_rel,
+                max_file_size=max_file_size,
+                manifest=manifest,
+                failed_dbs=failed_dbs,
+                oversized_skipped=oversized_skipped,
+            )
+
+        if runtime_src.is_file():
+            runtime_ok = _copy_quick_state_file(
+                src=runtime_src,
+                dst=runtime_dst,
+                rel=runtime_rel,
+                max_file_size=max_file_size,
+                manifest=manifest,
+                failed_dbs=failed_dbs,
+                oversized_skipped=oversized_skipped,
+            )
+        elif jobs_ok:
+            # Definitions with no runtime database are a valid first-run state.
+            # Build an empty paired database in the snapshot without mutating live
+            # state, so restore never needs a one-sided fallback.
+            replace_runtime_states(snap_dir / "cron", {})
+            manifest[runtime_rel] = runtime_dst.stat().st_size
+            runtime_ok = True
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        logger.error("Failed to snapshot coherent cron pair: %s", exc)
+
+    if jobs_ok and runtime_ok:
+        return True
+
+    # A pair member failed or exceeded limits. Remove both snapshot members and
+    # their manifest entries so this snapshot can never drive a partial restore.
+    for rel, path in ((jobs_rel, jobs_dst), (runtime_rel, runtime_dst)):
+        manifest.pop(rel, None)
+        path.unlink(missing_ok=True)
+    marker = "cron/jobs.json + cron/runtime.db"
+    if marker not in failed_dbs and not any(
+        rel in oversized_skipped for rel in (jobs_rel, runtime_rel)
+    ):
+        failed_dbs.append(marker)
+    return False
 
 
 def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
@@ -1214,7 +1518,30 @@ def _create_quick_snapshot_locked(
     # recoverable database.
     oversized_skipped: list[str] = []
 
+    # ``jobs.json`` declarations and ``runtime.db`` overlays form one logical
+    # cron snapshot. Copy both while holding the same profile-local lock that
+    # guards every cron mutation, otherwise a writer can commit between the
+    # JSON copy and SQLite backup and create a torn restore point.
+    #
+    # Write into staging_dir (not snap_dir): everything in this snapshot,
+    # cron pair included, must land in the one directory that gets published
+    # atomically via os.replace(staging_dir, snap_dir) below. Writing the
+    # pair straight into snap_dir would create it non-empty ahead of time,
+    # and os.replace onto an existing non-empty directory fails outright.
+    cron_pair = ("cron/jobs.json", "cron/runtime.db")
+    with _quick_cron_store_lock(home):
+        _snapshot_cron_pair(
+            home=home,
+            snap_dir=staging_dir,
+            max_file_size=max_file_size,
+            manifest=manifest,
+            failed_dbs=failed_dbs,
+            oversized_skipped=oversized_skipped,
+        )
+
     for rel in _QUICK_STATE_FILES:
+        if rel in cron_pair:
+            continue
         src = home / rel
         if not src.exists():
             continue
@@ -1435,39 +1762,202 @@ def restore_quick_snapshot(
         meta = json.load(f)
 
     restored = 0
-    for rel in meta.get("files", {}):
-        # Security: reject absolute paths and traversals in manifest entries
+    manifest_files = meta.get("files", {})
+    cron_pair = ("cron/jobs.json", "cron/runtime.db")
+
+    def _owner_for(dst: Path):
+        """Capture the live destination owner, or its parent for a new file."""
+        try:
+            return (dst if dst.exists() else dst.parent).stat()
+        except OSError:
+            return None
+
+    def _stage_file(src: Path, dst: Path) -> Path:
+        """Copy a snapshot member to a unique sibling temporary file."""
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{dst.name}.snap_restore.", dir=str(dst.parent)
+        )
+        os.close(tmp_fd)
+        tmp = Path(tmp_name)
+        try:
+            shutil.copy2(src, tmp)
+            return tmp
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+
+    def _replace_staged(tmp: Path, dst: Path, rel: str, owner) -> bool:
+        """Atomically install one staged file and preserve security metadata."""
+        try:
+            if dst.suffix == ".db":
+                for suffix in ("-wal", "-shm", "-journal"):
+                    Path(f"{dst}{suffix}").unlink(missing_ok=True)
+            os.replace(tmp, dst)
+            if rel == "cron/runtime.db":
+                os.chmod(dst, 0o600)
+            if owner is not None and hasattr(os, "chown"):
+                current = dst.stat()
+                if (
+                    getattr(current, "st_uid", None) != getattr(owner, "st_uid", None)
+                    or getattr(current, "st_gid", None) != getattr(owner, "st_gid", None)
+                ):
+                    os.chown(dst, owner.st_uid, owner.st_gid)
+            return True
+        except (OSError, PermissionError) as exc:
+            logger.error("Failed to restore %s: %s", rel, exc)
+            return False
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def _restore_file(rel: str) -> bool:
+        """Validate, stage, and atomically replace one manifest file."""
+        # Security: reject absolute paths and traversals in manifest entries.
         src = snap_dir / rel
         try:
             src.resolve().relative_to(snap_dir.resolve())
         except ValueError:
             logger.error("Manifest path traversal blocked: %s", rel)
-            continue
+            return False
 
         dst = home / rel
         try:
             dst.resolve().relative_to(home.resolve())
         except ValueError:
             logger.error("Manifest path traversal blocked: %s", rel)
-            continue
+            return False
 
         if not src.exists():
-            continue
-
-        dst.parent.mkdir(parents=True, exist_ok=True)
+            return False
 
         try:
-            if dst.suffix == ".db":
-                # Atomic-ish replace for databases
-                tmp = dst.parent / f".{dst.name}.snap_restore"
-                shutil.copy2(src, tmp)
-                dst.unlink(missing_ok=True)
-                shutil.move(str(tmp), str(dst))
-            else:
-                shutil.copy2(src, dst)
-            restored += 1
+            tmp = _stage_file(src, dst)
         except (OSError, PermissionError) as exc:
-            logger.error("Failed to restore %s: %s", rel, exc)
+            logger.error("Failed to stage restore for %s: %s", rel, exc)
+            return False
+        return _replace_staged(tmp, dst, rel, _owner_for(dst))
+
+    def _journal_snapshot_definitions(runtime_tmp: Path, jobs_tmp: Path) -> None:
+        """Make staged runtime authoritative until staged JSON materializes."""
+        with jobs_tmp.open(encoding="utf-8-sig") as handle:
+            payload = json.load(handle)
+        definitions = payload.get("jobs", []) if isinstance(payload, dict) else payload
+        if not isinstance(definitions, list):
+            raise ValueError("snapshot cron/jobs.json does not contain a jobs list")
+        definitions_json = json.dumps(
+            definitions,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with contextlib.closing(sqlite3.connect(str(runtime_tmp))) as conn:
+            with conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pending_definitions (
+                        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                        definitions_json TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO pending_definitions (singleton, definitions_json)
+                    VALUES (1, ?)
+                    ON CONFLICT(singleton) DO UPDATE SET
+                    definitions_json = excluded.definitions_json
+                    """,
+                    (definitions_json,),
+                )
+
+    def _clear_live_definition_journal(runtime_path: Path) -> None:
+        """Clear recovery intent after the JSON half is durably installed."""
+        with contextlib.closing(sqlite3.connect(str(runtime_path))) as conn:
+            with conn:
+                conn.execute("DELETE FROM pending_definitions WHERE singleton = 1")
+
+    def _restore_cron_pair() -> int:
+        """Restore both cron files runtime-first with roll-forward recovery."""
+        jobs_rel, runtime_rel = cron_pair
+        pair_members = {rel for rel in cron_pair if rel in manifest_files}
+        if pair_members and pair_members != set(cron_pair):
+            logger.error(
+                "Refusing partial cron restore: snapshot must contain both "
+                "cron/jobs.json and cron/runtime.db"
+            )
+            return 0
+        if not pair_members:
+            return 0
+
+        from cron.jobs import _oneshot_run_claim_ttl_seconds
+        from cron.runtime_state import list_live_claims
+
+        live_claims = list_live_claims(
+            home / "cron",
+            fire_claim_ttl_seconds=300.0,
+            run_claim_ttl_seconds=_oneshot_run_claim_ttl_seconds(),
+        )
+        try:
+            from cron.scheduler import get_running_job_ids
+
+            in_process_runs = sorted(get_running_job_ids())
+        except Exception:
+            in_process_runs = []
+        if live_claims or in_process_runs:
+            logger.error(
+                "Refusing cron restore while executions are active: claims=%s "
+                "in_process=%s",
+                live_claims,
+                in_process_runs,
+            )
+            return 0
+
+        jobs_src = snap_dir / jobs_rel
+        runtime_src = snap_dir / runtime_rel
+        jobs_dst = home / jobs_rel
+        runtime_dst = home / runtime_rel
+        jobs_tmp = None
+        runtime_tmp = None
+        try:
+            jobs_tmp = _stage_file(jobs_src, jobs_dst)
+            runtime_tmp = _stage_file(runtime_src, runtime_dst)
+            _journal_snapshot_definitions(runtime_tmp, jobs_tmp)
+
+            runtime_ok = _replace_staged(
+                runtime_tmp, runtime_dst, runtime_rel, _owner_for(runtime_dst)
+            )
+            runtime_tmp = None
+            if not runtime_ok:
+                return 0
+
+            jobs_ok = _replace_staged(
+                jobs_tmp, jobs_dst, jobs_rel, _owner_for(jobs_dst)
+            )
+            jobs_tmp = None
+            if jobs_ok:
+                _clear_live_definition_journal(runtime_dst)
+            return 1 + int(jobs_ok)
+        except (OSError, PermissionError, sqlite3.Error, ValueError, json.JSONDecodeError) as exc:
+            logger.error("Failed to restore coherent cron pair: %s", exc)
+            return 0
+        finally:
+            if jobs_tmp is not None:
+                jobs_tmp.unlink(missing_ok=True)
+            if runtime_tmp is not None:
+                runtime_tmp.unlink(missing_ok=True)
+
+    # The cron pair is one logical store. Hold the profile-local mutation lock
+    # from staging through replacement so scheduler/API writers cannot observe
+    # or create an interleaved definition/runtime combination. The staged
+    # runtime journal makes the replacement crash-recoverable across files.
+    with _quick_cron_store_lock(home):
+        restored += _restore_cron_pair()
+
+    for rel in manifest_files:
+        if rel in cron_pair:
+            continue
+        if _restore_file(rel):
+            restored += 1
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
     return restored > 0
@@ -1680,6 +2170,23 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     if not files_to_add:
         return None
 
+    cron_stage = None
+    try:
+        files_to_add, cron_stage = _prepare_full_backup_cron_pair(
+            home=hermes_root,
+            files_to_add=files_to_add,
+            staging_parent=out_path.parent,
+        )
+    except (OSError, RuntimeError) as exc:
+        # Nothing has been written to out_path yet (the atomic publisher
+        # below hasn't been entered) — a pre-existing valid backup there
+        # must not be deleted just because this run's cron snapshot failed.
+        logger.warning(
+            "Full-zip backup aborted: coherent cron snapshot failed: %s",
+            exc,
+        )
+        return None
+
     logger.info(
         "automatic backup phase=scan status=complete duration_ms=%.1f files=%d",
         (time.monotonic() - scan_started) * 1000,
@@ -1715,6 +2222,17 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
                     else:
                         zf.write(abs_path, arcname=str(rel_path))
                 except (PermissionError, OSError, ValueError) as exc:
+                    if _is_cron_pair_archive_path(rel_path):
+                        logger.warning(
+                            "Full-zip backup aborted: cron pair write failed for %s: %s",
+                            rel_path,
+                            exc,
+                        )
+                        # Raise (not flag+break): must propagate out of the
+                        # atomic-output-path block below so its exception
+                        # path discards the hidden partial instead of the
+                        # `with` exiting "cleanly" and getting published.
+                        raise _CronPairArchiveError(str(rel_path)) from exc
                     logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
                     continue
                 if index % 500 == 0:
@@ -1723,12 +2241,15 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
                         index,
                         len(files_to_add),
                     )
-    except (OSError, _SQLiteSnapshotError) as exc:
+    except (OSError, _SQLiteSnapshotError, _CronPairArchiveError) as exc:
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         # ``_atomic_output_path`` already removed the hidden partial.  Do not
         # unlink ``out_path`` here: it may be a previous valid backup that the
         # atomic publisher deliberately preserved.
         return None
+    finally:
+        if cron_stage is not None:
+            cron_stage.cleanup()
 
     logger.info(
         "automatic backup phase=archive status=complete duration_ms=%.1f files=%d bytes=%d",

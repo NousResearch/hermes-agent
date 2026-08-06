@@ -18,7 +18,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
     """Patch the job pipeline primitives and record the call order."""
     calls = []
 
-    def fake_run_job(job, *, defer_agent_teardown=None):
+    def fake_run_job(job, *, verbose=False):
         calls.append(("run_job", job["id"]))
         fr = final if silent_marker_in is None else silent_marker_in
         return (success, output, fr, error)
@@ -31,10 +31,17 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("deliver", job["id"]))
         return None
 
-    def fake_mark(jid, ok, err=None, delivery_error=None):
+    def fake_mark(
+        jid,
+        ok,
+        err=None,
+        delivery_error=None,
+        *,
+        expected_fire_claim_id=None,
+    ):
         calls.append(("mark", jid, ok))
 
-    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "_run_job_in_killable_process", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", fake_save)
     monkeypatch.setattr(s, "_deliver_result", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", fake_mark)
@@ -46,7 +53,8 @@ def test_tick_process_job_sequence(monkeypatch):
     sequence run_job → save → deliver → mark, in that order."""
     calls = _patch_pipeline(monkeypatch)
     monkeypatch.setattr(s, "get_due_jobs", lambda: [{"id": "j1", "name": "t"}])
-    monkeypatch.setattr(s, "advance_next_runs", lambda ids: 1)
+    monkeypatch.setattr(s, "claim_job_for_fire_token", lambda jid: f"claim-{jid}")
+    monkeypatch.setattr(s, "heartbeat_fire_claim", lambda *a, **k: True)
 
     s.tick(verbose=False, sync=True)
 
@@ -58,6 +66,8 @@ def test_run_one_job_success_sequence(monkeypatch):
     """The extracted helper runs the same execute→save→deliver→mark sequence
     for a successful job."""
     calls = _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(s, "claim_job_for_fire_token", lambda jid: f"claim-{jid}")
+    monkeypatch.setattr(s, "heartbeat_fire_claim", lambda *a, **k: True)
 
     ok = s.run_one_job({"id": "j2", "name": "t"})
 
@@ -83,17 +93,19 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
 
     scope_during_run = {}
 
-    def fake_run_job(job, *, defer_agent_teardown=None):
+    def fake_run_job(job, *, verbose=False):
         # This is where resolve_runtime_provider() would read a secret. Prove a
         # scope is installed and the profile's secret resolves without raising.
         scope_during_run["scope"] = ss.current_secret_scope()
         scope_during_run["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
         return (True, "out", "final", None)
 
-    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "_run_job_in_killable_process", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
     monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
+    monkeypatch.setattr(s, "claim_job_for_fire_token", lambda jid: f"claim-{jid}")
+    monkeypatch.setattr(s, "heartbeat_fire_claim", lambda *a, **k: True)
 
     ss.set_multiplex_active(True)
     try:
@@ -107,5 +119,286 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     assert scope_during_run["base_url"] == "https://openrouter.ai/api/v1"
     # And it was torn down after run_one_job returned (no leak).
     assert ss.current_secret_scope() is None
+
+
+def test_tokenless_direct_call_must_acquire_fire_ownership(monkeypatch):
+    """The shared callable must not expose an unclaimed execution bypass."""
+    calls = _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(s, "claim_job_for_fire_token", lambda _jid: None)
+    finished = []
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    ok = s.run_one_job({"id": "unowned", "name": "t"})
+
+    assert ok is False
+    assert calls == []
+    assert finished[-1][1]["success"] is False
+    assert "ownership" in finished[-1][1]["error"].lower()
+
+
+def test_dispatch_rejection_releases_owned_fire_claim(monkeypatch):
+    """A terminal one-shot cleanup cannot leave its universal claim live."""
+    calls = _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: False)
+    released = []
+    monkeypatch.setattr(
+        s,
+        "release_fire_claim",
+        lambda job_id, *, expected_claim_id: released.append(
+            (job_id, expected_claim_id)
+        ),
+    )
+    monkeypatch.setattr(s, "finish_execution", lambda *a, **k: None)
+
+    ok = s.run_one_job(
+        {
+            "id": "dispatch-complete",
+            "name": "t",
+            "execution_id": "exec-dispatch-complete",
+            "_fire_claim_id": "owned-token",
+        }
+    )
+
+    assert ok is True
+    assert calls == []
+    assert released == [("dispatch-complete", "owned-token")]
+
+
+def test_fire_claim_storage_failure_finishes_ledger_without_running(monkeypatch):
+    """Claim acquisition errors cannot strand a running ledger entry."""
+    calls = _patch_pipeline(monkeypatch)
+
+    def fail_claim(_job_id):
+        raise RuntimeError("runtime store unavailable")
+
+    monkeypatch.setattr(s, "claim_job_for_fire_token", fail_claim)
+    finished = []
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    ok = s.run_one_job(
+        {"id": "claim-error", "name": "t", "execution_id": "exec-claim-error"}
+    )
+
+    assert ok is False
+    assert calls == []
+    assert finished[-1][0] == "exec-claim-error"
+    assert finished[-1][1]["success"] is False
+    assert "runtime store unavailable" in finished[-1][1]["error"]
+
+
+def test_claim_lost_after_run_suppresses_output_delivery_and_success(monkeypatch):
+    """A stale worker must have no post-run side effects or successful ledger."""
+    calls = _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(s, "heartbeat_fire_claim", lambda *a, **k: False)
+    finished = []
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    ok = s.run_one_job(
+        {
+            "id": "lost-owner",
+            "name": "t",
+            "execution_id": "exec-lost",
+            "_fire_claim_id": "old-token",
+        }
+    )
+
+    assert ok is False
+    assert calls == [("run_job", "lost-owner")]
+    assert finished == [
+        (
+            "exec-lost",
+            {
+                "success": False,
+                "error": "Fire-claim ownership was lost before completion.",
+                "delivery_outcome": "suppressed",
+            },
+        )
+    ]
+
+
+def test_run_claim_lost_after_run_suppresses_output_and_delivery(monkeypatch):
+    """A replaced run token must fence all parent-side completion effects."""
+    calls = _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(s, "heartbeat_fire_claim", lambda *a, **k: True)
+    monkeypatch.setattr(s, "heartbeat_run_claim", lambda *a, **k: False)
+    finished = []
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    ok = s.run_one_job(
+        {
+            "id": "lost-run-owner",
+            "name": "t",
+            "execution_id": "exec-lost-run",
+            "_fire_claim_id": "fire-a",
+            "run_claim": {"id": "run-a", "by": "owner", "at": "now"},
+        }
+    )
+
+    assert ok is False
+    assert calls == [("run_job", "lost-run-owner")]
+    assert finished[-1][1]["delivery_outcome"] == "suppressed"
+    assert "ownership" in finished[-1][1]["error"].lower()
+
+
+def test_claim_lost_before_delivery_suppresses_external_side_effect(monkeypatch):
+    """A token lost after output save must not deliver a stale response."""
+    calls = _patch_pipeline(monkeypatch)
+    heartbeats = iter([True, False])
+    monkeypatch.setattr(
+        s,
+        "heartbeat_fire_claim",
+        lambda *a, **k: next(heartbeats),
+    )
+    finished = []
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    ok = s.run_one_job(
+        {
+            "id": "lost-before-delivery",
+            "name": "t",
+            "execution_id": "exec-before-delivery",
+            "_fire_claim_id": "old-token",
+        }
+    )
+
+    assert ok is False
+    assert [call[0] for call in calls] == ["run_job", "save"]
+    assert finished[-1][1]["delivery_outcome"] == "suppressed"
+
+
+def test_run_claim_lost_before_delivery_suppresses_external_side_effect(monkeypatch):
+    """The second run-token heartbeat fences the irreversible delivery phase."""
+    calls = _patch_pipeline(monkeypatch)
+    run_heartbeats = iter([True, False])
+    monkeypatch.setattr(s, "heartbeat_fire_claim", lambda *a, **k: True)
+    monkeypatch.setattr(
+        s,
+        "heartbeat_run_claim",
+        lambda *a, **k: next(run_heartbeats),
+    )
+    finished = []
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    ok = s.run_one_job(
+        {
+            "id": "lost-run-before-delivery",
+            "name": "t",
+            "execution_id": "exec-run-before-delivery",
+            "_fire_claim_id": "fire-a",
+            "run_claim": {"id": "run-a", "by": "owner", "at": "now"},
+        }
+    )
+
+    assert ok is False
+    assert [call[0] for call in calls] == ["run_job", "save"]
+    assert finished[-1][1]["delivery_outcome"] == "suppressed"
+
+
+def test_successful_finalization_propagates_run_claim_token(monkeypatch):
+    """Successful completion compares and clears only the owned run token."""
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(s, "heartbeat_fire_claim", lambda *a, **k: True)
+    monkeypatch.setattr(s, "heartbeat_run_claim", lambda *a, **k: True)
+    marked = []
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)) or True,
+    )
+
+    ok = s.run_one_job(
+        {
+            "id": "run-finalize-success",
+            "name": "t",
+            "_fire_claim_id": "fire-a",
+            "run_claim": {"id": "run-a", "by": "owner", "at": "now"},
+        }
+    )
+
+    assert ok is True
+    assert marked[-1][1]["expected_fire_claim_id"] == "fire-a"
+    assert marked[-1][1]["expected_run_claim_id"] == "run-a"
+
+
+def test_exception_finalization_propagates_run_claim_token(monkeypatch):
+    """Exception bookkeeping cannot clear a replacement run token."""
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+
+    def fail_worker(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(s, "_run_job_in_killable_process", fail_worker)
+    marked = []
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)) or True,
+    )
+    monkeypatch.setattr(s, "finish_execution", lambda *args, **kwargs: None)
+
+    ok = s.run_one_job(
+        {
+            "id": "run-finalize-error",
+            "name": "t",
+            "execution_id": "exec-run-finalize-error",
+            "_fire_claim_id": "fire-a",
+            "run_claim": {"id": "run-a", "by": "owner", "at": "now"},
+        }
+    )
+
+    assert ok is False
+    assert marked[-1][1]["expected_fire_claim_id"] == "fire-a"
+    assert marked[-1][1]["expected_run_claim_id"] == "run-a"
+
+
+def test_finalization_claim_loss_overrides_successful_execution_ledger(monkeypatch):
+    """A CAS loss at mark time must not leave the execution ledger successful."""
+    calls = _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(s, "heartbeat_fire_claim", lambda *a, **k: True)
+    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: False)
+    finished = []
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    ok = s.run_one_job(
+        {
+            "id": "stale-finalizer",
+            "name": "t",
+            "execution_id": "exec-stale",
+            "_fire_claim_id": "old-token",
+        }
+    )
+
+    assert ok is False
+    assert [call[0] for call in calls] == ["run_job", "save", "deliver"]
+    assert finished[-1][1]["success"] is False
+    assert "ownership" in finished[-1][1]["error"].lower()
 
 

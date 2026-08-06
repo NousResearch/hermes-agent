@@ -39,13 +39,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
-    claim_job_for_fire,
+    claim_job_for_fire_token,
     create_job,
     get_job,
     list_jobs,
     mark_job_run,
     parse_schedule,
     pause_job,
+    release_fire_claim,
     remove_job,
     resolve_job_ref,
     resume_job,
@@ -578,6 +579,10 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
     }
+    tombstone = job.get("runtime_tombstone")
+    if isinstance(tombstone, dict):
+        result["completed_reason"] = tombstone.get("reason")
+        result["completed_at"] = tombstone.get("at")
     if job.get("script"):
         result["script"] = job["script"]
     if job.get("no_agent"):
@@ -606,11 +611,13 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
     Returns {"claimed": bool, "success": bool, "error": str|None}.
     """
     job_id = job["id"]
+    claim_id: Optional[str] = None
     try:
         from cron.scheduler import run_one_job
 
         # At-most-once claim: bail without running if a tick/other fire owns it.
-        if not claim_job_for_fire(job_id):
+        claim_id = claim_job_for_fire_token(job_id)
+        if claim_id is None:
             # claim_job_for_fire returns False for paused/disabled/missing
             # jobs too — don't mislabel those as "already being fired"
             # (#60703): that message sends the user chasing a phantom
@@ -623,6 +630,16 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 reason = "Job is already being fired by the scheduler; not run again."
             return {"claimed": False, "success": False, "error": reason}
+
+        claimed_job = get_job(job["id"])
+        if not claimed_job:
+            release_fire_claim(job["id"], expected_claim_id=claim_id)
+            return {
+                "claimed": True,
+                "success": False,
+                "error": "Job disappeared after its fire was claimed.",
+            }
+        claimed_job["_fire_claim_id"] = claim_id
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
@@ -685,12 +702,17 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
             _heartbeat_thread.start()
 
         try:
-            processed = run_one_job(job)
+            # claimed_job (not job) carries _fire_claim_id — run_one_job reuses
+            # it to skip a redundant self-claim, which claim_job_for_fire_token
+            # would otherwise deny (we already hold the fresh claim above).
+            processed = run_one_job(claimed_job)
         finally:
             _heartbeat_stop.set()
             if _heartbeat_thread is not None:
                 _heartbeat_thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
-        refreshed = get_job(job_id) or {}
+        # include_terminal: a final run tombstones the job; without it the
+        # empty-dict fallback misreports a successful last run as failed.
+        refreshed = get_job(job_id, include_terminal=True) or {}
         ok = refreshed.get("last_status") == "ok"
         return {
             "claimed": True,
@@ -700,11 +722,21 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
-        try:
-            mark_job_run(job_id, False, str(e))
-        except Exception:
-            pass
-        return {"claimed": True, "success": False, "error": str(e)}
+        if claim_id is not None:
+            try:
+                mark_job_run(
+                    job_id,
+                    False,
+                    str(e),
+                    expected_fire_claim_id=claim_id,
+                )
+            except Exception:
+                pass
+        return {
+            "claimed": claim_id is not None,
+            "success": False,
+            "error": str(e),
+        }
 
 
 def cronjob(
@@ -716,6 +748,7 @@ def cronjob(
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
     include_disabled: bool = False,
+    include_completed: bool = False,
     skill: Optional[str] = None,
     skills: Optional[List[str]] = None,
     model: Optional[str] = None,
@@ -772,12 +805,15 @@ def cronjob(
             if base_url_error:
                 return tool_error(base_url_error, success=False)
 
-            # Validate context_from references existing jobs
+            # Validate context_from references existing jobs. Completed
+            # (runtime-tombstoned) upstreams are valid: fire-time injection
+            # reads the persisted output directory, not live job state, so a
+            # finished one-shot collector is a natural chaining source.
             if context_from:
                 from cron.jobs import get_job as _get_job
                 refs = [context_from] if isinstance(context_from, str) else context_from
                 for ref_id in refs:
-                    if not _get_job(ref_id):
+                    if not _get_job(ref_id, include_terminal=True):
                         return tool_error(
                             f"context_from job '{ref_id}' not found. "
                             "Use cronjob(action='list') to see available jobs.",
@@ -825,14 +861,28 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            jobs = [
+                _format_job(job)
+                for job in list_jobs(
+                    include_disabled=include_disabled,
+                    include_terminal=include_completed,
+                )
+            ]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
         try:
+            # Live-first, terminal fallback: a live job must always win a name
+            # tie with a retained completed namesake — management-by-name must
+            # not turn ambiguous just because a finished one-shot shares the
+            # name. Completed declarations stay reachable when nothing shadows
+            # them: remove and revive-via-update are the supported exits from
+            # the terminal state. Live-only actions are gated below.
             job = resolve_job_ref(job_id)
+            if not job:
+                job = resolve_job_ref(job_id, include_terminal=True)
         except AmbiguousJobReference as exc:
             return json.dumps(
                 {
@@ -842,6 +892,7 @@ def cronjob(
                         {
                             "id": m["id"],
                             "name": m.get("name"),
+                            "state": m.get("state"),
                             "schedule": m.get("schedule_display"),
                             "next_run_at": m.get("next_run_at"),
                         }
@@ -857,6 +908,21 @@ def cronjob(
             )
         # Resolve to canonical ID (supports name-based lookup)
         job_id = job["id"]
+
+        job_was_completed = bool(job.get("runtime_tombstone"))
+        if job_was_completed and normalized in {"pause", "resume", "run", "run_now", "trigger"}:
+            tombstone = job.get("runtime_tombstone")
+            if not isinstance(tombstone, dict):
+                tombstone = {}
+            return tool_error(
+                f"Cron job '{job['name']}' has completed "
+                f"(reason: {tombstone.get('reason', 'unknown')}, "
+                f"at: {tombstone.get('at', 'unknown')}) — action "
+                f"'{normalized}' only applies to live jobs. To revive it, use "
+                "action='update' with a new schedule or repeat; to drop it, "
+                "use action='remove'.",
+                success=False,
+            )
 
         if normalized == "remove":
             removed = remove_job(job_id)
@@ -900,7 +966,10 @@ def cronjob(
             if exec_result.get("claimed", False):
                 _notify_provider_jobs_changed_safe()
             # Re-read so the response reflects the post-run last_run_at/last_status.
-            result = _format_job(get_job(job_id) or {"id": job_id})
+            # include_terminal: a run that exhausts the repeat limit tombstones
+            # the job — report the real completed record, not a fabricated
+            # schedulable one.
+            result = _format_job(get_job(job_id, include_terminal=True) or {"id": job_id})
             result["executed"] = exec_result.get("claimed", False)
             result["execution_success"] = exec_result.get("success", False)
             if not exec_result.get("claimed", False):
@@ -967,9 +1036,12 @@ def cronjob(
                 else:
                     refs = [str(j).strip() for j in context_from if str(j).strip()]
                 if refs:
+                    # Completed upstreams stay valid here for the same reason
+                    # as the create path: their persisted output is what gets
+                    # injected at fire time.
                     from cron.jobs import get_job as _get_job
                     for ref_id in refs:
-                        if not _get_job(ref_id):
+                        if not _get_job(ref_id, include_terminal=True):
                             return tool_error(
                                 f"context_from job '{ref_id}' not found. "
                                 "Use cronjob(action='list') to see available jobs.",
@@ -1015,7 +1087,25 @@ def cronjob(
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
             _notify_provider_jobs_changed_safe()
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            # Tombstone reconciliation happens inside save_jobs(); re-read so
+            # the response reflects whether this edit actually revived a
+            # completed job (update_job returns the pre-reconcile record).
+            refreshed = get_job(job_id, include_terminal=True) or updated
+            response: Dict[str, Any] = {"success": True, "job": _format_job(refreshed)}
+            if job_was_completed:
+                if refreshed.get("runtime_tombstone"):
+                    response["message"] = (
+                        f"Cron job '{refreshed.get('name', job_id)}' updated but "
+                        "still completed — only a schedule, repeat, or enabled "
+                        "change revives a completed job."
+                    )
+                else:
+                    response["revived"] = True
+                    response["message"] = (
+                        f"Cron job '{refreshed.get('name', job_id)}' revived; "
+                        f"next run at {refreshed.get('next_run_at')}."
+                    )
+            return json.dumps(response, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
 
@@ -1053,6 +1143,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "job_id": {
                 "type": "string",
                 "description": "Required for update/pause/resume/remove/run"
+            },
+            "include_completed": {
+                "type": "boolean",
+                "default": False,
+                "description": "For action=list: also include completed jobs (one-shots or repeat-limited jobs that have exhausted their runs). Completed jobs show state='completed' with completed_reason/completed_at. They can be removed, or revived with action='update' by giving them a new schedule or repeat."
             },
             "prompt": {
                 "type": "string",
@@ -1171,6 +1266,7 @@ registry.register(
         repeat=args.get("repeat"),
         deliver=args.get("deliver"),
         include_disabled=args.get("include_disabled", True),
+        include_completed=args.get("include_completed", False),
         skill=args.get("skill"),
         skills=args.get("skills"),
         # model / provider / base_url are intentionally NOT read from the

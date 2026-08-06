@@ -182,7 +182,7 @@ class TestExternalCronProviderStatus:
 def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     monkeypatch.setattr(
         "cron.jobs.list_jobs",
-        lambda include_disabled=False: [
+        lambda include_disabled=False, include_terminal=False: [
             {
                 "id": "job-1",
                 "name": "Nightly docs",
@@ -234,3 +234,66 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "Failed to create job: boom" in out
+
+
+class TestCronEditRevive:
+    """`hermes cron edit <job-id> --repeat N` is the documented revive path
+    for a completed job — the CLI pre-resolve must reach terminal records."""
+
+    def test_edit_revives_completed_job(self, tmp_cron_dir, capsys):
+        from cron.jobs import get_job, mark_job_run
+
+        job = create_job(prompt="One time sweep", schedule="every 1h", repeat=1)
+        assert mark_job_run(job["id"], success=True) is True
+        assert get_job(job["id"]) is None  # completed — hidden from live lookup
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=3,
+                skill=None,
+                skills=None,
+                clear_skills=False,
+                add_skills=None,
+                remove_skills=None,
+                script=None,
+                workdir=None,
+                no_agent=None,
+            )
+        )
+        out = capsys.readouterr().out
+        assert "not found" not in out.lower()
+
+        revived = get_job(job["id"])
+        assert revived is not None  # visible to the live surface again
+        assert revived["repeat"]["times"] == 3
+        assert revived["repeat"]["completed"] == 0
+
+
+class TestCronListCompleted:
+    """`hermes cron list --all` must surface completed (runtime-tombstoned)
+    declarations with a terminal badge instead of a stale next-run time; the
+    default listing keeps hiding them."""
+
+    def test_list_all_shows_completed_with_reason(self, tmp_cron_dir, capsys):
+        from cron.jobs import mark_job_run
+
+        job = create_job(prompt="One shot sweep", schedule="every 1h", repeat=1)
+        assert mark_job_run(job["id"], success=True) is True
+
+        cron_cli.cron_list(show_all=False)
+        default_out = capsys.readouterr().out
+        assert "One shot sweep" not in default_out
+
+        cron_cli.cron_list(show_all=True)
+        all_out = capsys.readouterr().out
+        assert "One shot sweep" in all_out
+        assert "[completed]" in all_out
+        assert "repeat_limit" in all_out
+        # The stale pre-completion next_run_at must not read as upcoming.
+        assert "completed" in all_out.split("Next run:")[1].splitlines()[0]

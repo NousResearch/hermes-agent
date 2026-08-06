@@ -248,7 +248,7 @@ hermes cron status
 
 On each tick Hermes:
 
-1. loads jobs from `~/.hermes/cron/jobs.json`
+1. loads job definitions from `~/.hermes/cron/jobs.json`, overlaid with their scheduler-owned runtime state from `~/.hermes/cron/runtime.db`
 2. checks `next_run_at` against the current time
 3. starts a fresh `AIAgent` session for each due job
 4. optionally injects one or more attached skills into that fresh session
@@ -777,7 +777,21 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 
 ## Job storage
 
-Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
+Job state lives in two files under `~/.hermes/cron/`:
+
+- **`jobs.json`** holds the declarative job definitions — what you created: name, prompt, schedule, skills, delivery, repeat limit, enabled flag, and any per-job model/provider pins. Normal execution never modifies it, so it is safe to back up, review, or keep in source control.
+- **`runtime.db`** holds the scheduler-owned runtime state — next/last run times, statuses and errors, run counters, and in-flight execution claims. It changes on every tick and should never be edited by hand.
+
+Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
+
+Stores from older Hermes versions that kept everything in `jobs.json` migrate automatically the first time the new version loads them — schedules, counters, and statuses are preserved. Backups archive both files as one coherent pair so a restore cannot mix definitions from one generation with runtime state from another.
+
+### Completed jobs
+
+A one-shot that has fired, or a job that has exhausted its repeat limit, becomes **completed**: it will never fire again, but its definition is kept in `jobs.json` for reproducibility. Completed jobs are hidden from normal listings; see them with `hermes cron list --all` (or `cronjob(action="list", include_completed=True)`), where they show `[completed]` with the completion reason. From there you can:
+
+- **remove** the job to drop its declaration entirely, or
+- **revive** it by editing its schedule or repeat limit (`hermes cron edit <job-id> --schedule ...` / `--repeat N`) — this resets the run counter and schedules the next run from now. Editing only the prompt or name updates the definition but leaves the job completed.
 
 Job definitions are plain JSON on disk: they survive `hermes update`, gateway restarts, and machine reboots. A job that was mid-run during a restart is marked `unknown` in the execution ledger — it is not automatically retried, but the job's next scheduled tick fires normally. See [Execution history](#execution-history) for details.
 

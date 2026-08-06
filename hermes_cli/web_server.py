@@ -11604,7 +11604,10 @@ def _validate_dashboard_cron_context_from(
     if not refs:
         return
     for ref in refs:
-        if not _call_cron_for_profile(profile_name, "get_job", ref):
+        # include_terminal: completed upstreams are valid chaining sources
+        # (fire-time injection reads their persisted output), matching the
+        # cronjob tool's create/update validation.
+        if not _call_cron_for_profile(profile_name, "get_job", ref, include_terminal=True):
             raise HTTPException(
                 status_code=400,
                 detail=(

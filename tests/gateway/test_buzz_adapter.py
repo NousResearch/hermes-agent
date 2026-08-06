@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -609,6 +610,18 @@ class TestCliErrorContract:
     def test_parses_json_error(self):
         msg = _cli_error_message('{"error":"relay_error","message":"boom","retryable":false}', 2)
         assert "relay_error" in msg and "boom" in msg and "exit 2" in msg
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            "x" * 100_000,
+            json.dumps({"error": "relay_error", "message": "x" * 100_000}),
+        ],
+    )
+    def test_bounds_untrusted_cli_error_output(self, stderr):
+        msg = _cli_error_message(stderr, 2)
+        assert len(msg) <= 900
+        assert msg.endswith("...")
 
 
 # ── Seeding / high-water mark / de-dupe ───────────────────────────────────
@@ -2211,7 +2224,66 @@ class TestBuzzAdapterSend:
         args, _stdin = cli.calls[0]
         assert args[args.index("--reply-to") + 1] == "stable-root"
 
+    @pytest.mark.parametrize(
+        ("stdout", "error_fragment"),
+        [
+            ("not json", "invalid CLI response"),
+            (json.dumps([]), "invalid CLI response"),
+            (json.dumps({"event_id": "evt"}), "invalid CLI response"),
+            (json.dumps({"accepted": True}), "invalid CLI response"),
+            (json.dumps({"accepted": True, "event_id": "   "}), "invalid CLI response"),
+        ],
+    )
+    async def test_send_rejects_invalid_zero_exit_receipt(self, stdout, error_fragment):
+        adapter = _make_adapter()
+        adapter._run_cli = AsyncMock(return_value=(0, stdout, ""))
 
+        result = await adapter.send(CHANNEL, "hello")
+
+        assert result.success is False
+        assert error_fragment in result.error
+        assert result.message_id is None
+        assert result.raw_response is None
+
+    @pytest.mark.asyncio
+    async def test_send_rejection_is_useful_and_bounded(self):
+        adapter = _make_adapter()
+        adapter._run_cli = AsyncMock(
+            return_value=(
+                0,
+                json.dumps({"accepted": False, "message": "upload rejected " + "x" * 100_000}),
+                "",
+            )
+        )
+
+        result = await adapter.send(CHANNEL, "hello")
+
+        assert result.success is False
+        assert "upload rejected" in result.error
+        assert len(result.error) <= 1024
+        assert result.raw_response is None
+
+    @pytest.mark.asyncio
+    async def test_send_success_exposes_only_verified_receipt(self):
+        adapter = _make_adapter()
+        adapter._run_cli = AsyncMock(
+            return_value=(
+                0,
+                json.dumps({
+                    "accepted": True,
+                    "event_id": " evt-safe ",
+                    "message": "x" * 100_000,
+                    "raw_response": "y" * 100_000,
+                }),
+                "",
+            )
+        )
+
+        result = await adapter.send(CHANNEL, "hello")
+
+        assert result.success is True
+        assert result.message_id == "evt-safe"
+        assert result.raw_response is None
 
     @pytest.mark.asyncio
     async def test_send_image_local_file_uses_file_flag(self, tmp_path):
@@ -2935,6 +3007,101 @@ class TestInboundMediaAuthorizationGate:
 
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "suffix"),
+        [
+            ("send_image_file", ".png"),
+            ("send_video", ".mp4"),
+            ("send_voice", ".ogg"),
+            ("send_document", ".pdf"),
+        ],
+    )
+    async def test_live_media_capabilities_upload_local_file_with_caption_and_reply(
+        self, tmp_path, method_name, suffix
+    ):
+        media = tmp_path / f"attachment{suffix}"
+        media.write_bytes(b"media")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-media"})
+        adapter._run_cli = cli
+
+        result = await getattr(adapter, method_name)(
+            CHANNEL,
+            str(media),
+            caption="caption",
+            reply_to="root-event",
+            metadata={"thread_id": "ignored-thread"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "evt-media"
+        args, stdin_text = cli.calls[0]
+        assert args[args.index("--file") + 1] == str(media)
+        assert args[args.index("--reply-to") + 1] == "root-event"
+        assert stdin_text == "caption"
+
+    @pytest.mark.asyncio
+    async def test_live_media_rejects_zero_exit_without_verified_event_id(self, tmp_path):
+        media = tmp_path / "attachment.pdf"
+        media.write_bytes(b"media")
+        adapter = _make_adapter()
+        adapter._run_cli = AsyncMock(
+            return_value=(0, json.dumps({"accepted": True}), "")
+        )
+
+        result = await adapter.send_document(CHANNEL, str(media))
+
+        assert result.success is False
+        assert result.error == "invalid CLI response"
+        assert result.raw_response is None
+
+    @pytest.mark.asyncio
+    async def test_send_to_platform_live_buzz_delivers_all_media(self, monkeypatch, tmp_path):
+        from gateway.config import Platform
+        from tools.send_message_tool import _send_to_platform
+
+        first = tmp_path / "first.txt"
+        second = tmp_path / "second.pdf"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-text"})
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-first"})
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-second"})
+        adapter._run_cli = cli
+        platform = Platform("buzz")
+        runner = SimpleNamespace(adapters={platform: adapter})
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        result = await _send_to_platform(
+            platform,
+            SimpleNamespace(enabled=True, token=None, extra={}),
+            CHANNEL,
+            "attached files",
+            thread_id="root-event",
+            media_files=[(str(first), False), (str(second), False)],
+        )
+
+        assert result == {
+            "success": True,
+            "message_id": "evt-second",
+            "media_delivered": True,
+        }
+        assert len(cli.calls) == 3
+        assert cli.calls[0][1] == "attached files"
+        assert [call[0][call[0].index("--file") + 1] for call in cli.calls[1:]] == [
+            str(first),
+            str(second),
+        ]
+        assert all(
+            call[0][call[0].index("--reply-to") + 1] == "root-event"
+            for call in cli.calls
+        )
+
+
 # ── Lifecycle ─────────────────────────────────────────────────────────────
 
 
@@ -3419,6 +3586,73 @@ class TestBuzzAdapterEdit:
 
         assert await adapter.delete_message(CHANNEL, "") is False
         assert cli.calls == []
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stdout",
+        [
+            "not json",
+            json.dumps([]),
+            json.dumps({"event_id": "evt"}),
+            json.dumps({"accepted": True}),
+            json.dumps({"accepted": True, "event_id": ""}),
+        ],
+    )
+    async def test_standalone_send_rejects_invalid_zero_exit_receipt(
+        self, monkeypatch, tmp_path, stdout
+    ):
+        from gateway.config import PlatformConfig
+
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        monkeypatch.setattr(
+            _buzz_mod,
+            "_exec_buzz",
+            AsyncMock(return_value=(0, stdout, "")),
+        )
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}), CHANNEL, "hello"
+        )
+
+        assert result == {"error": "Buzz standalone send failed: invalid CLI response"}
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_rejection_is_useful_bounded_and_not_delivered(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.config import PlatformConfig
+
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        monkeypatch.setattr(
+            _buzz_mod,
+            "_exec_buzz",
+            AsyncMock(
+                return_value=(
+                    0,
+                    json.dumps({"accepted": False, "message": "upload rejected " + "x" * 100_000}),
+                    "",
+                )
+            ),
+        )
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            CHANNEL,
+            "hello",
+            media_files=[("/tmp/report.txt", False)],
+        )
+
+        assert "upload rejected" in result["error"]
+        assert len(result["error"]) <= 1024
+        assert "success" not in result
+        assert "media_delivered" not in result
 # ── Durable channel cursors across restart (#90464) ───────────────────────
 
 
@@ -3569,4 +3803,3 @@ class TestChannelCursorPersistence:
         await adapter._poll_channel(CHANNEL)
 
         assert path.stat().st_mtime_ns == before
-

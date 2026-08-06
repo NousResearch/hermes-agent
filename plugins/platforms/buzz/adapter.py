@@ -663,20 +663,53 @@ async def _exec_buzz(
     )
 
 
-def _cli_error_message(stderr: str, returncode: int) -> str:
-    """Extract the human-readable message from the CLI's JSON error contract.
+_MAX_CLI_MESSAGE_CHARS = 900
 
-    stderr is ``{"error": "<category>", "message": "<detail>"}`` on failure;
-    fall back to the raw (stripped) stderr when it isn't JSON.
-    """
+
+def _bounded_cli_message(message: str) -> str:
+    """Keep untrusted CLI detail useful without exposing unbounded output."""
+    if len(message) <= _MAX_CLI_MESSAGE_CHARS:
+        return message
+    return f"{message[: _MAX_CLI_MESSAGE_CHARS - 3]}..."
+
+
+def _cli_error_message(stderr: str, returncode: int) -> str:
+    """Extract a bounded human-readable message from the CLI error contract."""
     text = (stderr or "").strip()
     try:
         data = json.loads(text)
-        if isinstance(data, dict) and data.get("message"):
-            return f"{data.get('error', 'error')}: {data['message']} (exit {returncode})"
+        if isinstance(data, dict):
+            detail = data.get("message")
+            category = data.get("error")
+            if isinstance(detail, str) and detail.strip():
+                label = category.strip() if isinstance(category, str) and category.strip() else "error"
+                return _bounded_cli_message(
+                    f"{label}: {detail.strip()} (exit {returncode})"
+                )
     except ValueError:
         pass
-    return text or f"buzz CLI failed with exit code {returncode}"
+    return _bounded_cli_message(text or f"buzz CLI failed with exit code {returncode}")
+
+
+def _parse_send_receipt(stdout: str) -> Tuple[Optional[str], Optional[str]]:
+    """Validate the buzz-cli success receipt and return ``(event_id, error)``."""
+    try:
+        data = json.loads(stdout or "{}")
+    except ValueError:
+        return None, "invalid CLI response"
+    if not isinstance(data, dict):
+        return None, "invalid CLI response"
+    if data.get("accepted") is False:
+        detail = data.get("message")
+        if not isinstance(detail, str) or not detail.strip():
+            detail = "message was not accepted"
+        return None, _bounded_cli_message(detail.strip())
+    if data.get("accepted") is not True:
+        return None, "invalid CLI response"
+    event_id = data.get("event_id")
+    if not isinstance(event_id, str) or not event_id.strip():
+        return None, "invalid CLI response"
+    return event_id.strip(), None
 
 
 def _parse_json_list(stdout: str) -> List[dict]:
@@ -1322,25 +1355,19 @@ class BuzzAdapter(BasePlatformAdapter):
                 error=_cli_error_message(err, code),
                 retryable=code == 2,
             )
-        try:
-            data = json.loads(out or "{}")
-        except ValueError:
-            data = {}
-        event_id = data.get("event_id")
-        if event_id:
-            # Belt-and-braces echo suppression: the poll loop already skips
-            # our own pubkey, but marking the id seen makes de-dupe explicit.
-            # Also record event_meta so a thread reply to this send matches
-            # even if the WS/poll echo never arrives (#75826).
-            self._mark_seen(str(chat_id), str(event_id))
-            self._remember_event_meta(
-                str(chat_id), str(event_id), self._self_pubkey, content
-            )
-        return SendResult(
-            success=bool(data.get("accepted", True)),
-            message_id=str(event_id) if event_id else None,
-            raw_response=data,
+        event_id, receipt_error = _parse_send_receipt(out)
+        if receipt_error:
+            return SendResult(success=False, error=receipt_error)
+        assert event_id is not None
+        # Belt-and-braces echo suppression: the poll loop already skips our own
+        # pubkey, but marking the verified id seen makes de-dupe explicit.
+        # Also record event_meta so a thread reply to this send matches even
+        # if the WS/poll echo never arrives (#75826).
+        self._mark_seen(str(chat_id), event_id)
+        self._remember_event_meta(
+            str(chat_id), event_id, self._self_pubkey, content
         )
+        return SendResult(success=True, message_id=event_id)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Buzz has no typing indicator API — no-op."""
@@ -1447,6 +1474,43 @@ class BuzzAdapter(BasePlatformAdapter):
             self._mark_seen(str(chat_id), str(event_id))
         return bool(data.get("accepted", True))
 
+    async def _send_local_file(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Upload one local file through the Buzz CLI and verify its receipt."""
+        local = Path(file_path).expanduser()
+        if not local.is_file():
+            return SendResult(success=False, error="Media file not found")
+        args = [
+            "messages", "send",
+            "--channel", str(chat_id),
+            "--file", str(local),
+            "--content", "-",
+        ]
+        reply_target = self._resolve_reply_anchor(
+            (metadata or {}).get("thread_id") or reply_to
+        )
+        if reply_target and self._reply_to_mode != "off":
+            args += ["--reply-to", str(reply_target)]
+        code, out, err = await self._run_cli(args, input_text=caption or "")
+        if code != 0:
+            return SendResult(
+                success=False,
+                error=_cli_error_message(err, code),
+                retryable=code == 2,
+            )
+        event_id, receipt_error = _parse_send_receipt(out)
+        if receipt_error:
+            return SendResult(success=False, error=receipt_error)
+        assert event_id is not None
+        self._mark_seen(str(chat_id), event_id)
+        return SendResult(success=True, message_id=event_id)
+
     async def send_image(
         self,
         chat_id: str,
@@ -1488,7 +1552,8 @@ class BuzzAdapter(BasePlatformAdapter):
         """
         local = Path(file_path).expanduser()
         if probe and not local.is_file():
-            return SendResult(success=False, error=f"File not found: {local}")
+            # Never leak host filesystem paths into chat-visible errors.
+            return SendResult(success=False, error="Media file not found")
         args = [
             "messages", "send",
             "--channel", str(chat_id),
@@ -1507,18 +1572,12 @@ class BuzzAdapter(BasePlatformAdapter):
                 error=_cli_error_message(err, code),
                 retryable=code == 2,
             )
-        try:
-            data = json.loads(out or "{}")
-        except ValueError:
-            data = {}
-        event_id = data.get("event_id")
-        if event_id:
-            self._mark_seen(str(chat_id), str(event_id))
-        return SendResult(
-            success=bool(data.get("accepted", True)),
-            message_id=str(event_id) if event_id else None,
-            raw_response=data,
-        )
+        event_id, receipt_error = _parse_send_receipt(out)
+        if receipt_error:
+            return SendResult(success=False, error=receipt_error)
+        assert event_id is not None
+        self._mark_seen(str(chat_id), event_id)
+        return SendResult(success=True, message_id=event_id)
 
     async def send_image_file(
         self,
@@ -3204,14 +3263,14 @@ async def _standalone_send(
     except asyncio.CancelledError:
         raise
     except OSError as e:
-        return {"error": f"Buzz standalone send failed to launch CLI: {e}"}
+        detail = _bounded_cli_message(str(e))
+        return {"error": f"Buzz standalone send failed to launch CLI: {detail}"}
     if code != 0:
         return {"error": f"Buzz standalone send failed: {_cli_error_message(err, code)}"}
-    try:
-        data = json.loads(out or "{}")
-    except ValueError:
-        data = {}
-    result = {"success": True, "message_id": str(data.get("event_id") or "")}
+    event_id, receipt_error = _parse_send_receipt(out)
+    if receipt_error:
+        return {"error": f"Buzz standalone send failed: {receipt_error}"}
+    result = {"success": True, "message_id": event_id}
     if media_files:
         result["media_delivered"] = True
     return result

@@ -23,29 +23,174 @@ def test_buzz_uuid_target_is_explicit() -> None:
     assert _parse_target_ref("buzz", channel_id) == (channel_id, None, True)
 
 
-def test_plugin_media_receipt_suppresses_omitted_warning() -> None:
-    media_result = {
-        "success": True,
-        "message_id": "evt-media",
-        "media_delivered": True,
-    }
+def test_live_buzz_media_delivers_every_file_with_reply_metadata(tmp_path) -> None:
+    from gateway.platforms.base import SendResult
 
-    with patch(
-        "tools.send_message_tool._send_via_adapter",
-        new=AsyncMock(return_value=media_result),
-    ):
+    platform = Platform("buzz")
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.pdf"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    calls = []
+
+    class Adapter:
+        async def send(self, *, chat_id, content, metadata=None):
+            calls.append(("text", content, metadata))
+            return SendResult(success=True, message_id="evt-text")
+
+        async def send_document(self, chat_id, file_path, **kwargs):
+            calls.append(("document", file_path, kwargs))
+            return SendResult(success=True, message_id=f"evt-{len(calls)}")
+
+    runner = SimpleNamespace(adapters={platform: Adapter()})
+    with patch("gateway.run._gateway_runner_ref", return_value=runner):
         result = asyncio.run(
             _send_to_platform(
-                Platform("buzz"),
+                platform,
                 SimpleNamespace(enabled=True, token=None, extra={}),
                 "31b543d5-80d4-4df5-8a5c-cefca1a58fdd",
-                "attached",
-                media_files=[("/tmp/report.txt", False)],
+                "attached files",
+                thread_id="reply-root",
+                media_files=[(str(first), False), (str(second), False)],
             )
         )
 
-    assert result == media_result
-    assert "warnings" not in result
+    assert result["success"] is True
+    assert result["media_delivered"] is True
+    assert calls == [
+        ("text", "attached files", {"thread_id": "reply-root"}),
+        ("document", str(first), {"caption": None, "reply_to": "reply-root", "metadata": {"thread_id": "reply-root"}}),
+        ("document", str(second), {"caption": None, "reply_to": "reply-root", "metadata": {"thread_id": "reply-root"}}),
+    ]
+
+
+def test_live_buzz_single_image_uses_caption_without_duplicate_text(tmp_path) -> None:
+    from gateway.platforms.base import SendResult
+
+    platform = Platform("buzz")
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"png")
+    calls = []
+
+    class Adapter:
+        async def send(self, **kwargs):
+            calls.append(("text", kwargs))
+            return SendResult(success=True, message_id="unexpected")
+
+        async def send_image_file(self, chat_id, image_path, **kwargs):
+            calls.append(("image", image_path, kwargs))
+            return SendResult(success=True, message_id="evt-image")
+
+    runner = SimpleNamespace(adapters={platform: Adapter()})
+    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+        result = asyncio.run(
+            _send_to_platform(
+                platform,
+                SimpleNamespace(enabled=True, token=None, extra={}),
+                "31b543d5-80d4-4df5-8a5c-cefca1a58fdd",
+                "screenshot caption",
+                thread_id="reply-root",
+                media_files=[(str(image), False)],
+            )
+        )
+
+    assert result == {
+        "success": True,
+        "message_id": "evt-image",
+        "media_delivered": True,
+    }
+    assert calls == [
+        ("image", str(image), {"caption": "screenshot caption", "reply_to": "reply-root", "metadata": {"thread_id": "reply-root"}})
+    ]
+
+
+def test_live_buzz_media_failure_is_explicit_not_omitted(tmp_path) -> None:
+    from gateway.platforms.base import SendResult
+
+    platform = Platform("buzz")
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    media_calls = []
+
+    class Adapter:
+        async def send(self, **kwargs):
+            return SendResult(success=True, message_id="evt-text")
+
+        async def send_document(self, chat_id, file_path, **kwargs):
+            media_calls.append(file_path)
+            if file_path == str(second):
+                return SendResult(success=False, error="relay rejected upload")
+            return SendResult(success=True, message_id="evt-first")
+
+    runner = SimpleNamespace(adapters={platform: Adapter()})
+    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+        result = asyncio.run(
+            _send_to_platform(
+                platform,
+                SimpleNamespace(enabled=True, token=None, extra={}),
+                "31b543d5-80d4-4df5-8a5c-cefca1a58fdd",
+                "attached files",
+                media_files=[(str(first), False), (str(second), False)],
+            )
+        )
+
+    assert media_calls == [str(first), str(second)]
+    assert "relay rejected upload" in result["error"]
+    assert "media_delivered" not in result
+
+
+def test_live_adapter_inherited_media_fallback_is_not_claimed_as_delivery(tmp_path) -> None:
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+    platform = Platform("buzz")
+    document = tmp_path / "report.txt"
+    document.write_text("report", encoding="utf-8")
+
+    class Adapter:
+        name = "Fallback-only"
+        send_document = BasePlatformAdapter.send_document
+
+        async def send(self, **kwargs):
+            return SendResult(success=True, message_id="warning-text-only")
+
+    runner = SimpleNamespace(adapters={platform: Adapter()})
+    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+        result = asyncio.run(
+            _send_to_platform(
+                platform,
+                SimpleNamespace(enabled=True, token=None, extra={}),
+                "31b543d5-80d4-4df5-8a5c-cefca1a58fdd",
+                "attached",
+                media_files=[(str(document), False)],
+            )
+        )
+
+    assert "does not implement native document delivery" in result["error"]
+    assert "media_delivered" not in result
+
+
+def test_live_buzz_adapter_exception_is_bounded() -> None:
+    platform = Platform("buzz")
+
+    class Adapter:
+        async def send(self, **kwargs):
+            raise RuntimeError("x" * 100_000)
+
+    runner = SimpleNamespace(adapters={platform: Adapter()})
+    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+        result = asyncio.run(
+            _send_to_platform(
+                platform,
+                SimpleNamespace(enabled=True, token=None, extra={}),
+                "31b543d5-80d4-4df5-8a5c-cefca1a58fdd",
+                "hello",
+            )
+        )
+
+    assert result["error"].startswith("Plugin platform send failed: ")
+    assert len(result["error"]) <= 1024
 
 
 def test_send_message_routes_buzz_uuid_without_home_fallback() -> None:

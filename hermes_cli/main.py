@@ -4013,6 +4013,17 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("curator", "Curator", "skill-usage review pass"),
 ]
 
+# Special non-auxiliary task surfaced in the same picker: subagent delegation.
+# Routing lives under top-level `delegation.*` in config.yaml (NOT
+# `auxiliary.delegation`) because delegate_task spawns full child agents via
+# tools/delegate_tool.py::_resolve_delegation_credentials(), which reads the
+# delegation section directly. "auto" here means "inherit the parent agent's
+# provider/model/credentials" and is stored as empty strings — never persist
+# the literal "auto", or it would be resolved as a provider name.
+_DELEGATION_TASK_KEY = "delegation"
+_DELEGATION_TASK_NAME = "Delegation"
+_DELEGATION_TASK_DESC = "subagent model (delegate_task)"
+
 
 def _all_aux_tasks() -> list[tuple[str, str, str]]:
     """Return built-in + plugin-registered auxiliary tasks for picker/menu use.
@@ -4052,6 +4063,32 @@ def _format_aux_current(task_cfg: dict) -> str:
     return provider
 
 
+def _delegation_cfg_as_task(cfg: dict) -> dict:
+    """Project the top-level ``delegation`` section into aux-task shape.
+
+    Returns a dict with provider/model/base_url/api_key keys so the shared
+    rendering (``_format_aux_current``) and picker code can treat delegation
+    like any other task. Empty provider means "inherit parent" which renders
+    as "auto".
+    """
+    d = cfg.get("delegation")
+    if not isinstance(d, dict):
+        d = {}
+    return {
+        "provider": str(d.get("provider") or "").strip(),
+        "model": str(d.get("model") or "").strip(),
+        "base_url": str(d.get("base_url") or "").strip(),
+        "api_key": str(d.get("api_key") or "").strip(),
+    }
+
+
+def _aux_task_display_name(task: str) -> str:
+    """Display name for a task key, covering the special delegation entry."""
+    if task == _DELEGATION_TASK_KEY:
+        return _DELEGATION_TASK_NAME
+    return next((name for key, name, _ in _all_aux_tasks() if key == task), task)
+
+
 def _save_aux_choice(
     task: str,
     *,
@@ -4065,10 +4102,28 @@ def _save_aux_choice(
     Only writes the four routing fields — timeout, download_timeout, and any
     other task-specific settings are preserved untouched. The main model
     config (``model.default``/``model.provider``) is never modified.
+
+    The special ``delegation`` task writes to the top-level ``delegation``
+    section (consumed by ``tools/delegate_tool.py``), not ``auxiliary.*``.
+    There, "auto" (inherit the parent agent) is stored as an empty provider —
+    the literal string "auto" would be resolved as a provider name.
     """
     from hermes_cli.config import load_config, save_config
 
     cfg = load_config()
+
+    if task == _DELEGATION_TASK_KEY:
+        entry = cfg.setdefault("delegation", {})
+        if not isinstance(entry, dict):
+            entry = {}
+            cfg["delegation"] = entry
+        entry["provider"] = "" if provider == "auto" else provider
+        entry["model"] = model or ""
+        entry["base_url"] = base_url or ""
+        entry["api_key"] = api_key or ""
+        save_config(cfg)
+        return
+
     aux = cfg.setdefault("auxiliary", {})
     if not isinstance(aux, dict):
         aux = {}
@@ -4114,6 +4169,18 @@ def _reset_aux_to_auto() -> int:
         # Preserve timeout/download_timeout — those are user-tuned, not routing
         if changed:
             count += 1
+    # Delegation (top-level section) — clear only the routing fields; other
+    # delegation settings (max_concurrent_children, max_spawn_depth, etc.)
+    # are not routing and must be preserved.
+    dele = cfg.get("delegation")
+    if isinstance(dele, dict):
+        changed = False
+        for field in ("provider", "model", "base_url", "api_key"):
+            if dele.get(field):
+                dele[field] = ""
+                changed = True
+        if changed:
+            count += 1
     save_config(cfg)
     return count
 
@@ -4142,13 +4209,19 @@ def _aux_config_menu() -> None:
 
         # Build the task menu with current settings inline
         all_tasks = _all_aux_tasks()
-        name_col = max(len(name) for _, name, _ in all_tasks) + 2
-        desc_col = max(len(desc) for _, _, desc in all_tasks) + 4
+        menu_tasks = all_tasks + [
+            (_DELEGATION_TASK_KEY, _DELEGATION_TASK_NAME, _DELEGATION_TASK_DESC)
+        ]
+        name_col = max(len(name) for _, name, _ in menu_tasks) + 2
+        desc_col = max(len(desc) for _, _, desc in menu_tasks) + 4
         entries: list[tuple[str, str]] = []
-        for task_key, name, desc in all_tasks:
-            task_cfg = (
-                aux.get(task_key, {}) if isinstance(aux.get(task_key), dict) else {}
-            )
+        for task_key, name, desc in menu_tasks:
+            if task_key == _DELEGATION_TASK_KEY:
+                task_cfg = _delegation_cfg_as_task(cfg)
+            else:
+                task_cfg = (
+                    aux.get(task_key, {}) if isinstance(aux.get(task_key), dict) else {}
+                )
             current = _format_aux_current(task_cfg)
             label = (
                 f"{name.ljust(name_col)}{('(' + desc + ')').ljust(desc_col)}{current}"
@@ -4193,13 +4266,16 @@ def _aux_select_for_task(task: str) -> None:
     from hermes_cli.inventory import build_aux_picker_rows, format_aux_picker_entries
 
     cfg = load_config()
-    aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
-    task_cfg = aux.get(task, {}) if isinstance(aux.get(task), dict) else {}
+    if task == _DELEGATION_TASK_KEY:
+        task_cfg = _delegation_cfg_as_task(cfg)
+    else:
+        aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+        task_cfg = aux.get(task, {}) if isinstance(aux.get(task), dict) else {}
     current_provider = str(task_cfg.get("provider") or "auto").strip() or "auto"
     current_model = str(task_cfg.get("model") or "").strip()
     current_base_url = str(task_cfg.get("base_url") or "").strip()
 
-    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
+    display_name = _aux_task_display_name(task)
 
     # Gather authenticated providers (has credentials + curated model list)
     try:
@@ -4217,7 +4293,12 @@ def _aux_select_for_task(task: str) -> None:
     auto_marker = (
         "  ← current" if current_provider == "auto" and not current_base_url else ""
     )
-    entries.append(("__auto__", f"auto (recommended){auto_marker}", []))
+    auto_label = (
+        "auto (inherit main agent)"
+        if task == _DELEGATION_TASK_KEY
+        else "auto (recommended)"
+    )
+    entries.append(("__auto__", f"{auto_label}{auto_marker}", []))
 
     entries.extend(
         format_aux_picker_entries(
@@ -4267,7 +4348,7 @@ def _aux_flow_provider_model(
     from hermes_cli.auth import _prompt_model_selection
     from hermes_cli.models import get_pricing_for_provider
 
-    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
+    display_name = _aux_task_display_name(task)
 
     # Fetch live pricing for this provider (non-blocking)
     pricing: dict = {}
@@ -4314,7 +4395,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     """Prompt for a direct OpenAI-compatible base_url + optional api_key/model."""
     from hermes_cli.secret_prompt import masked_secret_prompt
 
-    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
+    display_name = _aux_task_display_name(task)
     current_base_url = str(task_cfg.get("base_url") or "").strip()
     current_model = str(task_cfg.get("model") or "").strip()
 

@@ -31,9 +31,10 @@ Safety properties:
   exact token is the current holder — a stale unwind can never release a
   newer turn's lease (the #28686 ownership lesson applied). Release is
   idempotent.
-- **Fail-open on timeout.** A stuck holder degrades to today's unserialized
-  behavior with a loud ERROR after the configured wait — never a wedged
-  session. A degraded token holds nothing and releases nothing.
+- **Fail-closed on timeout.** A timed-out waiter raises
+  :class:`TurnLeaseTimeoutError` and must be deferred by the dispatch layer.
+  It never runs concurrently against the still-live holder and therefore
+  cannot defeat the serialization invariant this lease exists to enforce.
 - **Bounded registry.** The per-session lease map is size-capped; eviction
   only ever removes idle (unheld, uncontended) entries, never a live lease.
 
@@ -61,17 +62,43 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_LEASES = 512
 
 # Fallback wait (seconds) when the caller passes no positive timeout. Matches
-# the gateway's default agent inactivity timeout so a stuck holder fails open
-# on the same clock the turn itself would be declared stuck on.
+# the gateway's default agent inactivity timeout. A caller that reaches this
+# bound must defer the turn rather than run it concurrently with the holder.
 DEFAULT_LEASE_WAIT = 1800.0
+
+
+class TurnLeaseTimeoutError(TimeoutError):
+    """The session lease stayed held for the caller's full wait budget.
+
+    This is a fail-closed signal: the caller did not acquire the lease and
+    must not enter the transcript load/run/flush region for this turn.
+    """
+
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        owner_key: str,
+        generation: int,
+        wait_seconds: float,
+    ) -> None:
+        self.session_id = session_id
+        self.owner_key = owner_key
+        self.generation = generation
+        self.wait_seconds = wait_seconds
+        super().__init__(
+            f"turn lease wait timed out after {wait_seconds:.0f}s on session "
+            f"{session_id} for routing key {owner_key} (gen {generation})"
+        )
 
 
 class TurnLeaseToken:
     """Handle returned by :meth:`SessionTurnLeaseRegistry.acquire`.
 
-    ``degraded`` means the acquire timed out and the turn is proceeding
-    UNSERIALIZED (fail-open); such a token holds nothing and its release is a
-    no-op. ``released`` makes release idempotent.
+    ``degraded`` is retained for compatibility with older callers and test
+    doubles, but :meth:`acquire` no longer returns degraded tokens: a timeout
+    raises :class:`TurnLeaseTimeoutError` instead. ``released`` makes release
+    idempotent.
     """
 
     __slots__ = ("session_id", "owner_key", "generation", "degraded", "released")
@@ -161,9 +188,10 @@ class SessionTurnLeaseRegistry:
     ) -> Optional[TurnLeaseToken]:
         """Acquire the turn lease for ``session_id``, waiting if held.
 
-        Returns a :class:`TurnLeaseToken` — degraded when the wait timed out
-        (fail-open: caller proceeds unserialized). Returns ``None`` for a
-        falsy ``session_id``.
+        Returns a held :class:`TurnLeaseToken`. Raises
+        :class:`TurnLeaseTimeoutError` when the wait budget expires; the caller
+        must defer rather than enter the serialized region. Returns ``None``
+        for a falsy ``session_id``.
         """
         if not session_id:
             return None
@@ -194,9 +222,8 @@ class SessionTurnLeaseRegistry:
             logger.error(
                 "turn lease wait timed out after %.0fs on session %s "
                 "(waiter: routing key %s gen %s; holder: routing key %s "
-                "gen %s) — failing open: this turn runs UNSERIALIZED against "
-                "the stuck holder rather than wedging the session; transcript "
-                "writes may interleave",
+                "gen %s) — failing closed: refusing to run this turn "
+                "UNSERIALIZED against the still-live holder",
                 wait,
                 session_id,
                 owner_key,
@@ -204,8 +231,12 @@ class SessionTurnLeaseRegistry:
                 holder.owner_key if holder else "?",
                 holder.generation if holder else "?",
             )
-            token.degraded = True
-            return token
+            raise TurnLeaseTimeoutError(
+                session_id,
+                owner_key=owner_key,
+                generation=generation,
+                wait_seconds=wait,
+            ) from None
 
         lease.holder = token
         lease.acquired_at = time.time()

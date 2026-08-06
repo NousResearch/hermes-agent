@@ -11,8 +11,8 @@ Covers:
 - distinct sessions do not contend
 - generation-scoped, idempotent release: a stale unwind can never free a
   newer turn's lease; double-release is a no-op
-- timeout fail-open: a stuck holder degrades to unserialized with a degraded
-  token, never a wedged session, and the degraded token releases nothing
+- timeout fail-closed: a timed-out waiter never enters the transcript region,
+  and the gateway returns a safe retry response before loading history
 - registry stays bounded; live leases are never evicted
 - GatewayRunner._release_turn_lease wiring (bare-runner safe, token-scoped)
 """
@@ -89,8 +89,85 @@ def test_distinct_sessions_do_not_contend():
 
 
 # ---------------------------------------------------------------------------
-# Fail-open on timeout
+# Timeout safety
 # ---------------------------------------------------------------------------
+
+
+def test_timeout_fails_closed_instead_of_authorizing_an_unserialized_turn():
+    """A timed-out waiter must never run against the still-live holder.
+
+    Returning a degraded token used to authorize exactly that unsafe path.
+    The two turns could then load the same history base and interleave their
+    transcript writes, defeating the serialization invariant this lease owns.
+    """
+    from gateway.turn_lease import TurnLeaseTimeoutError
+
+    async def scenario():
+        registry = SessionTurnLeaseRegistry()
+        holder = await registry.acquire(
+            "sess-timeout", owner_key="key-a", generation=1, timeout=1
+        )
+        assert holder is not None
+
+        with pytest.raises(TurnLeaseTimeoutError):
+            await registry.acquire(
+                "sess-timeout", owner_key="key-b", generation=1, timeout=0.02
+            )
+
+        # The timeout neither steals nor releases the live holder's lease.
+        assert registry._leases["sess-timeout"].holder is holder
+        assert registry.release(holder) is True
+
+        # Once the holder releases, a later turn can acquire normally.
+        successor = await registry.acquire(
+            "sess-timeout", owner_key="key-b", generation=2, timeout=1
+        )
+        assert successor is not None
+        assert registry.release(successor) is True
+
+    _run(scenario())
+
+
+@pytest.mark.asyncio
+async def test_gateway_defers_timed_out_lease_before_loading_transcript(
+    monkeypatch, tmp_path
+):
+    """The dispatch layer turns a lease timeout into a safe retry response.
+
+    Most importantly, transcript loading and agent execution must not start:
+    both would operate without the per-session serialization guarantee.
+    """
+    from tests.gateway.test_42039_duplicate_user_message import (
+        _bootstrap,
+        _event,
+        _source,
+    )
+
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._turn_leases = SessionTurnLeaseRegistry()
+    holder = await runner._turn_leases.acquire(
+        "sess-dedup", owner_key="holder-key", generation=1, timeout=1
+    )
+    assert holder is not None
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "0.02")
+
+    runner.session_store.load_transcript.side_effect = AssertionError(
+        "transcript must not load after a turn-lease timeout"
+    )
+    runner._run_agent = pytest.fail
+
+    try:
+        response = await runner._handle_message_with_agent(
+            _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+        )
+    finally:
+        assert runner._turn_leases.release(holder) is True
+
+    assert isinstance(response, str)
+    assert "still running" in response.lower()
+    assert "not processed" in response.lower()
+    assert "resend" in response.lower()
+    runner.session_store.load_transcript.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

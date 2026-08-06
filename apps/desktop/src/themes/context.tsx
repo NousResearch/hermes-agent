@@ -21,9 +21,10 @@ import { $connection } from '@/store/session'
 import { setAppearance } from '@/store/translucency'
 
 import { $accentOverride } from './accent-override'
-import { $backendThemes, $pendingSkinApply, localDisplaySkinName, localDisplaySkinProfile } from './backend-sync'
+import { $backendCustomCSS, $backendThemes, $pendingSkinApply, localDisplaySkinName, localDisplaySkinProfile } from './backend-sync'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, readableInk } from './color'
+
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import { retintTheme } from './retint'
 import type { DesktopTheme, DesktopThemeColors } from './types'
@@ -167,7 +168,12 @@ function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
     name: `${skinName}-${mode}`,
     label: `${seed.label} ${mode === 'light' ? 'Light' : 'Dark'}`,
     description: `${seed.label} ${mode} palette`,
-    colors: getBaseColors(skinName, mode)
+    colors: getBaseColors(skinName, mode),
+    // A backend skin named `default`/`mono`/… keeps the desktop's own palette
+    // (never shadowed — see ingestBackendSkin), but its customCSS is carried
+    // separately in $backendCustomCSS. The seed's own customCSS (non-built-in
+    // backend skins) wins when both exist.
+    customCSS: seed.customCSS ?? $backendCustomCSS.get()[skinName]
   }
 }
 
@@ -416,6 +422,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // grid, and `/skin` without a reload.
   const userThemes = useStore($userThemes)
   const backendThemes = useStore($backendThemes)
+  const backendCustomCSS = useStore($backendCustomCSS)
   const registryVersion = useStore($registryVersion)
 
   const availableThemes = useMemo(
@@ -491,9 +498,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     () => deriveTheme(paintedName, paintedMode),
     // deriveTheme resolves its seed through the merged registry, so the theme
     // stores are its reactivity too — an in-place palette edit of the ACTIVE
-    // skin (live theme authoring) must repaint, not just a name switch.
+    // skin (live theme authoring) must repaint, not just a name switch. The
+    // backend CSS store matters the same way for built-in-named user skins.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [paintedName, paintedMode, userThemes, backendThemes, registryVersion]
+    [paintedName, paintedMode, userThemes, backendThemes, backendCustomCSS, registryVersion]
   )
 
   // Dev-only accent retint. `null` (always, in production) returns the theme

@@ -2750,6 +2750,13 @@ class BasePlatformAdapter(ABC):
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
+        # Bot account this adapter instance serves (#8287). None = the
+        # platform's default account (single-bot gateways never set it).
+        # The gateway stamps this after construction when it starts named
+        # account adapters; adapters copy it onto every inbound
+        # ``SessionSource.account`` so session keys, busy guards, and
+        # outbound routing stay per-account.
+        self.account_name: Optional[str] = None
         self._message_handler: Optional[MessageHandler] = None
         # Optional gateway-supplied fan-out for platform-native emoji
         # reaction events (see ``set_reaction_handler``).
@@ -6657,6 +6664,13 @@ class BasePlatformAdapter(ABC):
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
             message_id=str(message_id) if message_id else None,
             profile=profile,
+            # Bot account this adapter instance serves (#8287). This is the
+            # single inbound-construction site every platform's normal-event
+            # path flows through, so stamping here (not in per-platform
+            # helpers) is what actually routes named-bot traffic to its own
+            # session key and egress adapter. None on default/single-bot
+            # adapters — byte-identical to before.
+            account=getattr(self, "account_name", None),
             role_authorized=role_authorized,
             auto_thread_created=auto_thread_created,
             auto_thread_initial_name=auto_thread_initial_name,
@@ -6666,7 +6680,7 @@ class BasePlatformAdapter(ABC):
         # for this turn even when profile_routes selects a different runtime.
         source._transport_adapter_ref = weakref.ref(self)
         return source
-    
+
     @abstractmethod
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """

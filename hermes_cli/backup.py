@@ -898,7 +898,11 @@ def _extract_member_atomically(
     symlinked target first, so a deployment that links ``config.yaml`` into a
     dotfiles repo keeps the link instead of having it silently swapped for a
     regular file (GitHub #16743), and it falls back to copy/fsync/unlink on
-    ``EXDEV``/``EBUSY`` for cross-device and bind-mount installs.
+    ``EXDEV``/``EBUSY`` for cross-device and bind-mount installs.  That
+    fallback uses ``shutil.copyfile``, which does truncate in place, so on the
+    cross-device path the guarantee above degrades to today's behaviour rather
+    than improving on it; closing that belongs in ``utils.atomic_replace``,
+    where every atomic writer in the repo would benefit, not here.
 
     Permission bits *and* ownership are carried across the replace so routing
     through mkstemp does not change the file the caller would otherwise have

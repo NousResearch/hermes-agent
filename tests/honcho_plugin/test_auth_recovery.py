@@ -399,6 +399,82 @@ class TestSyncAuthRetry:
 
 
 # ---------------------------------------------------------------------------
+# dead grant: skip calls entirely until re-login
+# ---------------------------------------------------------------------------
+
+
+def _kill_grant(tmp_path, monkeypatch) -> Path:
+    """Revoke the grant on a tmp config and point the manager's path at it."""
+    from plugins.memory.honcho import client as client_mod
+
+    path = tmp_path / "honcho.json"
+    _write(path, {"hosts": {"hermes": _host_block()}})
+    monkeypatch.setattr(oauth, "_REFRESH_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(
+        oauth, "_http_post_form_status",
+        lambda *a, **k: (400, {"error": "invalid_grant"}),
+    )
+    oauth.ensure_fresh_token(path, "hermes", now=1000)
+    assert oauth.reauth_required(path, "hermes") is True
+    monkeypatch.setattr(client_mod, "resolve_config_path", lambda: path)
+    return path
+
+
+def _relogin(path: Path) -> None:
+    oauth.install_grant(
+        path, "hermes",
+        {"access_token": "hch-at-fresh", "refresh_token": "hch-rt-fresh", "expires_in": 3600},
+        client_id="hermes-desktop",
+        token_endpoint="http://localhost:8000/oauth/token",
+    )
+
+
+class TestDeadGrantSkipsCalls:
+    def test_dead_grant_issues_no_dialectic_call(self, tmp_path, monkeypatch):
+        _kill_grant(tmp_path, monkeypatch)
+        peer = _FlakyPeer(failures=0)
+        mgr = _make_manager(peer)
+        with pytest.raises(HonchoAuthError):
+            mgr.dialectic_query("k", "q")
+        assert peer.calls == 0
+        assert mgr.pop_auth_notice() is not None
+
+    def test_relogin_resumes_dialectic_without_waiting(self, tmp_path, monkeypatch):
+        path = _kill_grant(tmp_path, monkeypatch)
+        peer = _FlakyPeer(failures=0)
+        mgr = _make_manager(peer)
+        with pytest.raises(HonchoAuthError):
+            mgr.dialectic_query("k", "q")
+        assert peer.calls == 0
+
+        _relogin(path)
+        assert mgr.dialectic_query("k", "q") == "synthesized answer"
+        assert peer.calls == 1
+        assert mgr._auth_failure is None
+
+    def test_dead_grant_issues_no_sync_call(self, tmp_path, monkeypatch):
+        _kill_grant(tmp_path, monkeypatch)
+        flaky = _FlakyHonchoSession(failures=0)
+        mgr, session = _make_sync_manager(flaky)
+        assert mgr._flush_session(session) is False
+        assert flaky.calls == 0
+        assert mgr._auth_failure is not None
+
+    def test_relogin_resumes_sync_without_waiting(self, tmp_path, monkeypatch):
+        path = _kill_grant(tmp_path, monkeypatch)
+        flaky = _FlakyHonchoSession(failures=0)
+        mgr, session = _make_sync_manager(flaky)
+        assert mgr._flush_session(session) is False
+        assert flaky.calls == 0
+
+        _relogin(path)
+        assert mgr._flush_session(session) is True
+        assert flaky.calls == 1
+        assert all(m["_synced"] for m in session.messages)
+        assert mgr._auth_failure is None
+
+
+# ---------------------------------------------------------------------------
 # one-time user-facing notice
 # ---------------------------------------------------------------------------
 

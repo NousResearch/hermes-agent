@@ -56,6 +56,12 @@ def _auth_error_message(exc: BaseException) -> str:
     )
 
 
+_REAUTH_REQUIRED_MESSAGE = (
+    "Honcho OAuth grant is revoked and cannot be refreshed; "
+    "re-authenticate with 'hermes honcho setup'."
+)
+
+
 @dataclass
 class HonchoSession:
     """
@@ -218,6 +224,23 @@ class HonchoSessionManager:
             return None
         self._auth_notice_emitted = True
         return self._auth_failure
+
+    def _reauth_required(self) -> bool:
+        """True when the OAuth grant is dead and only a new login can fix it.
+
+        Reads the config and compares the refresh-token digest, so a re-login
+        flips this back to False with no network call — recovery is immediate.
+        """
+        try:
+            from plugins.memory.honcho import oauth
+            from plugins.memory.honcho.client import resolve_config_path
+
+            host = getattr(self._config, "host", "") or ""
+            if not host:
+                return False
+            return oauth.reauth_required(resolve_config_path(), host)
+        except Exception:
+            return False
 
     def _force_reauth(self) -> bool:
         """Rotate the OAuth token after a server-side 401 and rebind the client.
@@ -512,6 +535,15 @@ class HonchoSessionManager:
         if not session.messages:
             return True
 
+        new_messages = [m for m in session.messages if not m.get("_synced")]
+        if not new_messages:
+            return True
+
+        # A dead grant cannot authenticate; skip the call until re-login.
+        if self._reauth_required():
+            self._record_auth_failure(HonchoAuthError(_REAUTH_REQUIRED_MESSAGE))
+            return False
+
         user_peer = self._get_or_create_peer(session.user_peer_id)
         assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
         honcho_session = self._sessions_cache.get(session.honcho_session_id)
@@ -520,10 +552,6 @@ class HonchoSessionManager:
             honcho_session, _ = self._get_or_create_honcho_session(
                 session.honcho_session_id, user_peer, assistant_peer
             )
-
-        new_messages = [m for m in session.messages if not m.get("_synced")]
-        if not new_messages:
-            return True
 
         honcho_messages = []
         for msg in new_messages:
@@ -749,6 +777,12 @@ class HonchoSessionManager:
         session = self._cache.get(session_key)
         if not session:
             return ""
+
+        # A dead grant cannot authenticate; skip the call until re-login.
+        if self._reauth_required():
+            exc = HonchoAuthError(_REAUTH_REQUIRED_MESSAGE)
+            self._record_auth_failure(exc)
+            raise exc
 
         target_peer_id = self._resolve_peer_id(session, peer)
         if target_peer_id is None:

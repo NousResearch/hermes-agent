@@ -1609,7 +1609,10 @@ def _check_model_drift(
         _remediation = (
             "To run on the new config, on the host running Hermes pin it explicitly: "
             f"`hermes cron edit {job_id} --provider <provider> "
-            "--model <model>` (or pin the original values to keep them)."
+            "--model <model>` (or pin the original values to keep "
+            f"them), OR adopt the current global default without pinning: "
+            f"`cronjob action=resnap job_id={job_id}` (or `action=resnap "
+            "all=true` for every unpinned job)."
         )
     logger.warning(
         "Job '%s': SKIPPED — global inference config drifted since "

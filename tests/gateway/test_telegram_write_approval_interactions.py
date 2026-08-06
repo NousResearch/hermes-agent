@@ -313,7 +313,18 @@ async def test_callback_fails_closed_for_unauthorized_user(monkeypatch):
 @pytest.mark.asyncio
 async def test_stale_bulk_callback_cannot_touch_later_pending_record(monkeypatch):
     adapter = _make_adapter(monkeypatch)
-    pending_ids = {"abc12345", "feed6789"}
+    pending_ids = {"abc12345"}
+
+    rendered = await adapter.send(
+        "12345",
+        "Pending memory writes (1): abc12345",
+        metadata={"write_approval": MEMORY_SURFACE},
+    )
+    assert rendered.success is True
+    assert adapter._lookup_write_approval_surface("12345", "77") == MEMORY_SURFACE
+
+    # This record did not exist when message 77's controls were rendered.
+    pending_ids.add("feed6789")
 
     class PendingRunner(_CallbackRunner):
         async def _handle_message(self, event):

@@ -43,6 +43,7 @@ write, optional rollback. No diff application.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -271,17 +272,21 @@ class DefaultSkillMuterApplier:
     Filesystem layout::
 
         {hermes_home}/skills/<skill_id>/SKILL.md        # current
-        {hermes_home}/skills/<skill_id>/SKILL.md.bak    # backup
+        {hermes_home}/skills/<skill_id>/SKILL.md.bak    # rollback only (deleted on success)
 
     On apply:
       1. If SKILL.md exists, copy it to SKILL.md.bak.
-      2. Write the new content to SKILL.md.
-      3. If anything in step 2 raises, restore from SKILL.md.bak.
+      2. Write the new content to a temp file, then os.replace() it
+         atomically over SKILL.md.
+      3. On success: delete SKILL.md.bak (prevents stale-rollback Bug 3).
+         On failure: leave bak in place so rollback can restore.
 
     On rollback:
-      - If SKILL.md.bak exists, overwrite SKILL.md with its
-        contents. Returns True on success, False if no backup
-        exists.
+      - If SKILL.md.bak exists, overwrite SKILL.md with its contents.
+        Returns True on success, False if no backup exists.
+      - Rollback only restores from the LAST failed apply's backup; a
+        successful apply always deletes the backup so no stale content
+        can be resurrected.
 
     The applier never throws on failure — it surfaces errors via
     ``ApplyResult.error``. Callers can choose to log + ignore.
@@ -321,10 +326,19 @@ class DefaultSkillMuterApplier:
             except OSError as e:
                 return ApplyResult(success=False, error=f"backup failed: {e}")
 
-        # Step 2: write new content.
+        # Step 2: atomic write via temp file + os.replace().
+        # This prevents concurrent readers from seeing partial content
+        # and prevents truncate-on-write data loss (fixes Bug 2 partial-write).
+        tmp_path = skill_file.with_suffix(".tmp")
         try:
-            skill_file.write_text(proposal.new_content, encoding="utf-8")
+            tmp_path.write_text(proposal.new_content, encoding="utf-8")
+            os.replace(tmp_path, skill_file)  # atomic on POSIX; fallback on Windows
         except OSError as e:
+            # Clean up the temp file if it exists.
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
             # Roll back if we created a backup.
             if backup_created:
                 try:
@@ -337,9 +351,15 @@ class DefaultSkillMuterApplier:
                 error=f"write failed: {e}",
             )
 
-        return ApplyResult(
-            success=True, backup_path=backup_path if backup_created else None
-        )
+        # Step 3: success — delete the backup so it cannot be used to
+        # resurrect stale content later (fixes Bug 3 stale-rollback).
+        if backup_created:
+            try:
+                backup_path.unlink()
+            except OSError:
+                pass  # Best-effort; backup is now stale anyway.
+
+        return ApplyResult(success=True, backup_path=None)
 
     def rollback(self, skill_id: str, *, hermes_home: Path) -> bool:
         skill_file = self._skill_file(skill_id, hermes_home)
@@ -400,27 +420,57 @@ def parse_mutation_response(text: str) -> tuple[Optional[str], str]:
     """
     if not text or not text.strip():
         return (None, "")
+
     # Strip ``` fenced blocks first.
     cleaned = re.sub(r"```(?:[a-zA-Z0-9_+-]*)\s*\n?", "", text)
     cleaned = cleaned.replace("```", "")
 
     # If the model added a trailing reasoning section, split.
+    # Use DOTALL so . matches newline; require the </reasoning> tag
+    # to be at the VERY end of the string (possibly with trailing
+    # whitespace) so that any content BEFORE the tag is preserved.
+    # Bug 5 fix: multiline $ would match before a trailing newline,
+    # causing valid content to be silently discarded.
     reasoning = ""
-    match = re.search(r"(?ims)^\s*<reasoning>\s*(.*?)\s*</reasoning>\s*$", cleaned)
-    if match:
-        reasoning = match.group(1).strip()
-        cleaned = cleaned[: match.start()].rstrip()
-
-    # Strip a leading "Here is the new SKILL.md:" preamble if the
-    # model added one.
-    preamble = re.search(
-        r"(?ims)^(.*?)([#]+\s+|^\s*\"\"\")",
-        cleaned,
+    reason_match = re.search(
+        r"(?ims)^\s*<reasoning>\s*(.*?)\s*</reasoning>\s*$", cleaned, flags=re.DOTALL
     )
-    if preamble and "current_skill_md" not in preamble.group(1).lower():
-        # Heuristic: only strip if the preamble is short (<200 chars).
-        if len(preamble.group(1)) < 200:
-            cleaned = cleaned[preamble.end() - len(preamble.group(2)) :]
+    if reason_match:
+        reasoning = reason_match.group(1).strip()
+        before = cleaned[: reason_match.start()]
+        # Require that content exists BEFORE the reasoning tag and
+        # is not just whitespace. If there is real content, keep it.
+        if before.strip():
+            cleaned = before.rstrip()
+        else:
+            cleaned = ""
+
+    # Strip a leading preamble if the model added one.
+    # Bug 6 fix: a valid skill file must contain a heading (#) or code fence (```).
+    # Single-line/no-newline preambles like "Here is the new SKILL.md:"
+    # are rejected entirely. Multi-line preambles are stripped only when
+    # a real heading/fence marker appears AFTER the preamble.
+    first_newline = cleaned.find("\n")
+    if first_newline == -1:
+        # No newline at all — plain text, no heading/fence marker.
+        # This is a single-line preamble like "Here is the new SKILL.md:".
+        first_line = cleaned.strip()
+        has_marker = "#" in cleaned or "```" in cleaned
+        if not has_marker and first_line and len(first_line) < 200:
+            # No heading, no fence, single line — not a valid skill.
+            return (None, reasoning)
+        # Otherwise keep as-is (might be plain-text skill content).
+    else:
+        # Has newlines — check if a heading or fence appears after line 1.
+        after_first = cleaned[first_newline:]
+        marker_match = re.search(r"\n(#|\```)", after_first)
+        if marker_match:
+            # A heading/fence appears after the preamble — strip preamble.
+            # Only strip short preambles (genuine prose, not real content).
+            preamble = cleaned[: first_newline + marker_match.start()]
+            if len(preamble.strip()) < 200:
+                cleaned = after_first[marker_match.start() :]
+
 
     new_content = cleaned.strip()
     if not new_content:

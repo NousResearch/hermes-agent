@@ -77,6 +77,44 @@ class TestParseMutationResponse:
         assert parse_mutation_response("") == (None, "")
         assert parse_mutation_response("   \n  ") == (None, "")
 
+    # Bug 5 fix: content BEFORE <reasoning> must be preserved.
+    def test_reasoning_block_with_real_content_before(self):
+        """Bug 5: content before <reasoning> must NOT be silently dropped."""
+        text = "# Real Skill\n\nThis is the real skill content.\n<reasoning>I thought about improving it</reasoning>"
+        new_content, reasoning = parse_mutation_response(text)
+        assert new_content is not None
+        assert "Real Skill" in new_content
+        assert "This is the real skill content" in new_content
+        assert "I thought about improving it" in reasoning
+
+    def test_reasoning_with_only_whitespace_before(self):
+        """Only whitespace before <reasoning> → content is None."""
+        text = "  \n<reasoning>only reasoning, no content</reasoning>"
+        new_content, reasoning = parse_mutation_response(text)
+        assert new_content is None
+
+    # Bug 6 fix: preamble-only response must be rejected.
+    def test_preamble_only_short_no_hash(self):
+        """Bug 6: short preamble without heading must fail."""
+        text = "Here is the new SKILL.md:"
+        new_content, _ = parse_mutation_response(text)
+        assert new_content is None, "preamble-only should be treated as failure"
+
+    def test_preamble_with_real_heading_after(self):
+        """Preamble followed by real heading → preamble stripped, content kept."""
+        text = "Here is the improved skill:\n# Improved Skill\n\nContent here."
+        new_content, reasoning = parse_mutation_response(text)
+        assert new_content is not None
+        assert "# Improved Skill" in new_content
+
+    # Bug 7 fix: bool-as-score rejected.
+    def test_bool_score_rejected(self):
+        """Bug 7: {\"score\": true} must NOT be accepted as score=1."""
+        from agent.llm_judge import parse_score_text
+        text = '{"score": true, "reasoning": "looks good"}'
+        score, _ = parse_score_text(text)
+        assert score is None, "bool is not a valid score type"
+
 
 class TestMutator:
     def test_returns_failure_when_aux_client_missing(self):
@@ -138,7 +176,8 @@ class TestApplier:
         skill_file.write_text(content, encoding="utf-8")
         return skill_file
 
-    def test_apply_writes_new_content_and_creates_backup(self, tmp_path: Path):
+    def test_apply_writes_new_content_and_cleans_up_backup(self, tmp_path: Path):
+        """After a successful apply, the backup is deleted (Bug 3 fix)."""
         skill_file = self._setup_skill(tmp_path)
         applier = DefaultSkillMuterApplier()
 
@@ -149,9 +188,47 @@ class TestApplier:
 
         assert result.success is True
         assert skill_file.read_text(encoding="utf-8") == "# mutated"
+        # Backup must be DELETED after success — prevents stale-rollback Bug 3.
+        backup_path = tmp_path / "skills" / "demo-skill" / "SKILL.md.bak"
+        assert not backup_path.exists(), "backup must be deleted after successful apply"
+
+    def test_apply_fails_keeps_backup_for_rollback(self, tmp_path: Path):
+        """When apply fails, the backup is preserved so rollback can restore."""
+        skill_file = self._setup_skill(tmp_path)
+        applier = DefaultSkillMuterApplier()
+
+        # Manually corrupt the write by patching write_text to fail.
+        original_write = Path.write_text
+
+        def failing_write(self, *args, **kwargs):
+            if str(self).endswith(".tmp"):
+                raise OSError("disk full")
+            return original_write(self, *args, **kwargs)
+
+        proposal = MutationProposal(new_content="# mutated", success=True)
+        with patch.object(Path, "write_text", failing_write):
+            result = applier.apply("demo-skill", proposal, hermes_home=tmp_path)
+
+        assert result.success is False
+        # Original must be intact.
+        assert skill_file.read_text(encoding="utf-8") == "# original"
+        # Backup must still exist for rollback to work.
         backup_path = tmp_path / "skills" / "demo-skill" / "SKILL.md.bak"
         assert backup_path.exists()
-        assert backup_path.read_text(encoding="utf-8") == "# original"
+
+
+# ---------------------------------------------------------------------------
+# parse_mutation_response — Bug 5 + Bug 6
+# ---------------------------------------------------------------------------
+
+
+class TestApplier:
+    def _setup_skill(self, tmp_path: Path, content: str = "# original") -> Path:
+        skill_dir = tmp_path / "skills" / "demo-skill"
+        skill_dir.mkdir(parents=True)
+        skill_file = skill_dir / "SKILL.md"
+        skill_file.write_text(content, encoding="utf-8")
+        return skill_file
 
     def test_apply_refuses_unsuccessful_proposal(self, tmp_path: Path):
         self._setup_skill(tmp_path)
@@ -178,19 +255,20 @@ class TestApplier:
 
         assert result.success is False
 
-    def test_rollback_restores_original(self, tmp_path: Path):
+    def test_rollback_returns_false_after_successful_apply(self, tmp_path: Path):
+        """Bug 3 fix: backup is deleted after successful apply, so rollback returns False."""
         skill_file = self._setup_skill(tmp_path)
         applier = DefaultSkillMuterApplier()
 
-        # Apply a mutation.
+        # Apply a mutation (success).
         proposal = MutationProposal(new_content="# mutated", success=True)
-        applier.apply("demo-skill", proposal, hermes_home=tmp_path)
+        result = applier.apply("demo-skill", proposal, hermes_home=tmp_path)
+        assert result.success is True
         assert skill_file.read_text(encoding="utf-8") == "# mutated"
 
-        # Roll back.
+        # Rollback now returns False because backup was deleted (intentional).
         rolled = applier.rollback("demo-skill", hermes_home=tmp_path)
-        assert rolled is True
-        assert skill_file.read_text(encoding="utf-8") == "# original"
+        assert rolled is False, "backup was deleted after apply, rollback must fail gracefully"
 
     def test_rollback_returns_false_when_no_backup(self, tmp_path: Path):
         self._setup_skill(tmp_path)
@@ -198,10 +276,8 @@ class TestApplier:
         # No apply first, so no backup exists.
         assert applier.rollback("demo-skill", hermes_home=tmp_path) is False
 
-    def test_apply_to_nonexistent_skill_creates_file_with_backup(self, tmp_path: Path):
-        """If the skill doesn't exist yet, apply should still create
-        SKILL.md (no backup, since there's nothing to back up).
-        """
+    def test_apply_to_new_skill_creates_file(self, tmp_path: Path):
+        """If the skill doesn't exist yet, apply creates SKILL.md (no backup)."""
         # Do not call _setup_skill — skill dir doesn't exist.
         applier = DefaultSkillMuterApplier()
 

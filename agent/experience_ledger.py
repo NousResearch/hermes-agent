@@ -19,12 +19,62 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# fcntl is POSIX-only (Linux/macOS); Windows has no equivalent in stdlib.
+# Guard all fcntl usage with `hasattr` so the module still imports on Windows.
+fcntl = None
+try:
+    import fcntl as _fcntl
+    fcntl = _fcntl  # type: ignore[assignment]
+except ImportError:
+    pass
+
+_LOCK_EXT = ".lock"
+
+
+@contextmanager
+def _lock_for_write(path: Path):
+    """Context manager: acquire exclusive flock() on a lock file.
+
+    Uses ``fcntl.flock`` on POSIX; on Windows (no fcntl) this is a
+    no-op context manager. Caller still gets atomic-write protection
+    via the temp-file + os.replace() pattern inside save().
+    """
+    import contextlib
+
+    if fcntl is None:
+        # Windows fallback: no locking. save() uses atomic
+        # os.replace() which is safe on NTFS for single-writer.
+        yield
+        return
+
+    lock_path = path.with_suffix(path.suffix + _LOCK_EXT)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(lock_path, "wb")
+    try:
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            # OS doesn't support this lock type (e.g. NFS). Proceed without lock.
+            lock_fd.close()
+            lock_fd = None
+    except Exception:
+        lock_fd.close()
+        raise
+    try:
+        yield lock_fd
+    finally:
+        if lock_fd is not None:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+            lock_fd.close()
 
 
 # ========================================================================
@@ -135,12 +185,36 @@ class ExperienceLedger:
         self._load()
 
     def _load(self) -> None:
-        """Load existing ledger from disk."""
+        """Load existing ledger from disk with a shared lock.
+
+        Multiple readers may load simultaneously; writers use
+        ``_lock_for_write`` to exclude all readers and writers.
+        """
         if not self.ledger_path.exists():
             logger.info("Experience ledger: no existing data found")
             return
 
+        lock_path = self.ledger_path.with_suffix(
+            self.ledger_path.suffix + _LOCK_EXT
+        )
+        if fcntl is not None and lock_path.exists():
+            # Shared lock for reading (LOCK_SH). Type: ignore because
+            # mypy doesn't narrow after hasattr check in try/except.
+            try:
+                lock_fd = open(lock_path, "rb")  # type: ignore[operator]
+                try:
+                    fcntl.flock(lock_fd.fileno(), fcntl.LOCK_SH)  # type: ignore[union-attr]
+                except OSError:
+                    lock_fd.close()
+                    lock_fd = None
+            except OSError:
+                lock_fd = None
+        else:
+            lock_fd = None
+
         try:
+            # Always read from the data file (ledger_path), never from the
+            # lock file descriptor — the lock file is always empty.
             data = json.loads(self.ledger_path.read_text(encoding="utf-8"))
             for skill_id, eval_list in data.get("evals", {}).items():
                 self._evals[skill_id] = [SkillEval.from_dict(e) for e in eval_list]
@@ -151,9 +225,23 @@ class ExperienceLedger:
             )
         except Exception as e:
             logger.warning("Experience ledger: failed to load: %s", e)
+        finally:
+            if lock_fd is not None:
+                try:
+                    fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)  # type: ignore[union-attr]
+                except OSError:
+                    pass
+                lock_fd.close()  # type: ignore[union-attr]
 
     def save(self) -> None:
-        """Persist ledger to disk."""
+        """Persist ledger to disk atomically with exclusive locking.
+
+        Uses a temp file + ``os.replace()`` so the on-disk file is never
+        partially written, even if this process crashes mid-write.
+        The ``_lock_for_write`` context manager provides exclusive access
+        on POSIX; on Windows it is a no-op and atomicity is guaranteed
+        by ``os.replace`` alone.
+        """
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "evals": {
@@ -161,10 +249,13 @@ class ExperienceLedger:
                 for skill_id, evals in self._evals.items()
             },
         }
-        self.ledger_path.write_text(
-            json.dumps(data, indent=2),
-            encoding="utf-8",
-        )
+        serialized = json.dumps(data, indent=2)
+        with _lock_for_write(self.ledger_path):  # type: ignore[operator]
+            tmp_path = self.ledger_path.with_suffix(
+                self.ledger_path.suffix + ".tmp"
+            )
+            tmp_path.write_text(serialized, encoding="utf-8")
+            os.replace(tmp_path, self.ledger_path)
         logger.debug(
             "Experience ledger: saved to %s",
             self.ledger_path,

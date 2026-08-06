@@ -212,7 +212,7 @@ def parse_score_text(text: str) -> tuple[Optional[int], str]:
             obj = json.loads(candidate)
             if isinstance(obj, dict):
                 raw_score = obj.get("score")
-                if isinstance(raw_score, int) and 0 <= raw_score <= 100:
+                if type(raw_score) is int and 0 <= raw_score <= 100:
                     reasoning = obj.get("reasoning")
                     if not isinstance(reasoning, str):
                         reasoning = ""

@@ -277,6 +277,15 @@ def run_oneshot(
 
     _write_usage_file(usage_file, result)
 
+    # Model text can contain lone UTF-16 surrogates (invalid in UTF-8). Writing
+    # those to a real stdout TextIO raises UnicodeEncodeError and aborts with
+    # exit 1 after the turn already completed — scrub to U+FFFD first.
+    # See #80366.
+    if response:
+        from agent.message_sanitization import _sanitize_surrogates
+
+        response = _sanitize_surrogates(response)
+
     if response:
         real_stdout.write(response)
         if not response.endswith("\n"):

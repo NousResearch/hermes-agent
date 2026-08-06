@@ -109,6 +109,42 @@ _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
 
+# Executables whose arguments are DATA, not commands: search patterns, SQL
+# statements, log filters. None of these can execute their argument text, so
+# a lifecycle-shaped string inside their arguments (a grep pattern hunting
+# for `systemctl restart hermes-gateway` in syslog, a SQL LIKE literal over a
+# restart-events table) is diagnostics, not a lifecycle command. Deliberately
+# conservative: no `awk` (system()), no `sed` (`s///e`), no `echo`/`printf`
+# (routinely piped into a shell), no `mysql` (`\\!` and `system` escapes).
+_DATA_SINK_EXECUTABLES = frozenset(
+    {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql"}
+)
+# Argument shapes that can smuggle execution back INTO a data sink: command
+# and process substitution anywhere, sqlite3 dot-commands (`.shell ...`),
+# psql backslash escapes (`\! ...`). Any hit disables masking for the whole
+# segment — fail closed to the plain regex verdict.
+_UNSAFE_DATA_ARG_MARKERS = ("`", "$(", "<(", ">(", "\\!")
+# A data sink piped into a shell/interpreter can feed matched lines straight
+# to execution (`grep 'systemctl restart hermes-gateway' f | sh`); never mask
+# such a line.
+_PIPE_TO_INTERPRETER = re.compile(
+    r"\|\s*&?\s*(?:sudo\s+)?(?:sh|bash|dash|ksh|zsh|xargs|eval|source)\b"
+)
+
+# Executable-image magic numbers: ELF, PE/COFF, Mach-O (universal + thin,
+# both endiannesses). A referenced file starting with one of these is a
+# compiled binary, never a shell script — don't read or scan it at all.
+_BINARY_MAGIC_PREFIXES = (
+    b"\x7fELF",
+    b"MZ",
+    b"\xca\xfe\xba\xbe",
+    b"\xcf\xfa\xed\xfe",
+    b"\xce\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xce",
+    b"\xfe\xed\xfa\xcf",
+)
+_BINARY_SNIFF_BYTES = 4096
+
 
 
 
@@ -171,6 +207,102 @@ def contains_launchctl_submit_command(command: str) -> bool:
             if arguments and arguments[0].lower() in {"submit", "bootstrap"}:
                 return True
     return False
+
+
+def _mask_data_sink_arguments(text: str) -> str:
+    """Replace data-sink executables' arguments with a neutral placeholder.
+
+    The lifecycle regex is command-shaped, but it cannot tell an EXECUTED
+    ``systemctl restart hermes-gateway`` from the same characters appearing
+    as *data* — a grep/rg pattern, a journalctl filter, a SQL string literal
+    passed to sqlite3/psql. Those diagnostics commands were being rejected
+    (false positives blocking legitimate cron prompts), e.g.::
+
+        grep -c 'systemctl restart hermes-gateway' /var/log/syslog
+        sqlite3 db "SELECT msg FROM log WHERE msg LIKE '%systemctl restart hermes-gateway%'"
+
+    This masker shell-tokenizes each line and, for command segments whose
+    executable is a known data sink (``_DATA_SINK_EXECUTABLES``), replaces
+    every argument with ``arg``. The caller then re-runs the lifecycle regex
+    on the masked text: a match that survives masking sits OUTSIDE any data
+    argument and is a real command.
+
+    Strictly fail-closed: masking is skipped (leaving the original,
+    regex-matching text in place) whenever the line pipes into a shell or
+    interpreter, any argument carries an execution-capable marker
+    (substitution, sqlite3 ``.``-commands, psql ``\\!``), or the line cannot
+    be tokenized at all. Masking can therefore only ever ALLOW a command the
+    plain regex would have blocked — never block one it would have allowed —
+    so it runs solely as a second-pass exemption check.
+    """
+    lines_out: list[str] = []
+    changed = False
+    for line in text.splitlines() or [text]:
+        if _PIPE_TO_INTERPRETER.search(line):
+            lines_out.append(line)
+            continue
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            tokens = list(lexer)
+        except ValueError:
+            lines_out.append(line)
+            continue
+
+        segments: list[list[str]] = []
+        current: list[str] = []
+        for token in tokens:
+            if token and set(token) <= _CONTROL_CHARS:
+                segments.append(current)
+                segments.append([token])
+                current = []
+                continue
+            current.append(token)
+        segments.append(current)
+
+        rebuilt: list[str] = []
+        for segment in segments:
+            if not segment:
+                continue
+            index = _command_token_index(segment)
+            if index is not None and Path(segment[index]).name in _DATA_SINK_EXECUTABLES:
+                arguments = segment[index + 1 :]
+                if not any(
+                    argument.startswith(".")
+                    or any(marker in argument for marker in _UNSAFE_DATA_ARG_MARKERS)
+                    for argument in arguments
+                ):
+                    changed = True
+                    rebuilt.extend(segment[: index + 1])
+                    rebuilt.extend("arg" for _ in arguments)
+                    continue
+            rebuilt.extend(segment)
+        lines_out.append(" ".join(rebuilt))
+    if not changed:
+        return text
+    return "\n".join(lines_out)
+
+
+def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
+    """Lifecycle-regex scan that exempts matches living inside data arguments.
+
+    Two-pass: the cheap regex first (the overwhelmingly common no-match case
+    pays nothing extra); on a raw match, re-scan with data-sink arguments
+    masked out. Only a match that survives masking — i.e. one in actual
+    command position — blocks.
+    """
+    if not contains_gateway_lifecycle_command(text):
+        return False
+    normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
+    return contains_gateway_lifecycle_command(_mask_data_sink_arguments(normalized))
+
+
+def _direct_lifecycle_scan(command: str) -> bool:
+    """Pure-string direct scans: lifecycle regex (data-exempted) + submit."""
+    return _lifecycle_command_scan_with_data_exemption(
+        command
+    ) or contains_launchctl_submit_command(command)
 
 
 def _expand_candidate_path(candidate: str) -> Optional[Path]:
@@ -309,10 +441,23 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             return None, True
-        # Read a bounded chunk first — even for oversized files, the first
-        # chunk tells us if this is a binary (NUL bytes) that should be
-        # skipped as "nothing to scan" rather than failing closed (#76762).
-        data = os.read(descriptor, _MAX_REFERENCED_SCRIPT_BYTES + 1)
+        # Sniff a small prefix first: files that are clearly compiled
+        # binaries (executable magic, or NUL bytes in the head) are never
+        # shell scripts, so skip them WITHOUT reading the rest — reading a
+        # megabyte of machine code just to discard it wastes the guard's
+        # budget and (pre-#77703) fed decoded garbage into the recursion.
+        data = os.read(descriptor, _BINARY_SNIFF_BYTES)
+        if data.startswith(_BINARY_MAGIC_PREFIXES) or b"\x00" in data:
+            return None, False
+        # Read the remainder (bounded). Loop because os.read may return
+        # short for non-regular-file-backed descriptors.
+        while len(data) <= _MAX_REFERENCED_SCRIPT_BYTES:
+            chunk = os.read(
+                descriptor, _MAX_REFERENCED_SCRIPT_BYTES + 1 - len(data)
+            )
+            if not chunk:
+                break
+            data += chunk
     except OSError:
         return None, False
     finally:
@@ -364,9 +509,7 @@ def _contains_unsafe_gateway_action(
     visited: set[Path],
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
 ) -> bool:
-    if contains_gateway_lifecycle_command(command) or contains_launchctl_submit_command(
-        command
-    ):
+    if _direct_lifecycle_scan(command):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return True
@@ -458,9 +601,15 @@ def contains_gateway_lifecycle_command_or_referenced_script(
             exc_info=True,
         )
         # Pure string scans of the top-level command — cannot raise.
-        return contains_gateway_lifecycle_command(
-            command
-        ) or contains_launchctl_submit_command(command)
+        try:
+            return _direct_lifecycle_scan(command)
+        except Exception:
+            # The data-argument masker tokenizes arbitrary text; if even
+            # that fails, fall to the raw regex + submit scan so the guard
+            # stays total.
+            return contains_gateway_lifecycle_command(
+                command
+            ) or contains_launchctl_submit_command(command)
 
 
 
@@ -548,7 +697,7 @@ def check_gateway_lifecycle(
         # `hermes gateway restart` embedded in a .py script is still
         # blocked. Non-regular/oversized script files still fail closed
         # via the lifecycle-shaped sentinel in _read_script_for_scanning.
-        unsafe = contains_gateway_lifecycle_command(combined)
+        unsafe = _lifecycle_command_scan_with_data_exemption(combined)
     else:
         script_dir = _resolve_script_directory(script) if script else None
         unsafe = contains_gateway_lifecycle_command_or_referenced_script(

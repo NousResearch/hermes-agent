@@ -1043,3 +1043,144 @@ class TestCronCreateLifecycleBlockExtra:
         assert rc == 1
         out = capsys.readouterr().out
         assert "Blocked" in out
+
+class TestLifecycleGuardDataArgumentExemption:
+    """Lifecycle words inside DATA arguments (SQL text, grep patterns) must
+    not block; the same words in command position must. Reproduces the two
+    live false positives (Aug 2026): a sqlite3 SELECT over restart-history
+    text and a grep for the lifecycle string in syslog."""
+
+    def _scan(self, command, **kwargs):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        return contains_gateway_lifecycle_command_or_referenced_script(
+            command, **kwargs
+        )
+
+    @pytest.mark.parametrize("command", [
+        # Exact live false-positive shapes: SQL string literals carrying the
+        # full lifecycle command as text.
+        'sqlite3 db "SELECT msg FROM log WHERE msg LIKE '
+        "'%systemctl restart hermes-gateway%'\"",
+        'psql -c "SELECT * FROM events WHERE cmd = '
+        "'systemctl stop hermes-gateway'\"",
+        # grep/rg pattern arguments hunting for the lifecycle string.
+        "grep -c 'systemctl restart hermes-gateway' /var/log/syslog",
+        "rg 'hermes gateway restart' /home/user/.hermes/logs/",
+        "journalctl -u hermes-gateway --grep 'systemctl restart hermes-gateway'",
+        # SQL with stop/restart column/value words but no command shape.
+        'sqlite3 stats.db "SELECT stop_time, restart_reason FROM '
+        'hermes_gateway_restarts"',
+        "psql -c \"SELECT count(*) FROM events WHERE action IN "
+        "('stop','restart') AND service LIKE '%gateway%'\"",
+    ])
+    def test_data_argument_lifecycle_text_not_blocked(self, command):
+        assert self._scan(command) is False
+
+    @pytest.mark.parametrize("command", [
+        # Execution smuggled through or around a data sink must still block.
+        'sqlite3 db ".shell hermes gateway restart"',
+        'psql -c "\\! systemctl restart hermes-gateway"',
+        "grep 'systemctl restart hermes-gateway' cmds.txt | sh",
+        "grep gateway f | xargs systemctl restart hermes-gateway",
+        'grep "$(systemctl restart hermes-gateway)" f',
+        "grep 'restart' log; systemctl restart hermes-gateway",
+        'sqlite3 db "SELECT 1"; hermes gateway stop',
+        # Plain lifecycle commands are unaffected by the exemption.
+        "hermes gateway restart",
+        "sudo systemctl stop hermes-gateway",
+    ])
+    def test_command_position_lifecycle_still_blocked(self, command):
+        assert self._scan(command) is True
+
+    def test_python_script_branch_gets_the_same_exemption(self, tmp_path):
+        """check_gateway_lifecycle's .py branch scans the combined
+        prompt+script text with the direct regex; a shell-shaped diagnostic
+        command in the PROMPT (the live false-positive shape) must not block
+        a job that runs a clean .py script. Note the exemption is
+        fail-closed: the same SQL buried in non-shell-shaped Python source
+        (e.g. inside a subprocess.run list literal) stays blocked because
+        the masker cannot prove it is data."""
+        from cron.lifecycle_guard import check_gateway_lifecycle
+        script = tmp_path / "report.py"
+        script.write_text("print('nightly report')\n", encoding="utf-8")
+        prompt = (
+            'sqlite3 db "SELECT msg FROM log '
+            "WHERE msg LIKE '%systemctl restart hermes-gateway%'\""
+        )
+        check_gateway_lifecycle(prompt, str(script))
+
+
+class TestLifecycleGuardNeverRaises:
+    """The guard must return a verdict for every input — binary referenced
+    paths, NUL bytes, non-UTF-8, /dev/* nodes, directories, missing files —
+    never crash (the live 'ValueError: embedded null byte' class)."""
+
+    def _scan(self, command, **kwargs):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        return contains_gateway_lifecycle_command_or_referenced_script(
+            command, **kwargs
+        )
+
+    def test_command_referencing_elf_binary_returns_false(self, tmp_path):
+        """The exact live crash shape: a command referencing a compiled
+        executable path (e.g. a venv python) must scan as 'nothing', not
+        crash on the binary's decoded bytes."""
+        binary = tmp_path / "python3.11"
+        binary.write_bytes(b"\x7fELF\x02\x01\x01" + bytes(64) + b"\x90" * 256)
+        assert self._scan(f"{binary} -m json.tool /tmp/x.json") is False
+
+    @pytest.mark.parametrize("command", [
+        "run /tmp/foo\x00bar/baz.sh",
+        "bash ./run\x00me.sh",
+        "bash /nonexistent/deeply/missing.sh",
+        "bash /" + "a" * 4096 + ".sh",  # ENAMETOOLONG
+    ])
+    def test_adversarial_paths_never_raise(self, command):
+        assert self._scan(command, cwd="/tmp") is False
+
+    def test_non_utf8_referenced_file_never_raises(self, tmp_path):
+        weird = tmp_path / "weird.sh"
+        weird.write_bytes(b"\xff\xfe\x00\x01 not really a script")
+        assert self._scan(f"bash {weird}") is False
+
+    def test_directory_and_dev_null_fail_closed_not_crash(self, tmp_path):
+        # Non-regular files are suspicious (fail closed = blocked), but the
+        # important contract is: verdict, not exception.
+        assert self._scan(f"bash {tmp_path}") is True
+        assert self._scan("bash /dev/null") is True
+
+    def test_magic_prefix_binaries_skipped_without_full_read(self, tmp_path):
+        """Executable magic (ELF/PE/Mach-O) short-circuits the read: the
+        guard must not treat compiled binaries as scripts at all."""
+        from cron.lifecycle_guard import _read_referenced_script
+        for name, magic in [
+            ("elf", b"\x7fELF"),
+            ("pe", b"MZ"),
+            ("macho", b"\xcf\xfa\xed\xfe"),
+            ("fat", b"\xca\xfe\xba\xbe"),
+        ]:
+            path = tmp_path / name
+            # No NUL after the magic — proves the magic check itself fires.
+            path.write_bytes(magic + b"ABCDEF" * 10)
+            text, unsafe = _read_referenced_script(path)
+            assert text is None, name
+            assert unsafe is False, name
+
+    def test_check_gateway_lifecycle_adversarial_script_values(self, tmp_path):
+        """check_gateway_lifecycle must never raise anything but the
+        documented GatewayLifecycleBlocked for junk script values."""
+        from cron.lifecycle_guard import (
+            GatewayLifecycleBlocked,
+            check_gateway_lifecycle,
+        )
+        binary = tmp_path / "prog"
+        binary.write_bytes(b"\x7fELF" + bytes(128))
+        for value in ("nul\x00byte.sh", str(binary), "/nonexistent/x.sh"):
+            check_gateway_lifecycle("clean prompt", value)  # must not raise
+        for value in ("/dev/null", str(tmp_path)):
+            with pytest.raises(GatewayLifecycleBlocked):
+                check_gateway_lifecycle("clean prompt", value)

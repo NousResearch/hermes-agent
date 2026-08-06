@@ -4426,3 +4426,65 @@ class TestAsynchronousFallbackCachePlans:
         wire_tools = client.chat.completions.create.call_args.kwargs["tools"]
         assert "cache_control" in wire_tools[-1]
         assert "cache_control" not in tools[-1]
+
+
+class TestAutoRoutedProviderProfileHooks:
+    def test_cached_auto_route_projects_selected_provider_on_every_request(self):
+        """Auto routing must retain the concrete provider for request hooks."""
+        import agent.auxiliary_client as aux
+        from providers.base import ProviderProfile
+
+        hook_calls = []
+
+        class DynamicProfile(ProviderProfile):
+            def build_api_kwargs_extras(self, *, reasoning_config=None, **context):
+                hook_calls.append(context)
+                return {}, {
+                    "extra_headers": {
+                        "Authorization": f"Bearer token-{len(hook_calls)}",
+                    },
+                }
+
+        profile = DynamicProfile(name="agentgateway")
+        client = MagicMock()
+        client.base_url = "https://gateway.example.com/v1"
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content="ok"))]
+
+        def lookup_profile(name):
+            return profile if name == "agentgateway" else None
+
+        aux.shutdown_cached_clients()
+        try:
+            with (
+                patch(
+                    "agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", "gateway/model", None, None, None),
+                ),
+                patch(
+                    "agent.auxiliary_client._resolve_auto_route",
+                    return_value=(client, "gateway/model", "agentgateway"),
+                ) as resolve_auto,
+                patch("providers.get_provider_profile", side_effect=lookup_profile),
+                patch(
+                    "agent.auxiliary_client._relay_sync_completion",
+                    return_value=response,
+                ) as relay,
+            ):
+                for _ in range(2):
+                    result = call_llm(
+                        task="title_generation",
+                        messages=[{"role": "user", "content": "title this"}],
+                    )
+                    assert result is response
+        finally:
+            aux.shutdown_cached_clients()
+
+        resolve_auto.assert_called_once()
+        assert len(hook_calls) == 2
+        assert relay.call_args_list[0].args[1]["extra_headers"] == {
+            "Authorization": "Bearer token-1",
+        }
+        assert relay.call_args_list[1].args[1]["extra_headers"] == {
+            "Authorization": "Bearer token-2",
+        }

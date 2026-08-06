@@ -138,6 +138,13 @@ _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
 )
 
+# A value that is purely a shell expansion carries no literal secret:
+# ``$(cat f)``, ```cat f```, ``$VAR``, ``${VAR}``. Masking it would both
+# over-redact (nothing to leak) and mangle the command (the \S+ value match
+# stops at the first space, stranding `` /root/gh.tok)`` — issue #79413).
+# Anchor at start-of-value so ``ghp_...`` literal secrets never match.
+_SHELL_EXPANSION_VALUE_RE = re.compile(r"^(?:\$\(|`|\$\{?[A-Za-z_])")
+
 # Lowercase / dotted / hyphenated config keys from config files
 # (application.properties, .env, YAML-ish dumps): ``spring.datasource.password=secret``,
 # ``app.api.key=xyz``, ``password=secret``. The uppercase _ENV_ASSIGN_RE above
@@ -729,6 +736,21 @@ def redact_sensitive_text(
                 # secret values — masking them corrupts code snippets in
                 # prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
                 if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
+                # Shell expansions carry no literal secret material — masking
+                # them both over-redacts (no secret present) and mangles the
+                # command: ``GH_TOKEN=$(cat /root/gh.tok)`` became
+                # ``GH_TOKEN=*** /root/gh.tok)`` (invalid shell) because the
+                # value match stops at the first space, stranding the rest of
+                # the substitution (issue #79413). ``$VAR`` / ``${VAR}`` /
+                # ``$(...)`` / backticks reference other values; nothing to
+                # redact. Literal secrets (``ghp_...``) still mask normally.
+                # Strip a leading quote before the expansion check. For a
+                # quoted RHS the regex's ``\2`` backreference binds to the
+                # closing quote, so ``quote`` is empty and the value itself
+                # starts with the opening quote (``"$(cat``).
+                _value_unquoted = value[1:] if value[:1] in {'"', "'"} else value
+                if _SHELL_EXPANSION_VALUE_RE.match(_value_unquoted):
                     return m.group(0)
                 # Keyword must sit at a word boundary within the key —
                 # ``author=Smith`` / ``press.secretary=…`` are prose, not

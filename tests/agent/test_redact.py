@@ -122,6 +122,47 @@ class TestEnvLookupPreserved:
         assert redact_sensitive_text(text, force=True) == text
 
 
+class TestShellExpansionPreserved:
+    """Shell-expansion env values must not be masked or mangled (#79413).
+
+    ``GH_TOKEN=$(cat /root/gh.tok)`` was over-redacted to
+    ``GH_TOKEN=*** /root/gh.tok)`` — the \S+ value match stopped at the
+    first space, stranding the rest of the substitution and producing
+    invalid shell that the model later re-emitted from history.
+    """
+
+    def test_command_substitution_preserved(self):
+        text = "GH_TOKEN=$(cat /root/gh.tok) gh issue list"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_quoted_command_substitution_preserved(self):
+        text = 'export GH_TOKEN="$(cat /root/gh.tok)"'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_backtick_substitution_preserved(self):
+        text = "API_KEY=`cat /root/k`"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_var_reference_preserved(self):
+        text = "AUTH_TOKEN=$SOME_VAR"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_braced_var_reference_preserved(self):
+        text = "AUTH_TOKEN=${SOME_VAR}"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_docker_env_var_reference_preserved(self):
+        text = "docker run -e API_KEY=$API_KEY img"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_literal_secret_still_masked(self):
+        """Control: a literal token in the same position must still mask."""
+        text = "GH_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef"
+        result = redact_sensitive_text(text, force=True)
+        assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef" not in result
+        assert "GH_TOKEN=" in result
+
+
 
 
 

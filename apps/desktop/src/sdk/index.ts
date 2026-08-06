@@ -145,8 +145,10 @@ export const host = {
     focusedStoredSessionId: readonlyAtom<null | string>($focusedStoredSessionId),
     /** Live usage snapshot of the focused session (`context_used` /
      *  `context_max` / `context_percent`, token counts, `cost_usd`) —
-     *  streamed by the backend, no RPC needed. Null while unresolved. */
-    focusedUsage: readonlyAtom<null | UsageStats>($focusedUsage),
+     *  streamed by the backend, no RPC needed. Null while unresolved.
+     *  Partial: the backend streams whichever fields changed, so every
+     *  field read needs a fallback. */
+    focusedUsage: readonlyAtom<null | Partial<UsageStats>>($focusedUsage),
     /** Gateway socket state: 'idle' | 'connecting' | 'open' | …. Not turn-busy. */
     gateway: readonlyAtom<string>($gatewayState),
     /** Current main model slug. */

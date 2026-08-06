@@ -38,9 +38,9 @@ describe('host.state focused-session atoms', () => {
     for (const key of ['focusedSessionId', 'focusedStoredSessionId', 'focusedUsage'] as const) {
       const store = host.state[key]
       expect(store, key).toBeDefined()
-      expect(typeof store.get, 'function', key)
-      expect(typeof store.listen, 'function', key)
-      expect(typeof store.subscribe, 'function', key)
+      expect(typeof store.get, key).toBe('function')
+      expect(typeof store.listen, key).toBe('function')
+      expect(typeof store.subscribe, key).toBe('function')
     }
   })
 
@@ -74,6 +74,7 @@ describe('host.state focused-session atoms', () => {
         title: id
       })
     }
+
     tree.declareDefaultTree(
       model.split('row', [
         model.group(['workspace'], { active: 'workspace', id: 'grp-main' }),

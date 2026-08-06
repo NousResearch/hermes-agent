@@ -31,6 +31,15 @@ _install_lock = threading.Lock()
 # never double-wrap and so we can recover the original stream.
 _installed: dict[str, "_ThreadRoutingStream"] = {}
 
+# Module-level devnull sink — opened once, never closed.  The previous design
+# opened a fresh ``/dev/null`` handle per ``thread_scoped_silence()`` call and
+# closed it on exit, but ``_ensure_installed`` is idempotent: it only captures
+# the sink on the *first* call.  Every subsequent call opened and closed a
+# handle that was never wired into the proxy, while the proxy's original sink
+# was already closed — causing silenced writes to fail silently.  A single
+# long-lived handle avoids the fd churn and the stale-sink bug.
+_DEVNULL: TextIO = open(os.devnull, "w", encoding="utf-8")
+
 
 class _ThreadRoutingStream:
     """A ``sys.stdout``/``sys.stderr`` stand-in that routes writes per-thread.
@@ -130,10 +139,9 @@ def thread_scoped_silence() -> Iterator[None]:
     thread's body instead of ``contextlib.redirect_stdout(devnull)`` when the
     process is multi-threaded and another thread must keep its console output.
     """
-    sink = open(os.devnull, "w", encoding="utf-8")
     ident = threading.get_ident()
-    out_proxy = _ensure_installed("stdout", sink)
-    err_proxy = _ensure_installed("stderr", sink)
+    out_proxy = _ensure_installed("stdout", _DEVNULL)
+    err_proxy = _ensure_installed("stderr", _DEVNULL)
     out_proxy.silence(ident)
     err_proxy.silence(ident)
     try:
@@ -141,7 +149,3 @@ def thread_scoped_silence() -> Iterator[None]:
     finally:
         out_proxy.unsilence(ident)
         err_proxy.unsilence(ident)
-        try:
-            sink.close()
-        except Exception:
-            pass

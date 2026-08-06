@@ -350,6 +350,11 @@ function PillLabel() {
 const plugin: HermesPlugin = {
   id: 'gateway-pill',
   name: 'Gateway Pill',
+  // Reference/demo plugin: a 1:1 rebuild of the core gateway-health statusbar
+  // item through the SDK. Off by default like the other in-tree example
+  // plugins — otherwise every shipped app shows TWO gateway pills (core +
+  // plugin) in the statusbar.
+  defaultEnabled: false,
   register(ctx) {
     startReadinessPoll()
 

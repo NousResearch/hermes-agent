@@ -105,6 +105,7 @@ class TestPrimaryRuntimeSnapshot:
         assert rt["compressor_provider"] == cc.provider
         assert rt["compressor_context_length"] == cc.context_length
         assert rt["compressor_threshold_tokens"] == cc.threshold_tokens
+        assert rt["compressor_api_mode"] == cc.api_mode
 
     def test_snapshot_includes_anthropic_state_when_applicable(self):
         """Anthropic-mode agents should snapshot Anthropic-specific state."""
@@ -280,6 +281,42 @@ class TestRestorePrimaryRuntime:
 
         assert agent.context_compressor.context_length == original_ctx_len
         assert agent.context_compressor.threshold_tokens == original_threshold
+
+    def test_compressor_api_mode_survives_fallback_round_trip(self):
+        """primary → fallback → primary must put the compressor back on the primary's wire.
+
+        The fallback moves the compressor to chat_completions; the init snapshot has to
+        carry the primary's api_mode or restore resets it to "" and summaries go out on
+        the wrong transport."""
+        with (
+            patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+            patch("agent.context_compressor.get_model_context_length", return_value=200_000),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant-test-12345678",
+                base_url="https://api.anthropic.com",
+                provider="anthropic",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+            )
+        assert agent.context_compressor.api_mode == "anthropic_messages"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)):
+            assert agent._try_activate_fallback() is True
+        assert agent.context_compressor.api_mode != "anthropic_messages"
+
+        with (
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            assert agent._restore_primary_runtime() is True
+        assert agent.context_compressor.api_mode == "anthropic_messages"
 
     def test_restores_prompt_caching_flag(self):
         agent = _make_agent()

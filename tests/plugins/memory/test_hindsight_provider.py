@@ -401,6 +401,40 @@ class TestConfig:
         finally:
             p.shutdown()
 
+    def test_get_client_waits_for_background_daemon_start(self):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        client = object()
+        p = HindsightMemoryProvider()
+        p._client = client
+        p._timeout = 2
+
+        def background_start():
+            started.set()
+            release.wait(timeout=2.0)
+
+        daemon_thread = threading.Thread(target=background_start)
+        p._daemon_thread = daemon_thread
+        daemon_thread.start()
+        results = []
+        caller = threading.Thread(target=lambda: results.append(p._get_client()))
+        caller.start()
+        try:
+            assert started.wait(timeout=1.0)
+            time.sleep(0.05)
+            assert results == []
+            release.set()
+            caller.join(timeout=2.0)
+            assert results == [client]
+        finally:
+            release.set()
+            caller.join(timeout=2.0)
+            daemon_thread.join(timeout=2.0)
+            p._client = None
+            p._daemon_thread = None
+
     def test_hermes_inheritance_uses_stable_database_independent_of_daemon_profile(self):
         provider = HindsightMemoryProvider()
         assert provider._effective_embedded_database_url(

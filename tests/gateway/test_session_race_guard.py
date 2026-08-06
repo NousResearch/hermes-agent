@@ -103,6 +103,30 @@ async def test_sentinel_placed_before_agent_setup():
     )
 
 
+@pytest.mark.asyncio
+async def test_stale_pre_history_unwind_preserves_newer_generation_state():
+    """A waiter invalidated behind the turn lease must not clear its successor."""
+    runner = _make_runner()
+    event = _make_event()
+    session_key = build_session_key(event.source)
+    newer_agent = MagicMock()
+
+    async def stale_inner(self_inner, ev, src, qk, generation):
+        self_inner._invalidate_session_run_generation(qk, reason="test-stop")
+        state = self_inner._session_state(qk)
+        state.turn.agent = newer_agent
+        state.turn.started_ts = 123.0
+        setattr(ev, "_stale_turn_before_history", True)
+        return {"final_response": "", "api_calls": 0, "interrupted": True}
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", stale_inner):
+        result = await runner._handle_message(event)
+
+    assert result == {"final_response": "", "api_calls": 0, "interrupted": True}
+    assert runner._running_agents.get(session_key) is newer_agent
+    assert runner._running_agents_ts.get(session_key) == 123.0
+
+
 # ------------------------------------------------------------------
 # Test 2: Sentinel is cleaned up after _handle_message_with_agent
 # ------------------------------------------------------------------

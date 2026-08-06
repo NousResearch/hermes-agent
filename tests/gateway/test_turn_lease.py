@@ -15,6 +15,7 @@ Covers:
   token, never a wedged session, and the degraded token releases nothing
 - registry stays bounded; live leases are never evicted
 - GatewayRunner._release_turn_lease wiring (bare-runner safe, token-scoped)
+- a waiter invalidated by /stop while blocked is dropped before transcript load
 """
 
 import asyncio
@@ -156,5 +157,40 @@ def test_runner_release_turn_lease_is_token_scoped_and_bare_safe():
         assert runner._release_turn_lease("key-a", 1) is False
         # Empty key guard.
         assert runner._release_turn_lease("", 1) is False
+
+    _run(scenario())
+
+
+def test_runner_drops_waiter_invalidated_while_acquiring_turn_lease():
+    """A pre-/stop waiter must not resume into history load/compression."""
+    from gateway.run import GatewayRunner
+
+    async def scenario():
+        runner = object.__new__(GatewayRunner)
+        runner._sessions = {}
+        runner._turn_leases = SessionTurnLeaseRegistry()
+        key = "key-a"
+        session_id = "sess-stop-race"
+        runner._session_state(key).persistent.run_generation = 1
+
+        holder = await runner._turn_leases.acquire(
+            session_id, owner_key="holder", generation=1, timeout=5
+        )
+        waiter = asyncio.create_task(
+            runner._acquire_turn_lease_for_run(
+                key, session_id, 1, timeout=5
+            )
+        )
+        await asyncio.sleep(0.02)
+        assert not waiter.done()
+
+        # /stop invalidates the waiter before the old turn unwinds.
+        runner._session_state(key).persistent.run_generation = 2
+        assert runner._turn_leases.release(holder) is True
+
+        assert await waiter is False
+        # The normal dispatch finally remains responsible for releasing the
+        # stale generation's newly acquired token.
+        assert runner._release_turn_lease(key, 1) is True
 
     _run(scenario())

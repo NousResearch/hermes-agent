@@ -52,6 +52,7 @@ _PROMPT_FIELDS = {
 # singular stems. This makes casing, plural and hyphen variants equivalent
 # without trying to infer arbitrary semantics.
 _PLACEHOLDER_IRREGULAR_STEMS = {
+    "bodies": "body",
     "children": "child",
     "ethnicities": "ethnicity",
     "gentlemen": "gentleman",
@@ -70,6 +71,7 @@ _PLACEHOLDER_FORBIDDEN_STEMS = {
     "bearded",
     "blond",
     "blonde",
+    "body",
     "boy",
     "brunette",
     "build",
@@ -85,6 +87,7 @@ _PLACEHOLDER_FORBIDDEN_STEMS = {
     "female",
     "feminine",
     "freckle",
+    "gender",
     "gentleman",
     "girl",
     "hair",
@@ -100,6 +103,7 @@ _PLACEHOLDER_FORBIDDEN_STEMS = {
     "man",
     "masculine",
     "model",
+    "name",
     "named",
     "nose",
     "old",

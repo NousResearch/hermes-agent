@@ -566,6 +566,11 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
 
+        # Track the last IMAP fetch attempt so the poll loop can distinguish
+        # "checked, nothing new" from "the check itself failed" (#80016).
+        self._last_fetch_failed: bool = False
+        self._last_fetch_error: str = ""
+
         # Map chat_id (sender email) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
@@ -763,6 +768,22 @@ class EmailAdapter(BasePlatformAdapter):
         # Run IMAP operations in a thread to avoid blocking the event loop
         loop = asyncio.get_running_loop()
         messages = await loop.run_in_executor(None, self._fetch_new_messages)
+        if self._last_fetch_failed:
+            # The IMAP check itself failed (connect/login/select/search/fetch),
+            # not just an empty inbox. Surface it through the fatal-error hook
+            # so the gateway's existing reconnect/backoff/status machinery
+            # re-establishes the mailbox instead of silently treating every
+            # failed check as "nothing new" (#80016). The handler runs in a
+            # detached task (gateway/run.py), so awaiting it from our own poll
+            # task is safe even though teardown cancels this task.
+            self._last_fetch_failed = False
+            self._set_fatal_error(
+                "email_imap_fetch_failed",
+                self._last_fetch_error or "IMAP fetch failed",
+                retryable=True,
+            )
+            await self._notify_fatal_error()
+            return
         for msg_data in messages:
             await self._dispatch_message(msg_data)
 
@@ -862,6 +883,8 @@ class EmailAdapter(BasePlatformAdapter):
                     pass
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
+            self._last_fetch_failed = True
+            self._last_fetch_error = str(e)
         return results
 
     @staticmethod

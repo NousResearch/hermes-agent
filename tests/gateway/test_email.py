@@ -581,6 +581,31 @@ class TestPollLoop(unittest.TestCase):
         self.assertEqual(len(dispatched), 1)
         self.assertEqual(dispatched[0]["subject"], "Inbox Test")
 
+    def test_check_inbox_notifies_fatal_error_on_fetch_failure(self):
+        """A failed IMAP check must surface through the fatal-error hook so
+        the gateway's reconnect/backoff machinery learns email is unhealthy
+        instead of silently treating the failed check as an empty inbox
+        (#80016)."""
+        import asyncio
+        adapter = self._make_adapter()
+        notified = []
+
+        async def mock_fatal_handler(adapter):
+            notified.append(adapter)
+
+        adapter.set_fatal_error_handler(mock_fatal_handler)
+
+        mock_imap = MagicMock()
+        mock_imap.login.side_effect = Exception("read operation timed out")
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            asyncio.run(adapter._check_inbox())
+
+        self.assertEqual(len(notified), 1)
+        self.assertEqual(adapter.fatal_error_code, "email_imap_fetch_failed")
+        self.assertTrue(adapter.fatal_error_retryable)
+        self.assertIn("read operation timed out", adapter.fatal_error_message)
+
 
 class TestSendEmailStandalone(unittest.TestCase):
     """Test the standalone _send_email function in send_message_tool."""

@@ -971,12 +971,23 @@ def is_available(feature: str) -> bool:
     return not feature_missing(feature)
 
 
-def feature_install_command(feature: str) -> Optional[str]:
-    """Return the ``pip install`` command a user could run manually, or None."""
+def feature_install_command(feature: str, *, venv_pip: bool = False) -> Optional[str]:
+    """Return the ``pip install`` command a user could run manually, or None.
+
+    ``venv_pip=True`` targets the running interpreter's pip
+    (``{sys.executable} -m pip install …``) — correct in every layout
+    (default install, ``HERMES_HOME`` overrides, profile installs) and
+    immune to Ubuntu 24.04's PEP 668 ``externally-managed-environment``
+    failure that a bare/system ``pip install`` hint invites.  The default
+    ``uv pip install`` form is kept for contexts that document uv usage.
+    """
     if feature not in LAZY_DEPS:
         return None
     specs = LAZY_DEPS[feature]
-    return "uv pip install " + " ".join(repr(s) for s in specs)
+    joined = " ".join(repr(s) for s in specs)
+    if venv_pip:
+        return f"{sys.executable} -m pip install {joined}"
+    return "uv pip install " + joined
 
 
 @dataclass

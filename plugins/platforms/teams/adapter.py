@@ -1475,22 +1475,19 @@ def _install_hint() -> str:
     """Build the Teams install hint from the canonical LAZY_DEPS pins.
 
     Derived (not hardcoded) so a pin bump in ``tools/lazy_deps.py`` — aiohttp
-    is CVE-pinned, so bumps happen — never leaves this string stale, and
-    ``sys.executable -m pip`` targets the actual Hermes venv in every layout
-    (default install, ``HERMES_HOME`` override, profile installs) instead of
-    a hardcoded ``~/.hermes`` path.  Also sidesteps Ubuntu 24.04's PEP 668
-    ``externally-managed-environment`` failure that a bare ``pip install``
-    hint invites.
+    is CVE-pinned, so bumps happen — never leaves this string stale.
+    ``feature_install_command(venv_pip=True)`` targets the actual Hermes
+    venv in every layout and sidesteps Ubuntu 24.04's PEP 668 failure that
+    a bare ``pip install`` hint invites.
     """
     try:
-        from tools.lazy_deps import feature_specs
-        specs = " ".join(f"'{s}'" for s in feature_specs("platform.teams"))
+        from tools.lazy_deps import feature_install_command
+        cmd = feature_install_command("platform.teams", venv_pip=True)
     except Exception:  # pragma: no cover — defensive
-        specs = "'microsoft-teams-apps' 'aiohttp'"
-    return (
-        "Teams SDK missing — restart the gateway to auto-install, or run: "
-        f"{sys.executable} -m pip install {specs}"
-    )
+        cmd = None
+    if not cmd:
+        cmd = f"{sys.executable} -m pip install microsoft-teams-apps aiohttp"
+    return f"Teams SDK missing — restart the gateway to auto-install, or run: {cmd}"
 
 
 def register(ctx) -> None:

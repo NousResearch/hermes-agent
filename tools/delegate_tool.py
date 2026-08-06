@@ -800,6 +800,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    persona: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -808,12 +809,18 @@ def _build_child_system_prompt(
     inspiration/openclaw/src/agents/subagent-system-prompt.ts:63-95).
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
+
+    When ``persona`` is provided, it is injected as a "YOUR ROLE" block
+    that specializes the subagent's behavior (e.g. "web researcher",
+    "senior engineer", "code reviewer").
     """
     parts = [
         "You are a focused subagent working on a specific delegated task.",
         "",
         f"YOUR TASK:\n{goal}",
     ]
+    if persona and persona.strip():
+        parts.append(f"\nYOUR ROLE:\n{persona.strip()}")
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -1220,6 +1227,13 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Per-task persona — injected into the child's system prompt as
+    # a "YOUR ROLE" block to specialize behavior.
+    persona: Optional[str] = None,
+    # Per-task wall-clock timeout in seconds. Overrides the global
+    # delegation.child_timeout_seconds for this child. None = inherit
+    # the global config default (which itself defaults to no timeout).
+    timeout: Optional[float] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1329,6 +1343,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        persona=persona,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1565,6 +1580,8 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
+    # Per-task timeout override (None = inherit global config default)
+    child._delegate_timeout = timeout
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
     # → NULL). Mirrors /branch's ``_branched_from`` pattern — see
@@ -2164,7 +2181,9 @@ def _run_single_child(
         # Run child with an optional hard timeout (off by default —
         # result(timeout=None) blocks until the child finishes). Stuck-child
         # protection comes from the heartbeat staleness monitor instead.
-        child_timeout = _get_child_timeout()
+        # Per-task timeout (child._delegate_timeout) beats the global config.
+        _per_task_timeout = getattr(child, "_delegate_timeout", None)
+        child_timeout = _per_task_timeout if _per_task_timeout is not None else _get_child_timeout()
         # Daemon worker (tools.daemon_pool): a timed-out child is abandoned
         # below; a stdlib non-daemon worker would then block interpreter
         # exit at atexit-join time if the child never unwinds.
@@ -3711,6 +3730,7 @@ def _build_top_level_description() -> str:
         "delegate_task.\n"
         "- Children inherit the parent model and fallback chain unless pinned "
         "globally via delegation.provider / delegation.model in config.yaml. "
+        "- Per-task fields on batch items: 'persona' (specialize its behavior via a role description), 'timeout' (per-task wall-clock cap in seconds).\n"
         "Results are returned as an array, one entry per task."
     )
 
@@ -3725,6 +3745,9 @@ def _build_tasks_param_description() -> str:
         f"Batch mode: tasks to run in parallel (up to {max_children} for this "
         f"user, set via delegation.max_concurrent_children). Each gets "
         "its own subagent with isolated context and terminal session. "
+        "Per-task fields: 'goal' (required), 'context', 'role', "
+        "'persona' (specialize "
+        "its behavior), 'timeout' (per-task wall-clock cap in seconds). "
         "When provided, top-level goal/context/role are ignored."
     )
 
@@ -3837,6 +3860,14 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "persona": {
+                            "type": "string",
+                            "description": "Optional role/persona description injected into the subagent's system prompt (e.g. 'web researcher — focus on finding authoritative sources, cite URLs', 'senior engineer — prioritize correctness, add error handling'). Helps specialize subagent behavior without cramming instructions into context.",
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "description": "Optional per-task wall-clock timeout in seconds. Overrides the global delegation.child_timeout_seconds for this subagent. Use a short timeout for quick lookups (e.g. 30) and a longer one for deep analysis (e.g. 300). Omit to inherit the global default (no timeout by default).",
                         },
                     },
                     "required": ["goal"],

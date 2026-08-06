@@ -1342,22 +1342,36 @@ class TestMatrixSyncLoop:
 
     @pytest.mark.asyncio
     async def test_sync_loop_retries_transient_error_instead_of_stopping(self):
-        """A transient error containing a false-positive status digit must be retried, not fatal.
+        """A timeout whose message text incidentally contains "401" must be retried, not fatal.
 
-        This is the regression the false-positive substring match caused in
-        production: an HTML error body with an embedded coordinate like
-        "40.4302" contains the digits "403", so a naive `"403" in str(exc)`
-        check stopped the sync loop permanently on what was really a passing
-        502 blip. This test drives `_sync_loop` itself (not just the
-        classifier function) so a regression in how the loop wires the
-        classifier in would also be caught here.
+        This is the actual production regression: a plain connection timeout
+        wraps the sync pagination token in its message, and that token is an
+        arbitrary digit string that happens to contain "401". The old naive
+        classifier did `"401" in str(exc).lower()` and stopped the sync loop
+        permanently on what was really a transient timeout with no auth
+        failure at all.
+
+        I confirmed this fixture actually discriminates the two classifiers
+        (see _verify_fixture.py, run manually against both): the OLD
+        substring check classifies it "permanent" (bug reproduces) and the
+        NEW layered classifier classifies it "transient" (fix works), since
+        the digits sit inside a pagination token, not a structured
+        http_status/errcode and not a whole-word match in the bounded
+        prefix scan. A fixture that both classifiers agree on (like the
+        old 502/SVG body used before this rework) proves nothing, since
+        agreement means nothing was actually being tested.
+
+        This test drives `_sync_loop` itself (not just the classifier
+        function) so a regression in how the loop wires the classifier in
+        would also be caught here.
         """
         adapter = _make_adapter()
         adapter._closing = False
 
-        real_502 = (
-            '502: <!DOCTYPE html><svg><path d="M17.4517 40.4302'
-            'C12.7214 40.4302 9.82339 41.8182 7.98048 44.0001"/></svg>'
+        transient_timeout_with_incidental_401 = (
+            "Connection timeout to host https://matrix.example.org/_matrix/"
+            "client/v3/sync?timeout=30000&since=s72802_401975_486_12943_11759"
+            "_12_1514_279_0_1_2_1_1"
         )
 
         calls = {"n": 0}
@@ -1365,7 +1379,7 @@ class TestMatrixSyncLoop:
         async def _sync_side_effect(**kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
-                raise Exception(real_502)
+                raise Exception(transient_timeout_with_incidental_401)
             # Second call: stop the loop cleanly after proving the retry
             # happened, without needing a real sync payload.
             adapter._closing = True
@@ -1390,7 +1404,17 @@ class TestMatrixSyncLoop:
 
     @pytest.mark.asyncio
     async def test_sync_loop_stops_on_real_permanent_auth_error(self):
-        """A genuine 401/403 auth failure must stop the loop, not retry forever."""
+        """A genuine 401/403 auth failure must stop the loop, not retry forever.
+
+        Note this fixture is not a discriminating RED/GREEN test between the
+        old and new classifier. The message text contains the word
+        "forbidden", so the old naive substring check also stops the loop
+        here, just for the wrong reason (a keyword match instead of a
+        structured errcode). I kept this test because it proves the loop
+        still stops on a real auth failure after the classifier rewrite, a
+        straightforward regression check, not proof that the fix changed
+        behavior on this specific input.
+        """
         adapter = _make_adapter()
         adapter._closing = False
 

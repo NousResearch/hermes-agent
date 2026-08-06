@@ -64,9 +64,12 @@ class SSHEnvironment(BaseEnvironment):
             pass
         # Reject an existing directory that is not owned by us or is group/
         # world-writable — safer than reusing a pre-planted attacker path.
+        # os.getuid is POSIX-only (AttributeError on Windows); ownership
+        # checks apply where multi-user /tmp planting is real.
         try:
             st = self.control_dir.stat()
-            if st.st_uid != os.getuid():
+            getuid = getattr(os, "getuid", None)
+            if getuid is not None and st.st_uid != getuid():
                 raise RuntimeError(
                     f"SSH control directory {self.control_dir} is not owned by "
                     f"the current user (uid={st.st_uid}); refuse to use a "

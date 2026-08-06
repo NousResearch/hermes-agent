@@ -108,25 +108,26 @@ _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
 def _worker_memory_max_bytes() -> int:
     """Return a finite per-worker cgroup limit without widening host risk.
 
-    An explicit byte override is useful for operators with known workload
-    requirements.  Otherwise retain the tighter of the gateway's current
-    cgroup-v2 ``memory.max`` and half of physical RAM, capped at 4 GiB.  This
-    keeps the sibling worker outside the gateway cgroup while ensuring the
-    worker cannot consume memory up to the enclosing user slice or host limit.
+    The proposed local-memory-guard environment override is honored so this
+    isolation composes with PR #57121 instead of inventing a second knob.
+    Otherwise retain the tighter of the gateway's current cgroup-v2
+    ``memory.max`` and half of physical RAM, capped at 4 GiB.  This keeps the
+    sibling worker outside the gateway cgroup while ensuring the worker cannot
+    consume memory up to the enclosing user slice or host limit.
     """
-    override = os.getenv("HERMES_WORKER_MEMORY_MAX_BYTES", "").strip()
+    override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
     if override:
         try:
-            parsed = int(override)
+            parsed = int(override) * 1024 * 1024
             if parsed >= _MIN_WORKER_MEMORY_MAX_BYTES:
                 return parsed
         except ValueError:
             pass
         logger.warning(
-            "Ignoring invalid HERMES_WORKER_MEMORY_MAX_BYTES=%r; "
-            "expected an integer of at least %d bytes",
+            "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; "
+            "expected an integer representing at least %d MiB",
             override,
-            _MIN_WORKER_MEMORY_MAX_BYTES,
+            _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024),
         )
 
     candidates: List[int] = []

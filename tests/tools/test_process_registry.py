@@ -1793,10 +1793,10 @@ class TestSystemdCgroupIsolation:
         assert argv[-3:] == ["/bin/bash", "-lic", "set +m; codex"]
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
-    def test_worker_memory_limit_accepts_valid_byte_override(self, monkeypatch):
+    def test_worker_memory_limit_honors_local_guard_mb_override(self, monkeypatch):
         import tools.process_registry as pr
 
-        monkeypatch.setenv("HERMES_WORKER_MEMORY_MAX_BYTES", "123456789")
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "123")
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
         argv = pr._build_systemd_scope_argv(
@@ -1804,7 +1804,7 @@ class TestSystemdCgroupIsolation:
             unit_suffix="test",
         )
 
-        assert "MemoryMax=123456789" in argv
+        assert f"MemoryMax={123 * 1024 * 1024}" in argv
 
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch

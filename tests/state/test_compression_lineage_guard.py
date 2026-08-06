@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from hermes_state import SessionDB
@@ -100,6 +102,44 @@ def test_reopen_orphaned_compression_session_fails_closed_with_active_lease(
 
     assert db.reopen_orphaned_compression_session("leased-parent") is False
     assert db.get_session("leased-parent")["end_reason"] == "compression"
+
+
+def test_reopen_orphaned_compression_session_reclaims_expired_lease(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "expired-lease-parent")
+    now = time.time()
+    db._conn.execute(
+        "INSERT INTO compression_locks "
+        "(session_id, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
+        ("expired-lease-parent", "old-compressor", now - 60, now - 30),
+    )
+    db._conn.commit()
+
+    assert db.reopen_orphaned_compression_session("expired-lease-parent") is True
+    assert db.refresh_compression_lock(
+        "expired-lease-parent", "old-compressor"
+    ) is False
+    assert db.get_compression_lock_holder("expired-lease-parent") is None
+
+
+def test_reopen_orphaned_compression_session_loses_to_expired_lease_refresh(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "refreshed-lease-parent")
+    now = time.time()
+    db._conn.execute(
+        "INSERT INTO compression_locks "
+        "(session_id, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
+        ("refreshed-lease-parent", "live-compressor", now - 60, now - 30),
+    )
+    db._conn.commit()
+
+    assert db.refresh_compression_lock(
+        "refreshed-lease-parent", "live-compressor"
+    ) is True
+    assert db.reopen_orphaned_compression_session("refreshed-lease-parent") is False
+    assert db.get_session("refreshed-lease-parent")["end_reason"] == "compression"
 
 
 

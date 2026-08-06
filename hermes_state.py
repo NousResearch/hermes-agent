@@ -3715,18 +3715,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ):
                 return False
 
-            # An expired row is harmless: a publisher must revalidate its lease
-            # before committing, while an active row indicates a handoff may
-            # still be in flight.
-            active_lock = conn.execute(
-                "SELECT 1 FROM compression_locks "
-                "WHERE session_id = ? "
-                "AND (expires_at IS NULL OR expires_at >= ?) LIMIT 1",
-                (session_id, time.time()),
-            ).fetchone()
-            if active_lock is not None:
-                return False
-
             # Treat any direct non-branch/non-delegate/non-tool child as a
             # continuation, regardless of its current ended state. Reopening
             # in that case could create a second live head for one lineage.
@@ -3744,6 +3732,29 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchone()
             if child is not None:
                 return False
+
+            # refresh_compression_lock() deliberately lets an owner revive its
+            # own expired row. Reclaim that row inside this write transaction
+            # before reopening: refresh-first makes the lease active and aborts
+            # recovery; recovery-first deletes the holder identity so a later
+            # refresh cannot resurrect it.
+            now = time.time()
+            lock_row = conn.execute(
+                "SELECT holder, expires_at FROM compression_locks "
+                "WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if lock_row is not None:
+                expires_at = lock_row["expires_at"]
+                if expires_at is None or float(expires_at) >= now:
+                    return False
+                deleted = conn.execute(
+                    "DELETE FROM compression_locks "
+                    "WHERE session_id = ? AND holder = ? AND expires_at = ?",
+                    (session_id, lock_row["holder"], expires_at),
+                )
+                if deleted.rowcount != 1:
+                    return False
 
             updated = conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL "

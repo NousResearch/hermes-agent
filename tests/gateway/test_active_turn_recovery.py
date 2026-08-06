@@ -9,7 +9,7 @@ marker, compare-and-swap cleanup, and promotion into the existing
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -354,6 +354,48 @@ def test_clean_startup_discards_orphan_markers_without_resuming(tmp_path):
     assert recovered.resume_pending is False
     assert recovered.active_turn_token is None
     assert recovered.active_turn_started_at is None
+
+
+@pytest.mark.asyncio
+async def test_clean_shutdown_marker_is_not_consumed_when_discard_fails(tmp_path):
+    marker = tmp_path / ".clean_shutdown"
+    marker.write_text("clean", encoding="utf-8")
+    runner = object.__new__(GatewayRunner)
+    async_store = MagicMock()
+    async_store.discard_active_turn_markers = AsyncMock(
+        side_effect=OSError("state store unavailable")
+    )
+
+    with patch.object(
+        GatewayRunner,
+        "async_session_store",
+        new_callable=PropertyMock,
+        return_value=async_store,
+    ):
+        with pytest.raises(OSError, match="state store unavailable"):
+            await runner._consume_clean_shutdown_marker(marker)
+
+    assert marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_clean_shutdown_marker_is_unlinked_after_durable_discard(tmp_path):
+    marker = tmp_path / ".clean_shutdown"
+    marker.write_text("clean", encoding="utf-8")
+    runner = object.__new__(GatewayRunner)
+    async_store = MagicMock()
+    async_store.discard_active_turn_markers = AsyncMock(return_value=2)
+
+    with patch.object(
+        GatewayRunner,
+        "async_session_store",
+        new_callable=PropertyMock,
+        return_value=async_store,
+    ):
+        discarded = await runner._consume_clean_shutdown_marker(marker)
+
+    assert discarded == 2
+    assert not marker.exists()
 
 
 @pytest.mark.asyncio

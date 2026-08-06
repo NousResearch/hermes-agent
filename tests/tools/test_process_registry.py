@@ -898,6 +898,54 @@ class TestCheckpoint:
             recovered = registry.recover_from_checkpoint()
             assert recovered == 0
 
+    def test_recover_dead_wrapper_retries_unreaped_systemd_scope(
+        self, registry, tmp_path, monkeypatch
+    ):
+        checkpoint = tmp_path / "procs.json"
+        entry = {
+            "session_id": "proc_dead_scope",
+            "command": "daemonize",
+            "pid": 999999999,
+            "pid_scope": "host",
+            "host_start_time": 123.0,
+            "systemd_unit": "hermes-worker-proc_dead_scope.scope",
+        }
+        checkpoint.write_text(json.dumps([entry]))
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: False)
+        monkeypatch.setattr(registry, "_is_host_pid_alive", lambda *_args: False)
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), patch(
+            "tools.process_registry._stop_systemd_unit", return_value=False
+        ) as stop_unit:
+            assert registry.recover_from_checkpoint() == 0
+
+        stop_unit.assert_called_once_with(entry["systemd_unit"])
+        assert json.loads(checkpoint.read_text()) == [entry]
+
+    def test_recover_dead_wrapper_drops_reaped_systemd_scope(
+        self, registry, tmp_path, monkeypatch
+    ):
+        checkpoint = tmp_path / "procs.json"
+        entry = {
+            "session_id": "proc_dead_scope",
+            "command": "daemonize",
+            "pid": 999999999,
+            "pid_scope": "host",
+            "host_start_time": 123.0,
+            "systemd_unit": "hermes-worker-proc_dead_scope.scope",
+        }
+        checkpoint.write_text(json.dumps([entry]))
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: False)
+        monkeypatch.setattr(registry, "_is_host_pid_alive", lambda *_args: False)
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), patch(
+            "tools.process_registry._stop_systemd_unit", return_value=True
+        ) as stop_unit:
+            assert registry.recover_from_checkpoint() == 0
+
+        stop_unit.assert_called_once_with(entry["systemd_unit"])
+        assert json.loads(checkpoint.read_text()) == []
+
 
     def test_recovery_skips_explicit_sandbox_backed_entries(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
@@ -1848,17 +1896,49 @@ class TestSystemdCgroupIsolation:
             f"hermes-worker-{session.id}-pipe-fallback.scope"
         )
 
+    def test_pty_spawn_failure_does_not_fallback_when_scope_reap_fails(
+        self, registry, monkeypatch
+    ):
+        """Do not launch a duplicate command while the failed PTY scope may live."""
+        from ptyprocess import PtyProcess
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch.object(
+            PtyProcess,
+            "spawn",
+            side_effect=RuntimeError("PTY wrapper failed after scope creation"),
+        ), patch("subprocess.Popen") as pipe_spawn, patch(
+            "tools.process_registry._stop_systemd_unit", return_value=False
+        ) as stop_unit:
+            with pytest.raises(RuntimeError, match="could not be reaped"):
+                registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        stop_unit.assert_called_once()
+        pipe_spawn.assert_not_called()
+
     def test_worker_memory_limit_honors_local_guard_mb_override(self, monkeypatch):
         import tools.process_registry as pr
 
         monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "123")
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
-        argv = pr._build_systemd_scope_argv(
-            ["/bin/bash", "-lc", "true"],
-            unit_suffix="test",
-        )
+        with patch("tools.process_registry.logger.warning") as warning:
+            argv = pr._build_systemd_scope_argv(
+                ["/bin/bash", "-lc", "true"],
+                unit_suffix="test",
+            )
 
+        warning.assert_not_called()
         assert f"MemoryMax={123 * 1024 * 1024}" in argv
 
     def test_worker_memory_limit_caps_oversized_local_guard_override(

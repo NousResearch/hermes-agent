@@ -10778,6 +10778,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 logger.debug("Failed to cancel gateway loop floor timer", exc_info=True)
 
+    async def _consume_clean_shutdown_marker(self, marker_path) -> int:
+        """Discard orphan turn markers before consuming a clean-exit receipt.
+
+        If either persistence or marker removal fails, startup must fail closed.
+        Continuing with the old receipt would let a later unclean exit masquerade
+        as clean and discard genuinely interrupted turns.
+        """
+        discarded = await self.async_session_store.discard_active_turn_markers()
+        marker_path.unlink()
+        return discarded
+
     async def _recover_unclean_sessions(self) -> tuple[int, int]:
         """Recover exact active turns, then run the legacy recency fallback."""
         exact = 0
@@ -11146,18 +11157,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _clean_marker.exists():
             logger.info("Previous gateway exited cleanly — skipping session suspension")
             try:
-                discarded = await self.async_session_store.discard_active_turn_markers()
-                if discarded:
-                    logger.info(
-                        "Discarded %d orphan active-turn marker(s) after clean shutdown",
-                        discarded,
-                    )
+                discarded = await self._consume_clean_shutdown_marker(_clean_marker)
             except Exception as exc:
-                logger.warning("Clean-start marker cleanup failed: %s", exc)
-            try:
-                _clean_marker.unlink()
-            except Exception:
-                pass
+                logger.error(
+                    "Clean-start marker cleanup failed; refusing startup so the "
+                    "clean-exit receipt cannot mask a later unclean exit: %s",
+                    exc,
+                )
+                raise RuntimeError("clean-start recovery cleanup failed") from exc
+            if discarded:
+                logger.info(
+                    "Discarded %d orphan active-turn marker(s) after clean shutdown",
+                    discarded,
+                )
         else:
             exact, fallback = await self._recover_unclean_sessions()
             recovered = exact + fallback

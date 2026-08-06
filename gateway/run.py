@@ -9033,55 +9033,56 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             cooldown_key = shutdown_notice.destination_key(
                 platform.value, home.chat_id, home.thread_id
             )
-            if not shutdown_notice.should_send_home_notice(
+            with shutdown_notice.home_notice_admission(
                 cooldown_key,
                 cooldown_seconds=getattr(
                     self.config, "shutdown_notification_cooldown_seconds", 0
                 ),
-            ):
-                logger.info(
-                    "Home-channel shutdown notification suppressed for %s:%s "
-                    "(sent within the last %ss)",
-                    platform.value,
-                    home.chat_id,
-                    getattr(self.config, "shutdown_notification_cooldown_seconds", 0),
-                )
-                continue
+            ) as admission:
+                if not admission.allowed:
+                    logger.info(
+                        "Home-channel shutdown notification suppressed for %s:%s "
+                        "(sent within the last %ss)",
+                        platform.value,
+                        home.chat_id,
+                        getattr(self.config, "shutdown_notification_cooldown_seconds", 0),
+                    )
+                    continue
 
-            try:
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    home.chat_id,
-                    home.thread_id,
-                    adapter=adapter,
-                )
-                if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
-                else:
-                    result = await adapter.send(str(home.chat_id), msg)
-                if result is not None and getattr(result, "success", True) is False:
+                try:
+                    metadata = self._thread_metadata_for_target(
+                        platform,
+                        home.chat_id,
+                        home.thread_id,
+                        adapter=adapter,
+                    )
+                    if metadata:
+                        result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    else:
+                        result = await adapter.send(str(home.chat_id), msg)
+                    if result is not None and getattr(result, "success", True) is False:
+                        logger.debug(
+                            "Failed to send shutdown notification to home channel %s:%s: %s",
+                            platform.value,
+                            home.chat_id,
+                            getattr(result, "error", "send returned success=False"),
+                        )
+                        continue
+
+                    notified.add(dedup_key)
+                    admission.record_success()
+                    logger.info(
+                        "Sent shutdown notification to home channel %s:%s",
+                        platform.value,
+                        home.chat_id,
+                    )
+                except Exception as e:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
                         platform.value,
                         home.chat_id,
-                        getattr(result, "error", "send returned success=False"),
+                        e,
                     )
-                    continue
-
-                notified.add(dedup_key)
-                shutdown_notice.record_home_notice(cooldown_key)
-                logger.info(
-                    "Sent shutdown notification to home channel %s:%s",
-                    platform.value,
-                    home.chat_id,
-                )
-            except Exception as e:
-                logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s",
-                    platform.value,
-                    home.chat_id,
-                    e,
-                )
 
     async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():

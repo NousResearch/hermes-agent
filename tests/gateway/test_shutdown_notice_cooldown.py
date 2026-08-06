@@ -12,6 +12,8 @@ These tests pin two properties:
     genuine restart after the window, and the disabled/misconfigured paths.
 """
 import asyncio
+import multiprocessing
+import time
 from pathlib import Path
 
 import pytest
@@ -48,6 +50,23 @@ def _runner_with_home(cooldown: int = 300, chat_id: str = "8737458794"):
     return runner, adapter
 
 
+def _concurrent_admission_worker(home, key, ready, start, results):
+    """Compete for one admission from a separate OS process."""
+    ready.put(True)
+    start.wait(10)
+    with shutdown_notice.home_notice_admission(
+        key,
+        cooldown_seconds=300,
+        now=100.0,
+        home=Path(home),
+    ) as admission:
+        results.put(admission.allowed)
+        if admission.allowed:
+            # Keep the lock held across the simulated awaited send.
+            time.sleep(0.15)
+            admission.record_success(now=100.0)
+
+
 # ── The bug: repeated gateway processes re-broadcast ────────────────────
 
 
@@ -68,6 +87,45 @@ async def test_second_process_suppressed_within_cooldown():
     assert adapter_b.sent == [], (
         "a second gateway process inside the cooldown window re-broadcast "
         "the shutdown notice — the durable guard did not hold"
+    )
+
+
+def test_concurrent_processes_have_single_admission(tmp_path):
+    """Concurrent gateway processes cannot both pass the cooldown check."""
+    ctx = multiprocessing.get_context("spawn")
+    ready = ctx.Queue()
+    start = ctx.Event()
+    results = ctx.Queue()
+    key = shutdown_notice.destination_key("telegram", "chat:a:b", "thread:c")
+    processes = [
+        ctx.Process(
+            target=_concurrent_admission_worker,
+            args=(str(tmp_path), key, ready, start, results),
+        )
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    try:
+        for _ in processes:
+            assert ready.get(timeout=15) is True
+        start.set()
+        decisions = sorted(results.get(timeout=15) for _ in processes)
+    finally:
+        start.set()
+        for process in processes:
+            process.join(timeout=15)
+            if process.is_alive():
+                process.terminate()
+                process.join()
+    assert all(process.exitcode == 0 for process in processes)
+    assert decisions == [False, True]
+
+
+def test_destination_key_is_collision_free():
+    """Structured keys keep colon-containing IDs distinct."""
+    assert shutdown_notice.destination_key("telegram", "a:b", "c") != (
+        shutdown_notice.destination_key("telegram", "a", "b:c")
     )
 
 
@@ -231,3 +289,29 @@ def test_malformed_cooldown_falls_back_to_default(bad):
     """A typo must never prevent the gateway from starting."""
     cfg = GatewayConfig.from_dict({"shutdown_notification_cooldown_seconds": bad})
     assert cfg.shutdown_notification_cooldown_seconds == 300
+
+
+def test_cooldown_default_is_in_shared_config_defaults():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["gateway"]["shutdown_notification_cooldown_seconds"] == 300
+
+
+def test_cooldown_read_from_real_yaml_loader(tmp_path, monkeypatch):
+    """The user-facing config.yaml path must reach GatewayConfig.from_dict."""
+    from gateway.config import load_gateway_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "gateway:\n  shutdown_notification_cooldown_seconds: 45\n",
+        encoding="utf-8",
+    )
+    assert load_gateway_config().shutdown_notification_cooldown_seconds == 45
+
+    config_path.write_text(
+        "gateway:\n  shutdown_notification_cooldown_seconds: 45\n"
+        "shutdown_notification_cooldown_seconds: 60\n",
+        encoding="utf-8",
+    )
+    assert load_gateway_config().shutdown_notification_cooldown_seconds == 60

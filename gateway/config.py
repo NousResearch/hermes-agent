@@ -1430,6 +1430,20 @@ def load_gateway_config() -> GatewayConfig:
                         "systemd_watchdog_seconds"
                     ]
 
+            # Shutdown-notice cooldown: top-level wins; nested gateway.* is the
+            # fallback shape written by ``hermes config set``.
+            if "shutdown_notification_cooldown_seconds" in yaml_cfg:
+                gw_data["shutdown_notification_cooldown_seconds"] = yaml_cfg[
+                    "shutdown_notification_cooldown_seconds"
+                ]
+            elif (
+                isinstance(gateway_section, dict)
+                and "shutdown_notification_cooldown_seconds" in gateway_section
+            ):
+                gw_data["shutdown_notification_cooldown_seconds"] = gateway_section[
+                    "shutdown_notification_cooldown_seconds"
+                ]
+
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
 

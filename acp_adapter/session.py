@@ -98,6 +98,16 @@ def _updated_at_sort_key(value: Any) -> float:
             return float("-inf")
 
 
+def _wants_claude_subscription(provider: Any) -> bool:
+    """True when *provider* names the Claude subscription runtime."""
+    try:
+        from hermes_cli.models import is_claude_subscription_slug
+
+        return is_claude_subscription_slug(provider if isinstance(provider, str) else None)
+    except Exception:
+        return False
+
+
 def _acp_stderr_print(*args, **kwargs) -> None:
     """Best-effort human-readable output sink for ACP stdio sessions.
 
@@ -230,10 +240,38 @@ class SessionManager:
         # Attempt to restore from database.
         return self._restore(session_id)
 
+    @staticmethod
+    def close_agent(agent: Any) -> None:
+        """Release an agent's process-level resources. Never raises.
+
+        ACP is a long-lived daemon: dropping an agent on the floor used to be
+        merely wasteful, but a ``claude_agent_sdk`` agent owns an OS thread and
+        a Claude Code subprocess, so an unclosed one leaks both for the life of
+        the daemon. Every path that discards an agent goes through here.
+        """
+        if agent is None:
+            return
+        close = getattr(agent, "close", None)
+        if not callable(close):
+            return
+        try:
+            close()
+        except Exception:
+            logger.debug("Failed to close ACP agent", exc_info=True)
+
+    def replace_agent(self, state: Any, agent: Any) -> None:
+        """Swap *state*'s agent for *agent*, closing the one being discarded."""
+        previous = getattr(state, "agent", None)
+        state.agent = agent
+        if previous is not agent:
+            self.close_agent(previous)
+
     def remove_session(self, session_id: str) -> bool:
         """Remove a session from memory and database. Returns True if it existed."""
         with self._lock:
-            existed = self._sessions.pop(session_id, None) is not None
+            removed = self._sessions.pop(session_id, None)
+        existed = removed is not None
+        self.close_agent(getattr(removed, "agent", None))
         db_existed = self._delete_persisted(session_id)
         if existed or db_existed:
             _clear_task_cwd(session_id)
@@ -357,8 +395,11 @@ class SessionManager:
     def cleanup(self) -> None:
         """Remove all sessions (memory and database) and clear task-specific cwd overrides."""
         with self._lock:
+            states = list(self._sessions.values())
             session_ids = list(self._sessions.keys())
             self._sessions.clear()
+        for state in states:
+            self.close_agent(getattr(state, "agent", None))
         for session_id in session_ids:
             _clear_task_cwd(session_id)
             self._delete_persisted(session_id)
@@ -645,7 +686,24 @@ class SessionManager:
                 }
             )
         except Exception:
+            if _wants_claude_subscription(requested_provider or config_provider):
+                # ACP is non-interactive. Swallowing the error here would build
+                # a chat_completions agent with an empty key and the user would
+                # first hear about it as a mid-turn 401 from the wrong provider.
+                # The Claude credential errors are actionable ("Install Claude
+                # Code, then run `claude auth login`"), so surface them now.
+                raise
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
+
+        if kwargs.get("api_mode") == "claude_agent_sdk":
+            # Fail fast rather than at the first turn: the gate, the optional
+            # extra, and the login are three independent problems with three
+            # different fixes, and each preflight message names its own.
+            from agent.claude_runtime import claude_runtime_preflight
+
+            preflight_error = claude_runtime_preflight(config)
+            if preflight_error:
+                raise RuntimeError(preflight_error)
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)

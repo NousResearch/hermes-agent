@@ -43,9 +43,16 @@ class AnthropicProfile(ProviderProfile):
 
 anthropic = AnthropicProfile(
     name="anthropic",
-    aliases=("claude", "claude-oauth", "claude-code"),
+    # API-key only. The `claude-code` / `claude-oauth` aliases and the Claude
+    # subscription OAuth credential belong to the `claude-code` provider, which
+    # routes a Claude subscription through the official Claude Agent SDK
+    # instead of billing it as extra usage on this endpoint.
+    aliases=("claude",),
     api_mode="anthropic_messages",
-    env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
+    display_name="Anthropic API",
+    description="Anthropic API (Claude models, billed per token with an API key)",
+    signup_url="https://console.anthropic.com/settings/keys",
+    env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
     base_url="https://api.anthropic.com",
     auth_type="api_key",
     default_aux_model="claude-haiku-4-5-20251001",

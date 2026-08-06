@@ -148,6 +148,14 @@ dependencies = [
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
+# Claude subscription via the official Agent SDK (provider "claude-code",
+# api_mode "claude_agent_sdk"). Range-pinned per the pre-1.0 rule in
+# AGENTS.md rather than exact-pinned like its neighbours, because the SDK
+# tracks the Claude CLI's release cadence and a floor+ceiling is what the
+# policy prescribes for 0.x. Deliberately NOT in [all]: the platform wheels
+# are ~72-82 MB each (they bundle the Claude executable), so every fresh
+# install would pay for a runtime that ships default-off.
+claude-code = ["claude-agent-sdk>=0.2.128,<0.4"]
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]

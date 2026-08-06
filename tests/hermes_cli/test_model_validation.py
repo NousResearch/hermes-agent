@@ -89,7 +89,9 @@ class TestNormalizeProvider:
 
 class TestProviderLabel:
     def test_known_labels_and_auto(self):
-        assert provider_label("anthropic") == "Anthropic"
+        # "Anthropic API", not bare "Anthropic": the label must not read as the
+        # Claude subscription path, which is now its own provider.
+        assert provider_label("anthropic") == "Anthropic API"
         assert provider_label("kimi") == "Kimi / Kimi Coding Plan"
         assert provider_label("stepfun") == "StepFun Step Plan"
         assert provider_label("copilot") == "GitHub Copilot"

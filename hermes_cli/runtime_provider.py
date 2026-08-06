@@ -37,6 +37,11 @@ from hermes_cli.auth import (
     resolve_external_process_provider_credentials,
     has_usable_secret,
 )
+from hermes_cli.claude_code import (
+    CLAUDE_CODE_API_MODE,
+    CLAUDE_CODE_BASE_URL,
+    CLAUDE_CODE_PROVIDER_ID,
+)
 from hermes_cli.config import (
     get_compatible_custom_providers,
     load_config,
@@ -1986,6 +1991,28 @@ def resolve_runtime_provider(
                 "source": creds.get("source", "oauth"),
                 "requested_provider": requested_provider,
             }
+
+    if provider == CLAUDE_CODE_PROVIDER_ID:
+        # The Claude subscription runtime. The credential lookup is called for
+        # its *validation* only — it raises an actionable AuthError when the
+        # `claude` CLI is missing — because the bundle it returns deliberately
+        # carries no credential: the Agent SDK resolves the user's own login.
+        # Every non-interactive surface (cron, ACP, batch, delegation) reaches
+        # the runtime through here, so without this branch they fall back to
+        # `anthropic` and silently resume the pre-SDK direct-OAuth billing path.
+        creds = resolve_external_process_provider_credentials(provider)
+        return {
+            "provider": CLAUDE_CODE_PROVIDER_ID,
+            "api_mode": CLAUDE_CODE_API_MODE,
+            "base_url": CLAUDE_CODE_BASE_URL,
+            # Empty by contract, not by accident — see hermes_cli/auth.py.
+            "api_key": "",
+            "credentials_owner": creds.get("credentials_owner", "claude-agent-sdk"),
+            "command": creds.get("command", ""),
+            "args": [],
+            "source": creds.get("source", "claude_agent_sdk"),
+            "requested_provider": requested_provider,
+        }
 
     if provider == "copilot-acp":
         creds = resolve_external_process_provider_credentials(provider)

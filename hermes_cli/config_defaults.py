@@ -3010,6 +3010,20 @@ DEFAULT_CONFIG = {
         "region": "global",
     },
 
+    # "Claude subscription via Agent SDK" runtime (provider "claude-code",
+    # api_mode "claude_agent_sdk"). A top-level root rather than a key under
+    # `model` because DEFAULT_CONFIG's `model` is a plain string here (only
+    # cli.py's CLI defaults shape it as a dict), so a nested key would be
+    # invisible to load_config() and to the gateway's raw-YAML reader.
+    # Read through hermes_cli/claude_subscription.py, never inline.
+    "claude_subscription": {
+        # Default-off pending written policy clearance from Anthropic; see
+        # docs/design/claude-subscription-via-agent-sdk.md. Flipping this on
+        # is only sanctioned for private validation against a
+        # developer-controlled, consenting Claude account.
+        "enabled": False,
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 33,
 }

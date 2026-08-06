@@ -16,6 +16,12 @@ def detect_provider() -> Optional[str]:
     credential. Without this, ACP sessions for Entra-configured Foundry
     deployments silently default to ``"openrouter"`` and the ACP auth
     handshake rejects the legitimate provider.
+
+    Also treats a provider that *owns its own credentials* as configured. The
+    Claude subscription runtime returns ``api_key: ""`` by contract — the Agent
+    SDK resolves the user's own ``claude`` login and Hermes holds nothing — so
+    a key-presence test reads a correctly configured account as unconfigured
+    and the handshake rejects it.
     """
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -26,11 +32,18 @@ def detect_provider() -> Optional[str]:
             return None
         is_string_key = isinstance(api_key, str) and api_key.strip()
         is_callable_provider = callable(api_key) and not isinstance(api_key, str)
-        if is_string_key or is_callable_provider:
+        if is_string_key or is_callable_provider or owns_its_own_credentials(runtime):
             return provider.strip().lower()
     except Exception:
         return None
     return None
+
+
+def owns_its_own_credentials(runtime: dict) -> bool:
+    """True when a resolved runtime deliberately exposes no API key."""
+    if str(runtime.get("credentials_owner") or "").strip() == "claude-agent-sdk":
+        return True
+    return str(runtime.get("api_mode") or "").strip() == "claude_agent_sdk"
 
 
 def has_provider() -> bool:

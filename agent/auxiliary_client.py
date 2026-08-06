@@ -334,7 +334,11 @@ _PROVIDER_ALIASES = {
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
-    "claude-code": "anthropic",
+    # These take effect only once the Claude subscription gate is open;
+    # _normalize_aux_provider() below short-circuits `claude-code` /
+    # `claude-oauth` to anthropic while it is closed.
+    "claude-oauth": "claude-code",
+    "claude-subscription": "claude-code",
     "github": "copilot",
     "github-copilot": "copilot",
     "github-model": "copilot",
@@ -365,7 +369,12 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
             normalized = main_prov
         else:
             return "custom"
-    return _PROVIDER_ALIASES.get(normalized, normalized)
+    try:
+        from hermes_cli.claude_code import legacy_alias_target
+        legacy = legacy_alias_target(normalized)
+    except Exception:
+        legacy = None
+    return legacy or _PROVIDER_ALIASES.get(normalized, normalized)
 
 
 # Sentinel: when returned by _fixed_temperature_for_model(), callers must
@@ -3132,6 +3141,96 @@ def _try_azure_foundry(
     return client, final_model
 
 
+def _is_claude_subscription_provider(provider: Optional[str]) -> bool:
+    """True when *provider* is the Claude subscription provider (Agent SDK).
+
+    Never true for ``anthropic``: the two are separate providers on purpose
+    (``docs/design/claude-subscription-via-agent-sdk.md`` § 1), and while the
+    subscription gate is closed ``_normalize_aux_provider`` has already rewritten
+    ``claude-code`` to ``anthropic`` before resolution reaches here.
+    """
+    from agent.claude_auxiliary import is_claude_subscription_provider
+
+    return is_claude_subscription_provider(provider)
+
+
+def _claude_subscription_is_active_main_provider() -> bool:
+    """True when the user's *main* runtime is the Claude subscription.
+
+    Used to keep auxiliary work off the pre-SDK direct-OAuth path.  Reads the
+    resolved main provider rather than the gate alone: a user can have the gate
+    open and still be running some other provider, and their explicitly
+    configured Anthropic API key must keep working untouched.
+    """
+    try:
+        return _is_claude_subscription_provider(_read_main_provider())
+    except Exception:
+        return False
+
+
+def _resolve_claude_subscription_client(
+    *,
+    model: Optional[str],
+    main_runtime: Optional[Dict[str, Any]],
+    async_mode: bool,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Auxiliary client for the Claude subscription runtime (Agent SDK).
+
+    ``resolve_external_process_provider_credentials("claude-code")`` returns
+    ``api_key: ""`` with ``credentials_owner: "claude-agent-sdk"`` — deliberately
+    no credential material, because Hermes holds none.  The only coherent thing
+    to do with that bundle is to *not* build an HTTP client: the one-shot SDK
+    adapter makes the call and the SDK resolves the user's own login.
+
+    Returns ``(None, None)`` on any failure so the caller's normal
+    "provider unavailable" handling applies — but note the companion guard in
+    :func:`_try_anthropic`, which stops that fallback from landing on the
+    pre-SDK direct-OAuth path.
+    """
+    from agent.claude_auxiliary import (
+        CLAUDE_CODE_PROVIDER_ID,
+        build_claude_auxiliary_client,
+    )
+    from hermes_cli.auth import resolve_external_process_provider_credentials
+
+    try:
+        creds = resolve_external_process_provider_credentials(CLAUDE_CODE_PROVIDER_ID)
+    except Exception as exc:
+        # Missing `claude` CLI is the common case; it carries its own
+        # actionable message ("Install Claude Code, then run `claude auth login`").
+        logger.warning(
+            "resolve_provider_client: claude-code auxiliary unavailable: %s", exc
+        )
+        return None, None
+
+    if str(creds.get("api_key") or "").strip():
+        # A non-empty key here would mean something upstream started handing
+        # Hermes a Claude credential. Refuse rather than forward it.
+        logger.error(
+            "resolve_provider_client: claude-code returned credential material; "
+            "refusing to use it (the SDK owns Claude auth)."
+        )
+        return None, None
+
+    final_model = _normalize_resolved_model(
+        model
+        or (main_runtime.get("model") if main_runtime else None)
+        or _read_main_model_for_aux(),
+        CLAUDE_CODE_PROVIDER_ID,
+    )
+    try:
+        client = build_claude_auxiliary_client(
+            final_model or "", async_mode=async_mode
+        )
+    except ImportError as exc:
+        logger.warning("resolve_provider_client: %s", exc)
+        return None, None
+    logger.debug(
+        "resolve_provider_client: claude-code one-shot SDK (%s)", final_model
+    )
+    return client, final_model
+
+
 def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -3156,6 +3255,26 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
         token = explicit_api_key or resolve_anthropic_token()
     if not token:
         return None, None
+
+    # A user on the Claude subscription runtime opted out of the direct-OAuth
+    # path entirely. resolve_anthropic_token() still finds their Claude login
+    # (env var, credential file, pool entry), so without this guard any
+    # auxiliary fallback would quietly resume billing their plan's extra-usage
+    # meter — the exact behaviour the SDK runtime exists to remove. An explicit
+    # ANTHROPIC_API_KEY is unaffected: this only refuses OAuth-shaped tokens.
+    try:
+        from agent.anthropic_adapter import _is_oauth_token as _is_oauth_probe
+
+        if _is_oauth_probe(token) and _claude_subscription_is_active_main_provider():
+            logger.info(
+                "Auxiliary client: refusing the Claude OAuth token — this account "
+                "runs on the Claude subscription runtime (Agent SDK). Set an "
+                "explicit auxiliary provider in config.yaml to use a different "
+                "backend for side tasks."
+            )
+            return None, None
+    except ImportError:
+        pass
 
     # Allow base URL override from config.yaml model.base_url, but only when:
     #   1. the configured provider is anthropic (otherwise a non-Anthropic
@@ -5779,6 +5898,15 @@ def resolve_provider_client(
                 else (client, final_model))
 
     if pconfig.auth_type == "external_process":
+        if _is_claude_subscription_provider(provider):
+            # Handled ahead of the shared credential lookup below because the
+            # Claude subscription has no credential to look up — see
+            # _resolve_claude_subscription_client for why that is the point.
+            return _resolve_claude_subscription_client(
+                model=model,
+                main_runtime=main_runtime,
+                async_mode=async_mode,
+            )
         creds = resolve_external_process_provider_credentials(provider)
         final_model = _normalize_resolved_model(
             model
@@ -7606,13 +7734,24 @@ def _aux_stream_total_ceiling(effective_timeout: Optional[float]) -> float:
 def _client_streams_internally(client: Any) -> bool:
     """Wire adapters that consume a stream inside .create() already tick the
     progress hook themselves (Codex per SSE event, Anthropic per stream
-    event); Bedrock's Converse shim cannot stream at all. None of them
+    event); Bedrock's Converse shim cannot stream at all, and the Claude
+    subscription one-shot adapter returns a complete response. None of them
     accept chat-completions ``stream=True`` semantics from us."""
-    return isinstance(client, (
+    internal_types: List[type] = [
         CodexAuxiliaryClient,
         AnthropicAuxiliaryClient,
         BedrockAuxiliaryClient,
-    ))
+    ]
+    try:
+        from agent.claude_auxiliary import (
+            AsyncClaudeAuxiliaryClient,
+            ClaudeAuxiliaryClient,
+        )
+
+        internal_types.extend([ClaudeAuxiliaryClient, AsyncClaudeAuxiliaryClient])
+    except ImportError:  # pragma: no cover - module ships with core
+        pass
+    return isinstance(client, tuple(internal_types))
 
 
 def _is_streaming_rejected_error(exc: Exception) -> bool:

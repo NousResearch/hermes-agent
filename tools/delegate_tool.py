@@ -3476,6 +3476,25 @@ def _resolve_child_credential_pool(
     return None
 
 
+# api_mode values whose provider holds no credential Hermes could check for.
+_CREDENTIAL_LESS_API_MODES = frozenset({"claude_agent_sdk"})
+
+
+def _provider_owns_its_own_credentials(runtime: Dict[str, Any]) -> bool:
+    """True when a resolved runtime has no API key *by design*.
+
+    The Claude subscription provider is the case that matters: the Agent SDK
+    resolves the user's own ``claude`` login and Hermes holds nothing. An empty
+    ``api_key`` there is the contract (``hermes_cli/auth.py`` —
+    ``credentials_owner: "claude-agent-sdk"``), not a misconfiguration, so the
+    "no API key" guard below must not reject it. Every other provider keeps
+    failing loudly on a missing key.
+    """
+    if str(runtime.get("credentials_owner") or "").strip() == "claude-agent-sdk":
+        return True
+    return str(runtime.get("api_mode") or "").strip() in _CREDENTIAL_LESS_API_MODES
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -3585,7 +3604,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         ) from exc
 
     api_key = runtime.get("api_key", "")
-    if not api_key:
+    if not api_key and not _provider_owns_its_own_credentials(runtime):
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
             f"Set the appropriate environment variable or run 'hermes auth'."

@@ -267,7 +267,30 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("Shutting down (KeyboardInterrupt)")
     except Exception:
         logger.exception("ACP agent crashed")
+        _close_live_agents(agent)
         sys.exit(1)
+    _close_live_agents(agent)
+
+
+def _close_live_agents(acp_agent) -> None:
+    """Close every live session agent on the way out. Never raises.
+
+    A session agent can own an OS thread and a provider subprocess (the Claude
+    Agent SDK runtime owns both). Dropping them at process exit leaves the child
+    to be killed rather than shut down, so release them explicitly.
+    """
+    manager = getattr(acp_agent, "session_manager", None)
+    if manager is None:
+        return
+    close_agent = getattr(manager, "close_agent", None)
+    if not callable(close_agent):
+        return
+    try:
+        states = list(getattr(manager, "_sessions", {}).values())
+    except Exception:
+        return
+    for state in states:
+        close_agent(getattr(state, "agent", None))
 
 
 if __name__ == "__main__":

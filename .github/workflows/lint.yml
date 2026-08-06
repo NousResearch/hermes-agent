@@ -170,3 +170,92 @@ jobs:
 
       - name: Run footgun checker
         run: python scripts/check-windows-footguns.py --all
+
+  claude-boundary:
+    # Claude subscription boundary: Hermes must not read Claude credentials,
+    # send a Claude OAuth token to api.anthropic.com, or impersonate Claude
+    # Code (spoofed user-agent / x-app / beta flags / prompt rewriting).
+    # Subscription inference goes through the official claude-agent-sdk.
+    # See scripts/check_claude_boundary.py for the rules and the allow-list.
+    name: Claude boundary (blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Claude boundary checker
+        run: python scripts/check_claude_boundary.py
+
+  claude-sdk-integration:
+    # The sanitized transport subclasses the SDK's SubprocessCLITransport and
+    # overrides a private connect(). Nothing else in CI installs the optional
+    # `claude-code` extra, so every requires_sdk / importorskip test silently
+    # skips and that override — the single mechanism the billing guarantee
+    # rests on — is validated by nothing against a >=0.2.128,<0.4 range pin.
+    # An SDK patch release that refactors connect() would break it silently.
+    # This job installs the real extra and runs those tests. It makes no
+    # network calls to Anthropic and needs no credentials: every test here
+    # asserts on the environment and argv handed to the spawn, never on a
+    # model response.
+    name: Claude Agent SDK integration (blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the claude-code extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install 'claude-agent-sdk>=0.2.128,<0.4'
+
+      - name: Assert the SDK internals the transport depends on still exist
+        # Fail with a precise message when an SDK release moves them, rather
+        # than as an opaque error inside a test.
+        run: |
+          python - <<'PROBE'
+          import inspect
+          from claude_agent_sdk._internal.transport import subprocess_cli as s
+          missing = [n for n in ("SubprocessCLITransport",) if not hasattr(s, n)]
+          t = getattr(s, "SubprocessCLITransport", None)
+          if t is not None and not hasattr(t, "connect"):
+              missing.append("SubprocessCLITransport.connect")
+          if missing:
+              raise SystemExit(
+                  "claude-agent-sdk moved internals the sanitized transport "
+                  "depends on: " + ", ".join(missing)
+              )
+          src = inspect.getsource(t.connect)
+          if "os.environ" not in src:
+              raise SystemExit(
+                  "SubprocessCLITransport.connect() no longer reads os.environ; "
+                  "agent/transports/claude_sanitized_transport.py overrides it "
+                  "to sanitize the child environment and must be re-verified."
+              )
+          print("SDK internals OK")
+          PROBE
+
+      - name: Run the SDK-gated tests
+        env:
+          # The suite must never resolve a real credential; these also exercise
+          # the refusal path the way a polluted developer shell would.
+          ANTHROPIC_API_KEY: ""
+        run: |
+          python -m pytest -q \
+            tests/agent/test_claude_billing_source.py \
+            tests/agent/test_claude_session_store.py \
+            tests/agent/test_claude_runtime.py \
+            tests/agent/test_claude_agent_session.py \
+            tests/agent/test_claude_tool_bridge.py

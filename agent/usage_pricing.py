@@ -1003,6 +1003,11 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
+    if provider_name == "claude-code" or base == "claude-sdk://subscription":
+        # Claude subscription via the Agent SDK: turns draw on the user's plan
+        # limits, the same bucket as openai-codex. The SDK reports an estimated
+        # total_cost_usd per turn; it is informational, not an invoice.
+        return BillingRoute(provider="claude-code", model=model.split("/")[-1], base_url=base_url or "", billing_mode="subscription_included")
     if provider_name == "openrouter" or base_url_host_matches(base_url or "", "openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
     if provider_name == "nous" or base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):

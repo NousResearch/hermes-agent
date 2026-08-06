@@ -2985,6 +2985,23 @@ class AIAgent:
                         exc_info=True,
                     )
 
+        # The Claude Agent SDK likewise owns its model/tool loop inside a CLI
+        # subprocess. Its interrupt is only half the sequence: the runtime
+        # keeps draining the interrupted response until the SDK's terminal
+        # ResultMessage lands, because issuing the next query() before that
+        # drain completes wedges the session.
+        if getattr(self, "api_mode", None) == "claude_agent_sdk":
+            _claude_session = getattr(self, "_claude_session", None)
+            _claude_interrupt = getattr(_claude_session, "request_interrupt", None)
+            if callable(_claude_interrupt):
+                try:
+                    _claude_interrupt()
+                except Exception:
+                    logger.debug(
+                        "Failed to interrupt Claude Agent SDK turn",
+                        exc_info=True,
+                    )
+
         # A cron turn performs its API request on the conversation thread to
         # avoid the nested interrupt-worker deadlock.  Unlike the normal worker
         # path, its client is registered here so this cross-thread interrupt can
@@ -3950,6 +3967,32 @@ class AIAgent:
         except Exception:
             pass
 
+        # The Claude Agent SDK session holds an OS thread and a Claude Code
+        # subprocess, so it is released here too: an evicted agent that
+        # resumes is rebuilt and would spawn its own session anyway.
+        self._release_claude_agent_sdk_session()
+
+    def _release_claude_agent_sdk_session(self) -> None:
+        """Tear down the Claude Agent SDK session, if one was ever started.
+
+        Idempotent and never raises — called from both the soft eviction path
+        and the hard teardown.
+        """
+        session = getattr(self, "_claude_session", None)
+        if session is None:
+            return
+        # Mirror agent.claude_runtime._retire_session: the next session must
+        # re-prove its billing source, whichever teardown path retired this
+        # one. claude_runtime is already imported whenever a session existed.
+        from agent.claude_runtime import _UNSET as _billing_unset
+
+        self._claude_billing_refusal = _billing_unset
+        self._claude_session = None
+        try:
+            session.close()
+        except Exception:
+            logger.debug("Claude Agent SDK session close failed", exc_info=True)
+
     def close(self) -> None:
         """Release all resources held by this agent instance.
 
@@ -4025,6 +4068,10 @@ class AIAgent:
             self._close_cached_request_openai_client(reason="agent_close")
         except Exception:
             pass
+
+        # 6c. Release the Claude Agent SDK session (loop thread + Claude Code
+        # subprocess) when the claude_agent_sdk runtime was in use.
+        self._release_claude_agent_sdk_session()
 
         # 7. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
@@ -7190,6 +7237,43 @@ class AIAgent:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
         return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+
+    def _run_claude_agent_sdk_turn(
+        self,
+        *,
+        user_message: str,
+        original_user_message: Any,
+        messages: List[Dict[str, Any]],
+        effective_task_id: str,
+        should_review_memory: bool = False,
+    ) -> Dict[str, Any]:
+        """Forwarder — see ``agent.claude_runtime.run_claude_agent_sdk_turn``.
+
+        Normalises the prompt on the way through.  ``user_message`` is a plain
+        string on almost every turn, but a turn that carries an attachment hands
+        down OpenAI-style content parts, and the runtime passes whatever it gets
+        straight to the SDK — which accepts a string or an async iterable of
+        stream-json frames, and nothing in between.  Translating here keeps the
+        conversion out of the runtime while making an image either *arrive* or
+        *fail loudly*; the one outcome we refuse is dropping it silently.
+        """
+        from agent.claude_runtime import run_claude_agent_sdk_turn
+        from agent.claude_sdk_input import ClaudeImageInputUnsupported, prompt_for_content
+
+        try:
+            prompt = prompt_for_content(user_message)
+        except ClaudeImageInputUnsupported as exc:
+            return {
+                "final_response": str(exc),
+                "messages": messages,
+                "api_calls": 0,
+                "completed": False,
+                "partial": True,
+                "failed": True,
+                "interrupted": False,
+                "error": str(exc),
+            }
+        return run_claude_agent_sdk_turn(self, user_message=prompt, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
 
 def main(
     query: str = None,

@@ -23,6 +23,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.claude_code import legacy_alias_target
 from utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,16 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "anthropic": HermesOverlay(
         transport="anthropic_messages",
-        extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
+        # API-key only: the Claude subscription OAuth token belongs to the
+        # `claude-code` provider (Claude Agent SDK), not to this endpoint.
+        extra_env_vars=("ANTHROPIC_TOKEN",),
+    ),
+    # Claude subscription via the official Claude Agent SDK. No credential env
+    # var and no HTTP base URL: the SDK resolves auth and transport itself.
+    "claude-code": HermesOverlay(
+        transport="claude_agent_sdk",
+        auth_type="external_process",
+        base_url_override="claude-sdk://subscription",
     ),
     "zai": HermesOverlay(
         transport="openai_chat",
@@ -306,7 +316,13 @@ ALIASES: Dict[str, str] = {
 
     # anthropic
     "claude": "anthropic",
-    "claude-code": "anthropic",
+
+    # claude-code (Claude Agent SDK). These mappings only take effect once the
+    # subscription gate is open: normalize_provider() below short-circuits both
+    # slugs to anthropic while it is closed, preserving pre-SDK configs.
+    "claude-oauth": "claude-code",
+    "claude-subscription": "claude-code",
+    "claude-agent-sdk": "claude-code",
 
     # github-copilot (models.dev ID)
     "copilot": "github-copilot",
@@ -404,6 +420,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "claude-code": "Claude subscription (Agent SDK)",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
@@ -425,6 +442,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
     "bedrock_converse": "bedrock_converse",
+    "claude_agent_sdk": "claude_agent_sdk",
 }
 
 
@@ -437,6 +455,9 @@ def normalize_provider(name: str) -> str:
     corresponds to a known provider.
     """
     key = name.strip().lower()
+    legacy = legacy_alias_target(key)
+    if legacy:
+        return legacy
     return ALIASES.get(key, key)
 
 

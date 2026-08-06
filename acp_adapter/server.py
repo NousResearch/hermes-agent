@@ -2089,6 +2089,62 @@ class HermesACPAgent(acp.Agent):
         lines.append("Unrecognized /commands are sent to the model as normal messages.")
         return "\n".join(lines)
 
+    def _retarget_session_model(
+        self,
+        state: SessionState,
+        new_model: str,
+        target_provider: str | None,
+        *,
+        base_url: str | None = None,
+        api_mode: str | None = None,
+    ):
+        """Point *state* at *new_model*, preserving the session where possible.
+
+        ACP historically rebuilt the whole ``AIAgent`` for a model switch, which
+        is merely wasteful for an HTTP provider but destructive for the Claude
+        subscription runtime: the SDK owns the conversation context and the warm
+        prompt cache, and a rebuilt session starts from neither. When the switch
+        stays on that runtime and on the same provider, retarget in place
+        instead; otherwise rebuild — and close the agent being discarded, which
+        the previous code never did.
+        """
+        agent = state.agent
+        current_provider = getattr(agent, "provider", None)
+        staying_on_claude = (
+            getattr(agent, "api_mode", None) == "claude_agent_sdk"
+            and (not target_provider or target_provider == current_provider)
+        )
+        if staying_on_claude:
+            from hermes_cli.models import (
+                claude_subscription_models,
+                is_valid_claude_subscription_model,
+            )
+
+            if not is_valid_claude_subscription_model(new_model):
+                raise ValueError(
+                    f"`{new_model}` is not a known Claude subscription model. "
+                    "Available: " + ", ".join(claude_subscription_models()) + "."
+                )
+            agent.switch_model(
+                new_model,
+                current_provider,
+                api_key="",
+                base_url=getattr(agent, "base_url", "") or "",
+                api_mode="claude_agent_sdk",
+            )
+            return agent
+
+        new_agent = self.session_manager._make_agent(
+            session_id=state.session_id,
+            cwd=state.cwd,
+            model=new_model,
+            requested_provider=target_provider,
+            base_url=base_url,
+            api_mode=api_mode,
+        )
+        self.session_manager.replace_agent(state, new_agent)
+        return new_agent
+
     def _cmd_model(self, args: str, state: SessionState) -> str:
         if not args:
             model = state.model or getattr(state.agent, "model", "unknown")
@@ -2099,12 +2155,7 @@ class HermesACPAgent(acp.Agent):
         target_provider, new_model = self._resolve_model_selection(args, current_provider)
 
         state.model = new_model
-        state.agent = self.session_manager._make_agent(
-            session_id=state.session_id,
-            cwd=state.cwd,
-            model=new_model,
-            requested_provider=target_provider,
-        )
+        self._retarget_session_model(state, new_model, target_provider)
         self.session_manager.save_session(state.session_id)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
@@ -2349,11 +2400,10 @@ class HermesACPAgent(acp.Agent):
             provider_changed = bool(current_provider and requested_provider != current_provider)
             current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
             current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
-            state.agent = self.session_manager._make_agent(
-                session_id=session_id,
-                cwd=state.cwd,
-                model=resolved_model,
-                requested_provider=requested_provider,
+            self._retarget_session_model(
+                state,
+                resolved_model,
+                requested_provider,
                 base_url=current_base_url,
                 api_mode=current_api_mode,
             )

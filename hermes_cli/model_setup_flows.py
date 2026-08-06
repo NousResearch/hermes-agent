@@ -2009,6 +2009,86 @@ def _model_flow_copilot_acp(config, current_model=""):
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
+
+def _model_flow_claude_code(config, current_model=""):
+    """Claude subscription flow — sign-in is delegated to the official CLI.
+
+    Hermes deliberately runs no OAuth flow here and stores no credential: it
+    reports what ``claude auth status`` says and tells the user which command
+    to run.  Signing in and out is the Claude CLI's job.
+    """
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _save_model_choice,
+        deactivate_provider,
+        get_external_process_provider_status,
+    )
+    from hermes_cli.claude_code import (
+        CLAUDE_CODE_API_MODE,
+        CLAUDE_CODE_BASE_URL,
+        CLAUDE_LOGIN_COMMAND,
+        CLAUDE_LOGOUT_COMMAND,
+    )
+    from hermes_cli.config import load_config, save_config
+
+    del config
+
+    provider_id = "claude-code"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    status = get_external_process_provider_status(provider_id)
+
+    print(f"  {pconfig.name} runs inference through the official Claude Agent SDK.")
+    print("  Hermes never reads, stores, or refreshes your Claude credentials —")
+    print("  the SDK resolves them from your own `claude` login.")
+    if status.get("cli_version"):
+        print(f"  Claude Code: {status['cli_version']}")
+    print(f"  {status.get('message', '')}")
+    print(f"  Sign in:  {CLAUDE_LOGIN_COMMAND}")
+    print(f"  Sign out: {CLAUDE_LOGOUT_COMMAND}")
+    print()
+
+    if not status.get("subscription"):
+        # Selecting the provider without a plan login would route every turn
+        # to a billing source the user did not choose. Stop before writing.
+        print("  No Claude plan login detected — run the sign-in command, then retry.")
+        print("  No change.")
+        return
+
+    try:
+        selected = input(f"Model name [{current_model or 'keep current'}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        selected = ""
+    selected = selected or current_model
+    if selected:
+        from hermes_cli.models import (
+            claude_subscription_models,
+            is_valid_claude_subscription_model,
+        )
+
+        # validate_requested_model rejects unknown slugs at runtime, so a
+        # free-form save here would persist a model that every later turn
+        # refuses. Same curated set, checked at entry.
+        if not is_valid_claude_subscription_model(selected):
+            print(f"Unknown Claude subscription model: {selected!r}")
+            print("Choose one of: " + ", ".join(sorted(claude_subscription_models())))
+            return
+        _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = CLAUDE_CODE_BASE_URL
+    model["api_mode"] = CLAUDE_CODE_API_MODE
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Provider set to: {pconfig.name}")
+
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection with automatic endpoint routing.
 

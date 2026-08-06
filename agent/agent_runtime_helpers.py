@@ -2094,6 +2094,61 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
+def switch_claude_agent_sdk_model(agent, model) -> str:
+    """Retarget a live Claude Agent SDK session at *model*, in place.
+
+    Returns what happened, for logging and for tests:
+
+    ``"none"``
+        No live session yet — the next turn connects with the new model anyway.
+    ``"set_model"``
+        The SDK's control plane accepted the switch. Claude keeps its context,
+        its message UUIDs, and its warm prompt cache; nothing is rebuilt.
+    ``"retired"``
+        The control-plane call failed. A session still pinned to the old model
+        would answer as the wrong model without saying so, which is worse than
+        paying for one reconnect — so the session is torn down and the next
+        turn rebuilds it.
+    """
+    session = getattr(agent, "_claude_session", None)
+    if session is None or getattr(session, "closed", False):
+        return "none"
+
+    accepted = False
+    try:
+        accepted = bool(session.set_model(model or None))
+    except Exception:  # noqa: BLE001 - set_model is documented never to raise
+        logger.debug("switch_model: Claude set_model raised", exc_info=True)
+        accepted = False
+
+    if accepted:
+        logger.info(
+            "switch_model: Claude Agent SDK session retargeted at %s in place "
+            "(context and prompt cache preserved)",
+            model,
+        )
+        return "set_model"
+
+    logger.warning(
+        "switch_model: Claude Agent SDK refused the in-place switch to %s; "
+        "retiring the session so the next turn reconnects with the new model",
+        model,
+    )
+    release = getattr(agent, "_release_claude_agent_sdk_session", None)
+    if callable(release):
+        try:
+            release()
+        except Exception:  # noqa: BLE001
+            logger.debug("switch_model: session release failed", exc_info=True)
+    else:  # pragma: no cover - AIAgent always defines the releaser
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001
+            pass
+        agent._claude_session = None
+    return "retired"
+
+
 def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
     """Switch the model/provider in-place for a live agent.
 
@@ -2132,6 +2187,23 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     old_model = agent.model
     old_provider = agent.provider
+    old_api_mode = getattr(agent, "api_mode", "")
+
+    # Leaving the Claude subscription runtime: the live SDK session owns an OS
+    # thread and a Claude Code subprocess pinned to the old provider. Release it
+    # here, before the new transport is built, so a provider switch cannot leak
+    # either. Staying on the runtime does NOT come through here — that case is
+    # handled in place by switch_claude_agent_sdk_model() below.
+    if old_api_mode == "claude_agent_sdk" and api_mode != "claude_agent_sdk":
+        _release = getattr(agent, "_release_claude_agent_sdk_session", None)
+        if callable(_release):
+            try:
+                _release()
+            except Exception:  # noqa: BLE001 - teardown must not block a switch
+                logger.debug(
+                    "switch_model: Claude Agent SDK session release failed",
+                    exc_info=True,
+                )
 
     # ── Snapshot all fields the swap+rebuild can mutate ──
     # If the rebuild raises (bad API key, network error, build_anthropic_client
@@ -2268,6 +2340,20 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
             agent.client = build_moa_facade(agent, agent.model)
+        elif api_mode == "claude_agent_sdk":
+            # The Claude subscription runtime owns its own endpoint and its own
+            # credential, so there is no HTTP client to rebuild — falling into
+            # the generic branch below would try to construct an OpenAI client
+            # against ``claude-sdk://subscription``.
+            #
+            # The live session's model is switched *in place* through the SDK
+            # control plane. Retiring and reconnecting would throw away Claude's
+            # conversation context and its warm prompt cache, which AGENTS.md's
+            # caching rule forbids and which the user would pay for twice.
+            agent.api_key = ""
+            agent.client = None
+            agent._client_kwargs = {}
+            switch_claude_agent_sdk_model(agent, agent.model)
         elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,

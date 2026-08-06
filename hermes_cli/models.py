@@ -612,6 +612,77 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
 _PROVIDER_MODELS["ai-gateway"] = [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS]
 
 # ---------------------------------------------------------------------------
+# Claude subscription (Agent SDK) — curated, derived, not discovered
+# ---------------------------------------------------------------------------
+# The Python `claude-agent-sdk` has no `supportedModels()` (the TypeScript SDK
+# does), and the provider profile's `fetch_models()` returns None on purpose:
+# there is no REST catalog behind `claude-sdk://subscription` to ask. So this
+# picker list is curated. It is *derived* from the Claude entries this module
+# already maintains rather than hand-copied into a second list that would drift
+# the first time a Claude model ships — same pattern as `ai-gateway` above.
+#
+# Dated API pins (`claude-opus-4-5-20251101`) are dropped: they are Anthropic
+# API request ids, not how the Claude CLI names a model. `-fast` variants are
+# an OpenRouter routing product, not a Claude model.
+
+_CLAUDE_DATED_PIN_RE = re.compile(r"-\d{8}$")
+
+# The Claude CLI's own short aliases. Rejecting these would be user-hostile —
+# `sonnet` is what the CLI's own docs tell people to type.
+CLAUDE_SUBSCRIPTION_MODEL_ALIASES: tuple[str, ...] = (
+    "default",
+    "opus",
+    "sonnet",
+    "haiku",
+)
+
+
+def claude_subscription_models() -> list[str]:
+    """Curated Claude model ids for the subscription runtime, plus CLI aliases."""
+    seen: dict[str, None] = {}
+    for model_id in _PROVIDER_MODELS.get("anthropic", ()):
+        if not _CLAUDE_DATED_PIN_RE.search(model_id):
+            seen.setdefault(model_id, None)
+    for model_id, _desc in OPENROUTER_MODELS:
+        if not model_id.startswith("anthropic/"):
+            continue
+        slug = model_id.split("/", 1)[1].replace(".", "-")
+        if slug.endswith("-fast"):
+            continue
+        seen.setdefault(slug, None)
+    return [*seen, *CLAUDE_SUBSCRIPTION_MODEL_ALIASES]
+
+
+def is_claude_subscription_slug(provider: Optional[str]) -> bool:
+    """True when *provider* names the Claude subscription runtime, right now.
+
+    ``normalize_provider()`` still maps ``claude-code`` → ``anthropic`` while
+    the subscription gate is closed (that legacy mapping is what keeps existing
+    configs resolving), so callers that need to tell the two apart must ask
+    before normalizing. ``legacy_alias_target`` returns ``"anthropic"`` while
+    the gate is closed and ``None`` once it is open — one source of truth.
+    """
+    if (provider or "").strip().lower() != "claude-code":
+        return False
+    try:
+        from hermes_cli.claude_code import legacy_alias_target
+
+        return legacy_alias_target("claude-code") is None
+    except Exception:
+        return False
+
+
+def is_valid_claude_subscription_model(model_name: str) -> bool:
+    """True when *model_name* is in the curated set (case-insensitive)."""
+    wanted = (model_name or "").strip().lower()
+    if not wanted:
+        return False
+    return wanted in {m.lower() for m in claude_subscription_models()}
+
+
+_PROVIDER_MODELS["claude-code"] = claude_subscription_models()
+
+# ---------------------------------------------------------------------------
 # Nous Portal free-model helper
 # ---------------------------------------------------------------------------
 # The Nous Portal models endpoint is the source of truth for which models
@@ -1110,7 +1181,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
-    ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
+    ProviderEntry("anthropic",      "Anthropic API",            "Anthropic API (Claude models, billed per token with an API key)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
     ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope (Qwen + multi-provider)"),
@@ -1143,6 +1214,32 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (Multi-model aggregator)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
 ]
+
+# The Claude subscription provider (Agent SDK) is opt-in: it only joins the
+# universe once ``claude_subscription.enabled`` is true in config.yaml.  The
+# gate is applied HERE rather than in provider_catalog() because the catalog's
+# parity contract is that the union of its two desktop tabs equals this list —
+# gating downstream would make one surface disagree with the other.  Its
+# auth_type is external_process, so the auto-extend block below would skip it
+# anyway; this is the only place it can enter.
+try:
+    from hermes_cli.claude_code import (
+        CLAUDE_CODE_DESCRIPTION as _CLAUDE_CODE_DESC,
+        CLAUDE_CODE_DISPLAY_NAME as _CLAUDE_CODE_LABEL,
+        CLAUDE_CODE_PROVIDER_ID as _CLAUDE_CODE_ID,
+        subscription_enabled as _claude_subscription_enabled,
+    )
+    if _claude_subscription_enabled():
+        _anthropic_idx = next(
+            (i for i, _p in enumerate(CANONICAL_PROVIDERS) if _p.slug == "anthropic"),
+            len(CANONICAL_PROVIDERS) - 1,
+        )
+        CANONICAL_PROVIDERS.insert(
+            _anthropic_idx + 1,
+            ProviderEntry(_CLAUDE_CODE_ID, _CLAUDE_CODE_LABEL, _CLAUDE_CODE_DESC),
+        )
+except Exception:
+    pass
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
 # that is not already in the list above.  Adding plugins/model-providers/<name>/
@@ -1308,7 +1405,10 @@ _PROVIDER_ALIASES = {
     "minimax-global": "minimax-oauth",
     "minimax_oauth": "minimax-oauth",
     "claude": "anthropic",
-    "claude-code": "anthropic",
+    # "claude-code" is gate-dependent and handled in normalize_provider():
+    # its own provider when the subscription gate is open, the legacy
+    # "anthropic" alias when it is shut. A static entry here would pin the
+    # closed-gate answer for every surface that renders provider labels.
     "deep-seek": "deepseek",
     "opencode": "opencode-zen",
     "zen": "opencode-zen",
@@ -2518,6 +2618,10 @@ def normalize_provider(provider: Optional[str]) -> str:
     provider based on credentials and environment.
     """
     normalized = (provider or "openrouter").strip().lower()
+    if normalized in ("claude-code", "claude-oauth"):
+        from hermes_cli.claude_code import legacy_alias_target
+
+        return legacy_alias_target(normalized) or "claude-code"
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
@@ -4685,6 +4789,29 @@ def validate_requested_model(
                 "accepted": False, "persist": False, "recognized": False,
                 "message": f"Could not read MoA presets: {exc}",
             }
+
+    if is_claude_subscription_slug(provider):
+        # No live probe: `claude-sdk://subscription` is an internal scheme, not
+        # a reachable endpoint, and the Python SDK exposes no model listing. An
+        # unknown string would be handed straight to the CLI's `--model`, which
+        # fails deep inside a spawned subprocess with a message the user cannot
+        # act on — so validate against the curated set and say what is allowed.
+        if is_valid_claude_subscription_model(requested):
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        return {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": (
+                f"`{requested}` is not a known Claude subscription model. "
+                "Available: " + ", ".join(claude_subscription_models()) + "."
+            ),
+        }
 
     if any(ch.isspace() for ch in requested):
         return {

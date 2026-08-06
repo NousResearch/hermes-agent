@@ -313,6 +313,7 @@ def _process_single_prompt(
         if config.get("verbose"):
             print(f"   Prompt {prompt_index}: Using container image {container_image}")
     
+    agent = None
     try:
         # Sample toolsets from distribution for this prompt
         selected_toolsets = sample_toolsets_from_distribution(config["distribution"])
@@ -325,6 +326,13 @@ def _process_single_prompt(
         agent = AIAgent(
             base_url=config.get("base_url"),
             api_key=config.get("api_key"),
+            # Provider + api_mode were never forwarded, so a batch run silently
+            # fell back to chat_completions regardless of the configured
+            # provider — which meant a subscription-mode user's batch went out
+            # over the legacy HTTP path. Both are optional: a config without
+            # them behaves exactly as before.
+            provider=config.get("provider"),
+            api_mode=config.get("api_mode"),
             model=config["model"],
             max_iterations=config["max_iterations"],
             enabled_toolsets=selected_toolsets,
@@ -395,6 +403,18 @@ def _process_single_prompt(
                 "timestamp": datetime.now().isoformat()
             }
         }
+
+    finally:
+        # A worker process handles many prompts in a row and the pool has no
+        # maxtasksperchild, so an unclosed agent accumulates for the life of the
+        # pool. That was merely wasteful for an HTTP client; a claude_agent_sdk
+        # agent owns an OS thread and a Claude Code subprocess per prompt.
+        if agent is not None:
+            try:
+                agent.close()
+            except Exception:
+                if config.get("verbose"):
+                    traceback.print_exc()
 
 
 def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
@@ -538,6 +558,8 @@ class BatchRunner:
         max_iterations: int = 10,
         base_url: str = None,
         api_key: str = None,
+        provider: str = None,
+        api_mode: str = None,
         model: str = "claude-opus-4-20250514",
         num_workers: int = 4,
         verbose: bool = False,
@@ -588,6 +610,8 @@ class BatchRunner:
         self.max_iterations = max_iterations
         self.base_url = base_url
         self.api_key = api_key
+        self.provider = provider
+        self.api_mode = api_mode
         self.model = model
         self.num_workers = num_workers
         self.verbose = verbose
@@ -807,6 +831,22 @@ class BatchRunner:
         
         return filtered_dataset, skipped_indices
     
+    def _preflight_runtime(self) -> None:
+        """Refuse to start when the configured runtime cannot serve the run.
+
+        Batch runs are non-interactive, so a runtime that would prompt for a
+        login has to be caught before any worker is spawned. Only the Claude
+        subscription runtime has such a gate today; every other provider keeps
+        its existing per-prompt error behaviour untouched.
+        """
+        if (self.api_mode or "").strip() != "claude_agent_sdk":
+            return
+        from agent.claude_runtime import claude_runtime_preflight
+
+        error = claude_runtime_preflight()
+        if error:
+            raise RuntimeError(f"Cannot start batch run: {error}")
+
     def run(self, resume: bool = False):
         """
         Run the batch processing pipeline.
@@ -888,6 +928,8 @@ class BatchRunner:
             "max_iterations": self.max_iterations,
             "base_url": self.base_url,
             "api_key": worker_api_key,
+            "provider": self.provider,
+            "api_mode": self.api_mode,
             "verbose": self.verbose,
             "ephemeral_system_prompt": self.ephemeral_system_prompt,
             "log_prefix_chars": self.log_prefix_chars,
@@ -908,7 +950,13 @@ class BatchRunner:
         total_tool_stats = {}
         
         start_time = time.time()
-        
+
+        # Fail the whole run once, up front, rather than N times mid-flight.
+        # A batch run is unattended: without this, a not-signed-in Claude
+        # subscription produces one identical error per prompt after the pool
+        # has already spun up, and the actionable message is buried in them.
+        self._preflight_runtime()
+
         print(f"\n🔧 Initializing {self.num_workers} worker processes...")
         
         # Checkpoint writes happen in the parent process; keep a lock for safety.
@@ -1152,6 +1200,8 @@ def main(
     model: str = "anthropic/claude-sonnet-4.6",
     api_key: str = None,
     base_url: str = "https://openrouter.ai/api/v1",
+    provider: str = None,
+    api_mode: str = None,
     max_turns: int = 10,
     num_workers: int = 4,
     resume: bool = False,
@@ -1180,6 +1230,9 @@ def main(
         model (str): Model name to use (default: "claude-opus-4-20250514")
         api_key (str): API key for model authentication
         base_url (str): Base URL for model API
+        provider (str): Provider id (e.g. "claude-code"). Optional; when omitted
+            the agent derives its transport from base_url as before.
+        api_mode (str): Transport override (e.g. "claude_agent_sdk"). Optional.
         max_turns (int): Maximum number of tool calling iterations per prompt (default: 10)
         num_workers (int): Number of parallel worker processes (default: 4)
         resume (bool): Resume from checkpoint if run was interrupted (default: False)
@@ -1292,6 +1345,8 @@ def main(
             max_iterations=max_turns,
             base_url=base_url,
             api_key=api_key,
+            provider=provider,
+            api_mode=api_mode,
             model=model,
             num_workers=num_workers,
             verbose=verbose,

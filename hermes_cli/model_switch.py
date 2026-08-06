@@ -2241,6 +2241,20 @@ def list_authenticated_providers(
                 has_creds = has_vertex_credentials()
             except Exception as exc:
                 logger.debug("Vertex credential check failed: %s", exc)
+        elif hermes_slug == "claude-code":
+            # No env var and no pool entry by design — the Claude Code CLI
+            # owns the credential. "Authenticated" for the picker means the
+            # CLI reports a claude.ai login (cached probe: two subprocesses
+            # cost too much per picker open otherwise). Without this branch
+            # the provider shows "(needs setup)" even while it is signed in
+            # and actively serving the current session.
+            try:
+                from hermes_cli.claude_code import probe_claude_auth_cached
+
+                probe = probe_claude_auth_cached()
+                has_creds = bool(probe.get("logged_in"))
+            except Exception as exc:
+                logger.debug("claude-code auth probe failed: %s", exc)
         elif overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type

@@ -239,6 +239,23 @@ DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 _IMPORT_DEFAULT_DB_PATH = DEFAULT_DB_PATH
 
 
+def _branched_from_parent(model_config: Any) -> Optional[str]:
+    """Extract ``_branched_from`` from a session's ``model_config``.
+
+    ``model_config`` reaches ``create_session`` as either a dict or the JSON
+    string it is stored as, depending on the caller.
+    """
+    if isinstance(model_config, str):
+        try:
+            model_config = json.loads(model_config)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(model_config, dict):
+        return None
+    parent = model_config.get("_branched_from")
+    return parent if isinstance(parent, str) and parent else None
+
+
 def _default_db_path() -> Path:
     """Resolve the default state DB path at call time.
 
@@ -2774,6 +2791,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
         """Create a new session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
+        # A branch (/branch, session.branch, the gateway's branch command) is
+        # the one create_session that inherits a conversation. All three
+        # implementations stamp ``_branched_from`` into model_config, so this
+        # is the single place that sees every branch. If a whole-turn runtime
+        # held a session for the parent, the child forks it rather than
+        # replaying history — context stays warm, and the two sessions stay
+        # isolated.
+        parent = _branched_from_parent(kwargs.get("model_config"))
+        if parent:
+            self.seed_provider_branch(parent, session_id)
         return session_id
 
     def record_gateway_session_peer(
@@ -6007,6 +6034,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
                 (total_messages, total_tool_calls, session_id),
             )
+            # This is the durable half of prompt.submit's
+            # ``truncate_user_ordinal`` (Desktop edit / regenerate / restore),
+            # and of /retry and /compress. A whole-turn runtime bound to this
+            # session forks at the surviving boundary on its next turn.
+            self._note_provider_rewind_boundary(
+                conn,
+                session_id,
+                sum(1 for m in messages if self._is_visible_user_message(m)),
+            )
 
         self._execute_write(_do)
 
@@ -6736,6 +6772,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "WHERE id = ?",
                 (session_id,),
             )
+            # A whole-turn runtime holding its own session for this
+            # conversation must fork at this boundary on its next turn — its
+            # resume cursor now points past history the user just discarded.
+            surviving = conn.execute(
+                f"SELECT COUNT(*) FROM messages WHERE session_id = ? "
+                f"AND id < ? AND {self._VISIBLE_USER_ROW_CLAUSE}",
+                (session_id, target_message_id),
+            ).fetchone()
+            self._note_provider_rewind_boundary(
+                conn, session_id, int((surviving[0] if surviving else 0) or 0)
+            )
             return ids
 
         rewound = self._execute_write(_do)
@@ -7137,6 +7184,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (session_id,),
             )
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            # The runtime binding dies with the Hermes session; the mirrored
+            # SDK transcript does NOT (see provider_transcript_entries: a
+            # downgrade must be able to leave it in place, and the SDK's own
+            # retention contract puts deletion in the adapter's hands via
+            # delete_session_via_store()).
+            conn.execute(
+                "DELETE FROM provider_runtime_sessions WHERE session_id = ?",
+                (session_id,),
+            )
+            conn.execute(
+                "DELETE FROM provider_message_bindings WHERE session_id = ?",
+                (session_id,),
+            )
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
 
@@ -8550,6 +8610,821 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (error[:500], session_id),
             )
         self._execute_write(_do)
+
+
+    # ══════════════════════════════════════════════════════════════════
+    # Whole-turn provider runtimes: session binding + transcript mirror
+    # ══════════════════════════════════════════════════════════════════
+    #
+    # A whole-turn runtime (Claude's Agent SDK, Codex's app-server) owns a
+    # session of its own that Hermes cannot reconstruct: the provider-native
+    # context, the prompt-cache prefix, the compaction state, the resume
+    # cursor, and the message UUIDs. Hermes owns the visible transcript.
+    # These methods are the seam.
+    #
+    # Everything here is provider-generic — the ``runtime`` argument is the
+    # discriminator — because Hermes already runs two such runtimes and a
+    # second copy of this table would be the wrong shape by the third.
+    #
+    # Transcript entries are OPAQUE. They are stored in append order,
+    # returned in the same order, and round-trip through json so a caller
+    # gets deep-equal (not necessarily byte-equal) objects back.
+
+    @staticmethod
+    def _provider_now_ms() -> int:
+        return int(time.time() * 1000)
+
+    # ── Session binding ──
+
+    def bind_provider_runtime_session(
+        self,
+        session_id: str,
+        runtime: str,
+        provider_session_id: str,
+        *,
+        project_key: str = "",
+        bootstrapped: Optional[bool] = None,
+    ) -> None:
+        """Bind *session_id* to the runtime-owned *provider_session_id*.
+
+        Idempotent and last-writer-wins on the id: a runtime is allowed to
+        rotate its own session id (Claude does exactly this on a fork), and
+        the binding must follow it. ``recovery_count`` is deliberately NOT
+        reset here — it is the cap that stops a stale-session recovery from
+        looping, and a successful rebind is not evidence the loop ended.
+        """
+        if not session_id or not runtime or not provider_session_id:
+            return
+        now = time.time()
+
+        def _do(conn):
+            conn.execute(
+                "INSERT INTO provider_runtime_sessions ("
+                "  session_id, runtime, provider_session_id, project_key,"
+                "  bootstrapped, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id, runtime) DO UPDATE SET "
+                "  provider_session_id = excluded.provider_session_id,"
+                "  project_key = excluded.project_key,"
+                "  bootstrapped = CASE WHEN ? IS NULL"
+                "    THEN provider_runtime_sessions.bootstrapped ELSE ? END,"
+                "  updated_at = excluded.updated_at",
+                (
+                    session_id,
+                    runtime,
+                    provider_session_id,
+                    project_key or "",
+                    1 if bootstrapped else 0,
+                    now,
+                    now,
+                    None if bootstrapped is None else 1,
+                    1 if bootstrapped else 0,
+                ),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "bind_provider_runtime_session(%s, %s) failed: %s",
+                session_id,
+                runtime,
+                exc,
+            )
+
+    def get_provider_runtime_session(
+        self, session_id: str, runtime: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the binding row for (*session_id*, *runtime*), or None.
+
+        ``provider_session_id`` is an empty string when the binding has been
+        cleared by a stale-session recovery — the row survives so
+        ``recovery_count`` survives with it.
+        """
+        if not session_id or not runtime:
+            return None
+        try:
+            with self._read_ctx() as conn:
+                row = conn.execute(
+                    "SELECT session_id, runtime, provider_session_id, project_key,"
+                    "       bootstrapped, recovery_count, pending_rewind_ordinal,"
+                    "       pending_fork_source, created_at, updated_at "
+                    "FROM provider_runtime_sessions "
+                    "WHERE session_id = ? AND runtime = ?",
+                    (session_id, runtime),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            logger.warning(
+                "get_provider_runtime_session(%s, %s) failed: %s",
+                session_id,
+                runtime,
+                exc,
+            )
+            return None
+        if row is None:
+            return None
+        keys = (
+            "session_id",
+            "runtime",
+            "provider_session_id",
+            "project_key",
+            "bootstrapped",
+            "recovery_count",
+            "pending_rewind_ordinal",
+            "pending_fork_source",
+            "created_at",
+            "updated_at",
+        )
+        if isinstance(row, sqlite3.Row):
+            out = {k: row[k] for k in keys}
+        else:
+            out = dict(zip(keys, row))
+        out["bootstrapped"] = bool(out["bootstrapped"])
+        out["recovery_count"] = int(out["recovery_count"] or 0)
+        return out
+
+    def clear_provider_runtime_session(self, session_id: str, runtime: str) -> int:
+        """Drop the runtime session id and count the recovery. Returns the count.
+
+        Called when the runtime reports the bound session is gone. The row is
+        kept (with an empty id) rather than deleted so ``recovery_count``
+        accumulates across attempts — that counter is the only thing standing
+        between a permanently-broken binding and an infinite
+        bootstrap/retry loop.
+        """
+        if not session_id or not runtime:
+            return 0
+        now = time.time()
+
+        def _do(conn):
+            conn.execute(
+                "INSERT INTO provider_runtime_sessions ("
+                "  session_id, runtime, provider_session_id, project_key,"
+                "  bootstrapped, recovery_count, created_at, updated_at"
+                ") VALUES (?, ?, '', '', 0, 1, ?, ?) "
+                "ON CONFLICT(session_id, runtime) DO UPDATE SET "
+                "  provider_session_id = '',"
+                "  bootstrapped = 0,"
+                "  recovery_count = provider_runtime_sessions.recovery_count + 1,"
+                "  updated_at = excluded.updated_at",
+                (session_id, runtime, now, now),
+            )
+            row = conn.execute(
+                "SELECT recovery_count FROM provider_runtime_sessions "
+                "WHERE session_id = ? AND runtime = ?",
+                (session_id, runtime),
+            ).fetchone()
+            if row is None:
+                return 0
+            return int(row["recovery_count"] if isinstance(row, sqlite3.Row) else row[0])
+
+        try:
+            return int(self._execute_write(_do))
+        except sqlite3.Error as exc:
+            logger.warning(
+                "clear_provider_runtime_session(%s, %s) failed: %s",
+                session_id,
+                runtime,
+                exc,
+            )
+            return 0
+
+    # ── Transcript mirror ──
+
+    def append_provider_transcript_entries(
+        self,
+        runtime: str,
+        project_key: str,
+        provider_session_id: str,
+        subpath: str,
+        entries: List[Dict[str, Any]],
+        *,
+        summary_fold: Optional[Callable[[Optional[dict], list], dict]] = None,
+    ) -> None:
+        """Mirror a batch of opaque transcript entries.
+
+        Deduplicated on ``entry_uuid`` via a partial unique index, because a
+        failed batch is retried and a retry can re-deliver entries that
+        already landed. Entries with no uuid are appended unconditionally —
+        the runtime uses uuid-less lines (titles, tags, mode markers) that
+        legitimately repeat.
+
+        *summary_fold* is a PURE ``(previous_summary_or_None, entries) ->
+        summary`` callable owned by the caller (the runtime's SDK ships one).
+        It runs INSIDE this write transaction so concurrent appends for the
+        same session cannot interleave read-fold-write on the sidecar. It is
+        skipped for subagent keys: a subagent transcript must not contribute
+        to the main session's summary.
+        """
+        subpath = subpath or ""
+        now = time.time()
+        now_ms = self._provider_now_ms()
+
+        def _do(conn):
+            # Storage write time, forced strictly forward per key. Callers
+            # sort sessions on it and compare it against the summary sidecar's
+            # mtime, so a coarse clock must never make it go backwards.
+            row = conn.execute(
+                "SELECT mtime_ms FROM provider_transcript_keys "
+                "WHERE runtime = ? AND project_key = ? "
+                "AND provider_session_id = ? AND subpath = ?",
+                (runtime, project_key, provider_session_id, subpath),
+            ).fetchone()
+            prev_mtime = 0
+            if row is not None:
+                prev_mtime = int(row["mtime_ms"] if isinstance(row, sqlite3.Row) else row[0])
+            stamp = now_ms if now_ms > prev_mtime else prev_mtime + 1
+
+            conn.execute(
+                "INSERT INTO provider_transcript_keys ("
+                "  runtime, project_key, provider_session_id, subpath,"
+                "  mtime_ms, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(runtime, project_key, provider_session_id, subpath) "
+                "DO UPDATE SET mtime_ms = excluded.mtime_ms",
+                (runtime, project_key, provider_session_id, subpath, stamp, now),
+            )
+
+            for entry in entries:
+                entry_uuid = None
+                if isinstance(entry, dict):
+                    raw_uuid = entry.get("uuid")
+                    if isinstance(raw_uuid, str) and raw_uuid:
+                        entry_uuid = raw_uuid
+                conn.execute(
+                    "INSERT OR IGNORE INTO provider_transcript_entries ("
+                    "  runtime, project_key, provider_session_id, subpath,"
+                    "  entry_uuid, entry_json, created_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        runtime,
+                        project_key,
+                        provider_session_id,
+                        subpath,
+                        entry_uuid,
+                        json.dumps(entry, ensure_ascii=False),
+                        now,
+                    ),
+                )
+
+            if summary_fold is None or subpath:
+                return
+
+            srow = conn.execute(
+                "SELECT summary_json FROM provider_transcript_summaries "
+                "WHERE runtime = ? AND project_key = ? AND provider_session_id = ?",
+                (runtime, project_key, provider_session_id),
+            ).fetchone()
+            previous = None
+            if srow is not None:
+                raw = srow["summary_json"] if isinstance(srow, sqlite3.Row) else srow[0]
+                try:
+                    previous = json.loads(raw)
+                except (TypeError, ValueError):
+                    previous = None
+            folded = summary_fold(previous, list(entries))
+            if not isinstance(folded, dict):
+                return
+            # The fold never sets mtime — it is storage write time and must
+            # share a clock with the key row stamped above.
+            folded = {**folded, "mtime": stamp}
+            conn.execute(
+                "INSERT INTO provider_transcript_summaries ("
+                "  runtime, project_key, provider_session_id, summary_json,"
+                "  mtime_ms, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(runtime, project_key, provider_session_id) "
+                "DO UPDATE SET summary_json = excluded.summary_json,"
+                "  mtime_ms = excluded.mtime_ms, updated_at = excluded.updated_at",
+                (
+                    runtime,
+                    project_key,
+                    provider_session_id,
+                    json.dumps(folded, ensure_ascii=False),
+                    stamp,
+                    now,
+                ),
+            )
+
+        self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def load_provider_transcript_entries(
+        self,
+        runtime: str,
+        project_key: str,
+        provider_session_id: str,
+        subpath: str = "",
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Return every mirrored entry for a key in append order, or None.
+
+        None means "never written" — distinguishable from "written then
+        emptied" because the key row outlives its entries.
+        """
+        subpath = subpath or ""
+        with self._read_ctx() as conn:
+            key_row = conn.execute(
+                "SELECT 1 FROM provider_transcript_keys "
+                "WHERE runtime = ? AND project_key = ? "
+                "AND provider_session_id = ? AND subpath = ?",
+                (runtime, project_key, provider_session_id, subpath),
+            ).fetchone()
+            if key_row is None:
+                return None
+            rows = conn.execute(
+                "SELECT entry_json FROM provider_transcript_entries "
+                "WHERE runtime = ? AND project_key = ? "
+                "AND provider_session_id = ? AND subpath = ? "
+                "ORDER BY id",
+                (runtime, project_key, provider_session_id, subpath),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            raw = row["entry_json"] if isinstance(row, sqlite3.Row) else row[0]
+            try:
+                out.append(json.loads(raw))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "provider transcript entry for %s/%s is not valid JSON; skipping",
+                    provider_session_id,
+                    subpath or "<main>",
+                )
+        return out
+
+    def list_provider_transcript_sessions(
+        self, runtime: str, project_key: str
+    ) -> List[Dict[str, Any]]:
+        """List main-transcript session ids + storage mtimes for a project key."""
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                "SELECT provider_session_id, mtime_ms FROM provider_transcript_keys "
+                "WHERE runtime = ? AND project_key = ? AND subpath = '' "
+                "ORDER BY mtime_ms DESC",
+                (runtime, project_key),
+            ).fetchall()
+        return [
+            {
+                "session_id": r["provider_session_id"]
+                if isinstance(r, sqlite3.Row)
+                else r[0],
+                "mtime": int(r["mtime_ms"] if isinstance(r, sqlite3.Row) else r[1]),
+            }
+            for r in rows
+        ]
+
+    def list_provider_transcript_summaries(
+        self, runtime: str, project_key: str
+    ) -> List[Dict[str, Any]]:
+        """Return the folded summary sidecars for a project key.
+
+        ``summary_json`` is opaque runtime-owned state, returned verbatim with
+        the stored storage-write ``mtime`` re-applied.
+        """
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                "SELECT provider_session_id, summary_json, mtime_ms "
+                "FROM provider_transcript_summaries "
+                "WHERE runtime = ? AND project_key = ?",
+                (runtime, project_key),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            if isinstance(r, sqlite3.Row):
+                sid, raw, mtime = r["provider_session_id"], r["summary_json"], r["mtime_ms"]
+            else:
+                sid, raw, mtime = r[0], r[1], r[2]
+            try:
+                summary = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(summary, dict):
+                continue
+            summary["session_id"] = sid
+            summary["mtime"] = int(mtime)
+            out.append(summary)
+        return out
+
+    def list_provider_transcript_subkeys(
+        self, runtime: str, project_key: str, provider_session_id: str
+    ) -> List[str]:
+        """List the subagent subpaths mirrored under a session.
+
+        Without this a resume rebuilds only the main transcript and every
+        subagent transcript is silently lost.
+        """
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                "SELECT subpath FROM provider_transcript_keys "
+                "WHERE runtime = ? AND project_key = ? "
+                "AND provider_session_id = ? AND subpath != '' "
+                "ORDER BY subpath",
+                (runtime, project_key, provider_session_id),
+            ).fetchall()
+        return [r["subpath"] if isinstance(r, sqlite3.Row) else r[0] for r in rows]
+
+    def delete_provider_transcript(
+        self,
+        runtime: str,
+        project_key: str,
+        provider_session_id: str,
+        subpath: Optional[str] = None,
+    ) -> None:
+        """Delete a mirrored transcript.
+
+        Deleting the main key (``subpath is None``) cascades to every subkey
+        and drops the summary sidecar, so subagent transcripts are never
+        orphaned. A targeted delete with an explicit subpath removes only
+        that one.
+        """
+
+        def _do(conn):
+            if subpath is None:
+                conn.execute(
+                    "DELETE FROM provider_transcript_entries "
+                    "WHERE runtime = ? AND project_key = ? "
+                    "AND provider_session_id = ?",
+                    (runtime, project_key, provider_session_id),
+                )
+                conn.execute(
+                    "DELETE FROM provider_transcript_keys "
+                    "WHERE runtime = ? AND project_key = ? "
+                    "AND provider_session_id = ?",
+                    (runtime, project_key, provider_session_id),
+                )
+                conn.execute(
+                    "DELETE FROM provider_transcript_summaries "
+                    "WHERE runtime = ? AND project_key = ? "
+                    "AND provider_session_id = ?",
+                    (runtime, project_key, provider_session_id),
+                )
+                return
+            conn.execute(
+                "DELETE FROM provider_transcript_entries "
+                "WHERE runtime = ? AND project_key = ? "
+                "AND provider_session_id = ? AND subpath = ?",
+                (runtime, project_key, provider_session_id, subpath),
+            )
+            conn.execute(
+                "DELETE FROM provider_transcript_keys "
+                "WHERE runtime = ? AND project_key = ? "
+                "AND provider_session_id = ? AND subpath = ?",
+                (runtime, project_key, provider_session_id, subpath),
+            )
+
+        self._execute_write(_do)
+
+    # ── Visible user row ↔ runtime message UUID ──
+
+    def provider_transcript_watermark(
+        self, runtime: str, project_key: str, provider_session_id: str
+    ) -> int:
+        """Highest mirrored entry row id for a main transcript (0 when empty).
+
+        Recorded when a turn is submitted so the runtime UUID that opened the
+        turn can be resolved afterwards, once the mirror has caught up —
+        the mirror is asynchronous, so the id is not available at submit time.
+        """
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT MAX(id) FROM provider_transcript_entries "
+                "WHERE runtime = ? AND project_key = ? "
+                "AND provider_session_id = ? AND subpath = ''",
+                (runtime, project_key, provider_session_id),
+            ).fetchone()
+        value = row[0] if row is not None else None
+        return int(value or 0)
+
+    _VISIBLE_USER_ROW_CLAUSE = (
+        "role = 'user' AND active = 1 "
+        "AND (display_kind IS NULL OR display_kind = '')"
+    )
+
+    @classmethod
+    def _is_visible_user_message(cls, msg: Dict[str, Any]) -> bool:
+        """The one predicate every rewind path in Hermes agrees on.
+
+        A "visible user turn" is an active user row that is not display
+        bookkeeping (``display_kind`` marks model-switch notices, background
+        process notifications, and similar rows that /undo, session.undo,
+        rollback.restore and ``truncate_user_ordinal`` all skip).
+        """
+        return bool(
+            msg.get("role") == "user"
+            and not msg.get("display_kind")
+            and msg.get("active", 1)
+        )
+
+    def record_provider_message_binding(
+        self,
+        session_id: str,
+        user_ordinal: int,
+        runtime: str,
+        provider_session_id: str,
+        *,
+        message_id: int = 0,
+        project_key: str = "",
+        after_entry_id: int = 0,
+    ) -> None:
+        """Bind a visible Hermes user turn to the turn it opened in the runtime.
+
+        *user_ordinal* is 0-based over visible user rows — the same anchor
+        ``prompt.submit``'s ``truncate_user_ordinal`` uses, so the binding
+        survives both of Hermes' rewind mechanics (soft-delete and
+        delete-and-reinsert).
+        """
+        if not session_id or user_ordinal is None or not provider_session_id:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "INSERT INTO provider_message_bindings ("
+                "  session_id, user_ordinal, message_id, runtime, project_key,"
+                "  provider_session_id, after_entry_id, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id, user_ordinal) DO UPDATE SET "
+                "  message_id = excluded.message_id,"
+                "  runtime = excluded.runtime,"
+                "  project_key = excluded.project_key,"
+                "  provider_session_id = excluded.provider_session_id,"
+                "  after_entry_id = excluded.after_entry_id",
+                (
+                    session_id,
+                    int(user_ordinal),
+                    int(message_id or 0),
+                    runtime,
+                    project_key or "",
+                    provider_session_id,
+                    int(after_entry_id or 0),
+                    time.time(),
+                ),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "record_provider_message_binding(%s, #%s) failed: %s",
+                session_id,
+                user_ordinal,
+                exc,
+            )
+
+    def get_provider_message_binding(
+        self, session_id: str, user_ordinal: int
+    ) -> Optional[Dict[str, Any]]:
+        """Return the binding row for a visible Hermes user turn, or None."""
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT session_id, user_ordinal, message_id, runtime, project_key,"
+                "       provider_session_id, after_entry_id,"
+                "       provider_message_uuid, fork_boundary_uuid "
+                "FROM provider_message_bindings "
+                "WHERE session_id = ? AND user_ordinal = ?",
+                (session_id, int(user_ordinal)),
+            ).fetchone()
+        if row is None:
+            return None
+        keys = (
+            "session_id",
+            "user_ordinal",
+            "message_id",
+            "runtime",
+            "project_key",
+            "provider_session_id",
+            "after_entry_id",
+            "provider_message_uuid",
+            "fork_boundary_uuid",
+        )
+        if isinstance(row, sqlite3.Row):
+            return {k: row[k] for k in keys}
+        return dict(zip(keys, row))
+
+    def set_provider_message_binding_uuids(
+        self,
+        session_id: str,
+        user_ordinal: int,
+        *,
+        provider_message_uuid: Optional[str],
+        fork_boundary_uuid: Optional[str],
+    ) -> None:
+        """Persist the resolved runtime UUIDs for a visible user turn."""
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE provider_message_bindings SET "
+                "  provider_message_uuid = ?, fork_boundary_uuid = ? "
+                "WHERE session_id = ? AND user_ordinal = ?",
+                (
+                    provider_message_uuid,
+                    fork_boundary_uuid,
+                    session_id,
+                    int(user_ordinal),
+                ),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.warning(
+                "set_provider_message_binding_uuids(%s, #%s) failed: %s",
+                session_id,
+                user_ordinal,
+                exc,
+            )
+
+    # ── Rewind / branch signalling ──
+    #
+    # Every durable rewind in Hermes funnels through exactly two SessionDB
+    # methods — rewind_to_message (CLI /undo, gateway /undo) and
+    # replace_messages (prompt.submit's truncate_user_ordinal, which is what
+    # Desktop's edit / regenerate / restore-checkpoint all submit, plus
+    # /retry and /compress). Signalling from there covers every surface at
+    # once instead of bolting a hook onto each one, and it cannot be bypassed
+    # by a surface that reaches the transcript another way.
+    #
+    # The signal is a boundary, not an action: a whole-turn runtime consumes
+    # it on its NEXT turn by forking its own session there. Doing the fork
+    # here would mean the state layer talking to a provider SDK, and would
+    # fork on every rewind even for sessions that never reach that runtime
+    # again.
+
+    def _note_provider_rewind_boundary(
+        self, conn, session_id: str, surviving_user_turns: int
+    ) -> None:
+        """Mark bound runtimes for a fork at *surviving_user_turns*.
+
+        Runs inside the caller's write transaction. The bindings for the
+        discarded turns are deliberately NOT dropped here: the binding at
+        ordinal ``surviving_user_turns`` is the first discarded turn, and its
+        ``fork_boundary_uuid`` is exactly the point the runtime forks at. The
+        runtime prunes them once it has consumed the boundary
+        (:meth:`prune_provider_message_bindings`).
+        """
+        if not session_id:
+            return
+        try:
+            conn.execute(
+                "UPDATE provider_runtime_sessions "
+                "SET pending_rewind_ordinal = ?, updated_at = ? "
+                "WHERE session_id = ? AND provider_session_id != ''",
+                (int(surviving_user_turns), time.time(), session_id),
+            )
+        except sqlite3.Error as exc:
+            # A missing table means a downgrade dropped it; the transcript
+            # rewrite itself must still commit.
+            logger.debug("provider rewind boundary not recorded: %s", exc)
+
+    def seed_provider_branch(
+        self, parent_session_id: str, new_session_id: str
+    ) -> None:
+        """Give a freshly-branched session its parent's runtime session to fork.
+
+        A branch is a fork, not a replay: the child starts from the parent's
+        runtime-native context so the provider's prompt cache stays warm and
+        no history is reconstructed. Marked pending here; the runtime performs
+        the fork on the branch's first turn.
+        """
+        if not parent_session_id or not new_session_id:
+            return
+
+        def _do(conn):
+            rows = conn.execute(
+                "SELECT runtime, provider_session_id, project_key "
+                "FROM provider_runtime_sessions "
+                "WHERE session_id = ? AND provider_session_id != ''",
+                (parent_session_id,),
+            ).fetchall()
+            now = time.time()
+            for row in rows:
+                if isinstance(row, sqlite3.Row):
+                    runtime, source, project_key = (
+                        row["runtime"],
+                        row["provider_session_id"],
+                        row["project_key"],
+                    )
+                else:
+                    runtime, source, project_key = row[0], row[1], row[2]
+                conn.execute(
+                    "INSERT INTO provider_runtime_sessions ("
+                    "  session_id, runtime, provider_session_id, project_key,"
+                    "  bootstrapped, pending_fork_source, created_at, updated_at"
+                    ") VALUES (?, ?, '', ?, 1, ?, ?, ?) "
+                    "ON CONFLICT(session_id, runtime) DO UPDATE SET "
+                    "  pending_fork_source = excluded.pending_fork_source,"
+                    "  project_key = excluded.project_key,"
+                    "  updated_at = excluded.updated_at",
+                    (new_session_id, runtime, project_key, source, now, now),
+                )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.debug("seed_provider_branch(%s) failed: %s", new_session_id, exc)
+
+    def prune_provider_message_bindings(
+        self, session_id: str, from_ordinal: int
+    ) -> None:
+        """Drop bindings for user turns at or past *from_ordinal*.
+
+        Called once the runtime has forked at that boundary — from then on
+        those UUIDs describe a branch the user abandoned.
+        """
+
+        def _do(conn):
+            conn.execute(
+                "DELETE FROM provider_message_bindings "
+                "WHERE session_id = ? AND user_ordinal >= ?",
+                (session_id, int(from_ordinal)),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.debug(
+                "prune_provider_message_bindings(%s) failed: %s", session_id, exc
+            )
+
+    def clear_provider_pending(self, session_id: str, runtime: str) -> None:
+        """Clear both pending markers once the runtime has acted on them."""
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE provider_runtime_sessions SET pending_rewind_ordinal = NULL, "
+                "pending_fork_source = NULL, updated_at = ? "
+                "WHERE session_id = ? AND runtime = ?",
+                (time.time(), session_id, runtime),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.Error as exc:
+            logger.debug("clear_provider_pending(%s) failed: %s", session_id, exc)
+
+    def provider_transcript_entries_after(
+        self,
+        runtime: str,
+        project_key: str,
+        provider_session_id: str,
+        after_entry_id: int,
+        limit: int = 200,
+    ) -> List[Tuple[int, Optional[str], Dict[str, Any]]]:
+        """Return ``(row_id, entry_uuid, entry)`` triples past a watermark.
+
+        The caller decides which entry shape counts as "the visible user
+        turn" — that is runtime-specific knowledge and does not belong in the
+        state layer.
+        """
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                "SELECT id, entry_uuid, entry_json FROM provider_transcript_entries "
+                "WHERE runtime = ? AND project_key = ? "
+                "AND provider_session_id = ? AND subpath = '' AND id > ? "
+                "ORDER BY id LIMIT ?",
+                (
+                    runtime,
+                    project_key,
+                    provider_session_id,
+                    int(after_entry_id or 0),
+                    int(limit),
+                ),
+            ).fetchall()
+        out: List[Tuple[int, Optional[str], Dict[str, Any]]] = []
+        for row in rows:
+            if isinstance(row, sqlite3.Row):
+                rid, ruuid, raw = row["id"], row["entry_uuid"], row["entry_json"]
+            else:
+                rid, ruuid, raw = row[0], row[1], row[2]
+            try:
+                entry = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            out.append((int(rid), ruuid, entry))
+        return out
+
+    def provider_transcript_uuid_before(
+        self,
+        runtime: str,
+        project_key: str,
+        provider_session_id: str,
+        entry_row_id: int,
+    ) -> Optional[str]:
+        """The last entry UUID strictly before *entry_row_id* on the main key.
+
+        This is the fork boundary for a rewind: forking a session inclusive of
+        this UUID reproduces everything the user is keeping and nothing they
+        are replacing.
+        """
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT entry_uuid FROM provider_transcript_entries "
+                "WHERE runtime = ? AND project_key = ? "
+                "AND provider_session_id = ? AND subpath = '' "
+                "AND id < ? AND entry_uuid IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (runtime, project_key, provider_session_id, int(entry_row_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        return row["entry_uuid"] if isinstance(row, sqlite3.Row) else row[0]
 
 
 class AsyncSessionDB:

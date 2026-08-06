@@ -278,6 +278,112 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claimed_at REAL
 );
 
+-- ── Whole-turn provider runtimes (claude_agent_sdk, codex_app_server, …) ──
+-- Some providers run the whole agentic turn themselves and own a session of
+-- their own: Claude's Agent SDK keeps the Claude-native context, the resume
+-- cursor, and the message UUIDs; Hermes keeps the visible transcript. The
+-- three tables below are the seam between the two halves.
+--
+-- They are deliberately provider-GENERIC (every row carries a ``runtime``
+-- discriminator) because Hermes already has two such runtimes, and
+-- deliberately FK-free: the mirror is written from the provider's own
+-- callback, which can fire before Hermes has created its ``sessions`` row,
+-- and a downgrade must be able to leave the mirror in place rather than
+-- delete transcript data (see docs/design/claude-subscription-via-agent-sdk.md
+-- § Rollback).
+
+-- Binds one Hermes session to the runtime-owned session id it resumes from.
+-- NOT sessions.thread_id: that column identifies a messaging origin (the
+-- chat/topic a gateway session was started in) and is load-bearing for
+-- gateway /resume IDOR scoping.
+CREATE TABLE IF NOT EXISTS provider_runtime_sessions (
+    session_id TEXT NOT NULL,
+    runtime TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL,
+    project_key TEXT NOT NULL DEFAULT '',
+    bootstrapped INTEGER NOT NULL DEFAULT 0,
+    recovery_count INTEGER NOT NULL DEFAULT 0,
+    -- Set by a rewind/edit/truncate to the number of visible user turns that
+    -- survive. The runtime consumes it on its next turn by FORKING its own
+    -- session at that boundary, so the parent transcript stays immutable and
+    -- the branch keeps a warm cache. NULL = nothing pending.
+    pending_rewind_ordinal INTEGER,
+    -- Set when a Hermes session is branched from one that had a binding: the
+    -- runtime session id to fork wholesale so the branch starts warm instead
+    -- of replaying history. NULL = nothing pending.
+    pending_fork_source TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (session_id, runtime)
+);
+
+-- One opaque JSONL transcript line as the runtime mirrored it to us. Entries
+-- are pass-through blobs: persisted in append order, returned in the same
+-- order, deep-equal on the way out. ``entry_uuid`` is the runtime's own id and
+-- is the idempotency key for a re-delivered batch; entries that carry no uuid
+-- (titles, tags, mode markers) are appended without dedup.
+CREATE TABLE IF NOT EXISTS provider_transcript_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    runtime TEXT NOT NULL,
+    project_key TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL,
+    subpath TEXT NOT NULL DEFAULT '',
+    entry_uuid TEXT,
+    entry_json TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
+-- One row per mirrored key (main transcript or subagent subpath). Carries the
+-- storage write time the runtime's session listing sorts on, and lets load()
+-- tell "never written" from "written then emptied".
+CREATE TABLE IF NOT EXISTS provider_transcript_keys (
+    runtime TEXT NOT NULL,
+    project_key TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL,
+    subpath TEXT NOT NULL DEFAULT '',
+    mtime_ms INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (runtime, project_key, provider_session_id, subpath)
+);
+
+-- Incrementally folded per-session summary sidecar. ``summary_json`` is opaque
+-- runtime-owned state — persisted verbatim, never interpreted here.
+CREATE TABLE IF NOT EXISTS provider_transcript_summaries (
+    runtime TEXT NOT NULL,
+    project_key TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    mtime_ms INTEGER NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (runtime, project_key, provider_session_id)
+);
+
+-- Maps a VISIBLE Hermes user row (messages.id) to the runtime message UUID
+-- that turn opened with. This is what makes a rewind land on the right
+-- boundary instead of a guessed offset. ``after_entry_id`` is the mirror
+-- watermark taken when the turn was submitted, so the UUID can be resolved
+-- lazily once the mirror has caught up.
+-- ``user_ordinal`` is the primary anchor, not ``message_id``: Hermes has two
+-- durable rewind mechanics and one of them (replace_messages, behind
+-- prompt.submit's truncate) DELETEs and re-INSERTs rows, so autoincrement ids
+-- do not survive it. The ordinal — position among visible, non-bookkeeping
+-- user rows — is the same anchor prompt.submit's ``truncate_user_ordinal``
+-- already uses, so it survives both. ``message_id`` is kept alongside it for
+-- direct row lookups.
+CREATE TABLE IF NOT EXISTS provider_message_bindings (
+    session_id TEXT NOT NULL,
+    user_ordinal INTEGER NOT NULL,
+    message_id INTEGER NOT NULL DEFAULT 0,
+    runtime TEXT NOT NULL,
+    project_key TEXT NOT NULL DEFAULT '',
+    provider_session_id TEXT NOT NULL,
+    after_entry_id INTEGER NOT NULL DEFAULT 0,
+    provider_message_uuid TEXT,
+    fork_boundary_uuid TEXT,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (session_id, user_ordinal)
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -288,6 +394,25 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+CREATE INDEX IF NOT EXISTS idx_provider_runtime_sessions_lookup
+    ON provider_runtime_sessions(runtime, provider_session_id);
+-- Ordered read path for load(): the AUTOINCREMENT id IS the append order.
+CREATE INDEX IF NOT EXISTS idx_provider_transcript_entries_key
+    ON provider_transcript_entries(
+        runtime, project_key, provider_session_id, subpath, id
+    );
+-- Idempotency for a re-delivered batch. Partial so the many legitimate
+-- uuid-less entries (titles, tags, mode markers) are never deduped against
+-- each other, and scoped per key because a fork rewrites every uuid.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_transcript_entries_uuid
+    ON provider_transcript_entries(
+        runtime, project_key, provider_session_id, subpath, entry_uuid
+    )
+    WHERE entry_uuid IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_provider_transcript_keys_project
+    ON provider_transcript_keys(runtime, project_key, mtime_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_provider_message_bindings_row
+    ON provider_message_bindings(session_id, message_id);
 """
 
 

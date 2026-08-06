@@ -612,7 +612,7 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server", "claude_agent_sdk"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
@@ -1082,6 +1082,32 @@ def init_agent(
         agent.base_url = "moa://local"
         if not agent.quiet_mode:
             print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
+    elif agent.api_mode == "claude_agent_sdk":
+        # Claude subscription via the official Agent SDK. There is nothing to
+        # construct here: Hermes holds no Claude credential and the SDK owns
+        # the endpoint, so a client built from an api_key/base_url pair would
+        # be meaningless. The runtime spawns its own session lazily on the
+        # first turn (agent/claude_runtime.py). base_url stays the internal
+        # `claude-sdk://subscription` scheme — never a reachable REST endpoint.
+        agent.client = None
+        agent._client_kwargs = {}
+        agent.api_key = ""
+        agent._claude_session = None
+        agent._claude_sdk_session_id = None
+        if not (agent.model or "").strip():
+            # Surfaces that resolve the model from config can hand this branch
+            # an empty string (the TUI did — #trial). An empty model reaches
+            # the SDK as "use the CLI's own default", silently running a model
+            # the user never picked, and resolves a 256k fallback context in
+            # the compressor. Pin the curated default instead.
+            from hermes_cli.claude_code import DEFAULT_SUBSCRIPTION_MODEL
+
+            agent.model = DEFAULT_SUBSCRIPTION_MODEL
+        if not agent.quiet_mode:
+            print(
+                f"🤖 AI Agent initialized with model: {agent.model} "
+                "(Claude subscription via Agent SDK)"
+            )
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
         # Region is extracted from the base_url or defaults to us-east-1.

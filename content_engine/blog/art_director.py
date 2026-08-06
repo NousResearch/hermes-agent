@@ -628,7 +628,12 @@ def build_art_brief(
 
             def default_llm(system: str, user: str) -> Optional[str]:
                 for cfg in _llm_configs(longform=True):
-                    body = _call_llm(system, user, cfg, timeout=180, max_tokens=4000)
+                    # max_tokens must be generous: reasoning models (gemini-2.5-flash)
+                    # burn budget on hidden thinking tokens, and a tight cap returns a
+                    # truncated JSON fence with no closing brace, which _extract_json
+                    # then rejects (verified 2026-08-06: 4000 -> 209-char truncated
+                    # body; 8192 -> complete brief).
+                    body = _call_llm(system, user, cfg, timeout=180, max_tokens=8192)
                     if body:
                         return body
                 return None

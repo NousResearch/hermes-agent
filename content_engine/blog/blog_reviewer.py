@@ -146,6 +146,12 @@ def review(draft: dict, stream: str) -> dict[str, Any]:
     score = int(parsed.get("score", 5))
     issues = list(parsed.get("issues", []) or [])
     claims = list(parsed.get("claims_to_verify", []) or [])
+    # Some models return a placeholder sentence instead of an empty list when
+    # there is nothing to verify ("No specific factual claims requiring
+    # verification", "None", etc.). Treat those as NO claims — otherwise every
+    # clean draft triggers a web-verify round-trip that can fail when search
+    # backends are down, forcing an unnecessary retry that ends in None.
+    claims = [c for c in claims if not _is_no_claims_placeholder(c)]
     passed = bool(parsed.get("passed", score >= 6 and not issues))
 
     return {
@@ -155,3 +161,26 @@ def review(draft: dict, stream: str) -> dict[str, Any]:
         "claims_to_verify": claims,
         "degraded": False,
     }
+
+
+def _is_no_claims_placeholder(text: str) -> bool:
+    """True when a claims_to_verify entry is a 'no claims' placeholder.
+
+    Models that follow the rubric but return prose instead of an empty list
+    commonly emit variants of "No specific factual claims requiring
+    verification". These are NOT claims to verify; filtering them prevents a
+    needless (and potentially failing) news-verify round-trip.
+    """
+    low = (text or "").strip().lower()
+    if not low:
+        return True
+    # Match only at the START of the entry (after optional filler), so real
+    # claims like "OpenAI's 47% adoption..." are never filtered. Bare "na"
+    # is intentionally omitted — it matches substrings of real words.
+    start = low.lstrip(" -–—:.,;")
+    no_claim_starts = (
+        "no ", "none", "n/a", "not applicable", "nothing",
+        "none found", "no specific", "no factual", "no claims",
+        "no particular", "no material", "no issues",
+    )
+    return start.startswith(no_claim_starts)

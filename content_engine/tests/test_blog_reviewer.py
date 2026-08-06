@@ -120,3 +120,60 @@ def test_review_builder_stream_checks_secret_sauce(monkeypatch):
     assert r["passed"] is False
     assert any("secret" in i.lower() or "internal" in i.lower() or "api" in i.lower()
                for i in r["issues"])
+
+
+def test_review_filters_no_claims_placeholder(monkeypatch):
+    """'No specific factual claims requiring verification' is treated as no claims.
+
+    Models that follow the rubric but return prose instead of an empty list
+    trigger a needless (and potentially failing) news-verify round-trip. The
+    reviewer must normalise those placeholder strings away.
+    """
+    raw = json.dumps({
+        "score": 8,
+        "passed": True,
+        "issues": [],
+        "claims_to_verify": ["No specific factual claims requiring verification"],
+        "rubric": {
+            "accuracy_risk": 2,
+            "voice_fidelity": 8,
+            "secret_sauce_leakage": 10,
+            "hype_honesty": 7,
+            "structure": 9,
+        },
+    })
+    monkeypatch.setattr(br, "_call_review_llm", lambda *a, **k: raw)
+    draft = {
+        "title": "Test",
+        "body_md": "## Section\n\nContent.",
+        "stream": "pm",
+    }
+    r = br.review(draft, "pm")
+    assert r["passed"] is True
+    assert r["claims_to_verify"] == []
+
+
+def test_review_keeps_real_claims_with_no_prefix(monkeypatch):
+    """Real claims are NOT filtered by the placeholder guard."""
+    raw = json.dumps({
+        "score": 7,
+        "passed": True,
+        "issues": [],
+        "claims_to_verify": ["The 2026 AI index reports 47% enterprise adoption"],
+        "rubric": {
+            "accuracy_risk": 3,
+            "voice_fidelity": 8,
+            "secret_sauce_leakage": 10,
+            "hype_honesty": 7,
+            "structure": 9,
+        },
+    })
+    monkeypatch.setattr(br, "_call_review_llm", lambda *a, **k: raw)
+    draft = {
+        "title": "Test",
+        "body_md": "## Section\n\nContent.",
+        "stream": "pm",
+    }
+    r = br.review(draft, "pm")
+    assert len(r["claims_to_verify"]) == 1
+    assert "47% enterprise adoption" in r["claims_to_verify"][0]

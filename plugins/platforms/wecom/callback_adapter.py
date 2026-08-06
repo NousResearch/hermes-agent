@@ -88,7 +88,6 @@ def ensure_wecom_callback_requirements() -> bool:
     False forever on installs without the ``wecom`` extra and the
     ``platform.wecom_callback`` LAZY_DEPS entry was never exercised.
     """
-    global ET, DEFUSEDXML_AVAILABLE
     if check_wecom_callback_requirements():
         return True
 

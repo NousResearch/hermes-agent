@@ -6,7 +6,8 @@ Runs an aiohttp webhook server to receive messages from Teams.
 Proactive messaging (send, typing) uses the SDK's App.send() method.
 
 Requires:
-    pip install microsoft-teams-apps aiohttp
+    the ``teams`` extra (auto-installed by the gateway on first start, or
+    manually: ``<hermes-venv>/bin/pip install microsoft-teams-apps aiohttp``)
     TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID env vars
 
 Configuration in config.yaml:

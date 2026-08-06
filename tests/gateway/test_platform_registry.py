@@ -656,3 +656,44 @@ class TestPluginEnablementGate:
                 assert cfg.platforms[plat].enabled is False
         finally:
             _reg.unregister("myhardblockplat")
+
+
+class TestMigratedPlatformWiring:
+    """Every lazy-installable bundled platform must register the split:
+    a PASSIVE check_fn plus an ACTIVE ensure_deps_fn (#79812).
+
+    Behavior contract, not a snapshot: asserts the two fields are distinct
+    callables (probe != installer), not specific function identities, so
+    renames don't churn this test.
+    """
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize(
+        "platform_name",
+        [
+            "teams", "telegram", "discord", "slack",
+            "matrix", "dingtalk", "feishu", "wecom_callback",
+        ],
+    )
+    def test_lazy_installable_platform_has_split_wiring(self, platform_name):
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        from gateway.platform_registry import platform_registry
+
+        # Materialize deferred loaders (wecom_callback is registered by the
+        # "wecom" manifest's loader; a cold get() by its own name misses).
+        platform_registry.plugin_entries()
+        entry = platform_registry.get(platform_name)
+        assert entry is not None, f"{platform_name} not registered"
+        assert entry.ensure_deps_fn is not None, (
+            f"{platform_name} has a lazy-installable SDK but no "
+            "ensure_deps_fn — its deps can never auto-install "
+            "(the #79812 deadlock)"
+        )
+        assert entry.ensure_deps_fn is not entry.check_fn, (
+            f"{platform_name} registered the same callable for the passive "
+            "probe and the active installer — status displays would "
+            "pip-install as a side effect"
+        )

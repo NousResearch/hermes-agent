@@ -1451,7 +1451,7 @@ def feishu_deps_present() -> bool:
     """PASSIVE probe: is lark-oapi installed right now?
 
     Registry ``check_fn`` — called from status displays and config loading,
-    so it must never install anything.  Uses ``feature_missing`` (cheap
+    so it must never install anything.  Uses ``is_available`` (cheap
     importlib.metadata lookups) instead of importing the SDK, which is
     deferred to ``_load_lark_oapi`` at connect time.  The ACTIVE
     lazy-installer (``check_feishu_requirements``) is registered as
@@ -1461,8 +1461,8 @@ def feishu_deps_present() -> bool:
     if FEISHU_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import feature_missing
-        return not feature_missing("platform.feishu")
+        from tools.lazy_deps import is_available
+        return is_available("platform.feishu")
     except Exception:  # pragma: no cover — defensive
         return False
 

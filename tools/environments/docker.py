@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, _popen_bash
 from tools.environments.local import (
     _HERMES_PROVIDER_ENV_BLOCKLIST,
@@ -39,6 +40,7 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EGRESS_LABEL_KEY = "hermes-egress"
+_ENVIRONMENT_LABEL_KEY = "hermes-environment"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -564,6 +566,35 @@ def _egress_reuse_fingerprint(
             "volume_args": volume_args,
             "env_overrides": env_overrides,
             "host_args": host_args,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def _reuse_environment_fingerprint(
+    *,
+    image: str,
+    mount_args: list[str],
+    hermes_home: str,
+) -> str:
+    """Stable Docker-label value for immutable container configuration.
+
+    Cross-process reuse cannot safely attach to a container created with a
+    different image, mount layout, or Hermes home. Hash the requested values
+    so profile paths and volume sources are not exposed in Docker labels.
+    Preserve mount-argument order because Docker can treat later duplicate
+    destinations as overrides.
+    """
+    normalized_home = os.path.normcase(
+        os.path.abspath(os.path.expanduser(hermes_home))
+    )
+    payload = json.dumps(
+        {
+            "image": image,
+            "mount_args": mount_args,
+            "hermes_home": normalized_home,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -1342,18 +1373,24 @@ class DockerEnvironment(BaseEnvironment):
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
         # Labels make hermes-created containers identifiable to:
         #   * the orphan reaper (`hermes-agent=1` for the global sweep filter)
-        #   * future cross-process reuse (`hermes-task-id`, `hermes-profile`)
+        #   * cross-process reuse (task, profile, egress, and environment)
         #   * operators running `docker ps --filter label=hermes-agent=1`
         # Values are limited to the safe character set defined by
         # _sanitize_label_value(); the active Hermes profile is captured at
         # container-start time and never changes for the container's lifetime.
         profile_name = _sanitize_label_value(_get_active_profile_name())
         task_label = _sanitize_label_value(task_id)
+        environment_label = _reuse_environment_fingerprint(
+            image=image,
+            mount_args=[*writable_args, *volume_args],
+            hermes_home=str(get_hermes_home()),
+        )
         label_args = [
             "--label", "hermes-agent=1",
             "--label", f"hermes-task-id={task_label}",
             "--label", f"hermes-profile={profile_name}",
             "--label", f"{_EGRESS_LABEL_KEY}={egress_label}",
+            "--label", f"{_ENVIRONMENT_LABEL_KEY}={environment_label}",
         ]
         # Save args for container recreation on "No such container" recovery.
         self._image = image
@@ -1366,6 +1403,7 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label,
+            _ENVIRONMENT_LABEL_KEY: environment_label,
         }
 
         # Cross-process container reuse (issue #20561 — docs claim "ONE long-lived
@@ -1375,14 +1413,15 @@ class DockerEnvironment(BaseEnvironment):
         # restores the documented contract; opt out via
         # ``terminal.docker_persist_across_processes: false``.
         #
-        # Reuse matches on labels only.  The egress posture gets its own label
-        # because env vars, CA mounts, and host mappings are immutable after
-        # container creation — reusing a pre-egress or pre-rotation container
-        # would silently bypass the credential firewall.
+        # Reuse matches on labels only. Immutable egress configuration and the
+        # requested image/mount/home configuration get separate fingerprints;
+        # a changed value starts a fresh container instead of silently reusing
+        # stale settings. Containers created before either label existed do not
+        # match, causing a one-time fresh container after upgrade.
         reused = False
         if persist_across_processes:
             existing = self._find_reusable_container(
-                task_label, profile_name, egress_label,
+                task_label, profile_name, egress_label, environment_label,
             )
             if existing is not None:
                 container_id, state = existing
@@ -1642,7 +1681,10 @@ class DockerEnvironment(BaseEnvironment):
         task_label = self._labels.get("hermes-task-id", "")
         profile_label = self._labels.get("hermes-profile", "")
         existing = self._find_reusable_container(
-            task_label, profile_label, self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            task_label,
+            profile_label,
+            self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            self._labels.get(_ENVIRONMENT_LABEL_KEY, ""),
         )
         if existing is not None:
             cid, state = existing
@@ -1807,8 +1849,9 @@ class DockerEnvironment(BaseEnvironment):
         task_label: str,
         profile_label: str,
         egress_label: str,
+        environment_label: str,
     ) -> Optional[tuple[str, str]]:
-        """Look for an existing container labeled for this (task, profile).
+        """Look for an existing container with the same immutable environment.
 
         Returns ``(container_id, state)`` on hit, ``None`` on miss / on any
         failure (including ``docker ps`` itself failing). State is one of the
@@ -1825,6 +1868,7 @@ class DockerEnvironment(BaseEnvironment):
                 "--filter", "label=hermes-agent=1",
                 "--filter", f"label=hermes-task-id={task_label}",
                 "--filter", f"label=hermes-profile={profile_label}",
+                "--filter", f"label={_ENVIRONMENT_LABEL_KEY}={environment_label}",
             ]
             if egress_label != "off":
                 filters.extend(["--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"])

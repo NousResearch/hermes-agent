@@ -2907,6 +2907,14 @@ class MCPServerTask:
                         # prior outage so the first call after recovery isn't
                         # gated on a stale consecutive-failure count (#16788).
                         _reset_server_error(self.name)
+                        # Reset the identical-error streak too: a success proves
+                        # the server is healthy again, so the next outage must
+                        # start from 1, not from a stale pre-recovery count
+                        # (#79141 — an HTTP server that recovered after 4
+                        # identical failures would otherwise cold-park after a
+                        # single new error).
+                        self._identical_failures = 0
+                        self._last_failure_fingerprint = None
                         # Unproven until keepalive/tool-call success (#62212).
                         self._session_proven = False
                         reason = await self._wait_for_lifecycle_event()
@@ -2970,13 +2978,17 @@ class MCPServerTask:
                             # a prior outage so the first call after recovery
                             # isn't gated on a stale failure count (#16788).
                             _reset_server_error(self.name)
+                            # Reset the identical-error streak too (#79141) —
+                            # see the SSE path above.
+                            self._identical_failures = 0
+                            self._last_failure_fingerprint = None
                             # Unproven until keepalive/tool-call success (#62212).
                             self._session_proven = False
                             reason = await self._wait_for_lifecycle_event()
                             if reason == "reconnect":
                                 logger.info(
                                     "MCP server '%s': reconnect requested — "
-                                    "tearing down HTTP session", self.name,
+                                    "tearing down streamable_http session", self.name,
                                 )
             except BaseExceptionGroup as _eg:
                 # Streamable-HTTP transport TaskGroup dropped: reconnect
@@ -3008,6 +3020,10 @@ class MCPServerTask:
                         # prior outage so the first call after recovery isn't
                         # gated on a stale consecutive-failure count (#16788).
                         _reset_server_error(self.name)
+                        # Reset the identical-error streak too (#79141) —
+                        # see the SSE path above.
+                        self._identical_failures = 0
+                        self._last_failure_fingerprint = None
                         # Unproven until keepalive/tool-call success (#62212).
                         self._session_proven = False
                         reason = await self._wait_for_lifecycle_event()
@@ -3293,9 +3309,48 @@ class MCPServerTask:
                         self._ready.set()
                         return
 
-                    # Track identical-error streak before the permanent
-                    # classification below: a deterministically-broken server
-                    # (missing module) fingerprints the same every attempt.
+                    if failure_class == "permanent":
+                        # Deterministic failure (bad command, non-MCP URL,
+                        # 401/403): every retry hits the same wall. Park
+                        # immediately instead of burning the retry ladder
+                        # and spamming N identical warnings (#65673).
+                        logger.warning(
+                            "MCP server '%s' failed initial connection with a "
+                            "permanent error, parking without retries "
+                            "(state: connecting → parked): %s: %s",
+                            self.name, type(root).__name__, root,
+                        )
+                        self._error = exc
+                        self._ready.set()
+                        self._was_parked = True
+                        self._deregister_tools()
+                        self._reconnect_event.clear()
+                        parked = await self._wait_for_reconnect_or_shutdown(
+                            timeout=_PARKED_RETRY_INTERVAL
+                        )
+                        if parked == "shutdown":
+                            return
+                        logger.debug(
+                            "MCP server '%s': attempting revival after "
+                            "permanent initial failure (self-probe or explicit "
+                            "reconnect request); rebuilding transport.",
+                            self.name,
+                        )
+                        initial_retries = 0
+                        self._reconnect_retries = 0
+                        backoff = 1.0
+                        self._error = None
+                        self._ready.clear()
+                        continue
+
+                    # Track identical-error streak AFTER the permanent
+                    # classification: a deterministically-broken server
+                    # (missing module) fingerprints the same every attempt,
+                    # but a permanent error (auth/ENOENT) parks immediately on
+                    # attempt 1 and must NOT advance the streak — otherwise the
+                    # 5th permanent revival would cold-park with a misleading
+                    # "deterministically broken" message and burn the ladder
+                    # it already avoided (#79141).
                     fp = _failure_fingerprint(root)
                     if fp == self._last_failure_fingerprint:
                         self._identical_failures += 1
@@ -3326,40 +3381,6 @@ class MCPServerTask:
                         )
                         self._identical_failures = 0
                         self._last_failure_fingerprint = None
-                        initial_retries = 0
-                        self._reconnect_retries = 0
-                        backoff = 1.0
-                        self._error = None
-                        self._ready.clear()
-                        continue
-
-                    if failure_class == "permanent":
-                        # Deterministic failure (bad command, non-MCP URL,
-                        # 401/403): every retry hits the same wall. Park
-                        # immediately instead of burning the retry ladder
-                        # and spamming N identical warnings (#65673).
-                        logger.warning(
-                            "MCP server '%s' failed initial connection with a "
-                            "permanent error, parking without retries "
-                            "(state: connecting → parked): %s: %s",
-                            self.name, type(root).__name__, root,
-                        )
-                        self._error = exc
-                        self._ready.set()
-                        self._was_parked = True
-                        self._deregister_tools()
-                        self._reconnect_event.clear()
-                        parked = await self._wait_for_reconnect_or_shutdown(
-                            timeout=_PARKED_RETRY_INTERVAL
-                        )
-                        if parked == "shutdown":
-                            return
-                        logger.debug(
-                            "MCP server '%s': attempting revival after "
-                            "permanent initial failure (self-probe or explicit "
-                            "reconnect request); rebuilding transport.",
-                            self.name,
-                        )
                         initial_retries = 0
                         self._reconnect_retries = 0
                         backoff = 1.0

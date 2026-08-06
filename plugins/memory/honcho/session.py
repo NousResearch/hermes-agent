@@ -26,18 +26,13 @@ _PEER_ID_HASH_ESCALATION_LENGTHS = (_PEER_ID_HASH_LEN, 12, 16, 24, 32, 64)
 
 
 class HonchoAuthError(RuntimeError):
-    """Auth failure that survived a forced token refresh and one retry.
+    """Auth failure that survived a forced refresh and one retry.
 
-    Raised instead of swallowed so callers can tell a rejected credential
-    apart from an empty result; cadence backoff must not count it as empty.
+    Raised, not swallowed, so callers can tell a rejected credential from an empty result.
     """
 
 
-# Text fallback for transports without a status attribute. Conservative on
-# purpose: a false positive spends a refresh-token rotation, and a lost
-# rotation response can permanently revoke the grant. A missed auth error
-# only costs one un-recovered call. "authentication failed" (not bare
-# "authentication") so auth-infrastructure outage messages stay transient.
+# Matched narrowly: a false positive spends a token rotation, and a lost rotation revokes the grant.
 _AUTH_ERROR_MARKERS = (
     "invalid or expired access token",
     "authentication failed",
@@ -240,10 +235,9 @@ class HonchoSessionManager:
         return self._auth_failure
 
     def _reauth_required(self) -> bool:
-        """True when the OAuth grant is dead and only a new login can fix it.
+        """True when the grant is dead and only a new login can fix it.
 
-        Reads the config and compares the refresh-token digest, so a re-login
-        flips this back to False with no network call — recovery is immediate.
+        Compares the on-disk refresh-token digest, so a new login clears it with no network call.
         """
         try:
             from plugins.memory.honcho import oauth
@@ -257,11 +251,9 @@ class HonchoSessionManager:
             return False
 
     def _force_reauth(self) -> bool:
-        """Rotate the OAuth token after a server-side 401 and rebind the client.
+        """Rotate the token after a 401 and rebind the client.
 
-        Returns True when a fresh token was obtained and applied. False for
-        static API keys (no OAuth credential), a dead grant, or a failed
-        exchange — callers surface the original auth error in that case.
+        False for a static API key, a dead grant, or a failed exchange.
         """
         try:
             from plugins.memory.honcho import oauth

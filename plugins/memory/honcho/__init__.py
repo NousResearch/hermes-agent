@@ -1047,8 +1047,7 @@ class HonchoMemoryProvider(MemoryProvider):
     def _note_dialectic_failure(self, exc: BaseException) -> None:
         """Widen the empty-streak backoff after a failed dialectic cycle.
 
-        Auth failures are exempt: waiting cannot fix a dead token, and backoff
-        would delay recovery after the user re-authenticates.
+        Auth failures are exempt because waiting cannot fix a dead token.
         """
         from plugins.memory.honcho.session import HonchoAuthError
 

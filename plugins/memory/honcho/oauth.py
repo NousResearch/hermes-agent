@@ -304,11 +304,9 @@ def _exchange_refresh_token(cred: OAuthCredential, *, now: float) -> OAuthCreden
 
 
 def _exchange_with_retry(cred: OAuthCredential, *, now: float) -> OAuthCredential:
-    """Exchange the refresh token, retrying once immediately on transient failure.
+    """Exchange the refresh token, retrying once on transient failure.
 
-    The server honors a replayed refresh token only within a short grace
-    window after rotating it, so the retry must happen now — deferring to the
-    next memory call lands outside the window and revokes the grant.
+    The server accepts a replayed token only briefly after rotating it, so the retry cannot wait.
     """
     try:
         return _exchange_refresh_token(cred, now=now)
@@ -440,13 +438,9 @@ def ensure_fresh_token(
 
 
 def force_refresh_token(path: Path, host: str) -> str | None:
-    """Rotate ``host``'s access token now, ignoring local expiry math.
+    """Rotate ``host``'s access token now, ignoring local expiry.
 
-    Recovery path for a server-side 401 on a token the local clock still
-    considers valid (clock skew, server-side rotation, revocation). Returns
-    the new access token, or ``None`` when the host has no OAuth credential,
-    the grant is dead, or the exchange fails — callers surface the original
-    auth error in that case.
+    Recovers a 401 on a token the local clock still thinks is valid.
     """
     now = time.time()
     key = (str(path), host)

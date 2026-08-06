@@ -651,8 +651,12 @@ class TestMemoryContextFencing:
             "tool_use",
             "tool_result",
             "tool_call",
+            "tool_response",
+            "tools",
             "function_call",
             "function_result",
+            "function_response",
+            "think",
         ],
     )
     def test_build_memory_context_block_neutralizes_prompt_tags(self, tag):
@@ -720,13 +724,21 @@ class TestMemoryContextFencing:
         for marker in markers:
             assert marker not in result
 
-    def test_build_memory_context_block_preserves_unrelated_xml(self):
+    def test_build_memory_context_block_neutralizes_unrelated_xml_tags(self):
         from agent.memory_manager import build_memory_context_block
 
         raw = '<preference key="theme">dark</preference>'
         result = build_memory_context_block(raw)
 
-        assert raw in result
+        assert raw not in result
+        assert '&lt;preference key="theme"&gt;dark&lt;/preference&gt;' in result
+
+    def test_build_memory_context_block_preserves_non_tag_text(self):
+        from agent.memory_manager import build_memory_context_block
+
+        raw = "Keep 2 < 3 and 5 > 4 as ordinary remembered text."
+
+        assert raw in build_memory_context_block(raw)
 
     def test_output_sanitizer_preserves_role_tags(self):
         from agent.memory_manager import sanitize_context

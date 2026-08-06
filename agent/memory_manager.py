@@ -170,7 +170,8 @@ _INTERNAL_NOTE_RE = re.compile(
     re.IGNORECASE,
 )
 _PROMPT_STRUCTURING_TAG_RE = re.compile(
-    r'<\s*/?\s*(?:'
+    r'</?[A-Za-z][A-Za-z0-9:_-]*(?:\s+[^<>]*?)?\s*/?>'
+    r'|<\s*/?\s*(?:'
     r'analysis|assistant|developer|final|human|input|instructions?|observation|'
     r'output|response|result|system|thinking|user|'
     r'function(?:_calls?|_result)?|tool(?:_calls?|_result|_use)?'
@@ -206,8 +207,9 @@ def _neutralize_prompt_structuring_tokens(text: str) -> str:
     This is intentionally separate from ``sanitize_context`` because that
     helper also scrubs assistant output. Memory-provider text is untrusted at
     the prompt-injection boundary, while legitimate assistant output may quote
-    XML or model-template examples. Escape the bounded XML role vocabulary and
-    common backend control-token syntaxes while preserving the payload text.
+    XML or model-template examples. Escape every conventional XML-like tag,
+    spaced variants of the known role vocabulary, and common backend control
+    tokens while preserving the payload text.
     """
     text = _PROMPT_STRUCTURING_TAG_RE.sub(_escape_prompt_delimiters, text)
     return _MODEL_TEMPLATE_CONTROL_RE.sub(

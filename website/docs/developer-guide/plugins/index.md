@@ -915,6 +915,50 @@ def register(ctx):
 
 This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead.
 
+### Handle inline-button clicks (callback prefixes)
+
+Plugins that post inline keyboards can claim a `callback_data` prefix and route their own button presses — no special-casing inside a platform adapter.
+
+```python
+def register(ctx):
+    def _on_press(data: str) -> str:
+        # data is the full payload, prefix included: "em:approve:tg-7:archive"
+        parts = data.split(":")
+        if len(parts) != 4 or parts[1] != "approve":
+            return "❌ Rejected."          # validate fail-closed, never guess
+        return "✅ Archived."
+
+    ctx.register_callback_prefix("em:", _on_press, description="email approvals")
+```
+
+**Signature:** `ctx.register_callback_prefix(prefix, handler, description="") -> None`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `prefix` | `str` | Lowercase `[a-z0-9_-]`, 2–16 chars, ending in `:` (e.g. `"em:"`) |
+| `handler` | callable | `fn(data: str) -> str \| None`, sync or async. `data` is the full payload including the prefix; the return value becomes the button's answer |
+| `description` | `str` | Optional human-readable label for diagnostics |
+
+**Payload contract:**
+
+- Your handler receives the payload **verbatim**, prefix included, and owns its grammar. Validate fail-closed — refuse anything malformed rather than guessing.
+- Keep payloads small. Telegram caps `callback_data` at 64 bytes total, prefix included.
+- The return value is stringified and truncated to 180 characters for the answer. Returning `None` answers `Done.`
+- Treat the payload as **untrusted input**. It comes off the wire and a button can be pressed more than once — make handlers idempotent, and never build one that depends on the press being unique.
+
+**Authorization contract:**
+
+- The presser is checked against the **same** authorization gate as the built-in approval buttons *before* your handler runs. An unauthorized press is answered `⛔ You are not authorized to use this button.` and never reaches your code.
+- Authorization says *who* pressed, not *what* they may do. Any further permission logic is yours.
+
+**Runtime behavior:**
+
+- Registration is fail-closed. A prefix that is malformed, collides with a built-in prefix, or is already claimed by another plugin is rejected with a warning and skipped; the plugin still loads. A **non-callable handler raises `ValueError`** at registration, like `register_slack_action_handler` — that is a bug in your plugin, not a policy outcome.
+- A plugin may re-register its own prefix to swap the handler; it can never take one from another plugin. Built-in prefixes always win in the adapter.
+- Sync handlers run on a worker thread, so a blocking handler cannot stall the gateway's update processing. Async handlers are awaited directly.
+- The whole invocation is bounded at 15 seconds; on expiry the press is answered `⏳ Action timed out.` The bound cancels the *wait*, not a running sync handler — keep handlers short and push long work to the background.
+- Handler exceptions are contained: the press is answered `❌ Action failed.` and the exception is logged, never relayed to the chat.
+
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
 :::

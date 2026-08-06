@@ -34,11 +34,13 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import importlib.metadata
 import importlib.util
 import inspect
 import logging
 import os
+import re
 import sys
 import threading
 import types
@@ -601,6 +603,84 @@ class PluginContext:
             "args_hint": (args_hint or "").strip(),
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
+
+    # -- inline-button callback prefix registration ---------------------------
+
+    # Callback prefixes consumed by the platform adapters' built-in button
+    # flows. A plugin prefix may not shadow (or be shadowed by) any of these.
+    _RESERVED_CALLBACK_PREFIXES = (
+        "mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:",
+        "cp:", "gt:", "ea:", "sc:", "cl:", "update_prompt:",
+    )
+    _CALLBACK_PREFIX_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,14}:$")
+
+    def register_callback_prefix(
+        self,
+        prefix: str,
+        handler: Callable,
+        description: str = "",
+    ) -> None:
+        """Register an inline-button callback prefix (e.g. ``"em:"``).
+
+        Platform adapters route button presses whose ``callback_data`` starts
+        with *prefix* to *handler* — only after the presser passes the same
+        authorization check as the built-in approval buttons. The handler
+        signature is ``fn(data: str) -> str | None`` (sync or async): ``data``
+        is the full callback payload including the prefix, and the return
+        value (truncated by the adapter) becomes the callback answer.
+
+        Handlers own their payload grammar and must validate it fail-closed:
+        refuse anything malformed rather than guessing. Prefixes are lowercase
+        ``[a-z0-9_-]``, 2-16 chars, ending in ``:``; built-in prefixes and
+        prefixes claimed by another plugin are rejected with a warning.
+
+        A non-callable *handler* is a programming error and raises immediately
+        (as ``register_slack_action_handler`` does) rather than failing later,
+        when a user presses the button. Prefix rejections stay warn-and-skip:
+        losing a prefix to a built-in or to another plugin is a policy outcome
+        a plugin can legitimately survive, not a bug in its own code.
+
+        Raises:
+            ValueError: if *handler* is not callable.
+        """
+        if not callable(handler):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register callback "
+                f"prefix {prefix!r} with a non-callable handler."
+            )
+        clean = (prefix or "").strip()
+        if not self._CALLBACK_PREFIX_RE.match(clean):
+            logger.warning(
+                "Plugin '%s' tried to register invalid callback prefix %r. Skipping.",
+                self.manifest.name, prefix,
+            )
+            return
+        if any(
+            clean.startswith(reserved) or reserved.startswith(clean)
+            for reserved in self._RESERVED_CALLBACK_PREFIXES
+        ):
+            logger.warning(
+                "Plugin '%s' tried to register callback prefix %r which conflicts "
+                "with a built-in prefix. Skipping.",
+                self.manifest.name, prefix,
+            )
+            return
+        existing = self._manager._callback_prefixes.get(clean)
+        if existing is not None and existing.get("plugin") != self.manifest.name:
+            logger.warning(
+                "Plugin '%s' tried to register callback prefix %r already claimed "
+                "by plugin '%s'. Skipping.",
+                self.manifest.name, prefix, existing.get("plugin"),
+            )
+            return
+        self._manager._callback_prefixes[clean] = {
+            "handler": handler,
+            "description": (description or "").strip(),
+            "plugin": self.manifest.name,
+        }
+        logger.debug(
+            "Plugin %s registered callback prefix: %s", self.manifest.name, clean
+        )
 
     # -- tool dispatch -------------------------------------------------------
 
@@ -1279,6 +1359,7 @@ class PluginManager:
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
+        self._callback_prefixes: Dict[str, dict] = {}  # Inline-button callback prefixes registered by plugins
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
@@ -1319,6 +1400,7 @@ class PluginManager:
             self._plugin_platform_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
+            self._callback_prefixes.clear()
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
@@ -2390,6 +2472,85 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def get_plugin_callback_prefix(data: str) -> Optional[tuple]:
+    """Return ``(prefix, entry)`` for the plugin callback prefix matching *data*.
+
+    ``entry`` is the registration dict (``handler`` / ``plugin`` /
+    ``description``) stored by ``PluginContext.register_callback_prefix``.
+    Registered prefixes are colon-terminated and cannot shadow each other or
+    any built-in prefix, so at most one entry matches. Returns ``None`` when
+    nothing matches.
+    """
+    registry = _ensure_plugins_discovered()._callback_prefixes
+    for prefix, entry in registry.items():
+        if data.startswith(prefix):
+            return prefix, entry
+    return None
+
+
+# Inline-button callbacks are answered while the platform holds the press open,
+# so the bound here is tighter than the plugin-command one below.
+_PLUGIN_CALLBACK_AWAIT_TIMEOUT_SECS = 15.0
+
+# Synchronous handlers run on a small dedicated pool rather than the default
+# executor: a plugin that wedges its workers then starves only other callback
+# handlers, never every other ``to_thread`` caller in the process.
+_PLUGIN_CALLBACK_MAX_WORKERS = 4
+_plugin_callback_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_plugin_callback_executor_lock = threading.Lock()
+
+
+def _get_plugin_callback_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Return the lazily-created pool used to run sync callback handlers."""
+    global _plugin_callback_executor
+    with _plugin_callback_executor_lock:
+        if _plugin_callback_executor is None:
+            _plugin_callback_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=_PLUGIN_CALLBACK_MAX_WORKERS,
+                thread_name_prefix="hermes-plugin-callback",
+            )
+        return _plugin_callback_executor
+
+
+async def _invoke_plugin_callback_handler(handler: Callable, data: str) -> Any:
+    """Await *handler* without ever running plugin code on the caller's loop."""
+    if inspect.iscoroutinefunction(handler):
+        return await handler(data)
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(_get_plugin_callback_executor(), handler, data)
+    # A sync callable may still hand back an awaitable (e.g. an object whose
+    # ``__call__`` is async); finish it on the loop.
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+async def run_plugin_callback_handler(
+    handler: Callable,
+    data: str,
+    *,
+    timeout: Optional[float] = _PLUGIN_CALLBACK_AWAIT_TIMEOUT_SECS,
+) -> Any:
+    """Run a plugin inline-button handler off the caller's event loop, bounded.
+
+    Platform adapters call this instead of invoking the registered handler
+    directly. Async handlers are awaited; synchronous handlers run on a worker
+    thread, so a blocking handler cannot stall the adapter's update processing.
+    The whole invocation shares one *timeout* budget, letting the adapter answer
+    the button press on a deadline instead of waiting indefinitely.
+
+    Raises:
+        asyncio.TimeoutError: if the handler does not finish within *timeout*.
+            Like every thread-offload in Python this cancels the *wait*, not the
+            worker: a runaway sync handler keeps its thread until it returns, it
+            just stops holding up the answer. Handlers should stay short and do
+            long work in the background.
+    """
+    return await asyncio.wait_for(
+        _invoke_plugin_callback_handler(handler, data), timeout=timeout
+    )
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

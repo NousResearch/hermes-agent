@@ -5129,7 +5129,10 @@ def run_job(
                         "To run on the new config, pin it explicitly: "
                         f"`cronjob action=update job_id={job_id} "
                         "provider=<provider> model=<model>` (or pin the original "
-                        "values to keep them)."
+                        "values to keep them), OR adopt the current global "
+                        f"default without pinning: `cronjob action=resnap "
+                        f"job_id={job_id}` (or `action=resnap all=true` for every "
+                        "unpinned job)."
                     )
                 logger.warning(
                     "Job '%s': SKIPPED — global inference config drifted since "

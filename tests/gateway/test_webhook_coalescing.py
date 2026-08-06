@@ -28,12 +28,14 @@ def _capture_admissions(adapter, monkeypatch):
         admitted.append(event)
         return SimpleNamespace(admission_id=f"adm-{len(admitted)}", ref=SimpleNamespace(profile_id="default"))
 
-    async def _finalize(event, authority, receipt):
+    async def _finalize(event, authority, receipt, **_completion):
         return None
 
     monkeypatch.setattr(webhook_ingress, "admit_producer", _admit)
     monkeypatch.setattr(adapter, "_finalize_delivery", _finalize)
-    adapter._message_handler = SimpleNamespace(__self__=SimpleNamespace())
+    from hermes_constants import get_hermes_home
+    runner = SimpleNamespace(_resolve_profile_home_for_source=lambda source: get_hermes_home())
+    adapter._message_handler = SimpleNamespace(__self__=runner)
     monkeypatch.setattr("gateway.session_authorities.authority_for_profile_id", lambda runner, pid: object())
     return admitted
 

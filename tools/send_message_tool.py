@@ -1286,7 +1286,7 @@ async def _send_to_platform(
         if platform == Platform.WHATSAPP:
             result = await _registry_standalone_send(
                 "whatsapp", pconfig, chat_id, chunk, thread_id,
-                **({"mentions": mentions} if mentions else {}),
+                **({"mentions": mentions} if mentions and i == 0 else {}),
             )
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)

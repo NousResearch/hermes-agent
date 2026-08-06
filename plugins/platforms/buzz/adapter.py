@@ -782,7 +782,7 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        reply_target = reply_to or (metadata or {}).get("thread_id")
+        reply_target = (metadata or {}).get("thread_id") or reply_to
         if reply_target:
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)
@@ -929,8 +929,9 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            if reply_to:
-                args += ["--reply-to", str(reply_to)]
+            reply_target = (metadata or {}).get("thread_id") or reply_to
+            if reply_target:
+                args += ["--reply-to", str(reply_target)]
             code, out, err = await self._run_cli(args, input_text=caption or "")
             if code != 0:
                 return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
@@ -1310,6 +1311,23 @@ class BuzzAdapter(BasePlatformAdapter):
         # open with "@Chip" even though no mention is required there, so the
         # strip applies to both chat types.
         dispatch_text = self._strip_mention(content)
+        tags = event.get("tags")
+        thread_id = (
+            next(
+                (
+                    str(tag[1])
+                    for tag in tags
+                    if isinstance(tag, (list, tuple))
+                    and len(tag) > 3
+                    and tag[0] == "e"
+                    and tag[1]
+                    and tag[3] == "root"
+                ),
+                None,
+            )
+            if isinstance(tags, list)
+            else None
+        )
 
         await self._dispatch_message(
             text=dispatch_text,
@@ -1319,6 +1337,7 @@ class BuzzAdapter(BasePlatformAdapter):
             user_name=await self._resolve_user_name(pubkey),
             message_id=event_id,
             created_at=created_at,
+            thread_id=thread_id,
         )
 
     # ── DM classification (issue #68871) ──────────────────────────────────
@@ -1482,6 +1501,7 @@ class BuzzAdapter(BasePlatformAdapter):
         user_name: str,
         message_id: str,
         created_at: int,
+        thread_id: Optional[str] = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
@@ -1493,6 +1513,7 @@ class BuzzAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
+            thread_id=thread_id,
         )
 
         event = MessageEvent(

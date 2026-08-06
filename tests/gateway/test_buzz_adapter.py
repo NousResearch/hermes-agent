@@ -828,6 +828,34 @@ class TestDmClassification:
         assert a._may_reclassify_as_dm(CHANNEL) is False
 
 
+class TestThreadRoots:
+
+    @pytest.mark.asyncio
+    async def test_inbound_root_e_tag_propagates_to_session_source(self):
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+        }
+        dispatched = []
+
+        async def capture(event):
+            dispatched.append(event)
+
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = capture
+        event = _tagged_event("latest-child", CHANNEL, content="@Chip follow-up")
+        event["tags"] += [
+            ["e", "stable-root", "", "root"],
+            ["e", "latest-parent", "", "reply"],
+        ]
+
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+
+        assert dispatched[0].source.thread_id == "stable-root"
+
+
 # ── Sending ───────────────────────────────────────────────────────────────
 
 
@@ -872,6 +900,24 @@ class TestBuzzAdapterSend:
         assert args[args.index("--reply-to") + 1] == "buzz-event-123"
 
     @pytest.mark.asyncio
+    async def test_send_prefers_stable_thread_root_over_latest_reply(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt124"})
+        adapter._run_cli = cli
+
+        await adapter.send(
+            CHANNEL,
+            "threaded reply",
+            reply_to="latest-child",
+            metadata={"thread_id": "stable-root"},
+        )
+
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "stable-root"
+
+
+    @pytest.mark.asyncio
     async def test_send_image_local_file_uses_file_flag(self, tmp_path):
         img = tmp_path / "shot.png"
         img.write_bytes(b"\x89PNG fake")
@@ -883,6 +929,25 @@ class TestBuzzAdapterSend:
         assert result.success is True
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
+
+    @pytest.mark.asyncio
+    async def test_send_image_local_file_prefers_stable_thread_root(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt127"})
+        adapter._run_cli = cli
+
+        await adapter.send_image(
+            CHANNEL,
+            str(img),
+            reply_to="latest-child",
+            metadata={"thread_id": "stable-root"},
+        )
+
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "stable-root"
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────

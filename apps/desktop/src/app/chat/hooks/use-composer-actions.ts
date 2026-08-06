@@ -68,13 +68,6 @@ export async function attachmentPreviewDataUrl(filePath: string): Promise<string
     dataUrl = await readDesktopFileDataUrl(filePath)
   }
 
-  // Downscale large images for preview to prevent main-thread decode freezes.
-  // macOS ImageIO/vImage blocks the Chromium renderer on Retina screenshots
-  // (6000×4000+, >5 MB). The full-resolution bytes are still on disk for the model.
-  if (dataUrl.startsWith('data:image/')) {
-    return downscaleDataUrlForPreview(dataUrl)
-  }
-
   return dataUrl
 }
 
@@ -483,7 +476,17 @@ export function useComposerActions({
         const previewUrl = await attachmentPreviewDataUrl(filePath)
 
         if (previewUrl) {
-          scope.add({ ...baseAttachment, previewUrl })
+          // Downscale only the pill thumbnail. `previewUrl` must keep the
+          // full-resolution bytes: current main feeds it to ImageLightbox and
+          // useImageDownload (attachments.tsx), and the attached-image
+          // pipeline uploads the on-disk original to the model. The helper
+          // never rejects — on failure it returns a 1×1 placeholder so the
+          // pill never renders the multi-MB original.
+          const thumbnailUrl = previewUrl.startsWith('data:image/')
+            ? await downscaleDataUrlForPreview(previewUrl)
+            : undefined
+
+          scope.add({ ...baseAttachment, previewUrl, thumbnailUrl })
         }
 
         return true

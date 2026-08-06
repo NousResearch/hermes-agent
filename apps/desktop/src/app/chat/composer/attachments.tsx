@@ -127,7 +127,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
                   alt={attachment.label}
                   className="size-full object-cover"
                   draggable={false}
-                  src={attachment.previewUrl}
+                  src={attachment.thumbnailUrl ?? attachment.previewUrl}
                 />
               ) : (
                 <Icon className="size-3.5" />

@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ComposerAttachment } from '@/store/composer'
+import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
 import { $connection } from '@/store/session'
 
 import {
@@ -317,5 +317,88 @@ describe('useComposerActions native image drops', () => {
         previewUrl
       })
     )
+  })
+})
+
+describe('attachImagePath thumbnail separation', () => {
+  // Full-resolution data URL the local bridge returns for a pasted screenshot.
+  // Content is irrelevant — the mock bitmap below reports 4000×3000 so the
+  // real downscale path runs (the data URL itself is never decoded in jsdom).
+  const FULL_RES = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+GkZcAAAAASUVORK5CYII='
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    $composerAttachments.set([])
+  })
+
+  it('keeps the full-resolution previewUrl and stores a separate downscaled thumbnailUrl', async () => {
+    const readFileDataUrl = vi.fn(async () => FULL_RES)
+
+    ;(window as unknown as { hermesDesktop: { readFileDataUrl: typeof readFileDataUrl } }).hermesDesktop = {
+      readFileDataUrl
+    }
+
+    // Exercise the real downscale path: 4000×3000 bitmap → 2048×1536 canvas.
+    const drawImage = vi.fn()
+    const close = vi.fn()
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' })
+      }))
+    )
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 4000, height: 3000, close })))
+
+    class MockOffscreenCanvas {
+      getContext = () => ({ drawImage })
+      convertToBlob = vi.fn(async () => new Blob(['x'], { type: 'image/png' }))
+      constructor(_width: number, _height: number) {}
+    }
+
+    vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas)
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '', requestGateway: vi.fn() })
+    )
+
+    await act(async () => {
+      await result.current.attachImagePath('/tmp/shot.png')
+    })
+
+    const attachment = $composerAttachments.get()[0]
+
+    expect(attachment).toBeDefined()
+    // Full-resolution bytes stay on `previewUrl` — the same field main feeds
+    // to ImageLightbox and useImageDownload, so open/download keep full res.
+    expect(attachment?.previewUrl).toBe(FULL_RES)
+    // The pill thumbnail is a SEPARATE downscaled value, never the multi-MB
+    // original (which would re-introduce the main-thread decode freeze).
+    expect(attachment?.thumbnailUrl).toBeDefined()
+    expect(attachment?.thumbnailUrl).not.toBe(FULL_RES)
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 2048, 1536)
+    expect(close).toHaveBeenCalled()
+  })
+
+  it('leaves the thumbnail undefined when the preview is not an image', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,aGVsbG8=')
+
+    ;(window as unknown as { hermesDesktop: { readFileDataUrl: typeof readFileDataUrl } }).hermesDesktop = {
+      readFileDataUrl
+    }
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '', requestGateway: vi.fn() })
+    )
+
+    await act(async () => {
+      await result.current.attachImagePath('/tmp/shot.txt')
+    })
+
+    const attachment = $composerAttachments.get()[0]
+
+    expect(attachment?.previewUrl).toBe('data:text/plain;base64,aGVsbG8=')
+    expect(attachment?.thumbnailUrl).toBeUndefined()
   })
 })

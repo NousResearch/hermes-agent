@@ -10,6 +10,9 @@ export interface ComposerAttachment {
   detail?: string
   refText?: string
   previewUrl?: string
+  /** Downscaled data URL for the attachment card's <img> pill only. Keeps the
+   * full-resolution `previewUrl` for lightbox/download/model bytes. */
+  thumbnailUrl?: string
   path?: string
   attachedSessionId?: string
   /** Set while the file/image bytes are being staged into the session

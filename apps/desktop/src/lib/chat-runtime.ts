@@ -259,7 +259,10 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
   }
 
   if (attachment.kind === 'image' && attachment.previewUrl?.startsWith('data:')) {
-    return attachment.previewUrl
+    // The pill and the in-flight bubble render the downscaled thumbnail; the
+    // full-resolution `previewUrl` stays for lightbox/download, and the model
+    // receives bytes via the attached-image upload pipeline, not this ref.
+    return attachment.thumbnailUrl ?? attachment.previewUrl
   }
 
   return attachmentDisplayText(attachment)

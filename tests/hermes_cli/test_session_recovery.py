@@ -594,6 +594,100 @@ def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(
     }
 
 
+def _corrupt_last_table_leaf(path: Path, root_page: int) -> int:
+    """Damage the rightmost data leaf so the descending rowid-edge probe fails.
+
+    The high-edge probe is ``ORDER BY rowid DESC LIMIT 1``; corrupting the
+    leaf holding the largest rowids makes that probe raise
+    ``database disk image is malformed`` while the low edge stays readable.
+    This reproduces #80205's exact shape: the populated range is small, the
+    high-edge probe fails, and the final recoverable row would previously be
+    skipped because bisection exhausted its budget on the domain-sized
+    fallback range.
+    """
+    page_size, leaf_pages = _btree_leaf_pages(path, root_page)
+    assert len(leaf_pages) >= 2
+    leaf_page = max(leaf_pages)
+    page_start = (leaf_page - 1) * page_size
+    header_offset = page_start + (100 if leaf_page == 1 else 0)
+
+    data = bytearray(path.read_bytes())
+    assert data[header_offset] in {0x0A, 0x0D}
+    data[header_offset + 3 : header_offset + 5] = b"\xff\xff"
+    path.write_bytes(data)
+    return leaf_page
+
+
+def test_allow_partial_reaches_tail_row_when_high_edge_probe_fails(
+    tmp_path: Path,
+) -> None:
+    """#80205: a failing descending high-edge probe must not cost the tail row.
+
+    When ``ORDER BY rowid DESC LIMIT 1`` raises (damaged rightmost leaf) but
+    the populated range is small and the low edge is readable, the salvage
+    must discover a practical upper bound near the data (exponential probes /
+    sqlite_sequence hint) instead of bisecting the whole 64-bit domain. The
+    final message row must be recovered without exhausting the query budget.
+    """
+    source = tmp_path / "high-edge-corrupt.db"
+    output = tmp_path / "high-edge-recovered.db"
+    message_count = 320
+    messages_root, count_index_root = _make_page_spanning_source(
+        source,
+        message_count,
+    )
+    corrupted = _corrupt_last_table_leaf(source, messages_root)
+    if count_index_root is not None:
+        _corrupt_last_table_leaf(
+            source,
+            count_index_root,
+        )
+    source_hash = _sha256(source)
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        chunk_size=8,
+        allow_partial=True,
+    )
+
+    assert report["verified"] is True
+    assert report["partial"] is True
+    assert report["source_unchanged"] is True
+    assert _sha256(source) == source_hash
+
+    copied_messages = report["copy"]["messages"]
+    assert copied_messages["status"] == "partial"
+    bounds = copied_messages["rowid_bounds"]
+    assert "high" in bounds.get("fallback_edges", [])
+    assert bounds["high"] <= message_count + 1, (
+        "practical upper bound must land near the populated range, "
+        f"got high={bounds['high']} for {message_count} rows"
+    )
+    assert copied_messages["query_limit_reached"] is False
+    assert copied_messages["copied_rows"] > 0
+
+    conn = sqlite3.connect(str(output))
+    try:
+        recovered_ids = {
+            int(row[0]) for row in conn.execute("SELECT id FROM messages")
+        }
+        # Rows outside the damaged rightmost leaf must all be recovered; the
+        # rows inside the damaged leaf are physically unrecoverable via SQL
+        # (only page-level .recover reaches them) — the bug was that the
+        # domain-sized fallback ALSO lost the recoverable tail, which the
+        # bounded upper bound now prevents.
+        assert max(recovered_ids) >= 317
+        assert len(recovered_ids) == copied_messages["copied_rows"]
+        assert conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+    finally:
+        conn.close()
+
+    # Prove the helper really damaged the rightmost leaf.
+    assert corrupted == max(_btree_leaf_pages(source, messages_root)[1])
+
+
 def test_partial_recovery_clears_only_unreadable_system_prompt_refs(
     tmp_path: Path,
 ) -> None:

@@ -497,12 +497,66 @@ def _salvage_rowid_bounds(
         rows["low"] = _MIN_SQLITE_ROWID
         result["fallback_edges"].append("low")
     if rows["high"] is None:
-        rows["high"] = _MAX_SQLITE_ROWID
+        rows["high"] = _probe_upper_bound(source, table, rows["low"])
         result["fallback_edges"].append("high")
 
     result["low"] = rows["low"]
     result["high"] = rows["high"]
     return result
+
+
+def _probe_upper_bound(
+    source: sqlite3.Connection,
+    table: str,
+    low: Optional[int],
+) -> int:
+    """Find a practical upper rowid bound when the descending edge probe fails.
+
+    Instead of bounding the missing edge by ``_MAX_SQLITE_ROWID`` — which
+    forces bisection to spend its query budget exploring empty or unreadable
+    space orders of magnitude beyond the populated range — probe outward
+    from the surviving edge with bounded exponential steps. Each probe asks
+    for the highest rowid in ``[low, low + step)``; the first empty probe
+    caps the range just past the last populated region, and bisection then
+    spends its budget near the data instead of across the whole domain.
+    """
+
+    if low is None:
+        return _MAX_SQLITE_ROWID
+    # sqlite_sequence (AUTOINCREMENT) records the highest ever assigned
+    # rowid; a best-effort hint only, never trusted as the sole source of
+    # truth (the issue's suggestion 2).
+    try:
+        row = source.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = ?",
+            (table,),
+        ).fetchone()
+        if row is not None and isinstance(row[0], int):
+            seq = int(row[0])
+            if seq >= low:
+                return seq + 1
+    except sqlite3.DatabaseError:
+        pass
+
+    step = 1
+    probe_low = low
+    while step <= _MAX_SALVAGE_RANGE_QUERIES:
+        probe_high = low + step
+        try:
+            row = source.execute(
+                f'SELECT rowid FROM "{table}" '
+                "WHERE rowid BETWEEN ? AND ? ORDER BY rowid DESC LIMIT 1",
+                (probe_low, probe_high),
+            ).fetchone()
+        except sqlite3.DatabaseError:
+            # Damaged page inside the probe window — fall back to the domain
+            # max so bisection can isolate the readable sub-ranges.
+            return _MAX_SQLITE_ROWID
+        if row is None:
+            return probe_high
+        probe_low = int(row[0])
+        step *= 2
+    return _MAX_SQLITE_ROWID
 
 
 def _copy_table_salvage(

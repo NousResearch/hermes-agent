@@ -38,9 +38,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, BinaryIO, Iterator, Optional
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -48,6 +51,9 @@ from utils import atomic_json_write
 _log = logging.getLogger(__name__)
 
 _STATE_FILENAME = ".shutdown_notice_state.json"
+_LOCK_FILENAME = ".shutdown_notice_state.lock"
+_LOCK_TIMEOUT_SECONDS = 5.0
+_LOCK_POLL_SECONDS = 0.020
 
 # Entries older than this are dropped on write so the file cannot grow
 # unbounded across a long-lived install with many home channels. Generous
@@ -62,14 +68,22 @@ def notice_state_path(home: Optional[Path] = None) -> Path:
     return Path(base) / _STATE_FILENAME
 
 
-def destination_key(platform: str, chat_id: Any, thread_id: Any = None) -> str:
-    """Stable string key for one delivery destination.
+def _notice_lock_path(home: Optional[Path] = None) -> Path:
+    return notice_state_path(home).with_name(_LOCK_FILENAME)
 
-    Mirrors the in-process ``dedup_key`` tuple so the durable record and the
-    per-process set agree on what "the same destination" means.
+
+def destination_key(platform: str, chat_id: Any, thread_id: Any = None) -> str:
+    """Return a canonical, one-to-one key for one delivery destination.
+
+    The JSON array is intentionally structured rather than delimiter-joined:
+    chat IDs and thread IDs can themselves contain colons.
     """
-    thread = str(thread_id) if thread_id else ""
-    return f"{platform}:{chat_id}:{thread}"
+    thread = str(thread_id) if thread_id else None
+    return json.dumps(
+        [str(platform), str(chat_id), thread],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _read_state(path: Path) -> dict[str, float]:
@@ -100,6 +114,177 @@ def _read_state(path: Path) -> dict[str, float]:
     return out
 
 
+def _should_send_from_state(
+    entries: dict[str, float],
+    key: str,
+    cooldown_seconds: float,
+    now_ts: float,
+) -> bool:
+    """Evaluate a loaded state snapshot without doing I/O."""
+    if cooldown_seconds <= 0:
+        return True
+    last = entries.get(key)
+    if last is None or last > now_ts:
+        # A backwards clock step must not silence the channel indefinitely.
+        return True
+    return (now_ts - last) >= cooldown_seconds
+
+
+def _fresh_state(entries: dict[str, float], now_ts: float) -> dict[str, float]:
+    """Drop stale and wildly-future entries before persisting the state."""
+    return {
+        key: value
+        for key, value in entries.items()
+        if abs(value - now_ts) <= _MAX_ENTRY_AGE_SECONDS
+    }
+
+
+def _record_home_notice_unlocked(
+    path: Path,
+    key: str,
+    now_ts: float,
+) -> None:
+    entries = _read_state(path)
+    entries[key] = now_ts
+    atomic_json_write(path, {"home_notices": _fresh_state(entries, now_ts)})
+
+
+def _acquire_lock(handle: BinaryIO, timeout: float = _LOCK_TIMEOUT_SECONDS) -> bool:
+    """Acquire the state lock with a bounded wait on POSIX and Windows."""
+    deadline = time.monotonic() + timeout
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+        except OSError:
+            return False
+
+        while True:
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                return True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(_LOCK_POLL_SECONDS)
+
+    import fcntl
+
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except (BlockingIOError, OSError):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_LOCK_POLL_SECONDS)
+
+
+def _release_lock(handle: BinaryIO) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except (OSError, AttributeError):
+        pass
+
+
+@dataclass
+class HomeNoticeAdmission:
+    """A cooldown decision that keeps the cross-process lock until send result."""
+
+    allowed: bool
+    key: str
+    path: Path
+    cooldown_seconds: float
+    _lock_handle: Optional[BinaryIO] = None
+    _recorded: bool = False
+
+    def record_success(self, *, now: Optional[float] = None) -> None:
+        """Record a successful send while the admission lock is still held."""
+        if not self.allowed or self._recorded:
+            return
+        try:
+            now_ts = time.time() if now is None else float(now)
+            if self._lock_handle is not None:
+                _record_home_notice_unlocked(self.path, self.key, now_ts)
+            else:
+                # Lock acquisition failure is fail-open for delivery. Make a
+                # best-effort post-send record if the lock becomes available.
+                record_home_notice(self.key, now=now_ts, home=self.path.parent)
+            self._recorded = True
+        except Exception as e:
+            _log.debug("Failed recording shutdown notice for %s: %s", self.key, e)
+
+
+@contextmanager
+def home_notice_admission(
+    key: str,
+    *,
+    cooldown_seconds: float,
+    now: Optional[float] = None,
+    home: Optional[Path] = None,
+) -> Iterator[HomeNoticeAdmission]:
+    """Atomically admit one home notice and hold the lock through its send.
+
+    The lock spans the state read, awaited platform send, and successful state
+    write. Two gateway processes therefore cannot both pass the cooldown check
+    for the same destination. A lock or filesystem failure fails open: the
+    caller may send, but bookkeeping never blocks a shutdown notification.
+    """
+    try:
+        cooldown = float(cooldown_seconds or 0)
+    except (TypeError, ValueError):
+        cooldown = 0.0
+
+    path = notice_state_path(home)
+    handle: Optional[BinaryIO] = None
+    admission: HomeNoticeAdmission
+    try:
+        if cooldown <= 0:
+            admission = HomeNoticeAdmission(True, key, path, cooldown)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = _notice_lock_path(home).open("a+b")
+            acquired = _acquire_lock(handle)
+            if not acquired:
+                _log.debug("Could not acquire shutdown-notice lock %s", handle.name)
+                admission = HomeNoticeAdmission(True, key, path, cooldown)
+            else:
+                now_ts = time.time() if now is None else float(now)
+                allowed = _should_send_from_state(
+                    _read_state(path), key, cooldown, now_ts
+                )
+                admission = HomeNoticeAdmission(
+                    allowed, key, path, cooldown, _lock_handle=handle
+                )
+    except Exception as e:
+        _log.debug("Shutdown-notice admission failed for %s: %s", key, e)
+        if handle is not None:
+            handle.close()
+            handle = None
+        admission = HomeNoticeAdmission(True, key, path, cooldown)
+
+    try:
+        yield admission
+    finally:
+        if handle is not None:
+            _release_lock(handle)
+            handle.close()
+
+
 def should_send_home_notice(
     key: str,
     *,
@@ -109,27 +294,18 @@ def should_send_home_notice(
 ) -> bool:
     """Return True when the home-channel broadcast for *key* may be sent.
 
-    Suppresses only when a previous send is recorded **and** it happened within
-    ``cooldown_seconds`` of *now*. A non-positive cooldown disables the check
-    entirely (always send), which is the documented opt-out.
-
-    A recorded timestamp in the future is treated as unusable rather than as an
-    infinitely-long cooldown: a backwards wall-clock step (NTP correction, VM
-    resume, the very host suspend/resume cycle this guard exists for) must not
-    be able to silence the channel indefinitely.
+    This read-only helper remains available for callers that do not need
+    cross-process admission. The shutdown send path uses
+    :func:`home_notice_admission` instead.
     """
     try:
-        if cooldown_seconds is None or cooldown_seconds <= 0:
+        cooldown = float(cooldown_seconds or 0)
+        if cooldown <= 0:
             return True
-
         now_ts = time.time() if now is None else float(now)
-        last = _read_state(notice_state_path(home)).get(key)
-        if last is None:
-            return True
-        if last > now_ts:
-            # Clock moved backwards — distrust the record, don't extend silence.
-            return True
-        return (now_ts - last) >= cooldown_seconds
+        return _should_send_from_state(
+            _read_state(notice_state_path(home)), key, cooldown, now_ts
+        )
     except Exception as e:
         # Never let bookkeeping block a notification.
         _log.debug("shutdown-notice cooldown check failed for %s: %s", key, e)
@@ -147,18 +323,19 @@ def record_home_notice(
     Best-effort and atomic: a failure to persist means the next process simply
     sends again (the pre-fix behaviour), which is the safe direction.
     """
+    handle: Optional[BinaryIO] = None
     try:
         now_ts = time.time() if now is None else float(now)
         path = notice_state_path(home)
-        entries = _read_state(path)
-        entries[key] = now_ts
-        # Keep only entries within one window of now, in EITHER direction: old
-        # ones are irrelevant (any cooldown has long lapsed) and wildly-future
-        # ones are clock-skew garbage. Bounds the file without extra state.
-        fresh = {
-            k: v for k, v in entries.items()
-            if abs(v - now_ts) <= _MAX_ENTRY_AGE_SECONDS
-        }
-        atomic_json_write(path, {"home_notices": fresh})
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = _notice_lock_path(home).open("a+b")
+        if not _acquire_lock(handle):
+            _log.debug("Could not acquire shutdown-notice lock for %s", key)
+            return
+        _record_home_notice_unlocked(path, key, now_ts)
     except Exception as e:
         _log.debug("Failed recording shutdown notice for %s: %s", key, e)
+    finally:
+        if handle is not None:
+            _release_lock(handle)
+            handle.close()

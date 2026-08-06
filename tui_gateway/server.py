@@ -37,6 +37,7 @@ from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+from gateway.turn_lease import DurableTurnLease, TurnLeaseCancelledError
 from tui_gateway import git_probe
 from tui_gateway.turn_marker import (
     clear_turn_marker,
@@ -1099,6 +1100,14 @@ def _close_sessions_for_transport(
                 _schedule_ws_orphan_reap(sid)
             except Exception:
                 pass
+    # Sweep observer attachments too: observer-only sessions aren't "owned"
+    # above, and leaving the dead transport in their observer sets would aim
+    # later event writes at a closed socket.
+    with _session_observers_lock:
+        for session in _sessions.values():
+            observers = session.get("observer_transports")
+            if observers:
+                observers.discard(transport)
     return reaped, detached
 
 
@@ -1508,14 +1517,81 @@ def _default_session_cwd() -> str:
     return _launch_configured_cwd() or os.getenv("TERMINAL_CWD") or os.getcwd()
 
 
+# Per-session observer transports: extra clients that receive the session's
+# event frames WITHOUT owning it (second-screen viewers such as LazoChat via
+# the HermesBridge). The primary ``session["transport"]`` keeps its
+# last-resumer-wins ownership semantics (orphan reaping, close_on_disconnect);
+# observers are a pure fan-out set managed by ``session.observe`` and swept on
+# WS disconnect. Guarded by its own lock: emitters write from run threads
+# while observe/unobserve/teardown mutate from dispatch/teardown threads.
+_session_observers_lock = threading.Lock()
+
+
+def add_session_observer(sid: str, transport) -> bool:
+    """Attach ``transport`` as an event observer of the live session ``sid``.
+
+    Returns False when the session isn't live (nothing to observe) or the
+    transport is missing. Idempotent.
+    """
+    if transport is None:
+        return False
+    session = _sessions.get(sid)
+    if session is None:
+        return False
+    with _session_observers_lock:
+        observers = session.setdefault("observer_transports", set())
+        observers.add(transport)
+    return True
+
+
+def remove_session_observer(sid: str, transport) -> bool:
+    """Detach ``transport`` from the session's observer set. Idempotent."""
+    session = _sessions.get(sid)
+    if session is None:
+        return False
+    with _session_observers_lock:
+        observers = session.get("observer_transports")
+        if not observers:
+            return False
+        observers.discard(transport)
+    return True
+
+
+def claim_session_transport(session: dict, transport) -> None:
+    """(Re)bind a session's primary transport, auto-promoting the displaced
+    owner to observer.
+
+    ``session[\"transport\"]`` keeps its last-resumer-wins semantics (orphan
+    reaping, close_on_disconnect), but a client that LOSES ownership must not
+    go dark: second-screen continuity relies on the previous owner receiving
+    the session's events after being displaced (e.g. the Hermes Desktop UI,
+    which never calls ``session.observe``). Idempotent — claiming with the
+    same transport adds nothing.
+
+    Caller MUST hold ``session[\"history_lock\"]`` (a non-reentrant Lock).
+    """
+    if transport is None:
+        return
+    previous = session.get("transport")
+    session["transport"] = transport
+    if previous is not None and previous is not transport:
+        # The orphan sentinel isn't a real client — never keep feeding it.
+        if previous is _detached_ws_transport:
+            return
+        with _session_observers_lock:
+            session.setdefault("observer_transports", set()).add(previous)
+
+
 def write_json(obj: dict) -> bool:
     """Emit one JSON frame. Routes via the most-specific transport available.
 
     Precedence:
 
-    1. Event frames with a session id → the transport stored on that session,
-       so async events land with the client that owns the session even if
-       the emitting thread has no contextvar binding.
+    1. Event frames with a session id → the transport stored on that session
+       PLUS every registered observer transport (second-screen viewers), so
+       async events land with every client watching the session even if the
+       emitting thread has no contextvar binding. Observer writes are
+       best-effort and never poison the primary's delivery result.
     2. Otherwise the transport bound on the current context (set by
        :func:`dispatch` for the lifetime of a request).
     3. Otherwise the module-level stdio transport, matching the historical
@@ -1523,8 +1599,30 @@ def write_json(obj: dict) -> bool:
     """
     if obj.get("method") == "event":
         sid = ((obj.get("params") or {}).get("session_id")) or ""
-        if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
-            return t.write(obj)
+        if sid:
+            session = _sessions.get(sid) or {}
+            primary = session.get("transport")
+            with _session_observers_lock:
+                observers = [
+                    t
+                    for t in (session.get("observer_transports") or ())
+                    if t is not primary
+                ]
+            if primary is not None or observers:
+                delivered = False
+                if primary is not None:
+                    try:
+                        delivered = bool(primary.write(obj))
+                    except Exception:
+                        delivered = False
+                for observer in observers:
+                    try:
+                        delivered = bool(observer.write(obj)) or delivered
+                    except Exception:
+                        # A dead observer must not break delivery accounting —
+                        # the disconnect teardown sweeps it shortly.
+                        pass
+                return delivered
 
     return (current_transport() or _stdio_transport).write(obj)
 
@@ -7943,7 +8041,7 @@ def _live_session_payload(
         if cols is not None:
             session["cols"] = cols
         if transport is not None:
-            session["transport"] = transport
+            claim_session_transport(session, transport)
         if touch:
             session["last_active"] = time.time()
         in_memory_history = list(session.get("display_history_prefix") or []) + list(
@@ -9394,6 +9492,28 @@ def _run_prompt_submit(
         result = None  # turn outcome; read after the finally for leftover /steer
         tts_queue = None  # streaming-TTS feed for this turn (voice mode)
         thinking_started = False  # ambient thinking sound armed for this turn
+        history: list = []
+        history_version = 0
+        turn_db_context = None
+        turn_lease = None
+        lease_rebind_installed = False
+        had_lease_rebind = False
+        previous_lease_rebind = None
+
+        def _restore_turn_lease_rebind() -> None:
+            nonlocal lease_rebind_installed
+            if not lease_rebind_installed:
+                return
+            try:
+                if had_lease_rebind:
+                    agent._durable_turn_lease_rebind = previous_lease_rebind
+                else:
+                    delattr(agent, "_durable_turn_lease_rebind")
+            except Exception:
+                logger.exception("Failed to restore TUI turn lease callback")
+            finally:
+                lease_rebind_installed = False
+
         one_turn_restore = session.pop("one_turn_model_restore", None)
         # True once a failed turn's snapshot was retained for resume replay —
         # tells the finally below to skip the normal inflight clear.
@@ -9425,6 +9545,49 @@ def _run_prompt_submit(
             if _profile_home_str:
                 home_token = set_hermes_home_override(_profile_home_str)
                 secret_token = set_secret_scope(build_profile_secret_scope(Path(_profile_home_str)))
+
+            # Desktop and the API server are separate processes sharing
+            # state.db. Serialize the full load -> run -> flush region there,
+            # then reload history so a queued wake sees the turn it followed.
+            turn_db_context = _session_db(session)
+            turn_db = turn_db_context.__enter__()
+            turn_session_id = str(session.get("session_key") or "")
+            turn_lease = DurableTurnLease.acquire(
+                turn_db,
+                turn_session_id,
+                owner_key=f"tui:{sid}",
+                generation=int(session.get("history_version", 0)),
+                cancelled=lambda: bool(
+                    session.get("_turn_cancel_requested")
+                    or session.get("_finalized")
+                ),
+            )
+            if turn_lease is not None:
+                had_lease_rebind = hasattr(agent, "_durable_turn_lease_rebind")
+                if had_lease_rebind:
+                    previous_lease_rebind = getattr(
+                        agent, "_durable_turn_lease_rebind"
+                    )
+                agent._durable_turn_lease_rebind = turn_lease.rebind
+                lease_rebind_installed = True
+            get_session = getattr(turn_db, "get_session", None)
+            get_history = getattr(turn_db, "get_messages_as_conversation", None)
+            persisted = (
+                get_session(turn_session_id)
+                if callable(get_session) and callable(get_history)
+                else None
+            )
+            persisted_history = (
+                get_history(turn_session_id)
+                if persisted is not None
+                else None
+            )
+            with session["history_lock"]:
+                if persisted_history is not None and persisted_history != session["history"]:
+                    session["history"] = persisted_history
+                    session["history_version"] = int(session.get("history_version", 0)) + 1
+                history = list(session["history"])
+                history_version = int(session.get("history_version", 0))
             # The sudo password callback is thread-local (tools.terminal_tool
             # _callback_tls), so wiring it on the build thread doesn't reach this
             # turn thread — terminal sudo prompts would fall through to /dev/tty
@@ -9796,6 +9959,26 @@ def _run_prompt_submit(
                 _sync_session_key_after_compress(
                     sid, session, clear_pending_title=False, restart_slash_worker=True,
                 )
+                new_session_id = str(session.get("session_key") or "")
+                if (
+                    turn_lease is not None
+                    and new_session_id != turn_lease.session_id
+                    and not turn_lease.rebind(new_session_id)
+                ):
+                    logger.error(
+                        "Failed to rebind durable turn lease after compression: %s -> %s",
+                        turn_lease.session_id,
+                        new_session_id,
+                    )
+                # The transcript is flushed when run_conversation returns.
+                # Let the queued wake start before auxiliary title/goal/TTS work.
+                if turn_lease is not None:
+                    _restore_turn_lease_rebind()
+                    turn_lease.release()
+                    turn_lease = None
+                if turn_db_context is not None:
+                    turn_db_context.__exit__(None, None, None)
+                    turn_db_context = None
 
                 raw = result.get("final_response", "")
                 status = (
@@ -10011,6 +10194,17 @@ def _run_prompt_submit(
                     logger.warning("voice TTS skipped: hermes_cli.voice unavailable")
                 except Exception as e:
                     logger.warning("voice TTS dispatch failed: %s", e)
+        except TurnLeaseCancelledError:
+            # Stop while queued behind another process is a clean interrupt,
+            # not a failed turn to retain/replay on the next resume.
+            with session["history_lock"]:
+                _clear_inflight_turn(session)
+            _retire_turn_marker(session, marker_key)
+            _emit(
+                "message.complete",
+                sid,
+                {"text": "", "usage": _get_usage(agent), "status": "interrupted"},
+            )
         except Exception as e:
             import traceback
 
@@ -10043,6 +10237,13 @@ def _run_prompt_submit(
                 )
                 _emit("error", sid, {"message": str(e)})
         finally:
+            _restore_turn_lease_rebind()
+            if turn_lease is not None:
+                with contextlib.suppress(Exception):
+                    turn_lease.release()
+            if turn_db_context is not None:
+                with contextlib.suppress(Exception):
+                    turn_db_context.__exit__(None, None, None)
             # Drop both local snapshots of the pre-turn history before asking
             # glibc to return pages. session["history"] already points at the
             # new/pruned result; retaining either list defeats this trim.

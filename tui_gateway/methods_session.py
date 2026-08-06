@@ -2895,6 +2895,42 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "interrupted"})
 
 
+@method("session.observe")
+def _(rid, params: dict) -> dict:
+    """Subscribe/unsubscribe the CALLING transport to a live session's event
+    stream without taking ownership of it.
+
+    Session events normally route to exactly one client — the transport stored
+    on the session (last resumer wins). Second-screen viewers (LazoChat via
+    the HermesBridge watching a desktop-owned run) need the same frames without
+    stealing that ownership: observing adds the caller to the session's
+    observer set and ``write_json`` fans every event out to primary + observers.
+    Observers are swept automatically when their transport disconnects.
+    """
+    sid = str(params.get("session_id") or "").strip()
+    if not sid:
+        return _err(rid, 4000, "session.observe requires session_id")
+    observing = is_truthy_value(params.get("observe", True))
+    transport = current_transport()
+    if transport is None:
+        return _err(rid, 4023, "session.observe requires a client transport")
+    live_sid, session = sid, _sessions.get(sid)
+    if session is None:
+        # Be lenient: accept the stored session key too (clients usually pass
+        # the live id from session.active_list, but a stored key is
+        # unambiguous when the session is live).
+        found = _find_live_session_by_key(sid)
+        if found is not None:
+            live_sid, session = found
+    if session is None:
+        return _err(rid, 4004, "session not live")
+    if observing:
+        add_session_observer(live_sid, transport)
+    else:
+        remove_session_observer(live_sid, transport)
+    return _ok(rid, {"session_id": live_sid, "observing": observing})
+
+
 @method("delegation.status")
 def _(rid, params: dict) -> dict:
     from tools.delegate_tool import (

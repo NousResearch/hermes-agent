@@ -37,20 +37,20 @@ Safety properties:
 - **Bounded registry.** The per-session lease map is size-capped; eviction
   only ever removes idle (unheld, uncontended) entries, never a live lease.
 
-Known limits (deliberate, flagged on #64934):
-
-- A CLI process sharing the session via CLI-continuity is outside any
-  in-process lock — that pair needs a DB-level lease (separate design).
-- Mid-turn compression rotation leaves a small alias window: the tip-walk can
-  resolve a fresh child id while the parent-holding turn is still in flight.
-  The mid-turn binding-sync sites are the right place to alias the lease in a
-  follow-up.
+``SessionTurnLeaseRegistry`` remains the lightweight gateway-local guard.
+``DurableTurnLease`` uses the same token shape with a SQLite row for entry
+points that can share a session across processes (Desktop and API wake turns).
 """
 
 import asyncio
 import logging
+import os
+import threading
 import time
-from typing import Dict, Optional
+import uuid
+from threading import Event as _ThreadEvent
+from threading import Thread as _Thread
+from typing import Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,21 @@ DEFAULT_MAX_LEASES = 512
 # the gateway's default agent inactivity timeout so a stuck holder fails open
 # on the same clock the turn itself would be declared stuck on.
 DEFAULT_LEASE_WAIT = 1800.0
+
+# Durable rows are renewed well before expiry so a long tool-using turn cannot
+# be mistaken for a stale owner. A crashed process is reclaimed immediately by
+# SessionDB's structured-holder PID check; the TTL is the conservative fallback
+# for an unprobeable/recycled PID.
+DEFAULT_DURABLE_LEASE_TTL = 120.0
+DEFAULT_DURABLE_POLL_INTERVAL = 0.1
+
+
+class TurnLeaseTimeoutError(TimeoutError):
+    """A durable turn lease stayed owned for the full bounded wait."""
+
+
+class TurnLeaseCancelledError(RuntimeError):
+    """The caller stopped waiting before the durable lease was acquired."""
 
 
 class TurnLeaseToken:
@@ -95,6 +110,132 @@ class TurnLeaseToken:
             f"owner_key={self.owner_key!r}, generation={self.generation}, "
             f"degraded={self.degraded}, released={self.released})"
         )
+
+
+class DurableTurnLease(TurnLeaseToken):
+    """DB-backed turn lease shared by Desktop and API-server processes."""
+
+    __slots__ = ("db", "holder", "session_ids", "ttl", "_stop", "_thread")
+
+    @classmethod
+    def acquire(
+        cls,
+        db,
+        session_id: str,
+        *,
+        owner_key: str,
+        generation: int,
+        timeout: Optional[float] = None,
+        ttl_seconds: float = DEFAULT_DURABLE_LEASE_TTL,
+        cancelled: Optional[Callable[[], bool]] = None,
+    ) -> Optional["DurableTurnLease"]:
+        if db is None or not session_id:
+            return None
+        lease_methods = (
+            "try_acquire_session_turn_lease",
+            "get_session_turn_lease_holder",
+            "refresh_session_turn_lease",
+            "release_session_turn_lease",
+        )
+        if any(not callable(getattr(db, name, None)) for name in lease_methods):
+            return None
+        wait = float(timeout) if timeout and timeout > 0 else DEFAULT_LEASE_WAIT
+        deadline = time.monotonic() + wait
+        holder = (
+            f"pid={os.getpid()}:tid={threading.get_ident()}"
+            f":owner={str(owner_key or '?').replace(':', '_')[:80]}"
+            f":gen={int(generation)}:nonce={uuid.uuid4().hex[:8]}"
+        )
+        logged = False
+        while not db.try_acquire_session_turn_lease(
+            session_id, holder, ttl_seconds=ttl_seconds
+        ):
+            if cancelled is not None and cancelled():
+                raise TurnLeaseCancelledError(
+                    f"cancelled while waiting for session turn lease on {session_id!r}"
+                )
+            if not logged:
+                logged = True
+                logger.warning(
+                    "durable turn lease contention on session %s: %s waits behind %s",
+                    session_id,
+                    owner_key,
+                    db.get_session_turn_lease_holder(session_id) or "?",
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TurnLeaseTimeoutError(
+                    f"timed out after {wait:.0f}s waiting for session turn lease "
+                    f"on {session_id!r}"
+                )
+            time.sleep(min(DEFAULT_DURABLE_POLL_INTERVAL, remaining))
+
+        if cancelled is not None and cancelled():
+            db.release_session_turn_lease(session_id, holder)
+            raise TurnLeaseCancelledError(
+                f"cancelled while waiting for session turn lease on {session_id!r}"
+            )
+
+        token = cls(session_id, owner_key, generation)
+        token.db = db
+        token.holder = holder
+        token.session_ids = [session_id]
+        token.ttl = max(1.0, float(ttl_seconds))
+        # Keep stable references to the stdlib primitives.  Some TUI tests
+        # replace ``server.threading.Thread`` with an immediate runner; because
+        # ``threading`` is a shared module object, looking the class up through
+        # the module here would also make the lease refresher run synchronously
+        # and block forever inside ``acquire``.
+        token._stop = _ThreadEvent()
+        token._thread = _Thread(
+            target=token._refresh,
+            name="session-turn-lease-refresh",
+            daemon=True,
+        )
+        token._thread.start()
+        return token
+
+    def _refresh(self) -> None:
+        interval = max(0.1, min(30.0, self.ttl / 2.0))
+        while not self._stop.wait(interval):
+            for session_id in tuple(self.session_ids):
+                if not self.db.refresh_session_turn_lease(
+                    session_id, self.holder, ttl_seconds=self.ttl
+                ):
+                    logger.error(
+                        "lost durable turn lease for session %s (holder %s)",
+                        session_id,
+                        self.holder,
+                    )
+
+    def rebind(self, new_session_id: str) -> bool:
+        if self.released or not new_session_id or new_session_id == self.session_id:
+            return False
+        # Keep the old id leased too: a caller may still resume the parent
+        # while compression has already rotated this turn onto its child.
+        if not self.db.try_acquire_session_turn_lease(
+            self.session_id, self.holder, ttl_seconds=self.ttl
+        ) or not self.db.try_acquire_session_turn_lease(
+            new_session_id, self.holder, ttl_seconds=self.ttl
+        ):
+            return False
+        self.session_ids.append(new_session_id)
+        self.session_id = new_session_id
+        return True
+
+    def release(self) -> bool:
+        if self.released:
+            return False
+        self.released = True
+        self._stop.set()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+        released = False
+        for session_id in reversed(self.session_ids):
+            released = self.db.release_session_turn_lease(
+                session_id, self.holder
+            ) or released
+        return released
 
 
 class _SessionLease:

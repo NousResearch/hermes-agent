@@ -1,7 +1,9 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
+import { type ChatMessage, preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { mergeInFlightMessages } from '@/lib/inflight-turn-journal'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
 import { refreshActiveProfile } from '@/store/profile'
@@ -25,7 +27,7 @@ const CRON_POLL_INTERVAL_MS = 30_000
 const CRON_BACKSTOP_INTERVAL_MS = 5 * 60_000
 const MESSAGING_POLL_INTERVAL_MS = 10_000
 const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
-const ACTIVE_MESSAGING_SESSION_BACKSTOP_INTERVAL_MS = 30_000
+const ACTIVE_TRANSCRIPT_CHANGE_DEBOUNCE_MS = 250
 // Match the TUI's live-session refresh cadence. Auto-compression can rotate a
 // stored session id while its turn keeps running; until the next snapshot the
 // sidebar row points at the new id while the renderer still knows the old one.
@@ -171,13 +173,52 @@ interface BackgroundSyncParams {
   activeSessionId: null | string
   freshDraftReady: boolean
   gatewayState: string
-  refreshActiveMessagingTranscript: () => Promise<unknown> | unknown
+  refreshActiveTranscript: () => Promise<unknown> | unknown
   refreshCronJobs: () => Promise<unknown> | unknown
   refreshCurrentModel: (force?: boolean) => Promise<unknown> | unknown
   refreshHermesConfig: () => Promise<unknown> | unknown
   refreshMessagingSessions: () => Promise<unknown> | unknown
   refreshSessions: () => Promise<unknown> | unknown
   requestGateway: GatewayRequester
+}
+
+/** Reconcile a stored transcript refresh with the renderer's current tail.
+ * The backend rows are authoritative, while a not-yet-persisted assistant
+ * tail (including tool progress) stays visible until the stored transcript
+ * catches up. Equivalent optimistic user rows collapse onto the durable row. */
+export function reconcileActiveTranscript(
+  storedMessages: ChatMessage[],
+  currentMessages: ChatMessage[]
+): ChatMessage[] {
+  const withLocalErrors = preserveLocalAssistantErrors(storedMessages, currentMessages)
+
+  const liveAssistantIndex = currentMessages.findLastIndex(
+    message =>
+      message.role === 'assistant' &&
+      (message.pending || message.id.startsWith('assistant-stream-') || message.id.startsWith('inflight-assistant-'))
+  )
+
+  if (liveAssistantIndex < 0) {
+    return withLocalErrors
+  }
+
+  let tailStart = liveAssistantIndex
+
+  for (let index = liveAssistantIndex - 1; index >= 0; index -= 1) {
+    if (currentMessages[index].role !== 'user') {
+      continue
+    }
+
+    tailStart = index
+
+    while (tailStart > 0 && currentMessages[tailStart - 1].role === 'user') {
+      tailStart -= 1
+    }
+
+    break
+  }
+
+  return mergeInFlightMessages(withLocalErrors, currentMessages.slice(tailStart), { keepPending: true }).messages
 }
 
 /** Poll a callback while the tab is visible, on `intervalMs`; re-checks on tab
@@ -220,7 +261,7 @@ export function useBackgroundSync({
   activeSessionId,
   freshDraftReady,
   gatewayState,
-  refreshActiveMessagingTranscript,
+  refreshActiveTranscript,
   refreshCronJobs,
   refreshCurrentModel,
   refreshHermesConfig,
@@ -366,24 +407,39 @@ export function useBackgroundSync({
     )
   }, [changeEventsAvailable, cronChangeTick, gatewayState, refreshCronJobs])
 
-  // Only the open messaging transcript needs its own cadence — local chats are
-  // live over the websocket already. sessions.changed re-pulls it via the tick
-  // dep; the visible poll is the backstop.
+  // Another Hermes surface can write the active stored transcript without
+  // sharing this websocket. Coalesce sessions.changed bursts, then re-pull the
+  // open transcript regardless of source. Older backends do not advertise
+  // change events, so only messaging keeps the legacy visible poll there.
   useEffect(() => {
-    if (gatewayState !== 'open' || !activeIsMessaging) {
+    if (gatewayState !== 'open' || !activeSessionId) {
       return
     }
 
-    const dispose = visiblePoll(
-      changeEventsAvailable ? ACTIVE_MESSAGING_SESSION_BACKSTOP_INTERVAL_MS : ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS,
-      () => void refreshActiveMessagingTranscript()
-    )
+    if (changeEventsAvailable) {
+      const timer = window.setTimeout(() => void refreshActiveTranscript(), ACTIVE_TRANSCRIPT_CHANGE_DEBOUNCE_MS)
 
-    void refreshActiveMessagingTranscript()
+      return () => window.clearTimeout(timer)
+    }
+
+    if (!activeIsMessaging) {
+      return
+    }
+
+    const dispose = visiblePoll(ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS, () => void refreshActiveTranscript())
+
+    void refreshActiveTranscript()
 
     return dispose
-    // sessionsChangeTick: an inbound turn re-pulls the open transcript.
-  }, [activeIsMessaging, changeEventsAvailable, gatewayState, refreshActiveMessagingTranscript, sessionsChangeTick])
+    // sessionsChangeTick: an external turn re-pulls the open transcript.
+  }, [
+    activeIsMessaging,
+    activeSessionId,
+    changeEventsAvailable,
+    gatewayState,
+    refreshActiveTranscript,
+    sessionsChangeTick
+  ])
 
   // Messaging session lists against an older backend: no sessions.changed, so
   // keep the legacy visible poll. (Event-capable backends fold this into the

@@ -29,16 +29,18 @@ import asyncio
 import logging
 from typing import Any, Optional
 
+from gateway.turn_lease import DEFAULT_LEASE_WAIT
+
 logger = logging.getLogger(__name__)
 
-# A wake self-post runs the entire agent turn synchronously (stream=false);
-# generous ceiling so long tool-using turns aren't killed mid-flight.
-WAKE_TURN_TIMEOUT_SECONDS = 600.0
+# A wake self-post may first wait behind the active Desktop turn, then run its
+# own synchronous turn. Keep the client alive longer than the bounded lease
+# wait so it cannot abandon and duplicate a legitimately queued wake.
+WAKE_TURN_TIMEOUT_SECONDS = DEFAULT_LEASE_WAIT + 600.0
 
 # Backoff delays between retries on transient failures (429 concurrency cap,
-# connection errors). The API server has no per-session lock — concurrent
-# turns on one session are last-writer-wins — but it DOES enforce a global
-# max_concurrent_runs cap via HTTP 429, which is worth waiting out.
+# connection errors). The API server also enforces a global max_concurrent_runs
+# cap via HTTP 429, which is worth waiting out before joining the session queue.
 _RETRY_DELAYS_SECONDS = (2.0, 5.0, 10.0)
 
 

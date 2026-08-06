@@ -39,6 +39,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from gateway.turn_lease import TurnLeaseTimeoutError
 
 
 # ---------------------------------------------------------------------------
@@ -1104,6 +1105,44 @@ class TestChatCompletionsEndpoint:
             fake_task.callbacks[0](fake_task)
             assert stream_q.get_nowait() is None
 
+    @pytest.mark.asyncio
+    async def test_stateful_chat_stream_lease_timeout_emits_session_busy(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        fake_db = MagicMock()
+        fake_db.get_messages_as_conversation.return_value = []
+
+        with (
+            patch.object(
+                auth_adapter,
+                "_ensure_session_db_async",
+                new=AsyncMock(return_value=fake_db),
+            ),
+            patch.object(
+                auth_adapter,
+                "_run_agent",
+                new=AsyncMock(side_effect=TurnLeaseTimeoutError("session is busy")),
+            ),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-Session-Id": "busy-chat-session",
+                    },
+                )
+                body = await resp.text()
+
+        assert resp.status == 200
+        assert '"code": "session_busy"' in body
+        assert '"error_code": "session_busy"' in body
+        assert "data: [DONE]" in body
+
 
     @pytest.mark.asyncio
     async def test_stream_includes_tool_progress(self, adapter):
@@ -1349,6 +1388,36 @@ class TestResponsesEndpoint:
             assert data["output"][0]["type"] == "message"
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
+            assert mock_run.call_args.kwargs["refresh_session_history"] is False
+
+    @pytest.mark.asyncio
+    async def test_chained_response_lease_timeout_returns_controlled_busy_response(self, adapter):
+        adapter._response_store.put(
+            "resp_busy",
+            {
+                "response": {"id": "resp_busy", "status": "completed"},
+                "conversation_history": [{"role": "user", "content": "earlier"}],
+                "session_id": "busy-response-session",
+            },
+        )
+        app = _create_app(adapter)
+
+        with patch.object(
+            adapter,
+            "_run_agent",
+            new=AsyncMock(side_effect=TurnLeaseTimeoutError("session is busy")),
+        ) as mock_run:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"input": "continue", "previous_response_id": "resp_busy"},
+                )
+                payload = await resp.json()
+
+        assert resp.status == 503
+        assert resp.headers["Retry-After"] == "30"
+        assert payload["error"]["code"] == "session_busy"
+        assert mock_run.call_args.kwargs["refresh_session_history"] is True
 
 
     @pytest.mark.asyncio
@@ -1645,6 +1714,39 @@ class TestResponsesStreaming:
             assert stream_q.empty()
             fake_task.callbacks[0](fake_task)
             assert stream_q.get_nowait() is None
+
+    @pytest.mark.asyncio
+    async def test_chained_stream_lease_timeout_emits_typed_failed_event(self, adapter):
+        adapter._response_store.put(
+            "resp_stream_busy",
+            {
+                "response": {"id": "resp_stream_busy", "status": "completed"},
+                "conversation_history": [{"role": "user", "content": "earlier"}],
+                "session_id": "busy-stream-response-session",
+            },
+        )
+        app = _create_app(adapter)
+
+        with patch.object(
+            adapter,
+            "_run_agent",
+            new=AsyncMock(side_effect=TurnLeaseTimeoutError("session is busy")),
+        ) as mock_run:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": "continue",
+                        "previous_response_id": "resp_stream_busy",
+                        "stream": True,
+                    },
+                )
+                body = await resp.text()
+
+        assert resp.status == 200
+        assert "event: response.failed" in body
+        assert '"code": "session_busy"' in body
+        assert mock_run.call_args.kwargs["refresh_session_history"] is True
 
 
     @pytest.mark.asyncio
@@ -2859,4 +2961,3 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
-

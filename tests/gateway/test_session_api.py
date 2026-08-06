@@ -1,5 +1,6 @@
 """Focused tests for API server session-control endpoints."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -8,6 +9,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
+from gateway.turn_lease import DurableTurnLease, TurnLeaseTimeoutError
 from hermes_state import SessionDB
 
 
@@ -124,6 +126,127 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
         "context_session_key": "request-key",
         "child_session_id": "request-session",
     }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_waits_then_reloads_persisted_session_history(
+    adapter, session_db, monkeypatch
+):
+    """An API wake queued behind Desktop must run on Desktop's flushed turn."""
+    session_id = session_db.create_session("shared-session", "tui")
+    holder_db = SessionDB(session_db.db_path)
+    holder = DurableTurnLease.acquire(
+        holder_db,
+        session_id,
+        owner_key="tui:desktop",
+        generation=1,
+        timeout=2,
+    )
+    observed = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self):
+            self.session_id = session_id
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            observed["history"] = conversation_history
+            observed["lease_rebind"] = getattr(
+                self, "_durable_turn_lease_rebind", None
+            )
+            return {"final_response": "wake handled"}
+
+    fake_agent = FakeAgent()
+    monkeypatch.setattr(adapter, "_create_agent", lambda **_kwargs: fake_agent)
+    initial_history = [{"role": "user", "content": "stale"}]
+    task = asyncio.create_task(
+        adapter._run_agent(
+            user_message="background task completed",
+            conversation_history=initial_history,
+            session_id=session_id,
+            refresh_session_history=True,
+        )
+    )
+    try:
+        await asyncio.sleep(0.1)
+        assert not task.done()
+        assert "history" not in observed
+
+        holder_db.append_message(session_id, "user", "desktop question")
+        holder_db.append_message(session_id, "assistant", "desktop answer")
+        assert holder is not None and holder.release()
+
+        result, _usage = await asyncio.wait_for(task, timeout=3)
+        assert result["final_response"] == "wake handled"
+        assert [
+            {"role": message["role"], "content": message["content"]}
+            for message in observed["history"]
+        ] == [
+            {"role": "user", "content": "desktop question"},
+            {"role": "assistant", "content": "desktop answer"},
+        ]
+        assert initial_history == observed["history"]
+        assert callable(observed["lease_rebind"])
+        assert not hasattr(fake_agent, "_durable_turn_lease_rebind")
+    finally:
+        if holder is not None:
+            holder.release()
+        if not task.done():
+            task.cancel()
+        holder_db.close()
+
+
+@pytest.mark.asyncio
+async def test_session_chat_lease_timeout_returns_controlled_busy_response(
+    adapter, session_db
+):
+    session_id = session_db.create_session("busy-session", "api_server")
+    app = _create_session_app(adapter)
+
+    with patch.object(
+        adapter,
+        "_run_agent",
+        new=AsyncMock(side_effect=TurnLeaseTimeoutError("session is busy")),
+    ):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hello"},
+            )
+            payload = await resp.json()
+
+    assert resp.status == 503
+    assert resp.headers["Retry-After"] == "30"
+    assert payload["error"]["code"] == "session_busy"
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_lease_timeout_emits_typed_busy_event(
+    adapter, session_db
+):
+    session_id = session_db.create_session("busy-stream-session", "api_server")
+    app = _create_session_app(adapter)
+
+    with patch.object(
+        adapter,
+        "_run_agent",
+        new=AsyncMock(side_effect=TurnLeaseTimeoutError("session is busy")),
+    ):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "hello"},
+            )
+            body = await resp.text()
+
+    assert resp.status == 200
+    assert "event: error" in body
+    assert '"type": "server_error"' in body
+    assert '"code": "session_busy"' in body
+    assert "event: done" in body
 
 
 @pytest.mark.asyncio
@@ -606,5 +729,3 @@ async def test_require_model_lock_hard_fails_when_global_default_would_be_used(a
             body = await resp.json()
             assert body["error"]["code"] in {"model_lock_unavailable", "invalid_model_lock", "missing_model"}
     mock_run.assert_not_called()
-
-

@@ -94,6 +94,11 @@ from gateway.platforms.base import (
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
+from gateway.turn_lease import (
+    DurableTurnLease,
+    TurnLeaseCancelledError,
+    TurnLeaseTimeoutError,
+)
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
@@ -3582,19 +3587,27 @@ class APIServerAdapter(BasePlatformAdapter):
             if selection_error:
                 return web.json_response(_openai_error(selection_error), status=400)
         history = await self._conversation_history_for_session(session_id)
-        result, usage = await self._run_agent(
-            user_message=user_message,
-            conversation_history=history,
-            ephemeral_system_prompt=system_prompt,
-            session_id=session_id,
-            gateway_session_key=gateway_session_key,
-            route=route,
-            session_model=session_model,
-            requested_runtime=runtime_request.get("requested") or {},
-            route_source=runtime_request.get("route_source") or "global",
-            confirmed_runtime_lock=lock_active,
-            **agent_overrides,
-        )
+        try:
+            result, usage = await self._run_agent(
+                user_message=user_message,
+                conversation_history=history,
+                ephemeral_system_prompt=system_prompt,
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+                route=route,
+                session_model=session_model,
+                requested_runtime=runtime_request.get("requested") or {},
+                route_source=runtime_request.get("route_source") or "global",
+                confirmed_runtime_lock=lock_active,
+                refresh_session_history=True,
+                **agent_overrides,
+            )
+        except TurnLeaseTimeoutError as exc:
+            return web.json_response(
+                _openai_error(str(exc), err_type="server_error", code="session_busy"),
+                status=503,
+                headers={"Retry-After": "30"},
+            )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
         headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
@@ -3758,6 +3771,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     requested_runtime=runtime_request.get("requested") or {},
                     route_source=runtime_request.get("route_source") or "global",
                     confirmed_runtime_lock=lock_active,
+                    refresh_session_history=True,
                     **agent_overrides,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -3796,6 +3810,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     "messages": turn_messages,
                     "usage": usage,
                     "runtime": effective_runtime,
+                }))
+            except TurnLeaseTimeoutError as exc:
+                await queue.put(_event_payload("error", {
+                    "message": _redact_api_error_text(exc),
+                    "type": "server_error",
+                    "code": "session_busy",
+                    "retry_after": 30,
                 }))
             except Exception as exc:
                 logger.exception("[api_server] session chat stream failed")
@@ -4114,6 +4135,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                refresh_session_history=bool(provided_session_id),
                 **agent_overrides,
                 route=route,
             ))
@@ -4135,6 +4157,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                refresh_session_history=bool(provided_session_id),
                 **agent_overrides,
                 route=route,
             )
@@ -4147,6 +4170,12 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
+            except TurnLeaseTimeoutError as e:
+                return web.json_response(
+                    _openai_error(str(e), err_type="server_error", code="session_busy"),
+                    status=503,
+                    headers={"Retry-After": "30"},
+                )
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
@@ -4156,6 +4185,12 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             try:
                 result, usage = await _compute_completion()
+            except TurnLeaseTimeoutError as e:
+                return web.json_response(
+                    _openai_error(str(e), err_type="server_error", code="session_busy"),
+                    status=503,
+                    headers={"Retry-After": "30"},
+                )
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
@@ -4386,17 +4421,26 @@ class APIServerAdapter(BasePlatformAdapter):
             }
             if finish_reason != "stop":
                 finish_chunk["choices"][0]["delta"] = {}
+                busy = isinstance(agent_error, TurnLeaseTimeoutError)
                 if err_msg:
                     finish_chunk["error"] = {
                         "message": err_msg,
-                        "type": type(agent_error).__name__ if agent_error else "agent_error",
+                        "type": "server_error" if busy else type(agent_error).__name__ if agent_error else "agent_error",
                     }
+                    if busy:
+                        finish_chunk["error"]["code"] = "session_busy"
                 finish_chunk["hermes"] = {
                     "completed": completed,
                     "partial": is_partial,
                     "failed": is_failed,
                     "error": err_msg,
-                    "error_code": "output_truncated" if finish_reason == "length" else "agent_error",
+                    "error_code": (
+                        "output_truncated"
+                        if finish_reason == "length"
+                        else "session_busy"
+                        if busy
+                        else "agent_error"
+                    ),
                 }
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
@@ -4540,6 +4584,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         final_response_text = ""
         agent_error: Optional[str] = None
+        agent_error_code: Optional[str] = None
         usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         terminal_snapshot_persisted = False
 
@@ -4853,6 +4898,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     final_response_text = agent_final
                 if isinstance(result, dict) and result.get("error") and not final_response_text:
                     agent_error = _redact_api_error_text(result["error"])
+            except TurnLeaseTimeoutError as e:
+                logger.warning("Session busy for streaming response %s: %s", response_id, e)
+                agent_error = _redact_api_error_text(e)
+                agent_error_code = "session_busy"
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
                 agent_error = _redact_api_error_text(e)
@@ -4925,6 +4974,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 failed_env = _envelope("failed")
                 failed_env["output"] = final_items
                 failed_env["error"] = {"message": _redact_api_error_text(agent_error), "type": "server_error"}
+                if agent_error_code:
+                    failed_env["error"]["code"] = agent_error_code
                 failed_env["usage"] = {
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
@@ -5029,6 +5080,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 failed_env = _envelope("failed")
                 failed_env["output"] = list(emitted_items)
                 failed_env["error"] = {"message": _redact_api_error_text(_exc, limit=500), "type": "server_error"}
+                if isinstance(_exc, TurnLeaseTimeoutError):
+                    failed_env["error"]["code"] = "session_busy"
                 failed_env["usage"] = {
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
@@ -5225,6 +5278,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                refresh_session_history=bool(stored_session_id),
                 **agent_overrides,
                 route=route,
             ))
@@ -5260,6 +5314,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                refresh_session_history=bool(stored_session_id),
                 **agent_overrides,
                 route=route,
             )
@@ -5281,6 +5336,12 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
+            except TurnLeaseTimeoutError as e:
+                return web.json_response(
+                    _openai_error(str(e), err_type="server_error", code="session_busy"),
+                    status=503,
+                    headers={"Retry-After": "30"},
+                )
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
@@ -5290,6 +5351,12 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             try:
                 result, usage = await _compute_response()
+            except TurnLeaseTimeoutError as e:
+                return web.json_response(
+                    _openai_error(str(e), err_type="server_error", code="session_busy"),
+                    status=503,
+                    headers={"Retry-After": "30"},
+                )
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
@@ -5974,6 +6041,7 @@ class APIServerAdapter(BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None,
         route_source: str = "global",
         confirmed_runtime_lock: bool = False,
+        refresh_session_history: bool = False,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -6005,6 +6073,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # run_in_executor threads, so the profile scope must be re-entered
         # inside _run() from this explicit value.
         request_profile = _api_request_profile.get()
+        cancel_lease_wait = threading.Event()
 
         def _run():
             from gateway.session_context import clear_session_vars
@@ -6016,7 +6085,24 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id or "",
                 )
                 agent = None
+                turn_lease = None
+                lease_rebind_installed = False
+                had_lease_rebind = False
+                previous_lease_rebind = None
                 try:
+                    run_history = conversation_history
+                    if refresh_session_history and session_id:
+                        db = self._ensure_session_db()
+                        turn_lease = DurableTurnLease.acquire(
+                            db,
+                            session_id,
+                            owner_key=f"api:{gateway_session_key or session_id}",
+                            generation=0,
+                            cancelled=cancel_lease_wait.is_set,
+                        )
+                        if db is not None and db.get_session(session_id) is not None:
+                            conversation_history[:] = db.get_messages_as_conversation(session_id)
+                            run_history = conversation_history
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt,
                         session_id=session_id,
@@ -6032,6 +6118,16 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_model=session_model,
                         confirmed_runtime_lock=confirmed_runtime_lock,
                     )
+                    if turn_lease is not None:
+                        had_lease_rebind = hasattr(
+                            agent, "_durable_turn_lease_rebind"
+                        )
+                        if had_lease_rebind:
+                            previous_lease_rebind = getattr(
+                                agent, "_durable_turn_lease_rebind"
+                            )
+                        agent._durable_turn_lease_rebind = turn_lease.rebind
+                        lease_rebind_installed = True
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     effective_task_id = session_id or str(uuid.uuid4())
@@ -6043,7 +6139,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     _publish_turn_process_ownership(agent, effective_task_id)
                     result = agent.run_conversation(
                         user_message=user_message,
-                        conversation_history=conversation_history,
+                        conversation_history=run_history,
                         task_id=effective_task_id,
                     )
                     usage = {
@@ -6057,6 +6153,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     _eff_sid = getattr(agent, "session_id", session_id)
                     if isinstance(_eff_sid, str) and _eff_sid:
                         result["session_id"] = _eff_sid
+                        if (
+                            turn_lease is not None
+                            and _eff_sid != turn_lease.session_id
+                            and not turn_lease.rebind(_eff_sid)
+                        ):
+                            logger.error(
+                                "Failed to rebind API turn lease after compression: %s -> %s",
+                                turn_lease.session_id,
+                                _eff_sid,
+                            )
                     # Signal whether context compression occurred during this turn
                     # so _build_response_conversation_history can skip the
                     # prior-concatenation path and store the compressed transcript
@@ -6163,6 +6269,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
                     )
                 finally:
+                    if agent is not None and lease_rebind_installed:
+                        try:
+                            if had_lease_rebind:
+                                agent._durable_turn_lease_rebind = previous_lease_rebind
+                            else:
+                                delattr(agent, "_durable_turn_lease_rebind")
+                        except Exception:
+                            logger.exception("Failed to restore API turn lease callback")
                     # Turn finished (success, auth failure, or crash) — clear
                     # ownership markers so a disconnect landing after this
                     # point can't reap background work this turn left
@@ -6170,12 +6284,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     # in gateway/run.py's _run_sync_with_timeout_lifecycle.
                     if agent is not None:
                         _clear_turn_process_ownership(agent)
-                    clear_session_vars(tokens)
+                    try:
+                        if turn_lease is not None:
+                            turn_lease.release()
+                    finally:
+                        clear_session_vars(tokens)
 
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
         try:
             return await loop.run_in_executor(None, _run)
+        except asyncio.CancelledError:
+            cancel_lease_wait.set()
+            raise
         finally:
             self._inflight_agent_runs -= 1
 
@@ -6368,7 +6489,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
-        session_id = body.get("session_id") or stored_session_id
+        stateful_session_id = body.get("session_id") or stored_session_id
+        session_id = stateful_session_id
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
         selection_error = self._request_route_conflict_error(
@@ -6431,10 +6553,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # Background task outlives the HTTP response (and thus the middleware
         # profile scope). Capture now and re-enter inside the task/executor.
         request_profile = _api_request_profile.get()
+        cancel_lease_wait = threading.Event()
 
         async def _run_and_close():
+            agent = None
             try:
-                self._set_run_status(run_id, "running")
                 if run_id in self._stopping_run_ids:
                     _put_event_if_active({
                         "event": "run.cancelled",
@@ -6447,20 +6570,6 @@ class APIServerAdapter(BasePlatformAdapter):
                         last_event="run.cancelled",
                     )
                     return
-                with self._profile_scope(request_profile):
-                    agent = self._create_agent(
-                        ephemeral_system_prompt=ephemeral_system_prompt,
-                        session_id=session_id,
-                        stream_delta_callback=_text_cb,
-                        tool_progress_callback=event_cb,
-                        gateway_session_key=gateway_session_key,
-                        requested_model=agent_overrides.get("requested_model"),
-                        requested_provider=agent_overrides.get("requested_provider"),
-                        model_options=agent_overrides.get("model_options"),
-                        route=route,
-                    )
-                self._active_run_agents[run_id] = agent
-
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
                     # Redact credentials from the command before it enters the
@@ -6491,6 +6600,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         pass
 
                 def _run_sync():
+                    nonlocal agent
                     from gateway.session_context import clear_session_vars
                     from tools.approval import (
                         register_gateway_notify,
@@ -6502,8 +6612,61 @@ class APIServerAdapter(BasePlatformAdapter):
                     effective_task_id = session_id or run_id
                     approval_token = None
                     session_tokens = []
+                    turn_lease = None
+                    lease_rebind_installed = False
+                    had_lease_rebind = False
+                    previous_lease_rebind = None
+                    run_history = conversation_history
                     with self._profile_scope(request_profile):
                         try:
+                            if stateful_session_id:
+                                db = self._ensure_session_db()
+                                turn_lease = DurableTurnLease.acquire(
+                                    db,
+                                    stateful_session_id,
+                                    owner_key=f"api-run:{gateway_session_key or run_id}",
+                                    generation=0,
+                                    cancelled=lambda: (
+                                        cancel_lease_wait.is_set()
+                                        or run_id in self._stopping_run_ids
+                                    ),
+                                )
+                                if db is not None and db.get_session(stateful_session_id) is not None:
+                                    conversation_history[:] = db.get_messages_as_conversation(
+                                        stateful_session_id
+                                    )
+                                    run_history = conversation_history
+                            if run_id in self._stopping_run_ids:
+                                raise TurnLeaseCancelledError(
+                                    f"run {run_id!r} stopped before agent start"
+                                )
+                            loop.call_soon_threadsafe(
+                                self._set_run_status,
+                                run_id,
+                                "running",
+                            )
+                            agent = self._create_agent(
+                                ephemeral_system_prompt=ephemeral_system_prompt,
+                                session_id=session_id,
+                                stream_delta_callback=_text_cb,
+                                tool_progress_callback=event_cb,
+                                gateway_session_key=gateway_session_key,
+                                requested_model=agent_overrides.get("requested_model"),
+                                requested_provider=agent_overrides.get("requested_provider"),
+                                model_options=agent_overrides.get("model_options"),
+                                route=route,
+                            )
+                            if turn_lease is not None:
+                                had_lease_rebind = hasattr(
+                                    agent, "_durable_turn_lease_rebind"
+                                )
+                                if had_lease_rebind:
+                                    previous_lease_rebind = getattr(
+                                        agent, "_durable_turn_lease_rebind"
+                                    )
+                                agent._durable_turn_lease_rebind = turn_lease.rebind
+                                lease_rebind_installed = True
+                            self._active_run_agents[run_id] = agent
                             # Bind approval/session identity for this API run via
                             # contextvars so concurrent runs do not share process
                             # environment state.
@@ -6529,35 +6692,64 @@ class APIServerAdapter(BasePlatformAdapter):
                             _publish_turn_process_ownership(agent, effective_task_id)
                             r = agent.run_conversation(
                                 user_message=user_message,
-                                conversation_history=conversation_history,
+                                conversation_history=run_history,
                                 task_id=effective_task_id,
                             )
+                            u = {
+                                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                            }
+                            effective_session_id = getattr(agent, "session_id", session_id)
+                            if isinstance(effective_session_id, str) and effective_session_id:
+                                if isinstance(r, dict):
+                                    r["session_id"] = effective_session_id
+                                if (
+                                    turn_lease is not None
+                                    and effective_session_id != turn_lease.session_id
+                                    and not turn_lease.rebind(effective_session_id)
+                                ):
+                                    logger.error(
+                                        "Failed to rebind /v1/runs turn lease after compression: %s -> %s",
+                                        turn_lease.session_id,
+                                        effective_session_id,
+                                    )
+                            return r, u
                         finally:
+                            if agent is not None and lease_rebind_installed:
+                                try:
+                                    if had_lease_rebind:
+                                        agent._durable_turn_lease_rebind = previous_lease_rebind
+                                    else:
+                                        delattr(agent, "_durable_turn_lease_rebind")
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to restore /v1/runs turn lease callback"
+                                    )
                             # Worker finished (interrupted or complete) —
                             # clear turn ownership immediately so a later
                             # stop/cancel can't reap background work this
                             # run deliberately left running (same race-window
                             # guard as gateway/run.py and _run_agent above).
-                            _clear_turn_process_ownership(agent)
+                            if agent is not None:
+                                _clear_turn_process_ownership(agent)
                             try:
                                 unregister_gateway_notify(approval_session_key)
                             finally:
-                                if approval_token is not None:
-                                    try:
-                                        reset_current_session_key(approval_token)
-                                    except Exception:
-                                        pass
-                                if session_tokens:
-                                    try:
-                                        clear_session_vars(session_tokens)
-                                    except Exception:
-                                        pass
-                        u = {
-                            "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                            "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                            "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-                        }
-                        return r, u
+                                try:
+                                    if turn_lease is not None:
+                                        turn_lease.release()
+                                finally:
+                                    if approval_token is not None:
+                                        try:
+                                            reset_current_session_key(approval_token)
+                                        except Exception:
+                                            pass
+                                    if session_tokens:
+                                        try:
+                                            clear_session_vars(session_tokens)
+                                        except Exception:
+                                            pass
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
                 if run_id in self._stopping_run_ids:
@@ -6602,9 +6794,15 @@ class APIServerAdapter(BasePlatformAdapter):
                         "completed",
                         output=final_response,
                         usage=usage,
+                        session_id=(
+                            result.get("session_id", session_id)
+                            if isinstance(result, dict)
+                            else session_id
+                        ),
                         last_event="run.completed",
                     )
             except asyncio.CancelledError:
+                cancel_lease_wait.set()
                 self._set_run_status(
                     run_id,
                     "cancelled",
@@ -6619,6 +6817,42 @@ class APIServerAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
                 raise
+            except TurnLeaseCancelledError:
+                self._set_run_status(
+                    run_id,
+                    "cancelled",
+                    last_event="run.cancelled",
+                )
+                try:
+                    _put_event_if_active({
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
+                except Exception:
+                    pass
+            except TurnLeaseTimeoutError as exc:
+                error_msg = _redact_api_error_text(exc)
+                self._set_run_status(
+                    run_id,
+                    "failed",
+                    error=error_msg,
+                    error_code="session_busy",
+                    retry_after=30,
+                    last_event="run.failed",
+                )
+                try:
+                    _put_event_if_active({
+                        "event": "run.failed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "error": error_msg,
+                        "type": "server_error",
+                        "code": "session_busy",
+                        "retry_after": 30,
+                    })
+                except Exception:
+                    pass
             except _ProviderAuthResolutionError as exc:
                 # /v1/runs builds its own agent via _create_agent() and does
                 # not route through _run_agent() (see that method's own
@@ -6662,6 +6896,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
             finally:
+                cancel_lease_wait.set()
                 # If the asyncio wrapper is cancelled (for example via
                 # /stop), the executor thread can still be blocked waiting
                 # on an approval Event.  Unregistering here releases those

@@ -24,6 +24,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from gateway.turn_lease import TurnLeaseCancelledError, TurnLeaseTimeoutError
 from tools import approval as approval_mod
 
 
@@ -258,6 +259,141 @@ class TestStartRun:
         assert kwargs["requested_provider"] == "minimax"
         assert kwargs["model_options"] == model_options
 
+    @pytest.mark.asyncio
+    async def test_contended_stateful_run_stays_queued_until_lease_acquired(self, adapter):
+        app = _create_runs_app(adapter)
+        lease_waiting = threading.Event()
+        release_lease_wait = threading.Event()
+        run_started = threading.Event()
+        finish_run = threading.Event()
+        fake_lease = MagicMock(session_id="queued-session")
+        fake_db = MagicMock()
+        persisted_history = [
+            {"role": "user", "content": "persisted question"},
+            {"role": "assistant", "content": "persisted answer"},
+        ]
+        fake_db.get_session.return_value = {"id": "queued-session"}
+        fake_db.get_messages_as_conversation.return_value = persisted_history
+
+        def _acquire(*_args, **_kwargs):
+            lease_waiting.set()
+            release_lease_wait.wait(timeout=3)
+            return fake_lease
+
+        mock_agent = MagicMock()
+        mock_agent.session_id = "rotated-session"
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def _run(**_kwargs):
+            run_started.set()
+            finish_run.wait(timeout=3)
+            return {"final_response": "done"}
+
+        mock_agent.run_conversation.side_effect = _run
+
+        with (
+            patch.object(adapter, "_ensure_session_db", return_value=fake_db),
+            patch("gateway.platforms.api_server.DurableTurnLease.acquire", side_effect=_acquire),
+            patch.object(adapter, "_create_agent", return_value=mock_agent),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "queued-session"},
+                )
+                run_id = (await resp.json())["run_id"]
+                assert await asyncio.to_thread(lease_waiting.wait, 1)
+
+                status_resp = await cli.get(f"/v1/runs/{run_id}")
+                assert (await status_resp.json())["status"] == "queued"
+
+                release_lease_wait.set()
+                assert await asyncio.to_thread(run_started.wait, 1)
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "running":
+                        break
+                    await asyncio.sleep(0.01)
+                assert status["status"] == "running"
+                finish_run.set()
+                for _ in range(40):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.01)
+                assert status["status"] == "completed"
+                assert status["session_id"] == "rotated-session"
+
+        assert mock_agent.run_conversation.call_args.kwargs["conversation_history"] == persisted_history
+        fake_lease.rebind.assert_called_once_with("rotated-session")
+        fake_lease.release.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stateless_run_does_not_acquire_durable_lease(self, adapter):
+        app = _create_runs_app(adapter)
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "done"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        with (
+            patch("gateway.platforms.api_server.DurableTurnLease.acquire") as acquire,
+            patch.object(adapter, "_create_agent", return_value=mock_agent),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                for _ in range(40):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.01)
+
+        assert status["status"] == "completed"
+        acquire.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_stateful_run_waiting_for_lease(self, adapter):
+        app = _create_runs_app(adapter)
+        lease_waiting = threading.Event()
+
+        def _acquire(*_args, cancelled, **_kwargs):
+            lease_waiting.set()
+            while not cancelled():
+                time.sleep(0.01)
+            raise TurnLeaseCancelledError("stopped")
+
+        with (
+            patch.object(adapter, "_ensure_session_db", return_value=MagicMock()),
+            patch("gateway.platforms.api_server.DurableTurnLease.acquire", side_effect=_acquire),
+            patch.object(adapter, "_create_agent") as create_agent,
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "stopped-session"},
+                )
+                run_id = (await resp.json())["run_id"]
+                assert await asyncio.to_thread(lease_waiting.wait, 1)
+
+                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop_resp.status == 200
+                for _ in range(40):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "cancelled":
+                        break
+                    await asyncio.sleep(0.01)
+
+        assert status["status"] == "cancelled"
+        create_agent.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status
@@ -330,6 +466,37 @@ class TestRunEvents:
                 # Should contain run.completed
                 assert "run.completed" in body
                 assert "Hello!" in body
+
+    @pytest.mark.asyncio
+    async def test_lease_timeout_emits_typed_session_busy_failure(self, adapter):
+        app = _create_runs_app(adapter)
+        fake_db = MagicMock()
+
+        with (
+            patch.object(adapter, "_ensure_session_db", return_value=fake_db),
+            patch(
+                "gateway.platforms.api_server.DurableTurnLease.acquire",
+                side_effect=TurnLeaseTimeoutError("session is busy"),
+            ),
+            patch.object(adapter, "_create_agent") as create_agent,
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "busy-run-session"},
+                )
+                run_id = (await resp.json())["run_id"]
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                events_body = await events_resp.text()
+                status_resp = await cli.get(f"/v1/runs/{run_id}")
+                status = await status_resp.json()
+
+        assert "run.failed" in events_body
+        assert '"code": "session_busy"' in events_body
+        assert status["status"] == "failed"
+        assert status["error_code"] == "session_busy"
+        assert status["retry_after"] == 30
+        create_agent.assert_not_called()
 
 
     @pytest.mark.asyncio

@@ -3985,6 +3985,129 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._execute_write(_do)
 
     # ──────────────────────────────────────────────────────────────────────
+    # Cross-process session turn leases
+    # ──────────────────────────────────────────────────────────────────────
+
+    def try_acquire_session_turn_lease(
+        self,
+        session_id: str,
+        holder: str,
+        ttl_seconds: float = 120.0,
+    ) -> bool:
+        """Acquire/renew ``session_id`` for ``holder`` in one transaction."""
+        if not session_id or not holder:
+            return False
+        now = time.time()
+        expires_at = now + max(1.0, float(ttl_seconds))
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT holder, expires_at FROM session_turn_leases "
+                "WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is not None:
+                current_holder = row["holder"]
+                if current_holder == holder:
+                    conn.execute(
+                        "UPDATE session_turn_leases SET expires_at = ? "
+                        "WHERE session_id = ? AND holder = ?",
+                        (expires_at, session_id, holder),
+                    )
+                    return True
+                if (
+                    float(row["expires_at"]) >= now
+                    and not _compression_lock_holder_process_is_dead(current_holder)
+                ):
+                    return False
+                conn.execute(
+                    "DELETE FROM session_turn_leases "
+                    "WHERE session_id = ? AND holder = ?",
+                    (session_id, current_holder),
+                )
+            conn.execute(
+                "INSERT INTO session_turn_leases "
+                "(session_id, holder, acquired_at, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (session_id, holder, now, expires_at),
+            )
+            return True
+
+        try:
+            return bool(self._execute_write(_do))
+        except sqlite3.Error as exc:
+            logger.warning(
+                "try_acquire_session_turn_lease(%s) failed: %s",
+                session_id,
+                exc,
+            )
+            return False
+
+    def refresh_session_turn_lease(
+        self,
+        session_id: str,
+        holder: str,
+        ttl_seconds: float = 120.0,
+    ) -> bool:
+        """Renew a turn lease only while ``holder`` still owns it."""
+        if not session_id or not holder:
+            return False
+        expires_at = time.time() + max(1.0, float(ttl_seconds))
+
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE session_turn_leases SET expires_at = ? "
+                "WHERE session_id = ? AND holder = ?",
+                (expires_at, session_id, holder),
+            )
+            return cur.rowcount > 0
+
+        try:
+            return bool(self._execute_write(_do))
+        except sqlite3.Error as exc:
+            logger.warning(
+                "refresh_session_turn_lease(%s) failed: %s",
+                session_id,
+                exc,
+            )
+            return False
+
+    def release_session_turn_lease(self, session_id: str, holder: str) -> bool:
+        """Release ``session_id`` only when ``holder`` still owns it."""
+        if not session_id or not holder:
+            return False
+
+        def _do(conn):
+            cur = conn.execute(
+                "DELETE FROM session_turn_leases "
+                "WHERE session_id = ? AND holder = ?",
+                (session_id, holder),
+            )
+            return cur.rowcount > 0
+
+        try:
+            return bool(self._execute_write(_do))
+        except sqlite3.Error as exc:
+            logger.warning(
+                "release_session_turn_lease(%s) failed: %s",
+                session_id,
+                exc,
+            )
+            return False
+
+    def get_session_turn_lease_holder(self, session_id: str) -> Optional[str]:
+        """Return the current non-expired turn-lease holder, if any."""
+        if not session_id:
+            return None
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT holder FROM session_turn_leases "
+                "WHERE session_id = ? AND expires_at >= ?",
+                (session_id, time.time()),
+            ).fetchone()
+        return row["holder"] if row is not None else None
+
+    # ──────────────────────────────────────────────────────────────────────
     # Compression locks
     # ──────────────────────────────────────────────────────────────────────
     # Atomic per-session locks that prevent two compression paths from

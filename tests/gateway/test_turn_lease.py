@@ -18,10 +18,43 @@ Covers:
 """
 
 import asyncio
+import multiprocessing
+import threading
+import time
+from pathlib import Path
 
 import pytest
 
-from gateway.turn_lease import SessionTurnLeaseRegistry
+from gateway.turn_lease import (
+    DurableTurnLease,
+    SessionTurnLeaseRegistry,
+    TurnLeaseCancelledError,
+    TurnLeaseTimeoutError,
+)
+
+
+def _desktop_turn_process(db_path, session_id, acquired, release):
+    """Hold the Desktop side of a cross-process turn, then flush and release."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(Path(db_path))
+    lease = DurableTurnLease.acquire(
+        db,
+        session_id,
+        owner_key="tui:desktop",
+        generation=1,
+        timeout=5,
+    )
+    acquired.set()
+    try:
+        if not release.wait(10):
+            raise TimeoutError("test parent did not release Desktop turn")
+        db.append_message(session_id, "user", "desktop question")
+        db.append_message(session_id, "assistant", "desktop answer")
+    finally:
+        if lease is not None:
+            lease.release()
+        db.close()
 
 
 def _run(coro):
@@ -81,6 +114,130 @@ def test_distinct_sessions_do_not_contend():
     order = _run(scenario())
     # Both started before either finished — no serialization across sessions.
     assert order[:2] == ["start:sess-a", "start:sess-b"]
+
+
+def test_durable_lease_serializes_two_processes_and_waiter_reads_flushed_history(
+    tmp_path,
+):
+    """The API-side DB handle waits for Desktop, then sees its committed turn."""
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    setup_db = SessionDB(db_path)
+    session_id = setup_db.create_session("shared-session", "tui")
+    setup_db.close()
+
+    ctx = multiprocessing.get_context("spawn")
+    desktop_acquired = ctx.Event()
+    release_desktop = ctx.Event()
+    desktop = ctx.Process(
+        target=_desktop_turn_process,
+        args=(str(db_path), session_id, desktop_acquired, release_desktop),
+    )
+    desktop.start()
+    assert desktop_acquired.wait(10)
+
+    api_db = SessionDB(db_path)
+    waiter_acquired = threading.Event()
+    observed = {}
+
+    def api_wake():
+        lease = DurableTurnLease.acquire(
+            api_db,
+            session_id,
+            owner_key="api:wake",
+            generation=1,
+            timeout=5,
+        )
+        try:
+            observed["history"] = api_db.get_messages_as_conversation(session_id)
+            waiter_acquired.set()
+        finally:
+            if lease is not None:
+                lease.release()
+
+    waiter = threading.Thread(target=api_wake)
+    waiter.start()
+    time.sleep(0.15)
+    assert not waiter_acquired.is_set()
+
+    release_desktop.set()
+    assert waiter_acquired.wait(5)
+    waiter.join(timeout=5)
+    desktop.join(timeout=10)
+    api_db.close()
+
+    assert desktop.exitcode == 0
+    assert [
+        {"role": message["role"], "content": message["content"]}
+        for message in observed["history"]
+    ] == [
+        {"role": "user", "content": "desktop question"},
+        {"role": "assistant", "content": "desktop answer"},
+    ]
+
+
+def test_durable_lease_wait_is_bounded_and_cancellable_across_db_handles(tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    holder_db = SessionDB(db_path)
+    waiter_db = SessionDB(db_path)
+    holder = DurableTurnLease.acquire(
+        holder_db, "shared", owner_key="tui", generation=1, timeout=1
+    )
+    try:
+        with pytest.raises(TurnLeaseTimeoutError):
+            DurableTurnLease.acquire(
+                waiter_db, "shared", owner_key="api", generation=1, timeout=0.05
+            )
+
+        with pytest.raises(TurnLeaseCancelledError):
+            DurableTurnLease.acquire(
+                waiter_db,
+                "shared",
+                owner_key="api",
+                generation=2,
+                timeout=1,
+                cancelled=lambda: True,
+            )
+
+        assert holder is not None
+        assert waiter_db.release_session_turn_lease("shared", "wrong-holder") is False
+        assert waiter_db.get_session_turn_lease_holder("shared") == holder.holder
+    finally:
+        if holder is not None:
+            holder.release()
+        holder_db.close()
+        waiter_db.close()
+
+
+def test_durable_lease_rebinds_rotation_alias_and_renews_both_rows(tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    owner_db = SessionDB(db_path)
+    contender_db = SessionDB(db_path)
+    lease = DurableTurnLease.acquire(
+        owner_db,
+        "parent",
+        owner_key="tui",
+        generation=1,
+        timeout=1,
+        ttl_seconds=1,
+    )
+    try:
+        assert lease is not None and lease.rebind("child")
+        time.sleep(1.2)
+        assert contender_db.get_session_turn_lease_holder("parent") == lease.holder
+        assert contender_db.get_session_turn_lease_holder("child") == lease.holder
+        assert not contender_db.try_acquire_session_turn_lease("parent", "other", 1)
+        assert not contender_db.try_acquire_session_turn_lease("child", "other", 1)
+    finally:
+        if lease is not None:
+            lease.release()
+        owner_db.close()
+        contender_db.close()
 
 
 # ---------------------------------------------------------------------------

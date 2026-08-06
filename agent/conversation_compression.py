@@ -101,6 +101,10 @@ COMPACTION_STATUS = (
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
 
 
+class _CompressionLeaseRebindError(RuntimeError):
+    """The active turn could not extend its lease to a rotation child."""
+
+
 def _emit_compaction_done(agent: Any) -> None:
     """Emit the structured terminal edge for a started compaction."""
     status_callback = getattr(agent, "status_callback", None)
@@ -3266,6 +3270,26 @@ def compress_context(
                         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
                         f"{uuid.uuid4().hex[:6]}"
                     )
+                    # A leased turn must own the child id before the atomic
+                    # parent→child publication makes that continuation routable.
+                    # Otherwise another process can enter the child while this
+                    # turn is still finishing on it.
+                    _turn_lease_rebind = getattr(
+                        agent, "_durable_turn_lease_rebind", None
+                    )
+                    if callable(_turn_lease_rebind):
+                        try:
+                            _child_leased = bool(_turn_lease_rebind(new_session_id))
+                        except Exception as _lease_exc:
+                            raise _CompressionLeaseRebindError(
+                                "failed to bind the active turn lease to compression "
+                                f"child {new_session_id!r}"
+                            ) from _lease_exc
+                        if not _child_leased:
+                            raise _CompressionLeaseRebindError(
+                                "active turn lease rejected compression child "
+                                f"{new_session_id!r}"
+                            )
                     agent._session_db.publish_compression_child(
                         parent_session_id=old_session_id,
                         child_session_id=new_session_id,
@@ -3375,6 +3399,8 @@ def compress_context(
                     )
                 else:
                     logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+                if isinstance(e, _CompressionLeaseRebindError):
+                    raise
 
         # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
         # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`

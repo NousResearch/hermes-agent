@@ -116,7 +116,7 @@ import { TitlebarControls } from '../shell/titlebar-controls'
 import { UpdatesOverlay } from '../updates-overlay'
 
 import { ContribWiringContext } from './context'
-import { useBackgroundSync } from './hooks/use-background-sync'
+import { reconcileActiveTranscript, useBackgroundSync } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
@@ -152,7 +152,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // context (the sticky toast). The shell owns `navigate`, so it consumes the
   // intent counter here; the ref skips the initial mount value.
   const billingSettingsSeenRef = useRef(0)
-  const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
+  const activeTranscriptSignatureRef = useRef(new Map<string, string>())
   // Stable identity for the whole callback surface (see WiringActions). Mutated
   // in place each render so memoized surfaces never re-render on churn.
   const actionsRef = useRef<WiringActions | null>(null)
@@ -359,10 +359,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
 
-  // Refresh the open messaging transcript (inbound platform turns arrive via
-  // the background gateway, not the desktop websocket). Signature-gated so a
-  // no-change poll doesn't churn the thread.
-  const refreshActiveMessagingTranscript = useCallback(async () => {
+  // Refresh the open stored transcript when another Hermes surface writes it.
+  // Signature-gated so repeated change broadcasts do not churn the thread.
+  const refreshActiveTranscript = useCallback(async () => {
     const storedSessionId = selectedStoredSessionIdRef.current
     const runtimeSessionId = activeSessionIdRef.current
 
@@ -370,9 +369,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       return
     }
 
-    const stored = $messagingSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+    const stored = [...$sessions.get(), ...$messagingSessions.get()].find(s =>
+      sessionMatchesStoredId(s, storedSessionId)
+    )
 
-    if (!stored || !isMessagingSource(stored.source)) {
+    if (!stored) {
       return
     }
 
@@ -381,16 +382,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
       const sig = sessionMessagesSignature(latest.messages)
 
-      if (messagingTranscriptSignatureRef.current.get(signatureKey) === sig) {
+      if (activeTranscriptSignatureRef.current.get(signatureKey) === sig) {
         return
       }
 
-      messagingTranscriptSignatureRef.current.set(signatureKey, sig)
+      activeTranscriptSignatureRef.current.set(signatureKey, sig)
       const messages = toChatMessages(latest.messages)
 
       updateSessionState(
         runtimeSessionId,
-        state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
+        state => ({ ...state, messages: reconcileActiveTranscript(messages, state.messages) }),
         storedSessionId
       )
     } catch {
@@ -765,7 +766,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     activeSessionId,
     freshDraftReady,
     gatewayState,
-    refreshActiveMessagingTranscript,
+    refreshActiveTranscript,
     refreshCronJobs,
     refreshCurrentModel,
     refreshHermesConfig,

@@ -1,5 +1,8 @@
+import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { $sessionsChangeTick, notifySessionsChanged, setChangeEventsAvailable } from '@/store/live-sync'
 import {
   $attentionSessionIds,
   $stalledSessionIds,
@@ -8,7 +11,7 @@ import {
   SESSION_WATCHDOG_TIMEOUT_MS
 } from '@/store/session-states'
 
-import { rehydrateLiveSessionStatuses } from './use-background-sync'
+import { reconcileActiveTranscript, rehydrateLiveSessionStatuses, useBackgroundSync } from './use-background-sync'
 
 describe('rehydrateLiveSessionStatuses', () => {
   beforeEach(() => {
@@ -16,8 +19,11 @@ describe('rehydrateLiveSessionStatuses', () => {
   })
 
   afterEach(() => {
+    cleanup()
     vi.clearAllTimers()
     vi.useRealTimers()
+    setChangeEventsAvailable(false)
+    $sessionsChangeTick.set(0)
     clearAllSessionStates()
   })
 
@@ -71,5 +77,90 @@ describe('rehydrateLiveSessionStatuses', () => {
     expect($workingSessionIds.get()).toEqual([])
     expect($attentionSessionIds.get()).toEqual([])
     expect($stalledSessionIds.get()).toEqual([])
+  })
+})
+
+describe('active stored transcript sync', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    setChangeEventsAvailable(true)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.clearAllTimers()
+    vi.useRealTimers()
+    setChangeEventsAvailable(false)
+    $sessionsChangeTick.set(0)
+  })
+
+  it('coalesces sessions.changed and refreshes an open desktop-source transcript', async () => {
+    const refreshActiveTranscript = vi.fn()
+
+    renderHook(() =>
+      useBackgroundSync({
+        activeGatewayProfile: 'default',
+        activeIsMessaging: false,
+        activeSessionId: 'runtime-desktop',
+        freshDraftReady: false,
+        gatewayState: 'open',
+        refreshActiveTranscript,
+        refreshCronJobs: vi.fn(),
+        refreshCurrentModel: vi.fn(),
+        refreshHermesConfig: vi.fn(),
+        refreshMessagingSessions: vi.fn(),
+        refreshSessions: vi.fn(),
+        requestGateway: vi.fn(async () => ({ sessions: [] })) as never
+      })
+    )
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250)
+    })
+    refreshActiveTranscript.mockClear()
+
+    act(() => {
+      notifySessionsChanged()
+      notifySessionsChanged()
+      notifySessionsChanged()
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(249)
+    })
+    expect(refreshActiveTranscript).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(refreshActiveTranscript).toHaveBeenCalledTimes(1)
+  })
+
+  it('dedupes the persisted external user row while preserving a live assistant tail', () => {
+    const history: ChatMessage[] = [
+      { id: 'stored-user-1', parts: [{ text: 'old prompt', type: 'text' }], role: 'user' },
+      { id: 'stored-assistant-1', parts: [{ text: 'old reply', type: 'text' }], role: 'assistant' }
+    ]
+
+    const stored = [
+      ...history,
+      { id: 'stored-iphone-user', parts: [{ text: 'sent from iPhone', type: 'text' }], role: 'user' }
+    ] satisfies ChatMessage[]
+
+    const current = [
+      ...history,
+      { id: 'optimistic-user', parts: [{ text: 'sent from iPhone', type: 'text' }], role: 'user' },
+      {
+        id: 'assistant-stream-1',
+        parts: [{ text: 'working', type: 'text' }],
+        pending: true,
+        role: 'assistant'
+      }
+    ] satisfies ChatMessage[]
+
+    const reconciled = reconcileActiveTranscript(stored, current)
+
+    expect(reconciled.filter(message => chatMessageText(message) === 'sent from iPhone')).toHaveLength(1)
+    expect(reconciled.at(-1)).toMatchObject({ id: 'assistant-stream-1', pending: true })
   })
 })

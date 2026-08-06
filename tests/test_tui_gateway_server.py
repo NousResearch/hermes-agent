@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import subprocess
@@ -9540,6 +9541,109 @@ def test_run_prompt_submit_registers_turn_thread_for_interrupt(monkeypatch):
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert calls["interrupted"] is True
     finally:
+        server._sessions.pop("sid", None)
+
+
+def test_interrupt_cancels_tui_turn_waiting_for_durable_lease(monkeypatch, tmp_path):
+    """Stop must cancel a Desktop turn before it enters stale-history replay."""
+    from gateway.turn_lease import DurableTurnLease
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    holder_db = SessionDB(db_path)
+    waiter_db = SessionDB(db_path)
+    holder = DurableTurnLease.acquire(
+        holder_db,
+        "session-key",
+        owner_key="api:active",
+        generation=1,
+        timeout=1,
+    )
+    ran = threading.Event()
+    agent = types.SimpleNamespace(
+        clear_interrupt=lambda: None,
+        interrupt=lambda: None,
+        interim_assistant_callback=None,
+        run_conversation=lambda *_args, **_kwargs: ran.set(),
+        session_id="session-key",
+    )
+    session = _session(agent=agent, running=True)
+    server._sessions["sid"] = session
+    emitted = []
+
+    @contextlib.contextmanager
+    def turn_db(_session):
+        yield waiter_db
+
+    try:
+        monkeypatch.setattr(server, "_session_db", turn_db)
+        monkeypatch.setattr(server, "record_turn_start", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(server, "_retire_turn_marker", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(server, "_emit_settled_session_info", lambda *_args: None)
+        monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
+
+        server._run_prompt_submit("1", "sid", session, "hello")
+        time.sleep(0.15)
+        assert session["_run_thread"].is_alive()
+        assert not ran.is_set()
+
+        response = server.handle_request(
+            {"id": "2", "method": "session.interrupt", "params": {"session_id": "sid"}}
+        )
+        assert response.get("result"), response
+        session["_run_thread"].join(timeout=2)
+
+        assert not session["_run_thread"].is_alive()
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+        assert not ran.is_set()
+        assert not any(event[0] == "error" for event in emitted)
+        assert any(
+            event[0] == "message.complete" and event[2].get("status") == "interrupted"
+            for event in emitted
+        )
+    finally:
+        if holder is not None:
+            holder.release()
+        holder_db.close()
+        waiter_db.close()
+        server._sessions.pop("sid", None)
+
+
+def test_tui_turn_installs_and_restores_compression_lease_rebind(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("session-key", "tui")
+    observed = {}
+    original_rebind = lambda _session_id: "original"
+
+    class _Agent(_RecordingAgent):
+        session_id = "session-key"
+
+        def run_conversation(self, *args, **kwargs):
+            observed["rebind"] = self._durable_turn_lease_rebind
+            return super().run_conversation(*args, **kwargs)
+
+    agent = _Agent([])
+    agent._durable_turn_lease_rebind = original_rebind
+    session = _session(agent=agent, session_key="session-key", running=True)
+    server._sessions["sid"] = session
+
+    @contextlib.contextmanager
+    def _turn_db(_session):
+        yield db
+
+    try:
+        monkeypatch.setattr(server, "_session_db", _turn_db)
+        server._run_prompt_submit("1", "sid", session, "hello")
+
+        assert callable(observed["rebind"])
+        assert observed["rebind"] is not original_rebind
+        assert agent._durable_turn_lease_rebind is original_rebind
+    finally:
+        db.close()
         server._sessions.pop("sid", None)
 
 

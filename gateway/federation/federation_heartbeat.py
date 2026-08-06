@@ -434,6 +434,12 @@ async def _run_lan_loop(
                     if state.get("status") in ("claimed", "in_progress"):
                         await adapter.send_task_heartbeat(task_id)
 
+                # Phase 22: broadcast health snapshot (ops layer)
+                await _broadcast_ops_health(adapter, config, device_id)
+
+                # Phase 22: run lost-contact SOS escalation
+                await _run_sos_escalation(adapter)
+
                 # Log federation status
                 peer_count = adapter.get_peer_count()
                 task_count = len(adapter.get_all_task_states())
@@ -450,6 +456,37 @@ async def _run_lan_loop(
     except asyncio.CancelledError:
         logger.info("Federation heartbeat loop cancelled")
         raise
+
+
+async def _broadcast_ops_health(adapter: FederationAdapter, config: FederationConfig, device_id: str) -> None:
+    """Broadcast this device's health snapshot as an OPS_HEALTH message."""
+    try:
+        from gateway.federation.federation_ops import collect_local_health
+        health = collect_local_health()
+        health["device_id"] = device_id
+        health["gateway_up"] = True
+        health["federation_connected"] = adapter.is_connected()
+        health["level"] = "ok"
+        msg = FedMessage(
+            msg_type=MessageType.OPS_HEALTH.value,
+            sender_id=device_id,
+            payload=health,
+        )
+        await adapter.send(msg)
+    except Exception as e:
+        logger.debug("Ops health broadcast failed: %s", e)
+
+
+async def _run_sos_escalation(adapter: FederationAdapter) -> None:
+    """Run LostContactSOS escalation on the current health matrix."""
+    try:
+        sos = getattr(adapter, "_sos", None)
+        if sos:
+            alerts = sos.update()
+            if alerts:
+                logger.warning("Federation SOS: %d new escalation(s)", len(alerts))
+    except Exception as e:
+        logger.debug("SOS escalation failed: %s", e)
 
 
 def _resolve_device_id(configured: Optional[str]) -> str:

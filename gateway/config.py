@@ -1488,6 +1488,14 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
 
+            # P2P federation: top-level wins; nested gateway.federation fallback
+            # (matches the gateway.streaming precedence pattern).
+            fed_cfg = yaml_cfg.get("federation")
+            if not isinstance(fed_cfg, dict) and isinstance(gateway_section, dict):
+                fed_cfg = gateway_section.get("federation")
+            if isinstance(fed_cfg, dict):
+                gw_data["federation"] = fed_cfg
+
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
             elif isinstance(gateway_section, dict) and "reset_triggers" in gateway_section:

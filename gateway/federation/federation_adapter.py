@@ -38,6 +38,7 @@ from gateway.federation.federation_relay import TaskExecutorRelay
 from gateway.federation.federation_discovery import FederationMDNS
 from gateway.federation.federation_collaboration import FederationMemorySync, FederationDistributedSearch
 from gateway.federation.federation_compute_pool import FederationComputePool
+from gateway.federation.federation_ops import SEV_CRITICAL
 from gateway.federation.federation_cron_relay import FederationCronRelay, FederationSkillSync
 from gateway.federation.federation_cluster import FederationLeaderElection, FederationConfigSync
 from gateway.federation.federation_api import FederationAPI, FederationAPIConfig
@@ -102,8 +103,39 @@ class FederationAdapter:
         self._config_sync: Optional[FederationConfigSync] = None
         self._api: Optional[FederationAPI] = None
 
+        # Phase 22: Ops layer (health monitoring + lost-contact SOS)
+        from gateway.federation.federation_ops import HealthMonitor, LostContactSOS
+        self._health = HealthMonitor(device_id=self.device_id,
+                                     offline_threshold_s=config.offline_threshold_s)
+        self._sos = LostContactSOS(
+            device_id=self.device_id,
+            health=self._health,
+            on_alert=self._on_ops_alert,
+        )
+
         # Register default message handlers
         self._register_default_handlers()
+
+    def _on_ops_alert(self, alert) -> None:
+        """Broadcast an ops alert to all peers + log to audit."""
+        try:
+            msg = FedMessage(
+                msg_type=MessageType.OPS_ALERT.value,
+                sender_id=self.device_id,
+                payload={
+                    "alert_id": alert.alert_id,
+                    "severity": alert.severity,
+                    "source": alert.source_device,
+                    "target": alert.target_device,
+                    "type": alert.alert_type,
+                    "message": alert.message,
+                    "created_at": alert.created_at,
+                },
+            )
+            if self._conn_manager:
+                asyncio.create_task(self._conn_manager.send(msg))
+        except Exception as e:
+            logger.debug("Ops alert broadcast failed: %s", e)
 
     def _register_default_handlers(self) -> None:
         """Register default message type handlers."""
@@ -127,6 +159,10 @@ class FederationAdapter:
         self._task_handlers[MessageType.SKILL_SYNC.value] = self._handle_skill_sync
         self._task_handlers[MessageType.ELECTION.value] = self._handle_election
         self._task_handlers[MessageType.ELECTION_OK.value] = self._handle_election_ok
+        # Phase 22: Ops layer handlers
+        self._task_handlers[MessageType.OPS_HEALTH.value] = self._handle_ops_health
+        self._task_handlers[MessageType.OPS_ALERT.value] = self._handle_ops_alert
+        self._task_handlers[MessageType.OPS_SOS.value] = self._handle_ops_sos
         self._task_handlers[MessageType.VICTORY.value] = self._handle_victory
         self._task_handlers[MessageType.COORDINATE.value] = self._handle_coordinate
         self._task_handlers[MessageType.CONFIG_SYNC.value] = self._handle_config_sync
@@ -238,7 +274,7 @@ class FederationAdapter:
         self._leader_election = FederationLeaderElection(
             device_id=self.device_id,
             adapter=self,
-            compute_score=self._compute_pool.compute_score if self._compute_pool else 0.0,
+            compute_score=self._compute_pool.compute_score() if self._compute_pool else 0.0,
         )
         await self._leader_election.start()
 
@@ -253,7 +289,7 @@ class FederationAdapter:
             adapter=self,
             config=FederationAPIConfig(
                 enabled=True,
-                port=self._federation_config.api_port if hasattr(self._federation_config, 'api_port') else 18766,
+                port=getattr(self.config, 'api_port', 18766),
             ),
             hermes_version=self._get_hermes_version(),
         )
@@ -415,6 +451,17 @@ class FederationAdapter:
         """Check if federation is connected."""
         return self._running and self.get_peer_count() > 0
 
+    async def send(self, msg: Any) -> bool:
+        """Send a message to all peers (delegated to connection manager).
+
+        Public API used by cluster / collaboration / relay components
+        (e.g. FederationLeaderElection broadcasts ELECTION messages).
+        """
+        if not self._conn_manager:
+            logger.warning("Federation: not connected, cannot send message")
+            return False
+        return await self._conn_manager.send(msg)
+
     # ----------------------------------------------------------------
     # Message handlers
     # ----------------------------------------------------------------
@@ -438,10 +485,20 @@ class FederationAdapter:
             "Federation: peer joined — %s (%s), score=%.1f",
             info.device_id, info.hostname, info.compute_score,
         )
+        # Ops layer: seed health snapshot from join metadata
+        self._health.update_from_heartbeat(info.device_id, {
+            "hostname": info.hostname,
+            "cpu_cores": info.cpu_cores,
+            "memory_gb": info.memory_gb,
+            "gateway_up": True,
+            "federation_connected": True,
+        })
+        self._sos.reset(info.device_id)
 
     def _on_peer_leave(self, device_id: str) -> None:
         """Called when a peer leaves."""
         logger.info("Federation: peer left — %s", device_id)
+        self._health.mark_offline(device_id, reason="peer_leave")
 
     def _on_mdns_discover(self, peer) -> None:
         """Handle mDNS discovery of a new peer."""
@@ -590,6 +647,57 @@ class FederationAdapter:
         info = self._conn_manager.get_peer(device_id) if self._conn_manager else None
         if info:
             info.last_seen = msg.payload.get("timestamp", time.time())
+
+    # ----------------------------------------------------------------
+    # Phase 22: Ops layer handlers
+    # ----------------------------------------------------------------
+
+    def _handle_ops_health(self, msg: FedMessage) -> None:
+        """Handle an OPS_HEALTH snapshot from a peer."""
+        payload = msg.payload
+        self._health.update_from_heartbeat(msg.sender_id, payload)
+        self._sos.reset(msg.sender_id)
+
+    def _handle_ops_alert(self, msg: FedMessage) -> None:
+        """Handle an OPS_ALERT from a peer — log + keep in local alert buffer."""
+        payload = msg.payload
+        logger.warning(
+            "Federation OPS alert from %s [%s] -> %s: %s",
+            msg.sender_id, payload.get("severity"), payload.get("target"),
+            payload.get("message"),
+        )
+        # Mirror remote alert into local history
+        self._health._emit_alert(
+            severity=payload.get("severity", "info"),
+            source_device=msg.sender_id,
+            target_device=payload.get("target", ""),
+            message=payload.get("message", ""),
+            alert_type=payload.get("type", "ops"),
+        )
+
+    def _handle_ops_sos(self, msg: FedMessage) -> None:
+        """Handle an SOS call from a peer — the operator / other peers act."""
+        payload = msg.payload
+        logger.critical(
+            "Federation SOS from %s: %s",
+            msg.sender_id, payload.get("message", "peer requesting assistance"),
+        )
+        self._health._emit_alert(
+            severity=SEV_CRITICAL,
+            source_device=msg.sender_id,
+            target_device=payload.get("target", ""),
+            message=payload.get("message", "SOS received"),
+            alert_type="lost_contact",
+        )
+        # Acknowledge the SOS
+        ack = FedMessage(
+            msg_type=MessageType.OPS_ASSIST_ACK.value,
+            sender_id=self.device_id,
+            target_id=msg.sender_id,
+            payload={"ack": True, "assist_offer": True},
+        )
+        if self._conn_manager:
+            asyncio.create_task(self._conn_manager.send(ack))
 
     # ----------------------------------------------------------------
     # Phase 3: Claim & Execute (consensus + relay)

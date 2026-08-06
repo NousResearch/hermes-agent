@@ -244,6 +244,9 @@ class FederationAPI:
             app.router.add_get("/api/federation/health", self._health)
             # Protected endpoints (auth required)
             app.router.add_get("/api/federation/status", self._get_status)
+            app.router.add_get("/api/federation/ops/health", self._get_ops_health)
+            app.router.add_get("/api/federation/ops/alerts", self._get_ops_alerts)
+            app.router.add_get("/api/federation/ops/summary", self._get_ops_summary)
             runner = web.AppRunner(app)
             await runner.setup()
 
@@ -293,6 +296,43 @@ class FederationAPI:
 
         status = self._build_status()
         return web.json_response(status.to_dict())
+
+    async def _get_ops_health(self, request) -> Any:
+        """GET /api/federation/ops/health — per-peer health matrix (Phase 22)."""
+        from aiohttp import web
+        health = getattr(self.adapter, "_health", None)
+        if not health:
+            return web.json_response({"error": "ops layer not initialized"})
+        return web.json_response({
+            "device_id": self.adapter.device_id,
+            "matrix": health.health_summary(),
+        })
+
+    async def _get_ops_alerts(self, request) -> Any:
+        """GET /api/federation/ops/alerts — recent ops alerts."""
+        from aiohttp import web
+        health = getattr(self.adapter, "_health", None)
+        if not health:
+            return web.json_response({"error": "ops layer not initialized"})
+        limit = int(request.query.get("limit", 50))
+        return web.json_response({"alerts": health.get_alerts(limit=limit)})
+
+    async def _get_ops_summary(self, request) -> Any:
+        """GET /api/federation/ops/summary — aggregate ops overview."""
+        from aiohttp import web
+        health = getattr(self.adapter, "_health", None)
+        if not health:
+            return web.json_response({"error": "ops layer not initialized"})
+        matrix = health.health_summary()
+        total = len(matrix)
+        healthy = sum(1 for v in matrix.values() if v["level"] in ("ok", "degraded") and v["health_score"] > 0.5)
+        return web.json_response({
+            "device_count": total,
+            "healthy_count": healthy,
+            "unhealthy_count": total - healthy,
+            "device_id": self.adapter.device_id,
+            "matrix": matrix,
+        })
 
     def _build_status(self) -> FederationStatus:
         """Build current federation status from adapter state."""

@@ -66,6 +66,12 @@ class MessageType(str, Enum):
     CONFIG_SYNC = "config_sync"      # Config data broadcast
     CONFIG_ACK = "config_ack"        # Peer acknowledges config update
 
+    # ── Ops layer (Phase 22) ─────────────────────────────────────────
+    OPS_HEALTH = "ops_health"        # Health snapshot broadcast (heartbeat-carried)
+    OPS_ALERT = "ops_alert"          # Operational alert (lost contact / recovery / degraded)
+    OPS_SOS = "ops_sos"              # Aircraft-lost call: peer requests assistance
+    OPS_ASSIST_ACK = "ops_assist_ack"  # Peer acknowledges SOS / offers assist
+
 
 @dataclass
 class PeerInfo:

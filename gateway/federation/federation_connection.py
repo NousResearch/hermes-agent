@@ -244,8 +244,17 @@ class FederationConnectionManager:
                 extra = {}
                 if self.auth_token:
                     extra["additional_headers"] = {"X-Federation-Auth": self.auth_token}
-                if self._ssl_context:
-                    extra["ssl"] = self._ssl_context
+                if self._ssl_context or info.ws_url.startswith("wss://"):
+                    # Outbound connections to peers use a CLIENT ssl context.
+                    # The server context (self._ssl_context) has no CA trust
+                    # chain, so verifying against it would fail for LAN
+                    # self-signed certs. Use a permissive client context that
+                    # still encrypts (TLS) but skips CA-chain verification —
+                    # peer auth is enforced via auth_token + message signing.
+                    client_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                    client_ctx.check_hostname = False
+                    client_ctx.verify_mode = ssl.CERT_NONE
+                    extra["ssl"] = client_ctx
                 extra["max_size"] = MAX_MESSAGE_SIZE
 
                 ws = await asyncio.wait_for(

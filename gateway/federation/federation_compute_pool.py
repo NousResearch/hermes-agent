@@ -179,6 +179,14 @@ class FederationComputePool:
         """Get all known peer capabilities."""
         return dict(self._capabilities)
 
+    def compute_score(self) -> float:
+        """Get this device's weighted compute score (for leader election)."""
+        cap = self._capabilities.get(self.device_id)
+        if cap is None:
+            self._register_local_capability()
+            cap = self._capabilities.get(self.device_id)
+        return cap.compute_score if cap else 0.0
+
     def _get_distribution_plan(self, total_chunks: int) -> Dict[str, int]:
         """Plan how to distribute chunks across peers based on capability.
 

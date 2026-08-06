@@ -2542,6 +2542,56 @@ class TestCompressionChainProjection:
         by_src = db.session_count_by_source(exclude_children=True)
         assert by_src == {"webui": 1}
 
+    def test_source_filter_uses_live_tip_activity_ordering(self, db):
+        """Source filtering and projection must select the same live tip.
+
+        A continuation heartbeat can be newer than its latest message while a
+        sibling has the newer message timestamp. The SQL source predicate must
+        use the same freshest-activity ordering as ``get_compression_tip``;
+        otherwise the filter can admit the wrong source and then project a
+        different tip in Python.
+        """
+        import time as _time
+
+        t0 = _time.time() - 3600
+        db.create_session("activity-root", "telegram")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=?, end_reason=? WHERE id=?",
+            (t0, t0 + 10, "compression", "activity-root"),
+        )
+
+        db.create_session(
+            "message-tip", "telegram", parent_session_id="activity-root"
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?",
+            (t0 + 20, t0 + 50, "message-tip"),
+        )
+        db.append_message("message-tip", "user", "older activity heartbeat")
+        db._conn.execute(
+            "UPDATE messages SET timestamp=? WHERE session_id=?",
+            (t0 + 300, "message-tip"),
+        )
+
+        db.create_session(
+            "heartbeat-tip", "webui", parent_session_id="activity-root"
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?",
+            (t0 + 30, t0 + 400, "heartbeat-tip"),
+        )
+        db.append_message("heartbeat-tip", "user", "newer heartbeat")
+        db._conn.execute(
+            "UPDATE messages SET timestamp=? WHERE session_id=?",
+            (t0 + 100, "heartbeat-tip"),
+        )
+        db._conn.commit()
+
+        assert db.get_compression_tip("activity-root") == "heartbeat-tip"
+        webui_rows = db.list_sessions_rich(source="webui", limit=20)
+        assert [row["id"] for row in webui_rows] == ["heartbeat-tip"]
+        assert db.list_sessions_rich(source="telegram", limit=20) == []
+
     def test_list_handles_broken_chain_gracefully(self, db):
         """A compression root with no child (e.g. DB corruption or a partial
         end_session call that didn't finish creating the child) must not

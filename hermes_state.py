@@ -290,12 +290,7 @@ def _projected_tip_source_sql(session_alias: str = "s") -> str:
                                     WHEN child.ended_at IS NULL THEN 1
                                     ELSE 2
                                 END,
-                                COALESCE(
-                                    (SELECT MAX(m.timestamp)
-                                     FROM messages m
-                                     WHERE m.session_id = child.id),
-                                    child.started_at
-                                ) DESC,
+                                {_sql_session_last_active("child")} DESC,
                                 child.started_at DESC,
                                 child.id DESC
                         ) AS child_rank

@@ -17811,6 +17811,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # of sending the word to the agent. Voice transcripts are
                     # already stop-checked at the transcription points, so this
                     # only intercepts typed input.
+                    # Voice-transcribed messages arrive wrapped in a sentinel so
+                    # only genuine STT output gets the voice prefix. This classic
+                    # CLI checkout does not wire that sentinel into the text
+                    # path, so submitted input is never voice here.
+                    is_voice_input = False
+
                     if not is_voice_input and self._typed_voice_stop(user_input):
                         continue
                     

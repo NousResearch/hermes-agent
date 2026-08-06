@@ -169,6 +169,7 @@ CREDITS_USAGE_BANDS: tuple[tuple[float, str, int], ...] = (
     (0.90, "warn", 90),
 )
 CREDITS_USAGE_KEY = "credits.usage"  # single key for the escalating usage notice
+GRANT_UNSPENT_MIN_MICROS = 10_000  # grant meaningfully unspent threshold (≥1¢)
 
 
 # ── AgentNotice (out-of-band notice payload; driver-agnostic) ────────────────
@@ -239,6 +240,21 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
         return False
 
 
+def new_credits_latch() -> dict:
+    """Return a fresh mutable latch for credits-notice reconciliation.
+
+    A separate latch is required for every agent/session. The policy mutates
+    this dictionary in place to track active notices, whether the usage-band
+    crossing gate has opened, and the currently displayed usage band.
+    """
+    return {
+        "active": set(),
+        "seen_below_90": False,
+        "usage_band": None,
+        "seen_grant_unspent": False,
+    }
+
+
 # ── evaluate_credits_notices (pure reconciliation function) ──────────────────
 
 
@@ -302,6 +318,19 @@ def evaluate_credits_notices(
         and uf >= 1.0
         and state.purchased_micros > 0
     )
+
+    # Grant-spent crossing gate: grant_spent may fire only after this session
+    # has OBSERVED the grant meaningfully unspent (≥1¢ left — see
+    # GRANT_UNSPENT_MIN_MICROS). Opening at grant-spent is a steady STATE, not
+    # an event — /usage carries it; only a live in-session crossing announces.
+    # Unlike seen_below_90, seeds must NOT prime this gate.
+    if (
+        uf is not None
+        and uf < 1.0
+        and state.subscription_micros >= GRANT_UNSPENT_MIN_MICROS
+    ):
+        latch["seen_grant_unspent"] = True
+
     depleted_cond = not state.paid_access
 
     # ── usage gauge (escalating single notice: 50 → 75 → 90) ──────────────────
@@ -340,15 +369,30 @@ def evaluate_credits_notices(
             active.add(CREDITS_USAGE_KEY)
         latch["usage_band"] = target_band
 
-    # ── grant_spent (REMOVED) ────────────────────────────────────────────────
-    # The "Grant spent · $X top-up left" sticky notice was removed because it
-    # camps the status bar permanently with no actionable next step. The usage
-    # bands (50/75/90%) and the depleted notice still cover the remaining
-    # escalation path. grant_cond is still computed above for the top-up
-    # suppression logic (a user on purchased credits should not see subscription
-    # cap percentage warnings), but the standalone notice is no longer emitted.
-    # Clear any stale grant_spent notice from a prior session.
-    if "credits.grant_spent" in active:
+    # ── grant_spent ──────────────────────────────────────────────────────────
+    # The crossing gate guards only the SHOW and is CONSUMED by it — one
+    # announcement per crossing. A header flicker (uf → None → back to 1.0)
+    # clears the sticky line via grant_cond but cannot re-announce; only a
+    # renewal that re-opens the gate (a fresh ≥1¢ observation) arms the next
+    # announcement. .get(): default closed for any hand-built latch missing
+    # the key, so a first observation can never fire this notice.
+    if (
+        grant_cond
+        and "credits.grant_spent" not in active
+        and latch.get("seen_grant_unspent", False)
+    ):
+        to_show.append(
+            AgentNotice(
+                text=f"• Grant spent · ${state.purchased_usd} top-up left",
+                level="info",
+                kind=CREDITS_NOTICE_KIND,
+                key="credits.grant_spent",
+                id="credits.grant_spent",
+            )
+        )
+        active.add("credits.grant_spent")
+        latch["seen_grant_unspent"] = False
+    elif "credits.grant_spent" in active and not grant_cond:
         to_clear.append("credits.grant_spent")
         active.discard("credits.grant_spent")
 

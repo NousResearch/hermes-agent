@@ -179,13 +179,40 @@ def _register_subagent(record: Dict[str, Any]) -> None:
     sid = record.get("subagent_id")
     if not sid:
         return
+    record.setdefault("accepting_steer", True)
     with _active_subagents_lock:
         _active_subagents[sid] = record
 
 
-def _unregister_subagent(subagent_id: str) -> None:
+def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
     with _active_subagents_lock:
-        _active_subagents.pop(subagent_id, None)
+        record = _active_subagents.get(subagent_id)
+        if record is not None and (agent is None or record.get("agent") is agent):
+            _active_subagents.pop(subagent_id, None)
+
+
+def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
+    """Atomically close steer acceptance and drain its final durable artifact.
+
+    ``steer_subagent`` holds the same registry lock through ``agent.steer``.
+    Therefore either acceptance wins and this drain sees its exact text, or
+    closure wins and the caller is rejected. Exact agent identity prevents a
+    finishing child with a recycled public id from closing its replacement.
+    """
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if record is None or record.get("agent") is not agent:
+            return None
+        record["accepting_steer"] = False
+        drain = getattr(agent, "_drain_pending_steer", None)
+        if not callable(drain):
+            return None
+        try:
+            pending = drain()
+        except Exception as exc:
+            logger.debug("final steer drain for %s failed: %s", subagent_id, exc)
+            return None
+        return pending if isinstance(pending, str) and pending.strip() else None
 
 
 def interrupt_subagent(subagent_id: str) -> bool:
@@ -212,6 +239,72 @@ def interrupt_subagent(subagent_id: str) -> bool:
     return True
 
 
+def steer_subagent(
+    subagent_id: str,
+    text: str,
+    *,
+    owner_session_id: Optional[str] = None,
+    owner_transport: Any = None,
+    owner_session_record: Any = None,
+) -> bool:
+    """Queue steering text into a single running subagent without stopping it.
+
+    The redirection-side mirror of interrupt_subagent(): resolves the live
+    child in the registry and calls AIAgent.steer(), which appends the text
+    to the child's last tool result at its next iteration boundary — the
+    current tool call is never cut. Returns True if a matching subagent
+    QUEUED the text while the child was still accepting work; False for an
+    unknown/closed id, an ownership mismatch, a record with no live agent, or
+    empty text. ``owner_session_id=None`` deliberately preserves the internal
+    in-process helper contract; gateway callers must pass exact authority.
+
+    Acceptance and completion are linearized by the registry lock. If
+    acceptance wins but no delivery boundary remains, ``_run_single_child``
+    drains the exact text into the completion entry as ``missed_steer``.
+    """
+    if not text or not text.strip():
+        return False
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if not record or not record.get("accepting_steer", False):
+            return False
+        if owner_session_id is not None:
+            if (
+                record.get("owner_session_id") != owner_session_id
+                or owner_transport is None
+                or record.get("owner_transport") is not owner_transport
+                or owner_session_record is None
+                or record.get("owner_session_record") is not owner_session_record
+            ):
+                return False
+        agent = record.get("agent")
+        if agent is None:
+            return False
+        try:
+            return bool(agent.steer(text))
+        except Exception as exc:
+            logger.debug("steer_subagent(%s) failed: %s", subagent_id, exc)
+            return False
+
+
+def _capture_gateway_steer_authority(
+    owner_session_id: Optional[str],
+) -> tuple[Any, Any]:
+    """Capture exact request transport + live session generation, if any.
+
+    This is intentionally an in-process bridge, not a serializable capability.
+    Non-gateway hosts (including the CLI helper path) receive ``(None, None)``.
+    """
+    if not owner_session_id:
+        return None, None
+    try:
+        from tui_gateway.server import _current_session_steer_authority
+
+        return _current_session_steer_authority(owner_session_id)
+    except Exception:
+        return None, None
+
+
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Snapshot of the currently running subagent tree.
 
@@ -220,7 +313,18 @@ def list_active_subagents() -> List[Dict[str, Any]]:
     """
     with _active_subagents_lock:
         return [
-            {k: v for k, v in r.items() if k != "agent"}
+            {
+                k: v
+                for k, v in r.items()
+                if k
+                not in {
+                    "agent",
+                    "owner_session_id",
+                    "owner_transport",
+                    "owner_session_record",
+                    "accepting_steer",
+                }
+            }
             for r in _active_subagents.values()
         ]
 
@@ -2489,6 +2593,20 @@ def _run_single_child(
             # is stuck on blocking I/O, wait=True would hang forever.
             _timeout_executor.shutdown(wait=False)
 
+        # Linearization boundary for registry steering. From this point on the
+        # child cannot consume another steer. Closing under the registry lock
+        # either rejects a concurrent caller or drains every previously accepted
+        # exact text into the result before callbacks/result assembly can run.
+        if _subagent_id:
+            _late_pending_steer = _close_subagent_steering(_subagent_id, child)
+            if _late_pending_steer:
+                _existing_pending = result.get("pending_steer")
+                result["pending_steer"] = (
+                    f"{_existing_pending}\n{_late_pending_steer}"
+                    if isinstance(_existing_pending, str) and _existing_pending
+                    else _late_pending_steer
+                )
+
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, "_flush"):
             try:
@@ -2614,6 +2732,21 @@ def _run_single_child(
             entry["error"] = sanitize_context(
                 str(result.get("error", "Subagent did not produce a response."))
             )
+
+        # A steer that queued after the child's final assistant turn had no
+        # tool batch left to drain into.  The finalizer hands the undelivered
+        # text back (turn_finalizer.py "pending_steer"); retain it here so the
+        # parent sees the steer was MISSED rather than silently absorbed —
+        # steer_subagent() returning True means "queued", and this is where a
+        # queued-but-never-delivered steer gets named.
+        _missed_steer = result.get("pending_steer")
+        if isinstance(_missed_steer, str) and _missed_steer.strip():
+            entry["missed_steer"] = _missed_steer
+            _miss_note = (
+                "[steer did not land — the subagent finished before it could "
+                f"be delivered: {_missed_steer}]"
+            )
+            entry["summary"] = f"{summary}\n\n{_miss_note}" if summary else _miss_note
 
         # Cross-agent file-state reminder.  If this subagent wrote any
         # files the parent had already read, surface it so the parent
@@ -2747,6 +2880,8 @@ def _run_single_child(
 
         # Drop the TUI-facing registry entry.  Safe to call even if the
         # child was never registered (e.g. ID missing on test doubles).
+        # Steering was already closed + drained above (before the completion
+        # callback); this only removes the registry row.
         if _subagent_id:
             _unregister_subagent(_subagent_id)
 

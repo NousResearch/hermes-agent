@@ -34,6 +34,7 @@ from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
+from gateway.profile_model import get_profile_model_info
 from gateway.session import (
     AsyncSessionStore,
     SessionSource,
@@ -483,6 +484,7 @@ class GatewaySlashCommandsMixin:
                 logger.debug("Session reset after profile switch failed", exc_info=True)
             return (
                 f"✅ This {scope} now serves profile **{canon}** "
+                f"(model: **{get_profile_model_info(canon)}**) "
                 "(live — session reset, next message runs under it).\n"
                 "To revert: `/profile clear`"
             )
@@ -569,6 +571,7 @@ class GatewaySlashCommandsMixin:
                         logger.debug("Session reset after profile switch failed", exc_info=True)
                     return (
                         f"✅ This {scope} now serves profile **{canon}** "
+                        f"(model: **{get_profile_model_info(canon)}**) "
                         "(live — session reset, next message runs under it).\n"
                         "To revert: `/profile clear`"
                     )

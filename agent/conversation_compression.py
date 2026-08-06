@@ -1325,7 +1325,7 @@ def recover_rotated_compression_session(
                                     session_id,
                                 )
                         except Exception as exc:
-                            logger.debug(
+                            logger.warning(
                                 "orphaned compression session reopen failed "
                                 "for %s: %s",
                                 session_id,

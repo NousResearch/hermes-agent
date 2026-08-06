@@ -4826,6 +4826,57 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
     return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
 
 
+# ---------------------------------------------------------------------------
+# message:pre_route hook timeout
+# ---------------------------------------------------------------------------
+# The pre_route hook fires on every inbound message before the turn-lease is
+# claimed.  The multi-role-router classifier makes an LLM call that routinely
+# takes 15-120s, so the timeout must be generous — the historical 5s hard
+# limit killed it on every invocation ("message:pre_route hook timed out
+# after 5s").  Configurable via config.yaml `hooks.pre_route_timeout`
+# (seconds), bounded so a wedged hook can never stall the gateway loop.
+_PRE_ROUTE_TIMEOUT_DEFAULT = 30.0
+_PRE_ROUTE_TIMEOUT_MAX = 120.0
+# Cache the resolved value + log it only once (first resolution) and on any
+# change — a gateway resolves this per inbound message, so per-call logging
+# would spam the log on every message.
+_pre_route_timeout_last_logged: float | None = None
+
+
+def _resolve_pre_route_timeout() -> float:
+    """Resolve the message:pre_route hook timeout from config, bounded.
+
+    Reads ``hooks.pre_route_timeout`` from config.yaml (seconds), clamps to
+    ``[1, _PRE_ROUTE_TIMEOUT_MAX]``, and logs which value is in effect the
+    first time it is resolved so a non-default setting is visible in the
+    gateway logs.
+    """
+    global _pre_route_timeout_last_logged
+
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        _cfg = load_config()
+        raw = cfg_get(_cfg, "hooks", "pre_route_timeout", default=_PRE_ROUTE_TIMEOUT_DEFAULT)
+        timeout = float(raw)
+    except Exception:
+        timeout = _PRE_ROUTE_TIMEOUT_DEFAULT
+
+    if timeout < 1.0:
+        timeout = 1.0
+    if timeout > _PRE_ROUTE_TIMEOUT_MAX:
+        timeout = _PRE_ROUTE_TIMEOUT_MAX
+
+    if timeout != _pre_route_timeout_last_logged:
+        logger.info(
+            "message:pre_route hook timeout in effect: %ss (config hooks.pre_route_timeout, max %ss)",
+            timeout,
+            _PRE_ROUTE_TIMEOUT_MAX,
+        )
+        _pre_route_timeout_last_logged = timeout
+    return timeout
+
+
 class TurnRunner:
     """Per-turn collaborator carrying the tool-progress callbacks that used to
     be nested closures inside ``GatewayRunner._run_agent_inner``.
@@ -21576,6 +21627,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn-lease is claimed.  Hooks may return
         #   {"decision": "switch_session", "session_id": "<id>"}
         # to redirect this turn to a different session/worker profile.
+        #
+        # Timeout is configurable via config.yaml `hooks.pre_route_timeout`
+        # (seconds). Default 30s — the multi-role-router classifier makes an
+        # LLM call that routinely takes 15-120s, and the historical 5s hard
+        # limit killed it on every invocation. Bounded at 120s so a wedged
+        # hook can never stall the gateway loop indefinitely.
+        _pre_route_timeout = _resolve_pre_route_timeout()
         _pre_route_ctx = {
             "platform": source.platform.value if hasattr(source.platform, "value") else str(source.platform),
             "user_id": str(source.user_id),
@@ -21589,10 +21647,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             _pre_route_results = await asyncio.wait_for(
                 self.hooks.emit_collect("message:pre_route", _pre_route_ctx),
-                timeout=5.0,
+                timeout=_pre_route_timeout,
             )
         except asyncio.TimeoutError:
-            logger.warning("message:pre_route hook timed out after 5s")
+            logger.warning(
+                "message:pre_route hook timed out after %ss (config hooks.pre_route_timeout)",
+                _pre_route_timeout,
+            )
             _pre_route_results = []
         except Exception:
             logger.warning("message:pre_route hook emit failed", exc_info=True)

@@ -404,3 +404,57 @@ class TestPreRouteHookEmit:
         )
 
         evict_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestPreRouteTimeoutResolution
+# ---------------------------------------------------------------------------
+
+
+class TestPreRouteTimeoutResolution:
+    """Tests for gateway.run._resolve_pre_route_timeout().
+
+    The pre_route hook timeout is configurable via config.yaml
+    ``hooks.pre_route_timeout`` (seconds), defaults to 30s, and is clamped
+    to a 120s maximum so a wedged hook cannot stall the gateway loop.
+    """
+
+    def _resolve(self, hooks_cfg=None, *, load_config_raises: bool = False) -> float:
+        """Call _resolve_pre_route_timeout with a monkeypatched load_config."""
+        from unittest.mock import patch
+
+        import gateway.run as gr
+
+        # The resolver imports load_config from hermes_cli.config at call
+        # time, so the patch must target the source module, not gateway.run.
+        if load_config_raises:
+            patcher = patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom"))
+        else:
+            patcher = patch("hermes_cli.config.load_config", return_value={"hooks": hooks_cfg} if hooks_cfg is not None else {})
+        with patcher:
+            return gr._resolve_pre_route_timeout()
+
+    def test_default_when_config_absent(self):
+        """No hooks config → 30s default."""
+        assert self._resolve() == 30.0
+
+    def test_custom_value_respected(self):
+        """hooks.pre_route_timeout: 45 → 45s."""
+        assert self._resolve({"pre_route_timeout": 45}) == 45.0
+
+    def test_clamped_to_max_120(self):
+        """Value above 120s is clamped to the 120s bound."""
+        assert self._resolve({"pre_route_timeout": 999}) == 120.0
+
+    def test_clamped_to_min_1(self):
+        """Non-positive values are clamped to a 1s floor."""
+        assert self._resolve({"pre_route_timeout": 0}) == 1.0
+        assert self._resolve({"pre_route_timeout": -5}) == 1.0
+
+    def test_invalid_value_falls_back_to_default(self):
+        """Non-numeric value → 30s default."""
+        assert self._resolve({"pre_route_timeout": "way-too-long"}) == 30.0
+
+    def test_load_config_failure_falls_back_to_default(self):
+        """Config load failure → 30s default, no crash."""
+        assert self._resolve(load_config_raises=True) == 30.0

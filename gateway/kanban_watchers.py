@@ -57,6 +57,23 @@ def _resolve_auto_decompose_settings(
     return enabled, per_tick
 
 
+def _auto_promote_children_from_config(kanban_cfg: dict) -> bool:
+    """Resolve ``kanban.auto_promote_children`` (default True).
+
+    When False, decompose-created children stay in 'todo' for manual
+    review: the gateway dispatcher's per-tick recompute_ready skips them
+    (#79608). Extracted as a module-level helper so the config→flag
+    mapping is unit-testable without running the dispatcher loop.
+
+    Handles stringified YAML values ("false"/"true") so a quoted value
+    can never silently flip the gate the wrong way.
+    """
+    raw = kanban_cfg.get("auto_promote_children", True)
+    if isinstance(raw, str):
+        return raw.strip().lower() not in ("", "0", "false", "no", "off")
+    return bool(raw)
+
+
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
 
@@ -1109,6 +1126,12 @@ class GatewayKanbanWatchersMixin:
                 default_assignee,
             )
 
+        # Read kanban.auto_promote_children — the manual-review gate.
+        # When False, decompose-created children stay in 'todo' until a
+        # human promotes them; the per-tick recompute_ready skips them
+        # (#79608). Defaults True (auto-promote, the pre-existing behavior).
+        auto_promote_children = _auto_promote_children_from_config(kanban_cfg)
+
         # Read kanban.max_in_progress_per_profile — per-profile concurrency
         # cap (#21582). When set, no single profile gets more than N
         # workers running at once, even if the global max_in_progress
@@ -1231,6 +1254,7 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    skip_decompose_children=not auto_promote_children,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):

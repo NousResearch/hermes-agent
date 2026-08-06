@@ -45,8 +45,14 @@ import {
   $gatewayState,
   $selectedStoredSessionId
 } from '@/store/session'
-import { $focusedSessionState, $focusedStoredSessionId, $sessionStates } from '@/store/session-states'
+import {
+  $focusedRuntimeId,
+  $focusedSessionState,
+  $focusedStoredSessionId,
+  $sessionStates
+} from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
+import type { UsageStats } from '@/types/hermes'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -109,6 +115,10 @@ if (typeof window !== 'undefined') {
   $narrowViewport.listen(refresh)
 }
 
+/** Live usage of the FOCUSED session, projected out of the streamed session
+ *  state — the same readout the core statusbar's context chip paints. */
+const $focusedUsage = computed($focusedSessionState, state => state?.usage ?? null)
+
 export const host = {
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
@@ -126,6 +136,17 @@ export const host = {
     busyBySession: readonlyAtom<Record<string, boolean>>($busyBySession),
     /** Active workspace cwd ('' when detached). */
     cwd: readonlyAtom<string>($currentCwd),
+    /** Runtime id of the FOCUSED chat session — the interacted tile, else the
+     *  primary. Prefer this over `activeSessionId` for any readout that
+     *  should follow the user between tiles (context, tokens, cost). */
+    focusedSessionId: readonlyAtom<null | string>($focusedRuntimeId),
+    /** Stored (durable) id of the focused session — for navigation and
+     *  session-list matching, where runtime ids don't survive reloads. */
+    focusedStoredSessionId: readonlyAtom<null | string>($focusedStoredSessionId),
+    /** Live usage snapshot of the focused session (`context_used` /
+     *  `context_max` / `context_percent`, token counts, `cost_usd`) —
+     *  streamed by the backend, no RPC needed. Null while unresolved. */
+    focusedUsage: readonlyAtom<null | UsageStats>($focusedUsage),
     /** Gateway socket state: 'idle' | 'connecting' | 'open' | …. Not turn-busy. */
     gateway: readonlyAtom<string>($gatewayState),
     /** Current main model slug. */

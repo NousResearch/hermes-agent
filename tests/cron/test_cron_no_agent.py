@@ -118,3 +118,28 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+def test_no_agent_timeout_is_not_mislabeled_as_provider_failure(hermes_env):
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    message = _summarize_cron_failure_for_delivery(
+        {"name": "watchdog", "no_agent": True},
+        "Client.Timeout exceeded while awaiting headers",
+    )
+
+    assert "script failed: upstream service timeout" in message
+    assert "provider" not in message
+    assert "Fallback chain" not in message
+
+
+def test_agent_timeout_keeps_provider_failure_summary(hermes_env):
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    message = _summarize_cron_failure_for_delivery(
+        {"name": "agent job", "no_agent": False},
+        "ReadTimeout while calling model",
+    )
+
+    assert "provider timeout" in message
+    assert "Fallback chain" in message

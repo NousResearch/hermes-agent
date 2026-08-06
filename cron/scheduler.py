@@ -107,6 +107,23 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
+    # Script-only jobs never call an LLM provider, so do not mislabel an
+    # upstream script/API failure as a provider or fallback-chain failure.
+    if job.get("no_agent"):
+        if "429" in text or "rate limit" in lower or "usage limit" in lower:
+            reason = "upstream service rate limit"
+        elif "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+            reason = "upstream service timeout"
+        elif re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text):
+            reason = "upstream service authentication error"
+        else:
+            reason = None
+        if reason:
+            return (
+                f"⚠️ Cron '{job_name}' script failed: {reason}. "
+                "Full details saved in cron output."
+            )
+
     # Provider/API failures are the common noisy path. Keep these short.
     if "429" in text or "rate limit" in lower or "usage limit" in lower:
         reason = "rate limit"

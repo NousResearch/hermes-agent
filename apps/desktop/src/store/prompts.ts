@@ -81,6 +81,8 @@ export interface ApprovalRequest extends KeyedPrompt {
 
 export interface SudoRequest extends KeyedPrompt {
   requestId: string
+  /** The privileged command the password will authorize (#79874). */
+  command?: string
 }
 
 export interface SecretRequest extends KeyedPrompt {

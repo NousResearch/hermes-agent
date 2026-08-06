@@ -5770,7 +5770,14 @@ def _wire_callbacks(sid: str):
     from tools.skills_tool import set_secret_capture_callback
     from tools.project_tools import set_project_workspace_callback
 
-    set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
+    set_sudo_password_callback(
+        lambda command=None: _block(
+            "sudo.request",
+            sid,
+            {"command": command or ""},
+            timeout=120,
+        )
+    )
     set_project_workspace_callback(_apply_project_workspace)
 
     def secret_cb(env_var, prompt, metadata=None):

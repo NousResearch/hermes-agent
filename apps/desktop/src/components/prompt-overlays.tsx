@@ -112,7 +112,18 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       <DialogContent showCloseButton={false}>
         <DialogHeader>
           <DialogTitle icon={Lock}>{copy.sudoTitle}</DialogTitle>
-          <DialogDescription>{copy.sudoDesc}</DialogDescription>
+          <DialogDescription>
+            {request.command ? (
+              <>
+                {copy.sudoDescCommand}
+                <code className="mt-1 block rounded-md bg-muted px-2 py-1 font-mono text-xs text-foreground">
+                  {request.command}
+                </code>
+              </>
+            ) : (
+              copy.sudoDesc
+            )}
+          </DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-3" onSubmit={onSubmit}>

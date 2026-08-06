@@ -476,7 +476,7 @@ def _invalidate_cached_sudo_on_auth_failure(
     return True
 
 
-def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
+def _prompt_for_sudo_password(timeout_seconds: int = 45, command: str | None = None) -> str:
     """
     Prompt user for sudo password with timeout.
     
@@ -492,11 +492,17 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     """
     import sys
     
-    # Use the registered callback when available (prompt_toolkit-compatible)
+    # Use the registered callback when available (prompt_toolkit-compatible).
+    # Callbacks that accept a command argument (the gateway/desktop sudo
+    # dialogs) get it so the approval UI can show WHAT is being approved;
+    # zero-arg callbacks (legacy CLI) are called bare (#79874).
     _sudo_cb = _get_sudo_password_callback()
     if _sudo_cb is not None:
         try:
-            return _sudo_cb() or ""
+            try:
+                return _sudo_cb(command) or ""
+            except TypeError:
+                return _sudo_cb() or ""
         except Exception:
             return ""
 
@@ -1041,7 +1047,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
         env_var_enabled("HERMES_INTERACTIVE") or has_sudo_prompt_callback
     )
     if not has_configured_password and not sudo_password and should_prompt_for_sudo:
-        sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
+        sudo_password = _prompt_for_sudo_password(timeout_seconds=45, command=command)
         if sudo_password:
             _set_cached_sudo_password(sudo_password)
 

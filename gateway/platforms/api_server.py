@@ -2903,7 +2903,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if not model:
             _recovered = (self._last_resolved_model.get(_resolved_key)
                           or self._last_resolved_model.get("*"))
-            if _recovered:
+            if _recovered and _recovered != self._model_name:
                 logger.warning(
                     "Empty model resolved for session=%s — recovering "
                     "last-known-good model %s (config read likely returned "
@@ -2912,9 +2912,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 model = _recovered
         elif model:
-            if _resolved_key:
-                self._last_resolved_model[_resolved_key] = model
-            self._last_resolved_model["*"] = model
+            if model != self._model_name:
+                if _resolved_key:
+                    self._last_resolved_model[_resolved_key] = model
+                self._last_resolved_model["*"] = model
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))

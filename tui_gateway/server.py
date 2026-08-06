@@ -295,6 +295,12 @@ _pool = concurrent.futures.ThreadPoolExecutor(
 )
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
+# Exact in-memory session generation executing on the current turn thread.
+# Unlike a public session id, this object identity cannot be supplied by RPC.
+_current_runtime_session_record: contextvars.ContextVar[dict | None] = (
+    contextvars.ContextVar("hermes_gateway_runtime_session_record", default=None)
+)
+
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
 # of corrupting the JSON protocol.
@@ -1898,6 +1904,31 @@ def handle_request(req: dict) -> dict | None:
     if not fn:
         return _err(rid, -32601, f"unknown method: {method}")
     return fn(rid, params)
+
+
+def _current_session_steer_authority(
+    session_id: str,
+) -> tuple[Transport | None, dict | None]:
+    """Resolve unforgeable steering authority for this exact RPC context.
+
+    The public session id is only a lookup hint. Authority is the identity of
+    both the request's ContextVar-bound transport and the live in-memory
+    session record currently stored under that id. Session transport rebinding,
+    removal, or id reuse therefore invalidates an earlier generation.
+    """
+    transport = current_transport()
+    if transport is None or not session_id:
+        return None, None
+    expected_session = _current_runtime_session_record.get()
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+        if (
+            session is None
+            or (expected_session is not None and session is not expected_session)
+            or session.get("transport") is not transport
+        ):
+            return None, None
+        return transport, session
 
 
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
@@ -9386,6 +9417,12 @@ def _run_prompt_submit(
     _emit("message.start", sid)
 
     def run():
+        # The conversation runs on a fresh thread, so ContextVars from the RPC
+        # dispatcher do not follow automatically. Rebind the exact transport
+        # stored on this session generation before any tool can commission a
+        # child; delegate_task then captures it as non-serializable authority.
+        transport_token = bind_transport(session.get("transport"))
+        runtime_session_token = _current_runtime_session_record.set(session)
         approval_token = None
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
@@ -10089,6 +10126,8 @@ def _run_prompt_submit(
             if secret_token is not None:
                 reset_secret_scope(secret_token)
             _clear_session_context(session_tokens)
+            _current_runtime_session_record.reset(runtime_session_token)
+            reset_transport(transport_token)
             # Clear the per-turn interim callback so a stale closure from
             # this turn can't fire during a later turn on the same agent.
             agent.interim_assistant_callback = None

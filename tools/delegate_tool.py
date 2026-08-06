@@ -237,6 +237,8 @@ def steer_subagent(
     text: str,
     *,
     owner_session_id: Optional[str] = None,
+    owner_transport: Any = None,
+    owner_session_record: Any = None,
 ) -> bool:
     """Queue steering text into a single running subagent without stopping it.
 
@@ -259,8 +261,15 @@ def steer_subagent(
         record = _active_subagents.get(subagent_id)
         if not record or not record.get("accepting_steer", False):
             return False
-        if owner_session_id is not None and record.get("owner_session_id") != owner_session_id:
-            return False
+        if owner_session_id is not None:
+            if (
+                record.get("owner_session_id") != owner_session_id
+                or owner_transport is None
+                or record.get("owner_transport") is not owner_transport
+                or owner_session_record is None
+                or record.get("owner_session_record") is not owner_session_record
+            ):
+                return False
         agent = record.get("agent")
         if agent is None:
             return False
@@ -269,6 +278,24 @@ def steer_subagent(
         except Exception as exc:
             logger.debug("steer_subagent(%s) failed: %s", subagent_id, exc)
             return False
+
+
+def _capture_gateway_steer_authority(
+    owner_session_id: Optional[str],
+) -> tuple[Any, Any]:
+    """Capture exact request transport + live session generation, if any.
+
+    This is intentionally an in-process bridge, not a serializable capability.
+    Non-gateway hosts (including the CLI helper path) receive ``(None, None)``.
+    """
+    if not owner_session_id:
+        return None, None
+    try:
+        from tui_gateway.server import _current_session_steer_authority
+
+        return _current_session_steer_authority(owner_session_id)
+    except Exception:
+        return None, None
 
 
 def list_active_subagents() -> List[Dict[str, Any]]:
@@ -282,7 +309,14 @@ def list_active_subagents() -> List[Dict[str, Any]]:
             {
                 k: v
                 for k, v in r.items()
-                if k not in {"agent", "owner_session_id", "accepting_steer"}
+                if k
+                not in {
+                    "agent",
+                    "owner_session_id",
+                    "owner_transport",
+                    "owner_session_record",
+                    "accepting_steer",
+                }
             }
             for r in _active_subagents.values()
         ]
@@ -2045,6 +2079,8 @@ def _run_single_child(
     parent_agent=None,
     *,
     owner_session_id: Optional[str] = None,
+    owner_transport: Any = None,
+    owner_session_record: Any = None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
@@ -2186,6 +2222,12 @@ def _run_single_child(
                 owner_session_id = get_session_env("HERMES_UI_SESSION_ID", "") or None
             except Exception:
                 owner_session_id = None
+        if owner_session_id and (
+            owner_transport is None or owner_session_record is None
+        ):
+            owner_transport, owner_session_record = (
+                _capture_gateway_steer_authority(owner_session_id)
+            )
         _raw_depth = getattr(child, "_delegate_depth", 1)
         _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
         _parent_sid = getattr(child, "_parent_subagent_id", None)
@@ -2207,6 +2249,8 @@ def _run_single_child(
                 # Immutable live gateway/TUI session that commissioned this
                 # child. Empty outside those hosts; RPC authority fails closed.
                 "owner_session_id": owner_session_id,
+                "owner_transport": owner_transport,
+                "owner_session_record": owner_session_record,
             }
         )
 
@@ -3090,6 +3134,9 @@ def delegate_task(
         _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
     except Exception:
         _origin_ui_session_id = ""
+    _origin_owner_transport, _origin_owner_session_record = (
+        _capture_gateway_steer_authority(_origin_ui_session_id)
+    )
 
     # Build all child agents on the main thread (thread-safe construction).
     # _build_child_preserving_parent_tools saves/restores the parent's
@@ -3154,6 +3201,8 @@ def delegate_task(
                 child,
                 parent_agent,
                 owner_session_id=_origin_ui_session_id or None,
+                owner_transport=_origin_owner_transport,
+                owner_session_record=_origin_owner_session_record,
             )
             results.append(result)
         else:
@@ -3177,6 +3226,8 @@ def delegate_task(
                         child=child,
                         parent_agent=parent_agent,
                         owner_session_id=_origin_ui_session_id or None,
+                        owner_transport=_origin_owner_transport,
+                        owner_session_record=_origin_owner_session_record,
                     )
                     futures[future] = i
 

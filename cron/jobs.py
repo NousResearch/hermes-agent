@@ -1620,6 +1620,16 @@ def create_job(
     from cron.lifecycle_guard import check_gateway_lifecycle
     check_gateway_lifecycle(prompt_text, normalized_script)
 
+    # Enforce target-aware path validation at the persistence boundary too.
+    # Tool/CLI checks give better early UX, but direct callers must not be able
+    # to write a job that bypasses the same execution-boundary contract.
+    from tools.cronjob_tools import _validate_cron_script_path
+    script_error = _validate_cron_script_path(
+        normalized_script, normalized_target, workdir=normalized_workdir,
+    )
+    if script_error:
+        raise ValueError(script_error)
+
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
 
     provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
@@ -1788,6 +1798,16 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
+            updated_target = str(updated.get("target") or "scheduler").strip().lower()
+            if updated_target not in {"scheduler", "backend"}:
+                raise ValueError("Cron target must be either 'scheduler' or 'backend'.")
+            updated["target"] = updated_target
+            from tools.cronjob_tools import _validate_cron_script_path
+            script_error = _validate_cron_script_path(
+                updated.get("script"), updated_target, workdir=updated.get("workdir"),
+            )
+            if script_error:
+                raise ValueError(script_error)
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)

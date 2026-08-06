@@ -457,6 +457,38 @@ class TestUnifiedCronjobTool:
         assert error == "Backend script path must be absolute: 'check.py'."
 
 
+    def test_backend_script_revalidated_when_update_changes_workdir(self, monkeypatch):
+        """A changed backend cwd is checked before the job can become broken."""
+        calls = []
+
+        def validate(script, workdir=None):
+            calls.append((script, workdir))
+            if len(calls) <= 2:
+                return None
+            return "Script not found in terminal backend: /workspace/check.py"
+
+        monkeypatch.setattr("tools.cronjob_tools._validate_backend_script", validate)
+        created = json.loads(
+            cronjob(
+                action="create",
+                schedule="every 1h",
+                script="/workspace/check.py",
+                target="backend",
+                no_agent=True,
+            )
+        )
+        assert created["success"] is True
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                workdir="/missing-backend-workdir",
+            )
+        )
+        assert updated["success"] is False
+        assert calls[-1] == ("/workspace/check.py", "/missing-backend-workdir")
+
     def test_update_normalizes_list_form_deliver(self):
         """update with deliver=['telegram'] stores the canonical string."""
         from cron.jobs import get_job

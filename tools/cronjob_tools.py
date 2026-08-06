@@ -1419,7 +1419,7 @@ def cronjob(
                     return tool_error("Cron target must be either 'scheduler' or 'backend'.", success=False)
                 updates["target"] = normalized_target
             effective_script = updates.get("script") if "script" in updates else job.get("script")
-            if effective_script and (script is not None or target is not None):
+            if effective_script and (script is not None or target is not None or workdir is not None):
                 effective_target = str(
                     updates.get("target", job.get("target", "scheduler"))
                 ).strip().lower()

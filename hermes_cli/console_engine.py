@@ -16,7 +16,7 @@ import io
 import json
 import shlex
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Literal, NoReturn, Sequence
 
@@ -57,16 +57,24 @@ def _capture_output(fn: Callable[[], object]) -> str:
     stdout = io.StringIO()
     stderr = io.StringIO()
     code = 0
+    message = ""
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         try:
             result = fn()
             if isinstance(result, int) and result:
                 raise SystemExit(result)
         except SystemExit as exc:
-            code = int(exc.code or 0)
+            # sys.exit("msg") / raise SystemExit("msg") is the standard non-zero-exit idiom:
+            # exc.code is the message string, not an int. int() would raise ValueError here,
+            # which escapes execute()'s ConsoleCommandError handler and crashes the REPL.
+            if isinstance(exc.code, str):
+                message = exc.code
+                code = 1
+            else:
+                code = int(exc.code or 0)
     text = stdout.getvalue() + stderr.getvalue()
     if code:
-        raise ConsoleCommandError(text.strip() or f"Command exited with status {code}")
+        raise ConsoleCommandError(message.strip() or text.strip() or f"Command exited with status {code}")
     return text.rstrip()
 
 
@@ -1180,7 +1188,7 @@ class HermesConsoleEngine:
             "model",
             "moa",
             "oneshot",
-            "postinstall",
+
             "proxy",
             "serve",
             "setup",
@@ -1324,7 +1332,7 @@ def _sessions_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
     db = SessionDB()
     try:
         sessions = db.list_sessions_rich(
-            exclude_sources=["tool"],
+            exclude_sources=["kanban", "tool"],
             limit=ns.limit,
             order_by_last_active=True,
         )
@@ -1340,7 +1348,7 @@ def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
     db = SessionDB()
     try:
         total = db.session_count()
-        listable = db.session_count(exclude_children=True, exclude_sources=["tool"])
+        listable = db.session_count(exclude_children=True, exclude_sources=["kanban", "tool"])
         messages = db.message_count()
         lines = [
             f"Total sessions: {total}",

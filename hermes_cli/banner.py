@@ -40,7 +40,14 @@ def cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's renderer."""
     from prompt_toolkit import print_formatted_text as _pt_print
     from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
-    _pt_print(_PT_ANSI(text))
+    try:
+        _pt_print(_PT_ANSI(text))
+    except Exception:
+        # prompt_toolkit needs a real console. On Windows, a redirected or
+        # absent stdout (pythonw.exe, CI, `hermes ... > file`) raises
+        # NoConsoleScreenBufferError from its Win32Output — display helpers
+        # must never crash the caller over that, so degrade to plain print.
+        print(text)
 
 
 # =========================================================================
@@ -160,6 +167,11 @@ def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str
             ["git", *args],
             capture_output=True,
             text=True,
+            # git output is UTF-8; on Windows text=True defaults to the ANSI
+            # code page and bytes like 0x90 (3rd byte of 🐛 in a commit
+            # subject) crash the stdlib reader thread (#52649).
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             cwd=str(cwd),
         )
@@ -179,7 +191,8 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     try:
         result = subprocess.run(
             ["git", "ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10,
         )
     except Exception:
         return None
@@ -213,7 +226,15 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     is_shallow = shallow == "true"
 
     try:
-        fetch_args = ["git", "fetch", "origin"]
+        # Scope the fetch to the one branch the behind-count compares against.
+        # An unscoped ``git fetch origin`` transfers every remote head (~1,400
+        # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full
+        # 10 s timeout on slow links. ``cmd_update`` already scopes its fetch
+        # for the same reason. Modern git updates the ``origin/main`` tracking
+        # ref on a scoped fetch, so the ``HEAD..origin/main`` count below is
+        # unaffected; the shallow path compares against FETCH_HEAD, which a
+        # scoped fetch also updates.
+        fetch_args = ["git", "fetch", "origin", "main"]
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
@@ -241,7 +262,8 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     try:
         result = subprocess.run(
             ["git", "rev-list", "--count", "HEAD..origin/main"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5,
             cwd=str(repo_dir),
         )
         if result.returncode == 0:
@@ -249,48 +271,6 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     except Exception:
         pass
     return None
-
-
-def _version_tuple(v: str) -> tuple[int, ...]:
-    """Parse '0.13.0' into (0, 13, 0) for comparison. Non-numeric segments become 0."""
-    parts = []
-    for segment in v.split("."):
-        try:
-            parts.append(int(segment))
-        except ValueError:
-            parts.append(0)
-    return tuple(parts)
-
-
-def _fetch_pypi_latest(package: str = "hermes-agent") -> Optional[str]:
-    """Fetch the latest version of a package from PyPI. Returns None on failure."""
-    try:
-        import urllib.request
-        url = f"https://pypi.org/pypi/{package}/json"
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-            return data.get("info", {}).get("version")
-    except Exception:
-        return None
-
-
-def check_via_pypi() -> Optional[int]:
-    """Compare installed version against PyPI latest.
-
-    Returns 0 if up-to-date, 1 if behind, None on failure.
-    """
-    latest = _fetch_pypi_latest()
-    if latest is None:
-        return None
-    if latest == VERSION:
-        return 0
-    try:
-        if _version_tuple(latest) > _version_tuple(VERSION):
-            return 1
-        return 0
-    except Exception:
-        return 1 if latest != VERSION else 0
 
 
 def check_for_updates() -> Optional[int]:
@@ -310,16 +290,11 @@ def check_for_updates() -> Optional[int]:
 
     # Docker images have no working tree to count commits against — the
     # published image excludes `.git` (see .dockerignore) and sets no
-    # HERMES_REVISION (that's nix-only). Without this guard the checks below
-    # fall through to `check_via_pypi()`, whose PyPI-version mismatch flag (1)
-    # then gets rendered by the CLI banner and the TUI badge as a phantom
-    # "1 commit behind" — even though no git repo or commit math is involved,
-    # and `hermes update` correctly refuses to run in-place inside the
-    # container anyway. The dashboard's REST `/api/hermes/update/check`
-    # endpoint already short-circuits docker the same way (web_server.py);
-    # mirror that here so the banner/TUI surfaces agree. Returning None makes
-    # both the Rich banner (build_welcome_banner) and the Ink badge
-    # (branding.tsx, guarded on `typeof === 'number' && > 0`) show nothing.
+    # HERMES_REVISION (that's nix-only). Returning None makes both the Rich
+    # banner (build_welcome_banner) and the Ink badge (branding.tsx, guarded
+    # on `typeof === 'number' && > 0`) show nothing. The dashboard's REST
+    # `/api/hermes/update/check` endpoint short-circuits docker the same way
+    # (web_server.py); mirror that here so the banner/TUI surfaces agree.
     try:
         from hermes_cli.config import detect_install_method, get_project_root
         if detect_install_method(get_project_root()) == "docker":
@@ -328,14 +303,11 @@ def check_for_updates() -> Optional[int]:
         pass
 
     # Read cache — invalidate if the embedded rev OR installed version has
-    # changed since the last check. The version guard matters for pip installs:
-    # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
-    # changes VERSION but leaves rev unchanged (both None), and without this
-    # the stale "behind" count would survive the upgrade for up to 6h. See #34491.
+    # changed since the last check.
     now = time.time()
     try:
         if cache_file.exists():
-            cached = json.loads(cache_file.read_text())
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
@@ -355,13 +327,17 @@ def check_for_updates() -> Optional[int]:
         if not (repo_dir / ".git").exists():
             repo_dir = hermes_home / "hermes-agent"
         if not (repo_dir / ".git").exists():
-            behind = check_via_pypi()
+            # No git checkout and no embedded revision — can't determine
+            # update status. This is the Docker path (already short-circuited
+            # above) or an unsupported install without a source tree.
+            behind = None
         else:
             behind = _check_via_local_git(repo_dir)
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
+            encoding="utf-8",
         )
     except Exception:
         pass
@@ -390,6 +366,8 @@ def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
             ["git", "rev-parse", "--short=8", rev],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             cwd=str(repo_dir),
         )
@@ -446,6 +424,8 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
             ["git", "rev-list", "--count", "origin/main..HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             cwd=str(repo_dir),
         )
@@ -482,6 +462,8 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
             ["git", "describe", "--tags", "--abbrev=0"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=3,
             cwd=str(repo_dir),
         )
@@ -677,13 +659,22 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
         left_lines.append(f"[{accent}]MoA: {preset_name}[/]{agg_str}{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
     else:
-        model_short = model.split("/")[-1] if "/" in model else model
-        if model_short.endswith(".gguf"):
-            model_short = model_short[:-5]
-        if len(model_short) > 28:
-            model_short = model_short[:25] + "..."
-        ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-        left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+        if not (model or "").strip() or (model or "").strip().lower() == "unknown":
+            # Unconfigured install: say so in red instead of a blank/"unknown"
+            # slug — this is the single clearest place to tell the user what
+            # is wrong and how to fix it.
+            left_lines.append(
+                f"[bold red]no model configured[/] "
+                f"[dim {dim}]— run /model or hermes setup[/]"
+            )
+        else:
+            model_short = model.split("/")[-1] if "/" in model else model
+            if model_short.endswith(".gguf"):
+                model_short = model_short[:-5]
+            if len(model_short) > 28:
+                model_short = model_short[:25] + "..."
+            ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
+            left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
 
     if os.getenv("HERMES_YOLO_MODE"):
         left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")
@@ -887,27 +878,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 right_lines.append(line)
     except Exception:
         pass  # Never break the banner over an update check
-
-    # Unsupported install-method warning — pip/PyPI and Homebrew are no
-    # longer an officially supported distribution method (see
-    # website/docs/getting-started/platform-support.md). Such installs miss
-    # the git checkout + installer-managed deps, so updates, self-update, and
-    # issue triage don't behave correctly. Warn, don't block. NixOS is fully
-    # supported and never hits this.
-    try:
-        from hermes_cli.config import (
-            detect_install_method,
-            format_unsupported_install_warning,
-            is_unsupported_install_method,
-            get_project_root
-        )
-        _install_method = detect_install_method(get_project_root())
-        if is_unsupported_install_method(_install_method):
-            right_lines.append(
-                f"[bold yellow]⚠ {format_unsupported_install_warning(_install_method)}[/]"
-            )
-    except Exception:
-        pass  # Never break the banner over the install-method check
 
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)

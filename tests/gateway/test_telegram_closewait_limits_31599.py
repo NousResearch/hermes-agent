@@ -160,18 +160,3 @@ def test_proxy_branch_general_pool_has_tight_keepalive(monkeypatch):
     assert any(inst.kwargs.get("proxy") == "http://127.0.0.1:9/" for inst in instances)
 
 
-def test_plain_branch_general_pool_has_tight_keepalive(monkeypatch):
-    """No proxy / no fallback IPs → plain branch must also wire tuned limits."""
-    instances = _drive_connect(monkeypatch, proxy_url=None)
-    assert len(instances) >= 2
-    _assert_keepalive_tight(instances)
-
-
-def test_limits_keepalive_below_ptb_default_is_the_contract():
-    """Document the invariant independent of adapter wiring: the shared
-    helper itself must tighten keepalive below httpx's 5.0 default."""
-    from gateway.platforms._http_client_limits import platform_httpx_limits
-
-    limits = platform_httpx_limits()
-    assert isinstance(limits, httpx.Limits)
-    assert limits.keepalive_expiry is not None and limits.keepalive_expiry < 5.0

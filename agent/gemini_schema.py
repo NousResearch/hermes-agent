@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict
 
 # Gemini's ``FunctionDeclaration.parameters`` field accepts the ``Schema``
@@ -76,15 +77,31 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
 
     # Gemini's Schema validator requires every ``enum`` entry to be a string,
     # even when the parent ``type`` is ``integer`` / ``number`` / ``boolean``.
-    # OpenAI / OpenRouter / Anthropic accept typed enums (e.g. Discord's
-    # ``auto_archive_duration: {type: integer, enum: [60, 1440, 4320, 10080]}``),
-    # so we only drop the ``enum`` when it would collide with Gemini's rule.
-    # Keeping ``type: integer`` plus the human-readable description gives the
-    # model enough guidance; the tool handler still validates the value.
+    # Preserve those constraints by stringifying scalar values while keeping
+    # the declared type intact; Gemini uses the strings as schema metadata and
+    # still emits typed tool arguments at runtime.
     enum_val = cleaned.get("enum")
     type_val = cleaned.get("type")
     if isinstance(enum_val, list) and type_val in {"integer", "number", "boolean"}:
-        if any(not isinstance(item, str) for item in enum_val):
+        stringified = []
+        for item in enum_val:
+            if isinstance(item, str):
+                value = item
+            elif isinstance(item, bool):
+                value = "true" if item else "false"
+            elif (
+                isinstance(item, (int, float))
+                and not isinstance(item, bool)
+                and math.isfinite(item)
+            ):
+                value = str(item)
+            else:
+                continue
+            if value not in stringified:
+                stringified.append(value)
+        if stringified:
+            cleaned["enum"] = stringified
+        else:
             cleaned.pop("enum", None)
 
     # Gemini validates ``required`` strictly against the same node's

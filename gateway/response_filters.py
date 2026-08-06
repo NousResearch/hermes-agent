@@ -70,6 +70,47 @@ def is_intentional_silence_response(response: Any) -> bool:
     return any(candidate in LIVE_GATEWAY_SILENT_MARKERS for candidate in _canonical_silence_candidates(stripped))
 
 
+def is_autonomous_silence_response(response: Any) -> bool:
+    """Loose silence matcher for autonomous lanes (cron, webhook).
+
+    Autonomous lanes instruct the agent to emit ``[SILENT]`` when a tick
+    produced nothing worth a human's attention, and models reliably bracket
+    the marker with a short note explaining why they stayed quiet.  Unlike
+    :func:`is_intentional_silence_response` (the interactive-chat rule, which
+    demands the response be EXACTLY a marker), this suppresses when a marker
+    is the whole response, sits on its own first or last line, or the
+    bracketed sentinel opens the response (the documented
+    ``[SILENT] No changes detected`` pattern).  A token buried mid-sentence
+    in a genuine report is still delivered.
+
+    Shares :data:`LIVE_GATEWAY_SILENT_MARKERS` so the interactive and
+    autonomous marker sets can never drift apart.
+    """
+    if not isinstance(response, str):
+        return False
+    stripped = response.strip()
+    if not stripped:
+        return False
+
+    def _is_token(line: str) -> bool:
+        return _canonical_silence_candidate(line) in LIVE_GATEWAY_SILENT_MARKERS
+
+    # Whole response is exactly a token.
+    if _is_token(stripped):
+        return True
+    # Marker on its own first or last line (leading/trailing note on a
+    # separate line — e.g. "2 deals filtered\n\n[SILENT]").
+    lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    if lines and (_is_token(lines[0]) or _is_token(lines[-1])):
+        return True
+    # Bracketed sentinel used as a same-line prefix — the documented pattern
+    # "[SILENT] No changes detected".  Restricted to the bracketed form so a
+    # bare word like "Silent retry succeeded" is NOT swallowed.
+    if stripped.upper().startswith("[SILENT]"):
+        return True
+    return False
+
+
 def is_intentional_silence_agent_result(agent_result: dict | None, response: Any) -> bool:
     """Silence markers suppress delivery only for successful agent turns."""
     if not isinstance(agent_result, dict):

@@ -8,6 +8,7 @@ the provider's config schema. Writes config to config.yaml + .env.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import shlex
 from pathlib import Path
@@ -16,6 +17,32 @@ from hermes_constants import get_hermes_home
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 _CANCELLED = -1
+
+
+def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
+    """Return the pip deps a provider actually needs on THIS install.
+
+    ``plugin.yaml`` declares the provider's baseline bridge packages, but
+    some providers install mode-dependent extras at setup time that the
+    manifest can't express. Hindsight's ``local_embedded`` mode installs
+    ``hindsight-all`` (daemon + embedder + client) during
+    ``hermes memory setup`` — if the update-time refresh only reinstalled
+    the declared ``hindsight-client``, the embedded daemon would stay
+    broken after a venv rebuild stripped ``hindsight-embed`` (#70636).
+    """
+    deps = list(declared or [])
+    if provider_name == "hindsight":
+        try:
+            import json
+            cfg_path = get_hermes_home() / "hindsight" / "config.json"
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+            mode = cfg.get("mode", "")
+            # "local" is a legacy alias for "local_embedded"
+            if mode in {"local", "local_embedded"}:
+                deps.append("hindsight-all")
+        except Exception:
+            pass
+    return deps
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +104,16 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
-def _install_dependencies(provider_name: str) -> None:
-    """Install pip dependencies declared in plugin.yaml."""
+def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
+    """Install pip dependencies declared in ``plugin.yaml``.
+
+    When ``force`` is true, every declared dependency is handed to the
+    installer even if its import currently succeeds — the resolver then
+    reinstalls anything missing or version-drifted and no-ops on satisfied
+    ranges. This is how ``hermes update`` heals the active memory provider
+    after a venv rebuild/sync removed or downgraded its bridge packages
+    (#53272, #70636).
+    """
     import subprocess
     from plugins.memory import find_provider_dir
 
@@ -96,7 +131,7 @@ def _install_dependencies(provider_name: str) -> None:
     except Exception:
         return
 
-    pip_deps = meta.get("pip_dependencies", [])
+    pip_deps = _provider_pip_dependencies(provider_name, meta.get("pip_dependencies", []))
     if not pip_deps:
         return
 
@@ -108,10 +143,15 @@ def _install_dependencies(provider_name: str) -> None:
         "hindsight-all": "hindsight",
     }
 
-    # Check which packages are missing
+    # Check which packages need installation.
     missing = []
     for dep in pip_deps:
-        import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
+        if force:
+            missing.append(dep)
+            continue
+        dep_name = re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*", dep)
+        base = dep_name.group(0) if dep_name else dep
+        import_name = _IMPORT_NAMES.get(base, base.replace("-", "_").split("[")[0])
         try:
             __import__(import_name)
         except ImportError:
@@ -122,16 +162,22 @@ def _install_dependencies(provider_name: str) -> None:
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
-    from hermes_cli.tools_config import _pip_install
+    # Environment-aware install: on immutable hosted images the agent venv
+    # is sealed read-only and installs must go to the durable target on the
+    # data volume (HERMES_LAZY_INSTALL_TARGET). install_specs handles the
+    # routing/gating; on normal installs it is venv-scoped as before (NS-605).
+    from tools.lazy_deps import install_specs
 
     manual_cmd = f"uv pip install {' '.join(missing)}"
     try:
-        result = _pip_install(["--quiet"] + missing, timeout=120)
-        if result.returncode == 0:
+        outcome = install_specs(missing, timeout=120)
+        if outcome.ok:
             print(f"  ✓ Installed {', '.join(missing)}")
+        elif outcome.blocked:
+            print(f"  ⚠ Cannot install {', '.join(missing)}: {outcome.reason}")
         else:
             print(f"  ⚠ Failed to install {', '.join(missing)}")
-            stderr = (result.stderr or "")[:200]
+            stderr = (outcome.stderr or "")[:200]
             if stderr:
                 print(f"    {stderr}")
             print(f"  Run manually: {manual_cmd}")
@@ -379,6 +425,21 @@ def cmd_setup(args) -> None:
     print("\n  Start a new session to activate.\n")
 
 
+def _env_line_safe(value) -> str:
+    """Neutralize characters that would break ``.env`` line structure.
+
+    ``.env`` is strictly line-oriented (one ``KEY=VALUE`` per line) and
+    values are interpolated straight into that line. A pasted secret with an
+    embedded CR/LF would spill onto a new line and be re-parsed as a
+    *separate* ``KEY=VALUE`` entry on the next read — injecting an arbitrary
+    variable into the credentials file. Strip every separator recognized by
+    ``str.splitlines()`` plus NUL so a value can only occupy its own line.
+    Mirrors the openviking plugin's writer and ``config.save_env_value``.
+    """
+    text = value if isinstance(value, str) else str(value)
+    return "".join(text.replace("\x00", "").splitlines())
+
+
 def _write_env_vars(env_path: Path, env_writes: dict) -> None:
     """Append or update env vars in .env file."""
     env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -392,14 +453,14 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
     for line in existing_lines:
         key_match = line.split("=", 1)[0].strip() if "=" in line else ""
         if key_match in env_writes:
-            new_lines.append(f"{key_match}={env_writes[key_match]}")
+            new_lines.append(f"{key_match}={_env_line_safe(env_writes[key_match])}")
             updated_keys.add(key_match)
         else:
             new_lines.append(line)
 
     for key, val in env_writes.items():
         if key not in updated_keys:
-            new_lines.append(f"{key}={val}")
+            new_lines.append(f"{key}={_env_line_safe(val)}")
 
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
     # Restrict permissions — .env holds API keys and tokens.
@@ -422,8 +483,24 @@ def cmd_status(args) -> None:
     mem_config = config.get("memory", {})
     provider_name = mem_config.get("provider", "")
 
+    memory_enabled = mem_config.get("memory_enabled", True)
+    user_profile_enabled = mem_config.get("user_profile_enabled", True)
+
+    mem_mark = "enabled ✓" if memory_enabled else "disabled ✗"
+    user_mark = "enabled ✓" if user_profile_enabled else "disabled ✗"
+
+    # Check if the memory tool is enabled for the CLI platform via the
+    # canonical resolver (handles composite toolsets like hermes-cli).
+    from hermes_cli.tools_config import _get_platform_tools
+    cli_tools = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    memory_tool_enabled = "memory" in cli_tools
+    tool_mark = "enabled ✓" if memory_tool_enabled else "disabled ✗"
+
     print("\nMemory status\n" + "─" * 40)
-    print("  Built-in:  always active")
+    print("  Built-in (MEMORY.md / USER.md):")
+    print(f"    Memory injection:   {mem_mark}")
+    print(f"    User profile:       {user_mark}")
+    print(f"    Memory tool:        {tool_mark}")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
 
     providers = _get_available_providers()

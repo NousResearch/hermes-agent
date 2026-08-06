@@ -53,6 +53,10 @@ WEBSOCKETS_AVAILABLE = websockets is not None
 # How long to wait for the handshake descriptor and for each outbound result.
 _HANDSHAKE_TIMEOUT_S = 30.0
 _OUTBOUND_TIMEOUT_S = 30.0
+# Bound supervisor/reader/ws.close awaits so a wedged peer cannot stall
+# adapter.disconnect. Three sequential awaits at 1.0s stay under the runner's
+# default 5s adapter disconnect budget (plus the 2s go_idle ACK budget).
+_TEARDOWN_AWAIT_TIMEOUT_S = 1.0
 
 # Phase 7 Unit 7d-B: the application close code the connector sends when it
 # rejects/revokes a gateway's WS upgrade auth (mirrors the connector's
@@ -129,6 +133,42 @@ def _render_relay_context(context: Any) -> Optional[str]:
     return f"[Recent channel messages]\n{body}"
 
 
+def _normalize_slack_parent_command(
+    text: str,
+    message_type: MessageType,
+) -> tuple[str, MessageType]:
+    """Mirror native Slack ``/hermes`` routing for authenticated relay text."""
+    stripped = text.strip()
+    parent_parts = stripped.split(maxsplit=1)
+    if not parent_parts or parent_parts[0] != "/hermes":
+        return text, message_type
+
+    from hermes_cli.commands import slack_subcommand_map
+
+    payload = parent_parts[1].strip() if len(parent_parts) > 1 else ""
+    subcommand_map = slack_subcommand_map()
+    subcommand_map["compact"] = "/compress"
+    payload_parts = payload.split() if payload else []
+    first_word = payload_parts[0] if payload_parts else ""
+
+    if first_word in subcommand_map:
+        rest = payload[len(first_word) :].strip()
+        normalized = (
+            f"{subcommand_map[first_word]} {rest}".strip()
+            if rest
+            else subcommand_map[first_word]
+        )
+    elif payload:
+        normalized = payload
+    else:
+        normalized = "/help"
+
+    normalized_type = (
+        MessageType.COMMAND if normalized.startswith("/") else MessageType.TEXT
+    )
+    return normalized, normalized_type
+
+
 def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
     """Rebuild a MessageEvent from the connector's normalized inbound payload.
 
@@ -150,7 +190,17 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         chat_type=src.get("chat_type", "dm"),
         chat_name=src.get("chat_name"),
         user_id=src.get("user_id"),
-        user_name=src.get("user_name"),
+        # Native adapters surface the human-facing DISPLAY name as user_name
+        # (e.g. Discord `message.author.display_name`); the connector sends the
+        # raw platform username as user_name plus optional user_display_name /
+        # user_handle enrichments (contract §3). Prefer the display name for
+        # parity with native lanes — session keys derive from user_id, never
+        # user_name, so this is presentation-only and key-stable.
+        user_name=(
+            src.get("user_display_name")
+            or src.get("user_name")
+            or src.get("user_handle")
+        ),
         thread_id=src.get("thread_id"),
         chat_topic=src.get("chat_topic"),
         user_id_alt=src.get("user_id_alt"),
@@ -167,6 +217,18 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         # config/credential scope — the same field the /p/<profile>/ HTTP
         # prefix and per-credential polling adapters already set.
         profile=src.get("profile"),
+        # Auto-thread markers (Phase 4): stamped by the CONNECTOR when this
+        # event's thread was auto-created by its auto-thread egress policy.
+        # Lights the SAME semantic-rename lane native Discord uses
+        # (_is_discord_auto_thread_lane's relay-aware sibling reads these).
+        auto_thread_created=bool(src.get("auto_thread_created", False)),
+        auto_thread_initial_name=src.get("auto_thread_initial_name"),
+        # Discord auto-thread session continuity: the connector stamps the
+        # thread id this channel message's reply WILL be auto-threaded into
+        # (== the message id) so the gateway keys the initiating channel message
+        # and its later in-thread follow-ups to ONE session. See
+        # build_session_key / SessionSource.prospective_thread_id.
+        prospective_thread_id=src.get("prospective_thread_id"),
         # Authentic upstream-trust signal: this event arrived over the
         # per-instance-authenticated relay WS, so the connector already resolved
         # it to this instance's owner-bound author. ``platform`` is the
@@ -181,12 +243,28 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
     except ValueError:
         msg_type = MessageType.TEXT
 
+    text = raw.get("text", "")
+    if platform_enum == Platform.SLACK:
+        # Team Gateway carries Slack slash text over the authenticated message
+        # relay, bypassing Hermes' native Slack command callback. Normalize at
+        # the wire boundary so adapter-level active-session gates see the real
+        # gateway command rather than the legacy `hermes` parent name.
+        text, msg_type = _normalize_slack_parent_command(text, msg_type)
+
     return MessageEvent(
-        text=raw.get("text", ""),
+        text=text,
         message_type=msg_type,
         source=source,
         message_id=raw.get("message_id"),
         reply_to_message_id=raw.get("reply_to_message_id"),
+        # Richer quoted-reply context (Phase 4): what the user replied TO,
+        # when the connector had it in hand (Discord referenced_message,
+        # Telegram reply_to_message, WhatsApp context + text cache). Maps to
+        # the SAME MessageEvent fields native adapters populate, so run.py's
+        # reply-context injection works identically over the relay.
+        reply_to_text=(raw.get("reply_to") or {}).get("text"),
+        reply_to_author_name=(raw.get("reply_to") or {}).get("author"),
+        reply_to_is_own_message=bool((raw.get("reply_to") or {}).get("is_own", False)),
         media_urls=raw.get("media_urls") or [],
         # Surrounding channel/group CONTEXT the connector attached for this
         # addressed turn (design relay-channel-context): a read-only, oldest→
@@ -197,6 +275,16 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         # connector that doesn't send it, a dm, or a no-context platform, so
         # this is purely additive and byte-identical to today when unset.
         channel_context=_render_relay_context(raw.get("context")),
+        # Structured interactive-prompt reply (Phase 3): carried verbatim off
+        # the wire when present ({prompt_id, option_id, label?,
+        # prompt_message_id?}). The RelayAdapter's inbound bridge consumes it
+        # to resolve pending approvals/confirms/clarifies; a gateway that
+        # predates the resolvers just sees the command-shaped text.
+        prompt_response=(
+            dict(raw["prompt_response"])
+            if isinstance(raw.get("prompt_response"), dict)
+            else None
+        ),
     )
 
 
@@ -326,6 +414,11 @@ class WebSocketRelayTransport:
         self._reader: Optional[asyncio.Task[None]] = None
         self._inbound: Optional[InboundHandler] = None
         self._descriptor: Optional[CapabilityDescriptor] = None
+        # Phase 1.5 multi-platform: descriptors keyed by the underlying platform
+        # (one per hello'd identity). `_descriptor` above stays the FIRST
+        # (primary-identity) descriptor for back-compat; this map is the
+        # per-platform capability surface read via `descriptor_for_platform`.
+        self._descriptors_by_platform: Dict[str, CapabilityDescriptor] = {}
         self._descriptor_ready: asyncio.Future[CapabilityDescriptor] | None = None
         # requestId -> future awaiting the matching outbound_result.
         self._pending: Dict[str, asyncio.Future[Dict[str, Any]]] = {}
@@ -355,8 +448,10 @@ class WebSocketRelayTransport:
         loop = asyncio.get_running_loop()
         self._descriptor_ready = loop.create_future()
         # A fresh handshake is coming; clear any stale descriptor so handshake()
-        # awaits the new one (matters on a re-dial).
+        # awaits the new one (matters on a re-dial). The per-platform map resets
+        # with it — a reconnected connector re-sends one descriptor per hello.
         self._descriptor = None
+        self._descriptors_by_platform = {}
         # scale-to-zero (D12): a successful (re-)dial ends any dormant state — we
         # are live again, so a subsequent UNEXPECTED close should reconnect on the
         # normal fast backoff, not the dormant cadence.
@@ -373,7 +468,20 @@ class WebSocketRelayTransport:
         # sends exactly one hello — byte-identical to before. The descriptor for
         # the FIRST identity resolves handshake(); later descriptors are absorbed.
         for platform, bot_id in self._identities:
-            await self._send({"type": "hello", "platform": platform, "botId": bot_id})
+            hello: Dict[str, Any] = {"type": "hello", "platform": platform, "botId": bot_id}
+            # Phase 4: declare the gateway's slash-command set on the Discord
+            # hello. The connector (which holds the bot token) reconciles
+            # Discord's global registration against it — idempotent, detached,
+            # best-effort on its side; a connector predating the field ignores
+            # it (additive). Only Discord has an app-command registry.
+            if platform == "discord":
+                try:
+                    from gateway.relay.command_manifest import build_relay_command_manifest
+
+                    hello["command_manifest"] = build_relay_command_manifest()
+                except Exception:  # noqa: BLE001 - manifest is enrichment, never blocks the handshake
+                    logger.debug("relay command manifest build failed", exc_info=True)
+            await self._send(hello)
 
     def _upgrade_headers(self) -> Dict[str, str]:
         """Auth headers for the WS upgrade, or {} when no secret is configured.
@@ -397,23 +505,26 @@ class WebSocketRelayTransport:
         if self._supervisor is not None:
             self._supervisor.cancel()
             try:
-                await self._supervisor
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+                await asyncio.wait_for(
+                    self._supervisor, timeout=_TEARDOWN_AWAIT_TIMEOUT_S
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
                 pass
             self._supervisor = None
         if self._reader is not None:
             self._reader.cancel()
             try:
-                await self._reader
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+                await asyncio.wait_for(self._reader, timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
                 pass
             self._reader = None
         if self._ws is not None:
             try:
-                await self._ws.close()
-            except Exception:  # noqa: BLE001
+                await asyncio.wait_for(self._ws.close(), timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-            self._ws = None
+            finally:
+                self._ws = None
         # Fail any in-flight outbound waiters so callers don't hang.
         for fut in self._pending.values():
             if not fut.done():
@@ -428,6 +539,18 @@ class WebSocketRelayTransport:
         if self._descriptor_ready is None:
             raise RuntimeError("handshake() called before connect()")
         return await asyncio.wait_for(self._descriptor_ready, timeout=self._connect_timeout_s)
+
+    def descriptor_for_platform(self, platform: str) -> Optional[CapabilityDescriptor]:
+        """The negotiated descriptor for one fronted platform, or None.
+
+        Phase 1.5 multi-platform: the connector replies one descriptor per
+        hello'd identity; they accumulate here keyed by the descriptor's own
+        ``platform`` field. Callers (RelayAdapter) use this to resolve PER-CHAT
+        capabilities — e.g. Discord's 2000-char max_message_length vs
+        Telegram's 4096 — instead of applying the primary identity's scalar
+        descriptor to every platform this gateway fronts.
+        """
+        return self._descriptors_by_platform.get(platform)
 
     @property
     def auth_revoked(self) -> bool:
@@ -547,9 +670,11 @@ class WebSocketRelayTransport:
         # flip us back to a fast reconnect.
         self._dormant = True
         try:
-            await self._ws.close()
-        except Exception:  # noqa: BLE001 - best-effort; the reader still ends + arms reconnect
-            logger.debug("relay go_dormant: ws.close() raised", exc_info=True)
+            await asyncio.wait_for(
+                self._ws.close(), timeout=_TEARDOWN_AWAIT_TIMEOUT_S
+            )
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 - best-effort; the reader still ends + arms reconnect
+            logger.debug("relay go_dormant: ws.close() raised or timed out", exc_info=True)
         return acked
 
     async def _send_inbound_ack(self, buffer_id: str) -> None:
@@ -704,7 +829,19 @@ class WebSocketRelayTransport:
         ftype = frame.get("type")
         if ftype == "descriptor":
             descriptor = CapabilityDescriptor.from_json(json.dumps(frame.get("descriptor", {})))
-            self._descriptor = descriptor
+            # Phase 1.5 multi-platform: one descriptor frame arrives per hello'd
+            # identity. Accumulate them keyed by the descriptor's own platform so
+            # the adapter can resolve PER-CHAT capabilities (e.g. Discord's 2000
+            # vs Telegram's 4096 max_message_length) instead of collapsing N
+            # platforms onto whichever descriptor arrived last.
+            if descriptor.platform:
+                self._descriptors_by_platform[descriptor.platform] = descriptor
+            # The FIRST descriptor of this connection generation is the session
+            # default (the primary identity's) — later arrivals must NOT
+            # overwrite it, or the scalar capability surface silently becomes
+            # last-writer-wins across platforms.
+            if self._descriptor is None:
+                self._descriptor = descriptor
             # Phase 7 Unit 7d-B: a received descriptor means the WS upgrade auth
             # passed and the connector accepted us — record that we've handshaked
             # at least once, so a LATER 4401 close is read as a revocation

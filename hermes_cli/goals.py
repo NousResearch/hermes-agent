@@ -29,9 +29,12 @@ Nothing in this module touches the agent's system prompt or toolset.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -66,6 +69,22 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # exhausted with every reply shaped like `judge returned empty response` or
 # `judge reply was not JSON`.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
+# Transport failures (API auth errors 401, timeouts, DNS, etc.) are also
+# tracked and auto-pause the loop after this many consecutive failures.
+# A broken/invalid API key returns 401 every call — the loop must not
+# run until the turn budget, wasting every turn on an unreachable judge.
+DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
+
+# Quality gates: deterministic shell commands that must pass before the goal
+# judge may declare the goal done. Defaults mirror the bounded-autonomy
+# pattern (per-gate retry limit + timeout, bounded output fed back to the
+# agent). A failed gate short-circuits the judge — its output IS the
+# continuation prompt, so the agent works on concrete evidence instead of a
+# vibe check.
+DEFAULT_GATE_TIMEOUT_SECONDS = 300
+DEFAULT_GATE_MAX_RETRIES = 3
+# Bounded tail of a failed gate's combined stdout/stderr fed back to the agent.
+_GATE_OUTPUT_TAIL_CHARS = 3000
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -106,6 +125,25 @@ CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "additional criterion are complete, state so explicitly and stop. "
     "If you are blocked and need input from the user, say so clearly "
     "and stop."
+)
+
+
+# Fed back when a quality gate fails: the gate's bounded output is the
+# evidence the agent must repair against. Deterministic — no judge involved.
+CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE = (
+    "[Continuing toward your standing goal — a quality gate failed]\n"
+    "Goal: {goal}\n\n"
+    "The quality gate command below must pass before this goal can be "
+    "declared done, and it just failed (attempt {attempt}/{max_retries}):\n"
+    "  $ {command}\n"
+    "Exit code: {exit_code}\n"
+    "Output (tail):\n"
+    "```\n"
+    "{output}\n"
+    "```\n\n"
+    "Fix the underlying problem so this gate passes, then re-run it to "
+    "confirm. Do not declare the goal complete while any gate fails. If the "
+    "gate itself is wrong or cannot pass, say so clearly and stop."
 )
 
 
@@ -381,6 +419,114 @@ def parse_contract(text: str) -> Tuple[str, GoalContract]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Quality gates
+# ──────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class GoalGate:
+    """A deterministic shell command that must pass before a goal can be done.
+
+    Gates run at turn boundary BEFORE the LLM judge. A failing gate
+    short-circuits judging entirely: its bounded output becomes the
+    continuation prompt, so the agent iterates against concrete evidence.
+    Only when every gate passes does the judge get to decide DONE.
+
+    ``attempts`` counts failed runs; when it exceeds ``max_retries`` the goal
+    auto-pauses (mirrors the turn-budget pause) instead of spinning. A gate
+    that failed on an unchanged workspace is not re-run — the recorded
+    failure is replayed and the attempt count advances, so a stuck agent
+    can't burn wall-clock re-running the same red suite.
+    """
+
+    command: str
+    timeout_seconds: int = DEFAULT_GATE_TIMEOUT_SECONDS
+    max_retries: int = DEFAULT_GATE_MAX_RETRIES
+    attempts: int = 0
+    last_exit_code: Optional[int] = None
+    last_output_tail: str = ""
+    # Workspace fingerprint at the time of the last FAILED run — used to skip
+    # re-running an identical gate when nothing changed since it failed.
+    last_failed_fingerprint: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GoalGate":
+        if not isinstance(data, dict):
+            return cls(command="")
+        return cls(
+            command=str(data.get("command") or ""),
+            timeout_seconds=int(data.get("timeout_seconds", DEFAULT_GATE_TIMEOUT_SECONDS) or DEFAULT_GATE_TIMEOUT_SECONDS),
+            max_retries=int(data.get("max_retries", DEFAULT_GATE_MAX_RETRIES) or DEFAULT_GATE_MAX_RETRIES),
+            attempts=int(data.get("attempts", 0) or 0),
+            last_exit_code=(int(data["last_exit_code"]) if data.get("last_exit_code") is not None else None),
+            last_output_tail=str(data.get("last_output_tail") or ""),
+            last_failed_fingerprint=str(data.get("last_failed_fingerprint") or ""),
+        )
+
+
+def workspace_fingerprint(cwd: Optional[str] = None) -> str:
+    """Cheap workspace change fingerprint for unchanged-gate skip.
+
+    Uses ``git status --porcelain`` + ``git rev-parse HEAD`` when inside a git
+    repo (covers tracked edits, stages, and commits). Outside git, returns
+    an empty string — an empty fingerprint never matches, so gates simply
+    always re-run (safe fallback, no behavior regression for non-repo work).
+    """
+    workdir = cwd or os.getcwd()
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10, cwd=workdir,
+        )
+        if head.returncode != 0:
+            return ""
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=30, cwd=workdir,
+        )
+        if status.returncode != 0:
+            return ""
+        blob = head.stdout.strip() + "\n" + status.stdout
+        return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
+    except Exception:
+        return ""
+
+
+def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, str]:
+    """Run one gate command. Returns ``(passed, exit_code, output_tail)``.
+
+    The command runs through the shell in ``cwd`` (default: process cwd) with
+    a hard timeout; on timeout the process is killed and treated as failed
+    with exit code -1. Output is the combined stdout+stderr tail, bounded to
+    ``_GATE_OUTPUT_TAIL_CHARS``.
+    """
+    try:
+        proc = subprocess.run(
+            gate.command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=max(1, int(gate.timeout_seconds)),
+            cwd=cwd or None,
+        )
+        combined = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+        tail = combined[-_GATE_OUTPUT_TAIL_CHARS:]
+        return proc.returncode == 0, proc.returncode, tail
+    except subprocess.TimeoutExpired as exc:
+        out = ""
+        for chunk in (exc.stdout, exc.stderr):
+            if chunk:
+                out += chunk if isinstance(chunk, str) else chunk.decode("utf-8", "replace")
+        tail = (out + f"\n[gate timed out after {gate.timeout_seconds}s]")[-_GATE_OUTPUT_TAIL_CHARS:]
+        return False, -1, tail
+    except Exception as exc:
+        return False, -1, f"[gate could not run: {type(exc).__name__}: {exc}]"
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Dataclass
 # ──────────────────────────────────────────────────────────────────────
 
@@ -399,6 +545,10 @@ class GoalState:
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
+    # Transport failures are API/auth/network errors.  Broken API keys return
+    # 401 every call — track them separately so the loop auto-pauses instead
+    # of burning every turn budget slot on an unreachable judge.
+    consecutive_transport_failures: int = 0   # judge API/transport errors in a row
     # User-added criteria appended mid-loop via the /subgoal command.
     # When non-empty the judge prompt and continuation prompt both
     # include them so the agent works toward them and the judge factors
@@ -433,6 +583,10 @@ class GoalState:
     # constraints / boundaries / stop_when). Empty by default; a goal with
     # no contract behaves exactly like the original free-form goal.
     contract: GoalContract = field(default_factory=GoalContract)
+    # Quality gates (/goal gate add <cmd>): deterministic shell commands that
+    # must ALL pass before the judge may declare the goal done. Empty by
+    # default — a goal with no gates behaves exactly as before.
+    gates: List[GoalGate] = field(default_factory=list)
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -457,6 +611,7 @@ class GoalState:
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
+            consecutive_transport_failures=int(data.get("consecutive_transport_failures", 0) or 0),
             subgoals=subgoals,
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
@@ -464,6 +619,11 @@ class GoalState:
             waiting_reason=data.get("waiting_reason"),
             waiting_since=float(data.get("waiting_since", 0.0) or 0.0),
             contract=GoalContract.from_dict(data.get("contract")),
+            gates=[
+                GoalGate.from_dict(g)
+                for g in (data.get("gates") or [])
+                if isinstance(g, dict) and str(g.get("command") or "").strip()
+            ],
         )
 
     # --- contract helpers -------------------------------------------------
@@ -841,17 +1001,23 @@ def judge_goal(
     subgoals: Optional[List[str]] = None,
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
-) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
+) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
-    Returns ``(verdict, reason, parse_failed, wait_directive)`` where verdict
+    Returns ``(verdict, reason, parse_failed, wait_directive, transport_failed)`` where verdict
     is ``"done"``, ``"continue"``, ``"wait"``, or ``"skipped"`` (when the
     judge couldn't be reached). ``wait_directive`` is set only for ``"wait"``
     (``{"pid": int}`` or ``{"seconds": int}``); ``None`` otherwise.
 
     ``parse_failed`` is True only when the judge call succeeded but its output
     was unusable (empty or non-JSON). API/transport errors return False — they
-    are transient and should fail-open silently. Callers use this flag to
+    are transient and should fail-open silently.
+
+    ``transport_failed`` is True only when the judge couldn't reach the API at
+    all (auth 401, timeout, DNS, connection error).  Repeated transport
+    failures signal a permanent config problem (e.g. invalid API key).  Callers
+    use this flag to auto-pause after N consecutive transport failures (see
+    ``DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES``). Callers use this flag to
     auto-pause after N consecutive parse failures (see
     ``DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES``).
 
@@ -867,21 +1033,23 @@ def judge_goal(
     judge prompt; when none are set, behavior is identical to the original
     free-form judge.
 
-    This is deliberately fail-open: any error returns ``("continue", ..., False, None)``
-    so a broken judge doesn't wedge progress — the turn budget and the
-    consecutive-parse-failures auto-pause are the backstops.
+    This is deliberately fail-open: transport errors return ``("continue", ..., ..., None, True)``
+    — the ``transport_failed=True`` flag lets callers track and auto-pause after
+    N consecutive transport failures (see
+    ``DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES``) so a permanently broken
+    judge doesn't burn the entire turn budget.
     """
     if not goal.strip():
-        return "skipped", "empty goal", False, None
+        return "skipped", "empty goal", False, None, False
     if not last_response.strip():
         # No substantive reply this turn — almost certainly not done yet.
-        return "continue", "empty response (nothing to evaluate)", False, None
+        return "continue", "empty response (nothing to evaluate)", False, None, False
 
     try:
         from agent.auxiliary_client import call_llm
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
-        return "continue", "auxiliary client unavailable", False, None
+        return "continue", "auxiliary client unavailable", False, None, False
 
     # Build the prompt. Priority: contract > subgoals > plain. When both a
     # contract and subgoals exist, the subgoals are appended into the
@@ -941,7 +1109,7 @@ def judge_goal(
         )
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}", False, None
+        return "continue", f"judge error: {type(exc).__name__}", False, None, True
 
     try:
         raw = resp.choices[0].message.content or ""
@@ -954,7 +1122,7 @@ def judge_goal(
         verdict, _truncate(reason, 120),
         f" wait={wait_directive}" if wait_directive else "",
     )
-    return verdict, reason, parse_failed, wait_directive
+    return verdict, reason, parse_failed, wait_directive, False
 
 
 def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1102,7 +1270,8 @@ class GoalManager:
         turns = f"{s.turns_used}/{s.max_turns} turns"
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
         con = ", contract" if self.has_contract() else ""
-        meta = f"{turns}{sub}{con}"
+        gat = f", {len(s.gates)} gate{'s' if len(s.gates) != 1 else ''}" if s.gates else ""
+        meta = f"{turns}{sub}{con}{gat}"
         if s.status == "active":
             if s.waiting_on_session and _session_waiting(s.waiting_on_session):
                 wr = s.waiting_reason or f"session {s.waiting_on_session}"
@@ -1243,6 +1412,154 @@ class GoalManager:
         if not self._state.subgoals:
             return "(no subgoals — use /subgoal <text> to add criteria)"
         return self._state.render_subgoals_block()
+
+    # --- /goal gate quality gates ---------------------------------------
+
+    def add_gate(
+        self,
+        command: str,
+        *,
+        timeout_seconds: Optional[int] = None,
+        max_retries: Optional[int] = None,
+    ) -> GoalGate:
+        """Append a quality-gate command to the active goal.
+
+        Requires ``has_goal()``; raises ``RuntimeError`` otherwise. Returns
+        the created gate so callers can echo it back.
+        """
+        if self._state is None or not self.has_goal():
+            raise RuntimeError("no active goal")
+        command = (command or "").strip()
+        if not command:
+            raise ValueError("gate command is empty")
+        gate = GoalGate(
+            command=command,
+            timeout_seconds=int(timeout_seconds) if timeout_seconds else DEFAULT_GATE_TIMEOUT_SECONDS,
+            max_retries=int(max_retries) if max_retries else DEFAULT_GATE_MAX_RETRIES,
+        )
+        self._state.gates.append(gate)
+        save_goal(self.session_id, self._state)
+        return gate
+
+    def remove_gate(self, index_1based: int) -> str:
+        """Remove a gate by 1-based index. Returns the removed command."""
+        if self._state is None or not self.has_goal():
+            raise RuntimeError("no active goal")
+        idx = int(index_1based) - 1
+        if idx < 0 or idx >= len(self._state.gates):
+            raise IndexError(f"index out of range (1..{len(self._state.gates)})")
+        removed = self._state.gates.pop(idx)
+        save_goal(self.session_id, self._state)
+        return removed.command
+
+    def clear_gates(self) -> int:
+        """Remove all gates. Returns the previous count."""
+        if self._state is None or not self.has_goal():
+            raise RuntimeError("no active goal")
+        prev = len(self._state.gates)
+        self._state.gates = []
+        save_goal(self.session_id, self._state)
+        return prev
+
+    def render_gates(self) -> str:
+        """Public helper for the /goal gate slash command."""
+        if self._state is None:
+            return "(no active goal)"
+        if not self._state.gates:
+            return "(no quality gates — use /goal gate add <command> to require one)"
+        lines = []
+        for i, g in enumerate(self._state.gates, start=1):
+            status = ""
+            if g.last_exit_code is not None:
+                status = " ✓ passing" if g.last_exit_code == 0 else (
+                    f" ✗ failing (exit {g.last_exit_code}, attempt {g.attempts}/{g.max_retries})"
+                )
+            lines.append(f"- {i}. $ {g.command}{status}")
+        return "\n".join(lines)
+
+    def _check_gates(self) -> Optional[Dict[str, Any]]:
+        """Run quality gates in order; return a decision dict on failure.
+
+        Returns ``None`` when there are no gates or every gate passes —
+        the caller then proceeds to the LLM judge. On the first failing
+        gate, returns a full ``evaluate_after_turn``-shaped decision dict:
+        either a continuation carrying the gate's output (attempts left)
+        or an auto-pause (retries exhausted).
+
+        An unchanged workspace since the last failure of the same gate is
+        NOT re-run — the recorded failure is replayed and the attempt count
+        advances, so a stalled agent can't spin re-running an identical red
+        suite (mirrors Prime-Agent's unchanged-gate rule).
+        """
+        state = self._state
+        if state is None or not state.gates:
+            return None
+
+        fingerprint = workspace_fingerprint()
+        for gate in state.gates:
+            unchanged = (
+                bool(fingerprint)
+                and gate.last_exit_code not in (None, 0)
+                and gate.last_failed_fingerprint == fingerprint
+            )
+            if unchanged:
+                passed, exit_code, tail = False, int(gate.last_exit_code or -1), gate.last_output_tail
+            else:
+                passed, exit_code, tail = run_gate(gate)
+            gate.last_exit_code = exit_code
+            gate.last_output_tail = tail
+            if passed:
+                gate.attempts = 0
+                gate.last_failed_fingerprint = ""
+                continue
+
+            gate.attempts += 1
+            gate.last_failed_fingerprint = fingerprint
+            skipped_note = " (workspace unchanged since last failure — not re-run)" if unchanged else ""
+
+            if gate.attempts > gate.max_retries:
+                state.status = "paused"
+                state.paused_reason = (
+                    f"quality gate exhausted {gate.attempts - 1} retries: $ {gate.command}"
+                )
+                save_goal(self.session_id, state)
+                return {
+                    "status": "paused",
+                    "should_continue": False,
+                    "continuation_prompt": None,
+                    "verdict": "gate_failed",
+                    "reason": f"gate exhausted retries: $ {gate.command}",
+                    "message": (
+                        f"⏸ Goal paused — quality gate still failing after "
+                        f"{gate.max_retries} retries: $ {gate.command} "
+                        f"(exit {exit_code}). Fix it manually or /goal gate remove it, "
+                        f"then /goal resume."
+                    ),
+                }
+
+            save_goal(self.session_id, state)
+            prompt = CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE.format(
+                goal=state.goal,
+                command=gate.command,
+                exit_code=exit_code,
+                attempt=gate.attempts,
+                max_retries=gate.max_retries,
+                output=tail or "(no output)",
+            )
+            return {
+                "status": "active",
+                "should_continue": True,
+                "continuation_prompt": prompt,
+                "verdict": "gate_failed",
+                "reason": f"gate failed (exit {exit_code}): $ {gate.command}",
+                "message": (
+                    f"✗ Quality gate failed ({state.turns_used}/{state.max_turns} turns, "
+                    f"attempt {gate.attempts}/{gate.max_retries}){skipped_note}: $ {gate.command}"
+                ),
+            }
+
+        save_goal(self.session_id, state)
+        return None
 
     # --- /goal wait barrier -------------------------------------------
 
@@ -1425,7 +1742,31 @@ class GoalManager:
         state.turns_used += 1
         state.last_turn_at = time.time()
 
-        verdict, reason, parse_failed, wait_directive = judge_goal(
+        # Quality gates run BEFORE the LLM judge: a failing gate is
+        # deterministic evidence the goal is not done, so the judge call is
+        # skipped entirely and the gate's output drives the next turn. Gate
+        # continuations respect the same turn budget as judge continuations.
+        gate_decision = self._check_gates()
+        if gate_decision is not None:
+            if gate_decision.get("should_continue") and state.turns_used >= state.max_turns:
+                state.status = "paused"
+                state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
+                save_goal(self.session_id, state)
+                return {
+                    "status": "paused",
+                    "should_continue": False,
+                    "continuation_prompt": None,
+                    "verdict": "gate_failed",
+                    "reason": gate_decision.get("reason", ""),
+                    "message": (
+                        f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used "
+                        f"(a quality gate is still failing). "
+                        "Use /goal resume to keep going, or /goal clear to stop."
+                    ),
+                }
+            return gate_decision
+
+        verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal,
             last_response,
             subgoals=state.subgoals or None,
@@ -1442,6 +1783,16 @@ class GoalManager:
             state.consecutive_parse_failures += 1
         else:
             state.consecutive_parse_failures = 0
+
+        # Track consecutive transport failures separately — persistent API
+        # errors (401 auth, DNS, timeout) signal a broken config, not
+        # transient network flakiness.  Auto-pause after N consecutive
+        # transport failures so a permanently broken judge doesn't burn
+        # every turn budget slot on an unreachable API.
+        if transport_failed:
+            state.consecutive_transport_failures += 1
+        else:
+            state.consecutive_transport_failures = 0
 
         # WAIT verdict: the judge decided the agent is blocked on async work
         # and re-poking now would be busy-work. Set the barrier and park —
@@ -1478,6 +1829,36 @@ class GoalManager:
                 "verdict": "done",
                 "reason": reason,
                 "message": f"✓ Goal achieved: {reason}",
+            }
+
+        # Auto-pause when the judge cannot reach the API at all N turns in a
+        # row (401 auth, DNS failure, timeout).  Persistent transport failures
+        # signal a broken configuration (e.g. invalid API key), not transient
+        # flakiness.  Without this guard, a permanently broken judge burns
+        # every turn budget slot on an unreachable API.
+        if state.consecutive_transport_failures >= DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES:
+            state.status = "paused"
+            state.paused_reason = (
+                f"judge API unreachable {state.consecutive_transport_failures} turns in a row "
+                f"(check auxiliary.goal_judge provider/key in config.yaml)"
+            )
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "continue",
+                "reason": reason,
+                "message": (
+                    f"⏸ Goal paused — judge API returned errors "
+                    f"({state.consecutive_transport_failures} turns). "
+                    "Check the goal_judge provider/key in ~/.hermes/config.yaml:\n"
+                    "  auxiliary:\n"
+                    "    goal_judge:\n"
+                    "      provider: deepseek\n"
+                    "      model: deepseek-v4-flash\n"
+                    "Then /goal resume to continue."
+                ),
             }
 
         # Auto-pause when the judge model can't produce the expected JSON
@@ -1679,7 +2060,7 @@ def run_kanban_goal_loop(
         # The kanban worker loop has no wait-barrier concept (workers finish
         # via kanban_complete / kanban_block, not by parking), so a WAIT
         # verdict is treated as CONTINUE here.
-        verdict, reason, _parse_failed, _wait = judge_goal(goal_text, last_response)
+        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
@@ -1727,9 +2108,12 @@ def run_kanban_goal_loop(
 __all__ = [
     "GoalState",
     "GoalContract",
+    "GoalGate",
     "GoalManager",
     "parse_contract",
     "draft_contract",
+    "run_gate",
+    "workspace_fingerprint",
     "CONTINUATION_PROMPT_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE",

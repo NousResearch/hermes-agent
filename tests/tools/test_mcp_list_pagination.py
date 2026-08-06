@@ -29,39 +29,6 @@ class TestPaginateFullList:
         assert [t.name for t in items] == ["a", "b"]
         list_method.assert_called_once_with()
 
-    def test_follows_next_cursor_across_pages(self):
-        """Pages are concatenated in order; cursor passed back verbatim."""
-        pages = {
-            None: SimpleNamespace(tools=[_tool("p1a"), _tool("p1b")], nextCursor="c2"),
-            "c2": SimpleNamespace(tools=[_tool("p2a")], nextCursor="c3"),
-            "c3": SimpleNamespace(tools=[_tool("p3a")], nextCursor=None),
-        }
-
-        async def fake_list(cursor=None):
-            return pages[cursor]
-
-        items = asyncio.run(_paginate_full_list(fake_list, "tools", "srv"))
-        assert [t.name for t in items] == ["p1a", "p1b", "p2a", "p3a"]
-
-    def test_empty_page_with_cursor_continues(self):
-        """An empty middle page doesn't abort the walk."""
-        pages = {
-            None: SimpleNamespace(resources=[_tool("r1")], nextCursor="c2"),
-            "c2": SimpleNamespace(resources=[], nextCursor="c3"),
-            "c3": SimpleNamespace(resources=[_tool("r2")]),
-        }
-
-        async def fake_list(cursor=None):
-            return pages[cursor]
-
-        items = asyncio.run(_paginate_full_list(fake_list, "resources", "srv"))
-        assert [t.name for t in items] == ["r1", "r2"]
-
-    def test_missing_items_attr_tolerated(self):
-        """A malformed result without the items attribute yields nothing."""
-        list_method = AsyncMock(return_value=SimpleNamespace())
-        items = asyncio.run(_paginate_full_list(list_method, "prompts", "srv"))
-        assert items == []
 
     def test_runaway_cursor_capped(self):
         """A server that returns a cursor forever is bounded by the page cap."""

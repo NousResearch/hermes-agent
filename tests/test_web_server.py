@@ -69,6 +69,22 @@ def _stub_uvicorn(monkeypatch):
     return captured
 
 
+def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):
+    captured = _stub_uvicorn(monkeypatch)
+
+    web_server.start_server(
+        host="127.0.0.1",
+        port=0,
+        open_browser=False,
+        ssh_session_token="s" * 64,
+        ssh_owner_nonce="0123456789abcdef",
+    )
+
+    assert web_server._SESSION_TOKEN == "s" * 64
+    assert web_server._SSH_OWNER_NONCE == "0123456789abcdef"
+    assert captured["port"] == 0
+
+
 def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
     """Loopback binds (the Desktop case) MUST disable uvicorn's protocol-level
     keepalive ping so an event-loop stall can never trigger a false disconnect.
@@ -89,6 +105,20 @@ def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
 
     assert captured["ws_ping_interval"] is None
     assert captured["ws_ping_timeout"] is None
+
+
+def test_start_server_accepts_base64_desktop_attachments_above_preview_limit(monkeypatch):
+    """The gateway frame cap must fit the Desktop attachment default after
+    base64 expansion and JSON framing; uvicorn's 16 MiB default would reject
+    the request before ``file.attach`` can stage it.
+    """
+    captured = _stub_uvicorn(monkeypatch)
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    raw_attachment_bytes = 256 * 1024 * 1024
+    base64_bytes = ((raw_attachment_bytes + 2) // 3) * 4
+    assert captured["ws_max_size"] > base64_bytes
 
 
 def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):

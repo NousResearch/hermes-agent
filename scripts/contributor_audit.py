@@ -49,7 +49,14 @@ IGNORED_PATTERNS = [
     re.compile(r"^dependabot", re.IGNORECASE),
     re.compile(r"^renovate", re.IGNORECASE),
     re.compile(r"^Hermes\s+(Agent|Audit)$", re.IGNORECASE),
+    re.compile(r"^nousbot(-eng)?$", re.IGNORECASE),
     re.compile(r"^Ubuntu$", re.IGNORECASE),
+    # v0.20.0 audit additions:
+    re.compile(r"^Blut-?Agent$", re.IGNORECASE),          # self-described AI agent account
+    re.compile(r".*\[bot\]$", re.IGNORECASE),             # any GitHub [bot] suffix (hermes-seaeye[bot] etc.)
+    re.compile(r"^TRON$", re.IGNORECASE),                 # AgentMail agent
+    re.compile(r"^Happy$", re.IGNORECASE),                # happy.engineering AI agent
+    re.compile(r"^Orca$", re.IGNORECASE),                 # Stably AI agent
 ]
 
 IGNORED_EMAILS = {
@@ -59,10 +66,15 @@ IGNORED_EMAILS = {
     "cursoragent@cursor.com",
     "hermes@nousresearch.com",
     "hermes-audit@example.com",
+    "nousbot@nousresearch.com",
     "hermes@habibilabs.dev",
     "omx@oh-my-codex.dev",
     "codex@openai.com",
     "noreply@commandcode.ai",
+    # v0.20.0 audit additions — AI-agent co-author trailers:
+    "tron-agent@agentmail.to",      # TRON (AgentMail agent)
+    "yesreply@happy.engineering",   # Happy (AI coding agent)
+    "help@stably.ai",               # Orca (Stably AI agent)
 }
 
 
@@ -85,7 +97,7 @@ def git(*args, cwd=None):
     result = subprocess.run(
         ["git"] + list(args),
         capture_output=True,
-        text=True,
+        text=True, encoding='utf-8', errors='replace',
         cwd=cwd or str(REPO_ROOT),
     )
     if result.returncode != 0:
@@ -110,7 +122,7 @@ def gh_pr_list():
                 "--limit", "300",
             ],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=60,
         )
         if result.returncode != 0:

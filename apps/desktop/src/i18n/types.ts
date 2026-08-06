@@ -1657,7 +1657,17 @@ export interface Translations {
       ageNow: string
       ageDay: string
       ageHour: string
-      ageMin: string
+      ageMin: string,
+      folders: string
+      createFolder: string
+      renameFolder: string
+      deleteFolder: string
+      deleteFolderConfirm: string
+      moveToFolder: string
+      removeFromFolder: string
+      addToFolder: string
+      noFolders: string
+
     }
     dateDivider: {
       today: string

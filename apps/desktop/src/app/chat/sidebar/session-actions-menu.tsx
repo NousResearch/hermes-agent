@@ -30,7 +30,6 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
@@ -39,6 +38,12 @@ import {
   sessionPinId,
   setSessions
 } from '@/store/session'
+import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import {
+  $folders,
+  moveToFolder as storeMoveToFolder,
+  removeFromFolder as storeRemoveFromFolder
+} from '@/store/session-folders'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { $sessionTiles } from '@/store/session-states'
 import { canOpenSessionWindow } from '@/store/windows'
@@ -99,6 +104,7 @@ interface SessionActions {
   onBranch?: () => void
   onArchive?: () => void
   onDelete?: () => void
+  currentFolderId?: string | null
   /** Close this surface (a tile tab) — omitted where nothing closes (sidebar
    *  rows, the main tab). */
   onClose?: () => void
@@ -177,6 +183,7 @@ function useSessionActions({
   title,
   pinned = false,
   profile,
+  currentFolderId,
   onPin,
   onBranch,
   onArchive,
@@ -189,6 +196,7 @@ function useSessionActions({
   const { t } = useI18n()
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)
+  const foldersList = useStore($folders)
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
 
@@ -394,6 +402,40 @@ function useSessionActions({
       />
       <kit.Separator />
       {workItems.map(item => renderActionItem(kit, item))}
+      {currentFolderId &&
+        renderActionItem(kit, {
+          icon: 'close',
+          label: r.removeFromFolder ?? 'Remove from folder',
+          onSelect: () => {
+            triggerHaptic('selection')
+            void storeRemoveFromFolder(sessionId, currentFolderId, profile)
+          }
+        })}
+      {foldersList.length > 0 && (
+        <kit.Sub>
+          <kit.SubTrigger>
+            <Codicon name="folder" size="0.875rem" />
+            <span>{r.moveToFolder ?? 'Move to folder'}</span>
+          </kit.SubTrigger>
+          <kit.SubContent>
+            {foldersList.map(folder =>
+              renderActionItem(kit, {
+                key: folder.id,
+                label: (
+                  <>
+                    <span>{folder.name}</span>
+                    {folder.id === currentFolderId && <span className="ml-auto text-(--ui-text-tertiary)">✓</span>}
+                  </>
+                ),
+                onSelect: () => {
+                  triggerHaptic('selection')
+                  void storeMoveToFolder(sessionId, folder.id, currentFolderId, profile)
+                }
+              })
+            )}
+          </kit.SubContent>
+        </kit.Sub>
+      )}
       <kit.Sub>
         <kit.SubTrigger disabled={!sessionId}>
           <Codicon name="folder" size="0.875rem" />

@@ -4142,6 +4142,15 @@ def _run_job_script_in_backend(
     command = f"{interpreter} {shlex.quote(backend_path)}"
 
     try:
+        preflight_raw = terminal_tool(
+            command=f"test -f {shlex.quote(backend_path)}",
+            timeout=30,
+            workdir=backend_cwd,
+        )
+        preflight = json.loads(preflight_raw) if isinstance(preflight_raw, str) else preflight_raw
+        if not isinstance(preflight, dict) or preflight.get("exit_code") != 0:
+            return False, f"Script not found in terminal backend: {backend_path}"
+
         raw_result = terminal_tool(
             command=command,
             timeout=min(_get_script_timeout(), FOREGROUND_MAX_TIMEOUT),
@@ -5389,8 +5398,12 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
+        _script_workdir = (job.get("workdir") or "").strip() or None
         prerun_script = _run_job_script_with_claim_heartbeat(
-            job, script_path, cancel_event=cancel_event,
+            job,
+            script_path,
+            workdir=_script_workdir,
+            cancel_event=cancel_event,
         )
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):

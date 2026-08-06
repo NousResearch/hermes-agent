@@ -92,6 +92,9 @@ class TestCronRearmRespectsScheduleLegality:
     def test_interval_job_still_rearms_to_now(self, cron_store):
         """Interval jobs (the 2026-08-14 incident class) keep the immediate
         catch-up: re-armed to now, due on this same scan."""
+        scripts = cron_store / "scripts"
+        scripts.mkdir()
+        (scripts / "p.py").write_text("print('ok')\n")
         job = J.create_job(prompt="probe", schedule="every 10m", no_agent=True, script="p.py")
         now = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
         _wedge(

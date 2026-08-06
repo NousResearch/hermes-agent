@@ -48,16 +48,46 @@ class TestJobScriptField:
     def test_create_job_with_script(self, cron_env):
         from cron.jobs import create_job, get_job
 
+        (cron_env / "scripts" / "monitor.py").write_text("print('ok')\n")
         job = create_job(
             prompt="Analyze the data",
             schedule="every 30m",
-            script="/path/to/monitor.py",
+            script="monitor.py",
+            target="scheduler",
         )
-        assert job["script"] == "/path/to/monitor.py"
+        assert job["script"] == "monitor.py"
 
         loaded = get_job(job["id"])
-        assert loaded["script"] == "/path/to/monitor.py"
+        assert loaded["script"] == "monitor.py"
 
+
+    def test_create_job_enforces_target_validation_for_direct_callers(self, cron_env, monkeypatch):
+        """Data-layer callers cannot persist an invalid backend script job."""
+        from cron.jobs import create_job
+
+        monkeypatch.setattr(
+            "tools.cronjob_tools._validate_cron_script_path",
+            lambda script, target, workdir=None: "Script not found in terminal backend",
+        )
+        with pytest.raises(ValueError, match="Script not found in terminal backend"):
+            create_job(
+                prompt="Analyze the data",
+                schedule="every 30m",
+                script="/path/to/monitor.py",
+                target="backend",
+            )
+
+    def test_update_job_enforces_target_validation_for_direct_callers(self, cron_env, monkeypatch):
+        """Direct updates cannot add an invalid backend script."""
+        from cron.jobs import create_job, update_job
+
+        job = create_job(prompt="Hello", schedule="every 1h")
+        monkeypatch.setattr(
+            "tools.cronjob_tools._validate_cron_script_path",
+            lambda script, target, workdir=None: "Script not found in terminal backend",
+        )
+        with pytest.raises(ValueError, match="Script not found in terminal backend"):
+            update_job(job["id"], {"script": "/new/script.py", "target": "backend"})
 
     def test_update_job_add_script(self, cron_env):
         from cron.jobs import create_job, update_job
@@ -65,8 +95,9 @@ class TestJobScriptField:
         job = create_job(prompt="Hello", schedule="every 1h")
         assert job.get("script") is None
 
-        updated = update_job(job["id"], {"script": "/new/script.py"})
-        assert updated["script"] == "/new/script.py"
+        (cron_env / "scripts" / "new.py").write_text("print('ok')\n")
+        updated = update_job(job["id"], {"script": "new.py", "target": "scheduler"})
+        assert updated["script"] == "new.py"
 
 
 def test_cronjob_tool_rejects_stale_past_one_shot(cron_env, monkeypatch):

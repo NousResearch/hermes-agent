@@ -58,7 +58,7 @@ def test_update_job_roundtrips_no_agent_flag(hermes_env):
 
     script_path = hermes_env / "scripts" / "w.sh"
     script_path.write_text("echo hi\n")
-    job = create_job(prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local")
+    job = create_job(prompt=None, schedule="every 5m", script="w.sh", target="scheduler", no_agent=True, deliver="local")
 
     update_job(job["id"], {"no_agent": False})
     reloaded = get_job(job["id"])
@@ -257,6 +257,7 @@ def test_no_agent_script_runs_through_terminal_backend(hermes_env, monkeypatch):
         return '{"output": "coop scraped\\n", "exit_code": 0, "error": null}'
 
     monkeypatch.setattr(scheduler, "terminal_tool", fake_terminal)
+    monkeypatch.setattr("tools.cronjob_tools._validate_backend_script", lambda script, workdir=None: None)
     job = create_job(
         prompt=None,
         schedule="every 1h",
@@ -272,11 +273,12 @@ def test_no_agent_script_runs_through_terminal_backend(hermes_env, monkeypatch):
     assert final_response == "coop scraped"
     assert error is None
     assert calls == [
+        ("test -f /workspace/scrape_coop.py", 30, "/workspace"),
         (
             "python3 /workspace/scrape_coop.py",
             min(scheduler._get_script_timeout(), scheduler.FOREGROUND_MAX_TIMEOUT),
             "/workspace",
-        )
+        ),
     ]
 
 
@@ -292,6 +294,7 @@ def test_no_agent_backend_script_keeps_backend_workdir(hermes_env, monkeypatch):
         return '{"output": "ok", "exit_code": 0, "error": null}'
 
     monkeypatch.setattr(scheduler, "terminal_tool", fake_terminal)
+    monkeypatch.setattr("tools.cronjob_tools._validate_backend_script", lambda script, workdir=None: None)
     job = create_job(
         prompt=None,
         schedule="every 1h",
@@ -309,9 +312,11 @@ def test_no_agent_backend_script_keeps_backend_workdir(hermes_env, monkeypatch):
     assert calls[0][2] == "/workspace"
 
 
-def test_new_script_job_defaults_to_backend_target(hermes_env):
+def test_new_script_job_defaults_to_backend_target(hermes_env, monkeypatch):
     """New script jobs follow the agent's terminal backend by default."""
     from cron.jobs import create_job
+
+    monkeypatch.setattr("tools.cronjob_tools._validate_backend_script", lambda script, workdir=None: None)
 
     job = create_job(
         prompt=None,
@@ -358,10 +363,12 @@ def test_legacy_script_job_without_target_uses_scheduler_compat_path(hermes_env,
         "terminal_tool",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("backend must not run")),
     )
+    (hermes_env / "scripts" / "legacy.py").write_text("print('legacy')\n")
     job = create_job(
         prompt=None,
         schedule="every 1h",
-        script="/workspace/legacy.py",
+        script="legacy.py",
+        target="scheduler",
         no_agent=True,
         deliver="local",
     )
@@ -371,7 +378,7 @@ def test_legacy_script_job_without_target_uses_scheduler_compat_path(hermes_env,
     assert success is True
     assert "scheduler output" in doc
     assert error is None
-    assert calls == [("/workspace/legacy.py", None)]
+    assert calls == [("legacy.py", None)]
 
 
 # ---------------------------------------------------------------------------

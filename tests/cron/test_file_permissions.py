@@ -7,6 +7,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+# chmod(0o700)/(0o600) is a documented no-op on Windows (see
+# cron.jobs._secure_dir/_secure_file) — NTFS doesn't have POSIX permission
+# bits, so os.stat().st_mode there reflects the read-only attribute, not
+# the requested mode.
+_SKIP_ON_WINDOWS = unittest.skipIf(
+    os.name == "nt", "chmod POSIX permission bits are a no-op on Windows"
+)
+
 
 class TestCronFilePermissions(unittest.TestCase):
     """Verify cron files get secure permissions."""
@@ -20,6 +28,7 @@ class TestCronFilePermissions(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
+    @_SKIP_ON_WINDOWS
     @patch("cron.jobs.CRON_DIR")
     @patch("cron.jobs.OUTPUT_DIR")
     @patch("cron.jobs.JOBS_FILE")
@@ -39,6 +48,7 @@ class TestCronFilePermissions(unittest.TestCase):
             self.assertEqual(cron_mode, 0o700)
             self.assertEqual(output_mode, 0o700)
 
+    @_SKIP_ON_WINDOWS
     @patch("cron.jobs.CRON_DIR")
     @patch("cron.jobs.OUTPUT_DIR")
     @patch("cron.jobs.JOBS_FILE")
@@ -56,6 +66,7 @@ class TestCronFilePermissions(unittest.TestCase):
             file_mode = stat.S_IMODE(os.stat(jobs_file).st_mode)
             self.assertEqual(file_mode, 0o600)
 
+    @_SKIP_ON_WINDOWS
     def test_save_job_output_sets_0600(self):
         output_dir = Path(self.tmpdir) / "output"
         with patch("cron.jobs.OUTPUT_DIR", output_dir), \
@@ -84,6 +95,7 @@ class TestConfigFilePermissions(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
+    @_SKIP_ON_WINDOWS
     def test_save_config_sets_0600(self):
         config_path = Path(self.tmpdir) / "config.yaml"
         with patch("hermes_cli.config.get_config_path", return_value=config_path), \
@@ -94,6 +106,7 @@ class TestConfigFilePermissions(unittest.TestCase):
             file_mode = stat.S_IMODE(os.stat(config_path).st_mode)
             self.assertEqual(file_mode, 0o600)
 
+    @_SKIP_ON_WINDOWS
     def test_save_env_value_sets_0600(self):
         env_path = Path(self.tmpdir) / ".env"
         with patch("hermes_cli.config.get_env_path", return_value=env_path), \
@@ -104,6 +117,7 @@ class TestConfigFilePermissions(unittest.TestCase):
             file_mode = stat.S_IMODE(os.stat(env_path).st_mode)
             self.assertEqual(file_mode, 0o600)
 
+    @_SKIP_ON_WINDOWS
     def test_ensure_hermes_home_sets_0700(self):
         home = Path(self.tmpdir) / ".hermes"
         with patch("hermes_cli.config.get_hermes_home", return_value=home):

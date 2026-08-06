@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -2310,6 +2311,16 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace",
             }
+        else:
+            # Give the script its own POSIX process group so a killpg()
+            # aimed at the gateway's own group — an external supervisor
+            # signalling the gateway's foreground group, or any future MCP
+            # lifecycle teardown/orphan sweep — can never reach a running
+            # no_agent script. Mirrors the start_new_session isolation
+            # already used for every other Hermes-spawned subprocess
+            # (mcp_stdio_watchdog, terminal/code-exec children, the LSP
+            # client) for the same reason (#78432).
+            popen_kwargs = {"start_new_session": True}
         env = build_subprocess_env()
         env.update(env_overlay)
         # Use the job's workdir as the subprocess cwd when configured,
@@ -2317,17 +2328,37 @@ def _run_job_script(
         # NEVER mutate the Python process cwd — that would leak into
         # concurrent gateway sessions (#69396).
         _script_cwd = workdir or str(path.parent)
-        result = subprocess.run(
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=script_timeout,
             cwd=_script_cwd,
             env=env,
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        try:
+            raw_stdout, raw_stderr = proc.communicate(timeout=script_timeout)
+        except subprocess.TimeoutExpired:
+            # The script owns its own process group (see popen_kwargs above,
+            # #78432) precisely so it can be reaped independently of the
+            # gateway's group. Killing only proc.pid here would leave any
+            # children the script spawned running as orphans in that same
+            # now-isolated group, with nothing else left to reach them.
+            if sys.platform != "win32":
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok — guarded by sys.platform check above
+                except ProcessLookupError:
+                    pass
+            proc.kill()
+            try:
+                proc.communicate(timeout=2)
+            except Exception:
+                pass
+            return False, f"Script timed out after {script_timeout}s: {path}"
+
+        stdout = (raw_stdout or "").strip()
+        stderr = (raw_stderr or "").strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2339,8 +2370,8 @@ def _run_job_script(
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if proc.returncode != 0:
+            parts = [f"Script exited with code {proc.returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
@@ -2349,8 +2380,6 @@ def _run_job_script(
 
         return True, stdout
 
-    except subprocess.TimeoutExpired:
-        return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"
 

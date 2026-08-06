@@ -47,7 +47,11 @@ class TestNormalizeWorkdir:
 
     def test_tilde_expands(self, tmp_path, monkeypatch):
         from cron.jobs import _normalize_workdir
+        # os.path.expanduser prioritizes HOME on POSIX but USERPROFILE on
+        # Windows (ntpath.expanduser ignores HOME entirely) — set both so
+        # this test is deterministic on either platform.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         result = _normalize_workdir("~")
         assert result == str(tmp_path.resolve())
 

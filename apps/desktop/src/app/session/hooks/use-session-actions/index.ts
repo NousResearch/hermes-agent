@@ -56,6 +56,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { flushSessionPinWrites } from '@/store/session-pin-sync'
 import {
   $sessionTiles,
   closeSessionTile,
@@ -1418,18 +1419,30 @@ export function useSessionActions({
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
       const archivedIds = [storedSessionId, archived?.id, archived?._lineage_root_id]
 
+      // Drop the local pin before removing the row, so the sync listener can
+      // still resolve its owning profile if it mirrors the same unpin. Doing
+      // this after setSessions() turns that best-effort PATCH profile-less and
+      // causes a 404 for every non-default profile.
+      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
+
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       tombstoneSessions(archivedIds)
       beginSessionMutation(archivedIds)
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
 
       if (wasSelected) {
         startFreshSessionDraft(true)
       }
 
       try {
-        await setSessionArchived(storedSessionId, true, archived?.profile)
+        // Order the archive after any pin writes still in flight for this
+        // session, so a slow pin=true can't land after the archive's
+        // pinned:false and leave a zombie durable pin behind.
+        await Promise.all([flushSessionPinWrites(storedSessionId), flushSessionPinWrites(archivedPinId)])
+        // Make archiving self-contained even if the best-effort sidebar sync
+        // write races or fails: otherwise a persisted pinned=1 can survive the
+        // archive and silently re-pin the session when it is later restored.
+        await setSessionArchived(storedSessionId, true, archived?.profile, false)
         // An archived session is hidden from the sidebar; its tile must go too.
         const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         closeSessionTile(storedSessionId)

@@ -131,6 +131,30 @@ describe('refreshSessions identity + loading hygiene', () => {
     expect($sessions.get()[0].title).toBe('Renamed')
   })
 
+  it('swaps the array when only the pinned flag changed', async () => {
+    // A refresh that differs solely in the backend pin flag must still reach
+    // $sessions — the pin-sync watcher's unpin confirmation and remote-pin
+    // adoption both depend on that update (signature must include `pinned`).
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a', { pinned: false })] }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    const first = $sessions.get()
+    expect(first[0].pinned).toBe(false)
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a', { pinned: true })] }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get()).not.toBe(first)
+    expect($sessions.get()[0].pinned).toBe(true)
+  })
+
   it('does not flicker the loading flag over a populated list', async () => {
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')] }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))

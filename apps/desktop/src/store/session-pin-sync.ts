@@ -28,39 +28,71 @@ import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session
 const mirrored = new Set<string>()
 // pin ids awaiting their row so we can resolve the owning profile before PATCH.
 const pending = new Set<string>()
-// Writes we've issued but not yet had acked, id -> value written. A list page
-// already in flight when we PATCH still carries the old value, so it must not
-// be read as the server disagreeing with us. Cleared when the write settles —
-// the request's own lifetime is the guard, so nothing can leave one open.
-const unconfirmed = new Map<string, boolean>()
+// Unpins local intent has issued but the server hasn't confirmed yet (failed
+// PATCH or a page that still reports pinned=true), keyed by the id with the
+// owning profile captured at unpin time. The pull must not adopt a stale
+// pinned=true row while one of these is outstanding, or a transient unpin
+// failure would silently re-pin the chat; settled when a page confirms
+// pinned=false, the user re-pins, or the unpin write lands on a row that is
+// no longer in the list.
+const unpinPending = new Map<string, null | string | undefined>()
+// One chain per id so a quick pin->unpin (or pin->unpin->pin) can't land out
+// of order: the server applies PATCHes in arrival order, and two parallel
+// writes for the same session can arrive swapped, leaving a pin the user just
+// unpinned. The chain lives until every queued write for the id has settled,
+// and its presence fences the pull — a page read while any write is queued or
+// in flight predates the newest local intent and must not be adopted.
+const writeChains = new Map<string, Promise<void>>()
 
 function profileFor(pinId: string): null | string | undefined {
   return $sessions.get().find(row => sessionMatchesStoredId(row, pinId))?.profile
 }
 
-/** PATCH the flag, guarding reads against pages that predate the write. */
-function writePin(id: string, pinned: boolean, profile?: null | string): Promise<void> {
-  unconfirmed.set(id, pinned)
+/**
+ * Resolves once every queued or in-flight write for the id has settled.
+ *
+ * Used by flows that mutate the session outside the pin-sync write path (the
+ * archive request) so their own PATCH cannot be overtaken by an earlier
+ * in-flight pin write for the same session.
+ */
+export function flushSessionPinWrites(id: string): Promise<void> {
+  const chain = writeChains.get(id)
 
-  return setSessionPinnedRemote(id, pinned, profile).then(
-    () => {
-      unconfirmed.delete(id)
-    },
-    (err: unknown) => {
-      unconfirmed.delete(id)
-      throw err
+  return chain ? chain.catch(() => {}) : Promise.resolve()
+}
+
+/** PATCH the flag. Writes for the same id are serialized per session. */
+function writePin(id: string, pinned: boolean, profile?: null | string): Promise<void> {
+  const prev = writeChains.get(id) ?? Promise.resolve()
+
+  const next: Promise<void> = prev
+    .then(() => setSessionPinnedRemote(id, pinned, profile))
+    .then(() => undefined)
+
+  // The chain swallows rejections so a failed write doesn't break the queue;
+  // callers observe the rejection on `next` and decide on retries.
+  const settled = next.catch(() => {})
+  writeChains.set(id, settled)
+  void settled.finally(() => {
+    // Only the newest chain owns the entry; an earlier settling chain must not
+    // delete a newer write's fence (the ABA hazard for boolean fences).
+    if (writeChains.get(id) === settled) {
+      writeChains.delete(id)
     }
-  )
+  })
+
+  return next
 }
 
 /**
  * Adopt the server's pin state for every row in the current page.
  *
  * Runs after the push pass so local intent is already fenced (`pending` /
- * `unconfirmed`) by the time the page is read — a fresh local toggle whose
- * PATCH hasn't landed yet must win over the stale row, not be reverted by it
- * (#74570). Remote pins adopted here are marked mirrored before the local set
- * changes, so the re-entrant reconcile doesn't echo them back as a PATCH.
+ * the per-id write chain) by the time the page is read — a fresh local toggle
+ * whose PATCH hasn't landed yet must win over the stale row, not be reverted
+ * by it (#74570). Remote pins adopted here are marked mirrored before the
+ * local set changes, so the re-entrant reconcile doesn't echo them back as a
+ * PATCH.
  */
 function pullRemotePins(): void {
   const local = new Set($pinnedSessionIds.get())
@@ -76,16 +108,21 @@ function pullRemotePins(): void {
     const pinId = sessionPinId(row)
     const heldLocally = local.has(pinId) || local.has(row.id)
 
-    // A write of ours the page hasn't caught up to yet is newer than the page.
-    const awaited = unconfirmed.has(pinId) ? unconfirmed.get(pinId) : unconfirmed.get(row.id)
-
-    if (awaited !== undefined && awaited !== row.pinned) {
+    // Any write of ours that is still queued or in flight is newer than this
+    // page — the page predates the newest local intent, so never adopt it.
+    if (writeChains.has(pinId) || writeChains.has(row.id)) {
       continue
     }
 
     // Local intent still waiting on its PATCH (row unresolved when the push
     // pass ran) is also newer than the page — never revert it.
     if (pending.has(pinId) || pending.has(row.id)) {
+      continue
+    }
+
+    // An unpin the server hasn't confirmed is newer than any pinned=true page;
+    // adopting it would silently undo the user's action.
+    if (unpinPending.has(pinId) || unpinPending.has(row.id)) {
       continue
     }
 
@@ -112,8 +149,8 @@ function reconcile(): void {
 
   // Push before pull. The pin listener fires synchronously on a local toggle,
   // so this reconcile runs before the PATCH for that toggle exists anywhere.
-  // The push pass below records the intent (`pending`, then `unconfirmed` via
-  // writePin) — only then may the pull read the page, where those fences stop
+  // The push pass below records the intent (`pending`, then the per-id write
+  // chain) — only then may the pull read the page, where those fences stop
   // the still-stale row from silently reverting the user's action (#74570).
   const current = new Set($pinnedSessionIds.get())
 
@@ -122,12 +159,19 @@ function reconcile(): void {
     if (!current.has(id)) {
       mirrored.delete(id)
       pending.delete(id)
+      // Record the intent (with the owning profile captured now, while the row
+      // is still resolvable) so a stale page can't re-pin it before the write
+      // is confirmed; settleUnpins() re-asserts and retires the entry.
+      unpinPending.set(id, profileFor(id))
       void writePin(id, false, profileFor(id)).catch(() => {})
     }
   }
 
   // Newly pinned: hold until we can resolve the row (for its profile).
   for (const id of current) {
+    // A re-pin supersedes any outstanding unpin intent for the same chat.
+    unpinPending.delete(id)
+
     if (!mirrored.has(id)) {
       pending.add(id)
     }
@@ -152,6 +196,68 @@ function reconcile(): void {
   }
 
   pullRemotePins()
+  settleUnpins()
+}
+
+/**
+ * Re-assert unpins the server hasn't confirmed yet, and retire the ones it has.
+ *
+ * A failed (or still-queued) unpin write leaves the backend believing the chat
+ * is pinned. Retrying here keeps local intent honest without swallowing the
+ * failure, and a page that finally reports pinned=false retires the entry —
+ * the pull only adopts server rows again once they match what the user asked
+ * for. A re-pin clears the entry in the push pass above.
+ */
+function settleUnpins(): void {
+  const current = new Set($pinnedSessionIds.get())
+
+  for (const [id, profile] of [...unpinPending]) {
+    if (current.has(id)) {
+      // User re-pinned; the push pass owns the id from here.
+      unpinPending.delete(id)
+
+      continue
+    }
+
+    const row = $sessions.get().find(entry => sessionMatchesStoredId(entry, id))
+
+    if (row && row.pinned === false) {
+      // Server truth caught up with local intent.
+      unpinPending.delete(id)
+
+      continue
+    }
+
+    if (writeChains.has(id)) {
+      continue // a write for this id is already queued or in flight
+    }
+
+    if (!row) {
+      // The row is not in the current list (profile switch, list-scope
+      // refresh, or the session was archived/deleted). That is not
+      // confirmation: re-assert with the profile captured when the unpin was
+      // issued. Retire only once the write lands (durable flag is then 0 and
+      // any later pinned=true is new truth to adopt) or the session is gone.
+      void writePin(id, false, profile).then(
+        () => unpinPending.delete(id),
+        (err: unknown) => {
+          if (isSessionGoneError(err)) {
+            unpinPending.delete(id)
+          }
+        }
+      )
+
+      continue
+    }
+
+    // Row still present and still reports pinned — keep re-asserting.
+    void writePin(id, false, profile).catch(() => {})
+  }
+}
+
+/** A 404 from the session PATCH means the row itself is gone. */
+function isSessionGoneError(err: unknown): boolean {
+  return String(err instanceof Error ? err.message : err).includes('404')
 }
 
 // Sync once, then re-sync on pin-set and session-list changes. Call once per app.

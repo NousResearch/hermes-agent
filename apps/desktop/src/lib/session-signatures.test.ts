@@ -28,6 +28,18 @@ describe('sameCronSignature', () => {
     const b = [session('b', 't'), session('a', 't')]
     expect(sameCronSignature(a, b)).toBe(false)
   })
+
+  it('is false when only the pinned flag changed', () => {
+    const a = [{ ...session('a', 't'), pinned: false }]
+    const b = [{ ...session('a', 't'), pinned: true }]
+    expect(sameCronSignature(a, b)).toBe(false)
+  })
+
+  it('is false when only the archived flag changed', () => {
+    const a = [{ ...session('a', 't'), archived: false }]
+    const b = [{ ...session('a', 't'), archived: true }]
+    expect(sameCronSignature(a, b)).toBe(false)
+  })
 })
 
 describe('sessionMessagesSignature', () => {

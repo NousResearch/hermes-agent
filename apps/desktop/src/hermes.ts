@@ -588,12 +588,12 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
 // backend (remote pool or local primary) via request.profile — matching the
 // read path. A remote session's row lives only on its remote host, so a mutation
 // that hit the local primary would no-op or 404. Omit for the current/default.
-export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
+export function setSessionArchived(id: string, archived: boolean, profile?: string | null, pinned?: boolean): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { archived }
+    body: { archived, ...(pinned !== undefined ? { pinned } : {}) }
   })
 }
 

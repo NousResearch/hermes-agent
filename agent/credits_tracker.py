@@ -239,6 +239,20 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
         return False
 
 
+def new_credits_latch() -> dict:
+    """Return a fresh mutable latch for credits-notice reconciliation.
+
+    A separate latch is required for every agent/session. The policy mutates
+    this dictionary in place to track active notices, whether the usage-band
+    crossing gate has opened, and the currently displayed usage band.
+    """
+    return {
+        "active": set(),
+        "seen_below_90": False,
+        "usage_band": None,
+    }
+
+
 # ── evaluate_credits_notices (pure reconciliation function) ──────────────────
 
 

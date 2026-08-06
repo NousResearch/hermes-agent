@@ -124,8 +124,11 @@ class TestBareSecretEnvSuffixes:
             assert "=" in result and result.split("=", 1)[1] != text.split("=", 1)[1]
 
     def test_lowercase_env_name_masks(self):
-        result = redact_sensitive_text("openai_key=sk-abc123def456", force=True)
-        assert "sk-abc123def456" not in result
+        # Opaque value with NO known prefix: only the env-name regex can
+        # catch it — a sk-/ghp_ value would be masked by _PREFIX_RE on old
+        # code too, making this test false-pass (review finding).
+        result = redact_sensitive_text("openai_key=xyzzyplugh1234567890abcd", force=True)
+        assert "xyzzyplugh1234567890abcd" not in result
 
     def test_prose_words_with_keyword_unchanged(self):
         # KEYBOARD / PASSAGE embed the bare keyword but are prose, not creds
@@ -145,23 +148,27 @@ class TestBareSecretEnvSuffixes:
 class TestControlCharSplitTokens:
     """Tokens split by control/zero-width chars must still mask — #77484."""
 
+    def _assert_split_masked(self, text, tok):
+        # Bare token (no KEY= context). Assert the LONGEST FRAGMENT is gone
+        # from the result: the token is split in the input, so `tok` (whole,
+        # contiguous) is absent from ANY output — even one that leaks every
+        # fragment verbatim (review finding: whole-token assertion is a false
+        # negative; the tail fragment appears contiguously in the leak).
+        result = redact_sensitive_text(text, force=True)
+        longest = max(tok[10:], tok[:10], key=len)
+        assert longest not in result
+
     def test_newline_split_token_masks(self):
         tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
-        text = f"token={tok[:10]}\n{tok[10:]}"
-        result = redact_sensitive_text(text, force=True)
-        assert tok not in result
+        self._assert_split_masked(f"{tok[:10]}\n{tok[10:]}", tok)
 
     def test_esc_split_token_masks(self):
         tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
-        text = f"token={tok[:10]}\x1b{tok[10:]}"
-        result = redact_sensitive_text(text, force=True)
-        assert tok not in result
+        self._assert_split_masked(f"{tok[:10]}\x1b{tok[10:]}", tok)
 
     def test_zero_width_split_token_masks(self):
         tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
-        text = f"token={tok[:10]}\u200b{tok[10:]}"
-        result = redact_sensitive_text(text, force=True)
-        assert tok not in result
+        self._assert_split_masked(f"{tok[:10]}\u200b{tok[10:]}", tok)
 
     def test_env_dump_lines_not_joined(self):
         # Control-stripping must not join unrelated env lines into one match

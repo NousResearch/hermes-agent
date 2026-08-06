@@ -8683,6 +8683,7 @@ def call_llm(
             api_mode=api_mode,
             stream=stream,
             stream_options=stream_options,
+            route_callback=route_callback,
         )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
@@ -8728,6 +8729,7 @@ def _call_llm_impl(
     api_mode: str = None,
     stream: bool = False,
     stream_options: dict = None,
+    route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
 ) -> Any:
     """Centralized synchronous LLM call.
 

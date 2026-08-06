@@ -41,7 +41,7 @@ Current gaps this MVP closes:
 8. **Sensitive-input redaction** — what is never stored, and the deterministic hash scheme (see §11).
 9. **Extension points** — where later stages plug in without changing the contract (see §12).
 10. **Graceful behavior on missing/malformed traces** — the engine degrades to `unknown` / `malformed_trace`, never crashes (see §13).
-11. **Sample traces** — one success, one failure (see §14).
+11. **Sample traces** — one success, one failure (see §15).
 
 ### Explicit non-goals
 
@@ -364,9 +364,55 @@ These are seams where later stages plug in without changing the contract:
 
 ---
 
-## 14. Sample traces
+## 14. Failure-path integration (t_097b0a62)
 
-### 14.1 Success trace
+The glue between the recorder + engine and the Kanban worker failure
+lifecycle lives in `hermes_cli/observability/loop_diagnostics_integration.py`
+and is invoked from the dispatcher-side failure paths in `kanban_db.py`
+(`detect_crashed_workers` / `enforce_max_runtime` / `_record_task_failure`
+(spawn-failure + gave_up) / `block_task` / `_block_task_locked`).
+
+### 14.1 Behavior
+
+- On a **terminal attempt failure** (worker `crashed` / `timed_out` /
+  `spawn_failed` / `gave_up` / `blocked` with an open run) the integration
+  finalizes nothing process-local, runs the deterministic diagnosis engine
+  on the run's trace, persists the `DiagnosisResult` to
+  `<run_id>.diagnosis.json` next to the trace, appends a `diagnosis` task
+  event (machine + human readable), and records one redacted metrics row
+  (`~/.hermes/governance/telemetry/loop-diagnostics.jsonl`).
+- **Success paths are unaffected.** No `diagnosis` event is emitted on
+  `complete_task`; the only new side effect on failure is the event + file +
+  metrics.
+- **Never masks the worker error.** Every entry point is wrapped; a
+  diagnosis failure (missing trace, engine hiccup, write error) degrades to
+  a `diagnosis_failed` / `diagnosis_skipped` event with the original error
+  preserved. The caller's error handling and retry/circuit-breaker accounting
+  are untouched.
+
+### 14.2 Configuration
+
+- `kanban.loop_diagnostics.enabled` (default False) — master switch; the
+  recorder plugin registers zero hooks when disabled.
+- `kanban.loop_diagnostics.diagnose_on_failure` (default True) — independent
+  gate for the failure-time diagnosis step. Set False to keep recording
+  traces while disabling the diagnostic attach on failure.
+
+### 14.3 Event payload (kind=`diagnosis`)
+
+Machine-readable fields: `run_id`, `outcome`, `status`, `category`,
+`confidence`, `root_cause_action_ids`, `propagation_path`, `interventions`
+(kind / action_id / rationale / payload), `evidence`, `explanation`.
+Human-readable one-liner: `summary` (e.g.
+`diagnosis=root_cause_found category=input_invalid root=41:1 path=41:2,41:1 intervention=retry_from_checkpoint · detail=...`).
+The original failure text is preserved as `original_error`; `trace_path`
+points at the persisted `.diagnosis.json` for operators.
+
+---
+
+## 15. Sample traces
+
+### 15.1 Success trace
 
 ```jsonl
 {"schema_version":"hermes.loop_diagnostics.v1","kind":"run_header","task_id":"t_example","run_id":41,"attempt":1,"profile":"default","goal_mode":false,"ts":1785739000}
@@ -378,7 +424,7 @@ These are seams where later stages plug in without changing the contract:
 {"schema_version":"hermes.loop_diagnostics.v1","kind":"run_footer","task_id":"t_example","run_id":41,"ts":1785739008,"outcome":"completed","event_count":7}
 ```
 
-### 14.2 Failure trace (root cause = input_invalid)
+### 15.2 Failure trace (root cause = input_invalid)
 
 ```jsonl
 {"schema_version":"hermes.loop_diagnostics.v1","kind":"run_header","task_id":"t_example","run_id":42,"attempt":2,"profile":"default","goal_mode":false,"ts":1785739100}
@@ -418,7 +464,7 @@ Engine result for run 42 (verbatim contract shape):
 }
 ```
 
-### 14.3 Failure trace (repeated loop failure)
+### 15.3 Failure trace (repeated loop failure)
 
 ```jsonl
 {"schema_version":"hermes.loop_diagnostics.v1","kind":"run_header","task_id":"t_example","run_id":43,"attempt":3,"profile":"default","goal_mode":false,"ts":1785739200}
@@ -434,18 +480,19 @@ Engine result: `category=loop_repeated`, `status=root_cause_found`, `root_cause_
 
 ---
 
-## 15. Acceptance criteria
+## 16. Acceptance criteria
 
-A. The schema file exists at `hermes_cli/observability/schemas/hermes.loop_diagnostics.v1.schema.json` and validates all sample records in §14 with `jsonschema`.
+A. The schema file exists at `hermes_cli/observability/schemas/hermes.loop_diagnostics.v1.schema.json` and validates all sample records in §15 with `jsonschema`.
 B. The recorder (t_8e6eb31d) can emit all six record kinds and disable with zero behavioral delta.
 C. The engine (t_a2e356b5) returns deterministic results for equivalent traces and safe termination on cyclic/corrupt input.
 D. Sensitive inputs are never stored; redaction is by-construction.
 E. Missing/malformed/truncated traces degrade to `unknown`/`malformed_trace` with evidence, never crash.
 F. The design is bounded to failure diagnosis: no intervention execution, no general observability rewrite, no dispatcher semantics change.
+G. The failure-path integration (t_097b0a62) attaches a machine + human readable `diagnosis` report to the task event stream on every terminal attempt failure (crashed / timed_out / spawn_failed / gave_up / blocked) while successful runs emit no `diagnosis` event; diagnosis failures never mask the original worker error.
 
 ---
 
-## 16. Non-goals recap (explicit)
+## 17. Non-goals recap (explicit)
 
 1. No intervention execution in MVP.
 2. No real-time UI / streaming.

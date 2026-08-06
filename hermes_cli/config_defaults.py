@@ -2425,6 +2425,13 @@ DEFAULT_CONFIG = {
             # Master switch. False = the loop-diagnostics plugin registers
             # no hooks and writes nothing.
             "enabled": False,
+            # When True (and ``enabled``), a terminal attempt failure
+            # (crashed / timed_out / spawn_failed / blocked with an open
+            # run / gave_up) runs the diagnosis engine on the run's trace
+            # and attaches the report as a ``diagnosis`` task event +
+            # ``<run_id>.diagnosis.json``. When False, failure reporting is
+            # byte-identical to today (no event, no diagnosis file).
+            "diagnose_on_failure": True,
             # Per-run cap on trace events (header/footer bypass the cap).
             # Bounds memory + disk growth on long-running workers.
             "max_events_per_run": 10000,

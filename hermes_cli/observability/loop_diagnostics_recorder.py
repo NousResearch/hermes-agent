@@ -890,8 +890,16 @@ def load_recorder_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, A
         retain = int(ld.get("retain_runs", DEFAULT_RETAIN_RUNS))
     except (TypeError, ValueError):
         retain = DEFAULT_RETAIN_RUNS
+    # Independent gate for the failure-time diagnosis step. Defaults to True
+    # so enabling the recorder automatically enables diagnosis; set False to
+    # keep recording traces while disabling the diagnostic attach on failure.
+    try:
+        diagnose_on_failure = bool(ld.get("diagnose_on_failure", True))
+    except Exception:
+        diagnose_on_failure = True
     return {
         "enabled": enabled,
+        "diagnose_on_failure": diagnose_on_failure,
         "max_events_per_run": max(1, max_events),
         "retain_runs": max(1, retain),
     }

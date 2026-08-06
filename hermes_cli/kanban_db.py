@@ -6602,6 +6602,17 @@ def _block_task_locked(
             summary=reason,
         )
     _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+    # Loop-diagnostics: attach the failure report for this terminal
+    # attempt failure (a worker blocked = a terminal non-success attempt).
+    # Only when a real run was closed — synthesized runs (never claimed)
+    # have no trace to diagnose.
+    if run_id is not None and reason:
+        _attach_loop_diagnosis(
+            conn, task_id,
+            run_id=run_id,
+            outcome="blocked",
+            error=reason,
+        )
     return True, run_id
 
 
@@ -6862,6 +6873,18 @@ def block_task(
                 run_id=run_id,
             )
             routed_to = dest_status
+        # Loop-diagnostics: attach the failure report for this terminal
+        # attempt failure (a worker block = a terminal non-success attempt).
+        # Dependency-wait blocks return early above, so this covers the
+        # normal / loop-detected / decision-gate routes. Only when a real
+        # run was closed — synthesized runs (never claimed) have no trace.
+        if run_id is not None and reason:
+            _attach_loop_diagnosis(
+                conn, task_id,
+                run_id=run_id,
+                outcome="blocked",
+                error=reason,
+            )
         _blocked_task = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
@@ -10338,6 +10361,14 @@ def enforce_max_runtime(
                 _append_event(
                     conn, tid, "timed_out", payload, run_id=run_id,
                 )
+                # Loop-diagnostics: attach the failure report for this
+                # terminal attempt failure (run already closed above).
+                _attach_loop_diagnosis(
+                    conn, tid,
+                    run_id=run_id,
+                    outcome="timed_out",
+                    error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
+                )
                 timed_out.append(tid)
         # Increment the unified failure counter. Outside the write_txn
         # above because ``_record_task_failure`` opens its own. If the
@@ -10720,6 +10751,16 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload,
                     run_id=run_id,
                 )
+                # Loop-diagnostics: attach the failure report to the closed
+                # run. The run id is explicit because the run was just closed
+                # above (the task's current_run_id is already NULL).
+                if not rate_limited_exit:
+                    _attach_loop_diagnosis(
+                        conn, row["id"],
+                        run_id=run_id,
+                        outcome=_run_outcome,
+                        error=error_text,
+                    )
                 if rate_limited_exit:
                     # Stamp the failure-error column so ``check_respawn_guard``
                     # recognizes this as a quota blocker and defers the
@@ -10969,6 +11010,16 @@ def _record_task_failure(
             _append_event(
                 conn, task_id, "gave_up", payload, run_id=run_id,
             )
+            # Loop-diagnostics: the run was closed above (spawn path). The
+            # gave_up event carries the final outcome; attach the failure
+            # report so the block reason / operator view has the root cause.
+            if end_run:
+                _attach_loop_diagnosis(
+                    conn, task_id,
+                    run_id=run_id,
+                    outcome="gave_up",
+                    error=error[:500],
+                )
             blocked = True
         else:
             # Below threshold.
@@ -11017,6 +11068,14 @@ def _record_task_failure(
                     {"error": error[:500], "failures": failures},
                     run_id=run_id,
                 )
+                # Loop-diagnostics: attach the failure report for this
+                # terminal attempt failure (run closed above).
+                _attach_loop_diagnosis(
+                    conn, task_id,
+                    run_id=run_id,
+                    outcome=outcome,
+                    error=error[:500],
+                )
             # Timeout/crash path's caller already emitted its own event.
     return blocked
 
@@ -11047,6 +11106,57 @@ def _record_spawn_failure(
         release_claim=True,
         end_run=True,
     )
+
+
+def _attach_loop_diagnosis(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    run_id: Optional[int] = None,
+    outcome: Optional[str] = None,
+    error: Optional[str] = None,
+    failed_action_id: Optional[str] = None,
+    board: Optional[str] = None,
+    force: bool = False,
+) -> None:
+    """Best-effort loop-diagnostics attachment on a terminal attempt failure.
+
+    Delegates to ``loop_diagnostics_integration.attach_failure_diagnosis``
+    with a guard so a diagnosis failure can NEVER mask the worker error or
+    break the failure path. The integration module itself never raises, but
+    this wrapper also catches import errors (e.g. the observability module
+    being pruned) so the failure lifecycle is byte-identical to today when
+    the feature is unavailable.
+
+    When ``run_id`` is omitted it is resolved from the task's active run
+    before the run is closed (the caller should pass it explicitly when the
+    run has already been closed — e.g. the crash/timeout reaper paths which
+    close the run before accounting).
+    """
+    if not task_id:
+        return
+    try:
+        from hermes_cli.observability.loop_diagnostics_integration import (
+            attach_failure_diagnosis,
+        )
+
+        if run_id is None:
+            run_id = _current_run_id(conn, task_id)
+        attach_failure_diagnosis(
+            conn,
+            task_id,
+            run_id=run_id,
+            outcome=outcome,
+            error=error,
+            failed_action_id=failed_action_id,
+            board=board,
+            force=force,
+        )
+    except Exception as exc:
+        _log.debug(
+            "loop-diagnostics: attach failed for %s run %s (%s)",
+            task_id, run_id, exc,
+        )
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:

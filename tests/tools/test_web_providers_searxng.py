@@ -200,6 +200,11 @@ class TestSearXNGSearchProviderSearch:
             "allowed by SearXNG bot-detection/proxy settings."
         )
         assert "private search terms" not in result["error"]
+        # The 403 must carry the top-level fallback signal so the web
+        # dispatcher fails over to another search provider (t_611be323
+        # integration regression: status_code was nested in diagnostics only).
+        assert result["status_code"] == 403
+        assert result["fallback_eligible"] is True
         assert result["diagnostics"] == {
             "status_code": 403,
             "method": "GET",
@@ -400,3 +405,91 @@ class TestSearXNGOnlyExtractCrawlErrors:
         result = json.loads(result_str)
         assert result["success"] is False
         assert "search-only" in result["error"].lower() or "SearXNG" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher integration: SearXNG 403 fails over to DDGS
+# ---------------------------------------------------------------------------
+
+
+class TestSearXNG403FallbackToDDGS:
+    """A SearXNG HTTP 403 (config regression / bot detection) must surface the
+    top-level fallback signal so web_search_tool fails over to DDGS instead
+    of returning a hard error. Regression for the t_611be323 integration gap:
+    status_code was nested inside diagnostics only, invisible to
+    _is_fallback_eligible_response()."""
+
+    _register_providers = staticmethod(register_all_web_providers)
+
+    @pytest.fixture(autouse=True)
+    def _populate_web_registry(self):
+        self._register_providers()
+        yield
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
+
+    def test_searxng_403_response_is_fallback_eligible(self, monkeypatch):
+        import httpx
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        request = httpx.Request(
+            "GET",
+            "http://localhost:8080/search",
+            params={"q": "query", "format": "json", "pageno": 1},
+        )
+        response = httpx.Response(
+            403,
+            request=request,
+            headers={"server": "granian", "content-type": "text/html; charset=utf-8"},
+            text="Forbidden",
+        )
+
+        with patch("httpx.get", return_value=response):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        from tools.web_tools import _is_fallback_eligible_response
+
+        assert _is_fallback_eligible_response(result) is True
+
+    def test_searxng_403_dispatches_to_ddgs_fallback(self, monkeypatch):
+        """web_search_tool with searxng configured; searxng returns 403; the
+        dispatcher must fall back to ddgs and mark fallback_from=searxng."""
+        import httpx
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+
+        def _searxng_403(url, **kwargs):
+            request = httpx.Request("GET", url, params=kwargs.get("params"))
+            return httpx.Response(
+                403,
+                request=request,
+                headers={"server": "granian", "content-type": "text/html; charset=utf-8"},
+                text="Forbidden",
+            )
+
+        def _ddgs_ok(query, limit=5):
+            return [
+                {
+                    "title": "DDGS Fallback",
+                    "url": "https://ddgs.example.com",
+                    "description": "fallback result",
+                    "position": 1,
+                }
+            ]
+
+        with patch("httpx.get", side_effect=_searxng_403), \
+             patch("plugins.web.ddgs.provider._run_ddgs_search_bounded", side_effect=_ddgs_ok):
+            result_str = web_tools.web_search_tool("query", limit=3)
+
+        import re
+        result = json.loads(
+            result_str.replace("<<<UNTRUSTED_DOCUMENT>>>", "").replace("<<<END_UNTRUSTED_DOCUMENT>>>", "").strip()
+        )
+        assert result["success"] is True
+        assert result["fallback_from"] == "searxng"
+        assert result["data"]["web"][0]["title"] == "DDGS Fallback"

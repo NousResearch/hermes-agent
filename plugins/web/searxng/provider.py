@@ -117,6 +117,14 @@ class SearXNGWebSearchProvider(WebSearchProvider):
                         "Verify that JSON is enabled in search.formats and that the API client is "
                         "allowed by SearXNG bot-detection/proxy settings."
                     ),
+                    # Top-level status_code + fallback_eligible signal the web
+                    # dispatcher's _is_fallback_eligible_response() so a 403
+                    # (config regression / bot detection) fails over to the
+                    # next available search provider instead of surfacing as
+                    # a hard error. Diagnostics carry the same status for the
+                    # log surface without duplicating the signal key.
+                    "status_code": status_code,
+                    "fallback_eligible": True,
                     "diagnostics": diagnostics,
                 }
             return {

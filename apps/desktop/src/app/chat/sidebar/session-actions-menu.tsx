@@ -20,8 +20,9 @@ import {
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CopyButton } from '@/components/ui/copy-button'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, preventCloseButtonAutoFocus } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -198,6 +199,7 @@ function useSessionActions({
   // action leaves the restore alone (it's the correct behavior for them). Mirrors
   // the project menu's appearance-popover guard.
   const suppressCloseFocusRef = useRef(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const isRemote = useStore($connection)?.mode === 'remote'
@@ -399,7 +401,15 @@ function useSessionActions({
       label: t.common.delete,
       onSelect: () => {
         triggerHaptic('warning')
-        onDelete?.()
+
+        // Deleting is irreversible (the CLI path asks y/N; the desktop used to
+        // fire instantly on click). Gate it behind an explicit confirm — see
+        // #61470. The dialog owns the delete call, so every surface that routes
+        // through this menu (sidebar rows, tab menus, the chat header) gets the
+        // guard for free.
+        if (onDelete) {
+          setDeleteOpen(true)
+        }
       },
       variant: 'destructive'
     }
@@ -484,7 +494,50 @@ function useSessionActions({
     }
   }
 
-  return { onCloseAutoFocus, renameDialog, renderItems }
+  const deleteDialog = (
+    <DeleteSessionDialog
+      onConfirm={() => {
+        onDelete?.()
+      }}
+      onOpenChange={setDeleteOpen}
+      open={deleteOpen}
+      sessionTitle={title}
+    />
+  )
+
+  return { deleteDialog, onCloseAutoFocus, renameDialog, renderItems }
+}
+
+interface DeleteSessionDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onConfirm: () => void
+  sessionTitle: string
+}
+
+// Thin wrapper over ConfirmDialog — the single choke point for every session
+// delete entry point (sidebar rows, tab menus, the chat header). Deleting a
+// session is irreversible and the desktop used to fire it instantly on click
+// (#61470); this mirrors the CLI's y/N guard. onConfirm is the fire-and-forget
+// delete call; ConfirmDialog owns the busy/done beat and Enter-to-confirm.
+function DeleteSessionDialog({ open, onOpenChange, onConfirm, sessionTitle }: DeleteSessionDialogProps) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+
+  return (
+    <ConfirmDialog
+      busyLabel={r.deleting}
+      confirmLabel={t.common.delete}
+      description={r.deleteDesc(sessionTitle)}
+      destructive
+      doneLabel={r.deleted}
+      onClose={() => onOpenChange(false)}
+      onConfirm={onConfirm}
+      onOpenAutoFocus={preventCloseButtonAutoFocus}
+      open={open}
+      title={r.deleteTitle}
+    />
+  )
 }
 
 interface SessionActionsMenuProps
@@ -494,7 +547,7 @@ interface SessionActionsMenuProps
 
 export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
-  const { onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -509,6 +562,7 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
         {children}
       </ActionsMenu>
       {renameDialog}
+      {deleteDialog}
     </>
   )
 }
@@ -519,7 +573,7 @@ interface SessionContextMenuProps extends SessionActions {
 
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
-  const { onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -532,6 +586,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
         {children}
       </ActionsContextMenu>
       {renameDialog}
+      {deleteDialog}
     </>
   )
 }

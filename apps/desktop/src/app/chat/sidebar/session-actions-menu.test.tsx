@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { SessionActionsMenu } from './session-actions-menu'
+import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
 afterEach(cleanup)
 
@@ -20,7 +20,16 @@ vi.mock('@/hermes', () => ({ renameSession: vi.fn() }))
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
-      common: { cancel: 'Cancel', close: 'Close', delete: 'Delete', save: 'Save' },
+      common: {
+        cancel: 'Cancel',
+        close: 'Close',
+        confirm: 'Confirm',
+        delete: 'Delete',
+        done: 'Done',
+        loading: 'Loading…',
+        save: 'Save'
+      },
+      errors: { genericFailure: 'Something went wrong' },
       sidebar: {
         projects: {
           menuAppearance: 'Appearance',
@@ -35,6 +44,10 @@ vi.mock('@/i18n', () => ({
           branchFrom: 'Branch from here',
           copyId: 'Copy ID',
           copyIdFailed: 'Failed to copy ID',
+          deleteDesc: (title: string) => `Delete ${title}?`,
+          deleteTitle: 'Delete session?',
+          deleting: 'Deleting…',
+          deleted: 'Session deleted',
           export: 'Export',
           hideTabBar: 'Hide tab bar',
           pin: 'Pin',
@@ -139,5 +152,120 @@ describe('SessionActionsMenu', () => {
     await waitFor(() => expect(document.activeElement).toBe(input))
     // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
     expect(document.activeElement).not.toBe(trigger)
+  })
+
+  it('confirms before deleting — cancel keeps the session, confirm deletes it', async () => {
+    const onDelete = vi.fn()
+    render(
+      <SessionActionsMenu onDelete={onDelete} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const deleteItem = await screen.findByRole('menuitem', { name: /delete/i })
+    fireEvent.click(deleteItem)
+
+    // The confirm dialog is up and names the session being deleted.
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(screen.getByText(/My session/)).toBeTruthy()
+
+    // Cancel: nothing is deleted.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onDelete).not.toHaveBeenCalled()
+
+    // Re-open the menu and confirm: only now does the delete call fire.
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    const deleteItemAgain = await screen.findByRole('menuitem', { name: /delete/i })
+    fireEvent.click(deleteItemAgain)
+
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    // ConfirmDialog shows a done beat before auto-closing (600ms); awaiting it
+    // also drains the async run() update inside act().
+    expect(await screen.findByText('Session deleted')).toBeTruthy()
+    expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables the delete item when no onDelete is provided', async () => {
+    render(
+      <SessionActionsMenu sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const deleteItem = await screen.findByRole('menuitem', { name: /delete/i })
+    expect(deleteItem.getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('confirms with the Enter key and cancels with Escape', async () => {
+    const onDelete = vi.fn()
+    render(
+      <SessionActionsMenu onDelete={onDelete} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toBeTruthy()
+
+    // Escape cancels: dialog closes, nothing is deleted.
+    fireEvent.keyDown(window.document, { key: 'Escape' })
+    expect(await screen.queryByRole('dialog')).toBeNull()
+    expect(onDelete).not.toHaveBeenCalled()
+
+    // Re-open and confirm with Enter: the delete call fires.
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
+    fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Enter' })
+
+    expect(await screen.findByText('Session deleted')).toBeTruthy()
+    expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('routes the same confirm guard through the context menu', async () => {
+    const onDelete = vi.fn()
+    render(
+      <SessionContextMenu onDelete={onDelete} sessionId="s1" title="My session">
+        <button aria-label="Session row" type="button">
+          Row
+        </button>
+      </SessionContextMenu>
+    )
+
+    const row = screen.getByRole('button', { name: 'Session row' })
+    fireEvent.contextMenu(row)
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(await screen.findByText('Session deleted')).toBeTruthy()
+    expect(onDelete).toHaveBeenCalledTimes(1)
   })
 })

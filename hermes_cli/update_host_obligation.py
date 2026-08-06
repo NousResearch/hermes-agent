@@ -109,6 +109,320 @@ def amend_host_obligation(**fields: Any) -> None:
     _update_record(lambda record: record.update(fields), "amend")
 
 
+def _protected_ack_token(record: dict, row: dict, receipt: dict, count: int = 1) -> str:
+    """Bind an acknowledgment to one exact protected debt and checkout revision."""
+    payload = json.dumps([record.get("expected_sha"), record.get("started"), record.get("pid"), row, receipt, count],
+                         sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def protected_acknowledgment_details() -> list[tuple[dict, int, str]]:
+    """List exact protected debts, grouping identical entries with an explicit count."""
+    record = read_host_obligation()
+    if record is None and not host_obligation_present():
+        from hermes_cli.update_gateway_ack_legacy import fallback_record
+        record = fallback_record()
+    record = record or {}
+    from hermes_cli.update_receipt import read_latest_receipt
+    receipt = read_latest_receipt() or {}
+    inventory = record.get("inventory")
+    if not isinstance(inventory, dict) or inventory.get("version") != 1 or not isinstance(inventory.get("runtimes"), list):
+        return []
+    rows = [row for row in inventory["runtimes"]
+            if isinstance(row, dict) and row.get("kind") == "gateway" and row.get("protected_unmapped")
+            and row.get("incident_id") and isinstance(row.get("pid"), int) and row["pid"] > 0]
+    result = []
+    for row in rows:
+        if any(item[0] == row for item in result):
+            continue
+        count = rows.count(row)
+        result.append((row, count, _protected_ack_token(record, row, receipt, count)))
+    return result
+
+
+def protected_acknowledgments() -> list[tuple[int, str]]:
+    return [(row["pid"], token) for row, _, token in protected_acknowledgment_details()]
+
+
+def _receipt_entry_hash(source: str, row: dict) -> str:
+    raw = json.dumps([source, row], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _receipt_snapshot_hash(receipt: dict) -> str:
+    raw = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _ack_ledger_path(path: Path) -> Path:
+    return path.with_name(path.stem + "-acknowledged.json")
+
+
+def _read_ack_ledger(path: Path) -> list[dict]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return []
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("entries"), list):
+        raise ValueError("invalid acknowledgment ledger")
+    return data["entries"]
+
+
+def _read_recovery_ledgers() -> list[dict]:
+    from hermes_cli.update_gateway_ack_legacy import _marker_path
+    entries = []
+    for path in (_ack_ledger_path(host_obligation_path()), _ack_ledger_path(_marker_path())):
+        try:
+            entries.extend(_read_ack_ledger(path))
+        except OSError:
+            # A non-directory or unavailable host state must not hide a valid
+            # per-home fallback ledger. Malformed ledger content still fails closed.
+            continue
+    return entries
+
+
+def _receipt_gateway_hashes(receipt: dict, pid: int, incident_id: str) -> list[str]:
+    plan = receipt.get("plan") or {}
+    candidates = [("fleet", row) for row in receipt.get("fleet") or []]
+    candidates += [("plan", row) for row in plan.get("runtimes") or []] if isinstance(plan, dict) else []
+    hashes = [_receipt_entry_hash(source, row) for source, row in candidates
+              if isinstance(row, dict) and row.get("pid") == pid
+              and row.get("protected_incident_id") == incident_id
+              and row.get("kind", "gateway" if source == "fleet" else None) == "gateway"]
+    # Identical repeated rows cannot be targeted independently.
+    return [value for value in hashes if hashes.count(value) == 1]
+
+
+def receipt_without_acknowledged_gateways(receipt: dict) -> dict:
+    """Remove only exact receipt rows explicitly acknowledged for this receipt."""
+    receipt_id = receipt.get("update_id")
+    if not isinstance(receipt_id, str) or not receipt_id:
+        return receipt
+    try:
+        ledger = _read_recovery_ledgers()
+    except (OSError, ValueError, TypeError):
+        return receipt
+    acknowledged = {entry.get("row_hash") for entry in ledger if isinstance(entry, dict)
+                    and entry.get("receipt_id") == receipt_id
+                    and entry.get("receipt_hash") == _receipt_snapshot_hash(receipt)}
+    if not acknowledged:
+        return receipt
+    result = dict(receipt)
+    if isinstance(receipt.get("unrecorded_gateway_obligations"), list):
+        result["unrecorded_gateway_obligations"] = [
+            row for row in receipt["unrecorded_gateway_obligations"] if not isinstance(row, dict)
+            or _receipt_entry_hash("unrecorded", row) not in acknowledged]
+    if isinstance(receipt.get("fleet"), list):
+        result["fleet"] = [row for row in receipt["fleet"] if not isinstance(row, dict)
+                           or _receipt_entry_hash("fleet", row) not in acknowledged]
+    plan = receipt.get("plan")
+    if isinstance(plan, dict) and isinstance(plan.get("runtimes"), list):
+        result["plan"] = {**plan, "runtimes": [row for row in plan["runtimes"] if not isinstance(row, dict)
+                                                or _receipt_entry_hash("plan", row) not in acknowledged]}
+    restart = receipt.get("gateway_restart")
+    if isinstance(restart, dict):
+        updated = dict(restart)
+        units = restart.get("failed_units")
+        if isinstance(units, list):
+            updated["failed_units"] = [unit for unit in units
+                                      if _receipt_entry_hash("failed_unit", {"unit": unit}) not in acknowledged]
+        error = restart.get("phase_error")
+        if error and _receipt_entry_hash("phase_error", {"phase_error": error}) in acknowledged:
+            updated["phase_error"] = ""
+        if _receipt_entry_hash("restart", {"incomplete": True}) in acknowledged:
+            updated["incomplete"] = False
+        result["gateway_restart"] = updated
+    if isinstance(receipt.get("followups"), list):
+        result["followups"] = [row for row in receipt["followups"] if not isinstance(row, dict)
+                               or _receipt_entry_hash("followup", row) not in acknowledged]
+    return result
+
+
+def _receipt_row_token(receipt: dict, source: str, row: dict) -> str:
+    raw = json.dumps([receipt, source, row], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _receipt_candidate_tokens(receipt: dict, candidates: list) -> list:
+    """Bind identical entries as one explicitly displayed group, never suppress a partial group."""
+    groups = {}
+    for source, row in candidates:
+        key = _receipt_entry_hash(source, row)
+        if key not in groups:
+            groups[key] = [source, row, 0]
+        groups[key][2] += 1
+    result = []
+    for source, row, count in groups.values():
+        if count > 1:
+            source, row = "duplicate_group", {"source": source, "entry": row, "count": count}
+        result.append((source, row, _receipt_row_token(receipt, source, row)))
+    return result
+
+
+def receipt_gateway_acknowledgments(receipt: dict) -> list[tuple[str, dict, str]]:
+    """List individually attestable gateway rows of this exact receipt snapshot."""
+    if not isinstance(receipt.get("update_id"), str) or not receipt["update_id"]:
+        return []
+    try:
+        ledger = _read_recovery_ledgers()
+    except (OSError, ValueError, TypeError):
+        return []
+    contexts = [entry for entry in ledger if isinstance(entry, dict) and entry.get("recovery_context")
+                and entry.get("receipt_id") == receipt["update_id"]
+                and entry.get("receipt_hash") == _receipt_snapshot_hash(receipt)]
+    remaining = receipt_without_acknowledged_gateways(receipt)
+    unrecorded = remaining.get("unrecorded_gateway_obligations") or []
+    candidates = [("unrecorded", row) for row in unrecorded
+                  if isinstance(row, dict) and row.get("kind") == "gateway"]
+    if not contexts:
+        return _receipt_candidate_tokens(receipt, candidates)
+    plan = remaining.get("plan") or {}
+    candidates += [("fleet", row) for row in remaining.get("fleet") or []]
+    candidates += [("plan", row) for row in plan.get("runtimes") or []] if isinstance(plan, dict) else []
+    candidates = [(source, row) for source, row in candidates if isinstance(row, dict)
+                  and row.get("kind", "gateway" if source in ("fleet", "unrecorded") else None) == "gateway"]
+    restart = remaining.get("gateway_restart")
+    if isinstance(restart, dict):
+        candidates.extend(("failed_unit", {"unit": unit}) for unit in restart.get("failed_units") or [])
+        if restart.get("phase_error"):
+            candidates.append(("phase_error", {"phase_error": restart["phase_error"]}))
+        if restart.get("incomplete") and not restart.get("failed_units") and not restart.get("phase_error"):
+            candidates.append(("restart", {"incomplete": True}))
+    # A follow-up is indivisible in older receipts. Do not offer it until every
+    # individually named entry has been reviewed; display the entire reason.
+    if not candidates:
+        candidates.extend(("followup", row) for row in remaining.get("followups") or []
+                          if isinstance(row, dict) and row.get("step") == "gateway_restart")
+    return _receipt_candidate_tokens(receipt, candidates)
+
+
+def acknowledge_receipt_gateway(token: str) -> bool:
+    """Attest exactly one displayed receipt gateway row under its storage mutex."""
+    from hermes_cli.update_receipt import read_latest_receipt
+    from hermes_cli.update_gateway_ack_legacy import _marker_path
+    from hermes_cli.update_lock import marker_mutex
+    receipt = read_latest_receipt() or {}
+    matches = [(source, row) for source, row, candidate in receipt_gateway_acknowledgments(receipt)
+               if candidate == token]
+    if len(matches) != 1:
+        return False
+    snapshot = _receipt_snapshot_hash(receipt)
+    options = (host_obligation_path(), _marker_path())
+    for path in options:
+        try:
+            ledger = _read_ack_ledger(_ack_ledger_path(path))
+        except (OSError, ValueError, TypeError):
+            continue
+        has_context = any(isinstance(entry, dict) and entry.get("recovery_context")
+                          and entry.get("receipt_id") == receipt.get("update_id")
+                          and entry.get("receipt_hash") == snapshot for entry in ledger)
+        source, entry = matches[0]
+        is_unrecorded = source == "unrecorded" or (source == "duplicate_group" and entry.get("source") == "unrecorded")
+        if not has_context and not is_unrecorded:
+            continue
+        lock = _record_mutex(path) if path == options[0] else marker_mutex(path)
+        try:
+            with lock:
+                latest = read_latest_receipt() or {}
+                current = [(source, row) for source, row, candidate in receipt_gateway_acknowledgments(latest)
+                           if candidate == token]
+                if len(current) != 1:
+                    return False
+                ledger_path = _ack_ledger_path(path)
+                ledger = _read_ack_ledger(ledger_path)
+                source, row = current[0]
+                if source == "duplicate_group":
+                    source, row = row["source"], row["entry"]
+                ledger.append({"receipt_id": latest["update_id"], "receipt_hash": _receipt_snapshot_hash(latest),
+                               "row_hash": _receipt_entry_hash(source, row), "operator_attested": True})
+                if source == "unrecorded":
+                    ledger.append({"receipt_id": latest["update_id"], "receipt_hash": _receipt_snapshot_hash(latest),
+                                   "incident_id": row.get("incident_id") or _receipt_entry_hash("unrecorded", row),
+                                   "pid": row.get("pid"), "recovery_context": True})
+                _write_record(ledger_path, {"version": 1, "entries": ledger})
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def acknowledge_protected_gateway(token: str) -> bool:
+    """Remove exactly the named protected debt, retaining every other obligation.
+
+    The caller must hold the checkout update lock. All validation and mutation occur
+    under the host-record mutex; stale or ambiguous tokens never change the record.
+    """
+    if not host_obligation_present():
+        from hermes_cli.update_gateway_ack_legacy import acknowledge_fallback
+        from hermes_cli.update_receipt import read_latest_receipt
+        return acknowledge_fallback(token, read_latest_receipt() or {})
+    path = _owed_path()
+    with _record_mutex(path):
+        if _owed_path() != path:
+            return False
+        record = _read_record(path)
+        if record is None:
+            return False
+        inventory = record.get("inventory")
+        if not isinstance(inventory, dict) or inventory.get("version") != 1 or not isinstance(inventory.get("runtimes"), list):
+            return False
+        rows = inventory["runtimes"]
+        from hermes_cli.update_receipt import read_latest_receipt
+        receipt = read_latest_receipt() or {}
+        matching_rows = [row for row in rows
+                         if isinstance(row, dict) and row.get("kind") == "gateway" and row.get("protected_unmapped")
+                         and row.get("incident_id") and _protected_ack_token(record, row, receipt, rows.count(row)) == token]
+        if not matching_rows or any(row != matching_rows[0] for row in matching_rows):
+            return False
+        row = matching_rows[0]
+        receipt_id = receipt.get("update_id")
+        receipt_sha = (receipt.get("post_update") or {}).get("sha") if isinstance(receipt.get("post_update") or {}, dict) else None
+        if isinstance(receipt_id, str) and receipt_id:
+            hashes = (_receipt_gateway_hashes(receipt, row.get("pid"), row["incident_id"])
+                      if receipt_sha == record.get("expected_sha") else [])
+            ledger_path = _ack_ledger_path(host_obligation_path())
+            ledger = _read_ack_ledger(ledger_path)
+            entries = [{"receipt_id": receipt_id, "receipt_hash": _receipt_snapshot_hash(receipt),
+                        "row_hash": value, "incident_id": row["incident_id"]}
+                       for value in hashes]
+            entries.append({"receipt_id": receipt_id, "receipt_hash": _receipt_snapshot_hash(receipt),
+                            "incident_id": row["incident_id"], "pid": row["pid"], "recovery_context": True})
+            _write_record(ledger_path, {"version": 1, "entries": ledger + entries})
+        record["inventory"] = {**inventory, "runtimes": [item for item in rows if item != row]}
+        _write_record(path, record)
+        return True
+
+
+def merge_owed_gateway_inventory(expected_sha: str, additions: list[dict]) -> bool:
+    """Append debt under the host mutex, never overwriting a concurrent obligation."""
+    path = host_obligation_path()
+    try:
+        with _record_mutex(path):
+            selected = _owed_path()
+            record = _read_record(selected)
+            if record is None:
+                if selected.exists():
+                    return False
+                from hermes_cli.update_gateway_ack_legacy import _marker_path
+                if _marker_path().exists():
+                    return False  # the fallback path owns this debt
+                return _write_locked(path, expected_sha=expected_sha, runtimes=additions, profile="", owner="")
+            if str(record.get("expected_sha") or "") != expected_sha:
+                return False
+            inventory = record.get("inventory")
+            if inventory is None:
+                inventory = {"version": 1, "runtimes": []}
+            if (not isinstance(inventory, dict) or inventory.get("version") != 1
+                    or not isinstance(inventory.get("runtimes"), list)):
+                return False
+            rows = list(inventory["runtimes"])
+            rows.extend(row for row in additions if row not in rows)
+            _write_record(selected, {**record, "inventory": {**inventory, "runtimes": rows}})
+            return True
+    except OSError:
+        return False
+
+
 def write_host_obligation(
     *, expected_sha: str = "", runtimes: Optional[list] = None, profile: str = "", owner: str = ""
 ) -> bool:
@@ -151,7 +465,10 @@ def arm_host_obligation(
         lines.append("inventory=" + json.dumps({"version": 1, "runtimes": runtimes}))
     hidden = ""
     try:
-        replace_bytes(marker, ("\n".join(lines) + "\n").encode("utf-8"))
+        # The fallback is read and discharged independently of the host record.
+        # Serialize its read-judge-delete with every current fallback writer.
+        with _marker_mutex()(marker):
+            replace_bytes(marker, ("\n".join(lines) + "\n").encode("utf-8"))
     except OSError as exc:
         hidden = f" or {marker} ({exc})"
     if not hidden:
@@ -391,6 +708,18 @@ def clear_host_obligation() -> None:
         _owed_path().unlink(missing_ok=True)
     except OSError as exc:
         logger.debug("Could not clear host update-restart obligation: %s", exc)
+
+
+def clear_host_obligation_if_unchanged(path: Path, judged: dict) -> bool:
+    """Discharge only the exact host record previously judged, under the writer mutex."""
+    try:
+        with _record_mutex(path):
+            if _owed_path() != path or _read_record(path) != judged:
+                return False
+            path.unlink()
+            return True
+    except OSError:
+        return False
 
 
 def obligation_fields() -> Optional[dict[str, str]]:

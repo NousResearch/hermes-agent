@@ -64,10 +64,13 @@ def test_cron_status_still_green_after_a_clean_tick(cron_home):
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGUSR1"), reason="POSIX drain-first restart signal")
-def test_update_signals_proven_stale_gateway_survivor(cron_home, tmp_path):
+def test_update_signals_proven_stale_gateway_survivor(cron_home, tmp_path, monkeypatch):
     """A `stale` fleet-matrix row gets SIGUSR1 (request_restart); a `current` row is untouched."""
     from hermes_cli.update_cmd_fleet import _GatewayRestartOutcome
     from hermes_cli.update_cmd_stale_survivors import signal_stale_fleet_survivors
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(update_cmd, "_systemd_service_membership_for_pid", lambda pid: False)
 
     marker = tmp_path / "got_sigusr1"
     child = subprocess.Popen(
@@ -102,10 +105,39 @@ def test_update_signals_proven_stale_gateway_survivor(cron_home, tmp_path):
     assert restart.killed_pids == {child.pid}
 
 
+@pytest.mark.platforms("linux")
+def test_stale_survivors_leave_custom_services_and_unknown_ownership_running(monkeypatch, capsys):
+    from hermes_cli import gateway, update_cmd
+    import hermes_cli.update_cmd_fleet as fleet_mod
+    from hermes_cli.update_cmd_stale_survivors import signal_stale_fleet_survivors
+
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda **kwargs: {104})
+    monkeypatch.setattr(update_cmd, "_systemd_service_membership_for_pid",
+                        lambda pid: {101: True, 102: None, 103: False}[pid])
+    sent = []
+    monkeypatch.setattr(fleet_mod, "_drain_or_signal_gateway_for_update",
+                        lambda pid, *args: sent.append(pid) or True)
+    restart = fleet_mod._GatewayRestartOutcome(
+        incomplete=False, phase_errors=[], pre_restart_gateway_pids=[101, 102, 103, 104],
+        restarted_services=[], failed_or_stale_units=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(),
+    )
+    rows = [{"profile": str(pid), "pid": pid, "state": "stale"} for pid in (101, 102, 103, 104)]
+
+    assert signal_stale_fleet_survivors(rows, restart, 10) == [103, 104]
+    assert sent == [103, 104]
+    assert restart.incomplete
+    assert restart.protected_gateway_pids == {101, 102}
+    assert restart.killed_pids == {103, 104}
+    assert restart.stopped_unmapped_pids == {103}
+    assert "101, 102" in capsys.readouterr().out
+
+
 def test_verify_fleet_hands_stale_rows_to_survivor_signalling(monkeypatch):
     """The wiring: a stale fleet matrix reaches signal_stale_fleet_survivors; the restart stays owed."""
     import hermes_cli.update_cmd_fleet as fleet_mod
     import hermes_cli.update_cmd_fleet_verify as fleet_verify
+    import hermes_cli.update_cmd_maint as maint
     import hermes_cli.update_cmd_stale_survivors as surv
     from hermes_cli import update_cmd
     from hermes_cli.update_cmd_fleet import _GatewayRestartOutcome
@@ -115,7 +147,7 @@ def test_verify_fleet_hands_stale_rows_to_survivor_signalling(monkeypatch):
     monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
     # The live post-update dashboard pass restarts a managed hermes-dashboard unit.
-    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: set())
+    monkeypatch.setattr(maint, "_refresh_dashboard_after_update", lambda **k: set())
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
     monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot", lambda restart, expected: stale_fleet)
     monkeypatch.setattr(surv, "signal_stale_fleet_survivors",

@@ -180,6 +180,8 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
     from hermes_cli.update_cmd import _current_checkout_sha
     if not isinstance(receipt, dict):
         return False
+    if receipt.get("unrecorded_gateway_obligations"):
+        return True
     expected_sha = expected_sha or _current_checkout_sha()
     if not expected_sha:
         return False
@@ -319,7 +321,7 @@ def _marker_owed_gateways(inventory: object) -> set[tuple[str, str]] | None:
             raise ValueError("fleet-restart inventory row is not an object")
         if runtime_outside_gateway_evidence(runtime):
             continue
-        if runtime.get("kind") == "gateway" and runtime.get("stopped_unmapped"):
+        if runtime.get("kind") == "gateway" and (runtime.get("stopped_unmapped") or runtime.get("protected_unmapped")):
             owed.add(_UNMAPPED_GATEWAY)
             continue
         profile = runtime.get("profile")
@@ -329,7 +331,7 @@ def _marker_owed_gateways(inventory: object) -> set[tuple[str, str]] | None:
     return owed
 
 
-def _discharge_gatewayless_marker(checkout_sha: str, expected_sha: str) -> bool:
+def _discharge_gatewayless_marker(checkout_sha: str, expected_sha: str, host_snapshot=None, legacy_snapshot=None) -> bool:
     """Settle an inventory-less marker on a host with no live gateway (#118742).
 
     Only when the host itself shows nothing the update could still owe a restart to, and HEAD
@@ -345,9 +347,104 @@ def _discharge_gatewayless_marker(checkout_sha: str, expected_sha: str) -> bool:
         return False
     if not gatewayless:
         return False
-    _clear_fleet_restart_pending_marker()
+    if not _clear_judged_fleet_marker(host_snapshot, legacy_snapshot):
+        return False
     logger.debug("Fleet-restart-pending marker discharged: host runs no gateway at %s", checkout_sha[:10])
     return True
+
+
+def _protected_gateways_recovered(inventory, fleet) -> bool:
+    """Prove each protected gateway's home has a current successor."""
+    from gateway.status import (_pid_exists, get_process_start_time, live_gateway_pid_for_home,
+                                start_time_fingerprints_match)
+    from hermes_cli.update_receipt import row_is_external
+    from pathlib import Path
+
+    protected = [row for row in (inventory or {}).get("runtimes", [])
+                 if isinstance(row, dict) and row.get("protected_unmapped")]
+    for entry in protected:
+        home, birth, old_pid = entry.get("home"), entry.get("birth"), entry.get("pid")
+        if not home or birth is None or not isinstance(old_pid, int):
+            return False
+        try:
+            current_pid = live_gateway_pid_for_home(Path(home))
+            if not isinstance(current_pid, int) or current_pid <= 0:
+                return False
+            if _pid_exists(old_pid):
+                observed_birth = get_process_start_time(old_pid)
+                if observed_birth is None:
+                    return False
+                if current_pid != old_pid and start_time_fingerprints_match(observed_birth, birth):
+                    return False
+        except (OSError, ValueError, TypeError):
+            return False
+        if not any(row.get("pid") == current_pid and not row_is_external(row) for row in fleet):
+            return False
+    return True
+
+
+def _clear_judged_fleet_marker(host_snapshot, legacy_snapshot=None) -> bool:
+    """Do not erase a host obligation armed after the one we judged."""
+    if host_snapshot is not None:
+        from hermes_cli.update_host_obligation import clear_host_obligation_if_unchanged
+        path, record = host_snapshot
+        return clear_host_obligation_if_unchanged(path, record)
+    # Hold the update claim as well as the marker mutex: historical fallback
+    # writers predate the marker mutex but still run under the update claim.
+    from hermes_cli.update_cmd import _m
+    from hermes_cli.update_host_obligation import host_obligation_present
+    from hermes_cli.update_lock import UpdateLock, marker_mutex
+    marker = _fleet_restart_pending_marker_path()
+    if legacy_snapshot is None:
+        return False
+    lock = UpdateLock(install_root=_m().PROJECT_ROOT)
+    try:
+        if not lock.acquire():
+            return False
+        with marker_mutex(marker):
+            if host_obligation_present():
+                return False
+            if marker.read_bytes() != legacy_snapshot:
+                return False
+            marker.unlink()
+    except OSError:
+        return False
+    finally:
+        lock.release()
+    return True
+
+
+def _marker_verdict_inputs():
+    """Read the terms and the exact marker incarnation they came from."""
+    from hermes_cli.update_host_obligation import _owed_path, _read_record
+
+    path = _owed_path()
+    record = _read_record(path)
+    host_snapshot = (path, record) if record is not None else None
+    legacy_snapshot = None
+    if host_snapshot is None:
+        with suppress(OSError):
+            legacy_snapshot = _fleet_restart_pending_marker_path().read_bytes()
+    fields = _obligation_fields()
+    if fields is None:
+        return None
+    if host_snapshot is not None:
+        host_fields = {"expected_sha": str(record.get("expected_sha") or "")}
+        if record.get("inventory") is not None:
+            host_fields["inventory"] = json.dumps(record["inventory"])
+        if fields != host_fields:
+            return None
+    else:
+        # The parsed terms must be from the same bytes we later compare.
+        legacy_fields = {}
+        for line in (legacy_snapshot or b"").decode("utf-8-sig").splitlines():
+            key, sep, value = line.partition("=")
+            if not sep or key in legacy_fields:
+                return None
+            legacy_fields[key] = value
+        if fields != legacy_fields:
+            return None
+    return fields, host_snapshot, legacy_snapshot
 
 
 def _marker_only_restart_obsolete() -> bool:
@@ -380,17 +477,20 @@ def _marker_only_restart_obsolete() -> bool:
     from hermes_cli.update_cmd_fleet_checkout import checkout_contains
 
     try:
-        fields = _obligation_fields()
-        if fields is None:
+        snapshot = _marker_verdict_inputs()
+        if snapshot is None:
             return False
+        fields, host_snapshot, legacy_snapshot = snapshot
         expected_sha = fields.get("expected_sha", "").strip()
-        owed = _marker_owed_gateways(json.loads(fields.get("inventory", "null")))
+        inventory = json.loads(fields.get("inventory", "null"))
+        owed = _marker_owed_gateways(inventory)
     except (OSError, UnicodeError, ValueError):
         return False
     if owed is not None and not owed:
         # A pull that recorded no gateway runtime owes no restart; clearing avoids the
         # stuck "Fleet restart incomplete" loop on Desktop-hosted (no-service) installs.
-        _clear_fleet_restart_pending_marker()
+        if not _clear_judged_fleet_marker(host_snapshot, legacy_snapshot):
+            return False
         logger.debug("Fleet-restart-pending marker discharged: no gateway obligation recorded")
         return True
     if owed is not None and not expected_sha:
@@ -415,7 +515,7 @@ def _marker_only_restart_obsolete() -> bool:
             # Absence cannot prove recovery of the recorded inventory / unnamed code; a fleet
             # whose every row serves ANOTHER checkout root is absence too, not evidence.
             return False
-        return _discharge_gatewayless_marker(checkout_sha, expected_sha)
+        return _discharge_gatewayless_marker(checkout_sha, expected_sha, host_snapshot, legacy_snapshot)
     covered = _fleet_covered_gateways(fleet)
     if covered is None:
         return False  # unidentified runtime: the matrix cannot vouch for it
@@ -426,12 +526,18 @@ def _marker_only_restart_obsolete() -> bool:
             return False  # stale / down / unknown-identity row still owes the restart
     if owed is not None and not owed - {_UNMAPPED_GATEWAY} <= covered:
         return False  # A gateway this marker owns is absent (down) or unidentifiable.
-    if owed and _UNMAPPED_GATEWAY in owed and not (_fleet_covered_gateways(
-            [row for row in fleet if not row_is_external(row)]) or set()) - owed:
+    if not _protected_gateways_recovered(inventory, fleet):
+        return False
+    stopped_unmapped = any(isinstance(row, dict) and row.get("stopped_unmapped")
+                           for row in (inventory or {}).get("runtimes", []))
+    required_unmapped = int(stopped_unmapped)
+    if required_unmapped and len((_fleet_covered_gateways(
+            [row for row in fleet if not row_is_external(row)]) or set()) - owed) < required_unmapped:
         # An unmapped stopped gateway has no identity to match, so only a local gateway that no
         # mapped owed one explains can be its successor; another checkout's gateway never is.
         return False
-    _clear_fleet_restart_pending_marker()
+    if not _clear_judged_fleet_marker(host_snapshot, legacy_snapshot):
+        return False
     logger.debug(
         "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",
         len(fleet), target_sha[:10],
@@ -461,8 +567,14 @@ def _pending_fleet_restart_needed(*, receipt: dict | None = None, pending_manual
     if pending_manual is None:
         pending_manual = retain_receipt_manual_serves(receipt)
     # The HOST obligation owns its inventory; latest.json can belong to an older update.
-    if _fleet_restart_obligation_armed():
-        return not _marker_only_restart_obsolete()
+    if _fleet_restart_obligation_armed() and not _marker_only_restart_obsolete():
+        return True
+    from hermes_cli.update_host_obligation import receipt_without_acknowledged_gateways
+    from hermes_cli.update_gateway_ack_legacy import _acknowledged_receipt_has_unresolved_debt
+    original_receipt = receipt
+    receipt = receipt_without_acknowledged_gateways(receipt)
+    if receipt.get("unrecorded_gateway_obligations") or _acknowledged_receipt_has_unresolved_debt(original_receipt, receipt):
+        return True
     owed = _receipt_owed_gateways(receipt, pending_manual)
     if not _receipt_reports_stale_runtime(receipt):
         return False
@@ -480,8 +592,14 @@ def _update_owes_fleet_restart(*, receipt: dict | None = None, pending_manual: l
     if pending_manual is None:
         pending_manual = retain_receipt_manual_serves(receipt)
     # A completed older receipt cannot discharge an independent host obligation's inventory.
-    if _fleet_restart_obligation_armed():
-        return not _marker_only_restart_obsolete()
+    if _fleet_restart_obligation_armed() and not _marker_only_restart_obsolete():
+        return True
+    from hermes_cli.update_host_obligation import receipt_without_acknowledged_gateways
+    from hermes_cli.update_gateway_ack_legacy import _acknowledged_receipt_has_unresolved_debt
+    original_receipt = receipt
+    receipt = receipt_without_acknowledged_gateways(receipt)
+    if receipt.get("unrecorded_gateway_obligations") or _acknowledged_receipt_has_unresolved_debt(original_receipt, receipt):
+        return True  # An acknowledged row cannot discharge an independent generic debt.
     owed = _receipt_owed_gateways(receipt, pending_manual)
     if not _receipt_reports_stale_runtime(receipt):
         return False
@@ -514,6 +632,20 @@ def _warn_pending_fleet_restart_on_startup() -> None:
     with suppress(Exception):
         if _update_owes_fleet_restart(receipt=receipt, pending_manual=pending_manual):
             _warn_pending_fleet_restart(startup=True)
+            from hermes_cli.update_host_obligation import protected_acknowledgment_details
+            for row, count, token in protected_acknowledgment_details():
+                print(f"  Verify all {count} identical protected gateway record(s) have recovered:")
+                print(f"    {json.dumps(row, sort_keys=True)}")
+                print("  Then acknowledge only these exact record(s) with:")
+                print(f"    hermes update --acknowledge-protected-gateway {token}")
+            from hermes_cli.update_host_obligation import receipt_gateway_acknowledgments
+            armed = _fleet_restart_obligation_armed()
+            for source, row, token in receipt_gateway_acknowledgments(receipt):
+                if armed and source != "unrecorded" and not (source == "duplicate_group" and row.get("source") == "unrecorded"):
+                    continue
+                print(f"  Verify every item in this {source} receipt entry has been recovered:")
+                print(f"    {json.dumps(row, sort_keys=True)}")
+                print(f"  Then explicitly acknowledge only this entry: hermes update --acknowledge-gateway-receipt {token}")
     with suppress(Exception):
         warn_pending_manual_serves(startup=True, pending_manual=pending_manual)
 
@@ -1456,6 +1588,9 @@ class _GatewayRestartOutcome:
     relaunched_profiles: list
     externally_supervised_profiles: list
     killed_pids: set
+    #: Running gateways whose service ownership prevents safe manual signalling.
+    protected_gateway_pids: set = field(default_factory=set)
+    protected_gateway_identities: dict = field(default_factory=dict)
     #: Gateways stopped with NO successor (no profile mapping / relaunch could not be armed);
     #: the summary tells the user to restart them by hand, so the fleet probe must not expect
     #: a row for them.
@@ -1507,11 +1642,28 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
     from hermes_cli.update_cmd_posix_pause import already_restarted
     # Plus the gateways this update paused and already restarted on the new code.
     service_pids = _get_service_pids(all_profiles=True) | already_restarted()["pids"]
-    manual_pids = find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
+    from hermes_cli.update_cmd import _select_update_manual_gateway_pids
+    from hermes_cli.gateway import supports_systemd_services
+    candidates = find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
+    manual_pids = _select_update_manual_gateway_pids(
+        candidates, known_service_pids=service_pids, systemd_supported=supports_systemd_services(),
+    )
+    # Scope before reporting skipped PIDs: all_profiles can include other installs.
+    processes = find_profile_gateway_processes(exclude_pids=service_pids)
+    skipped = _scoped_manual_gateway_pids(
+        [pid for pid in candidates if pid not in manual_pids],
+        keep={proc.pid for proc in processes}, quiet=True,
+    )
+    if skipped:
+        from hermes_cli.update_cmd_gateway_ownership import protected_gateway_identity
+        out.protected_gateway_pids.update(skipped)
+        out.protected_gateway_identities.update({pid: protected_gateway_identity(pid) for pid in skipped})
+        out.incomplete = True
+        print(f"  ⚠ Gateway PID(s) {', '.join(map(str, skipped))} were not restarted: "
+              "systemd service ownership was detected or could not be determined.")
+        print("    Restart and verify the relevant service manually, then retry the update.")
     profile_processes = {
-        proc.pid: proc
-        for proc in find_profile_gateway_processes(exclude_pids=service_pids)
-        if proc.pid in manual_pids
+        proc.pid: proc for proc in processes if proc.pid in manual_pids
     }
     # ``all_profiles`` is host-wide: a sibling install's gateway matches too. Only this update's
     # homes are stopped; the profile-mapped PIDs come from this install's own PID files (#93349).
@@ -1662,7 +1814,7 @@ def _recover_after_restart_phase_abort(
         # Fresh child is terminal; the fleet-version matrix stays the authoritative
         # read-back before success is declared. Desktop-owned survivors (the only rows
         # that can remain here) are named, not owed. See #111494.
-        out.incomplete = False
+        out.incomplete = bool(out.protected_gateway_pids)
         _warn_stale_serve_runtimes(_stale_runtime_rows)
     elif (
         _restart_phase_failure_is_incomplete(_surviving, out.pre_restart_gateway_pids)

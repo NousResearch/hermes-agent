@@ -175,7 +175,8 @@ def _settle_units_proven_current(restart, fleet_rows: list) -> bool:
     restart.restarted_services.extend(u for u in proven if u not in restart.restarted_services)
     for unit in proven:
         print(f"  ✓ {unit} finished restarting onto the new code after the restart phase stopped waiting")
-    restart.incomplete = bool(restart.failed_or_stale_units or restart.phase_errors)
+    restart.incomplete = bool(restart.failed_or_stale_units or restart.phase_errors
+                              or getattr(restart, "protected_gateway_pids", None))
     if not restart.incomplete:
         # The restart phase withheld this stamp; every other profile's CLI reads it.
         from hermes_cli import update_cmd_fleet as fleet
@@ -184,7 +185,17 @@ def _settle_units_proven_current(restart, fleet_rows: list) -> bool:
     return True
 
 
-def _record_owed_gateway_inventory(plan, stopped_unmapped_pids=()) -> None:
+def _record_unstored_gateway_obligations(rows):
+    from hermes_cli import update_receipt
+    active = update_receipt._current.get()
+    if active is not None:
+        active.data["unrecorded_gateway_obligations"] = rows
+    print("  ⚠ Could not record every gateway restart obligation. "
+          "Restart and verify the listed gateways through their owners; "
+          "inspect the update receipt before retrying.")
+
+
+def _record_owed_gateway_inventory(plan, stopped_unmapped_pids=(), protected_gateway_pids=(), protected_identities=None) -> None:
     """Name the pre-update gateways on the obligation once their restart is owed.
 
     The pull arms the obligation before the restart phase knows what it owes. An inventory-less
@@ -200,6 +211,7 @@ def _record_owed_gateway_inventory(plan, stopped_unmapped_pids=()) -> None:
     armed = fleet._fleet_restart_obligation_armed()
     fields = fleet._obligation_fields() if armed else {}
     if fields is None:
+        _record_unstored_gateway_obligations(list((protected_identities or {}).values()))
         return  # unreadable terms stay fail-closed
     recorded: list = []
     if fields.get("inventory") not in (None, "", "null"):
@@ -207,6 +219,7 @@ def _record_owed_gateway_inventory(plan, stopped_unmapped_pids=()) -> None:
             inventory = json.loads(fields["inventory"])
             fleet._marker_owed_gateways(inventory)  # validates; malformed/unsupported stays untouched
         except ValueError:
+            _record_unstored_gateway_obligations(list((protected_identities or {}).values()))
             return
         recorded = inventory["runtimes"]
     from dataclasses import asdict
@@ -217,12 +230,57 @@ def _record_owed_gateway_inventory(plan, stopped_unmapped_pids=()) -> None:
         and runtime.profile.strip() and runtime.profile != "unknown"
     ] + [{"kind": "gateway", "profile": None, "pid": pid, "stopped_unmapped": True}
          for pid in sorted(stopped_unmapped_pids)]
+    from hermes_cli.update_cmd_gateway_ownership import protected_gateway_identity
+    identities = protected_identities or {}
+    protected_rows = [dict(identities[pid] if pid in identities else protected_gateway_identity(pid))
+                      for pid in sorted(set(protected_gateway_pids))]
+    missing_homes = [row for row in protected_rows if not row.get("home")]
+    if missing_homes:
+        from hermes_cli.update_receipt import _profile_homes
+        homes = dict(_profile_homes())
+        for row in missing_homes:
+            profile = next((r.get("profile") for r in rows if r.get("pid") == row["pid"] and r.get("profile")), None)
+            if profile in homes:
+                row["home"] = str(homes[profile])
+    # A later catch-up may rediscover the same incarnation. Keep the existing
+    # incident token, while a debt acknowledged and then reintroduced gets a new one.
+    for row in protected_rows:
+        if not any(old.get("protected_unmapped") and old.get("pid") == row.get("pid")
+                   and old.get("birth") is not None and old.get("birth") == row.get("birth")
+                   and old.get("home") == row.get("home") for old in recorded if isinstance(old, dict)):
+            rows.append(row)
     rows = [row for row in rows if row not in recorded]
     if rows:
         # Not armed any more (a pre-restart probe settled an inventory-less record): re-arm, the
         # restart is owed. The SHA is the code the fleet must be proven current on.
         sha = fields.get("expected_sha", "") if armed else (fleet._current_checkout_sha() or "")
-        fleet._write_fleet_restart_pending_marker(expected_sha=sha, runtimes=recorded + rows)
+        from hermes_cli.update_host_obligation import merge_owed_gateway_inventory
+        if not merge_owed_gateway_inventory(sha, rows):
+            from hermes_cli.update_gateway_ack_legacy import merge_fallback_inventory
+            try:
+                fallback_recorded = merge_fallback_inventory(sha, rows)
+            except (OSError, ValueError, TypeError):
+                fallback_recorded = False
+            if not fallback_recorded:
+                _record_unstored_gateway_obligations(rows)
+
+
+def _tag_protected_fleet_rows(rows, identities) -> None:
+    """Bind receipt rows only to a protected PID whose birth is witnessed now."""
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
+    for row in rows:
+        if not isinstance(row, dict) or row.get("pid") not in identities:
+            continue
+        identity = identities[row["pid"]]
+        birth = identity.get("birth")
+        if birth is None or not identity.get("incident_id"):
+            continue
+        try:
+            observed = get_process_start_time(row["pid"])
+            if observed is not None and start_time_fingerprints_match(birth, observed):
+                row["protected_incident_id"] = identity["incident_id"]
+        except (OSError, TypeError, ValueError):
+            continue
 
 
 def _named_gateways_still_owed() -> bool:
@@ -251,6 +309,8 @@ def _restart_phase_owes_gateway(restart) -> bool:
     gateways unless every failure it recorded is a serve/dashboard unit (#141021)."""
     if not restart.incomplete:
         return False
+    if getattr(restart, "protected_gateway_pids", None):
+        return True
     failed = list(restart.failed_or_stale_units)
     return bool(restart.phase_errors) or not failed or not all(map(_is_serve_unit, failed))
 
@@ -280,10 +340,12 @@ def _owed_restart_reason(restart, stopped, *, gateway_owed: bool, stale_serves: 
     the user to run `hermes gateway restart`, which never touches that unit."""
     parts = []
     if gateway_owed:
+        protected = sorted(getattr(restart, "protected_gateway_pids", None) or ())
         parts.append(
             _GATEWAY_OWED_REASON
             + (f" (stopped PIDs {', '.join(map(str, stopped))})" if stopped else "")
-            + _GATEWAY_RECOVERY)
+            + (f"; restart protected gateway PID(s) {', '.join(map(str, protected))} through their supervisor or owner"
+               if protected else _GATEWAY_RECOVERY))
     units = sorted({str(u).removesuffix(".service") for u in restart.failed_or_stale_units if _is_serve_unit(u)})
     if units:
         parts.append(
@@ -371,6 +433,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             _pre_update_plan, _pre_restart, _windows_gateway_resume, restart.restarted_services, _killed,
         )
         _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
+        _tag_protected_fleet_rows(_fleet_snapshot, getattr(restart, "protected_gateway_identities", {}))
         _units_settled = _settle_units_proven_current(restart, _fleet_snapshot)
         if _units_settled:
             _gateway_owed = _restart_phase_owes_gateway(restart)
@@ -381,6 +444,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             # nothing else restarts it, #117275): hand it to the drain-first restart path.
             from hermes_cli.update_cmd_stale_survivors import signal_stale_fleet_survivors
             signal_stale_fleet_survivors(_fleet_snapshot, restart, fleet._gateway_drain_budget())
+            _tag_protected_fleet_rows(_fleet_snapshot, getattr(restart, "protected_gateway_identities", {}))
         elif not _fleet_snapshot and _fleet_rows_expected:
             # collect_fleet_versions() swallows every failure, so zero rows with
             # expected runtimes is indistinguishable from health — keep the restart owed.
@@ -459,7 +523,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 # live to restart this time): keep owing it rather than clearing the obligation.
                 print("  ⚠ A gateway owed a restart by a previous update is still not serving this checkout.")
                 restart.incomplete = _gateway_owed = True
-    if getattr(restart, "stopped_unmapped_pids", None):
+    if getattr(restart, "stopped_unmapped_pids", None) or getattr(restart, "protected_gateway_pids", None):
         # A gateway stopped with no successor is owed a restart, not "accounted for": keep the
         # fleet obligation armed so the startup warning names it until someone restarts it.
         restart.incomplete = _gateway_owed = True
@@ -473,8 +537,9 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             restart, stopped, gateway_owed=_gateway_owed, stale_serves=_stale_serves_owed,
             down_serves=set(_dashboards_down or ())))
         with _best_effort('Fleet restart inventory not recorded: %s'):
-            _record_owed_gateway_inventory(_pre_update_plan, stopped)
-    if _units_settled:
+            _record_owed_gateway_inventory(_pre_update_plan, stopped, getattr(restart, "protected_gateway_pids", ()),
+                                           getattr(restart, "protected_gateway_identities", None))
+    if _units_settled or getattr(restart, "protected_gateway_pids", None):
         # Credited units changed the restart result; save it with the final verdict so it agrees with
         # the follow-up above.
         restart.record_receipt()

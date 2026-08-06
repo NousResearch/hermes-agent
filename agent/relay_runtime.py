@@ -587,10 +587,9 @@ class RelayRuntime:
                     )
                 except Exception as exc:
                     failures.append(f"session scope close failed: {exc}")
-        try:
-            _flush_relay_subscribers(self.relay)
-        except Exception as exc:
-            failures.append(f"subscriber flush failed: {exc}")
+        # Subscriber flushing is process-wide and may wait for publications
+        # owned by other sessions. Final plugin teardown flushes once after all
+        # tracked operations drain; doing it here can deadlock an asyncio loop.
         with self._sessions_lock:
             if self._sessions.get(session_id) is session:
                 self._sessions.pop(session_id, None)

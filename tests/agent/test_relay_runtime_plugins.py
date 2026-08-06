@@ -107,16 +107,14 @@ class _AsyncCleanupRelay(_FakeRelay):
         self.events.append(("subscribers.flush_async",))
 
 
-class _BlockingFlushRelay(_FakeRelay):
+class _ConcurrentPublicationRelay(_AsyncCleanupRelay):
     def __init__(self) -> None:
         super().__init__()
-        self.flush_started = threading.Event()
-        self.finish_flush = threading.Event()
+        self.publication_finished = threading.Event()
 
-    def _flush(self) -> None:
-        self.events.append(("subscribers.flush",))
-        self.flush_started.set()
-        assert self.finish_flush.wait(5)
+    async def _flush_async(self) -> None:
+        self.events.append(("subscribers.flush_async",))
+        assert await asyncio.to_thread(self.publication_finished.wait, 5)
 
 
 @pytest.fixture(autouse=True)
@@ -455,42 +453,71 @@ environment_ref = "environment"
     )
 
 
-def test_shutdown_waits_for_concurrent_session_close_before_dynamic_unload(
-    tmp_path,
-    monkeypatch,
-):
-    config = tmp_path / "plugins.toml"
-    config.write_text(
-        """
-[[dynamic_plugins]]
-plugin_id = "native.policy"
-kind = "rust_dynamic"
-manifest_ref = "relay-plugin.toml"
-""".strip(),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
-    relay = _BlockingFlushRelay()
-    host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
-    assert host.ensure_session({"session_id": "session"}) is not None
+def test_session_close_does_not_flush_during_concurrent_managed_publication():
+    relay = _ConcurrentPublicationRelay()
+    completed = threading.Event()
+    errors: list[BaseException] = []
 
-    close_thread = threading.Thread(
-        target=host.close_session,
-        args=({"session_id": "session"},),
-    )
-    close_thread.start()
-    assert relay.flush_started.wait(5)
+    async def run_lifecycle() -> None:
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+        closing_session = host.ensure_session({"session_id": "closing"})
+        active_session = host.ensure_session({"session_id": "active"})
+        assert closing_session is not None
+        assert active_session is not None
+        publication_started = asyncio.Event()
+        finish_publication = asyncio.Event()
 
-    host.shutdown()
-    assert ("plugin.activation.close",) not in relay.events
+        async def managed_publication() -> None:
+            relay.events.append(("publication.start",))
+            publication_started.set()
+            await finish_publication.wait()
+            relay.events.append(("publication.end",))
+            relay.publication_finished.set()
 
-    relay.finish_flush.set()
-    close_thread.join(5)
-    assert not close_thread.is_alive()
-    assert host._shutdown_complete.wait(5)
-    assert relay.events.index(("subscribers.flush",)) < relay.events.index(
-        ("plugin.activation.close",)
+        publication = asyncio.create_task(
+            host.run_in_session_async(active_session, managed_publication)
+        )
+        await publication_started.wait()
+
+        host.close_session({"session_id": "closing"})
+        relay.events.append(("session.close.returned",))
+        finish_publication.set()
+        await publication
+        host.shutdown()
+        assert host._shutdown_complete.is_set()
+
+    def run_on_event_loop_thread() -> None:
+        try:
+            asyncio.run(run_lifecycle())
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            completed.set()
+
+    event_loop_thread = threading.Thread(
+        target=run_on_event_loop_thread,
+        name="hermes-relay-session-close-regression",
+        daemon=True,
     )
+    event_loop_thread.start()
+
+    if not completed.wait(3):
+        # Release a broken implementation so the test process can clean up
+        # after reporting the same deadlock guarded in production.
+        relay.publication_finished.set()
+        assert completed.wait(5)
+        pytest.fail("session close blocked the active asyncio event loop")
+
+    event_loop_thread.join()
+    assert errors == []
+    assert relay.events.count(("subscribers.flush_async",)) == 1
+    assert relay.events.index(("session.close.returned",)) < relay.events.index(
+        ("publication.end",)
+    )
+    assert relay.events.index(("publication.end",)) < relay.events.index(
+        ("subscribers.flush_async",)
+    )
+    assert relay.events[-1] == ("plugin.clear_async",)
 
 
 def test_failed_dynamic_teardown_retains_activation_and_blocks_replacement(

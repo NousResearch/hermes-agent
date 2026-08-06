@@ -525,38 +525,6 @@ class TestLaunchdServiceRecovery:
         assert waited and waited[0][0] == 4242
 
 
-    def test_registered_but_not_running_is_not_success(self, monkeypatch):
-        """A definition with no PID must not end the loop.
-
-        `launchctl list` exits 0 for a registered-but-not-running job (macOS
-        26+ `state = not running`), so exit-0 alone would report success for a
-        gateway launchd is not actually running. Verified against live launchd
-        on 2026-08-05.
-        """
-        list_calls = {"n": 0}
-
-        def fake_run(cmd, check=False, **kwargs):
-            if cmd[:2] == ["launchctl", "list"]:
-                list_calls["n"] += 1
-                # Registered (exit 0) but no PID line — never running.
-                return SimpleNamespace(
-                    returncode=0,
-                    stdout='{\n\t"Label" = "ai.hermes.gateway";\n};',
-                    stderr="",
-                )
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
-
-        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
-            self.DOMAIN, self.PLIST, self.LABEL,
-            deadline=gateway_cli.time.monotonic() - 1,  # already expired
-        )
-        assert ok is False
-        assert list_calls["n"] >= 1
-
-
     def test_launchd_domain_uses_user_domain(self, monkeypatch):
         # The user/<uid> domain (not gui/<uid>) is the one reachable from
         # non-Aqua/background sessions on macOS 26+ (issue #23387).
@@ -1937,14 +1905,24 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
     PLIST = "/tmp/ai.hermes.gateway.plist"
     LABEL = "ai.hermes.gateway"
 
+    # `launchctl list <label>` output for a job launchd is actively running.
+    # Success requires a PID here, not just exit 0 — exit 0 alone also covers a
+    # registered-but-not-running definition (macOS 26+ `state = not running`).
+    RUNNING_LIST_OUTPUT = '{\n\t"PID" = 4242;\n\t"Label" = "ai.hermes.gateway";\n};'
+
     def test_returns_true_once_label_is_registered(self, monkeypatch):
-        """Success requires launchctl list to confirm registration, not just
-        a zero bootstrap exit."""
+        """Success requires launchctl list to confirm a supervised process, not
+        just a zero bootstrap exit."""
         list_results = iter([1, 0])  # first check: not registered, second: registered
 
         def fake_run(cmd, check=False, **kwargs):
             if cmd[:2] == ["launchctl", "list"]:
-                return SimpleNamespace(returncode=next(list_results))
+                rc = next(list_results)
+                return SimpleNamespace(
+                    returncode=rc,
+                    stdout=self.RUNNING_LIST_OUTPUT if rc == 0 else "",
+                    stderr="",
+                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -1969,7 +1947,12 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             if cmd[:2] == ["launchctl", "list"]:
                 # registered only after the second (successful) bootstrap
-                return SimpleNamespace(returncode=0 if attempts["bootstrap"] >= 2 else 1)
+                ok = attempts["bootstrap"] >= 2
+                return SimpleNamespace(
+                    returncode=0 if ok else 1,
+                    stdout=self.RUNNING_LIST_OUTPUT if ok else "",
+                    stderr="",
+                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -1981,4 +1964,35 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
         )
         assert ok is True
         assert attempts["bootstrap"] >= 2  # the timeout was retried, not raised
+
+    def test_registered_but_not_running_is_not_success(self, monkeypatch):
+        """A definition with no PID must not end the loop.
+
+        `launchctl list` exits 0 for a registered-but-not-running job (macOS
+        26+ `state = not running`), so exit-0 alone would report success for a
+        gateway launchd is not actually running. Verified against live launchd
+        on 2026-08-05.
+        """
+        list_calls = {"n": 0}
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                list_calls["n"] += 1
+                # Registered (exit 0) but no PID line — never running.
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout='{\n\t"Label" = "ai.hermes.gateway";\n};',
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() - 1,  # already expired
+        )
+        assert ok is False
+        assert list_calls["n"] >= 1
 

@@ -11835,11 +11835,7 @@ app.whenReady().then(() => {
     rememberLog(`[tls] could not load Windows system CA certificates: ${systemCa.error}`)
   }
 
-  if (IS_MAC) {
-    Menu.setApplicationMenu(buildApplicationMenu())
-  } else {
-    Menu.setApplicationMenu(null)
-  }
+  Menu.setApplicationMenu(buildApplicationMenu())
 
   installMediaPermissions()
   registerMediaProtocol()

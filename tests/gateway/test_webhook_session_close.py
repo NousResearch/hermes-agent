@@ -23,6 +23,7 @@ masks exactly that bug (the first version of this fix shipped that way).
 """
 
 import asyncio
+import json
 
 import pytest
 
@@ -67,7 +68,13 @@ def _make_store(tmp_path) -> SessionStore:
     return store
 
 
-def _make_event(adapter: WebhookAdapter, delivery_id: str, text: str) -> MessageEvent:
+def _make_event(
+    adapter: WebhookAdapter,
+    delivery_id: str,
+    text: str,
+    *,
+    completion_script: str | None = None,
+) -> MessageEvent:
     session_chat_id = f"webhook:alerts:{delivery_id}"
     source = adapter.build_source(
         chat_id=session_chat_id,
@@ -82,6 +89,10 @@ def _make_event(adapter: WebhookAdapter, delivery_id: str, text: str) -> Message
         source=source,
         raw_message={"message": text},
         message_id=delivery_id,
+        metadata={
+            "webhook_route": "alerts",
+            "webhook_completion_script": completion_script,
+        },
     )
 
 
@@ -92,6 +103,29 @@ async def _drain_background_tasks(adapter: WebhookAdapter, timeout: float = 5.0)
         await asyncio.sleep(0.02)
     # One extra tick for done-callbacks to run.
     await asyncio.sleep(0.05)
+
+
+def _write_completion_script(tmp_path, monkeypatch, body: str) -> str:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir(exist_ok=True)
+    script = scripts_dir / "complete.py"
+    script.write_text(body, encoding="utf-8")
+    return script.name
+
+
+def _get_db(store: SessionStore):
+    assert store._db is not None
+    return store._db
+
+
+def _get_session_row(store: SessionStore, event: MessageEvent):
+    session_key = store._generate_session_key(event.source)
+    session_id = store.peek_session_id(session_key)
+    assert session_id is not None
+    row = _get_db(store).get_session(session_id)
+    assert row is not None
+    return row
 
 
 @pytest.mark.asyncio
@@ -135,7 +169,7 @@ async def test_completed_webhook_delivery_closes_its_session(tmp_path):
     await _drain_background_tasks(adapter)
 
     session_id = created["session_id"]
-    row = store._db.get_session(session_id)
+    row = _get_db(store).get_session(session_id)
     assert row is not None
 
     # INVARIANT: a completed webhook session must be closed so prune can reap it.
@@ -146,8 +180,140 @@ async def test_completed_webhook_delivery_closes_its_session(tmp_path):
     assert row["end_reason"] == "webhook_complete"
 
     # And the closed row is actually prunable, unlike the pre-fix leak.
-    pruned = store._db.prune_sessions(older_than_days=0, source="webhook")
+    pruned = _get_db(store).prune_sessions(older_than_days=0, source="webhook")
     assert pruned >= 1
-    store._db.close()
+    _get_db(store).close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler_error", "expected_outcome"),
+    [(False, "success"), (True, "failure")],
+)
+async def test_completion_script_receives_terminal_outcome(
+    tmp_path, monkeypatch, handler_error, expected_outcome
+):
+    output_path = tmp_path / "completion.json"
+    script_name = _write_completion_script(
+        tmp_path,
+        monkeypatch,
+        "import json, os, pathlib, sys\n"
+        "payload = json.load(sys.stdin)\n"
+        "pathlib.Path(os.environ['COMPLETION_OUTPUT']).write_text(json.dumps(payload))\n",
+    )
+    monkeypatch.setenv("COMPLETION_OUTPUT", str(output_path))
+    store = _make_store(tmp_path)
+    adapter = _make_adapter({})
+    adapter.gateway_runner = _FakeRunner(store)
+
+    async def _message_handler(event: MessageEvent):
+        store.get_or_create_session(event.source)
+        if handler_error:
+            raise RuntimeError("agent failed")
+        return ""
+
+    adapter._message_handler = _message_handler
+    event = _make_event(
+        adapter,
+        f"terminal-{expected_outcome}",
+        "payload; touch should-not-run",
+        completion_script=script_name,
+    )
+
+    await adapter.handle_message(event)
+    await _drain_background_tasks(adapter)
+
+    envelope = json.loads(output_path.read_text(encoding="utf-8"))
+    assert envelope == {
+        "version": 1,
+        "route": "alerts",
+        "outcome": expected_outcome,
+        "delivery_id": f"terminal-{expected_outcome}",
+        "payload": {"message": "payload; touch should-not-run"},
+    }
+    assert not (tmp_path / "should-not-run").exists()
+    row = _get_session_row(store, event)
+    assert row["end_reason"] == "webhook_complete"
+    _get_db(store).close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_webhook_does_not_run_completion_script(
+    tmp_path, monkeypatch
+):
+    output_path = tmp_path / "completion.json"
+    script_name = _write_completion_script(
+        tmp_path,
+        monkeypatch,
+        "import os, pathlib, sys\n"
+        "sys.stdin.read()\n"
+        "pathlib.Path(os.environ['COMPLETION_OUTPUT']).write_text('called')\n",
+    )
+    monkeypatch.setenv("COMPLETION_OUTPUT", str(output_path))
+    store = _make_store(tmp_path)
+    adapter = _make_adapter({})
+    adapter.gateway_runner = _FakeRunner(store)
+    started = asyncio.Event()
+
+    async def _message_handler(event: MessageEvent):
+        store.get_or_create_session(event.source)
+        started.set()
+        await asyncio.Event().wait()
+
+    adapter._message_handler = _message_handler
+    event = _make_event(
+        adapter,
+        "cancelled-001",
+        "interrupted",
+        completion_script=script_name,
+    )
+
+    await adapter.handle_message(event)
+    await started.wait()
+    task = adapter._session_tasks[store._generate_session_key(event.source)]
+    adapter._expected_cancelled_tasks.add(task)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert not output_path.exists()
+    row = _get_session_row(store, event)
+    assert row["end_reason"] == "webhook_complete"
+    _get_db(store).close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "script_body",
+    [
+        "raise SystemExit(3)\n",
+        "import time; time.sleep(2)\n",
+    ],
+)
+async def test_completion_script_failure_does_not_block_session_close(
+    tmp_path, monkeypatch, script_body
+):
+    script_name = _write_completion_script(tmp_path, monkeypatch, script_body)
+    store = _make_store(tmp_path)
+    adapter = _make_adapter({}, script_timeout_seconds=1)
+    adapter.gateway_runner = _FakeRunner(store)
+
+    async def _message_handler(event: MessageEvent):
+        store.get_or_create_session(event.source)
+        return ""
+
+    adapter._message_handler = _message_handler
+    event = _make_event(
+        adapter,
+        "script-failure-001",
+        "complete",
+        completion_script=script_name,
+    )
+
+    await adapter.handle_message(event)
+    await _drain_background_tasks(adapter)
+
+    row = _get_session_row(store, event)
+    assert row["end_reason"] == "webhook_complete"
+    _get_db(store).close()
 
 

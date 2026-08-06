@@ -1310,6 +1310,27 @@ def recover_rotated_compression_session(
                 return recovered
             holder = holder_getter(session_id) if callable(holder_getter) else None
             if not holder or attempt == 20:
+                if not holder:
+                    orphan_reopener = getattr(
+                        type(session_db),
+                        "reopen_orphaned_compression_session",
+                        None,
+                    )
+                    if callable(orphan_reopener):
+                        try:
+                            if orphan_reopener(session_db, session_id):
+                                logger.warning(
+                                    "compression recovery: reopened orphaned "
+                                    "session=%s with no continuation",
+                                    session_id,
+                                )
+                        except Exception as exc:
+                            logger.debug(
+                                "orphaned compression session reopen failed "
+                                "for %s: %s",
+                                session_id,
+                                exc,
+                            )
                 return None
             time.sleep(0.05)
         return None

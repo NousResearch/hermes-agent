@@ -3691,6 +3691,70 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchall()
         return self._session_row_dict(rows[0]) if len(rows) == 1 else None
 
+    def reopen_orphaned_compression_session(self, session_id: str) -> bool:
+        """Reopen a compression parent only when no continuation was published.
+
+        Compression publication is atomic in current builds, but older builds
+        could leave a closed parent behind after an interrupted handoff.  This
+        recovery is deliberately conservative: an active compression lease or
+        any canonical child means the lineage is still owned by another path,
+        so the caller must fail closed instead of reopening the parent.
+        """
+        if not session_id:
+            return False
+
+        def _do(conn):
+            parent = conn.execute(
+                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if (
+                parent is None
+                or parent["ended_at"] is None
+                or parent["end_reason"] != "compression"
+            ):
+                return False
+
+            # An expired row is harmless: a publisher must revalidate its lease
+            # before committing, while an active row indicates a handoff may
+            # still be in flight.
+            active_lock = conn.execute(
+                "SELECT 1 FROM compression_locks "
+                "WHERE session_id = ? "
+                "AND (expires_at IS NULL OR expires_at >= ?) LIMIT 1",
+                (session_id, time.time()),
+            ).fetchone()
+            if active_lock is not None:
+                return False
+
+            # Treat any direct non-branch/non-delegate/non-tool child as a
+            # continuation, regardless of its current ended state. Reopening
+            # in that case could create a second live head for one lineage.
+            child = conn.execute(
+                """
+                SELECT 1
+                FROM sessions
+                WHERE parent_session_id = ?
+                  AND json_extract(COALESCE(model_config, '{}'), '$._branched_from') IS NULL
+                  AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL
+                  AND COALESCE(source, '') != 'tool'
+                LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+            if child is not None:
+                return False
+
+            updated = conn.execute(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
+                "WHERE id = ? AND ended_at IS NOT NULL "
+                "AND end_reason = 'compression'",
+                (session_id,),
+            )
+            return updated.rowcount == 1
+
+        return bool(self._execute_write(_do))
+
     def publish_compression_child(
         self,
         *,

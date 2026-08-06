@@ -42,6 +42,66 @@ def test_find_live_compression_child_fails_closed_when_ambiguous(db: SessionDB) 
     assert db.find_live_compression_child("parent") is None
 
 
+def test_reopen_orphaned_compression_session_reopens_parent_without_child(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "orphan")
+
+    assert db.reopen_orphaned_compression_session("orphan") is True
+    assert db.get_session("orphan")["ended_at"] is None
+    assert db.get_session("orphan")["end_reason"] is None
+
+    db.append_message("orphan", "user", "recovered turn")
+    assert [m["content"] for m in db.get_messages("orphan")] == [
+        "before split",
+        "recovered turn",
+    ]
+
+
+def test_reopen_orphaned_compression_session_fails_closed_with_child(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "parent-with-child")
+    db.create_session("child", source="webui", parent_session_id="parent-with-child")
+
+    assert db.reopen_orphaned_compression_session("parent-with-child") is False
+    parent = db.get_session("parent-with-child")
+    assert parent["end_reason"] == "compression"
+    assert parent["ended_at"] is not None
+
+
+def test_reopen_orphaned_compression_session_ignores_non_continuation_children(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "parent-with-non-continuation-children")
+    db.create_session(
+        "branch",
+        source="webui",
+        parent_session_id="parent-with-non-continuation-children",
+        model_config={"_branched_from": "parent-with-non-continuation-children"},
+    )
+    db.create_session(
+        "delegate",
+        source="tool",
+        parent_session_id="parent-with-non-continuation-children",
+        model_config={"_delegate_from": "parent-with-non-continuation-children"},
+    )
+
+    assert db.reopen_orphaned_compression_session(
+        "parent-with-non-continuation-children"
+    ) is True
+
+
+def test_reopen_orphaned_compression_session_fails_closed_with_active_lease(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "leased-parent")
+    assert db.try_acquire_compression_lock("leased-parent", "compressor")
+
+    assert db.reopen_orphaned_compression_session("leased-parent") is False
+    assert db.get_session("leased-parent")["end_reason"] == "compression"
+
+
 
 
 def test_find_live_compression_child_ignores_non_continuation_children(

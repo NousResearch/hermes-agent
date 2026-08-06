@@ -13,7 +13,6 @@ import logging
 import os
 import shutil
 import sqlite3
-import stat
 import sys
 import tempfile
 import threading
@@ -25,7 +24,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
-from utils import atomic_replace
+from utils import (
+    _preserve_file_mode,
+    _preserve_file_owner,
+    _restore_file_mode,
+    _restore_file_owner,
+    atomic_replace,
+)
 
 # Shared formatter; the private alias is kept because claw.py and the backup
 # tests import ``_format_size`` from this module.
@@ -895,16 +900,23 @@ def _extract_member_atomically(
     regular file (GitHub #16743), and it falls back to copy/fsync/unlink on
     ``EXDEV``/``EBUSY`` for cross-device and bind-mount installs.
 
-    Permission bits are carried across the replace so routing through mkstemp
-    does not change the mode the caller would otherwise have produced.  The
-    temp file is removed on any failure so a partial import leaves no residue.
+    Permission bits *and* ownership are carried across the replace so routing
+    through mkstemp does not change the file the caller would otherwise have
+    produced.  ``os.replace`` swaps in a temp file owned by the *writing* user,
+    so without the chown a ``sudo hermes import`` would silently re-own every
+    restored file to root — on the disaster-recovery path, and on exactly the
+    Docker/NAS installs ``utils._restore_file_owner`` documents.  Both concerns
+    delegate to the shared ``utils`` helpers rather than being re-derived here.
+    The temp file is removed on any failure so a partial import leaves no
+    residue.
     """
-    mode = new_file_mode
-    try:
-        mode = stat.S_IMODE(target.stat().st_mode)
-    except OSError:
-        # Target does not exist (or cannot be stat'd) — keep the create-mode.
-        pass
+    # ``_preserve_file_mode`` returns None when the target does not exist (or
+    # cannot be stat'd), in which case the umask-derived create-mode applies —
+    # the same shape as ``atomic_yaml_write``'s ``create_mode`` fallback.
+    mode = _preserve_file_mode(target)
+    owner = _preserve_file_owner(target)
+    if mode is None:
+        mode = new_file_mode
 
     # Truncate the stem: mkstemp adds ~16 characters, and a member already near
     # NAME_MAX would otherwise fail here on a write that used to succeed.
@@ -913,23 +925,27 @@ def _extract_member_atomically(
     )
     try:
         with os.fdopen(fd, "wb") as dst:
-            if mode is not None and hasattr(os, "fchmod"):
-                # Apply before the replace so the target never transits through
-                # mkstemp's 0600.  fchmod is Unix-only; Windows uses the
-                # post-replace chmod below.
-                os.fchmod(dst.fileno(), mode)
+            if mode is not None:
+                # Apply the mode to the temp file BEFORE the replace so the
+                # target never transits through mkstemp's 0600, and so
+                # ``atomic_replace``'s EXDEV/EBUSY ``shutil.copystat`` fallback
+                # copies the intended bits rather than 0600.  fchmod is
+                # Unix-only; Windows takes the path-based chmod.
+                if hasattr(os, "fchmod"):
+                    os.fchmod(dst.fileno(), mode)
+                else:
+                    os.chmod(tmp_name, mode)
             # Stream instead of ``src.read()``: a multi-gigabyte state.db member
             # must not be held in memory in one piece.
             with zf.open(member) as src:
                 shutil.copyfileobj(src, dst)
             dst.flush()
             os.fsync(dst.fileno())
-        real_path = atomic_replace(tmp_name, target)
-        if mode is not None and not hasattr(os, "fchmod"):
-            try:
-                os.chmod(real_path, mode)
-            except OSError:
-                pass
+        real_path = Path(atomic_replace(tmp_name, target))
+        # Owner first: chown clears setuid/setgid, so the mode restore below is
+        # what puts those bits back.  Ordering mirrors ``atomic_yaml_write``.
+        _restore_file_owner(real_path, owner)
+        _restore_file_mode(real_path, mode)
     except BaseException:
         try:
             os.unlink(tmp_name)

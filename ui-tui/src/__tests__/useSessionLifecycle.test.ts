@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@hermes/ink', () => ({ evictInkCaches: vi.fn() }))
 
+import { pendingPromptOverlay } from '../app/pendingPromptOverlay.js'
 import { turnController } from '../app/turnController.js'
-import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import {
@@ -18,6 +19,7 @@ import {
   signalFreshSessionBoundary,
   writeActiveSessionFile
 } from '../app/useSessionLifecycle.js'
+import type { SessionPendingPrompt } from '../gatewayTypes.js'
 
 describe('fresh session boundary', () => {
   it('signals only when a live session is replaced by a different session', () => {
@@ -211,5 +213,70 @@ describe('resume scroll settle', () => {
 
     sticky = true
     cancel()
+  })
+})
+
+describe('pending prompt overlay mapping', () => {
+  // The live event path and the rehydration path used to carry their own copy
+  // of this mapping. A field added to one payload would then be dropped on the
+  // rehydration side only — an overlay that renders with a missing question or
+  // env var, but exclusively after a session switch. Both now funnel through
+  // pendingPromptOverlay; these lock the shape so the split cannot come back
+  // unnoticed.
+  const PROMPTS: SessionPendingPrompt[] = [
+    {
+      event: 'clarify.request',
+      payload: { choices: ['a', 'b'], question: 'Which option?', request_id: 'clarify-9' }
+    },
+    { event: 'sudo.request', payload: { request_id: 'sudo-9' } },
+    {
+      event: 'secret.request',
+      payload: { env_var: 'OPENAI_API_KEY', prompt: 'Paste the key', request_id: 'secret-9' }
+    }
+  ]
+
+  it('maps every rehydratable prompt to an overlay and a status', () => {
+    for (const prompt of PROMPTS) {
+      const mapped = pendingPromptOverlay(prompt)
+
+      expect(mapped, prompt.event).not.toBeNull()
+      expect(Object.keys(mapped!.overlay), prompt.event).toHaveLength(1)
+      expect(mapped!.status, prompt.event).toBeTruthy()
+    }
+  })
+
+  it('carries every payload field into the overlay', () => {
+    expect(pendingPromptOverlay(PROMPTS[0])!.overlay).toEqual({
+      clarify: { choices: ['a', 'b'], question: 'Which option?', requestId: 'clarify-9' }
+    })
+    expect(pendingPromptOverlay(PROMPTS[1])!.overlay).toEqual({ sudo: { requestId: 'sudo-9' } })
+    expect(pendingPromptOverlay(PROMPTS[2])!.overlay).toEqual({
+      secret: { envVar: 'OPENAI_API_KEY', prompt: 'Paste the key', requestId: 'secret-9' }
+    })
+  })
+
+  it('produces the same overlay whether the prompt arrives live or on resume', () => {
+    // The invariant the extraction exists to hold: a prompt replayed by the
+    // gateway must leave the UI in the state the original event would have.
+    for (const prompt of PROMPTS) {
+      resetOverlayState()
+      resetUiState()
+      expect(restorePendingPrompt(prompt)).toBe(true)
+      const afterResume = { overlay: getOverlayState(), status: getUiState().status }
+
+      resetOverlayState()
+      resetUiState()
+      const mapped = pendingPromptOverlay(prompt)!
+
+      patchOverlayState(mapped.overlay)
+      patchUiState({ status: mapped.status })
+
+      expect({ overlay: getOverlayState(), status: getUiState().status }, prompt.event).toEqual(afterResume)
+    }
+  })
+
+  it('ignores a prompt with no overlay to render', () => {
+    expect(pendingPromptOverlay(undefined)).toBeNull()
+    expect(pendingPromptOverlay(null)).toBeNull()
   })
 })

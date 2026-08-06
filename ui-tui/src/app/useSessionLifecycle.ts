@@ -23,6 +23,7 @@ import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
+import { pendingPromptOverlay } from './pendingPromptOverlay.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -70,38 +71,16 @@ export const hydrateLiveSessionInflight = (inflight?: null | SessionInflightTurn
 }
 
 export const restorePendingPrompt = (prompt?: SessionPendingPrompt) => {
-  if (!prompt) {
+  const restored = pendingPromptOverlay(prompt)
+
+  if (!restored) {
     return false
   }
 
-  switch (prompt.event) {
-    case 'clarify.request':
-      patchOverlayState({
-        clarify: {
-          choices: prompt.payload.choices,
-          question: prompt.payload.question,
-          requestId: prompt.payload.request_id
-        }
-      })
-      patchUiState({ status: 'waiting for input…' })
-      return true
-    case 'sudo.request':
-      patchOverlayState({ sudo: { requestId: prompt.payload.request_id } })
-      patchUiState({ status: 'sudo password needed' })
-      return true
-    case 'secret.request':
-      patchOverlayState({
-        secret: {
-          envVar: prompt.payload.env_var,
-          prompt: prompt.payload.prompt,
-          requestId: prompt.payload.request_id
-        }
-      })
-      patchUiState({ status: 'secret input needed' })
-      return true
-  }
+  patchOverlayState(restored.overlay)
+  patchUiState({ status: restored.status })
 
-  return false
+  return true
 }
 
 export const signalFreshSessionBoundary = (

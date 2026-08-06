@@ -7763,6 +7763,17 @@ def _session_rehydration_prompt(pending: tuple[str, dict] | None) -> dict | None
     ``terminal.read.request`` is intentionally omitted: it is a desktop-only
     callback and the Ink TUI has no corresponding input surface. Returning a
     prompt only when the client can answer it avoids rendering a dead overlay.
+
+    ``approval.request`` is missing for a different reason, and not because the
+    TUI cannot answer it — it has an approval overlay and an
+    ``approval.respond`` handler. Approvals never pass through ``_block``:
+    they are pushed by ``_emit_approval_request`` via ``register_gateway_notify``
+    and resolved through ``tools.approval.resolve_gateway_approval`` keyed by
+    ``session_key``, so nothing about them is recorded in ``_pending`` /
+    ``_pending_prompt_payloads`` for this function to find. Rehydrating them
+    means teaching ``tools.approval`` to report its outstanding requests per
+    session and reading that here — a change to a different subsystem, left as
+    follow-up rather than half-wired.
     """
     if pending is None:
         return None

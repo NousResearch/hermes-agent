@@ -721,10 +721,19 @@ def build_turn_context(
                 if _idle_status:
                     agent._emit_status(_idle_status)
                 _idle_input = messages
-                messages, active_system_prompt = agent._compress_context(
-                    messages, system_message, approx_tokens=_idle_tokens,
-                    task_id=effective_task_id,
-                )
+                try:
+                    messages, active_system_prompt = agent._compress_context(
+                        messages, system_message, approx_tokens=_idle_tokens,
+                        task_id=effective_task_id,
+                    )
+                except Exception as _compress_exc:
+                    logger.warning(
+                        "Idle compaction failed or was interrupted: %s. "
+                        "Proceeding without idle compaction.",
+                        _compress_exc,
+                        exc_info=True,
+                    )
+                    messages = _idle_input
                 # ``_compress_context`` returns the INPUT list object when it
                 # skips (per-session lock held by another path, failure
                 # cooldown, anti-thrash breaker, codex-native routing). Only
@@ -895,10 +904,21 @@ def build_turn_context(
                 _orig_len = len(messages)
                 _orig_tokens = _preflight_tokens
                 _preflight_input = messages
-                messages, active_system_prompt = agent._compress_context(
-                    messages, system_message, approx_tokens=_preflight_tokens,
-                    task_id=effective_task_id,
-                )
+                try:
+                    messages, active_system_prompt = agent._compress_context(
+                        messages, system_message, approx_tokens=_preflight_tokens,
+                        task_id=effective_task_id,
+                    )
+                except Exception as _compress_exc:
+                    logger.warning(
+                        "Context compression failed or was interrupted: %s. "
+                        "Proceeding without compression for this turn and blocking preflight passes.",
+                        _compress_exc,
+                        exc_info=True,
+                    )
+                    _preflight_compression_blocked = True
+                    messages = _preflight_input
+                    break
                 if (
                     messages is _preflight_input
                     and compression_skipped_due_to_lock(agent)
@@ -1028,10 +1048,19 @@ def build_turn_context(
                     f"{getattr(_compressor, 'threshold_tokens', 0):,}",
                 )
                 _engine_input = messages
-                messages, active_system_prompt = agent._compress_context(
-                    messages, system_message, approx_tokens=_preflight_tokens,
-                    task_id=effective_task_id,
-                )
+                try:
+                    messages, active_system_prompt = agent._compress_context(
+                        messages, system_message, approx_tokens=_preflight_tokens,
+                        task_id=effective_task_id,
+                    )
+                except Exception as _compress_exc:
+                    logger.warning(
+                        "Engine-driven preflight compression failed or was interrupted: %s. "
+                        "Proceeding without compression.",
+                        _compress_exc,
+                        exc_info=True,
+                    )
+                    messages = _engine_input
                 # ``_compress_context`` returns the INPUT list object on every
                 # skip path (per-session lock held elsewhere, cooldown,
                 # anti-thrash breaker, codex-native routing) and an engine may

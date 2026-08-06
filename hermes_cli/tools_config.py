@@ -1725,6 +1725,7 @@ def _run_cua_driver_installer(
         else:
             proc = subprocess.Popen(
                 install_cmd, shell=use_shell, env=installer_env,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=_post_setup_no_window_flags(),

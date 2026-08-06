@@ -865,29 +865,35 @@ class GatewayShutdownMixin:
             cooldown_key = shutdown_notice.destination_key(
                 platform.value, home.chat_id, home.thread_id
             )
-            if not shutdown_notice.should_send_home_notice(
+            # The admission holds the cross-process lock through the await, so two gateways
+            # shutting down together cannot both pass the check for one destination.
+            with shutdown_notice.home_notice_admission(
                 cooldown_key, cooldown_seconds=cooldown_seconds
-            ):
-                logger.info(
-                    "Home-channel shutdown notification suppressed for %s:%s "
-                    "(sent within the last %ss)",
-                    platform.value, home.chat_id, cooldown_seconds,
-                )
-                continue
-            try:
-                metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)
-            except Exception as e:
-                logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s", platform.value, home.chat_id, e,
-                )
-                continue
-            # Home channels omit ``metadata=`` when empty (adapter doubles may not accept the kwarg).
-            if await self._send_shutdown_notice(
-                adapter, str(home.chat_id), msg, "home channel", platform.value,
-                **({"metadata": metadata} if metadata else {}),
-            ):
-                notified.add(dedup_key)
-                shutdown_notice.record_home_notice(cooldown_key)
+            ) as admission:
+                if not admission.allowed:
+                    logger.info(
+                        "Home-channel shutdown notification suppressed for %s:%s "
+                        "(sent within the last %ss)",
+                        platform.value, home.chat_id, cooldown_seconds,
+                    )
+                    continue
+                try:
+                    metadata = self._thread_metadata_for_target(
+                        platform, home.chat_id, home.thread_id, adapter=adapter
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "Failed to send shutdown notification to home channel %s:%s: %s",
+                        platform.value, home.chat_id, e,
+                    )
+                    continue
+                # Home channels omit ``metadata=`` when empty (adapter doubles may not accept the kwarg).
+                if await self._send_shutdown_notice(
+                    adapter, str(home.chat_id), msg, "home channel", platform.value,
+                    **({"metadata": metadata} if metadata else {}),
+                ):
+                    notified.add(dedup_key)
+                    admission.record_success()
 
     # Agent finalization / resource cleanup
     @staticmethod

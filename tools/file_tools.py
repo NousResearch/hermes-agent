@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """File Tools Module - LLM agent file manipulation tools."""
 
+import base64
 import errno
 import json
 import logging
@@ -1533,15 +1534,30 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
         # Malformed documents fall through to the normal path/binary guard.
-        from tools.read_extract import ExtractionError, extract_document_text, is_extractable_document
+        from tools.read_extract import (
+            MAX_DOCUMENT_BYTES,
+            ExtractionError,
+            extract_document_bytes,
+            is_extractable_document,
+        )
 
         if is_extractable_document(str(_resolved)):
+            file_ops = _get_file_ops(task_id)
             try:
-                extracted_text = extract_document_text(str(_resolved))
-            except ExtractionError:
+                binary = file_ops.read_file_bytes(
+                    str(_resolved), max_bytes=MAX_DOCUMENT_BYTES
+                )
+                if binary.error or binary.base64_content is None:
+                    raise ExtractionError(binary.error or "Document bytes unavailable")
+                document_bytes = base64.b64decode(
+                    binary.base64_content, validate=True
+                )
+                extracted_text = extract_document_bytes(
+                    document_bytes, str(_resolved)
+                )
+            except (ExtractionError, ValueError, base64.binascii.Error):
                 logger.debug("document extraction failed for %s", path, exc_info=True)
             else:
-                file_ops = _get_file_ops(task_id)
                 lines = extracted_text.splitlines()
                 total_lines = len(lines)
                 end_line = offset + limit - 1
@@ -1549,7 +1565,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 result_dict = {
                     "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
                     "total_lines": total_lines,
-                    "file_size": os.path.getsize(_resolved),
+                    "file_size": binary.file_size,
                     "truncated": total_lines > end_line,
                     "extracted_document": True,
                 }

@@ -25,6 +25,7 @@ Usage:
     result = file_ops.search("TODO", path=".", file_glob="*.py")
 """
 
+import base64
 import os
 import re
 import difflib
@@ -463,6 +464,10 @@ class FileOperations(ABC):
         failure. Always reads to EOF regardless of file size.
         """
         ...
+
+    def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
+        """Read complete binary content as base64 across the backend boundary."""
+        return ReadResult(error="Binary reads are not implemented for this backend")
 
     @abstractmethod
     def write_file(self, path: str, content: str,
@@ -1326,6 +1331,38 @@ class ShellFileOperations(FileOperations):
         return ReadResult(
             content=raw_content,
             file_size=file_size,
+        )
+
+    def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
+        """Read binary-safe bytes from any shell-backed environment."""
+        path = self._expand_path(path)
+        stat_result = self._exec(
+            f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
+        )
+        if stat_result.exit_code != 0:
+            return ReadResult(error=f"File not found: {path}")
+        try:
+            file_size = int(_strip_terminal_fence_leaks(stat_result.stdout).strip())
+        except ValueError:
+            return ReadResult(error=f"Could not determine file size: {path}")
+        if max_bytes is not None and file_size > max_bytes:
+            return ReadResult(
+                file_size=file_size,
+                error=f"File is too large ({file_size:,} bytes, limit is {max_bytes:,})",
+            )
+
+        encoded = self._exec(f"base64 < {self._escape_shell_arg(path)}")
+        if encoded.exit_code != 0:
+            return ReadResult(error=f"Failed to read binary file: {encoded.stdout}")
+        compact = "".join(_strip_terminal_fence_leaks(encoded.stdout).split())
+        try:
+            base64.b64decode(compact, validate=True)
+        except (ValueError, base64.binascii.Error):
+            return ReadResult(error=f"Backend returned invalid binary data for: {path}")
+        return ReadResult(
+            base64_content=compact,
+            file_size=file_size,
+            is_binary=True,
         )
 
     def delete_file(self, path: str) -> WriteResult:

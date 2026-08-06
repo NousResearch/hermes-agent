@@ -18,6 +18,7 @@ import os
 import posixpath
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import zipfile
@@ -25,7 +26,13 @@ from pathlib import Path
 from typing import Any, Optional
 from xml.etree import ElementTree as ET
 
-__all__ = ["EXTRACTABLE_EXTENSIONS", "ExtractionError", "extract_document_text", "is_extractable_document"]
+__all__ = [
+    "EXTRACTABLE_EXTENSIONS",
+    "ExtractionError",
+    "extract_document_bytes",
+    "extract_document_text",
+    "is_extractable_document",
+]
 
 EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx"})
 # Formats handled only when the optional anydoc converter is installed.
@@ -41,6 +48,7 @@ MAX_XLSX_BYTES = 50 * 1024 * 1024
 # Rust core with no streaming, and the read_file char budget only applies
 # after conversion, so an unbounded input can pin a tool turn and spike RAM.
 MAX_ANYDOC_BYTES = 50 * 1024 * 1024
+MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 _MAX_XLSX_ROWS_PER_SHEET = 5000
 _MAX_XLSX_COLS = 256
 
@@ -97,12 +105,14 @@ def _anydoc() -> Optional[Any]:
             # prompt=False: read_file must never block on an install prompt.
             _lazy_ensure("tool.doc_extract", prompt=False)
         except Exception:
-            pass  # lazy install unavailable — fall through to a plain import
+            _anydoc_failed_at = time.monotonic()
+            return None
         try:
             _anydoc_module = importlib.import_module("anydoc")
         except Exception:  # ImportError or a broken native binding
             _anydoc_failed_at = time.monotonic()
             return None
+        _anydoc_failed_at = None
     return _anydoc_module  # type: ignore[return-value]
 
 
@@ -121,6 +131,34 @@ def extract_document_text(path: str) -> str:
     if ext in ANYDOC_EXTENSIONS:
         return _extract_anydoc(path)
     raise ExtractionError(f"Unsupported document type: {path!r}")
+
+
+def extract_document_bytes(data: bytes, path: str) -> str:
+    """Extract a document already fetched across a file backend boundary."""
+    if len(data) > MAX_DOCUMENT_BYTES:
+        raise ExtractionError(
+            f"Document too large to convert ({len(data):,} bytes, limit is {MAX_DOCUMENT_BYTES:,})"
+        )
+    ext = _extension(path)
+    if ext in ANYDOC_EXTENSIONS:
+        return _extract_anydoc_bytes(data, path)
+    if ext not in EXTRACTABLE_EXTENSIONS:
+        raise ExtractionError(f"Unsupported document type: {path!r}")
+
+    # The stdlib extractors are path-oriented. Materialize backend bytes in a
+    # private host temp file, then remove it even when parsing fails.
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as fh:
+            fh.write(data)
+            temp_path = fh.name
+        return extract_document_text(temp_path)
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 def _extract_anydoc(path: str) -> str:
@@ -212,8 +250,13 @@ def _page_ranges(pages: list[int]) -> str:
     return ", ".join(parts)
 
 
-def _pdf_coverage_note(path: str) -> str:
-    """A warning footer when many PDF pages produced no text, else ''."""
+def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
+    """A warning header when many PDF pages produced no text, else ''.
+
+    ``path`` is the file scanned with pdftotext (may be a host temp file
+    for backend-transferred bytes); ``display_path`` is the path shown in
+    the recovery command — the one the agent's terminal can actually see.
+    """
     counts = _pdf_page_char_counts(path)
     if not counts or len(counts) < 2:
         return ""
@@ -226,6 +269,7 @@ def _pdf_coverage_note(path: str) -> str:
         and len(empty) < PDF_COVERAGE_ABSOLUTE_EMPTY
     ):
         return ""
+    shown = display_path or path
     return (
         "[EXTRACTION COVERAGE WARNING: "
         f"{len(empty)} of {total} pages in this PDF yielded no text "
@@ -233,10 +277,57 @@ def _pdf_coverage_note(path: str) -> str:
         "images (or blank) — their content is MISSING from the extracted "
         "text below, even where section headers appear with empty bodies. "
         "To read them: render pages to images with "
-        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> '{path}' /tmp/page` "
+        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> '{shown}' /tmp/page` "
         "and inspect each image with the vision_analyze tool, or use the "
         "ocr-and-documents skill (marker-pdf) for bulk OCR.]\n"
     )
+
+
+def _extract_anydoc_bytes(data: bytes, path: str) -> str:
+    mod = _anydoc()
+    if mod is None:
+        raise ExtractionError(f"Unsupported document type: {path!r}")
+    if len(data) > MAX_ANYDOC_BYTES:
+        raise ExtractionError(
+            f"Document too large to convert ({len(data):,} bytes, limit is {MAX_ANYDOC_BYTES:,})"
+        )
+    try:
+        text = mod.to_markdown_bytes(data)
+    except Exception as exc:
+        raise ExtractionError(f"{type(exc).__name__}: {exc}") from exc
+    if not isinstance(text, str) or not text.strip():
+        raise ExtractionError("Document contains no extractable text")
+    text = text.rstrip("\n") + "\n"
+    if Path(path).suffix.lower() == ".pdf":
+        note = _pdf_coverage_note_from_bytes(data, path)
+        if note:
+            # Prepend: read_file paginates the extraction, so a footer on a
+            # long document would sit on a page the model may never fetch.
+            text = note + text
+    return text
+
+
+def _pdf_coverage_note_from_bytes(data: bytes, display_path: str) -> str:
+    """Coverage note for backend-transferred PDF bytes.
+
+    pdftotext is path-oriented, so materialize the bytes in a private host
+    temp file for the scan; the recovery command still names
+    ``display_path`` — the path the agent's terminal backend can see.
+    """
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fh:
+            fh.write(data)
+            temp_path = fh.name
+        return _pdf_coverage_note(temp_path, display_path=display_path)
+    except OSError:
+        return ""
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 def _source_text(source) -> str:

@@ -766,7 +766,17 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                         _activate_target_on_syspath(target)
                     return _InstallResult(True, r.stdout or "", r.stderr or "")
                 logger.debug("uv pip install failed: %s", r.stderr)
-            except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                # A resolver failure is authoritative. Falling through to pip
+                # here would silently discard uv policy such as exclude-newer
+                # and could install a release that the project quarantined.
+                return _InstallResult(False, r.stdout or "", r.stderr or "")
+            except subprocess.TimeoutExpired as e:
+                logger.debug("uv invocation failed: %s", e)
+                return _InstallResult(False, "", f"uv pip install timed out: {e}")
+            except FileNotFoundError as e:
+                # The resolved uv path disappeared between lookup and spawn.
+                # In that narrow availability failure, the pip tier remains a
+                # valid fallback because uv never evaluated the requirements.
                 logger.debug("uv invocation failed: %s", e)
 
         # Tier 2: python -m pip (with ensurepip bootstrap if needed)

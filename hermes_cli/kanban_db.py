@@ -8133,7 +8133,17 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Guard only fires if a prior worker run actually exists: a task with
+    #    zero runs cannot have "already opened a PR" — its PR URL is part of
+    #    the card contract (merge-gate / review tasks legitimately reference
+    #    an existing PR) and must not block the first-ever spawn (#80231).
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    has_prior_run = conn.execute(
+        "SELECT 1 FROM task_runs WHERE task_id = ? LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not has_prior_run:
+        return None
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),

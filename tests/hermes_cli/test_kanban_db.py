@@ -359,6 +359,70 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kb.check_respawn_guard(conn, tid) is None
 
 
+# ---------------------------------------------------------------------------
+# active_pr respawn guard (#80231)
+# ---------------------------------------------------------------------------
+
+
+def test_active_pr_guard_does_not_block_first_spawn(kanban_home):
+    """A merge-gate/review task referencing an existing PR must spawn once.
+
+    #80231: the active_pr guard fired on ANY PR URL in a recent comment,
+    including the task's own contract (merge-gate tasks say "merge PR #N").
+    A task with zero runs cannot have "already opened a PR" — the guard
+    must not block its first-ever spawn.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="merge reviewed PR #42 into epic",
+            assignee="default",
+        )
+        kb.add_comment(
+            conn,
+            tid,
+            author="orchestrator",
+            body="Merge https://github.com/NousResearch/hermes-agent/pull/42",
+        )
+        kb.promote_task(conn, tid, actor="test")
+
+    with kb.connect() as conn:
+        # No runs yet → guard must NOT fire; the task can spawn.
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_active_pr_guard_fires_after_a_prior_run(kanban_home):
+    """Once a worker has actually run, a PR URL comment still guards.
+
+    The guard's purpose (prevent duplicate PRs from a re-spawn) only makes
+    sense when a prior worker run exists — the zero-run exemption must not
+    weaken that.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="implement feature", assignee="default")
+        # Simulate a prior worker run that posted its PR. Use an old ended_at
+        # so the recent_success guard (window 1h) does not fire first.
+        old = int(time.time()) - 7200
+        kb._synthesize_ended_run(
+            conn, tid, outcome="completed", summary="opened PR #42",
+            metadata={"_ended_at": old},
+        )
+        # Backdate the run row's ended_at.
+        conn.execute(
+            "UPDATE task_runs SET ended_at = ? WHERE task_id = ?",
+            (old, tid),
+        )
+        kb.add_comment(
+            conn,
+            tid,
+            author="worker-profile",
+            body="PR opened: https://github.com/NousResearch/hermes-agent/pull/42",
+        )
+
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
 
 
 

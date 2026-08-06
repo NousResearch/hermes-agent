@@ -1346,8 +1346,9 @@ def _snapshot_pin(job: dict, axis: str, current: str, job_id: str) -> str:
     if snapshot and current and snapshot.lower() != current.lower():
         logger.info(
             "Job '%s': running on creation-snapshot %s %r (global default is now %r); "
-            "`hermes cron edit %s --%s <value>` or cron.%s in config.yaml moves it.",
-            job_id, axis, snapshot, current, job_id, axis,
+            "`hermes cron resnap %s` adopts the new default (stays unpinned), "
+            "`hermes cron edit %s --%s <value>` or cron.%s in config.yaml pins it.",
+            job_id, axis, snapshot, current, job_id, job_id, axis,
             "model" if axis == "model" else "model_provider")
     return snapshot
 

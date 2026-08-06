@@ -102,6 +102,29 @@ _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # to cover slow-but-legitimate authorization (e.g. an approval round-trip),
 # short enough that one wedged dispatch cannot starve the batch forever.
 _START_ORDER_GATE_TIMEOUT_S = 120.0
+# Fallback bound a concurrent worker will wait for the authorization gate's
+# serialization lock before running its prompt unserialized. The effective
+# bound is derived from ``approvals.timeout`` plus a margin (see
+# _authorization_gate_lock_timeout): a legitimate holder is at worst a human
+# answering an approval prompt, which self-terminates at approvals.timeout —
+# so a holder that overstays it is wedged and must not starve the batch.
+_AUTHORIZATION_GATE_LOCK_TIMEOUT_S = 360.0
+
+
+def _authorization_gate_lock_timeout() -> float:
+    """Bound for the authorization serialization lock: approval timeout + margin.
+
+    Long enough that serialization is never broken while a legitimate approval
+    prompt is still answerable; short enough that a wedged holder (hanging
+    ``pre_tool_call`` plugin, dead approval client) cannot park other workers
+    forever (#79719).
+    """
+    try:
+        from tools.approval import _get_approval_timeout
+
+        return float(_get_approval_timeout()) + 60.0
+    except Exception:
+        return _AUTHORIZATION_GATE_LOCK_TIMEOUT_S
 
 
 class _BatchAbandoned(BaseException):
@@ -356,43 +379,72 @@ class _ManagedToolResult:
 
 
 class _ConcurrentToolAuthorizationGate:
-    """Serialize policy prompts and exclude their queue from batch deadlines."""
+    """Serialize policy prompts and exclude human approval waits from batch deadlines.
 
-    def __init__(self) -> None:
+    Serialization keeps concurrent approval prompts from interleaving on the
+    user's screen. The acquire is BOUNDED: a worker wedged inside the gate (a
+    hanging ``pre_tool_call`` plugin, or an approval round-trip to a client
+    that went away) must not park every other worker forever. On expiry the
+    worker runs its prompt unserialized — worst case is interleaved prompts,
+    strictly better than permanent starvation (same tradeoff as the
+    start-order gate, #79705).
+
+    Deadline exclusion is measured at the SOURCE of the human wait
+    (``tools.approval.human_wait_seconds``: the CLI prompt and the gateway
+    approval poll loop mark their own blocking windows), NOT as residency in
+    this gate. Gate residency is arbitrary code — using it as the exclusion
+    signal let a wedged plugin grow the exclusion 1:1 with wall clock, keeping
+    the batch deadline's ``remaining`` constant so it never fired and the turn
+    hung forever (#79719). A wedged plugin now contributes nothing to the
+    exclusion and the batch times out normally, while a genuine approval wait
+    (which can legitimately exceed any fixed bound) is still excluded in full.
+    """
+
+    def __init__(self, *, lock_timeout: float | None = None) -> None:
         self._serialization_lock = threading.Lock()
-        self._state_lock = threading.Lock()
-        self._pending = 0
-        self._window_started: float | None = None
-        self._excluded_seconds = 0.0
+        self._lock_timeout = (
+            _authorization_gate_lock_timeout()
+            if lock_timeout is None
+            else lock_timeout
+        )
+        self._session_key: str | None = None
+        try:
+            from tools.approval import get_current_session_key
+
+            # Snapshot the batch's session identity on the SUBMITTING thread:
+            # excluded_seconds() is polled from the batch wait loop, whose
+            # context may differ from the workers'.
+            self._session_key = get_current_session_key()
+        except Exception:
+            pass
+        self._baseline_wait_seconds = self._human_wait_seconds()
+
+    def _human_wait_seconds(self) -> float:
+        try:
+            from tools.approval import human_wait_seconds
+
+            return human_wait_seconds(self._session_key)
+        except Exception:
+            return 0.0
 
     def run(self, callback):
-        now = time.monotonic()
-        with self._state_lock:
-            if self._pending == 0:
-                self._window_started = now
-            self._pending += 1
+        acquired = self._serialization_lock.acquire(timeout=self._lock_timeout)
+        if not acquired:
+            logger.warning(
+                "authorization gate lock not acquired after %.1fs "
+                "(holder wedged in a pre_tool_call plugin or approval "
+                "round-trip?); running prompt unserialized",
+                self._lock_timeout,
+            )
+            return callback()
         try:
-            with self._serialization_lock:
-                return callback()
+            return callback()
         finally:
-            now = time.monotonic()
-            with self._state_lock:
-                self._pending -= 1
-                if self._pending == 0:
-                    if self._window_started is not None:
-                        self._excluded_seconds += max(
-                            0.0, now - self._window_started
-                        )
-                    self._window_started = None
+            self._serialization_lock.release()
 
     def excluded_seconds(self) -> float:
-        """Return completed plus currently active authorization wait time."""
-        now = time.monotonic()
-        with self._state_lock:
-            excluded = self._excluded_seconds
-            if self._window_started is not None:
-                excluded += max(0.0, now - self._window_started)
-            return excluded
+        """Return human-approval wait seconds accrued since the batch started."""
+        return max(0.0, self._human_wait_seconds() - self._baseline_wait_seconds)
 
 
 def _managed_values(

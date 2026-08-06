@@ -134,7 +134,8 @@ def _cognitive_enabled() -> bool:
     mem = cfg.get("memory") or {}
     if not isinstance(mem, dict):
         return DEFAULT_COGNITIVE_ENABLED
-    return bool(mem.get("cognitive", DEFAULT_COGNITIVE_ENABLED))
+    value = mem.get("cognitive", DEFAULT_COGNITIVE_ENABLED)
+    return value if isinstance(value, bool) else DEFAULT_COGNITIVE_ENABLED
 
 
 _CONSOLIDATION_SYSTEM_PROMPT = (
@@ -644,6 +645,18 @@ class MemoryStore:
         try:
             plan_entries: Dict[int, tuple] = plan["entries"]
             insert_new: bool = plan["insert_new"]
+
+            # ``insert_new: false`` is only safe when an update demonstrably
+            # retains the submitted fact. Otherwise a schema-valid delete-only
+            # (or unrelated-update) plan could silently discard the new write.
+            if not insert_new and not any(
+                action == "update" and updated_content and content in updated_content
+                for action, updated_content in plan_entries.values()
+            ):
+                logger.warning(
+                    "Consolidation omitted the new fact; falling back to plain append."
+                )
+                return None
 
             # Build the working set: keep order, apply update/delete by index.
             working: List[str] = []

@@ -700,6 +700,11 @@ class TestCognitiveFlag:
         assert _cognitive_enabled() is False
         assert DEFAULT_COGNITIVE_ENABLED is False
 
+    def test_default_registered_in_canonical_config(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["memory"]["cognitive"] is False
+
     def test_enabled_when_config_true(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.config.load_config", lambda: {"memory": {"cognitive": True}}
@@ -710,6 +715,14 @@ class TestCognitiveFlag:
         monkeypatch.setattr(
             "hermes_cli.config.load_config", lambda: {"memory": {"cognitive": False}}
         )
+        assert _cognitive_enabled() is False
+
+    def test_non_boolean_config_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"memory": {"cognitive": "false"}},
+        )
+
         assert _cognitive_enabled() is False
 
     def test_config_load_failure_falls_back_off(self, monkeypatch):
@@ -790,6 +803,24 @@ class TestConsolidationOnAdd:
         assert "Lives in Seattle (moved from Portland)" in store.memory_entries
         assert "Lives in Portland" not in store.memory_entries
         assert len(store.memory_entries) == 1
+
+    def test_delete_only_plan_without_insertion_falls_back(self, store, monkeypatch):
+        """An auxiliary plan cannot delete old facts and discard the incoming fact."""
+        monkeypatch.setattr("tools.memory_tool._cognitive_enabled", lambda: True)
+        store.add("memory", "User prefers tabs")
+
+        def _plan(content, entries, main_runtime=None):
+            return {"entries": {0: ("delete", None)}, "insert_new": False}
+
+        monkeypatch.setattr("tools.memory_tool._request_consolidation_plan", _plan)
+
+        result = store.add("memory", "User prefers spaces now")
+
+        assert result["success"] is True
+        assert store.memory_entries == [
+            "User prefers tabs",
+            "User prefers spaces now",
+        ]
 
     def test_no_contradiction_plain_insert_untouched(self, store, monkeypatch):
         """Keep-all + insert plan behaves like a plain append: existing untouched."""

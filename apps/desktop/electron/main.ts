@@ -2867,28 +2867,14 @@ async function applyUpdates(opts = {}) {
       // `hermes desktop`, never the Tauri installer that self-copies
       // hermes-setup.exe into HERMES_HOME). They DO have a working `hermes`
       // on PATH / in the venv, so the correct path is the one-liner in their
-      // native medium. We show the EXACT command, branch-pinned to the
-      // checkout they're on — bare `hermes update` defaults to main and would
-      // silently switch a bb/gui (or any non-main) install off-branch. Mirror
-      // the GUI button's contract: append --branch <current> for non-main
-      // checkouts, keep it bare for main so the card stays clean.
+      // native medium. Show the EXACT command that matches the in-app update
+      // contract: explicit tracked branch + --stay-on-branch, so a checkout
+      // sitting on a feature branch still updates the tracked branch and ends
+      // there instead of stranding the desktop on stale code.
       const updateRoot = resolveUpdateRoot()
-      let command = 'hermes update'
-
-      try {
-        const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-        const current = (head.stdout || '').trim()
-
-        if (head.code === 0 && current && current !== 'HEAD') {
-          const branch = await resolveHealedBranch(updateRoot, current)
-
-          if (branch !== 'main') {
-            command = `hermes update --branch ${branch}`
-          }
-        }
-      } catch {
-        // Best-effort: fall back to bare `hermes update` if branch detection fails.
-      }
+      const { branch: configuredBranch } = readDesktopUpdateConfig()
+      const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
+      const command = `hermes update --branch ${branch} --stay-on-branch`
 
       rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for CLI install at ${updateRoot}`)
       emitUpdateProgress({ stage: 'manual', message: command, percent: null })
@@ -3348,20 +3334,17 @@ async function applyUpdatesPosixInApp(opts: any) {
     env.HERMES_DESKTOP_CHILD_PID = desktopChildPids.join(',')
   }
 
-  // Branch-pin so a non-main checkout doesn't get switched to main (and self-heal
-  // to main when the pinned branch no longer exists on origin).
-  let branchArgs = []
-
-  try {
-    const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-    const current = (head.stdout || '').trim()
-
-    if (head.code === 0 && current && current !== 'HEAD') {
-      branchArgs = ['--branch', await resolveHealedBranch(updateRoot, current)]
-    }
-  } catch {
-    // best effort
-  }
+  // Track the configured update branch (default main) and stay on it after the
+  // update. Historical behavior pinned --branch to whatever branch the checkout
+  // was on, which stranded desktop users whose checkout sat on a feature branch:
+  // `hermes update` refreshed main, switched BACK to the feature branch, and the
+  // post-update `hermes desktop --build-only` rebuild then packaged the stale
+  // feature-branch code — the desktop never moved past the old version while the
+  // CLI claimed "already up to date". A product update must end on the tracked
+  // branch, so always pass the tracked branch explicitly and --stay-on-branch.
+  const { branch: configuredBranch } = readDesktopUpdateConfig()
+  const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
+  const branchArgs = ['--branch', branch, '--stay-on-branch']
 
   emitUpdateProgress({ stage: 'update', message: 'Updating Hermes (git + dependencies)…', percent: 10 })
 

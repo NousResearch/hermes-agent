@@ -602,6 +602,17 @@ class SimplexAdapter(BasePlatformAdapter):
                     media_urls.append(file_path)
                     media_types.append("application/octet-stream")
 
+        # Inline images: SimpleX mobile clients deliver photos as base64
+        # data URLs in msgContent.image with no chatItem.file sibling.
+        # Surface them through the same media slot so the gateway's vision
+        # pipeline (image_source._resolve_data_url) can analyze them.
+        if not media_urls and msg_type_str == "image":
+            inline = msg_content.get("image", "")
+            if isinstance(inline, str) and inline.startswith("data:image/"):
+                mime = inline[len("data:"):].split(";", 1)[0] or "image/jpeg"
+                media_urls.append(inline)
+                media_types.append(mime)
+
         # Source
         chat_name = sender_name
         if is_group:

@@ -1,5 +1,6 @@
 """Tests for agent/skill_commands.py — skill slash command scanning and platform filtering."""
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -8,11 +9,43 @@ import pytest
 
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
+    _load_skill_payload_result,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
     resolve_skill_command_key,
     scan_skill_commands,
 )
+
+
+class TestLoadSkillPayloadResult:
+    def test_preserves_non_missing_skill_view_error(self):
+        response = json.dumps(
+            {
+                "success": False,
+                "error": "Object of type date is not JSON serializable",
+            }
+        )
+        with patch("tools.skills_tool.skill_view", return_value=response):
+            loaded, error, not_found = _load_skill_payload_result("broken-skill")
+
+        assert loaded is None
+        assert error == "Object of type date is not JSON serializable"
+        assert not_found is False
+
+    def test_classifies_genuine_missing_skill(self):
+        response = json.dumps(
+            {
+                "success": False,
+                "error": "Skill 'ghost-skill' not found.",
+                "available_skills": ["real-skill"],
+            }
+        )
+        with patch("tools.skills_tool.skill_view", return_value=response):
+            loaded, error, not_found = _load_skill_payload_result("ghost-skill")
+
+        assert loaded is None
+        assert error == "Skill 'ghost-skill' not found."
+        assert not_found is True
 
 
 def _make_skill(

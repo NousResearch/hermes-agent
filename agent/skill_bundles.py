@@ -283,7 +283,10 @@ def build_bundle_invocation_message(
 
     # Late import to avoid pulling tools/* at module import time and to
     # keep skill_bundles cheap to import in test environments.
-    from agent.skill_commands import _load_skill_payload, _build_skill_message
+    from agent.skill_commands import (
+        _build_skill_message,
+        _load_skill_payload_result,
+    )
 
     try:
         from agent.skill_utils import get_disabled_skill_names
@@ -293,6 +296,7 @@ def build_bundle_invocation_message(
 
     loaded_names: List[str] = []
     missing: List[str] = []
+    failed: List[Tuple[str, str]] = []
     disabled: List[str] = []
     skill_blocks: List[str] = []
     seen: set[str] = set()
@@ -307,9 +311,17 @@ def build_bundle_invocation_message(
             continue
         seen.add(identifier)
 
-        loaded = _load_skill_payload(identifier, task_id=task_id)
+        loaded, load_error, not_found = _load_skill_payload_result(
+            identifier,
+            task_id=task_id,
+        )
         if not loaded:
-            missing.append(identifier)
+            if not_found:
+                missing.append(identifier)
+            else:
+                failed.append(
+                    (identifier, load_error or "Skill failed to load.")
+                )
             continue
         loaded_skill, skill_dir, skill_name = loaded
 
@@ -353,6 +365,11 @@ def build_bundle_invocation_message(
     ]
     if missing:
         header_lines.append(f"Skills missing (skipped): {', '.join(missing)}")
+    if failed:
+        header_lines.append(
+            "Skills failed to load (skipped): "
+            + "; ".join(f"{name}: {error}" for name, error in failed)
+        )
     if disabled:
         header_lines.append(
             f"Skills disabled for this platform (skipped): {', '.join(disabled)}"

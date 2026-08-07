@@ -1,5 +1,6 @@
 """Tests for agent/skill_bundles.py — YAML-defined skill bundles."""
 
+import json
 import os
 from pathlib import Path
 
@@ -195,6 +196,38 @@ class TestBuildBundleInvocationMessage:
         assert loaded == ["skill-a"]
         assert missing == ["skill-ghost"]
         assert "skill-ghost" in msg  # called out in header
+
+    def test_preserves_non_missing_member_load_failure(self, bundles_env, monkeypatch):
+        bundles_dir, skills_dir = bundles_env
+        _make_skill(skills_dir, "skill-a", body="Skill A content.")
+        _make_bundle_yaml(bundles_dir, "combo", ["skill-a", "broken-skill"])
+        scan_bundles()
+
+        from tools import skills_tool
+
+        original_skill_view = skills_tool.skill_view
+
+        def skill_view(name, *args, **kwargs):
+            if name == "broken-skill":
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "Object of type date is not JSON serializable",
+                    }
+                )
+            return original_skill_view(name, *args, **kwargs)
+
+        monkeypatch.setattr(skills_tool, "skill_view", skill_view)
+
+        result = build_bundle_invocation_message("/combo")
+
+        assert result is not None
+        message, loaded, missing = result
+        assert loaded == ["skill-a"]
+        assert missing == []
+        assert "Skills failed to load (skipped)" in message
+        assert "broken-skill" in message
+        assert "Object of type date is not JSON serializable" in message
 
     def test_skips_platform_disabled_skills(self, bundles_env, monkeypatch):
         """A skill disabled for the invoking platform must not be injected

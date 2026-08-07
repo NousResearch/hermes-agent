@@ -16846,11 +16846,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _is_new_session and _auto:
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
-                from agent.skill_commands import _load_skill_payload, _build_skill_message
+                from agent.skill_commands import (
+                    _build_skill_message,
+                    _load_skill_payload_result,
+                )
                 _combined_parts: list[str] = []
                 _loaded_names: list[str] = []
                 for _sname in _skill_names:
-                    _loaded = _load_skill_payload(_sname, task_id=_quick_key)
+                    _loaded, _load_error, _not_found = _load_skill_payload_result(
+                        _sname,
+                        task_id=_quick_key,
+                    )
                     if _loaded:
                         _loaded_skill, _skill_dir, _display_name = _loaded
                         _note = (
@@ -16861,8 +16867,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if _part:
                             _combined_parts.append(_part)
                             _loaded_names.append(_sname)
+                    elif _not_found:
+                        logger.warning(
+                            "[Gateway] Auto-skill '%s' not found: %s",
+                            _sname,
+                            _load_error,
+                        )
                     else:
-                        logger.warning("[Gateway] Auto-skill '%s' not found", _sname)
+                        logger.warning(
+                            "[Gateway] Auto-skill '%s' failed to load: %s",
+                            _sname,
+                            _load_error,
+                        )
                 if _combined_parts:
                     # Append the user's original text after all skill payloads
                     _combined_parts.append(event.text)

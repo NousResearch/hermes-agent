@@ -1155,6 +1155,23 @@ class TestBuildJobPromptMissingSkill:
         assert "ghost-skill" in result
         assert "not found" in result.lower() or "skipped" in result.lower()
 
+    def test_load_failure_notice_preserves_real_error(self):
+        response = json.dumps(
+            {
+                "success": False,
+                "error": "Object of type date is not JSON serializable",
+            }
+        )
+        with patch("tools.skills_tool.skill_view", return_value=response):
+            result = _build_job_prompt(
+                {"skills": ["broken-skill"], "prompt": "do something"}
+            )
+
+        assert "failed to load" in result
+        assert "broken-skill" in result
+        assert "Object of type date is not JSON serializable" in result
+        assert "not found and skipped" not in result
+
 
 class TestBuildJobPromptAbsoluteSkillPath:
     """Cron jobs may store absolute skill paths; normalize before skill_view."""

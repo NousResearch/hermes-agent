@@ -189,11 +189,26 @@ def _resolve_skill_commands_platform() -> Optional[str]:
         resolved_platform = os.getenv("HERMES_PLATFORM")
     return resolved_platform or None
 
-def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
-    """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
+SkillPayload = tuple[dict[str, Any], Path | None, str]
+SkillPayloadLoadResult = tuple[SkillPayload | None, str | None, bool]
+
+
+def _skill_payload_is_not_found(payload: dict[str, Any]) -> bool:
+    """Return whether a failed ``skill_view`` payload is a genuine miss."""
+    if "available_skills" in payload:
+        return True
+    error = str(payload.get("error") or "")
+    return bool(re.fullmatch(r"Skill '.+' not found(?: in plugin '.+')?\.", error))
+
+
+def _load_skill_payload_result(
+    skill_identifier: str,
+    task_id: str | None = None,
+) -> SkillPayloadLoadResult:
+    """Load a skill while preserving the reason for any failure."""
     raw_identifier = (skill_identifier or "").strip()
     if not raw_identifier:
-        return None
+        return None, "Skill identifier is empty.", False
 
     try:
         from tools.skills_tool import SKILLS_DIR, skill_view
@@ -204,11 +219,12 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         loaded_skill = json.loads(
             skill_view(normalized, task_id=task_id, preprocess=False)
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        return None, str(exc) or type(exc).__name__, False
 
     if not loaded_skill.get("success"):
-        return None
+        error = str(loaded_skill.get("error") or "Skill failed to load.")
+        return None, error, _skill_payload_is_not_found(loaded_skill)
 
     skill_name = str(loaded_skill.get("name") or normalized)
     skill_path = str(loaded_skill.get("path") or "")
@@ -226,7 +242,19 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         except Exception:
             skill_dir = None
 
-    return loaded_skill, skill_dir, skill_name
+    return (loaded_skill, skill_dir, skill_name), None, False
+
+
+def _load_skill_payload(
+    skill_identifier: str,
+    task_id: str | None = None,
+) -> SkillPayload | None:
+    """Load a skill by name/path and return its payload, directory and name."""
+    loaded, _error, _not_found = _load_skill_payload_result(
+        skill_identifier,
+        task_id=task_id,
+    )
+    return loaded
 
 
 def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None:

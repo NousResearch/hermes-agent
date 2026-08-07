@@ -2748,7 +2748,8 @@ def _build_job_prompt(
     from agent.skill_utils import normalize_skill_lookup_name
 
     parts = []
-    skipped: list[str] = []
+    skipped_missing: list[str] = []
+    skipped_failed: list[tuple[str, str]] = []
     for skill_name in skill_names:
         # Cron jobs historically accepted only skill names here, but the CLI/gateway
         # slash-command path lets bundles shadow skills with the same slug. Mirror
@@ -2772,19 +2773,35 @@ def _build_job_prompt(
                 job.get("name", job.get("id")),
                 skill_name,
             )
-            skipped.append(skill_name)
+            skipped_failed.append(
+                (skill_name, "Bundle could not load any member skills.")
+            )
             continue
 
         try:
             loaded = json.loads(skill_view(normalize_skill_lookup_name(skill_name)))
         except (json.JSONDecodeError, TypeError):
             logger.warning("Cron job '%s': skill '%s' returned invalid JSON, skipping", job.get("name", job.get("id")), skill_name)
-            skipped.append(skill_name)
+            skipped_failed.append((skill_name, "Skill returned invalid JSON."))
             continue
         if not loaded.get("success"):
             error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
-            logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
-            skipped.append(skill_name)
+            from agent.skill_commands import _skill_payload_is_not_found
+
+            if _skill_payload_is_not_found(loaded):
+                logger.warning(
+                    "Cron job '%s': skill not found, skipping — %s",
+                    job.get("name", job.get("id")),
+                    error,
+                )
+                skipped_missing.append(skill_name)
+            else:
+                logger.warning(
+                    "Cron job '%s': skill failed to load, skipping — %s",
+                    job.get("name", job.get("id")),
+                    error,
+                )
+                skipped_failed.append((skill_name, str(error)))
             continue
 
         # Bump usage so the curator sees this skill as actively used.
@@ -2804,12 +2821,22 @@ def _build_job_prompt(
             ]
         )
 
-    if skipped:
+    if skipped_missing:
         notice = (
             f"[IMPORTANT: The following skill(s) were listed for this job but could not be found "
-            f"and were skipped: {', '.join(skipped)}. "
+            f"and were skipped: {', '.join(skipped_missing)}. "
             f"Start your response with a brief notice so the user is aware, e.g.: "
-            f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
+            f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped_missing)}']"
+        )
+        parts.insert(0, notice)
+    if skipped_failed:
+        failure_summary = "; ".join(
+            f"{name}: {error}" for name, error in skipped_failed
+        )
+        notice = (
+            "[IMPORTANT: The following skill(s) failed to load and were skipped: "
+            f"{failure_summary}. Start your response with a brief notice so the "
+            "user sees the real load failure rather than a missing-skill message.]"
         )
         parts.insert(0, notice)
 

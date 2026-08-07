@@ -150,11 +150,18 @@ def clarify_tool(
         # user-facing text here — the single platform-agnostic entry point —
         # so the CLI panel, Discord buttons, and Telegram list all render clean
         # text and the resolved answer is never a raw Python dict repr.
+        raw_count = len(choices)
         choices = [s for s in (_flatten_choice(c) for c in choices) if s]
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
         if not choices:
-            choices = None  # empty list → open-ended
+            if raw_count > 0:
+                return tool_error(
+                    "choices contained no non-empty options after normalization; "
+                    "resend with meaningful labels or omit choices for an "
+                    "open-ended question."
+                )
+            choices = None  # empty input list → open-ended
 
     if callback is None:
         return tool_error("Clarify tool is not available in this execution context.")

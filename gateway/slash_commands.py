@@ -4045,7 +4045,6 @@ class GatewaySlashCommandsMixin:
             return "\n".join(lines)
 
         try:
-            from run_agent import AIAgent
             from agent.manual_compression_feedback import summarize_manual_compression
             from agent.model_metadata import estimate_request_tokens_rough
 
@@ -4059,9 +4058,11 @@ class GatewaySlashCommandsMixin:
             # "local" vs "cli" mismatch.
             from gateway.run import (
                 _GATEWAY_HYGIENE_PLATFORM,
+                _load_runtime_ai_agent_class,
                 _platform_config_key,
                 _seed_hygiene_system_prompt,
             )
+            AIAgent = _load_runtime_ai_agent_class()
             platform_key = (
                 _platform_config_key(source.platform) if source.platform else None
             )

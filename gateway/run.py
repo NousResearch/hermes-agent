@@ -16,13 +16,13 @@ Usage:
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
 # on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
 try:
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
 except ModuleNotFoundError:
     # Graceful fallback when hermes_bootstrap isn't registered in the venv
     # yet — happens during partial ``hermes update`` where git-reset landed
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
-    pass
+    hermes_bootstrap = None
 
 import asyncio
 import concurrent.futures
@@ -1821,6 +1821,58 @@ _ensure_ssl_certs()
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+
+def _load_runtime_ai_agent_class():
+    """Resolve AIAgent from this gateway's immutable runtime or fail closed."""
+    # A connected gateway is not coherent if a lazy turn import can fall
+    # through to another checkout.
+    _runtime_root = Path(__file__).resolve().parent.parent
+    _runtime_entry = str(_runtime_root)
+    _expected_run_agent = (_runtime_root / "run_agent.py").resolve()
+
+    if hermes_bootstrap is not None:
+        hermes_bootstrap.harden_import_path(_runtime_entry)
+    else:
+        sys.path.insert(0, _runtime_entry)
+
+    _loaded_run_agent = sys.modules.get("run_agent")
+    if _loaded_run_agent is not None:
+        _loaded_file = getattr(_loaded_run_agent, "__file__", None)
+        if _loaded_file is not None:
+            _loaded_origin = Path(_loaded_file).resolve()
+            if _loaded_origin != _expected_run_agent:
+                raise RuntimeError(
+                    "runtime coherence violation: run_agent already loaded from "
+                    f"{_loaded_origin}, expected {_expected_run_agent}"
+                )
+
+    from run_agent import AIAgent as _RuntimeAIAgent
+
+    _actual_file = getattr(sys.modules["run_agent"], "__file__", None)
+    if _actual_file is not None:
+        _actual_origin = Path(_actual_file).resolve()
+        if _actual_origin != _expected_run_agent:
+            raise RuntimeError(
+                "runtime coherence violation: run_agent resolved from "
+                f"{_actual_origin}, expected {_expected_run_agent}"
+            )
+
+    _agent_init = sys.modules.get("agent.agent_init")
+    if _agent_init is not None:
+        _agent_init_file = getattr(_agent_init, "__file__", None)
+        if _agent_init_file is not None:
+            _agent_init_origin = Path(_agent_init_file).resolve()
+            try:
+                _agent_init_origin.relative_to(_runtime_root)
+            except ValueError as _exc:
+                raise RuntimeError(
+                    "runtime coherence violation: agent.agent_init resolved from "
+                    f"{_agent_init_origin}, expected root {_runtime_root}"
+                ) from _exc
+
+    return _RuntimeAIAgent
+
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home, get_hermes_home_override
@@ -17178,7 +17230,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     try:
                         from agent.conversation_compression import CompressionCommitFence
-                        from run_agent import AIAgent
+                        AIAgent = _load_runtime_ai_agent_class()
 
                         _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
                             source=source,
@@ -19814,7 +19866,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         media_types: Optional[List[str]] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
-        from run_agent import AIAgent
+        AIAgent = _load_runtime_ai_agent_class()
 
         media_urls = media_urls or []
         media_types = media_types or []
@@ -24818,7 +24870,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 event_message_id=event_message_id,
             )
 
-        from run_agent import AIAgent
+        AIAgent = _load_runtime_ai_agent_class()
         import queue
 
         def _run_still_current() -> bool:

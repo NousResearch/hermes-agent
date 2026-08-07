@@ -471,6 +471,83 @@ class TestBuildApiKwargsCodex:
         assert "name" in tools[0]
         assert "function" not in tools[0]
 
+    def test_azure_foundry_reasoning_id_survives_full_build_api_kwargs(self, monkeypatch):
+        """Regression: ``base_url`` must reach ``build_kwargs()``.
+
+        The Azure Foundry reasoning-id fix is keyed off the ``base_url``
+        kwarg that ``build_api_kwargs()`` forwards to the transport. If that
+        forwarding is dropped, the transport silently sees ``None``, decides
+        the endpoint is not Azure, and strips the replayed reasoning ``id``
+        again — reintroducing the very bug this path exists to fix. Asserting
+        on ``build_kwargs()`` directly cannot catch that, so drive the whole
+        ``_build_api_kwargs`` path here.
+        """
+        agent = _make_agent(
+            monkeypatch, "azure-foundry", api_mode="codex_responses",
+            base_url="https://paperclip.services.ai.azure.com/models",
+            model="gpt-5.5",
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "content": "thinking",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_123",
+                        "encrypted_content": "enc_blob",
+                        "summary": [{"type": "summary_text", "text": "brief"}],
+                        "status": "completed",
+                        "response_id": "resp_123",
+                    }
+                ],
+            },
+            {"role": "user", "content": "continue"},
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        reasoning_item = next(
+            item for item in kwargs["input"] if item.get("type") == "reasoning"
+        )
+        assert reasoning_item["id"] == "rs_123"
+
+    def test_non_azure_reasoning_id_stripped_through_full_build_api_kwargs(self, monkeypatch):
+        """The Azure carve-out must not leak onto other Responses endpoints.
+
+        OpenAI/Codex with ``store=False`` returns 404 when a replayed
+        reasoning item carries an ``id``, so the id must still be stripped
+        everywhere that is not Azure Foundry.
+        """
+        agent = _make_agent(
+            monkeypatch, "openai-codex", api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "content": "thinking",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_123",
+                        "encrypted_content": "enc_blob",
+                        "summary": [{"type": "summary_text", "text": "brief"}],
+                    }
+                ],
+            },
+            {"role": "user", "content": "continue"},
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        reasoning_item = next(
+            (item for item in kwargs["input"] if item.get("type") == "reasoning"),
+            None,
+        )
+        if reasoning_item is not None:
+            assert "id" not in reasoning_item
+
 
 # ── Message conversion tests ────────────────────────────────────────────────
 

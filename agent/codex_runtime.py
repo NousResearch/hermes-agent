@@ -615,6 +615,219 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     return on_event
 
 
+# ---------------------------------------------------------------------------
+# App-server turn lifecycle
+#
+# One app-server turn is one provider request as far as Hermes is concerned,
+# so it carries the same lifecycle the ordinary loop dispatches around a
+# chat-completions call (conversation_loop's pre_api_request /
+# post_api_request / api_request_error sites).  Dispatch goes through
+# hermes_cli.lifecycle rather than hermes_cli.plugins so first-party
+# observability is notified before the compatibility plugin hooks.
+#
+# The pairing is what makes the events usable: consumers key a model call on
+# api_request_id and DROP a terminal event whose start they never saw
+# (observability/relay_shared_metrics.end_model_call, the langfuse plugin's
+# generation lookup).  So every path out of the turn — success, empty usage,
+# codex never returning — has to emit exactly one terminal event under the
+# same identity the pre hook opened.
+# ---------------------------------------------------------------------------
+
+_HOOK_USAGE_KEYS = (
+    "prompt_tokens", "completion_tokens", "total_tokens", "input_tokens",
+    "output_tokens", "cache_read_tokens", "cache_write_tokens",
+    "reasoning_tokens",
+)
+
+
+def _codex_hook_identity(agent, task_id: str) -> Dict[str, Any]:
+    """Identity + runtime fields every hook of one turn repeats verbatim."""
+    turn_id = str(getattr(agent, "_current_turn_id", "") or "")
+    return {
+        "task_id": task_id,
+        "turn_id": turn_id,
+        # The ordinary loop numbers requests within a turn as
+        # f"{turn_id}:api:{api_call_count}"; an app-server turn is always
+        # exactly one request, so the ordinal is fixed at 1.
+        "api_request_id": f"{turn_id}:api:1" if turn_id else "",
+        "session_id": getattr(agent, "session_id", "") or "",
+        "platform": getattr(agent, "platform", "") or "",
+        "model": getattr(agent, "model", "") or "",
+        "provider": getattr(agent, "provider", "") or "",
+        "base_url": getattr(agent, "base_url", "") or "",
+        "api_mode": getattr(agent, "api_mode", "") or "",
+        "api_call_count": 1,
+    }
+
+
+def _codex_hook_usage(usage_result: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Token buckets only — the contract's ``usage`` carries no cost fields."""
+    usage = {
+        key: usage_result[key]
+        for key in _HOOK_USAGE_KEYS
+        if key in usage_result
+    }
+    return usage or None
+
+
+def _codex_request_payload(agent, user_message: str) -> Any:
+    """Sanitized view of what Hermes actually handed the app server."""
+    return agent._sanitize_hook_payload({
+        "method": "codex_app_server/run_turn",
+        "body": {
+            "model": getattr(agent, "model", "") or "",
+            "input": user_message,
+        },
+    })
+
+
+def _codex_projected_tool_calls(turn) -> List[Any]:
+    """Tool calls the app server made while serving this turn."""
+    calls: List[Any] = []
+    for message in getattr(turn, "projected_messages", None) or []:
+        if isinstance(message, dict):
+            calls.extend(message.get("tool_calls") or [])
+    return calls
+
+
+def _codex_finish_reason(turn) -> str:
+    if getattr(turn, "error", None):
+        return "error"
+    if getattr(turn, "interrupted", False):
+        return "interrupt"
+    return "stop"
+
+
+def _fire_codex_pre_api_request(
+    agent,
+    identity: Dict[str, Any],
+    *,
+    user_message: str,
+    original_user_message: Any,
+    messages: List[Dict[str, Any]],
+    started_at: float,
+) -> None:
+    """Open the model call before codex is asked to serve the turn."""
+    try:
+        from hermes_cli import lifecycle as _lifecycle
+
+        if not _lifecycle.has_hook("pre_api_request"):
+            return
+        _lifecycle.invoke_hook(
+            "pre_api_request",
+            **identity,
+            user_message=original_user_message,
+            conversation_history=list(messages),
+            # Hermes hands the app server this turn's user input only —
+            # codex holds the rest of the thread on its side.
+            request_messages=[{"role": "user", "content": user_message}],
+            retry_count=0,
+            message_count=len(messages),
+            # Codex serves the turn with its own tools, and neither Hermes
+            # tokenization nor max_tokens governs this request.
+            tool_count=0,
+            approx_input_tokens=None,
+            request_char_count=len(user_message or ""),
+            max_tokens=None,
+            started_at=started_at,
+            request=_codex_request_payload(agent, user_message),
+        )
+    except Exception:
+        logger.debug(
+            "codex app-server pre_api_request hook failed", exc_info=True
+        )
+
+
+def _fire_codex_post_api_request(
+    agent,
+    identity: Dict[str, Any],
+    *,
+    turn,
+    usage: Dict[str, Any] | None,
+    message_count: int,
+    started_at: float,
+    ended_at: float,
+) -> None:
+    """Close the model call with the contract the ordinary loop delivers."""
+    try:
+        from hermes_cli import lifecycle as _lifecycle
+
+        if not _lifecycle.has_hook("post_api_request"):
+            return
+        finish_reason = _codex_finish_reason(turn)
+        tool_calls = _codex_projected_tool_calls(turn)
+        assistant_text = getattr(turn, "final_text", "") or ""
+        _lifecycle.invoke_hook(
+            "post_api_request",
+            **identity,
+            api_duration=ended_at - started_at,
+            started_at=started_at,
+            ended_at=ended_at,
+            finish_reason=finish_reason,
+            message_count=message_count,
+            # The app-server protocol never echoes the model that served the
+            # turn, so there is no honest response_model to report.
+            response_model=None,
+            response=agent._sanitize_hook_payload({
+                "model": None,
+                "finish_reason": finish_reason,
+                "assistant_message": {
+                    "role": "assistant",
+                    "content": assistant_text,
+                    "tool_calls": tool_calls,
+                },
+                "usage": usage,
+            }),
+            usage=usage,
+            # No normalized provider message object exists on this path;
+            # consumers fall back to the assistant_* summary fields.
+            assistant_message=None,
+            assistant_content_chars=len(assistant_text),
+            assistant_tool_call_count=len(tool_calls),
+        )
+    except Exception:
+        logger.debug(
+            "codex app-server post_api_request hook failed", exc_info=True
+        )
+
+
+def _fire_codex_api_request_error(
+    agent,
+    identity: Dict[str, Any],
+    *,
+    user_message: str,
+    error: BaseException,
+    started_at: float,
+    ended_at: float,
+) -> None:
+    """Terminate the model call when codex never returned a turn at all."""
+    try:
+        from hermes_cli import lifecycle as _lifecycle
+
+        if not _lifecycle.has_hook("api_request_error"):
+            return
+        _lifecycle.invoke_hook(
+            "api_request_error",
+            **identity,
+            api_duration=ended_at - started_at,
+            started_at=started_at,
+            ended_at=ended_at,
+            status_code=None,
+            # This path has no retry loop of its own: the session is retired
+            # and the failure is handed straight back to the caller.
+            retry_count=0,
+            max_retries=0,
+            retryable=False,
+            reason="codex_app_server_turn_failed",
+            error={"type": type(error).__name__, "message": str(error)},
+            request=_codex_request_payload(agent, user_message),
+        )
+    except Exception:
+        logger.debug(
+            "codex app-server api_request_error hook failed", exc_info=True
+        )
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -694,9 +907,35 @@ def run_codex_app_server_turn(
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    _hook_identity = _codex_hook_identity(agent, effective_task_id)
+    # conversation_loop stamps this per API request so tool-level hooks fired
+    # during the turn correlate to the request that caused them; this runtime
+    # bypasses that loop, so stamp it here.
+    agent._current_api_request_id = _hook_identity["api_request_id"]
+    # Both hooks must report the request the same way, and `messages` grows
+    # once projected messages are spliced in below.
+    _request_message_count = len(messages)
+    _api_started_at = time.time()
+    _fire_codex_pre_api_request(
+        agent,
+        _hook_identity,
+        user_message=user_message,
+        original_user_message=original_user_message,
+        messages=messages,
+        started_at=_api_started_at,
+    )
+
     try:
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:
+        _fire_codex_api_request_error(
+            agent,
+            _hook_identity,
+            user_message=user_message,
+            error=exc,
+            started_at=_api_started_at,
+            ended_at=time.time(),
+        )
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn
         # respawns from scratch instead of reusing a dead client.
@@ -732,6 +971,8 @@ def run_codex_app_server_turn(
             ),
             "error": str(exc),
         }
+
+    _api_ended_at = time.time()
 
     # This runtime bypasses the normal conversation-loop finalizer. Mirror its
     # interrupt handoff/cleanup so a hard stop cannot poison the next turn and a
@@ -817,6 +1058,19 @@ def run_codex_app_server_turn(
     _record_codex_app_server_compaction(agent, turn)
     usage_result = _record_codex_app_server_usage(agent, turn)
     api_calls = 1
+
+    # Fires for every turn codex returned, including the ones it reported no
+    # token usage for — those still cost an API call, and an observer that
+    # opened this model call needs its terminal event either way.
+    _fire_codex_post_api_request(
+        agent,
+        _hook_identity,
+        turn=turn,
+        usage=_codex_hook_usage(usage_result),
+        message_count=_request_message_count,
+        started_at=_api_started_at,
+        ended_at=_api_ended_at,
+    )
 
     # Now check the skill nudge AFTER iters were incremented — same
     # pattern the chat_completions path uses (line ~15432).

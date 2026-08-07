@@ -160,6 +160,14 @@ API hooks describe provider attempts inside the agent loop:
 The sanitized `request`, `response`, and `error` fields are the canonical
 observer inputs for new consumers.
 
+The `codex_app_server` runtime hands a whole turn to a Codex subprocess, so it
+reports that turn as one API request with the same fields. Two of them have no
+equivalent in the app-server protocol and are always `None` there:
+`response_model` (Codex never echoes the model it served the turn with) and the
+`assistant_message` compatibility object (no provider message object is
+normalized on that path — read `assistant_content_chars` /
+`assistant_tool_call_count`, or `response`, instead).
+
 ### Tool Lifecycle
 
 Tool hooks describe individual tool calls:

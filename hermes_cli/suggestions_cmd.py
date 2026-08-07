@@ -102,7 +102,7 @@ def handle_suggestions_command(
         try:
             job = store.accept_suggestion(rest, origin=origin)
         except CronSchedulerRegistrationError as e:
-            return str(e)
+            return e.user_message()
         if job is None:
             return f"No pending suggestion matches '{rest}'. Run /suggestions to list them."
         sched = job.get("schedule_display") or (job.get("job_spec", {}) or {}).get("schedule", "")

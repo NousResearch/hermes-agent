@@ -9,6 +9,10 @@ the default path is unchanged.
 import pytest
 
 
+def _fail_registration(job):
+    raise RuntimeError("private callback URL and token")
+
+
 @pytest.fixture
 def temp_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -47,25 +51,16 @@ def test_builtin_notify_is_harmless(monkeypatch):
     sched._notify_provider_jobs_changed()
 
 
-def test_create_registers_first_trigger_with_active_provider(temp_home, monkeypatch):
+def test_create_registers_first_trigger_with_active_provider(
+    temp_home, monkeypatch, make_cron_provider
+):
     """A successful create is not reported until the provider sees the job."""
     import cron.scheduler_provider as sp
     import cron.scheduler as sched
 
     registered = []
-
-    class Spy(sp.CronScheduler):
-        @property
-        def name(self):
-            return "spy"
-
-        def start(self, stop_event, **kw):
-            pass
-
-        def register_job(self, job):
-            registered.append(job)
-
-    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: Spy())
+    provider = make_cron_provider(register_job=registered.append)
+    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: provider)
 
     job = sched.create_job_with_scheduler_registration(
         prompt="echo hi",
@@ -76,24 +71,16 @@ def test_create_registers_first_trigger_with_active_provider(temp_home, monkeypa
     assert registered == [job]
 
 
-def test_create_failure_preserves_job_and_hides_provider_details(temp_home, monkeypatch):
+def test_create_failure_preserves_job_and_hides_provider_details(
+    temp_home, monkeypatch, make_cron_provider
+):
     """Registration failure is explicit without losing the durable local job."""
     import cron.jobs as jobs
     import cron.scheduler_provider as sp
     import cron.scheduler as sched
 
-    class FailingProvider(sp.CronScheduler):
-        @property
-        def name(self):
-            return "failing"
-
-        def start(self, stop_event, **kw):
-            pass
-
-        def register_job(self, job):
-            raise RuntimeError("private callback URL and token")
-
-    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: FailingProvider())
+    provider = make_cron_provider(register_job=_fail_registration, name="failing")
+    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: provider)
 
     with pytest.raises(sched.CronSchedulerRegistrationError) as exc_info:
         sched.create_job_with_scheduler_registration(
@@ -106,26 +93,20 @@ def test_create_failure_preserves_job_and_hides_provider_details(temp_home, monk
     assert jobs.get_job(error.job["id"]) == error.job
     assert "private callback URL and token" not in str(error)
     assert "Do not create a duplicate" in str(error)
+    # Human-facing variant hides the exception class name and names the job.
+    assert "RuntimeError" not in error.user_message()
+    assert "'w'" in error.user_message()
 
 
-def test_tool_create_registers_provider_before_reporting_success(temp_home, monkeypatch):
+def test_tool_create_registers_provider_before_reporting_success(
+    temp_home, monkeypatch, make_cron_provider
+):
     """The model-tool success response includes a provider-registered job."""
     import cron.scheduler_provider as sp
 
     registered = []
-
-    class RecordingProvider(sp.CronScheduler):
-        @property
-        def name(self):
-            return "recording"
-
-        def start(self, stop_event, **kw):
-            pass
-
-        def register_job(self, job):
-            registered.append(job)
-
-    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: RecordingProvider())
+    provider = make_cron_provider(register_job=registered.append, name="recording")
+    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: provider)
 
     from tools.cronjob_tools import cronjob
     import json
@@ -138,22 +119,14 @@ def test_tool_create_registers_provider_before_reporting_success(temp_home, monk
     assert [job["id"] for job in registered] == [out["job_id"]]
 
 
-def test_tool_create_reports_partial_registration_failure(temp_home, monkeypatch):
+def test_tool_create_reports_partial_registration_failure(
+    temp_home, monkeypatch, make_cron_provider
+):
     """The model tool must not claim a remotely unregistered job succeeded."""
     import cron.scheduler_provider as sp
 
-    class FailingProvider(sp.CronScheduler):
-        @property
-        def name(self):
-            return "failing"
-
-        def start(self, stop_event, **kw):
-            pass
-
-        def register_job(self, job):
-            raise RuntimeError("private callback URL and token")
-
-    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: FailingProvider())
+    provider = make_cron_provider(register_job=_fail_registration, name="failing")
+    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: provider)
 
     from tools.cronjob_tools import cronjob
     import json

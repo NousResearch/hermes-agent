@@ -11797,6 +11797,19 @@ async def _run_cron_dashboard_io(func, *args, **kwargs):
     return result
 
 
+def _raise_if_cron_registration_error(e: Exception) -> None:
+    """Re-raise a cron partial-failure (job saved, external scheduler
+    registration failed) as HTTP 424 with the structured envelope.
+
+    Shared by every dashboard cron-create surface so the contract can't
+    drift between copies. The lazy import keeps cron out of module import.
+    """
+    from cron.scheduler import CronSchedulerRegistrationError
+
+    if isinstance(e, CronSchedulerRegistrationError):
+        raise HTTPException(status_code=424, detail=e.to_dict()) from e
+
+
 from hermes_cli.web_routers import cron as _cron_routes  # noqa: E402
 
 app.include_router(_cron_routes.router)
@@ -11910,13 +11923,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
     except HTTPException:
         raise
     except Exception as e:
-        from cron.scheduler import CronSchedulerRegistrationError
-
-        if isinstance(e, CronSchedulerRegistrationError):
-            raise HTTPException(
-                status_code=424,
-                detail=e.to_dict(),
-            ) from e
+        _raise_if_cron_registration_error(e)
         _log.exception("POST /api/cron/jobs failed")
         raise HTTPException(status_code=400, detail=str(e))
 

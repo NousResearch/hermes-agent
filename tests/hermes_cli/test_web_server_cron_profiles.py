@@ -88,13 +88,21 @@ def test_create_registers_scheduler_inside_target_profile(
 ):
     """Dashboard create must resolve and register under the selected profile."""
     from cron import jobs as cron_jobs
+    from cron.scheduler_provider import CronScheduler
     from hermes_cli import web_server
     from hermes_constants import get_hermes_home
 
     worker_home = isolated_profiles["worker_alpha"]
     captured = {}
 
-    class RecordingProvider:
+    class RecordingProvider(CronScheduler):
+        @property
+        def name(self):
+            return "recording"
+
+        def start(self, stop_event, **kw):
+            pass
+
         def register_job(self, job):
             captured["job"] = job
             captured["runtime_home"] = get_hermes_home()

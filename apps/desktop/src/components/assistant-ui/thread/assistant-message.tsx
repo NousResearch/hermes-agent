@@ -1,5 +1,4 @@
 import {
-import { QuoteSelectionContextMenu } from '@/components/assistant-ui/thread/quote-selection'
   ActionBarPrimitive,
   BranchPickerPrimitive,
   ErrorPrimitive,
@@ -7,6 +6,7 @@ import { QuoteSelectionContextMenu } from '@/components/assistant-ui/thread/quot
   useAuiState,
   useMessageRuntime
 } from '@assistant-ui/react'
+import { QuoteSelectionContextMenu } from '@/components/assistant-ui/thread/quote-selection'
 import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useMemo, useState } from 'react'
 

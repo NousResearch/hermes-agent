@@ -110,6 +110,10 @@ function openContextMenu(target: HTMLElement) {
 }
 
 describe('UserMessage quote/reaction context-menu integration', () => {
+  // The user message renders first, so its picker is the first of the mocked
+  // ReactionPicker testids (the assistant message renders one too).
+  const userPicker = () => screen.getAllByTestId('reaction-picker')[0]
+
   it('lets a local selection open quote while reactions are enabled', async () => {
     render(<Harness />)
 
@@ -117,7 +121,7 @@ describe('UserMessage quote/reaction context-menu integration', () => {
     selectText(bubble)
     openContextMenu(bubble)
 
-    expect(screen.getByTestId('reaction-picker')).toHaveAttribute('data-open', 'false')
+    expect(userPicker().getAttribute('data-open')).toBe('false')
 
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Quote in new message' }))
 
@@ -134,7 +138,7 @@ describe('UserMessage quote/reaction context-menu integration', () => {
     const bubble = await screen.findByRole('button', { name: 'Edit message' })
     openContextMenu(bubble)
 
-    expect(screen.getByTestId('reaction-picker')).toHaveAttribute('data-open', 'true')
+    expect(userPicker().getAttribute('data-open')).toBe('true')
     expect(screen.queryByRole('menuitem', { name: 'Quote in new message' })).toBeNull()
   })
 })

@@ -543,7 +543,7 @@ class SessionResetPolicy:
 @dataclass
 class ChannelOverride:
     """
-    Per-channel override for model, provider, and system prompt.
+    Per-channel override for model, provider, system prompt, and reasoning effort.
 
     Used in config under platforms.<name>.channel_overrides[channel_id].
     Enables different channels (e.g. Discord #daily vs #dev) to use different
@@ -552,6 +552,9 @@ class ChannelOverride:
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+
+    _KNOWN_KEYS = {"model", "provider", "system_prompt", "reasoning_effort"}
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
@@ -561,16 +564,30 @@ class ChannelOverride:
             out["provider"] = self.provider
         if self.system_prompt is not None:
             out["system_prompt"] = self.system_prompt
+        if self.reasoning_effort is not None:
+            out["reasoning_effort"] = self.reasoning_effort
         return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
         if not data:
             return cls()
+        # Silent discard of unknown keys cost real debugging time (#79468) —
+        # warn so typos in model/system_prompt/reasoning_effort surface
+        # immediately instead of being swallowed.
+        unknown = set(data) - cls._KNOWN_KEYS
+        if unknown:
+            import logging
+            logging.getLogger(__name__).warning(
+                "channel_overrides entry has unknown key(s) %s — ignored. "
+                "Known keys: model, provider, system_prompt, reasoning_effort",
+                sorted(unknown),
+            )
         return cls(
             model=data.get("model"),
             provider=data.get("provider"),
             system_prompt=data.get("system_prompt"),
+            reasoning_effort=data.get("reasoning_effort"),
         )
 
 

@@ -13311,6 +13311,36 @@ def main():
     sessions_rename.add_argument("session_id", help="Session ID to rename")
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
 
+    sessions_pin = sessions_subparsers.add_parser(
+        "pin",
+        help="Pin session(s) — durable keep flag, exempt from auto-archive",
+        description=(
+            "Set the durable 'keep' flag on one or more sessions. Pinned "
+            "sessions are exempt from the sessions.auto_archive stale sweep "
+            "and always appear in listings. The same flag drives the Desktop "
+            "sidebar's Pinned section — pin from either surface, both see it."
+        ),
+    )
+    sessions_pin.add_argument(
+        "session_ids", nargs="+", help="Session ID(s) or unique prefix(es) to pin"
+    )
+
+    sessions_unpin = sessions_subparsers.add_parser(
+        "unpin", help="Remove the pin (durable keep flag) from session(s)"
+    )
+    sessions_unpin.add_argument(
+        "session_ids", nargs="+", help="Session ID(s) or unique prefix(es) to unpin"
+    )
+
+    sessions_pinned = sessions_subparsers.add_parser(
+        "pinned", help="List pinned sessions"
+    )
+    sessions_pinned.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON (for backup/restore scripting)",
+    )
+
     sessions_retitle = sessions_subparsers.add_parser(
         "retitle-skills",
         help="Re-title sessions whose auto-title came from a /skill's own text",

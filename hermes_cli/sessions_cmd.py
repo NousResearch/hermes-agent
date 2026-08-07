@@ -1023,6 +1023,69 @@ def cmd_sessions(args, sessions_parser=None):
         except ValueError as e:
             print(f"Error: {e}")
 
+    elif action in ("pin", "unpin"):
+        # CLI surface for the durable "keep" flag (issue #52955). Pinned
+        # sessions are exempt from the sessions.auto_archive stale sweep and
+        # always surface in listings; until now only the Desktop sidebar
+        # could write the flag. Inspired by Perplexity Computer's
+        # conversational session management (pin/archive from any surface):
+        # pin state is operational infrastructure, so every surface — GUI,
+        # TUI, CLI, scripts — needs read/write access to the same store.
+        pinning = action == "pin"
+        failures = 0
+        for raw_id in args.session_ids:
+            resolved = db.resolve_session_id(raw_id)
+            if not resolved:
+                print(f"Session '{raw_id}' not found.")
+                failures += 1
+                continue
+            if db.set_session_pinned(resolved, pinning):
+                verb = "Pinned" if pinning else "Unpinned"
+                title = db.get_session_title(resolved)
+                suffix = f"  ({title})" if title else ""
+                print(f"{verb} session '{resolved}'.{suffix}")
+            else:
+                print(f"Session '{raw_id}' not found.")
+                failures += 1
+        if failures:
+            return 1
+
+    elif action == "pinned":
+        # List every pinned conversation regardless of age. limit=1 keeps the
+        # recency page minimal; include_pinned back-fills ALL pinned rows the
+        # page missed (bounded by pin count, see list_sessions_rich), so old
+        # pins can't fall off a paging window.
+        rows = db.list_sessions_rich(
+            limit=1, include_pinned=True, exclude_sources=_exclude
+        )
+        pinned_rows = [s for s in rows if s.get("pinned")]
+        if getattr(args, "json", False):
+            payload = [
+                {
+                    "id": s["id"],
+                    "title": s.get("title"),
+                    "source": s.get("source"),
+                    "last_active": s.get("last_active"),
+                    "message_count": s.get("message_count"),
+                }
+                for s in pinned_rows
+            ]
+            print(_json.dumps(payload, indent=2))
+            return
+        if not pinned_rows:
+            print(
+                "No pinned sessions. Pin one with: hermes sessions pin <session_id>"
+            )
+            return
+        print(f"{'Title':<32} {'Last Active':<13} {'Src':<9} {'ID'}")
+        print("─" * 100)
+        for s in pinned_rows:
+            title = (s.get("title") or s.get("preview", "") or "—")[:30]
+            last_active = _relative_time(s.get("last_active"))
+            print(
+                f"{title:<32} {last_active:<13} {(s.get('source') or '-'):<9} {s['id']}"
+            )
+
     elif action == "retitle-skills":
         from agent.skill_commands import describe_skill_invocation
         from agent.title_generator import generate_title

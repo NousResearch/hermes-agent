@@ -25,6 +25,20 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
             rc = 0 if verify_ok else 128
             return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
 
+        # git remote get-url upstream
+        if "remote get-url upstream" in joined:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="https://github.com/NousResearch/hermes-agent.git\n",
+                stderr="",
+            )
+
+        # fork-divergence guard: default helper models origin/main as not ahead
+        # of upstream/main, so upstream/main is safe to apply.
+        if "rev-list --count upstream/main..origin/main" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+
         # git rev-list HEAD..origin/{branch} --count
         if "rev-list" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
@@ -49,6 +63,15 @@ def mock_args():
 # fixtures make the managed_uv functions delegate to the patched
 # ``shutil.which`` so the existing test setup keeps working without
 # per-test changes.
+@pytest.fixture(autouse=True)
+def _ignore_live_windows_venv_holders():
+    """cmd_update unit tests should not depend on live local Hermes processes."""
+    from hermes_cli import main as hm
+
+    with patch.object(hm, "_detect_venv_python_processes", return_value=[]):
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _patch_managed_uv(request):
     """Make managed_uv helpers follow shutil.which mocking in tests."""
@@ -206,13 +229,15 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
-    def test_update_on_fork_checks_upstream_when_origin_up_to_date(
+    def test_update_on_fork_compares_against_upstream_main(
         self, mock_run, _mock_which, mock_args, capsys
     ):
-        """Regression for issue #26172: forks whose local HEAD already matches
-        origin/main must still consult upstream/main before printing
-        "Already up to date!" — otherwise a fork that's caught up to its own
-        origin but behind NousResearch/hermes-agent silently misses updates.
+        """Forks must compare against upstream/main before saying up to date.
+
+        Regression for the false "Already up to date" state: a fork can match
+        its own stale origin/main while the official upstream/main has new
+        commits. The update apply path must use the same canonical upstream ref
+        that `hermes update --check` reports.
         """
         from hermes_cli import main as hm
 
@@ -227,13 +252,181 @@ class TestCmdUpdateBranchFallback:
         ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
             cmd_update(mock_args)
 
-        expected_git_cmd = (
-            ["git", "-c", "windows.appendAtomically=false"] if hm._is_windows() else ["git"]
-        )
-        sync_mock.assert_called_once_with(expected_git_cmd, PROJECT_ROOT)
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("fetch upstream main" in c for c in commands), commands
+        assert any("rev-list HEAD..upstream/main --count" in c for c in commands), commands
+        sync_mock.assert_not_called()
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_on_fork_preserves_diverged_origin_commits(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """A fork with commits absent from upstream must not reset to upstream/main."""
+        from hermes_cli import main as hm
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "remote get-url upstream" in joined:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="https://github.com/NousResearch/hermes-agent.git\n", stderr=""
+                )
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-list --count upstream/main..origin/main" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="2\n", stderr="")
+            if "rev-list HEAD..origin/main --count" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ):
+            cmd_update(mock_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("fetch upstream main" in c for c in commands), commands
+        assert any("rev-list --count upstream/main..origin/main" in c for c in commands), commands
+        assert any("rev-list HEAD..origin/main --count" in c for c in commands), commands
+        assert not any("pull --ff-only upstream main" in c for c in commands), commands
+        assert not any("reset --hard upstream/main" in c for c in commands), commands
+        assert "preserving origin/main update path" in capsys.readouterr().out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_on_fork_pulls_from_upstream_when_origin_stale(
+        self, mock_run, _mock_which, mock_args
+    ):
+        """If upstream/main has commits, apply them from upstream, not origin."""
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="2"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+            cmd_update(mock_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("rev-list HEAD..upstream/main --count" in c for c in commands), commands
+        assert any("pull --ff-only upstream main" in c for c in commands), commands
+        assert not any("pull --ff-only origin main" in c for c in commands), commands
+        sync_mock.assert_not_called()
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_update_refreshes_repo_and_tui_node_dependencies(
+        self, mock_run, mock_which, mock_args
+    ):
+        from hermes_cli import main as hm
+
+        mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+        # The web UI build runs through _run_with_idle_timeout now (issue
+        # #33788) so it no longer appears in subprocess.run's call list.
+        # Mock it so the test doesn't actually shell out to ``tsc``.
+        import subprocess as _subprocess
+        build_ok = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch.object(hm, "_is_termux_env", return_value=False), \
+             patch("hermes_constants.find_node_executable", side_effect={"npm": "/usr/bin/npm"}.get), \
+             patch.object(hm, "_run_with_idle_timeout", return_value=build_ok) as mock_idle:
+            cmd_update(mock_args)
+
+        npm_calls = [
+            (call.args[0], call.kwargs.get("cwd"))
+            for call in mock_run.call_args_list
+            if call.args and call.args[0][0] == "/usr/bin/npm"
+        ]
+
+        # cmd_update runs npm commands in these locations:
+        #   1. repo root  — root-only install (--workspaces=false)
+        #   2. repo root  — workspace install (--workspace ui-tui --workspace web)
+        #   3. web/       — npm ci --silent (if lockfile not at root)
+        #                  via _build_web_ui (subprocess.run)
+        #   4. web/       — npm run build (_run_with_idle_timeout)
+        #
+        # With a single workspace lockfile at the repo root, the root
+        # install covers all workspaces.  The web/ ci call runs from the
+        # workspace root too (parent of web_dir) when the root lockfile
+        # exists.
+        #
+        # The root install omits `--silent` and runs without
+        # `capture_output` so optional postinstall scripts (e.g.
+        # `@askjo/camofox-browser`'s browser-binary fetch) print progress —
+        # otherwise long downloads look like a hang (#18840).
+        root_flags = [
+            "/usr/bin/npm",
+            "ci",
+            "--include=dev",
+            "--no-fund",
+            "--no-audit",
+            "--progress=false",
+            "--workspaces=false",
+        ]
+        ws_flags = [
+            "/usr/bin/npm",
+            "ci",
+            "--include=dev",
+            "--no-fund",
+            "--no-audit",
+            "--progress=false",
+            "--workspace",
+            "ui-tui",
+            "--workspace",
+            "web",
+        ]
+        assert npm_calls[:2] == [
+            (root_flags, PROJECT_ROOT),
+            (ws_flags, PROJECT_ROOT),
+        ]
+        if len(npm_calls) > 2:
+            # The web/ install runs from the workspace root when the root
+            # lockfile exists (npm workspaces hoist node_modules upward).
+            assert npm_calls[2:] == [
+                (["/usr/bin/npm", "ci", "--include=dev", "--workspace", "web", "--silent"], PROJECT_ROOT),
+            ]
+
+        # If the web UI is stale, the build itself goes through the streaming
+        # helper. On already-built local checkouts it is skipped, but the node
+        # dependency install above still validates the update path.
+        if mock_idle.call_count:
+            mock_idle.assert_called_once()
+            idle_args, idle_kwargs = mock_idle.call_args
+            assert idle_args[0] == ["/usr/bin/npm", "run", "build"]
+            assert idle_kwargs["cwd"] == PROJECT_ROOT / "web"
+
+        # Regression for #18840: root npm installs must stream output
+        # (capture_output=False) so postinstall progress is visible
+        # to the user.  The _build_web_ui install uses --silent and
+        # capture_output=True, so exclude it.
+        root_install_calls = [
+            call
+            for call in mock_run.call_args_list
+            if call.args
+            and call.args[0][0] == "/usr/bin/npm"
+            and call.args[0][1] == "ci"
+            and call.kwargs.get("cwd") == PROJECT_ROOT
+            and "--silent" not in call.args[0]
+        ]
+        assert len(root_install_calls) == 2  # root-only + workspace install
+        for call in root_install_calls:
+            assert call.kwargs.get("capture_output") is False, (
+                "repo-root npm install must stream output "
+                "(no capture_output) so postinstall progress is visible"
+            )
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""

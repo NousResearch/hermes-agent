@@ -336,3 +336,191 @@ async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp
     result = await runner._inject_watch_notification("[SYSTEM: done]", evt)
     assert result is True
     assert posts == ["raw-origin-sid"]
+
+
+# ---------------------------------------------------------------------------
+# _coalesce_and_inject_watch_events tests (post-turn drain coalescing)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_single_watch_event_passes_through_unchanged(monkeypatch, tmp_path):
+    """A lone watch event should be injected as-is, no coalescing needed."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    evt = {
+        "type": "watch_match",
+        "session_id": "proc_abc",
+        "session_key": "agent:main:telegram:dm:123:42",
+        "platform": "telegram",
+        "chat_id": "123",
+        "thread_id": "42",
+        "pattern": "DONE",
+        "output": "Build DONE",
+        "command": "make build",
+    }
+
+    await runner._coalesce_and_inject_watch_events([evt])
+
+    assert adapter.handle_message.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_multiple_watch_match_same_session_key_are_coalesced(
+    monkeypatch, tmp_path,
+):
+    """Multiple watch_match events for the same session_key produce exactly
+    one injection."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    session_key = "agent:main:telegram:dm:123:42"
+    events = [
+        {
+            "type": "watch_match",
+            "session_id": f"proc_{i}",
+            "session_key": session_key,
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+            "pattern": f"PATTERN_{i}",
+            "output": f"output_{i}",
+            "command": f"cmd_{i}",
+        }
+        for i in range(4)
+    ]
+
+    await runner._coalesce_and_inject_watch_events(events)
+
+    # 4 events → 1 coalesced injection
+    assert adapter.handle_message.await_count == 1
+    injected_text = adapter.handle_message.await_args.args[0].text
+    assert "4 background processes matched watch patterns" in injected_text
+    assert "batched" in injected_text.lower()
+    for i in range(4):
+        assert f"proc_{i}" in injected_text
+
+
+@pytest.mark.asyncio
+async def test_watch_match_different_session_keys_not_coalesced(
+    monkeypatch, tmp_path,
+):
+    """watch_match events for different session_keys remain separate."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    events = [
+        {
+            "type": "watch_match",
+            "session_id": f"proc_a{i}",
+            "session_key": f"agent:main:telegram:dm:100:{i}",
+            "platform": "telegram",
+            "chat_id": "100",
+            "thread_id": str(i),
+            "pattern": "DONE",
+            "output": f"out_{i}",
+            "command": f"cmd_{i}",
+        }
+        for i in range(3)
+    ]
+
+    await runner._coalesce_and_inject_watch_events(events)
+
+    # Different session_keys → separate injections
+    assert adapter.handle_message.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_mixed_watch_types_coalesced_by_type_and_key(
+    monkeypatch, tmp_path,
+):
+    """watch_match and watch_disabled events for the same session_key
+    are coalesced separately by type."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    session_key = "agent:main:telegram:dm:123:42"
+    events = [
+        {"type": "watch_match", "session_id": "proc_w1",
+         "session_key": session_key, "platform": "telegram",
+         "chat_id": "123", "thread_id": "42",
+         "pattern": "DONE", "output": "ok", "command": "cmd"},
+        {"type": "watch_match", "session_id": "proc_w2",
+         "session_key": session_key, "platform": "telegram",
+         "chat_id": "123", "thread_id": "42",
+         "pattern": "ERROR", "output": "fail", "command": "cmd2"},
+        {"type": "watch_disabled", "session_id": "proc_d1",
+         "session_key": session_key, "platform": "telegram",
+         "chat_id": "123", "thread_id": "42",
+         "message": "Watch disabled for proc_d1"},
+        {"type": "watch_disabled", "session_id": "proc_d2",
+         "session_key": session_key, "platform": "telegram",
+         "chat_id": "123", "thread_id": "42",
+         "message": "Watch disabled for proc_d2"},
+    ]
+
+    await runner._coalesce_and_inject_watch_events(events)
+
+    # 2 watch_match coalesced + 2 watch_disabled coalesced = 2 injections
+    assert adapter.handle_message.await_count == 2
+    texts = [c.args[0].text for c in adapter.handle_message.await_args_list]
+
+    # One should be the watch_match batch
+    match_texts = [t for t in texts if "matched watch patterns" in t]
+    assert len(match_texts) == 1
+    assert "2 background processes matched watch patterns" in match_texts[0]
+
+    # One should be the watch_disabled batch
+    disabled_texts = [t for t in texts if "disabled" in t]
+    assert len(disabled_texts) == 1
+    assert "2 background processes had watch patterns disabled" in disabled_texts[0]
+
+
+@pytest.mark.asyncio
+async def test_coalesced_ids_truncated_after_5(monkeypatch, tmp_path):
+    """When >5 processes, first 5 IDs are listed, rest shown as count."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    session_key = "agent:main:telegram:dm:123:42"
+    events = [
+        {
+            "type": "watch_match",
+            "session_id": f"proc_{i}",
+            "session_key": session_key,
+            "platform": "telegram",
+            "chat_id": "123",
+            "thread_id": "42",
+            "pattern": "DONE",
+            "output": f"out_{i}",
+            "command": "cmd",
+        }
+        for i in range(8)
+    ]
+
+    await runner._coalesce_and_inject_watch_events(events)
+
+    assert adapter.handle_message.await_count == 1
+    injected_text = adapter.handle_message.await_args.args[0].text
+    assert "8 background processes matched watch patterns" in injected_text
+    for i in range(5):
+        assert f"proc_{i}" in injected_text
+    assert "...and 3 more" in injected_text
+    assert "proc_5" not in injected_text
+
+
+@pytest.mark.asyncio
+async def test_empty_events_list_is_noop(monkeypatch, tmp_path):
+    """Empty event list should not cause any injection."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.handle_message = AsyncMock()
+
+    await runner._coalesce_and_inject_watch_events([])
+
+    adapter.handle_message.assert_not_awaited()

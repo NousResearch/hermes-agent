@@ -163,7 +163,7 @@ mailbox.alias.sent = "Sent Messages"
 ## Hermes integration notes
 
 - **Reading, listing, searching, flagging, copying** — all work directly through the terminal tool.
-- **Composing / replying / forwarding** — use the `message compose` / `message reply` / `message forward` subcommands (flag-based) or chain `mml` for rich MIME / attachments / PGP. To send a pre-written RFC 822 message, use `message send < message.eml` or pipe via stdin to `message compose --body-file -` / `message compose` with no `--body` (stdin fallback).
+- **Composing / replying / forwarding** — use the `message compose` / `message reply` / `message forward` subcommands (flag-based) or chain `mml` for rich MIME / attachments / PGP. To send a pre-written RFC 822 message, use `message send < message.eml` (or pipe it: `message send < message.eml` — same stdin path). For `message compose`, pipe a body via stdin by omitting both `--body` and `--body-file` (stdin is the fallback).
 - **Pitfall — `message write` is an alias, not an editor opener.** In v2, `himalaya message write` is a `visible_alias` of `message compose` and behaves identically (flag-based, no `$EDITOR`). The pre-v1.x editor-driven flow no longer exists. Use `mml compose` if you want interactive composition.
 - For programmatic output (parsing in scripts), pass `--json` for structured envelopes / messages. It's a global flag (pass before the subcommand for consistency); v2 also recognizes it after the subcommand for ergonomics.
 - **Pitfall — search query DSL:** the query is a positional `Vec<String>` that captures trailing tokens until end-of-input. Always put the query **last** on the command line. Quote-protect patterns containing `$`, shell metacharacters, or spaces.
@@ -197,7 +197,7 @@ himalaya envelope list --has-attachment    # populate ATT column
 
 ### Search envelopes
 
-`envelope search` takes a positional query using himalaya's cross-backend DSL. Conditions: `date <yyyy-mm-dd>`, `after <yyyy-mm-dd>`, `before <yyyy-mm-dd>`, `from <pattern>`, `to <pattern>`, `subject <pattern>`, `body <pattern>`, `flag <seen|answered|flagged|draft>`. Combine with `and`, `or`, `not`, group with parens. Sort with `order by <date|from|to|subject> [asc|desc]`.
+`envelope search` takes a positional query using himalaya's cross-backend DSL. Conditions: `date <yyyy-mm-dd>`, `after <yyyy-mm-dd>`, `from <pattern>`, `to <pattern>`, `subject <pattern>`, `body <pattern>`, `flag <seen|answered|flagged|draft>`. Combine with `and`, `or`, `not`, group with parens. Sort with `order by <date|from|to|subject> [asc|desc]`.
 
 ```bash
 himalaya envelope search "from alice"
@@ -228,23 +228,33 @@ himalaya message compose \
   --send
 ```
 
-For a body from stdin (replaces the removed `template send` subcommand), **omit `--body` and `--body-file` — stdin is the body** by default:
+For a body from stdin (replaces the removed `template send` subcommand), **omit `--body` and `--body-file` — stdin is the body** by default. **`compose` writes the composed RFC 5322 bytes to stdout by default; pass `--send` to actually deliver** through SMTP/JMAP:
 
 ```bash
 echo "Hello from a piped body" | himalaya message compose \
   --to you@example.com \
-  --subject "Test"
+  --subject "Test" \
+  --send
 
 # Or read the body from a file
 himalaya message compose \
   --to you@example.com \
   --subject "Test" \
-  --body-file ./body.txt
+  --body-file ./body.txt \
+  --send
 ```
 
 Note: `--body-file -` does NOT work — the binary tries to open a file literally named `-`. The `--body` / `--body-file` / implicit stdin paths are mutually exclusive; pick one.
 
-For rich MIME (multipart, attachments, signing), pipe `mml` output into `message compose` via stdin or process substitution; see `references/message-composition.md`.
+To send a **pre-written RFC 822 message** (full headers + body, e.g. one produced by `mml`, a template, or another tool), use `message send` — it accepts a file path, raw contents, or piped stdin:
+
+```bash
+himalaya message send < message.eml
+# or
+himalaya message send --save drafts < message.eml
+```
+
+`message send` reads the full message verbatim (headers + body); it does NOT take `--body` / `--body-file` / `--subject`. For richer composition (multipart MIME, attachments, signing/encryption), chain a standalone composer like `mml` into `message send` via stdin or process substitution; see `references/message-composition.md`.
 
 ### Reply to a message
 
@@ -276,15 +286,14 @@ himalaya message reply 42 --posting-style bottom --body "..." --send
 himalaya message forward 42 --to other@example.com --body "FYI" --send
 ```
 
-### Move / copy / delete
+### Move / copy
 
 ```bash
 himalaya message copy --from INBOX --to Archives 42
 himalaya message move --from INBOX --to Archives 42    # if backend supports move
-himalaya message delete 42                              # trash-move; permanent for in-trash
 ```
 
-> **v2 note.** There is no `message expunge` subcommand in v2. `message delete` already trash-moves; on IMAP servers without UIDPLUS, deleted-from-trash items are flagged `\Deleted` and reclaimed by the next `message delete` on the trash mailbox, or by the server's own expunge policy.
+> **v2 note.** There is no `message delete` or `message expunge` subcommand in v2. To trash a message, move it to a trash mailbox (e.g. `himalaya message move --from INBOX --to Trash 42`) or rely on the backend's automatic deletion-on-trash behavior (Gmail/JMAP do this; IMAP behavior depends on the server's `expunge_behavior`). Permanent deletion (real expunge) is a backend-side / mailbox-policy concern, not a CLI subcommand.
 
 ### Manage flags
 
@@ -293,14 +302,14 @@ himalaya flag add --flag seen 1:3,5
 himalaya flag remove --flag seen 42
 ```
 
-The `--flag` argument accepts `seen`, `answered`, `flagged`, `draft`, `recent`. Multiple message IDs can be comma-separated ranges (`1:3,5` = 1,2,3,5).
+The `--flag` argument accepts `seen`, `answered`, `flagged`, `draft`. Multiple message IDs can be comma-separated ranges (`1:3,5` = 1,2,3,5).
 
 ### Download attachments
 
 ```bash
 himalaya attachment download 42                         # download all; default dir from config
 himalaya attachment download 42 --dir /tmp/attach       # override destination
-himalaya attachment download 42 0 1                     # download only attachments 0 and 1
+himalaya attachment download 42 1 2                     # download only attachments 1 and 2 (1-based ids from `attachments list`)
 ```
 
 > **v2 note.** The destination flag is `--dir` (also `-d`), not `--output-dir`. Default destination is the account's `downloads-dir` config (falling back to the global config, then the platform standard). Run `himalaya attachment download --help` for the full flag list.

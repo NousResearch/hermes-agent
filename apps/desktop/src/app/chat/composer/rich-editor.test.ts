@@ -362,12 +362,16 @@ describe('replaceBeforeCaret', () => {
 })
 
 describe('handleNumberedListKey', () => {
-  const editorWithCaret = (text: string) => {
+  const editorWithCaret = (text: string, caretOffset?: number) => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT
     document.body.append(editor)
     renderComposerContents(editor, text)
-    caretIn(editor)
+    if (caretOffset === undefined) {
+      caretIn(editor)
+    } else {
+      placeCaretAtOffset(editor, caretOffset)
+    }
 
     return editor
   }
@@ -397,7 +401,7 @@ describe('handleNumberedListKey', () => {
   })
 
   it('keeps one paragraph gap when the blank marker precedes text', () => {
-    const editor = editorWithCaret('1. first\n2. \nnext')
+    const editor = editorWithCaret('1. first\n2. \nnext', '1. first\n2. '.length)
 
     expect(handleNumberedListKey(editor, 'Enter')).toBe(true)
     expect(composerPlainText(editor)).toBe('1. first\n\nnext')

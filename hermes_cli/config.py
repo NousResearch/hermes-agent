@@ -3086,6 +3086,42 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         ) from exc
 
 
+def require_parsable_config_before_write(config_path: Optional[Path] = None) -> None:
+    """Refuse to replace an existing config.yaml that cannot be PARSED.
+
+    :func:`require_readable_config_before_write` only proves the bytes are
+    reachable — a file full of valid bytes and invalid YAML sails through it.
+    That is not enough for read-modify-write callers, because every reader
+    (:func:`read_raw_config`, :func:`load_config`) degrades a parse failure to
+    ``{}``. A caller that reads, mutates one key and saves therefore writes a
+    document containing ONLY that key, silently destroying every user setting
+    (#75431, fixed for ``hermes config set/unset`` in #75885/#75900).
+
+    Full-document replacement callers that intentionally rebuild the file
+    (first-run creation, ``hermes doctor`` reset, migrations) must NOT call
+    this — repairing a broken config is exactly their job. Only read-modify-
+    write paths need it.
+
+    Raises ``RuntimeError`` (mirroring the readability guard) so non-CLI
+    callers such as the dashboard route surface an error instead of exiting
+    the process.
+    """
+    if config_path is None:
+        config_path = get_config_path()
+    require_readable_config_before_write(config_path)
+    if not config_path.exists():
+        return
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            fast_safe_load(f)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Refusing to overwrite {config_path}: the existing config.yaml has a "
+            f"YAML syntax error ({exc}). Fix it first — `hermes config edit` opens "
+            f"it in your editor — then retry."
+        ) from exc
+
+
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     """Fail-closed atomic write for ``config.yaml``.
 
@@ -3165,6 +3201,10 @@ def write_platform_config_field(
     user's raw config file. Dashboard routes use the default loaded-config path
     so they retain their existing profile-scoped ``load_config`` behavior.
     """
+    # Read-modify-write: both readers below return {} for an unparsable file,
+    # so without this guard a single YAML typo turns "toggle one platform
+    # field" into "replace config.yaml with just that field" (#75431 class).
+    require_parsable_config_before_write()
     config = read_raw_config() if raw else load_config()
     platforms = config.setdefault("platforms", {})
     if not isinstance(platforms, dict):

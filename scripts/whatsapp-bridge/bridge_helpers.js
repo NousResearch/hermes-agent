@@ -306,10 +306,24 @@ export async function extractBridgeEvent({
   downloadMedia,
   writeMediaFile,
   cacheDirs = {},
+  resolveMentionNames,
 }) {
   const messageContent = getMessageContent(msg);
   const contextInfo = getContextInfo(messageContent);
   const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
+  // Mentions arrive as opaque ids; the readable identity lives in group
+  // metadata. Resolve here so the agent can tell "tagged me" from "tagged
+  // someone else" instead of guessing from a bare number.
+  let mentionedNames = {};
+  if (mentionedIds.length && typeof resolveMentionNames === 'function') {
+    try {
+      const resolved = await resolveMentionNames(mentionedIds, chatId);
+      if (resolved && typeof resolved === 'object') mentionedNames = resolved;
+    } catch {
+      // Name resolution is best-effort: an unresolved mention degrades to
+      // "another person", which is still correct. Never drop the message.
+    }
+  }
   const quotedMessageId = contextInfo?.stanzaId || null;
   const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
   const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
@@ -477,6 +491,7 @@ export async function extractBridgeEvent({
     nativeMetadata,
     mediaUrls,
     mentionedIds,
+    mentionedNames,
     quotedMessageId,
     quotedParticipant,
     quotedRemoteJid,

@@ -55,7 +55,11 @@ class TestCachedFetchApiModels:
     def test_expired_entry_triggers_live_fetch_and_is_persisted(self):
         import hermes_cli.models as mod
 
-        cache = {"custom:https://gw.example.com/v1": self._entry(["old"], age_seconds=99999)}
+        # Beyond the stale-serve window, so the wrapper must block on a
+        # live fetch (within the window it stale-serves + refreshes off
+        # thread — covered in TestSalvageFollowups).
+        too_old = mod._PROVIDER_MODELS_STALE_SERVE_MAX + 60
+        cache = {"custom:https://gw.example.com/v1": self._entry(["old"], age_seconds=too_old)}
         saved = {}
         with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
              patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
@@ -205,3 +209,87 @@ class TestCachedFetchApiModelsDiskRoundTrip:
         cache = mod._load_provider_models_cache()
         assert cache["custom:https://openrouter.ai/v1"]["models"] == ["custom-endpoint-model"]
         assert cache["openrouter"]["models"] == ["openrouter-curated-model"]
+
+
+class TestSalvageFollowups:
+    """Follow-up behaviors added while salvaging PR #80740: SWR stale-serve
+    parity with cached_provider_model_ids, and corrupt-cache degradation."""
+
+    def _entry(self, models, age_seconds, fp="fp"):
+        return {"fp": fp, "at": time.time() - age_seconds, "models": list(models)}
+
+    def test_expired_entry_within_stale_window_is_served_and_refreshed_off_thread(self):
+        """TTL-expired (but < stale-serve max) entries must be served
+        immediately — the picker never blocks on a live round-trip — while a
+        background refresh is spawned for the next open."""
+        import hermes_cli.models as mod
+
+        cache = {"custom:https://gw.example.com/v1": self._entry(["stale-ok"], age_seconds=7200)}
+        with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
+             patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
+             patch.object(mod, "_spawn_swr_refresh") as spawn, \
+             patch.object(mod, "fetch_api_models") as live:
+            out = mod.cached_fetch_api_models(
+                "sk-key", "https://gw.example.com/v1", ttl_seconds=3600
+            )
+        assert out == ["stale-ok"]
+        live.assert_not_called()
+        spawn.assert_called_once()
+        assert spawn.call_args[0][0] == "custom:https://gw.example.com/v1"
+
+    def test_entry_beyond_stale_window_blocks_on_live_fetch(self):
+        import hermes_cli.models as mod
+
+        too_old = mod._PROVIDER_MODELS_STALE_SERVE_MAX + 60
+        cache = {"custom:https://gw.example.com/v1": self._entry(["ancient"], age_seconds=too_old)}
+        with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
+             patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
+             patch.object(mod, "_save_provider_models_cache"), \
+             patch.object(mod, "_spawn_swr_refresh") as spawn, \
+             patch.object(mod, "fetch_api_models", return_value=["fresh"]) as live:
+            out = mod.cached_fetch_api_models("sk-key", "https://gw.example.com/v1")
+        assert out == ["fresh"]
+        live.assert_called_once()
+        spawn.assert_not_called()
+
+    def test_swr_refresh_fn_writes_custom_entry_through_shared_scaffolding(self):
+        """The generalized _spawn_swr_refresh(key, refresh_fn) must persist a
+        custom-endpoint entry via the shared inflight-dedupe machinery."""
+        import threading as _threading
+
+        import hermes_cli.models as mod
+
+        done = _threading.Event()
+        saved = {}
+
+        def fake_save(data):
+            saved.update(data)
+            done.set()
+
+        with patch.object(mod, "_load_provider_models_cache", return_value={}), \
+             patch.object(mod, "_save_provider_models_cache", side_effect=fake_save):
+            mod._spawn_swr_refresh(
+                "custom:https://gw.example.com/v1",
+                lambda: {"fp": "fp", "at": time.time(), "models": ["refreshed"]},
+            )
+            assert done.wait(timeout=5), "background refresh did not complete"
+        assert saved["custom:https://gw.example.com/v1"]["models"] == ["refreshed"]
+        assert "custom:https://gw.example.com/v1" not in mod._swr_refresh_inflight
+
+    def test_corrupt_at_field_degrades_to_live_fetch_instead_of_raising(self):
+        """provider_models_cache.json is user-editable; a corrupted 'at' must
+        be a cache miss (live fetch), never an exception out of the wrapper."""
+        import hermes_cli.models as mod
+
+        cache = {
+            "custom:https://gw.example.com/v1": {
+                "fp": "fp", "at": "yesterday", "models": ["corrupt-row"],
+            }
+        }
+        with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
+             patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
+             patch.object(mod, "_save_provider_models_cache"), \
+             patch.object(mod, "fetch_api_models", return_value=["live-models"]) as live:
+            out = mod.cached_fetch_api_models("sk-key", "https://gw.example.com/v1")
+        assert out == ["live-models"]
+        live.assert_called_once()

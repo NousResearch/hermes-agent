@@ -19,7 +19,10 @@ import urllib.error
 import time
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import TypeGuard
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url
@@ -3106,37 +3109,50 @@ _swr_refresh_inflight: set = set()
 _swr_refresh_lock = threading.Lock()
 
 
-def _spawn_swr_refresh(provider: str) -> None:
-    """Kick a background refresh of *provider*'s model-id cache entry.
+def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
+    """Kick a background refresh of *cache_key*'s model-id cache entry.
 
-    Fire-and-forget daemon thread; at most one in flight per provider.
+    Fire-and-forget daemon thread; at most one in flight per cache key.
     Failures are swallowed — the stale entry stays served until a later
     refresh succeeds (same degradation the blocking path already had).
+
+    ``refresh_fn`` (no-args, returns the fresh cache-entry dict or ``None``)
+    lets non-slug keys (``custom:<base_url>`` entries from
+    :func:`cached_fetch_api_models`) reuse the same inflight-dedupe and
+    thread scaffolding. When omitted, *cache_key* is treated as a
+    ``PROVIDER_REGISTRY`` slug and refreshed via :func:`provider_model_ids`
+    (the original behavior).
     """
     with _swr_refresh_lock:
-        if provider in _swr_refresh_inflight:
+        if cache_key in _swr_refresh_inflight:
             return
-        _swr_refresh_inflight.add(provider)
+        _swr_refresh_inflight.add(cache_key)
+
+    def _default_refresh():
+        live = provider_model_ids(cache_key, force_refresh=True)
+        if not live:
+            return None
+        return {
+            "fp": _credential_fingerprint(cache_key),
+            "at": time.time(),
+            "models": list(live),
+        }
 
     def _refresh() -> None:
         try:
-            live = provider_model_ids(provider, force_refresh=True)
-            if live:
+            entry = (refresh_fn or _default_refresh)()
+            if entry:
                 cache = _load_provider_models_cache()
-                cache[provider] = {
-                    "fp": _credential_fingerprint(provider),
-                    "at": time.time(),
-                    "models": list(live),
-                }
+                cache[cache_key] = entry
                 _save_provider_models_cache(cache)
         except Exception:
-            logger.debug("SWR refresh failed for %s", provider, exc_info=True)
+            logger.debug("SWR refresh failed for %s", cache_key, exc_info=True)
         finally:
             with _swr_refresh_lock:
-                _swr_refresh_inflight.discard(provider)
+                _swr_refresh_inflight.discard(cache_key)
 
     threading.Thread(
-        target=_refresh, daemon=True, name=f"model-cache-swr-{provider}"
+        target=_refresh, daemon=True, name=f"model-cache-swr-{cache_key}"
     ).start()
 
 
@@ -4668,6 +4684,23 @@ def _custom_endpoint_fingerprint(
     return hashlib.blake2b(blob, digest_size=8).hexdigest()
 
 
+def _cache_entry_valid(entry: Any, fp: str) -> "TypeGuard[dict[str, Any]]":
+    """True when *entry* is a well-formed cache row for fingerprint *fp*.
+
+    Requires a numeric ``at`` so corrupt disk state (hand-edited JSON with
+    ``"at": "yesterday"`` or ``null``) degrades to a cache miss / live fetch
+    instead of raising out of the wrapper.
+    """
+    return (
+        isinstance(entry, dict)
+        and entry.get("fp") == fp
+        and isinstance(entry.get("models"), list)
+        and bool(entry["models"])
+        and isinstance(entry.get("at"), (int, float))
+        and not isinstance(entry.get("at"), bool)
+    )
+
+
 def cached_fetch_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
@@ -4680,29 +4713,23 @@ def cached_fetch_api_models(
 ) -> Optional[list[str]]:
     """Disk-cached wrapper around :func:`fetch_api_models` for custom endpoints.
 
-    Mirrors :func:`cached_provider_model_ids` but keys
-    ``provider_models_cache.json`` off ``custom:<base_url>`` instead of a
-    ``PROVIDER_REGISTRY`` slug, since custom endpoints (named
-    ``custom_providers`` rows, bare ``provider: custom``, and per-endpoint-map
-    entries) have none. Same stale-beats-nothing fallback policy as
-    ``cached_provider_model_ids``: a live-fetch failure serves the last
-    same-fingerprint result rather than an empty list. Always returns
-    whatever :func:`fetch_api_models` would (a list or ``None``), never
-    raises.
+    Mirrors :func:`cached_provider_model_ids` — including its
+    stale-while-revalidate tier — but keys ``provider_models_cache.json``
+    off ``custom:<base_url>`` instead of a ``PROVIDER_REGISTRY`` slug, since
+    custom endpoints (named ``custom_providers`` rows, bare
+    ``provider: custom``, and per-endpoint-map entries) have none. Same
+    stale-beats-nothing fallback policy: a live-fetch failure serves the
+    last same-fingerprint result rather than an empty list. Returns whatever
+    :func:`fetch_api_models` would (a list or ``None``); corrupt cache rows
+    degrade to a live fetch instead of raising.
     """
-    # Only forward api_mode when the caller actually set it — none of the
-    # current probe call sites do, and omitting it (rather than passing
-    # api_mode=None) keeps the live-call signature identical to a direct
-    # fetch_api_models() call.
-    live_kwargs: dict[str, Any] = {"timeout": timeout, "headers": headers}
-    if api_mode is not None:
-        live_kwargs["api_mode"] = api_mode
-
     normalized_url = str(base_url or "").strip().rstrip("/").lower()
     if not normalized_url:
         # No base_url means nothing to key the cache on — fall through to a
         # live call so callers keep getting fetch_api_models' own behavior.
-        return fetch_api_models(api_key, base_url, **live_kwargs)
+        return fetch_api_models(
+            api_key, base_url, timeout=timeout, api_mode=api_mode, headers=headers
+        )
 
     cache_key = f"custom:{normalized_url}"
     fp = _custom_endpoint_fingerprint(api_key, api_mode, headers)
@@ -4710,17 +4737,30 @@ def cached_fetch_api_models(
     entry = cache.get(cache_key)
     now = time.time()
 
-    if (
-        not force_refresh
-        and isinstance(entry, dict)
-        and entry.get("fp") == fp
-        and isinstance(entry.get("models"), list)
-        and entry["models"]
-        and (now - float(entry.get("at", 0))) < ttl_seconds
-    ):
-        return list(entry["models"])
+    if not force_refresh and _cache_entry_valid(entry, fp):
+        age = now - entry["at"]
+        if age < ttl_seconds:
+            return list(entry["models"])
+        if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+            # Stale-while-revalidate: serve the expired entry immediately so
+            # picker opens never block on a live /v1/models round-trip
+            # (#72762's stall class, which a plain TTL would reintroduce an
+            # hour into the session); refresh off-thread for the next open.
+            def _refresh_custom():
+                live = fetch_api_models(
+                    api_key, base_url,
+                    timeout=timeout, api_mode=api_mode, headers=headers,
+                )
+                if not live:
+                    return None
+                return {"fp": fp, "at": time.time(), "models": list(live)}
 
-    live = fetch_api_models(api_key, base_url, **live_kwargs)
+            _spawn_swr_refresh(cache_key, _refresh_custom)
+            return list(entry["models"])
+
+    live = fetch_api_models(
+        api_key, base_url, timeout=timeout, api_mode=api_mode, headers=headers
+    )
     if live:
         cache[cache_key] = {"fp": fp, "at": now, "models": list(live)}
         _save_provider_models_cache(cache)
@@ -4728,12 +4768,7 @@ def cached_fetch_api_models(
 
     # Live fetch returned nothing (offline endpoint, timeout, auth hiccup).
     # A stale same-fingerprint entry beats an empty result.
-    if (
-        isinstance(entry, dict)
-        and entry.get("fp") == fp
-        and isinstance(entry.get("models"), list)
-        and entry["models"]
-    ):
+    if _cache_entry_valid(entry, fp):
         return list(entry["models"])
     return live
 

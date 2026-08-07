@@ -114,7 +114,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
             is_provider_enabled,
             load_config,
         )
-        from hermes_cli.models import fetch_api_models
+        from hermes_cli.models import cached_fetch_api_models
         from hermes_cli.providers import custom_provider_slug
     except ImportError:
         return []
@@ -176,7 +176,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
             discover = discover.lower() not in {"false", "no", "0"}
         if discover and api_key:
             try:
-                live = fetch_api_models(
+                live = cached_fetch_api_models(
                     api_key, base_url, api_mode=entry.get("api_mode")
                 )
             except Exception:

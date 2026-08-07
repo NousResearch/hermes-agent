@@ -100,14 +100,10 @@ def _restore_user_after_reference_handoff(
 ) -> bool:
     """Re-append this turn's real user ask when compaction left only a handoff.
 
-    Returns True when a restore append happened. Used before deciding whether
-    a post-compaction ``continue`` would let the reference-only summary drive
-    the next model call (#80622).
+    Returns True when a restore append happened. The caller has already
+    established that a reference-only handoff would drive the next model
+    call (#80622); this helper only decides whether a restorable ask exists.
     """
-    from agent.context_compressor import reference_handoff_would_drive_next_model_call
-
-    if not reference_handoff_would_drive_next_model_call(messages):
-        return False
     if user_message is None:
         return False
     if isinstance(user_message, str):
@@ -137,23 +133,25 @@ def _should_skip_model_call_for_reference_handoff(
     """Guard post-compaction continues against sole-handoff active turns (#80622)."""
     from agent.context_compressor import reference_handoff_would_drive_next_model_call
 
-    _restore_user_after_reference_handoff(messages, user_message)
-    return reference_handoff_would_drive_next_model_call(messages)
+    if not reference_handoff_would_drive_next_model_call(messages):
+        return False
+    if _restore_user_after_reference_handoff(messages, user_message):
+        # The restored ask is an actionable non-synthetic user row appended
+        # after the handoff — by construction the handoff no longer drives.
+        return False
+    return True
 
 
-def _final_response_from_messages(messages: List[Dict[str, Any]]) -> str:
-    """Fallback text for a turn ended by the sole-handoff skip (#80622).
-
-    Deliberately NOT a replay of the last assistant text: finalize_turn's
-    non-assistant-tail chokepoint (#43849) appends ``final_response`` as a
-    fresh assistant row, so recovering the previous turn's prose here would
-    duplicate it in the durable transcript AND re-deliver it to the user as
-    if it were this turn's answer. A short status is honest and idempotent.
-    """
-    return (
-        "Context was compacted. The previous response is complete — "
-        "awaiting your next message."
-    )
+# Fallback final_response for a turn ended by the sole-handoff skip (#80622).
+# Deliberately NOT a replay of the last assistant text: finalize_turn's
+# non-assistant-tail chokepoint (#43849) appends final_response as a fresh
+# assistant row, so recovering the previous turn's prose here would duplicate
+# it in the durable transcript AND re-deliver it to the user as if it were
+# this turn's answer. A short status is honest and idempotent.
+_HANDOFF_SKIP_FINAL_RESPONSE = (
+    "Context was compacted. The previous response is complete — "
+    "awaiting your next message."
+)
 
 
 # Stable prefix of the local interrupt status string emitted when a turn is
@@ -2234,7 +2232,7 @@ def run_conversation(
                         "handoff would be the sole active user turn (#80622)"
                     )
                     if not final_response:
-                        final_response = _final_response_from_messages(messages)
+                        final_response = _HANDOFF_SKIP_FINAL_RESPONSE
                     _turn_exit_reason = "compaction_handoff_not_actionable"
                     break
                 continue
@@ -5815,7 +5813,7 @@ def run_conversation(
                     "handoff would be the sole active user turn (#80622)"
                 )
                 if not final_response:
-                    final_response = _final_response_from_messages(messages)
+                    final_response = _HANDOFF_SKIP_FINAL_RESPONSE
                 _turn_exit_reason = "compaction_handoff_not_actionable"
                 break
             # In-loop compression rebuilt `messages` with fresh compaction
@@ -6681,9 +6679,7 @@ def run_conversation(
                                 "active user turn (#80622)"
                             )
                             if not final_response:
-                                final_response = _final_response_from_messages(
-                                    messages
-                                )
+                                final_response = _HANDOFF_SKIP_FINAL_RESPONSE
                             _turn_exit_reason = "compaction_handoff_not_actionable"
                             break
                 elif agent.compression_enabled:

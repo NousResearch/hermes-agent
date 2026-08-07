@@ -1103,19 +1103,33 @@ class SessionSearchMixin:
         active_clause = "" if include_inactive else " AND active = 1"
         # Match CLI/desktop: only real user turns, not timeline bookkeeping.
         display_clause = " AND (display_kind IS NULL OR display_kind = '')"
+        # Legacy standalone compaction handoffs (persisted pre-#80622) are
+        # durable role='user' rows with NO display_kind — SQL can't see them,
+        # so fetch with headroom and drop them in the decode loop below.
+        # Without this, /undo N and rewind pair an in-memory count that
+        # excludes handoffs with a DB pick that includes them, soft-deleting
+        # the wrong turn.
+        fetch_limit = int(limit) * 2 + 5
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id, timestamp, content FROM messages "
                 "WHERE session_id = ? AND role = 'user'"
                 f"{active_clause}{display_clause} "
                 "ORDER BY id DESC LIMIT ?",
-                (session_id, int(limit)),
+                (session_id, fetch_limit),
             )
             rows = cursor.fetchall()
 
+        from agent.context_compressor import ContextCompressor
+
         result: List[Dict[str, Any]] = []
         for row in rows:
+            if len(result) >= int(limit):
+                break
             decoded = self._decode_content(row["content"])
+            if ContextCompressor._is_context_summary_content(decoded):
+                # Compaction handoff — never a user-originated turn (#80622).
+                continue
             if isinstance(decoded, list):
                 # Multimodal — flatten text parts.
                 text_parts = [

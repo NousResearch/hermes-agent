@@ -7025,18 +7025,22 @@ def _handoff_carries_live_user_content(message: Any) -> bool:
     Force-user-leading merges prepend the handoff + end marker to the real
     ask, leaving a non-empty remainder after ``_SUMMARY_END_MARKER``. Either
     shape must remain actionable (#80622 must not treat them as sole-handoff).
+
+    Delegates to ``_strip_context_summary_handoff_message`` — the canonical
+    "does anything survive once the handoff is removed" logic (it also
+    handles multimodal list content and returns ``None`` for a merged-shaped
+    row whose preserved prior tail is EMPTY, which a bare
+    ``classify_summary_content(...) == "merged"`` check would wrongly treat
+    as live). Callers must pre-filter with ``is_compaction_summary_message``:
+    for non-summary rows the strip helper returns the message unchanged,
+    which would read as "carries live content" here.
     """
     if not isinstance(message, dict):
         return False
-    content = message.get("content")
-    kind = ContextCompressor.classify_summary_content(content)
-    if kind == "merged":
-        return True
-    text = _content_text_for_contains(content)
-    marker_idx = text.find(_SUMMARY_END_MARKER)
-    if marker_idx < 0:
-        return False
-    return bool(text[marker_idx + len(_SUMMARY_END_MARKER) :].strip())
+    return (
+        ContextCompressor._strip_context_summary_handoff_message(message)
+        is not None
+    )
 
 
 def reference_handoff_would_drive_next_model_call(

@@ -8653,6 +8653,66 @@ def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
+    """rollback.restore must not truncate from a legacy standalone compaction
+    handoff — a durable role=user row persisted pre-#80622 with NO
+    display_kind. Same bug class as the display_kind marker above, caught
+    only by the is_user_originated_turn predicate.
+    """
+    from agent.context_compressor import (
+        COMPRESSED_SUMMARY_METADATA_KEY,
+        HISTORICAL_TASK_HEADING,
+        SUMMARY_PREFIX,
+        _SUMMARY_END_MARKER,
+    )
+
+    class _Mgr:
+        enabled = True
+
+        def list_checkpoints(self, cwd):
+            return [{"hash": "abc123"}]
+
+        def restore(self, cwd, target, file_path=None):
+            return {"success": True, "message": "restored"}
+
+    handoff = {
+        "role": "user",
+        "content": (
+            f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\n"
+            f"User asked: 'old task'\n\n{_SUMMARY_END_MARKER}"
+        ),
+        COMPRESSED_SUMMARY_METADATA_KEY: True,
+        # NOTE: no display_kind — the legacy-persistence shape (#80622).
+    }
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "second answer"},
+        handoff,
+    ]
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()),
+        history=list(history),
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "rollback.restore",
+                "params": {"session_id": "sid", "hash": "abc123"},
+            }
+        )
+
+        assert resp["result"]["success"] is True
+        # Truncation lands on "second question", not the handoff row.
+        assert resp["result"]["history_removed"] == 3  # q2 + a2 + handoff
+        remaining = server._sessions["sid"]["history"]
+        assert [m["content"] for m in remaining] == ["first question", "first answer"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 # ── session.steer ────────────────────────────────────────────────────
 
 

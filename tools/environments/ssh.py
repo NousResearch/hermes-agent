@@ -7,6 +7,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 from tools.environments.base import (
@@ -23,6 +24,36 @@ from tools.environments.file_sync import (
 )
 
 logger = logging.getLogger(__name__)
+
+_control_socket_refcounts: dict[Path, int] = {}
+_control_socket_lock = threading.Lock()
+
+
+def _control_socket_path(user: str, host: str, port: int) -> Path:
+    """Return the deterministic ControlMaster socket path for *user@host:port*."""
+    control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
+    _socket_id = hashlib.sha256(
+        f"{user}@{host}:{port}".encode()
+    ).hexdigest()[:16]
+    return control_dir / f"{_socket_id}.sock"
+
+
+def _acquire_control_socket(control_socket: Path) -> None:
+    with _control_socket_lock:
+        _control_socket_refcounts[control_socket] = (
+            _control_socket_refcounts.get(control_socket, 0) + 1
+        )
+
+
+def _release_control_socket(control_socket: Path) -> bool:
+    """Drop one holder. Return True when the mux should be torn down."""
+    with _control_socket_lock:
+        count = _control_socket_refcounts.get(control_socket, 0)
+        if count <= 1:
+            _control_socket_refcounts.pop(control_socket, None)
+            return True
+        _control_socket_refcounts[control_socket] = count - 1
+        return False
 
 
 def _ensure_ssh_available() -> None:
@@ -64,10 +95,8 @@ class SSHEnvironment(BaseEnvironment):
         # deeply-nested $TMPDIR (e.g. /var/folders/xx/yy/T/). Hashing the
         # triple keeps the path stable across reconnects so ControlMaster
         # reuse still works.
-        _socket_id = hashlib.sha256(
-            f"{user}@{host}:{port}".encode()
-        ).hexdigest()[:16]
-        self.control_socket = self.control_dir / f"{_socket_id}.sock"
+        self.control_socket = _control_socket_path(user, host, port)
+        self._control_socket_released = False
         _ensure_ssh_available()
         self._establish_connection()
         self._remote_home = self._detect_remote_home()
@@ -83,6 +112,7 @@ class SSHEnvironment(BaseEnvironment):
         self._sync_manager.sync(force=True)
 
         self.init_session()
+        _acquire_control_socket(self.control_socket)
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
@@ -407,6 +437,13 @@ class SSHEnvironment(BaseEnvironment):
         if self._sync_manager:
             logger.info("SSH: syncing files from sandbox...")
             self._sync_manager.sync_back()
+
+        if self._control_socket_released:
+            return
+        self._control_socket_released = True
+
+        if not _release_control_socket(self.control_socket):
+            return
 
         if self.control_socket.exists():
             try:

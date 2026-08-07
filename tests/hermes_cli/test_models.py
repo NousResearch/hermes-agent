@@ -101,6 +101,129 @@ class TestFetchOpenRouterModels:
         # Image-only model advertised supported_parameters WITHOUT tools → must be dropped.
         assert "google/gemini-3-pro-image-preview" not in ids
 
+    def test_surfaces_latest_alias_for_curated_models(self, monkeypatch):
+        """OpenRouter '~' latest aliases must surface when they point at a curated model.
+
+        OpenRouter registers rolling aliases like
+        `~deepseek/deepseek-v4-flash-latest` that resolve to the newest checkpoint
+        in a family (the alias_target.slug field). These are real, callable catalog
+        entries, but they never appear in the curated allowlist — so the picker
+        previously hid them even though the model they target was curated.
+        """
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"deepseek/deepseek-v4-flash-0731",'
+                    b'"pricing":{"prompt":"0.00000009","completion":"0.00000018"},'
+                    b'"supported_parameters":["tools","temperature"]},'
+                    b'{"id":"~deepseek/deepseek-v4-flash-latest",'
+                    b'"alias_target":{"slug":"deepseek/deepseek-v4-flash-0731"},'
+                    b'"pricing":{"prompt":"0.00000009","completion":"0.00000018"},'
+                    b'"supported_parameters":["tools","temperature"]}'
+                    b']}'
+                )
+
+        monkeypatch.setattr(
+            _models_mod,
+            "OPENROUTER_MODELS",
+            [("deepseek/deepseek-v4-flash-0731", "dated snapshot of v4-flash")],
+        )
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        ids = [mid for mid, _ in models]
+        assert "deepseek/deepseek-v4-flash-0731" in ids
+        assert "~deepseek/deepseek-v4-flash-latest" in ids
+        desc = dict(models).get("~deepseek/deepseek-v4-flash-latest")
+        assert desc == "latest"
+
+    def test_latest_alias_for_uncurated_target_is_not_surfaced(self, monkeypatch):
+        """A '~' alias whose target is NOT curated must stay hidden — the alias
+        only rides along when the model it resolves to is already in the picker."""
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"brandnew/brand-new-model",'
+                    b'"pricing":{"prompt":"0.00001","completion":"0.00002"},'
+                    b'"supported_parameters":["tools"]},'
+                    b'{"id":"~brandnew/brand-new-model-latest",'
+                    b'"alias_target":{"slug":"brandnew/brand-new-model"},'
+                    b'"pricing":{"prompt":"0.00001","completion":"0.00002"},'
+                    b'"supported_parameters":["tools"]}'
+                    b']}'
+                )
+
+        monkeypatch.setattr(
+            _models_mod,
+            "OPENROUTER_MODELS",
+            [("deepseek/deepseek-v4-flash-0731", "dated snapshot of v4-flash")],
+        )
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        ids = [mid for mid, _ in models]
+        assert "~brandnew/brand-new-model-latest" not in ids
+
+    def test_latest_alias_without_tool_support_is_not_surfaced(self, monkeypatch):
+        """Tool-support filtering must apply to '~' aliases just like any other model."""
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"deepseek/deepseek-v4-flash-0731",'
+                    b'"pricing":{"prompt":"0.00000009","completion":"0.00000018"},'
+                    b'"supported_parameters":["tools","temperature"]},'
+                    b'{"id":"~deepseek/deepseek-v4-flash-latest",'
+                    b'"alias_target":{"slug":"deepseek/deepseek-v4-flash-0731"},'
+                    b'"pricing":{"prompt":"0.00000009","completion":"0.00000018"},'
+                    b'"supported_parameters":["temperature"]}'
+                    b']}'
+                )
+
+        monkeypatch.setattr(
+            _models_mod,
+            "OPENROUTER_MODELS",
+            [("deepseek/deepseek-v4-flash-0731", "dated snapshot of v4-flash")],
+        )
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        ids = [mid for mid, _ in models]
+        assert "deepseek/deepseek-v4-flash-0731" in ids
+        assert "~deepseek/deepseek-v4-flash-latest" not in ids
+
 
 
 class TestOpenRouterToolSupportHelper:

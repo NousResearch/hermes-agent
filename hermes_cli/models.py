@@ -1566,6 +1566,32 @@ def fetch_openrouter_models(
             desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
 
+    # Surface OpenRouter "latest" aliases for already-curated models.
+    #
+    # OpenRouter registers rolling aliases (e.g. `~deepseek/deepseek-v4-flash-latest`)
+    # that track the newest checkpoint in a model family. They are real, callable
+    # catalog entries with their own pricing and tool support, but they appear in
+    # the live /v1/models response under a `~`-prefixed id that is never part of the
+    # curated allowlist — so they were previously invisible in the picker even
+    # though the model they point at was curated. Relying on the alias_target field
+    # (which OpenRouter sets to the concrete checkpoint the alias resolves to)
+    # keeps the picker current without hardcoding each alias into the manifest:
+    # any curated model that gains a `~latest` alias will surface automatically.
+    curated_ids = {mid for mid, _ in curated}
+    for item in live_items:
+        if not isinstance(item, dict):
+            continue
+        alias_id = str(item.get("id") or "").strip()
+        if not alias_id.startswith("~") or alias_id in curated_ids:
+            continue
+        target = item.get("alias_target") or {}
+        target_slug = str(target.get("slug") or "").strip()
+        if not target_slug or target_slug not in curated_ids:
+            continue
+        if not _openrouter_model_supports_tools(item):
+            continue
+        curated.append((alias_id, "latest"))
+
     if not curated:
         return list(_openrouter_catalog_cache or fallback)
 

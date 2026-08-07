@@ -334,6 +334,7 @@ interface CapRowProps {
   busy?: boolean
   enabled: boolean
   meta?: ReactNode
+  metaTitle?: string
   onSelect: () => void
   onToggle: (checked: boolean) => void
   rowId?: string
@@ -351,6 +352,7 @@ export function CapRow({
   busy,
   enabled,
   meta,
+  metaTitle,
   onSelect,
   onToggle,
   rowId,
@@ -387,7 +389,11 @@ export function CapRow({
           )}
         </span>
         {meta != null && (
-          <span className="shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-px text-[0.6rem] tabular-nums leading-3.5 text-(--ui-text-tertiary)">
+          <span
+            aria-label={metaTitle}
+            className="shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-px text-[0.6rem] tabular-nums leading-3.5 text-(--ui-text-tertiary)"
+            title={metaTitle}
+          >
             {meta}
           </span>
         )}

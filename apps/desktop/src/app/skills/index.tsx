@@ -610,6 +610,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                   enabled={skill.enabled}
                   key={skill.name}
                   meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
+                  metaTitle={usageOf(skill) > 0 ? t.skills.activityTooltip(usageOf(skill)) : undefined}
                   onSelect={() => setSelectedSkill(skill.name)}
                   onToggle={enabled => void handleToggleSkill(skill, enabled)}
                   subtitle={skillSubtitle(skill)}
@@ -748,6 +749,12 @@ function SkillDetail({ onArchive, onEdit, skill }: { onArchive: () => void; onEd
         }
         title={skill.name}
       />
+      {typeof skill.usage === 'number' && skill.usage > 0 && (
+        <div className="flex items-center gap-2 border-t border-(--ui-border-subtle) pt-2.5 text-[0.72rem]">
+          <span className="text-(--ui-text-tertiary)">{t.skills.activityCount}</span>
+          <span className="tabular-nums text-(--ui-text-secondary)">{compactNumber(skill.usage)}</span>
+        </div>
+      )}
       {editable && (
         <div className="flex items-center gap-2">
           <Button onClick={onEdit} size="xs" variant="text">

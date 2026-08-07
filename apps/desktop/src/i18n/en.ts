@@ -1002,6 +1002,8 @@ export const en: Translations = {
     noToolsetsTitle: 'No toolsets found',
     noToolsetsDesc: 'Try a broader search query.',
     noDescription: 'No description.',
+    activityCount: 'Activity count',
+    activityTooltip: count => `${count} — Total skill activity across all sessions — loads, views, and edits.`,
     configured: 'Configured',
     needsKeys: 'Needs keys',
     visionModelHint:

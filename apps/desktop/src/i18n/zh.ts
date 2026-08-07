@@ -1202,6 +1202,8 @@ export const zh: Translations = {
     noToolsetsTitle: '未找到工具集',
     noToolsetsDesc: '尝试更宽泛的搜索词。',
     noDescription: '暂无描述。',
+    activityCount: '活动次数',
+    activityTooltip: count => `${count} — 所有会话中的技能活动（加载、查看、编辑）。`,
     configured: '已配置',
     needsKeys: '需要密钥',
     visionModelHint: '视觉功能使用你的辅助模型配置——支持图像的模型在那里选择，而不是在此处按提供商选择。',

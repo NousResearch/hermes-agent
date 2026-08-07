@@ -1030,6 +1030,8 @@ export const ja = defineLocale({
     noToolsetsTitle: 'ツールセットが見つかりません',
     noToolsetsDesc: '検索キーワードを広げてください。',
     noDescription: '説明はありません。',
+    activityCount: 'アクティビティ数',
+    activityTooltip: count => `${count} — 全セッションにわたるスキルアクティビティ（読み込み、閲覧、編集）。`,
     configured: '設定済み',
     needsKeys: 'キーが必要',
     visionModelHint:

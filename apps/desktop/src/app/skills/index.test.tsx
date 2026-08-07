@@ -58,14 +58,25 @@ function toolset(overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function renderSkills() {
+function skill(overrides: Record<string, unknown> = {}) {
+  return {
+    name: 'web-search',
+    category: 'web',
+    description: 'Search the web',
+    enabled: true,
+    provenance: 'bundled',
+    ...overrides
+  }
+}
+
+async function renderSkills(initialEntry = '/skills?tab=toolsets') {
   const { SkillsView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
       // SkillsView reads skills/toolsets via useQuery, so it needs a provider.
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
+        <MemoryRouter initialEntries={[initialEntry]}>
           <SkillsView />
         </MemoryRouter>
       </QueryClientProvider>
@@ -153,5 +164,40 @@ describe('SkillsView toolset management', () => {
     // Internal route change into the Models section with the aux slot target —
     // consumed by ModelSettings' deep-link highlight. Never an external URL.
     await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings?tab=config:model&aux=vision'))
+  })
+})
+
+describe('SkillsView usage badge', () => {
+  it('shows a ×N badge with a localized tooltip and an activity row for a skill with usage', async () => {
+    getSkills.mockResolvedValue([skill({ name: 'web-search', usage: 42 })])
+    await renderSkills('/skills')
+
+    // Sidebar badge: compact ×N plus an explanatory tooltip that doubles as the
+    // badge's accessible name (the ×-glyph alone reads as "times" to SRs).
+    const badge = await screen.findByText('×42')
+    expect(badge.getAttribute('title')).toContain('Total skill activity across all sessions')
+    expect(badge.getAttribute('aria-label')).toContain('42')
+
+    // Detail pane: labeled activity row for the auto-selected first skill.
+    const label = screen.getByText('Activity count')
+    expect(label.parentElement?.textContent).toContain('42')
+  })
+
+  it('hides the badge and activity row when usage is zero', async () => {
+    getSkills.mockResolvedValue([skill({ name: 'web-search', usage: 0 })])
+    await renderSkills('/skills')
+
+    expect((await screen.findAllByText('web-search')).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/×/)).toBeNull()
+    expect(screen.queryByText('Activity count')).toBeNull()
+  })
+
+  it('hides the badge and activity row when usage is absent (older backend)', async () => {
+    getSkills.mockResolvedValue([skill({ name: 'web-search' })])
+    await renderSkills('/skills')
+
+    expect((await screen.findAllByText('web-search')).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/×/)).toBeNull()
+    expect(screen.queryByText('Activity count')).toBeNull()
   })
 })

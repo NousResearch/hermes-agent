@@ -909,6 +909,8 @@ export const ar = defineLocale({
     noToolsetsTitle: 'لا توجد مجموعات أدوات',
     noToolsetsDesc: 'ستظهر مجموعات الأدوات المتاحة هنا.',
     noDescription: 'لا يوجد وصف',
+    activityCount: 'عدد الأنشطة',
+    activityTooltip: count => `${count} — إجمالي نشاط المهارة عبر جميع الجلسات (تحميل وعرض وتعديل).`,
     configured: 'مضبوط',
     needsKeys: 'يحتاج مفاتيح',
     toolsetsEnabled: (enabled, total) => `${enabled} من ${total} مفعلة`,

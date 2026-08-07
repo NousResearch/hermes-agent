@@ -996,6 +996,8 @@ export const zhHant = defineLocale({
     noToolsetsTitle: '找不到工具集',
     noToolsetsDesc: '請嘗試更廣泛的搜尋詞。',
     noDescription: '無可用描述。',
+    activityCount: '活動次數',
+    activityTooltip: count => `${count} — 所有工作階段中的技能活動（載入、檢視、編輯）。`,
     configured: '已設定',
     needsKeys: '需要金鑰',
     visionModelHint: '視覺功能使用你的輔助模型設定——支援影像的模型在那裡選擇，而不是在此處按供應商選擇。',

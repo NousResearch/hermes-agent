@@ -527,7 +527,19 @@ def cmd_status(args) -> None:
                 print(f"    {key}: {val}")
 
         if provider:
-            print("\n  Plugin:    installed ✓")
+            # `provider` existing means the plugin was discovered on disk.
+            # Report that distinctly from runtime readiness: a discovered plugin
+            # whose SDK dependency is not importable is not "installed" in the
+            # functional sense, so label it accordingly instead of a blanket
+            # "installed OK".
+            try:
+                _sdk_ok = provider.is_available()
+            except Exception:
+                _sdk_ok = False
+            if _sdk_ok:
+                print("\n  Plugin:    discovered, available ✓")
+            else:
+                print("\n  Plugin:    discovered, dependency missing ✗")
             if provider.is_available():
                 print("  Status:    available ✓")
             else:

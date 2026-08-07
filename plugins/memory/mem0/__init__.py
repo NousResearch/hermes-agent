@@ -228,10 +228,25 @@ class Mem0MemoryProvider(MemoryProvider):
         cfg = _load_config()
         mode = cfg.get("mode", "platform")
         if mode == "oss":
-            return bool(cfg.get("oss", {}).get("vector_store"))
-        # Platform needs an api_key; self-hosted needs a host (api_key optional
-        # when the server runs with AUTH_DISABLED).
-        return bool(cfg.get("api_key") or cfg.get("host"))
+            if not cfg.get("oss", {}).get("vector_store"):
+                return False
+        else:
+            # Platform needs an api_key; self-hosted needs a host (api_key
+            # optional when the server runs with AUTH_DISABLED).
+            if not (cfg.get("api_key") or cfg.get("host")):
+                return False
+        # Config looks right, but the provider cannot function until the SDK
+        # is importable. Verify offline (no network, no install) so callers —
+        # and `hermes memory status` — don't report "available" for a provider
+        # whose dependency is missing. The lazy-install in _create_backend()
+        # still installs the SDK on first real use; this check only gates the
+        # readiness signal, and stays within the offline is_available() contract.
+        try:
+            import importlib.util as _ilu
+
+            return _ilu.find_spec("mem0") is not None
+        except Exception:
+            return False
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/mem0.json."""

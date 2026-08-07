@@ -14,6 +14,8 @@ def _make_agent(**overrides):
         skip_context_files=False,
         valid_tool_names=[],
         _task_completion_guidance=False,
+        _verification_enforcement=False,
+        _fix_fidelity=False,
         _tool_use_enforcement=False,
         _environment_probe=False,
         _kanban_worker_guidance="",
@@ -145,7 +147,7 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
 
     expected_profile = (
         "Active Hermes profile: default. Other profiles (if any) live "
-        "under /hermes/profiles/<name>/. Each profile has its own skills/, "
+        f"under {Path('/hermes')}/profiles/<name>/. Each profile has its own skills/, "
         "plugins/, cron/, and memories/ that affect a different session than "
         "this one. Do not modify another profile's skills/plugins/cron/memories "
         "unless the user explicitly directs you to."

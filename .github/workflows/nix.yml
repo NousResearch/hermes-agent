@@ -1,0 +1,42 @@
+name: Nix
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: Nix job to run
+        type: choice
+        options:
+          - check
+          - build
+        default: check
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'ci/nix'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Nix
+        uses: ./.github/actions/nix-setup
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Run Nix job
+        run: scripts/nix-ci.sh "${{ github.event.inputs.job || 'check' }}"

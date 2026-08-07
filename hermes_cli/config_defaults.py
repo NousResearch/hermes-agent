@@ -2799,6 +2799,13 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # ``hermes doctor`` behaviour.
+    "doctor": {
+        # Per-probe timeout (seconds) for the opt-in `hermes doctor --live`
+        # real-call backend probes (Firecrawl/FAL/browser/MCP/TTS/STT).
+        "live_probe_timeout": 10,
+    },
+
     # ``hermes update`` behaviour.
     "updates": {
         # Pre-update safety backup — ONE consolidated mechanism, three modes:

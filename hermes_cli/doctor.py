@@ -2747,6 +2747,14 @@ def run_doctor(args):
     except Exception:
         pass
 
+    # Opt-in live backend probes run AFTER all static checks, only with
+    # `hermes doctor --live` (real network calls; bounded + read-only).
+    try:
+        from hermes_cli.doctor_live import maybe_run_live_checks
+        maybe_run_live_checks(args, manual_issues)
+    except Exception:
+        pass
+
     print()
     remaining_issues = issues + manual_issues
     if should_fix and fixed_count > 0:

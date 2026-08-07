@@ -8703,8 +8703,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return False
 
-    async def _session_has_compression_in_flight(self, session_key: str) -> bool:
-        """Return True when a compression lock is held for this session's id.
+    async def _session_has_compression_in_flight(self, session_key: str) -> Optional[bool]:
+        """Return the compression-lock state for this session.
+
+        ``True`` means the lock is held, ``False`` means it is not held, and
+        ``None`` means the state could not be read. Callers must queue on
+        ``None`` to preserve parent-session rotation safety, but must not report
+        that compression is active when storage itself is unavailable.
 
         Context compression is interrupt-protected (#23975) but gateway
         ``interrupt`` busy-input mode can still start a follow-up turn against
@@ -8719,21 +8724,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_store = getattr(self, "session_store", None)
         if not session_key or session_store is None:
             return False
+        missing = object()
+        required_store_attrs = ("_lock", "_ensure_loaded_locked", "_entries")
+        try:
+            if any(
+                inspect.getattr_static(session_store, attr, missing) is missing
+                for attr in required_store_attrs
+            ):
+                return False
+        except Exception:
+            logger.warning(
+                "Compression in-flight check failed while inspecting session "
+                "store for %s; compression state is unavailable",
+                session_key,
+                exc_info=True,
+            )
+            return None
         try:
             session_id = await asyncio.to_thread(
                 self._lookup_session_id_under_store_lock, session_store, session_key
             )
-        except (AttributeError, TypeError):
-            return False
         except Exception:
             logger.warning(
                 "Compression in-flight check failed while reading session %s; "
-                "treating compression as active to avoid interrupting a possible "
-                "parent-session rotation",
+                "compression state is unavailable",
                 session_key,
                 exc_info=True,
             )
-            return True
+            return None
         if not session_id:
             return False
         session_db = getattr(self, "_session_db", None)
@@ -8741,21 +8759,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         raw_db = getattr(session_db, "_db", session_db)
         try:
-            holder = await asyncio.to_thread(
-                raw_db.get_compression_lock_holder, str(session_id)
-            )
+            if (
+                inspect.getattr_static(
+                    raw_db, "get_compression_lock_holder", missing
+                )
+                is missing
+            ):
+                return False
+            get_lock_holder = getattr(raw_db, "get_compression_lock_holder")
+            if not callable(get_lock_holder):
+                raise TypeError("compression lock helper is not callable")
+            holder = await asyncio.to_thread(get_lock_holder, str(session_id))
             return bool(holder)
-        except (AttributeError, TypeError):
-            return False
         except Exception:
             logger.warning(
                 "Compression in-flight check failed while reading lock holder "
-                "for session %s; treating compression as active to avoid "
-                "interrupting a possible parent-session rotation",
+                "for session %s; compression state is unavailable",
                 session_id,
                 exc_info=True,
             )
-            return True
+            return None
 
     @staticmethod
     def _lookup_session_id_under_store_lock(session_store, session_key: str):
@@ -9024,14 +9047,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
             )
             effective_mode = "queue"
-        demoted_for_compression = (
-            effective_mode == "interrupt"
-            and await self._session_has_compression_in_flight(session_key)
-        )
+        compression_state = False
+        if effective_mode == "interrupt":
+            compression_state = await self._session_has_compression_in_flight(session_key)
+        demoted_for_compression = compression_state is True
+        demoted_for_state_unavailable = compression_state is None
         if demoted_for_compression:
             logger.info(
                 "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
                 "because context compression is in flight (#56391)",
+                session_key,
+            )
+            effective_mode = "queue"
+        elif demoted_for_state_unavailable:
+            logger.info(
+                "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
+                "because compression state is unavailable",
                 session_key,
             )
             effective_mode = "queue"
@@ -9231,6 +9262,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message = (
                 f"⏳ Compressing context{status_detail} — your message is queued for "
                 f"when it finishes (use /stop to cancel everything)."
+            )
+        elif is_queue_mode and demoted_for_state_unavailable:
+            message = (
+                f"⚠️ Session state unavailable{status_detail} — your message is queued "
+                f"until the current task finishes (use /stop to cancel everything)."
             )
         elif is_queue_mode:
             message = (
@@ -15128,7 +15164,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the id out from under it, forking orphaned compression
             # siblings. Demote to queue semantics so the follow-up waits
             # for the in-flight compression + rotation to land.
-            if await self._session_has_compression_in_flight(_quick_key):
+            compression_state = await self._session_has_compression_in_flight(_quick_key)
+            if compression_state is True:
                 logger.info(
                     "PRIORITY interrupt demoted to queue for session %s "
                     "because context compression is in flight (#56391)",
@@ -15136,6 +15173,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
+            if compression_state is None:
+                logger.info(
+                    "PRIORITY interrupt demoted to queue for session %s "
+                    "because compression state is unavailable",
+                    _quick_key,
+                )
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return (
+                    "⚠️ Session state unavailable — your message is queued until "
+                    "the current task finishes (use /stop to cancel everything)."
+                )
             # Text-only corrections redirect the live turn (preserving
             # displayed context) when the runtime supports it; media/voice and
             # older runtimes fall back to the proven interrupt path below.

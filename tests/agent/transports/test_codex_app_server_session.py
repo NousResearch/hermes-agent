@@ -162,8 +162,10 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
-    def test_thread_start_passes_cwd_only(self):
-        """thread/start carries cwd. We intentionally do NOT pass `permissions`
+    def test_thread_start_passes_cwd_and_disables_codex_personality(self):
+        """thread/start carries cwd and disables Codex's built-in personality.
+
+        We intentionally do NOT pass `permissions`
         on this codex version (experimentalApi-gated + requires matching
         config.toml [permissions] table). Letting codex use its default
         (read-only unless user configures otherwise) is the documented path."""
@@ -172,6 +174,7 @@ class TestLifecycle:
         s.ensure_started()
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"
+        assert params["personality"] == "none"
         assert "permissions" not in params  # see session.ensure_started() comment
 
     def test_close_idempotent(self):

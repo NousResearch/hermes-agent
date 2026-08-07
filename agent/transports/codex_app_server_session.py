@@ -342,7 +342,10 @@ class CodexAppServerSession:
         # codex CLI workflow and avoids fighting codex's own validation.
         # Users who want a write-capable profile configure it in their
         # ~/.codex/config.toml the same way they would for any codex usage.
-        params: dict[str, Any] = {"cwd": self._cwd}
+        # Hermes supplies its own agent identity and personality through the
+        # workspace/system prompt. Disable Codex's built-in personality layer
+        # so it cannot compete with those higher-level instructions.
+        params: dict[str, Any] = {"cwd": self._cwd, "personality": "none"}
         result = self._client.request("thread/start", params, timeout=15)
         # Cross-fill thread.id/sessionId — different codex versions have
         # serialized this under either key. Mirrors openclaw beta.8's

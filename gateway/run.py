@@ -26422,6 +26422,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _final,
                 previewed=_previewed,
             )
+            # Stale-finalize guard (#71643): when the stream consumer claims
+            # content_delivered, verify the text it last sent matches the
+            # completed response.  A race between the last preview edit and
+            # stream completion can leave _accumulated holding the preview
+            # buffer while content_delivered=True — the gateway then suppresses
+            # the only path that carries the full text.  Compare lengths: if
+            # the delivered text is substantially shorter than the final
+            # response, fall through to the normal send.
+            if _content_delivered and not _streamed and _sc is not None and _final:
+                _delivered_text = getattr(_sc, "_last_sent_text", "") or ""
+                _clean_delivered = (
+                    _sc._clean_for_display(_delivered_text).strip()
+                    if hasattr(_sc, "_clean_for_display")
+                    else _delivered_text.strip()
+                )
+                _clean_final = _final.strip()
+                if (
+                    _clean_delivered
+                    and _clean_final
+                    and len(_clean_delivered) < len(_clean_final) * 0.8
+                ):
+                    logger.warning(
+                        "Stream consumer delivered stale text for session %s: "
+                        "delivered %d chars vs final %d chars (%.0f%%). "
+                        "NOT suppressing normal final send.",
+                        session_key or "?",
+                        len(_clean_delivered),
+                        len(_clean_final),
+                        100 * len(_clean_delivered) / len(_clean_final),
+                    )
+                    _content_delivered = False
             if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
                 logger.info(
                     "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",

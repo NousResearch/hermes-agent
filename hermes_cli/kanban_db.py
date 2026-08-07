@@ -5623,7 +5623,7 @@ def block_task(
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
+    """Transition ``running``/``ready`` → ``blocked``/``waiting``/``todo``/``triage``.
 
     ``kind`` (one of :data:`VALID_BLOCK_KINDS`, or ``None`` for a legacy
     un-typed block) drives routing instead of every block landing in one
@@ -5633,22 +5633,22 @@ def block_task(
       sit in ``blocked`` (where a cron would keep "unblocking" it); it goes to
       ``todo`` so the existing parent-gating / ``recompute_ready`` machinery
       promotes it automatically once its parents finish. No human, no cron, no
-      retry storm. This is Dale's "Type 2 — dependency blocked".
+      retry storm.
 
-    * ``needs_input`` / ``capability`` / ``None`` — "truly blocked" (Dale's
-      "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
-      is re-blocked for the SAME kind after having been unblocked, the
-      unblock-loop counter (``block_recurrences``) increments. When it reaches
-      :data:`BLOCK_RECURRENCE_LIMIT`, the task is routed to ``triage`` instead
-      of ``blocked`` — breaking the cron-unblock ↔ worker-re-block loop and
-      forcing a human-in-the-loop triage decision.
+    * ``needs_input`` / ``capability`` — human-time waits. Land in ``waiting``
+      (TTL-exempt, never auto-promoted) so the dispatcher never reclaims them.
+      An explicit ``unwait_task`` / ``unblock_task`` / ``promote_task`` is
+      required to return them to the work pool.
 
-    * ``transient`` — treated like a generic block for routing, but a worker
-      can use it to signal "this might clear on its own"; it still participates
-      in the loop breaker so a forever-flaky task eventually escalates.
+    * ``transient`` / ``None`` — agent-time blocks. Land in ``blocked``
+      (TTL-reclaimable, auto-promotable for circuit-breaker conditions).
+      A transient failure may clear on retry; the loop breaker routes
+      the task to ``triage`` after :data:`BLOCK_RECURRENCE_LIMIT` unblock↔
+      re-block cycles.
 
-    Returns True on any successful transition (to ``blocked``, ``todo``, or
-    ``triage``), False when the task wasn't in a blockable state.
+    Returns True on any successful transition (to ``blocked``, ``waiting``,
+    ``todo``, or ``triage``), False when the task wasn't in a blockable
+    state.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(

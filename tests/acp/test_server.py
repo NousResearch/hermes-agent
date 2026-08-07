@@ -532,7 +532,10 @@ class TestSlashCommands:
         state.agent._session_db = original_session_db
 
         def _compress_context(messages, system_prompt, *, approx_tokens, task_id, force):
-            assert state.agent._session_db is None
+            # _session_db must remain attached so archive_and_compact can
+            # persist the compacted transcript (#76215).
+            assert state.agent._session_db is original_session_db
+            assert state.agent.compression_in_place is True
             assert messages == state.history
             assert system_prompt == "system"
             assert approx_tokens == 40

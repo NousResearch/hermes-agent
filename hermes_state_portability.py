@@ -263,22 +263,57 @@ class SessionPortabilityMixin:
         decoded = self._decode_content(row["content"])
         return decoded if isinstance(decoded, str) else ""
 
-    def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Export a single session with all its messages as a dict."""
+    def export_session(
+        self,
+        session_id: str,
+        *,
+        include_compacted: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Export a single session with its durable messages as a dict.
+
+        The default preserves the historical live-context export contract and
+        returns only active messages.  Destructive archive callers can opt in
+        to ``include_compacted`` so pre-compaction turns are preserved before
+        the source session is deleted.  Rewind/undo rows remain excluded:
+        those are inactive with ``compacted=0`` and are not durable transcript
+        history.
+        """
         session = self.get_session(session_id)
         if not session:
             return None
-        messages = self.get_messages(session_id)
+        messages = self.get_messages(
+            session_id,
+            include_inactive=include_compacted,
+        )
+        if include_compacted:
+            messages = [
+                message
+                for message in messages
+                if bool(message.get("active")) or bool(message.get("compacted"))
+            ]
         return {**session, "messages": messages}
 
-    def export_session_lineage(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Export a compression lineage as one logical session dict."""
+    def export_session_lineage(
+        self,
+        session_id: str,
+        *,
+        include_compacted: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Export a compression lineage as one logical session dict.
+
+        ``include_compacted=True`` is intended for verified archive-before-
+        delete workflows.  It retains compacted historical turns while still
+        excluding inactive rewind/undo rows.
+        """
         lineage_ids = self.get_compression_lineage(session_id)
         if not lineage_ids:
             return None
         segments = []
         for sid in lineage_ids:
-            segment = self.export_session(sid)
+            segment = self.export_session(
+                sid,
+                include_compacted=include_compacted,
+            )
             if segment:
                 segments.append(segment)
         if not segments:

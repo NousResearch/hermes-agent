@@ -18357,6 +18357,15 @@ def main(
         # (and only) tool snapshot. See #51316.
         cli._single_query_mode = True
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
+            # A dispatcher-spawned Kanban worker can lose the race for the
+            # global session cap after the task has already been claimed.
+            # Treat that as temporary backpressure, not a worker crash: the
+            # dispatcher already understands EX_TEMPFAIL and will requeue the
+            # task without incrementing its consecutive-failure counter.
+            if os.environ.get("HERMES_KANBAN_TASK"):
+                from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+
+                sys.exit(KANBAN_RATE_LIMIT_EXIT_CODE)
             sys.exit(1)
         try:
             query, single_query_images = _collect_query_images(query, image)

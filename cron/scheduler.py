@@ -59,6 +59,20 @@ from agent.delegation_context import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_job_workdir(raw: Any) -> Optional[str]:
+    """Return a stripped workdir string from a job record, or None.
+
+    Malformed jobs.json (e.g. ``workdir: 42``) must not crash the scheduler
+    tick — non-string values are treated as absent.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return None
+    stripped = raw.strip()
+    return stripped or None
+
+
 def _set_cron_session_title(session_db, session_id, base_title):
     """Robustly title a finished cron session before it is closed.
 
@@ -3201,7 +3215,7 @@ def run_job(
         # paths. For no_agent jobs this is passed as the subprocess cwd so the
         # Python process cwd is NEVER mutated — avoiding the global-side-effect
         # bug where os.chdir() leaks into concurrent gateway sessions (#69396).
-        _job_workdir = (job.get("workdir") or "").strip() or None
+        _job_workdir = _resolve_job_workdir(job.get("workdir"))
         if _job_workdir and not Path(_job_workdir).is_dir():
             logger.warning(
                 "Job '%s': configured workdir %r no longer exists — running without it",
@@ -3494,7 +3508,7 @@ def run_job(
     # letting set_session_vars handle the _SESSION_CWD ContextVar set/clear
     # via its existing machinery (clear_session_vars calls clear_session_cwd
     # internally). This avoids a separate import/set/clear dance (#69396).
-    _job_workdir = (job.get("workdir") or "").strip() or None
+    _job_workdir = _resolve_job_workdir(job.get("workdir"))
     if _job_workdir and not Path(_job_workdir).is_dir():
         logger.warning(
             "Job '%s': configured workdir %r no longer exists — running without it",
@@ -4911,8 +4925,8 @@ def tick(
         # That alone only keeps workdir jobs from overlapping EACH OTHER;
         # run_job's _terminal_cwd_lock is what additionally stops a concurrently
         # firing workdir-less parallel-pool job from observing the override.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        sequential_jobs = [j for j in due_jobs if _resolve_job_workdir(j.get("workdir"))]
+        parallel_jobs = [j for j in due_jobs if not _resolve_job_workdir(j.get("workdir"))]
 
         _results: list = []
         _all_futures: list = []

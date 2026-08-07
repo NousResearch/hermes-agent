@@ -251,3 +251,48 @@ class TestRunJobTerminalCwd:
         # And after run_job completes, it's still the sentinel (nothing
         # overwrote or cleared it).
         assert os.environ["TERMINAL_CWD"] == before
+
+
+# ---------------------------------------------------------------------------
+# scheduler._resolve_job_workdir — malformed stored values
+# ---------------------------------------------------------------------------
+
+class TestSchedulerWorkdirTypeGuard:
+    def test_non_string_workdir_treated_as_absent(self):
+        from cron.scheduler import _resolve_job_workdir
+
+        assert _resolve_job_workdir(42) is None
+        assert _resolve_job_workdir(True) is None
+        assert _resolve_job_workdir([]) is None
+
+    def test_string_workdir_stripped(self, tmp_path):
+        from cron.scheduler import _resolve_job_workdir
+
+        path = str(tmp_path)
+        assert _resolve_job_workdir(f"  {path}  ") == path
+
+    def test_tick_partitions_malformed_workdir_without_crashing(self, tmp_path, monkeypatch):
+        """A non-string workdir must not crash tick() job partitioning."""
+        from unittest.mock import patch
+
+        import cron.scheduler as sched
+
+        lock_dir = tmp_path / "cron"
+        lock_dir.mkdir()
+        lock_file = lock_dir / ".tick.lock"
+
+        jobs = [
+            {"id": "job-a", "name": "a", "deliver": "local", "workdir": 42},
+            {"id": "job-b", "name": "b", "deliver": "local"},
+        ]
+
+        with patch("cron.scheduler._get_lock_paths", return_value=(lock_dir, lock_file)), \
+             patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_runs"), \
+             patch("cron.scheduler.run_job", return_value=(True, "out", "resp", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run"):
+            result = sched.tick(verbose=False)
+
+        assert result == 2

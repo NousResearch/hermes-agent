@@ -620,5 +620,64 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         mock_sleep.assert_called()
 
 
+class TestCJKQueryTerms(unittest.TestCase):
+    """The skill-search tokenizer must not silently drop CJK characters (#78985).
+
+    Without CJK support, Chinese/Japanese/Korean queries produce zero terms,
+    so skill search scoring degrades to substring-only matching — a core
+    discoverability failure for CJK users.
+    """
+
+    def test_query_terms_chinese(self):
+        terms = ClawHubSource._query_terms("公众号")
+        self.assertGreaterEqual(len(terms), 1, "Chinese query must produce terms")
+
+    def test_query_terms_japanese(self):
+        terms = ClawHubSource._query_terms("ニュース")
+        self.assertGreaterEqual(len(terms), 1, "Japanese query must produce terms")
+
+    def test_query_terms_korean(self):
+        terms = ClawHubSource._query_terms("뉴스")
+        self.assertGreaterEqual(len(terms), 1, "Korean query must produce terms")
+
+    def test_query_terms_mixed_ascii_cjk(self):
+        terms = ClawHubSource._query_terms("github 公众号")
+        self.assertIn("github", terms)
+        cjk_terms = [t for t in terms if len(t) == 1 and ord(t) > 0x3000]
+        self.assertGreaterEqual(len(cjk_terms), 1, "CJK chars must survive")
+
+    def test_query_terms_ascii_unchanged(self):
+        """CJK support must not break existing ASCII tokenization."""
+        self.assertEqual(
+            ClawHubSource._query_terms("github issues"), ["github", "issues"]
+        )
+
+    def test_search_score_cjk_description(self):
+        """A CJK query must score > 0 against a skill with CJK text."""
+        meta = SkillMeta(
+            name="微信发布",
+            description="发布文章到微信公众号 (publish to WeChat)",
+            source="clawhub",
+            identifier="wechat-publish",
+            trust_level="community",
+            tags=[],
+        )
+        score = ClawHubSource._search_score("公众号", meta)
+        self.assertGreater(score, 0, "CJK query must score against CJK description")
+
+    def test_search_score_cjk_no_false_match(self):
+        """A CJK query must not match an ASCII-only skill via token scoring."""
+        meta = SkillMeta(
+            name="slack-send",
+            description="Post a message into a Slack channel",
+            source="clawhub",
+            identifier="slack-send",
+            trust_level="community",
+            tags=[],
+        )
+        score = ClawHubSource._search_score("公众号", meta)
+        self.assertEqual(score, 0, "CJK query must not match ASCII-only skill")
+
+
 if __name__ == "__main__":
     unittest.main()

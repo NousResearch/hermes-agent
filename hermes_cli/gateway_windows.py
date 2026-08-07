@@ -1452,7 +1452,10 @@ def status(deep: bool = False) -> None:
         print("✗ Gateway service not installed")
 
     if pids:
-        print(f"✓ Gateway process running (PID: {', '.join(map(str, pids))})")
+        # Keep the positive liveness marker consistent with the manual status
+        # path in hermes_cli.gateway.  Health checks and operators should not
+        # need a Windows-only phrase to recognize the same gateway state.
+        print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
     else:
         print("✗ No gateway process detected")
 

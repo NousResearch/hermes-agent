@@ -24,6 +24,22 @@ def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
     assert gateway_windows._schtasks_encoding() == "utf-8"
 
 
+def test_status_uses_shared_gateway_running_marker(monkeypatch, capsys):
+    """Windows status must expose the same positive marker as manual status."""
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "query_task_status", lambda: {})
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [12345])
+
+    gateway_windows.status()
+
+    output = capsys.readouterr().out
+    assert "Gateway is running (PID: 12345)" in output
+
+
 
 
 def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, tmp_path):
@@ -245,7 +261,6 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 # the gateway's marker-watcher thread to drain + exit cleanly, then escalates
 # to taskkill if drain times out.
 # ---------------------------------------------------------------------------
-
 
 
 

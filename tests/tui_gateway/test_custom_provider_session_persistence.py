@@ -27,6 +27,7 @@ import json
 import types
 from unittest.mock import MagicMock, patch
 
+from agent.image_routing import decide_image_input_mode
 import hermes_cli.runtime_provider as rp
 
 MIMO_URL = "https://token-plan-cn.xiaomimimo.com/v1"
@@ -48,6 +49,16 @@ PROVIDERS_DICT_CONFIG = {
         "mimo-v2.5-pro": {
             "api": MIMO_URL,
             "api_key": MIMO_KEY,
+        }
+    }
+}
+
+VISION_CONFIG = {
+    "providers": {
+        "vision-provider": {
+            "api": "https://vision.example.test/v1",
+            "api_key": "test-key",
+            "models": {"vision-model": {"supports_vision": True}},
         }
     }
 }
@@ -152,8 +163,30 @@ class TestResumeRoundTrip:
         )
 
         assert kwargs["provider"] == "custom"
+        assert kwargs["requested_provider"] == "custom:mimo-v2.5-pro"
         assert kwargs["base_url"] == MIMO_URL
         assert kwargs["api_key"] == MIMO_KEY
+
+    def test_named_provider_identity_enables_native_vision(self, monkeypatch):
+        """The Desktop/TUI agent must retain a named provider identity after
+        runtime resolution changes its transport provider to ``custom``."""
+        kwargs = _make_agent_with_override(
+            {"model": "vision-model", "provider": "vision-provider"},
+            monkeypatch,
+            VISION_CONFIG,
+        )
+
+        assert kwargs["provider"] == "custom"
+        assert kwargs["requested_provider"] == "vision-provider"
+        assert (
+            decide_image_input_mode(
+                kwargs["provider"],
+                "vision-model",
+                VISION_CONFIG,
+                requested_provider=kwargs["requested_provider"],
+            )
+            == "native"
+        )
 
     def test_legacy_row_with_bare_custom_heals_via_base_url(self, monkeypatch):
         """Rows persisted BEFORE the fix stored provider="custom"; the

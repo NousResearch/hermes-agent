@@ -7707,12 +7707,17 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     "email": {
         "name": "Email",
         "description": "Talk to Hermes through an IMAP/SMTP mailbox.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/email",
         "env_vars": (
             "EMAIL_ADDRESS",
             "EMAIL_PASSWORD",
             "EMAIL_IMAP_HOST",
             "EMAIL_SMTP_HOST",
+            "EMAIL_ALLOWED_USERS",
+            "EMAIL_HOME_ADDRESS",
+            "EMAIL_SESSION_ROUTING",
+            "EMAIL_DISPLAY_NAME",
+            "EMAIL_ALLOW_ALL_USERS",
         ),
         "required_env": (
             "EMAIL_ADDRESS",
@@ -7967,6 +7972,26 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
     "EMAIL_SMTP_HOST": {
         "description": "SMTP server host (e.g. smtp.gmail.com)",
         "prompt": "SMTP host",
+    },
+    "EMAIL_ALLOWED_USERS": {
+        "description": "Comma-separated email addresses or @domain tokens allowed to message the bot",
+        "prompt": "Allowed email users",
+    },
+    "EMAIL_HOME_ADDRESS": {
+        "description": "Home email address for proactive / home-channel delivery",
+        "prompt": "Home email address",
+    },
+    "EMAIL_SESSION_ROUTING": {
+        "description": "Email session routing: sender (default, one session per person) or thread (one session per email thread — recommended for email agents)",
+        "prompt": "Email session routing (sender|thread)",
+    },
+    "EMAIL_DISPLAY_NAME": {
+        "description": "Optional From: display name (e.g. Iris Sloane)",
+        "prompt": "Email display name",
+    },
+    "EMAIL_ALLOW_ALL_USERS": {
+        "description": "When true, allow any sender (overrides EMAIL_ALLOWED_USERS)",
+        "prompt": "Allow all email senders",
     },
     "TWILIO_ACCOUNT_SID": {
         "description": "Twilio Account SID",

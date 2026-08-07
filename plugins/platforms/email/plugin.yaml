@@ -30,10 +30,22 @@ optional_env:
     prompt: "IMAP host"
     password: false
   - name: EMAIL_ALLOWED_USERS
-    description: "Comma-separated email addresses allowed to talk to the bot"
+    description: "Comma-separated email addresses or @domain tokens allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
     password: false
   - name: EMAIL_HOME_ADDRESS
     description: "Default address for cron / notification delivery"
     prompt: "Home address"
+    password: false
+  - name: EMAIL_SESSION_ROUTING
+    description: "Session routing: sender (default, one session per person) or thread (one session per email thread — recommended for email agents)"
+    prompt: "Session routing (sender|thread)"
+    password: false
+  - name: EMAIL_DISPLAY_NAME
+    description: "Display name for the From: header (e.g. Iris Sloane)"
+    prompt: "From display name"
+    password: false
+  - name: EMAIL_ALLOW_ALL_USERS
+    description: "When true, accept mail from any sender (use with a dedicated mailbox)"
+    prompt: "Allow all senders (true/false)"
     password: false

@@ -17,12 +17,15 @@ Environment variables:
 
 import asyncio
 import email as email_lib
+import hashlib
 import imaplib
+import json
 import logging
 import os
 import re
 import smtplib
 import socket
+import time
 
 # Profile-scoped secret reader for multiplexing support (PR #50094)
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -33,7 +36,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, formataddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -526,8 +529,89 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
 
-        # Map chat_id (sender email) -> last subject + message-id for threading
-        self._thread_context: Dict[str, Dict[str, str]] = {}
+        # Map context key -> last subject + message-id for threading.
+        # Context key is "<chat_id>::<thread_id>" in thread mode, or the bare
+        # chat_id (sender address) in sender mode. chat_id is ALWAYS a real
+        # email address — never a subject or composite key.
+        self._thread_context: Dict[str, Dict[str, Any]] = {}
+        # Message-ID -> context key, so replies can anchor to the exact
+        # inbound message even when send-time metadata lacks thread_id.
+        self._msgid_context: Dict[str, str] = {}
+        self._thread_context_max: int = 2000  # cap to prevent unbounded growth
+
+        # Content hashes of files already attached per thread, so the agent
+        # doesn't re-send the same file on every turn of a conversation.
+        # ctx_key -> {sha256, ...}
+        self._sent_attachments: Dict[str, set] = {}
+
+        # ── Single-email coalescing ───────────────────────────────────────
+        # One inbound turn should produce ONE outbound mail, the way a person
+        # replies. The gateway dispatches a turn as several adapter calls:
+        # send() for the body, send_multiple_images() once for an image batch,
+        # and send_document() once PER remaining file, with human_delay sleeps
+        # between them. Sent straight through, that is 1+N emails for one
+        # answer — and on email (unlike chat) each one is a separate message in
+        # the recipient's thread. Parts are buffered here and flushed as a
+        # single MIME once the turn goes quiet.
+        # ctx_key -> {to_addr, ctx, reply_to, body_parts, files, task, first_seen}
+        self._pending: Dict[str, Dict[str, Any]] = {}
+        # Idle debounce, re-armed by every new part. Observed body->attachment
+        # gaps on real turns were 4.1-7.9s, so this must comfortably clear that.
+        self._fold_window: float = float(
+            extra.get("fold_window_seconds")
+            or os.getenv("EMAIL_FOLD_WINDOW_SECONDS", "")
+            or 12.0
+        )
+        # Hard ceiling measured from the first part, so a long attachment loop
+        # can never stall a reply indefinitely.
+        self._fold_max_wait: float = float(
+            extra.get("fold_max_wait_seconds")
+            or os.getenv("EMAIL_FOLD_MAX_WAIT_SECONDS", "")
+            or 90.0
+        )
+
+        # Thread state is otherwise memory-only, so every gateway restart wipes
+        # it: the next reply on a live thread goes out with a generic subject,
+        # no In-Reply-To and no Cc. Persist it across restarts.
+        #
+        # Resolved through get_hermes_home() rather than Path.home() so the
+        # file lands under the active HERMES_HOME (per-profile, and sandboxed
+        # per-test), instead of leaking one shared file across profiles.
+        _state_override = str(
+            extra.get("thread_state_path")
+            or os.getenv("EMAIL_THREAD_STATE_PATH", "")
+        ).strip()
+        if _state_override:
+            self._state_path: str = _state_override
+        else:
+            try:
+                from hermes_constants import get_hermes_home
+                _home = Path(get_hermes_home())
+            except Exception:
+                _home = Path.home() / ".hermes"
+            self._state_path = str(_home / "state" / "email_thread_state.json")
+        self._load_state()
+
+        # Session routing (opt-in thread isolation):
+        #   "sender" (default) — one session per sender address (stock Hermes
+        #     behaviour; safe for existing deployments — no session key change).
+        #   "thread" — one session per email thread via SessionSource.thread_id
+        #     (recommended for email-agent secretaries). Enable via
+        #     platforms.email.session_routing or EMAIL_SESSION_ROUTING=thread.
+        self._session_routing = (
+            extra.get("session_routing", "")
+            or os.getenv("EMAIL_SESSION_ROUTING", "")
+            or "sender"
+        ).strip().lower()
+        if self._session_routing not in ("thread", "sender"):
+            self._session_routing = "sender"
+
+        # Display name for the From: header in outgoing emails.
+        self._display_name = (
+            extra.get("display_name", "")
+            or os.getenv("EMAIL_DISPLAY_NAME", "")
+            or ""
+        ).strip()
 
         logger.info("[Email] Adapter initialized for %s", self._address)
 
@@ -664,6 +748,16 @@ class EmailAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop polling and disconnect."""
         self._running = False
+        # Emit anything still buffered by the fold: a restart mid-turn would
+        # otherwise silently drop a reply, which is worse than sending two.
+        try:
+            self._flush_all_pending()
+        except Exception as e:
+            logger.error("[Email] Pending flush on disconnect failed: %s", e)
+        try:
+            self._save_state()
+        except Exception:
+            pass
         if self._poll_task:
             self._poll_task.cancel()
             try:
@@ -749,6 +843,12 @@ class EmailAdapter(BasePlatformAdapter):
                     subject = _decode_header_value(msg.get("Subject", "(no subject)"))
                     message_id = msg.get("Message-ID", "")
                     in_reply_to = msg.get("In-Reply-To", "")
+                    # Kept so replies can EXTEND the References chain instead of
+                    # resetting it to just the parent (long threads drift apart
+                    # in Outlook otherwise), and so reply-all can preserve Cc.
+                    references = msg.get("References", "")
+                    to_header = _decode_header_value(msg.get("To", ""))
+                    cc_header = _decode_header_value(msg.get("Cc", ""))
                     # Skip automated/noreply senders before any processing
                     msg_headers = dict(msg.items())
                     if _is_automated_sender(sender_addr, msg_headers):
@@ -775,6 +875,9 @@ class EmailAdapter(BasePlatformAdapter):
                         "subject": subject,
                         "message_id": message_id,
                         "in_reply_to": in_reply_to,
+                        "references": references,
+                        "to_header": to_header,
+                        "cc_header": cc_header,
                         "body": body,
                         "attachments": attachments,
                         "date": msg.get("Date", ""),
@@ -838,20 +941,25 @@ class EmailAdapter(BasePlatformAdapter):
         # that the gateway will never authorize.  Without this early guard,
         # a race between dispatch and authorization can result in the adapter
         # sending a reply even though the handler returned None.
-        allowed_raw = _get_secret("EMAIL_ALLOWED_USERS", "").strip()
-        if not allowed_raw:
-            if _get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"} and (
-                os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"}
-            ):
+        #
+        # Precedence matches the gateway authz layer: allow-all wins FIRST;
+        # only when it is off does the allowlist gate. Allowlist tokens may be
+        # exact addresses or @domain wildcards (e.g. "@known.ltd").
+        if not self._allow_all_senders():
+            allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
+            if not allowed_raw:
                 logger.debug(
                     "[Email] Dropping sender at dispatch — EMAIL_ALLOWED_USERS is unset "
                     "and open access is not opted in: %s",
                     sender_addr,
                 )
                 return
-        else:
-            allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
-            if sender_addr.lower() not in allowed:
+            tokens = {t.strip().lower() for t in allowed_raw.split(",") if t.strip()}
+            sender_l = sender_addr.lower()
+            if not any(
+                (t.startswith("@") and sender_l.endswith(t)) or sender_l == t
+                for t in tokens
+            ):
                 logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
                 return
 
@@ -908,14 +1016,60 @@ class EmailAdapter(BasePlatformAdapter):
                 # only classification that surfaces both.
                 msg_type = MessageType.DOCUMENT
 
-        # Store thread context for reply threading
-        self._thread_context[sender_addr] = {
+        # Store thread context for reply threading.
+        # chat_id is ALWAYS the sender address (a deliverable mailbox). In
+        # "thread" mode, thread_id is a stable per-thread key so
+        # build_session_key() isolates sessions per (sender, thread) the same
+        # way Telegram topics / Discord threads do. In "sender" mode,
+        # thread_id is None and each sender gets one session (legacy).
+        if self._session_routing == "thread":
+            _thread_subject = re.sub(
+                r'^(?:(?:re|fwd|fw):\s*)+', '', subject.strip(), flags=re.IGNORECASE
+            ).strip()
+            _thread_key = (
+                _thread_subject
+                or msg_data.get("in_reply_to")
+                or msg_data["message_id"]
+            )
+            thread_id = _thread_key or None
+        else:
+            thread_id = None
+
+        _ctx_key = f"{sender_addr}::{thread_id}" if thread_id else sender_addr
+        # Reply-all: remember every recipient on the inbound mail (To + Cc,
+        # minus the sender and ourselves) so replies keep the chain instead of
+        # silently dropping everyone who was cc'd.
+        _recipients: List[str] = []
+        for _hdr in (msg_data.get("to_header", ""), msg_data.get("cc_header", "")):
+            if not _hdr:
+                continue
+            for _part in _hdr.split(","):
+                _addr = _extract_email_address(_part)
+                if (
+                    _addr
+                    and _addr != sender_addr
+                    and _addr != self._address.lower()
+                    and _addr not in _recipients
+                ):
+                    _recipients.append(_addr)
+        self._thread_context[_ctx_key] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
+            "references": msg_data.get("references", ""),
+            "sender_addr": sender_addr,
+            "recipients": list(_recipients),
+            # Carried so every outbound path indexes itself against the same
+            # key the inbound side used, rather than recomputing it.
+            "ctx_key": _ctx_key,
         }
+        if msg_data.get("message_id"):
+            self._msgid_context[msg_data["message_id"]] = _ctx_key
+        self._trim_thread_context()
+        self._save_state()
 
         source = self.build_source(
             chat_id=sender_addr,
+            thread_id=thread_id,
             chat_name=msg_data["sender_name"] or sender_addr,
             chat_type="dm",
             user_id=sender_addr,
@@ -942,16 +1096,415 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an email reply to the given address."""
+        """Send an email reply to the given address.
+
+        ``chat_id`` is always a real email address (the sender from the
+        inbound dispatch). Thread context is resolved from ``metadata``
+        (the gateway passes ``thread_id`` through) or from ``reply_to``
+        (the inbound Message-ID), never from an arbitrary cached sender.
+        """
+        to_addr, ctx = self._resolve_recipient(chat_id, metadata=metadata, reply_to=reply_to)
+        if not to_addr:
+            logger.error("[Email] Cannot resolve recipient for chat_id=%r and no EMAIL_HOME_ADDRESS set", chat_id)
+            return SendResult(success=False, error=f"Cannot resolve recipient for chat_id={chat_id!r}")
+        # Buffer rather than send: any attachments for this same turn arrive in
+        # later adapter calls and must land in the SAME email.
+        return SendResult(
+            success=True,
+            message_id=self._queue_part(to_addr, ctx, reply_to=reply_to, body=content),
+        )
+
+    def _trim_thread_context(self) -> None:
+        """Bound thread context + msgid index so long-lived gateways don't grow forever."""
+        if len(self._thread_context) > self._thread_context_max:
+            # Dicts preserve insertion order; drop the oldest half.
+            drop = len(self._thread_context) - (self._thread_context_max // 2)
+            stale_keys = list(self._thread_context.keys())[:drop]
+            for key in stale_keys:
+                del self._thread_context[key]
+            stale = set(stale_keys)
+            self._msgid_context = {
+                mid: key for mid, key in self._msgid_context.items() if key not in stale
+            }
+        if len(self._msgid_context) > self._thread_context_max:
+            drop = len(self._msgid_context) - (self._thread_context_max // 2)
+            for mid in list(self._msgid_context.keys())[:drop]:
+                del self._msgid_context[mid]
+
+    # ── Persistent thread state ───────────────────────────────────────────
+    def _load_state(self) -> None:
+        """Restore thread/msgid/attachment state written by a previous run."""
         try:
-            loop = asyncio.get_running_loop()
-            message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
-            )
-            return SendResult(success=True, message_id=message_id)
+            raw = json.loads(Path(self._state_path).read_text())
+        except FileNotFoundError:
+            return
         except Exception as e:
-            logger.error("[Email] Send failed to %s: %s", chat_id, e)
-            return SendResult(success=False, error=str(e))
+            logger.warning("[Email] Could not load thread state (%s) — starting empty", e)
+            return
+        try:
+            tc = raw.get("thread_context") or {}
+            mc = raw.get("msgid_context") or {}
+            sa = raw.get("sent_attachments") or {}
+            if isinstance(tc, dict):
+                self._thread_context.update(
+                    {k: v for k, v in tc.items() if isinstance(v, dict)}
+                )
+            if isinstance(mc, dict):
+                self._msgid_context.update(
+                    {k: v for k, v in mc.items() if isinstance(v, str)}
+                )
+            if isinstance(sa, dict):
+                for k, v in sa.items():
+                    if isinstance(v, list):
+                        self._sent_attachments[k] = set(v)
+            self._trim_thread_context()
+            logger.info(
+                "[Email] Restored thread state: %d thread(s), %d message-id(s)",
+                len(self._thread_context),
+                len(self._msgid_context),
+            )
+        except Exception as e:
+            logger.warning("[Email] Malformed thread state (%s) — starting empty", e)
+
+    def _save_state(self) -> None:
+        """Atomically persist thread state. Never raises into a send path."""
+        try:
+            payload = {
+                "thread_context": self._thread_context,
+                "msgid_context": self._msgid_context,
+                "sent_attachments": {
+                    k: sorted(v) for k, v in self._sent_attachments.items()
+                },
+            }
+            p = Path(self._state_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_suffix(p.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload))
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+            os.replace(tmp, p)
+        except Exception as e:
+            logger.warning("[Email] Could not save thread state: %s", e)
+
+    def _ctx_key_for(self, to_addr: str, ctx: Optional[Dict[str, Any]]) -> str:
+        """Key identifying the thread an outbound mail belongs to.
+
+        Prefers the key stamped onto the context when the inbound message was
+        stored, so the outbound side can never disagree with the inbound side
+        about which thread this is.
+        """
+        ctx = ctx or {}
+        key = str(ctx.get("ctx_key") or "").strip()
+        if key:
+            return key
+        subject = str(ctx.get("subject") or "").strip()
+        if subject:
+            tid = re.sub(
+                r"^(?:(?:re|fwd|fw):\s*)+", "", subject, flags=re.IGNORECASE
+            ).strip()
+            if tid:
+                return f"{(ctx.get('sender_addr') or to_addr).lower()}::{tid}"
+        return to_addr.lower()
+
+    def _register_outbound_msgid(
+        self, msg_id: str, to_addr: str, ctx: Optional[Dict[str, Any]]
+    ) -> None:
+        """Index an agent-generated Message-ID against its thread.
+
+        Without this, a reply to one of the agent's own mails arrives with
+        In-Reply-To=<hermes-...>, misses _msgid_context (which only ever held
+        INBOUND ids), and falls through to the most-recent-thread scan in
+        _context_for_send — answering on the wrong thread, with that thread's
+        Cc list. Registering outbound ids closes that gap.
+        """
+        if not msg_id or msg_id.startswith(("suppressed-", "pending-", "folded-")):
+            return
+        key = self._ctx_key_for(to_addr, ctx)
+        if not key:
+            return
+        self._msgid_context[msg_id] = key
+        # Chain forward: the next reply on this thread should anchor to the
+        # agent's latest mail and carry the earlier ids in References.
+        stored = self._thread_context.get(key)
+        if isinstance(stored, dict):
+            chain = str(stored.get("references") or "").split()
+            prior_id = str(stored.get("message_id") or "").strip()
+            if prior_id and prior_id not in chain:
+                chain.append(prior_id)
+            stored["references"] = " ".join(chain)
+            stored["message_id"] = msg_id
+        self._trim_thread_context()
+        self._save_state()
+
+    def _apply_reply_headers(
+        self,
+        msg,
+        to_addr: str,
+        ctx: Optional[Dict[str, Any]] = None,
+        reply_to_msg_id: Optional[str] = None,
+        has_attachments: bool = False,
+    ) -> None:
+        """Stamp Subject / Cc / In-Reply-To / References on an outbound reply.
+
+        Single source of truth for reply identity. Every send path (text,
+        multi-attachment, single-attachment) goes through this. When the
+        attachment paths built these headers themselves they silently diverged:
+        a bare self._thread_context.get(to_addr) lookup always misses under
+        session_routing="thread" (keys are "sender::thread_id"), so attachment
+        mail went out as "Re: Hermes Agent" with no In-Reply-To and no Cc, and
+        mail clients filed it as a brand-new conversation.
+        """
+        ctx = ctx or {}
+
+        # Reply-all: preserve the inbound To/Cc chain.
+        cc_addrs: List[str] = []
+        for _addr in (ctx.get("recipients") or []):
+            if _addr and _addr != to_addr.lower() and _addr != self._address.lower():
+                if _addr not in cc_addrs:
+                    cc_addrs.append(_addr)
+        if cc_addrs:
+            msg["Cc"] = ", ".join(cc_addrs)
+
+        # Subject: inherit the thread's, prefixing a single "Re:".
+        subject = str(ctx.get("subject") or "").strip()
+        if not subject:
+            # Fail loud rather than silently opening a new thread under a
+            # generic subject — that is what cross-threaded attachment mail.
+            logger.warning(
+                "[Email] No thread context for %s (attachments=%s) — reply may not thread",
+                to_addr,
+                has_attachments,
+            )
+            subject = "Hermes Agent"
+        if not re.match(r"^re:\s", subject, flags=re.IGNORECASE):
+            subject = f"Re: {subject}"
+        msg["Subject"] = subject
+
+        # In-Reply-To is the parent; References is the whole chain (parent's
+        # References + parent's Message-ID). Overwriting References with only
+        # the parent made long threads drift apart in Outlook.
+        parent_id = str(reply_to_msg_id or ctx.get("message_id") or "").strip()
+        if parent_id:
+            msg["In-Reply-To"] = parent_id
+            chain = [r for r in str(ctx.get("references") or "").split() if r]
+            if parent_id not in chain:
+                chain.append(parent_id)
+            if len(chain) > 20:
+                # Keep the thread root plus the most recent ids.
+                chain = chain[:1] + chain[-19:]
+            msg["References"] = " ".join(chain)
+        elif has_attachments:
+            logger.error(
+                "[Email] Sending attachment mail to %s with NO parent message-id "
+                "— it will start a new thread",
+                to_addr,
+            )
+
+    # ── Single-email coalescing ───────────────────────────────────────────
+    def _queue_part(
+        self,
+        to_addr: str,
+        ctx: Optional[Dict[str, Any]],
+        reply_to: Optional[str] = None,
+        body: Optional[str] = None,
+        file_paths: Optional[List[str]] = None,
+    ) -> str:
+        """Buffer one outbound part of a turn and (re)arm the idle flush.
+
+        The gateway emits one answer as several adapter calls: send() for the
+        body, send_multiple_images() once for an image batch, and
+        send_document() once PER remaining file. Folding the body into just
+        the first attachment would still leave one email per subsequent file,
+        so parts accumulate here and are flushed together.
+        """
+        key = self._ctx_key_for(to_addr, ctx)
+        # Tolerate a partially-constructed adapter (tests and some proactive
+        # paths instantiate via object.__new__), so buffering never depends on
+        # __init__ having run.
+        pending = getattr(self, "_pending", None)
+        if pending is None:
+            pending = self._pending = {}
+        entry = pending.get(key)
+        if entry is None:
+            entry = {
+                "to_addr": to_addr,
+                # Captured once. Deliberately NOT re-resolved at flush time:
+                # re-resolving would reintroduce the wrong-thread fallback
+                # this change exists to eliminate.
+                "ctx": ctx or {},
+                "reply_to": reply_to,
+                "body_parts": [],
+                "files": [],
+                "task": None,
+                "first_seen": time.monotonic(),
+            }
+            pending[key] = entry
+        if body and body.strip():
+            entry["body_parts"].append(body.strip())
+        for fp in file_paths or []:
+            if fp not in entry["files"]:
+                entry["files"].append(fp)
+        if reply_to and not entry.get("reply_to"):
+            entry["reply_to"] = reply_to
+
+        window = float(getattr(self, "_fold_window", 12.0))
+        old = entry.get("task")
+        if old is not None and not old.done():
+            old.cancel()
+        try:
+            entry["task"] = asyncio.get_running_loop().create_task(
+                self._flush_after_idle(key)
+            )
+        except RuntimeError:
+            # No running loop — send immediately rather than swallow the reply.
+            self._flush_now(key)
+            return "folded-immediate"
+        logger.info(
+            "[Email] Buffered part for %s (body_parts=%d files=%d) — flushing in %.1fs",
+            key,
+            len(entry["body_parts"]),
+            len(entry["files"]),
+            window,
+        )
+        return f"pending-fold-{key}"
+
+    async def _flush_after_idle(self, key: str) -> None:
+        """Wait for the turn to go quiet, then emit exactly one mail."""
+        try:
+            entry = getattr(self, "_pending", {}).get(key)
+            if not entry:
+                return
+            elapsed = time.monotonic() - entry["first_seen"]
+            await asyncio.sleep(
+                max(
+                    0.0,
+                    min(
+                        float(getattr(self, "_fold_window", 12.0)),
+                        float(getattr(self, "_fold_max_wait", 90.0)) - elapsed,
+                    ),
+                )
+            )
+        except asyncio.CancelledError:
+            # A newer part arrived and re-armed the timer.
+            return
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, self._flush_now, key)
+        except Exception as e:
+            logger.error("[Email] Fold flush failed for %s: %s", key, e, exc_info=True)
+
+    def _flush_now(self, key: str) -> Optional[str]:
+        """Build and send the buffered turn as a single MIME message."""
+        entry = getattr(self, "_pending", {}).pop(key, None)
+        if not entry:
+            return None
+        body = "\n\n".join(entry["body_parts"]).strip()
+        files = [f for f in entry["files"] if f]
+        to_addr = entry["to_addr"]
+        ctx = entry["ctx"]
+        reply_to = entry.get("reply_to")
+        if not body and not files:
+            return None
+        logger.info(
+            "[Email] Folding turn for %s into ONE email (body=%dch files=%d waited=%.1fs)",
+            key,
+            len(body),
+            len(files),
+            time.monotonic() - entry["first_seen"],
+        )
+        try:
+            if files:
+                return self._send_email_with_attachments(
+                    to_addr, body, files, ctx=ctx, reply_to=reply_to
+                )
+            return self._send_email(to_addr, body, reply_to, ctx)
+        except Exception as e:
+            logger.error(
+                "[Email] Folded send FAILED for %s (%d file(s)) — reply lost: %s",
+                to_addr, len(files), e, exc_info=True,
+            )
+            return None
+
+    def _flush_all_pending(self) -> None:
+        """Emit every buffered turn — used on shutdown so nothing is dropped."""
+        pending = getattr(self, "_pending", None) or {}
+        for key in list(pending.keys()):
+            entry = pending.get(key) or {}
+            task = entry.get("task")
+            if task is not None and not task.done():
+                task.cancel()
+            try:
+                self._flush_now(key)
+            except Exception as e:
+                logger.error("[Email] Shutdown flush failed for %s: %s", key, e)
+
+    def _context_for_send(
+        self,
+        chat_id: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """Resolve reply context (subject + threading headers) for a send.
+
+        Lookup order:
+        1. metadata.thread_id -> "<chat_id>::<thread_id>" (gateway thread passthrough)
+        2. reply_to -> Message-ID index -> context key (exact inbound anchor)
+        3. bare chat_id key (sender mode, or direct address)
+        4. Most recent context stored for this sender (same mailbox only).
+
+        Step 4 can only pick a subject/headers for a reply going to the SAME
+        address — it never changes the recipient, so delivery stays fail-closed.
+        """
+        thread_id = (metadata or {}).get("thread_id")
+        if thread_id:
+            ctx = self._thread_context.get(f"{chat_id}::{thread_id}")
+            if ctx:
+                return ctx
+        if reply_to:
+            key = self._msgid_context.get(reply_to)
+            if key:
+                ctx = self._thread_context.get(key)
+                if ctx:
+                    return ctx
+        ctx = self._thread_context.get(chat_id)
+        if ctx:
+            return ctx
+        # Most recent context for this sender (insertion order = recency).
+        best: Dict[str, str] = {}
+        prefix = f"{chat_id}::"
+        for key, val in self._thread_context.items():
+            if key.startswith(prefix):
+                best = val
+        return best
+
+    def _resolve_recipient(
+        self,
+        chat_id: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
+    ) -> tuple:
+        """Resolve a chat_id to (recipient_address, thread_context).
+
+        Single source of truth for all send paths. Never guesses — if the
+        chat_id cannot be resolved to a specific recipient, returns ("", {})
+        so the caller can fail closed or use EMAIL_HOME_ADDRESS explicitly.
+
+        Resolution order:
+        1. chat_id is itself an email address (the normal path: chat_id is
+           always the sender's mailbox)
+        2. Fall back to EMAIL_HOME_ADDRESS for proactive delivery only
+        """
+        ctx = self._context_for_send(chat_id, metadata=metadata, reply_to=reply_to)
+        if "@" in chat_id:
+            return chat_id, ctx
+        # Proactive delivery (cron, kanban notifications) — use home address
+        home = os.getenv("EMAIL_HOME_ADDRESS", "")
+        if home:
+            return home, {}
+        return "", {}
 
     def _message_id_domain(self) -> str:
         """Domain part for generated Message-IDs.
@@ -968,24 +1521,18 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        ctx: Optional[Dict[str, str]] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = formataddr((self._display_name, self._address)) if self._display_name else self._address
         msg["To"] = to_addr
 
-        # Thread context for reply
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-        msg["Subject"] = subject
-
-        # Threading headers
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
-        if original_msg_id:
-            msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
+        ctx = ctx or {}
+        self._apply_reply_headers(
+            msg, to_addr, ctx=ctx, reply_to_msg_id=reply_to_msg_id, has_attachments=False
+        )
+        subject = msg["Subject"]
 
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
@@ -1004,6 +1551,7 @@ class EmailAdapter(BasePlatformAdapter):
                 smtp.close()
 
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
+        self._register_outbound_msgid(msg_id, to_addr, ctx)
         return msg_id
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -1065,40 +1613,33 @@ class EmailAdapter(BasePlatformAdapter):
 
         body = "\n\n".join(body_parts)
 
-        try:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None,
-                self._send_email_with_attachments,
-                chat_id,
-                body,
-                local_paths,
-            )
-        except Exception as e:
-            logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+        to_addr, ctx = self._resolve_recipient(chat_id, metadata=metadata)
+        if not to_addr:
+            logger.error("[Email] Cannot resolve recipient for multi-image send, chat_id=%r", chat_id)
+            return
+
+        # Buffered, not sent: the body for this turn arrived in an earlier
+        # send() call and the remaining files arrive in later send_document
+        # calls. They all belong in one email.
+        self._queue_part(to_addr, ctx, body=body, file_paths=local_paths)
 
     def _send_email_with_attachments(
         self,
         to_addr: str,
         body: str,
         file_paths: List[str],
+        ctx: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = formataddr((self._display_name, self._address)) if self._display_name else self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-        msg["Subject"] = subject
-
-        original_msg_id = ctx.get("message_id")
-        if original_msg_id:
-            msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
+        ctx = ctx or {}
+        self._apply_reply_headers(
+            msg, to_addr, ctx=ctx, reply_to_msg_id=reply_to, has_attachments=True
+        )
 
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
@@ -1106,6 +1647,35 @@ class EmailAdapter(BasePlatformAdapter):
 
         if body:
             msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        # Don't re-attach a file already delivered on this thread — a person
+        # wouldn't resend the same attachments on every turn. Dedupe by content
+        # hash, scoped to the thread so a genuinely revised file still sends.
+        _dedupe_key = self._ctx_key_for(to_addr, ctx)
+        _already = self._sent_attachments.setdefault(_dedupe_key, set())
+        _fresh: List[str] = []
+        _fresh_hashes: List[str] = []
+        _skipped: List[str] = []
+        for _fp in file_paths:
+            try:
+                _h = hashlib.sha256(Path(_fp).read_bytes()).hexdigest()
+            except Exception:
+                _fresh.append(_fp)
+                continue
+            if _h in _already or _h in _fresh_hashes:
+                _skipped.append(Path(_fp).name)
+            else:
+                _fresh_hashes.append(_h)
+                _fresh.append(_fp)
+        if _skipped:
+            logger.info(
+                "[Email] Skipping %d already-sent attachment(s) for %s: %s",
+                len(_skipped), to_addr, ", ".join(_skipped),
+            )
+        file_paths = _fresh
+        if len(self._sent_attachments) > self._thread_context_max:
+            for _k in list(self._sent_attachments.keys())[: len(self._sent_attachments) // 2]:
+                del self._sent_attachments[_k]
 
         for file_path in file_paths:
             p = Path(file_path)
@@ -1130,6 +1700,10 @@ class EmailAdapter(BasePlatformAdapter):
                 smtp.close()
 
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
+        # Record hashes only AFTER a successful send: marking them earlier meant
+        # a failed flush permanently suppressed those files on this thread.
+        _already.update(_fresh_hashes)
+        self._register_outbound_msgid(msg_id, to_addr, ctx)
         return msg_id
 
     async def send_document(
@@ -1142,20 +1716,23 @@ class EmailAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a file as an email attachment."""
-        try:
-            loop = asyncio.get_running_loop()
-            message_id = await loop.run_in_executor(
-                None,
-                self._send_email_with_attachment,
-                chat_id,
-                caption or "",
-                file_path,
-                file_name,
-            )
-            return SendResult(success=True, message_id=message_id)
-        except Exception as e:
-            logger.error("[Email] Send document failed: %s", e)
-            return SendResult(success=False, error=str(e))
+        metadata = kwargs.get("metadata")
+        to_addr, ctx = self._resolve_recipient(chat_id, metadata=metadata, reply_to=reply_to)
+        if not to_addr:
+            logger.error("[Email] Cannot resolve recipient for document send, chat_id=%r", chat_id)
+            return SendResult(success=False, error=f"Cannot resolve recipient for chat_id={chat_id!r}")
+        # The gateway calls this once PER file, so each call only contributes
+        # its file to the buffered turn — it never sends an email of its own.
+        return SendResult(
+            success=True,
+            message_id=self._queue_part(
+                to_addr,
+                ctx,
+                reply_to=reply_to,
+                body=caption or "",
+                file_paths=[file_path],
+            ),
+        )
 
     def _send_email_with_attachment(
         self,
@@ -1163,22 +1740,18 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         file_path: str,
         file_name: Optional[str] = None,
+        ctx: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = formataddr((self._display_name, self._address)) if self._display_name else self._address
         msg["To"] = to_addr
 
-        ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-        msg["Subject"] = subject
-
-        original_msg_id = ctx.get("message_id")
-        if original_msg_id:
-            msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
+        ctx = ctx or {}
+        self._apply_reply_headers(
+            msg, to_addr, ctx=ctx, reply_to_msg_id=reply_to, has_attachments=True
+        )
 
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
@@ -1212,6 +1785,13 @@ class EmailAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the email chat."""
         ctx = self._thread_context.get(chat_id, {})
+        if not ctx:
+            # Thread mode: contexts live under "<chat_id>::<thread_id>"; report
+            # the most recent subject for this mailbox.
+            prefix = f"{chat_id}::"
+            for key, val in self._thread_context.items():
+                if key.startswith(prefix):
+                    ctx = val
         return {
             "name": chat_id,
             "type": "dm",
@@ -1297,6 +1877,144 @@ def _build_adapter(config):
     return EmailAdapter(config)
 
 
+def interactive_setup() -> None:
+    """Interactive `hermes gateway setup` flow for the Email platform.
+
+    Collects IMAP/SMTP credentials, access control, session routing, and an
+    optional From display name. Lazy-imports hermes_cli.setup helpers so the
+    plugin stays importable in non-CLI contexts.
+    """
+    from hermes_cli.setup import (
+        get_env_value,
+        print_header,
+        print_info,
+        print_success,
+        print_warning,
+        prompt,
+        prompt_choice,
+        prompt_yes_no,
+        save_env_value,
+    )
+
+    print_header("Email")
+    existing = get_env_value("EMAIL_ADDRESS")
+    if existing:
+        print_info(f"Email: already configured (address: {existing})")
+        if not prompt_yes_no("Reconfigure Email?", False):
+            return
+
+    print_info("Talk to Hermes through a dedicated IMAP/SMTP mailbox.")
+    print_info("  Use an app password for Gmail / Workspace — not the account password.")
+    print_info("  Prefer a dedicated mailbox (not your personal inbox).")
+    print()
+
+    address = prompt("Email address", default=get_env_value("EMAIL_ADDRESS") or "")
+    if not address:
+        print_warning("Email address is required — skipping Email setup")
+        return
+    save_env_value("EMAIL_ADDRESS", address.strip())
+
+    password = prompt("Email password / app password", password=True)
+    if password:
+        save_env_value("EMAIL_PASSWORD", password)
+    elif not get_env_value("EMAIL_PASSWORD"):
+        print_warning("Password is required — skipping Email setup")
+        return
+
+    imap_host = prompt(
+        "IMAP host (e.g. imap.gmail.com)",
+        default=get_env_value("EMAIL_IMAP_HOST") or "imap.gmail.com",
+    )
+    if imap_host:
+        save_env_value("EMAIL_IMAP_HOST", imap_host.strip())
+
+    smtp_host = prompt(
+        "SMTP host (e.g. smtp.gmail.com)",
+        default=get_env_value("EMAIL_SMTP_HOST") or "smtp.gmail.com",
+    )
+    if smtp_host:
+        save_env_value("EMAIL_SMTP_HOST", smtp_host.strip())
+
+    print()
+    print_info("Access control — the gateway denies unknown senders by default.")
+    allowed = prompt(
+        "Allowed senders (comma-separated addresses or @domain tokens, empty = decide next)",
+        default=get_env_value("EMAIL_ALLOWED_USERS") or "",
+    )
+    if allowed.strip():
+        save_env_value("EMAIL_ALLOWED_USERS", allowed.replace(" ", ""))
+        print_success("  Allowlist saved.")
+    else:
+        access_idx = prompt_choice(
+            "How should unauthorized senders be handled?",
+            [
+                "Open access (any email sender can message the bot)",
+                "Keep unknown senders silent (configure allowlist later)",
+            ],
+            1,
+        )
+        if access_idx == 0:
+            save_env_value("EMAIL_ALLOW_ALL_USERS", "true")
+            print_warning("  Open access enabled — anyone who can email this mailbox can talk to the bot.")
+        else:
+            save_env_value("EMAIL_ALLOW_ALL_USERS", "")
+            print_info("  Unknown senders will be ignored until EMAIL_ALLOWED_USERS is set.")
+
+    home = prompt(
+        "Home address for cron/notifications (optional)",
+        default=get_env_value("EMAIL_HOME_ADDRESS") or "",
+    )
+    if home.strip():
+        save_env_value("EMAIL_HOME_ADDRESS", home.strip())
+
+    print()
+    print_info("Session routing controls how email conversations are isolated.")
+    print_info("  Thread mode (recommended for email secretaries): one agent session")
+    print_info("  per email thread — two subjects from the same person stay separate.")
+    print_info("  Sender mode (stock default): one session per sender address.")
+    routing_idx = prompt_choice(
+        "Session routing?",
+        [
+            "One session per email thread (recommended for email agents)",
+            "One session per sender (stock / legacy)",
+        ],
+        0,
+    )
+    routing = "thread" if routing_idx == 0 else "sender"
+    save_env_value("EMAIL_SESSION_ROUTING", routing)
+    # Also persist under platforms.email so config.yaml is the source of truth
+    # for operators who prefer YAML over env.
+    try:
+        from hermes_cli.config import write_platform_config_field
+
+        write_platform_config_field("email", "session_routing", routing, raw=True)
+    except Exception:
+        pass
+    print_success(f"  Session routing: {routing}")
+
+    print()
+    display = prompt(
+        "From display name (optional, e.g. Iris Sloane)",
+        default=get_env_value("EMAIL_DISPLAY_NAME") or "",
+    )
+    if display.strip():
+        save_env_value("EMAIL_DISPLAY_NAME", display.strip())
+        try:
+            from hermes_cli.config import write_platform_config_field
+
+            write_platform_config_field("email", "display_name", display.strip(), raw=True)
+        except Exception:
+            pass
+        print_success(f"  From header will show: {display.strip()} <{address.strip()}>")
+    else:
+        print_info("  From header will use the bare address.")
+
+    print()
+    print_success("Email platform configured.")
+    print_info("  Start or restart the gateway: hermes gateway restart")
+    print_info("  Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/email")
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
@@ -1315,4 +2033,5 @@ def register(ctx) -> None:
         pii_safe=True,
         emoji="📧",
         allow_update_command=True,
+        setup_fn=interactive_setup,
     )

@@ -419,6 +419,9 @@ class TestEmailMultiImage:
             adapter, "_send_email_with_attachments", MagicMock(return_value="<msgid@x>")
         ) as mock_send:
             _run(adapter.send_multiple_images("user@example.com", images))
+            # send_multiple_images now buffers into the per-turn fold; force the
+            # flush so the single folded SMTP send is observable here.
+            adapter._flush_all_pending()
 
         mock_send.assert_called_once()
         to_addr, body, file_paths = mock_send.call_args.args

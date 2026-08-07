@@ -9,10 +9,25 @@ text in any language.  Printing those to a cp1252 console raises
 ``UnicodeEncodeError: 'charmap' codec can't encode character…`` and kills the
 whole CLI before the REPL even opens.
 
-The fix is to force UTF-8 on the Python side and also flip the console's
-code page to UTF-8 (65001).  Both matter: Python-level only helps when
-Python's stdout is a real TTY; code-page flipping lets subprocesses and
-child Python ``print()`` calls agree on encoding.
+A second Windows pitfall is that legacy CMD / PowerShell hosts don't
+interpret ANSI escape sequences by default.  Without
+``ENABLE_VIRTUAL_TERMINAL_PROCESSING`` on the console handle, sequences like
+``\x1b[35m`` get rendered as the literal fragment ``[35m`` — the ESC byte
+is silently consumed — which is the bug reported in
+https://github.com/NousResearch/hermes-agent/issues/59397.  The setup
+wizard, model picker, and banner code all rely on
+:mod:`hermes_cli.colors` to emit these escapes; without VT processing on
+the console, those render as garbled literal text in CMD.
+
+The fix has two parts:
+
+1. Force UTF-8 on the Python side and flip the console's code page to
+   UTF-8 (65001).  Both matter: Python-level only helps when Python's
+   stdout is a real TTY; code-page flipping lets subprocesses and child
+   Python ``print()`` calls agree on encoding.
+
+2. Enable ``ENABLE_VIRTUAL_TERMINAL_PROCESSING`` on the stdout and stderr
+   console handles so Hermes's ANSI color escapes actually render.
 
 This module is a no-op on every non-Windows platform, and idempotent.
 Entry points (``cli.py`` ``main``, ``hermes_cli/main.py`` CLI dispatch,
@@ -36,6 +51,17 @@ __all__ = ["configure_windows_stdio", "is_windows"]
 
 
 _CONFIGURED = False
+
+# Win32 console handle IDs (see GetStdHandle docs).
+_STD_OUTPUT_HANDLE = -11
+_STD_ERROR_HANDLE = -12
+_INVALID_HANDLE_VALUE = -1
+
+# Console mode flag that enables ANSI / VT escape interpretation.  See
+# https://learn.microsoft.com/en-us/windows/console/setconsolemode for the
+# full list of mode flags; this is the one that turns literal ``[35m``
+# text into actual magenta rendering on a Windows console.
+_ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
 
 
 def is_windows() -> bool:
@@ -66,6 +92,59 @@ def _flip_console_code_page_to_utf8() -> None:
         pass
 
 
+def _enable_windows_virtual_terminal_processing() -> bool:
+    """Enable ``ENABLE_VIRTUAL_TERMINAL_PROCESSING`` on stdout / stderr.
+
+    Without this flag, the legacy Windows console host (CMD, classic
+    PowerShell, and Windows Terminal in some compatibility modes) treats
+    ``\x1b[35m…\x1b[0m`` as raw bytes — the ``\x1b`` is silently dropped
+    and the user sees literal ``[35m`` / ``[0m`` fragments where colored
+    text was intended (issue #59397).
+
+    Only attached console handles are touched.  Streams that have been
+    redirected to a pipe, file, or service (where ``GetConsoleMode``
+    returns ``0``) are skipped — issuing ``SetConsoleMode`` on a
+    non-console handle would be a no-op at best and could disturb the
+    redirected stream's state.
+
+    Returns ``True`` when at least one handle was successfully switched,
+    ``False`` when nothing changed (POSIX, ctypes unavailable, no attached
+    console, or every call failed).
+    """
+    if not is_windows():
+        return False
+
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    except Exception:
+        return False
+
+    enabled = False
+    for std_handle in (_STD_OUTPUT_HANDLE, _STD_ERROR_HANDLE):
+        try:
+            handle = kernel32.GetStdHandle(std_handle)
+            if handle in (0, _INVALID_HANDLE_VALUE):
+                # No real console attached (e.g. piped output).  Skip.
+                continue
+
+            mode = ctypes.c_uint()
+            if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                # Not a console handle — redirected stream.  Skip silently.
+                continue
+
+            new_mode = mode.value | _ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            if kernel32.SetConsoleMode(handle, new_mode):
+                enabled = True
+        except Exception:
+            # Any unexpected error here is non-fatal — we'd rather lose
+            # color rendering than block startup over a console-mode call.
+            continue
+
+    return enabled
+
+
 def _reconfigure_stream(stream, *, encoding: str = "utf-8", errors: str = "replace") -> None:
     """Reconfigure a text stream to UTF-8 in place.
 
@@ -83,7 +162,7 @@ def _reconfigure_stream(stream, *, encoding: str = "utf-8", errors: str = "repla
 
 
 def configure_windows_stdio() -> bool:
-    """Force UTF-8 stdio on Windows.  No-op elsewhere.
+    """Force UTF-8 stdio + ANSI rendering on Windows.  No-op elsewhere.
 
     Idempotent — safe to call multiple times from different entry points.
 
@@ -153,6 +232,13 @@ def configure_windows_stdio() -> bool:
     # input path uses prompt_toolkit which manages its own encoding,
     # but batch/pipe input benefits from UTF-8 decoding on stdin too.
     _reconfigure_stream(sys.stdin)
+
+    # Switch the Windows console into virtual-terminal mode so Hermes's
+    # ANSI color escapes (used by ``hermes_cli.colors.color()`` and every
+    # ``print_info`` / ``print_success`` / banner line) actually render
+    # instead of leaking literal ``[35m`` text (issue #59397).  No-op
+    # when there's no attached console (services, redirected pipes).
+    _enable_windows_virtual_terminal_processing()
 
     _CONFIGURED = True
     return True

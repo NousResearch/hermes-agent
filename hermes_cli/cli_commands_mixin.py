@@ -2471,6 +2471,19 @@ class CLICommandsMixin:
         parts = (cmd or "").strip().split(None, 1)
         focus = parts[1].strip() if len(parts) > 1 else ""
 
+        # Refuse mid-turn, exactly as the gateway handler does. ``cli.py``
+        # assigns ``conversation_history`` only once a turn returns ("Update
+        # history with full conversation"), so a snapshot taken while the
+        # agent is working holds the PREVIOUS turn — the review would miss
+        # the work the user is watching, including whatever prompted the
+        # /refine, and still report success.
+        if getattr(self, "_agent_running", False):
+            _cprint(
+                f"  {_DIM}Agent is running — wait for the turn to finish, "
+                f"then /refine.{_RST}"
+            )
+            return
+
         agent = getattr(self, "agent", None)
         if agent is None:
             _cprint(f"  {_DIM}Nothing to refine yet — send a message first.{_RST}")

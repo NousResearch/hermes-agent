@@ -13,6 +13,8 @@ import { Navigate, Route, Routes, useParams } from 'react-router'
 
 import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
+import type { HermesGateway } from '@/hermes'
+import { $gateway } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
 
@@ -114,18 +116,12 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   maxVoiceRecordingSeconds?: number
 }) {
   const activeGatewayProfile = useStore($activeGatewayProfile)
+  // Gateway identity is not implied by connection state: a prewarmed profile
+  // swap can replace one open gateway with another while state remains "open".
+  const gateway = useStore($gateway) as HermesGateway | null
   const gatewayState = useStore($gatewayState)
   useContributions(ROUTES_AREA)
   const routeContributions = contributedRoutes()
-
-  // Recapture the live gateway instance whenever the connection state flips.
-  // getGateway reads a controller ref, so gatewayState is the intentional
-  // re-eval trigger (not a value the computation itself reads).
-  const gateway = useMemo(
-    () => actions.getGateway(),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [actions, gatewayState]
-  )
 
   const modelMenuContent = useMemo(
     () =>

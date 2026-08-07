@@ -44,10 +44,25 @@ interface ModelOptionsRequest {
   sessionId?: null | string
 }
 
-export function modelOptionsQueryKey(profile: null | string | undefined, sessionId?: null | string) {
+export type ModelOptionsTransport = 'gateway' | 'rest'
+
+/**
+ * Return the transport used for a model-options request. REST is still a
+ * valid fallback for onboarding, but its catalog is not interchangeable with
+ * a remote gateway catalog (which may include virtual/session-scoped models).
+ */
+export function modelOptionsTransport(gateway: HermesGateway | null | undefined): ModelOptionsTransport {
+  return gateway ? 'gateway' : 'rest'
+}
+
+export function modelOptionsQueryKey(
+  profile: null | string | undefined,
+  sessionId?: null | string,
+  transport: ModelOptionsTransport = 'gateway'
+) {
   const profileKey = (profile ?? '').trim() || 'default'
 
-  return ['model-options', profileKey, sessionId || 'global'] as const
+  return ['model-options', profileKey, sessionId || 'global', transport] as const
 }
 
 export function requestModelOptions({

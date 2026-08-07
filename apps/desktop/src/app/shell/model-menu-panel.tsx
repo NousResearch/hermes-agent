@@ -7,7 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenuItem, dropdownMenuRow } from '@/components/ui/dropdown-menu'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { modelOptionsQueryKey, modelOptionsTransport, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
@@ -72,7 +72,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   // back to the catalog's reported current, and a non-reactive read would
   // never repaint that fallback once the catalog resolved.
   const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, activeSessionId),
+    queryKey: modelOptionsQueryKey(profile, activeSessionId, modelOptionsTransport(gateway)),
     queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, sessionId: activeSessionId })
   })
 
@@ -93,7 +93,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     setRefreshing(true)
 
     try {
-      const queryKey = modelOptionsQueryKey(profile, activeSessionId)
+      const queryKey = modelOptionsQueryKey(profile, activeSessionId, modelOptionsTransport(gateway))
 
       const next = await requestModelOptions({ gateway, refresh: true, sessionId: activeSessionId })
 

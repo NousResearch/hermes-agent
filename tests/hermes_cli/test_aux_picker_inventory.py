@@ -104,6 +104,22 @@ def test_aux_picker_requests_exhausted_pool_visibility(configured_home):
     assert seen.get("for_picker") is True
 
 
+def test_desktop_model_options_requests_picker_visibility(configured_home):
+    """The Desktop/TUI shared catalog must preserve exhausted providers too."""
+    from hermes_cli import inventory
+
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return []
+
+    with patch("hermes_cli.model_switch.list_authenticated_providers", _capture):
+        inventory.build_model_options_payload(inventory.load_picker_context())
+
+    assert seen.get("for_picker") is True
+
+
 # ─── Shared rendering ───────────────────────────────────────────────────
 
 

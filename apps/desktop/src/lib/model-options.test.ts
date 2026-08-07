@@ -51,13 +51,24 @@ describe('requestModelOptions', () => {
 
 describe('modelOptionsQueryKey', () => {
   it('isolates new-chat catalogs by active gateway profile', () => {
-    expect(modelOptionsQueryKey('default')).toEqual(['model-options', 'default', 'global'])
-    expect(modelOptionsQueryKey('compass')).toEqual(['model-options', 'compass', 'global'])
+    expect(modelOptionsQueryKey('default')).toEqual(['model-options', 'default', 'global', 'gateway'])
+    expect(modelOptionsQueryKey('compass')).toEqual(['model-options', 'compass', 'global', 'gateway'])
     expect(modelOptionsQueryKey('default')).not.toEqual(modelOptionsQueryKey('compass'))
   })
 
   it('keeps session catalogs inside the owning profile namespace', () => {
-    expect(modelOptionsQueryKey(' compass ', 'session-1')).toEqual(['model-options', 'compass', 'session-1'])
+    expect(modelOptionsQueryKey(' compass ', 'session-1')).toEqual([
+      'model-options',
+      'compass',
+      'session-1',
+      'gateway'
+    ])
+  })
+
+  it('does not reuse a pre-gateway REST catalog for a remote gateway', () => {
+    expect(modelOptionsQueryKey('default', null, 'rest')).not.toEqual(
+      modelOptionsQueryKey('default', null, 'gateway')
+    )
   })
 })
 

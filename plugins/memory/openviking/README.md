@@ -87,6 +87,7 @@ Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
 | `viking_read` | Read content at a viking:// URI (abstract/overview/full) |
 | `viking_browse` | Filesystem-style navigation (list/tree/stat) |
 | `viking_remember` | Store a fact directly with OpenViking `content/write` |
+| `viking_remember_shared` | Store a fact in the SHARED user root, visible to all agent peers |
 | `viking_forget` | Delete one exact `viking://` memory file URI |
 | `viking_add_resource` | Ingest URLs/docs into the knowledge base |
 

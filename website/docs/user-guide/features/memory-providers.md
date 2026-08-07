@@ -290,7 +290,9 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
 | **Data storage** | Self-hosted (local or cloud) |
 | **Cost** | Free (open-source, AGPL-3.0) |
 
-**Tools (6):** `viking_search` (semantic search), `viking_read` (tiered: abstract/overview/full), `viking_browse` (filesystem navigation), `viking_remember` (store facts), `viking_forget` (delete a memory file by exact `viking://` URI), `viking_add_resource` (ingest URLs/docs)
+**Tools (7):** `viking_search` (semantic search), `viking_read` (tiered: abstract/overview/full), `viking_browse` (filesystem navigation), `viking_remember` (store facts in the agent's own peer tree), `viking_remember_shared` (store facts in the shared user root, visible to all agent peers), `viking_forget` (delete a memory file by exact `viking://` URI), `viking_add_resource` (ingest URLs/docs)
+
+Auto-captured session memories are isolated per agent peer (peer-only sessions); only facts explicitly stored via `viking_remember_shared` land in the shared user root visible to every peer.
 
 **Setup:**
 ```bash

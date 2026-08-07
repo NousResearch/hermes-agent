@@ -1,0 +1,20 @@
+[Unit]
+Description=$service_name — bare mesh node (heartbeat + health)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$node_user
+WorkingDirectory=/home/$node_user
+ExecStart=/home/$node_user/$namespace-venv/bin/python3 /home/$node_user/$service_name.py
+Restart=always
+RestartSec=10
+EnvironmentFile=/home/$node_user/.$service_name.env
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+OOMScoreAdjust=-100
+
+[Install]
+WantedBy=multi-user.target

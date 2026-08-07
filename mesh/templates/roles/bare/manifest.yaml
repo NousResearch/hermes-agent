@@ -1,0 +1,58 @@
+name: bare
+description: |
+  Minimal mesh node. Heartbeat + health publishing only.
+  Starting point for new hardware; copy-and-extend for custom roles.
+
+capabilities:
+  declared: []           # bare nodes declare no capabilities by default
+  optional: []           # operator may add via --capabilities flag at `add` time
+
+topics:
+  publishes:
+    - "$namespace/$host/alive"   # retained, every 30s + on connect; ISO UTC timestamp
+    - "$namespace/$host/health"  # every 30s, JSON {host, uptime_seconds, mem_used_pct, ts}
+  subscribes: []
+
+alive_semantics: |
+  Topic: $namespace/$host/alive
+  Retained: yes (last-writer-wins, persists across broker restarts).
+  Payload "" (empty)            = dead (broker's Last Will & Testament on ungraceful disconnect)
+  Payload "<ISO 8601 UTC ts>"   = alive at that timestamp.
+    Format: "YYYY-MM-DDTHH:MM:SS.ffffff+00:00" (Python datetime.now(timezone.utc).isoformat())
+    Note: trailing offset is `+00:00`, NOT `Z`. Subscribers parsing as JSON
+    or with strict ISO regex should account for both forms if interop matters.
+  Subscribers should treat empty payload as "node is dead" and freshness
+  threshold (e.g. >60s old) as "node is down."
+
+health_semantics: |
+  Topic: $namespace/$host/health
+  Retained: NO. Streamed every 30s; subscribers see only events since they connected.
+  Payload: JSON object with fixed keys —
+    {"host", "namespace", "hostname", "uptime_seconds", "mem_used_pct", "ts"}
+    `ts` follows the same ISO 8601 UTC format as alive (`+00:00` not `Z`).
+  Last-writer is NOT special — health is a stream, not a state. For "what's the
+  current health right now," subscribe and wait for the next message.
+
+client_session_note: |
+  The bare template uses `clean_session=True` (paho default) — correct for
+  heartbeat-only nodes that don't subscribe.
+
+  When extending: if your role subscribes to topics AND needs persistent
+  session state (offline message queueing, durable subscriptions), set
+  `clean_session=False`. PREREQUISITE: keep `client_id` STABLE across restarts.
+  Persistent session state is keyed off client_id; a changing id orphans state
+  on the broker. The bare template's `client_id = f"{NAMESPACE}-{HOST}"` is
+  already stable, so subscribing roles inherit safe naming.
+
+systemd:
+  service_name_template: "$namespace-$host"
+  restart_policy: always
+
+post_install_hints: |
+  Bare nodes are starting points. To extend behavior:
+    1. Copy this role template:  hermes mesh role new <new-role-name>
+    2. Edit the generated ~/.hermes/mesh/roles/<new-role-name>/script.py.tmpl
+    3. Re-provision with the new role:  hermes mesh add <host> --role <new-role-name>
+
+  Or edit /home/$node_user/$service_name.py directly on the node and
+  systemctl restart $service_name.service. (Changes won't survive re-provisioning.)

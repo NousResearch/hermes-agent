@@ -552,12 +552,89 @@ class TestLaunchdServiceRecovery:
     # ── Probe requires PID ───────────────────────────────────────────────
 
 
+    def test_probe_launchd_service_running_unknown_when_query_is_blocked(
+        self, tmp_path, monkeypatch
+    ):
+        """A restricted shell must not turn launchctl denial into stopped."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="",
+            ),
+        )
+
+        assert gateway_cli._probe_launchd_service_running() is None
+
+    def test_probe_launchd_service_running_false_when_missing_message_uses_other_code(
+        self, tmp_path, monkeypatch
+    ):
+        """Some launchctl versions report a missing job with a generic exit."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="Could not find service",
+            ),
+        )
+
+        assert gateway_cli._probe_launchd_service_running() is False
+
     # ── Unsupport marker lifecycle ───────────────────────────────────────
 
 
 
     # ── launchd_status with active supervision ───────────────────────────
 
+
+    def test_launchd_status_reports_unknown_when_query_is_blocked(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Do not label a supervised gateway detached when launchctl is denied."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="",
+            ),
+        )
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda cleanup_stale=False: 24680,
+        )
+
+        gateway_cli.launchd_status()
+
+        out = capsys.readouterr().out
+        assert "Unable to verify launchd service state from this shell" in out
+        assert "Gateway process is running (PID 24680)" in out
+        assert "not loaded" not in out
+        assert "detached" not in out
+
+        snapshot = gateway_cli.GatewayRuntimeSnapshot(
+            manager="launchd",
+            service_installed=True,
+            service_running=False,
+            service_status_known=False,
+            gateway_pids=(24680,),
+        )
+        gateway_cli._print_gateway_process_mismatch(snapshot)
+        assert capsys.readouterr().out == ""
 
     def test_launchd_status_reports_fallback_when_unsupported_and_pid_running(self, tmp_path, monkeypatch, capsys):
         """When the unsupported marker exists and a fallback PID is running."""

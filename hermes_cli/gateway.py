@@ -78,6 +78,7 @@ class GatewayRuntimeSnapshot:
     manager: str
     service_installed: bool = False
     service_running: bool = False
+    service_status_known: bool = True
     gateway_pids: tuple[int, ...] = ()
     service_scope: str | None = None
 
@@ -87,7 +88,12 @@ class GatewayRuntimeSnapshot:
 
     @property
     def has_process_service_mismatch(self) -> bool:
-        return self.service_installed and self.running and not self.service_running
+        return (
+            self.service_status_known
+            and self.service_installed
+            and self.running
+            and not self.service_running
+        )
 
 
 @dataclass(frozen=True)
@@ -1295,13 +1301,24 @@ def _parse_launchd_pid_from_list_output(output: str) -> int | None:
     return None
 
 
-def _probe_launchd_service_running() -> bool:
-    """Return True when launchd is actively supervising the gateway process.
+def _launchctl_status_indicates_unloaded(result: subprocess.CompletedProcess) -> bool:
+    """Return True only when launchctl positively reports a missing job."""
+    stderr = (result.stderr or "").lower()
+    return (
+        result.returncode in _LAUNCHD_JOB_UNLOADED_EXIT_CODES
+        or "could not find service" in stderr
+    )
+
+
+def _probe_launchd_service_running() -> bool | None:
+    """Return whether launchd is actively supervising the gateway process.
 
     ``launchctl list <label>`` returns exit 0 whenever the service definition is
     registered with launchd — even when ``state = not running`` (macOS 26+).
     We additionally require a PID in the output to confirm launchd is actually
-    managing a live process, not just holding a static definition.
+    managing a live process, not just holding a static definition. ``None``
+    means this shell could not query launchd, so callers must not infer that the
+    service is stopped or detached.
     """
     if not get_launchd_plist_path().exists():
         return False
@@ -1312,10 +1329,12 @@ def _probe_launchd_service_running() -> bool:
             text=True, encoding='utf-8', errors='replace',
             timeout=10,
         )
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if _launchctl_status_indicates_unloaded(result):
         return False
     if result.returncode != 0:
-        return False
+        return None
     return _parse_launchd_pid_from_list_output(result.stdout) is not None
 
 
@@ -1379,10 +1398,12 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
         )
 
     if is_macos():
+        launchd_running = _probe_launchd_service_running()
         return GatewayRuntimeSnapshot(
             manager="launchd",
             service_installed=get_launchd_plist_path().exists(),
-            service_running=_probe_launchd_service_running(),
+            service_running=launchd_running is True,
+            service_status_known=launchd_running is not None,
             gateway_pids=gateway_pids,
             service_scope="launchd",
         )
@@ -4685,6 +4706,7 @@ def launchd_restart():
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
+    service_status_known = True
     try:
         result = subprocess.run(
             ["launchctl", "list", label],
@@ -4693,9 +4715,15 @@ def launchd_status(deep: bool = False):
             timeout=10,
         )
         service_listed = result.returncode == 0
+        if (
+            not service_listed
+            and not _launchctl_status_indicates_unloaded(result)
+        ):
+            service_status_known = False
         list_output = result.stdout
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, OSError):
         service_listed = False
+        service_status_known = False
         list_output = ""
 
     # Determine whether launchd is actively supervising a process.
@@ -4728,7 +4756,19 @@ def launchd_status(deep: bool = False):
         print("⚠ Service definition is stale relative to the current Hermes install")
         print("  Run: hermes gateway start")
 
-    if service_listed:
+    if not service_status_known:
+        print("⚠ Unable to verify launchd service state from this shell")
+        print(
+            "  The launchctl status query was blocked or unavailable; "
+            "this does not mean the service is unloaded."
+        )
+        if fallback_pid:
+            print(
+                f"  Gateway process is running (PID {fallback_pid}), but "
+                "launchd supervision could not be verified."
+            )
+        print("  Run from an unrestricted host shell: hermes gateway status")
+    elif service_listed:
         if launchd_pid is not None:
             print(f"✓ Gateway is supervised by launchd (PID {launchd_pid})")
             print("  Auto-start at login and auto-restart on crash are available.")

@@ -1,0 +1,1091 @@
+[
+  {
+    "id": "lpmilp-001-production-planning-problem",
+    "question": "A factory produces two types of food, I and II, and currently has 50 skilled workers. It is known that one skilled worker can produce $10 \\ \\mathrm{kg} / \\ \\mathrm{h}$ of food I or $6 \\ \\mathrm{kg} / \\ \\mathrm{h}$ of food II. According to contract bookings, the weekly demand for these two foods will rise sharply, as shown in Table 1-11. Therefore, the factory has decided to train 50 new workers by the end of the 8th week. It is known that a worker works $40 \\ \\mathrm{h}$ per week, and a skilled worker can train up to three new workers in two weeks (during the training period, both the skilled worker and the trainees do not participate in production). The weekly wage of a skilled worker is 360 yuan, the weekly wage of a trainee during the training period is 120 yuan, and after training, the wage is 240 yuan per week, with the same production efficiency as skilled workers. During the transition period of training, many skilled workers are willing to work overtime, and the factory has decided to arrange some workers to work $60 \\ \\mathrm{h}$ per week, with a weekly wage of 540 yuan. If the booked food cannot be delivered on time, the compensation fee for each week of delay per $ \\ \\mathrm{kg}$ is 0.5 yuan for food I and 0.6 yuan for food II. Under these conditions, how should the factory make comprehensive arrangements to minimize the total cost?\n\nTable 1-11\n\n| Week | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |\n|------|---|---|---|---|---|---|---|---|\n| I    | 10000 | 10000  | 12000  | 12000  | 16000  | 16000  | 20000  | 20000  |\n| II   | 6000 | 7200 | 8400 | 10800 | 10800 | 12000  | 12000  | 12000  |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "219816.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 0 (MIT)"
+  },
+  {
+    "id": "lpmilp-002-capacitated-lot-sizing-problem-c",
+    "question": "Each year $t=1,\\dots ,n$ two production lines deliver $a_1=10$ and $a_2=15$ new fighter jets (25 total). $n=10$. Decide how many of that year's 25 aircraft, $x_t$, enter combat immediately and how many, $y_t=25-x_t$, become training platforms. A training jet produces five newly qualified pilots who are available at the start of the next year; every combat jet must be matched with one trained pilot to be operational, and training jets can be reassigned to combat in later years. Starting with no aircraft or pilots, choose integer sequences $\\{x_t,y_t\\}_{t=1}^n$ to maximise the cumulative number of operational combat jet-years $\\sum_{t=1}^{n} x_t$, subject to annual pilot-availability and fleet-balance constraints.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "1350.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 1 (MIT)"
+  },
+  {
+    "id": "lpmilp-003-capacitated-lot-sizing-problem-c",
+    "question": "A company specializing in foldable tables needs to create an optimal production and human resources plan for a six-month period (January to June) to maximize its total net profit. The plan must detail monthly in-house production levels, outsourcing quantities, and workforce management (hiring/firing).\n\n**Initial Conditions (at the start of January):**\n- Initial Workforce: 1,000 employees\n- Initial Inventory: 15,000 units\n\n**Revenue and Cost Structure:**\n- **Sales Price:** 300 Yuan per unit sold.\n- **Raw Material Cost:** 90 Yuan per unit, applicable *only* to units produced in-house.\n- **Outsourcing Cost:** 200 Yuan per unit for finished tables acquired from a third-party supplier. This is an all-inclusive cost.\n- **Inventory Holding Cost:** 15 Yuan per unit for any inventory held at the end of a month.\n- **Backorder Cost:** 35 Yuan per unit for any unfulfilled demand (stockout) carried over to the next month.\n\n**Labor and Production Parameters:**\n- **Labor Requirement:** Each in-house unit requires 5 labor hours to produce.\n- **Regular Labor:** Each worker provides 160 regular working hours per month (8 hours/day * 20 days/month). The company pays a regular wage of 30 Yuan/hour for these 160 hours, regardless of full utilization.\n- **Overtime Labor:** Workers can perform overtime. Total overtime hours per month for the entire workforce cannot exceed 20 hours per worker. The overtime wage is 40 Yuan/hour.\n- **Workforce Management:** The company can hire or fire workers each month. The cost to hire a new worker is 5,000 Yuan, and the cost to fire a worker is 8,000 Yuan.\n\n**Demand and Fulfillment Logic:**\n- Unfulfilled demand from one month is back-ordered and must be met in subsequent months.\n- The company fulfills orders (both current demand and backorders) using available inventory from the previous month, current in-house production, and outsourced units.\n\n**Terminal Condition (at the end of June):**\n- The ending inventory must be at least 10,000 units.\n- All backorders must be cleared (i.e., ending backorders must be zero).\n\n**Forecasted Demand:**\n| Month | January | February | March | April | May | June |\n|:---:|:---:|:---:|:---:|:---:|:---:|:---:|\n| Demand Forecast | 20,000 | 40,000 | 42,000 | 35,000 | 19,000 | 18,500 |\n\nBased on this information, formulate the optimal six-month operational plan.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "10349920.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 2 (MIT)"
+  },
+  {
+    "id": "lpmilp-004-farm-planning",
+    "question": "A farmer needs to decide how many cows, sheep, and chickens to raise in order to achieve maximum profit. The farmer can sell cows, sheep, and chickens for $500, $200, and $8 each, respectively. The feed costs for each cow, sheep, and chicken are $100, $80, and $5, respectively. The profit is the difference between the selling price and the feed cost. Each cow, sheep, and chicken produces 10, 5, and 3 units of manure per day, respectively. Due to the limited time the farm staff has for cleaning the farm each day, they can handle up to 800 units of manure. Additionally, because of the limited farm size, the farmer can raise at most 50 chickens. Furthermore, the farmer must have at least 10 cows to meet customer demand. The farmer must also raise at least 20 sheep. Finally, the total number of animals cannot exceed 100.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "30400.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 3 (MIT)"
+  },
+  {
+    "id": "lpmilp-005-diet-problem",
+    "question": "Mary is planning her dinner tonight. Every 100 grams of okra contains 3.2 grams of fiber, every 100 grams of carrots contains 2.7 grams of fiber, every 100 grams of celery contains 1.6 grams of fiber, and every 100 grams of cabbage contains 2 grams of fiber. How many grams of each type of food should Mary buy to maximize her fiber intake?\n\nShe is considering choosing one among salmon, beef, and pork as a protein source. For the chosen protein she must take at least one gram of it.\n\nShe also considers choosing at least two kinds of vegetables among okra, carrots, celery, and cabbage. For each of the selected vegetables, she must take at least one gram.\n\nThe price of salmon is $4 per 100 grams, beef is $3.6 per 100 grams, pork is $1.8 per 100 grams. The price of okra is $2.6 per 100 grams, carrots are $1.2 per 100 grams, celery is $1.6 per 100 grams, and cabbage is $2.3 per 100 grams. Mary has a budget of $15 for this meal.\n\nThe total food intake should be 600 grams.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "18.95657143",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 4 (MIT)"
+  },
+  {
+    "id": "lpmilp-006-capacitated-lot-sizing-problem-c",
+    "question": "The contract reservations for the next year for products I, II, and III of a certain factory in each quarter are shown in Table 1-10.\n\nTable 1-10\n| Product | 1    | 2    | 3    | 4    |\n|---------|------|------|------|------|\n| I       | 1500 | 1000 | 2000 | 1200 |\n| II      | 1500 | 1500 | 1200 | 1500 |\n| III     | 1000 | 2000 | 1500 | 2500 |\n\nAt the beginning of the first quarter, there is no inventory for these three products, and it is required to have 150 units in stock for each product by the end of the fourth quarter. It is known that the factory has 15,000 production hours per quarter, and each unit of products I, II, and III requires 2, 4, and 3 hours respectively. Due to a change in equipment, product I cannot be produced in the second quarter. It is stipulated that if the products cannot be delivered on time, a compensation of 20 yuan per unit per quarter delay is required for products I and II, while for product III, the compensation is 10 yuan. Additionally, for products produced but not delivered in the current quarter, the inventory cost is 5 yuan per unit per quarter. How should the factory schedule production to minimize the total cost of compensation and inventory?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "10755.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 5 (MIT)"
+  },
+  {
+    "id": "lpmilp-007-transportation-problem",
+    "question": "An Italian transportation company needs to move some empty containers from its 6 warehouses (located in Verona, Perugia, Rome, Pescara, Taranto, and Lamezia) to major national ports (Genoa, Venice, Ancona, Naples, Bari). The container inventory at the warehouses is as follows:\n\n|  | Empty Containers |\n|:---:|:---:|\n| Verona | 10 |\n| Perugia | 12 |\n| Rome | 20 |\n| Pescara | 24 |\n| Taranto | 18 |\n| Lamezia | 40 |\n\nThe demand at the ports is as follows:\n\n|  | Container Demand |\n|:---:|:---:|\n| Genoa | 20 |\n| Venice | 15 |\n| Ancona | 25 |\n| Naples | 33 |\n| Bari | 21 |\n\nThe transport is carried out by a fleet of trucks. The cost to transport each container is proportional to the distance traveled by the trucks, with a rate of 30 euros per kilometer. Each truck can carry up to 2 containers. The distances are as follows:\n\n|  | Genoa | Venice | Ancona | Naples | Bari |\n|:---:|:---:|:---:|:---:|:---:|:---:|\n| Verona | $290 \\mathrm{~km}$ | $115 \\mathrm{~km}$ | $355 \\mathrm{~km}$ | $715 \\mathrm{~km}$ | $810 \\mathrm{~km}$ |\n| Perugia | $380 \\mathrm{~km}$ | $340 \\mathrm{~km}$ | $165 \\mathrm{~km}$ | $380 \\mathrm{~km}$ | $610 \\mathrm{~km}$ |\n| Rome | $505 \\mathrm{~km}$ | $530 \\mathrm{~km}$ | $285 \\mathrm{~km}$ | $220 \\mathrm{~km}$ | $450 \\mathrm{~km}$ |\n| Pescara | $655 \\mathrm{~km}$ | $450 \\mathrm{~km}$ | $155 \\mathrm{~km}$ | $240 \\mathrm{~km}$ | $315 \\mathrm{~km}$ |\n| Taranto | $1010 \\mathrm{~km}$ | $840 \\mathrm{~km}$ | $550 \\mathrm{~km}$ | $305 \\mathrm{~km}$ | $95 \\mathrm{~km}$ |\n| Lamezia | $1072 \\mathrm{~km}$ | $1097 \\mathrm{~km}$ | $747 \\mathrm{~km}$ | $372 \\mathrm{~km}$ | $333 \\mathrm{~km}$ |\n\nWrite a mathematical program to find the minimum cost transportation policy and solve it.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "904590.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 6 (MIT)"
+  },
+  {
+    "id": "lpmilp-008-assignment-problem",
+    "question": "Now, we need to determine 4 out of 5 workers to complete one of the four tasks respectively. Due to each worker's different technical specialties, the time required for them to complete each task varies. The hours required by each worker to complete each task are shown in Table 5-2.\n\nTable 5-2\n| Worker | $A$ | $B$ | $C$ | $D$ |\n|--------|-----|-----|-----|-----|\n| I      | 9   | 4   | 3   | 7   |\n| II     | 4   | 6   | 5   | 6   |\n| III    | 5   | 4   | 7   | 5   |\n| IV     | 7   | 5   | 2   | 3   |\n| V      | 10  | 6   | 7   | 4   |\n\nTry to find a job assignment plan that minimizes the total working hours.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "14.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 7 (MIT)"
+  },
+  {
+    "id": "lpmilp-009-profit-maximization-problem",
+    "question": "Haus Toys can manufacture and sell toy trucks, toy airplanes, toy boats, and toy trains. The profit for each truck sold is $5, each airplane $10, each boat $8, and each train $7. How many types of toys should Haus Toys manufacture to maximize profits?\n\nThere are 890 units of wood available. Each truck requires 12 units, each airplane 20 units, each boat 15 units, and each train 10 units.\n\nThere are 500 units of steel available. Each airplane requires 3 units, each boat 5 units, each train 4 units, and each truck 6 units.\n\nIf Haus Toys manufactures trucks, they will not manufacture trains.\n\nHowever, if they manufacture boats, they will also manufacture airplanes.\n\nThe number of toy boats manufactured cannot exceed the number of toy trains manufactured.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "623.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 8 (MIT)"
+  },
+  {
+    "id": "lpmilp-010-set-cover",
+    "question": "A convenience supermarket is planning to open several chain stores in a newly built residential area in the northwest suburb of the city. For shopping convenience, the distance from any residential area to one of the chain stores should not exceed $800 \\mathrm{~m}$. Table 5-1 shows the new residential areas and the residential areas within a radius of $800 \\mathrm{~m}$ from each of them. Question: What is the minimum number of chain stores the supermarket needs to build among the mentioned residential areas, and in which residential areas should they be built?\n\n| Area Code | Residential Areas within $800 \\mathrm{~m}$ Radius |\n|-----------|---------------------------------------------------|\n| A         | A, C, E, G, H, I                                  |\n| B         | B, H, I                                           |\n| C         | A, C, G, H, I                                     |\n| D         | D, J                                              |\n| E         | A, E, G                                           |\n| F         | F, J, K                                           |\n| G         | A, C, E, G                                        |\n| H         | A, B, C, H, I                                     |\n| I         | A, B, C, H, I                                     |\n| J         | D, F, J, K, L                                     |\n| K         | F, J, K, L                                        |\n| L         | J, K, L                                           |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "3.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 9 (MIT)"
+  },
+  {
+    "id": "lpmilp-011-production-planning-problem",
+    "question": "A company produces two types of small motorcycles, where type A is entirely manufactured by the company, and type B is assembled from imported parts. The production, assembly, and inspection time required for each unit of these two products are shown in Table 3.2.\n\nTable 3.2\n\n| Type | Process | | | Selling Price <br> (Yuan/unit) |\n| :---: | :---: | :---: | :---: | :---: |\n| | Manufacturing | Assembly | Inspection | |\n| Type A (hours/unit) | 20 | 5 | 3 | 650 |\n| Type B (hours/unit) | 0 | 7 | 6 | 725 |\n| Max production capacity per week (hours) | 120 | 80 | 40 | |\n| Production cost per hour (Yuan) | 12 | 8 | 10 | |\n\nIf the company's operational goals and targets are as follows:\n\n$p_{1}$ : The total profit per week should be at least 3000 yuan;\n\n$p_{2}$ : At least 5 units of type A motorcycles should be produced per week;\n\n$p_{3}$ : Minimize the idle time of each process as much as possible. The weight coefficients of the three processes are their hourly costs, and overtime is not allowed.\n\nTry to establish a model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "272.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 10 (MIT)"
+  },
+  {
+    "id": "lpmilp-012-facility-location-problem",
+    "question": "Red Star Plastics Factory produces six distinct types of plastic containers. Each container type is characterized by a specific volume, market demand, and unit variable production cost, as detailed in Table 5-11.\n\n**Table 5-11: Container Data**\n| Container Type (Code)             | 1    | 2    | 3    | 4    | 5    | 6     |\n| :------------------------------ | :--- | :--- | :--- | :--- | :--- | :---- |\n| Volume ($\\text{cm}^3$)             | 1500 | 2500 | 4000 | 6000 | 9000 | 12000 |\n| Market Demand (units)           | 500  | 550  | 700  | 900  | 400  | 300   |\n| Unit Variable Production Cost (Yuan/unit) | 5    | 8    | 10   | 12   | 16   | 18    |\n\nThe production of any container type necessitates the use of its dedicated specialized equipment. If the decision is made to **activate** the production equipment for a particular container type (i.e., if the production quantity of that type is greater than zero), a fixed setup cost of 1200 Yuan is incurred for that specific equipment.\n\nShould the production quantity of a certain container type be insufficient to meet its direct demand, the factory has the option to utilize other container types with **larger or equal volume** as substitutes to fulfill this unmet demand. For instance, type 2 containers (volume 2500 $\\text{cm}^3$) can be used to satisfy the demand for type 1 containers (requiring a volume of 1500 $\\text{cm}^3$), but type 1 containers cannot be used for type 2 demand. In this problem, the container type codes are pre-sorted in ascending order of their volumes.\n\n**Question:**\nHow should the factory organize its production? The objective is to develop a production plan that minimizes the total cost—comprising the sum of variable production costs for all containers produced and the fixed costs for all activated equipment—while ensuring that the demand for all container types is fully met.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "43200.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 11 (MIT)"
+  },
+  {
+    "id": "lpmilp-013-profit-maximization-problem",
+    "question": "Tom and Jerry just bought a farm in Sunshine Valley, and they are considering using it to plant corn, wheat, soybeans, and sorghum. The profit per acre for planting corn is $1500, the profit per acre for planting wheat is $1200, the profit per acre for planting soybeans is $1800, and the profit per acre for planting sorghum is $1600. To maximize their profit, how many acres of land should they allocate to each crop? Tom and Jerry’s farm has a total area of 100 acres.\n\nThe land area used for planting corn must be at least twice the land area used for planting wheat.\n\nThe land area used for planting soybeans must be at least half the land area used for planting sorghum.\n\nThe land area used for planting wheat must be three times the land area used for planting sorghum.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "180000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 12 (MIT)"
+  },
+  {
+    "id": "lpmilp-014-knapsack",
+    "question": "Mary is planning tonight's dinner. She wants to choose a combination of protein and vegetables to maximize her protein intake for the meal. Her protein options are chicken, salmon, and tofu, which can be bought in any quantity.\n\n- Chicken: 23g protein, $3.00 cost, per 100g.\n- Salmon: 20g protein, $5.00 cost, per 100g.\n- Tofu: 8g protein, $1.50 cost, per 100g.\n\nShe also wants to choose from a list of five vegetables, sold in 100g packs. She must select at least three different types of vegetables.\n\n- Broccoli (100g pack): 2.8g protein, $1.20 cost.\n- Carrots (100g pack): 0.9g protein, $0.80 cost.\n- Spinach (100g pack): 2.9g protein, $1.50 cost.\n- Bell Pepper (100g pack): 1.0g protein, $1.00 cost.\n- Mushrooms (100g pack): 3.1g protein, $2.00 cost.\n\nMary has two main constraints:\n1. Her total budget is $20.\n2. The total weight of all food must not exceed 800 grams.\n\nHow should Mary choose her ingredients to get the maximum possible amount of protein?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "123.8",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 13 (MIT)"
+  },
+  {
+    "id": "lpmilp-015-lot-sizing-problem",
+    "question": "A certain factory needs to use a special tool over $n$ planning stages. At stage $j$, $r_j$ specialized tools are needed. At the end of this stage, all tools used within this stage must be sent for repair before they can be reused. There are two repair methods: one is slow repair, which is cheaper (costs $b$ per tool) but takes longer ($p$ stages to return, e.g. if a tool goes to repair after stage 1, it will return at stage 1+p); the other is fast repair, which costs $c$ per tool $(c > b)$ and is faster, requiring only $q$ stages to return $(q < p)$. If the repaired tools cannot meet the needs, new ones must be purchased, with a cost of $a$ per new tool $(a > c)$. This special tool will no longer be used after $n$ stages. Determine an optimal plan for purchasing and repairing the tools to minimize the cost spent on tools during the planning period.\\n\\nn = 10  # number of stages\\nr = [3, 5, 2, 4, 6, 5, 4, 3, 2, 1]  # tool requirements per stage, indexing starts at 1\\na = 10  # cost of buying a new tool\\nb = 1   # cost of slow repair\\nc = 3   # cost of fast repair\\np = 3   # slow repair duration\\nq = 1   # fast repair duration",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "134.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 14 (MIT)"
+  },
+  {
+    "id": "lpmilp-016-lot-sizing-problem",
+    "question": "A store plans to formulate the purchasing and sales plan for a certain product for the first quarter of next year. It is known that the warehouse capacity of the store can store up to 500 units of the product, and there are 200 units in stock at the end of this year. The store purchases goods once at the beginning of each month. The purchasing and selling prices of the product in each month are shown in Table 1.3.\n\nTable 1.3\n\n| Month | 1 | 2 | 3 |\n| :---: | :---: | :---: | :---: |\n| Purchasing Price (Yuan) | 8 | 6 | 9 |\n| Selling Price (Yuan) | 9 | 8 | 10 |\n\nNow, determine how many units should be purchased and sold each month to maximize the total profit, and express this problem as a linear programming model.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "4100.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 15 (MIT)"
+  },
+  {
+    "id": "lpmilp-017-production-planning-problem",
+    "question": "A textile factory produces two types of fabrics: one for clothing and the other for curtains. The factory operates two shifts, with a weekly production time set at 110 hours. Both types of fabrics are produced at a rate of 1000 meters per hour. Assuming that up to 70,000 meters of curtain fabric can be sold per week, with a profit of 2.5 yuan per meter, and up to 45,000 meters of clothing fabric can be sold per week, with a profit of 1.5 yuan per meter, the factory has the following objectives in formulating its production plan:\n\n$p_{1}$ : The weekly production time must fully utilize 110 hours;\n\n$p_{2}$ : Overtime should not exceed 10 hours per week;\n\n$p_{3}$ : At least 70,000 meters of curtain fabric and 45,000 meters of clothing fabric must be sold per week;\n\n$p_{4}$ : Minimize overtime as much as possible.\n\nFormulate a model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "5.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 16 (MIT)"
+  },
+  {
+    "id": "lpmilp-018-production-planning-problem",
+    "question": "A furniture store can choose to order chairs from three different manufacturers: A, B, and C. The cost of ordering each chair from manufacturer A is $50, from manufacturer B is $45, and from manufacturer C is $40. The store needs to minimize the total cost of the order.\n\nAdditionally, each order from manufacturer A will include 15 chairs, while each order from manufacturers B and C will include 10 chairs. The number of orders must be an integer. The store needs to order at least 100 chairs.\n\nEach order from manufacturer A will include 15 chairs, while each order from manufacturers B and C will include 10 chairs. The store needs to order at most 500 chairs.\n\nIf the store decides to order chairs from manufacturer A, it must also order at least 10 chairs from manufacturer B.\n\nFurthermore, if the store decides to order chairs from manufacturer B, it must also order chairs from manufacturer C.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "4000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 17 (MIT)"
+  },
+  {
+    "id": "lpmilp-019-production-planning-problem",
+    "question": "Bright Future Toys wants to build and sell robots, model cars, building blocks, and dolls. The profit for each robot sold is $15, for each model car sold is $8, for each set of building blocks sold is $12, and for each doll sold is $5. How many types of toys should Bright Future Toys manufacture to maximize profit?\nThere are 1200 units of plastic available. Each robot requires 30 units of plastic, each model car requires 10 units of plastic, each set of building blocks requires 20 units of plastic, and each doll requires 15 units of plastic.\n\nThere are 800 units of electronic components available. Each robot requires 8 units of electronic components, each model car requires 5 units of electronic components, each set of building blocks requires 3 units of electronic components, and each doll requires 2 units of electronic components.\n\nIf Bright Future Toys manufactures robots, they will not manufacture dolls.\n\nHowever, if they manufacture model cars, they will also manufacture building blocks.\n\nThe number of dolls manufactured cannot exceed the number of model cars manufactured.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "956.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 18 (MIT)"
+  },
+  {
+    "id": "lpmilp-020-lot-sizing-problem",
+    "question": "A restaurant needs to order dining tables from three different suppliers, A, B, and C. The cost of ordering each dining table from Supplier A is $120, from Supplier B is $110, and from Supplier C is $100. The restaurant needs to minimize the total cost of the order.\n\nAdditionally, each order from Supplier A will include 20 tables, while each order from Suppliers B and C will include 15 tables. The number of orders must be an integer. The restaurant needs to order at least 150 tables.\n\nEach order from Supplier A will include 20 tables, and each order from Suppliers B and C will include 15 tables. The restaurant needs to order no more than 600 tables.\n\nIf the restaurant decides to order tables from Supplier A, it must also order at least 30 tables from Supplier B.\n\nAdditionally, if the restaurant decides to order tables from Supplier B, it must also order tables from Supplier C.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "15000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 19 (MIT)"
+  },
+  {
+    "id": "lpmilp-021-production-planning-problem",
+    "question": "A company plans to produce 3 types of products $A_{1}, A_{2}, A_{3}$. It can produce for 22 days in a month. The following table gives the maximum demand (unit $=100 \\mathrm{~kg}$), price ($\\$ / 100 \\mathrm{Kg}$), production cost (per 100Kg product), and production quota (the maximum number of 100kg units that can be produced in one day if all production lines are devoted to this product).\n\n| Product | $A_{1}$ | $A_{2}$ | $A_{3}$ |\n| :---: | :---: | :---: | :---: |\n| Maximum Demand | 5300 | 4500 | 5400 |\n| Selling Price | $124$ | $109$ | $115$ |\n| Production Cost | $73.30$ | $52.90$ | $65.40$ |\n| Production Quota | 500 | 450 | 550 |\n\nThe fixed activation cost of the production line is as follows:\n\n| Product | $A_{1}$ | $A_{2}$ | $A_{3}$ |\n| :---: | :---: | :---: | :---: |\n| Activation Cost | $170000$ | $150000$ | $100000$ |\n\nMinimum production batch:\n\n$$\n\\begin{array}{c|ccc}\nProduct & A_{1} & A_{2} & A_{3} \\\\\n\\hline\nMinimum Batch & 20 & 20 & 16\n\\end{array}\n$$\n\nPlease formulate an operations research model to determine a production plan that maximizes total revenue while accommodating fixed activation costs and minimum production batch constraints.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "270290.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 20 (MIT)"
+  },
+  {
+    "id": "lpmilp-022-profit-maximization-problem",
+    "question": "Hongdou Clothing Factory uses three special equipment to produce shirts, short-sleeved shirts, and casual clothes respectively. It is known that the labor, material usage, selling price, and variable cost of each of the above products are as shown in Table 5-10.\n\nTable 5-10\n\n| Product Name | Labor per unit | Material per unit | Selling Price | Variable Cost |\n|--------------|----------------|------------------|---------------|---------------|\n| Shirt        | 3              | 4                | 120           | 60            |\n| Short-sleeve | 2              | 3                | 80            | 40            |\n| Casual Cloth | 6              | 6                | 180           | 80            |\n\nIt is known that the available labor per week is 1500 units, the available material is 1600 units, and the weekly fixed costs for the three special equipment for producing shirts, short-sleeved shirts, and casual clothes are 2000, 1500, and 1000 respectively. Design a weekly production plan for the factory to maximize its profit.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "24000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 21 (MIT)"
+  },
+  {
+    "id": "lpmilp-023-transportation-problem",
+    "question": "A manufacturing company needs to transport 1800 units of product from the warehouse to three different sales points. The company has four transportation options to choose from: truck, van, motorcycle, and electric vehicle. Since the van and electric vehicle both consume a lot of energy, the company wants to choose only one of these two options. Each trip with a truck generates 100 units of pollution, a van generates 50 units of pollution, a motorcycle generates 10 units of pollution, and an electric vehicle generates 0 units of pollution. The total pollution generated from all trips cannot exceed 2000 units. At least 10 trips must use a truck. Trucks, vans, motorcycles, and electric vehicles can transport 100 units, 80 units, 40 units, and 60 units of product per trip, respectively. The company needs to ensure that the total amount of transported product is at least 1800 units. Return the minimized pollution in units while meeting all constraints.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "1000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 22 (MIT)"
+  },
+  {
+    "id": "lpmilp-024-portfoliooptimization",
+    "question": "An investor plans to invest 100,000 yuan, with two investment options to choose from. The first investment guarantees a return of 0.7 yuan for every 1 yuan invested after one year. The second investment guarantees a return of 2 yuan for every 1 yuan invested after two years, but the investment time must be in multiples of two years. In order to maximize the investor's earnings by the end of the third year, how should the investments be made? Formulate this as a linear programming problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "510000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 23 (MIT)"
+  },
+  {
+    "id": "lpmilp-025-set-multi-cover",
+    "question": "The number of salespeople required at a 24-hour convenience store in different time periods is as follows: 2:00-6:00 - 10 people, 6:00-10:00 - 15 people, 10:00-14:00 - 25 people, 14:00-18:00 - 20 people, 18:00-22:00 - 18 people, 22:00-2:00 - 12 people. Salespeople start their shifts at 2:00, 6:00, 10:00, 14:00, 18:00, and 22:00, working continuously for 8 hours. Determine the minimum number of salespeople needed to meet the requirements.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "53.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 24 (MIT)"
+  },
+  {
+    "id": "lpmilp-026-factory-planning-problem",
+    "question": "A factory produces three types of products: I, II, and III. Each product needs to go through two processing procedures, A and B. The factory has two pieces of equipment that can complete process A, denoted as A1 and A2; it has three pieces of equipment that complete process B, denoted as B1, B2, and B3. Product I can be processed on any equipment for A and B; Product II can be processed on any A equipment but only on B1 for process B; Product III can only be processed on A2 and B2. Given the unit processing time on various machines, raw material costs, product sale prices, effective machine hours, and the costs of operating the machines at full capacity as shown in Table 1-4, the task is to arrange the optimal production plan to maximize the factory's profit.\n\nTable 1-4\n| Equipment  | Product I | Product II | Product III | Effective Machine Hours | Operating Costs at Full Capacity (Yuan) |\n|------------|-----------|------------|-------------|--------------------------|------------------------------------------|\n| A1         | 5         | 10         |             | 6000                     | 300                                      |\n| A2         | 7         | 9          | 12          | 10000                    | 321                                      |\n| B1         | 6         | 8          |             | 4000                     | 250                                      |\n| B2         | 4         |            | 11          | 7000                     | 783                                      |\n| B3         | 7         |            |             | 4000                     | 200                                      |\n| Raw Material Cost (Yuan/Unit) | 0.25 | 0.35       | 0.50       |                          |                                          |\n| Unit Price (Yuan/Unit)        | 1.25 | 2.00       | 2.80       |                          |                                          |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "1146.4142",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 25 (MIT)"
+  },
+  {
+    "id": "lpmilp-027-profit-maximization-problem",
+    "question": "Someone has a fund of 300,000 yuan and has the following investment projects in the next three years:\n(1) Investment can be made at the beginning of each year within three years, with an annual profit of 20% of the investment amount, and the principal and interest can be used for investment in the following year;\n(2) Investment is only allowed at the beginning of the first year, and it can be recovered at the end of the second year, with the total principal and interest amounting to 150% of the investment amount, but the investment limit is no more than 150,000 yuan;\n(3) Investment is allowed at the beginning of the second year within three years, and it can be recovered at the end of the third year, with the total principal and interest amounting to 160% of the investment amount, and the investment limit is 200,000 yuan;\n(4) Investment is allowed at the beginning of the third year within three years, and it can be recovered in one year with a profit of 40%, and the investment limit is 100,000 yuan.\nChapter One: Linear Programming and Simplex Method\nTry to determine an investment plan for this person that maximizes the principal and interest at the end of the third year.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "580000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 26 (MIT)"
+  },
+  {
+    "id": "lpmilp-028-assignment-problem",
+    "question": "Jieli Company needs to recruit three types of professionals to work in the two regional branches located in Donghai City and Nanjiang City. The demand for different professionals in these regional branches is shown in Table 4-3. After assessing the situation of the applicants, the company has categorized them into 6 types. Table 4-4 lists the specialties each type of person can handle, the specialty they prefer, and the city they prefer to work in. The company's personnel arrangement considers the following three priorities:\n$p_1$: All three types of professionals needed are fully met;\n$p_2$: 4000 recruited personnel meet their preferred specialty;\n$p_3$: 4000 recruited personnel meet their preferred city.\nFormulate a plan to minimize the total number of people that need to move from one city to another to meet these priorities. Return the minimized objective value.\n\nTable 4-3\n| Branch Location | Specialty | Demand |\n|-----------------|-----------|--------|\n| Donghai City    | 1         | 1000   |\n| Donghai City    | 2         | 2000   |\n| Donghai City   | 3         | 1500   |\n| Nanjiang City   | 1         | 2000   |\n| Nanjiang City   | 2         | 1000   |\n| Nanjiang City   | 3         | 1000   |\n\nTable 4-4\n\n| Type | Number of People | Suitable Specialty | Preferred Specialty | Preferred City |\n|------|------------------|--------------------|---------------------|----------------|\n| 1    | 1500             | 1,2                | 1                   | Donghai        |\n| 2    | 1500             | 2,3                | 2                   | Donghai        |\n| 3    | 1500             | 1,3                | 1                   | Nanjiang       |\n| 4    | 1500             | 1,3                | 3                   | Nanjiang       |\n| 5    | 1500             | 2,3                | 3                   | Donghai        |\n| 6    | 1500             | 3                  | 3                   | Nanjiang       |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "2000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 27 (MIT)"
+  },
+  {
+    "id": "lpmilp-029-diet-problem",
+    "question": "Suppose a certain animal needs at least $700 \\mathrm{~g}$ of protein, $30 \\mathrm{~g}$ of minerals, and $100 \\mathrm{mg}$ of vitamins daily. There are 5 types of feed available, and the nutritional content and price per kilogram of each type of feed are shown in Table 1-5:\nTry to formulate a linear programming model that meets the animal's growth needs while minimizing the cost of selecting the feed.\nTable 1-6\n| Feed | Protein (g) | Minerals (g) | Vitamins (mg) | Price (¥/kg) | Feed | Protein (g) | Minerals (g) | Vitamins (mg) | Price (¥/kg) |\n|------|-------------|--------------|---------------|--------------|------|-------------|--------------|---------------|--------------|\n| 1    | 3           | 1            | 0.5           | 0.2          | 4    | 6           | 2            | 2             | 0.3          |\n| 2    | 2           | 0.5          | 1             | 0.7          | 5    | 18          | 0.5          | 0.8           | 0.8          |\n| 3    | 1           | 0.2          | 0.2           | 0.4          |      |             |              |               |              |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "32.43589744",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 28 (MIT)"
+  },
+  {
+    "id": "lpmilp-030-factory-planning-problem",
+    "question": "A factory produces three types of products: I, II, and III. Each product must undergo two processing stages, A and B. The factory has two types of equipment to complete stage A (A1, A2) and three types of equipment to complete stage B (B1, B2, B3).\n\nThe production rules are as follows:\n- Product I can be processed on any type of A equipment (A1 or A2) and any type of B equipment (B1, B2, or B3).\n- Product II can be processed on any type of A equipment (A1 or A2), but for stage B, it can only be processed on B1 equipment.\n- Product III can only be processed on A2 equipment for stage A and B2 equipment for stage B.\n\nThe detailed data for processing time per piece, costs, sales price, and machine availability is provided in the table below. The objective is to determine the optimal production plan to maximize the factory's total profit.\n\nData Table\n| Equipment | Product I | Product II | Product III | Effective Machine Hours | Full - load Equipment Cost (Yuan) | Processing Cost per Machine Hour (Yuan/hour) |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n| A1 | 5 | 10 | - | 6000 | 300 | 0.05 |\n| A2 | 7 | 9 | 12 | 10000 | 321 | 0.03 |\n| B1 | 6 | 8 | - | 4000 | 250 | 0.06 |\n| B2 | 4 | - | 11 | 7000 | 783 | 0.11 |\n| B3 | 7 | - | - | 4000 | 200 | 0.05 |\n| Raw Material Cost (Yuan/piece) | 0.25 | 0.35 | 0.5 | - | - | - |\n| Unit Price (Yuan/piece) | 1.25 | 2 | 2.8 | - | - | - |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "1190.38",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 29 (MIT)"
+  },
+  {
+    "id": "lpmilp-031-production-planning-problem",
+    "question": "A product consists of three components produced by four workshops, each with a limited number of production hours. Table 1.4 below provides the production rates of the three components. The objective is to determine the number of hours each workshop should allocate to each component to maximize the number of completed products. Formulate this problem.\n\nTable 1.4\n\n| Workshop | Production Capacity (hours) | Production Rate (units/hour) |   |   |\n| :------: | :-------------------------: | :--------------------------: | - | - |\n|          |                             | Component 1 | Component 2  | Component 3 |\n|    A     |           100               |      10      |      15     |      5      |\n|    B     |           150               |      15      |      10     |      5      |\n|    C     |           80                |      20      |      5      |      10     |\n|    D     |           200               |      10      |      15     |      20     |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "2924.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 30 (MIT)"
+  },
+  {
+    "id": "lpmilp-032-knapsack",
+    "question": "A wealthy noble passed away, leaving the following inheritance:\n\n- A painting by Caillebotte: $25000\n- A bust of Diocletian: $5000\n- A Yuan dynasty Chinese vase: $20000\n- A 911 Porsche: $40000\n- Three diamonds: each $12000\n- A Louis XV sofa: $3000\n- Two very precious Jack Russell racing dogs: each $3000 (will stipulates they must not be separated)\n- A sculpture from 200 AD: $10000\n- A sailing boat: $15000\n- A Harley Davidson motorcycle: $10000\n- A piece of furniture once belonging to Cavour: $13000,\n\nwhich must be shared between two sons. How to formulate a mathematical program and solve it to minimize the difference in value between the two parts?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "1000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 31 (MIT)"
+  },
+  {
+    "id": "lpmilp-033-bin-packing",
+    "question": "The current problem faced by the company is how to use the fewest number of containers to pack the currently needed goods for transportation, while considering the weight of the goods, specific packaging requirements, and inventory limitations. Professional modeling and analysis are needed for a batch of goods’ transportation strategy to ensure maximum utilization of the limited container space.\n\nThe company currently has a batch to be transported, with each container able to hold a maximum of 60 tons of goods and each container used must load at least 18 tons of goods. The goods to be loaded include five types: A, B, C, D, and E, with quantities of 120, 90, 300, 90, and 120 respectively. The weights are 0.5 tons for A, 1 ton for B, 0.4 tons for C, 0.6 tons for D, and 0.65 tons for E. Additionally, to meet specific usage requirements, every time A goods are loaded, at least 1 unit of C must also be loaded, but loading C alone does not require simultaneously loading A; and considering the demand limitation for D goods, each container must load at least 12 units of D.\n\nEstablish an operations research model so that the company can use the fewest number of containers to pack this batch of goods.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "7.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 32 (MIT)"
+  },
+  {
+    "id": "lpmilp-034-flow-shop-scheduling",
+    "question": "A fabric dyeing plant has 3 dyeing vats. Each batch of fabric must be dyed in sequence in each vat: first, the second, and third vats. The plant must color five batches of fabric of different sizes. The time required in hours to dye batch $i$ in vat $j$ is given in the following matrix:\n\n$$\n\\left(\\begin{array}{ccc}\n3 & 1 & 1 \\\\\n2 & 1.5 & 1 \\\\\n3 & 1.2 & 1.3 \\\\\n2 & 2 & 2 \\\\\n2.1 & 2 & 3\n\\end{array}\\right)\n$$\n\nSchedule the dyeing operations in the vats to minimize the completion time of the last batch.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "14.1",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 33 (MIT)"
+  },
+  {
+    "id": "lpmilp-035-capacitated-vehicle-routing-prob",
+    "question": "The Vehicle Routing Problem (VRP) was first proposed by Dantzig and Ramser in 1959. It is a classic combinatorial optimization problem. The basic VRP can be described as follows: in a certain area, there is a number of customers and a distribution center or depot. Customers are generally located at different positions, and each has a specific demand for goods. The distribution center needs to dispatch a fleet of vehicles and design appropriate delivery routes to fulfill the demands of all customers. The objective of VRP is to optimize a certain benefit metric while satisfying all customer demands. The benefit metric is usually presented as an objective function, which varies according to the company's requirements. Common objective functions include minimizing the total distance traveled by vehicles, minimizing the total delivery time, or minimizing the number of vehicles used. In addition to satisfying customer demands, VRP often needs to consider various other constraints, leading to several variants. For example, if the vehicle's load cannot exceed its maximum capacity, the problem becomes the Capacitated Vehicle Routing Problem (CVRP). If each customer's delivery must be made within a specific time frame, the problem becomes the Vehicle Routing Problem with Time Windows (VRPTW).\n\nThe Vehicle Routing Problem with Time Windows (VRPTW) is a classic variant of the VRP. There are many real-world applications of VRPTW, as customer locations often have service time windows. For instance, some logistics centers need to stock parcels during off-peak hours, and large supermarkets need to replenish goods outside of business hours. Real-time delivery services like food delivery also require strict delivery time windows. Time windows can be categorized as hard or soft. A Hard Time Window (HTW) means that a vehicle must arrive at the delivery point within or before the time window; late arrivals are not permitted. If a vehicle arrives early, it must wait until the time window opens to begin service. This is common in scenarios like supermarket restocking and logistics center inbound operations. A Soft Time Window (STW) means that a vehicle is not strictly required to arrive within the time window, but it is encouraged to do so. A penalty is incurred for early or late arrivals. This is applicable in scenarios such as meal delivery, school bus services, and industrial deliveries.\n\nThe Vehicle Routing Problem with Hard Time Windows (VRPHTW) can be described as follows: within a region, there is a set of customer locations and a central depot. Vehicles must start from the depot and return to the depot, following continuous paths. Each customer must be served by exactly one vehicle, and vehicles have a limited capacity. Each customer has a specific service time window, and service is only accepted within this window. A vehicle can arrive at a customer location early and wait for the time window to open, or it can arrive within the time window to provide service. Service can only begin within the time window, and the service duration is known. The distribution center must arrange an optimal delivery plan to both complete the delivery tasks and minimize travel costs. Because VRPHTW does not allow for delays, it, like the VRP, primarily emphasizes the minimization of travel costs along the routes.\n\n Now we consider a major enterprise logistics provider, 'Global Logistics', is responsible for providing precise material delivery services for multiple high-end office buildings and shops in a city's central business district (CBD). Due to traffic control in the CBD and the specific receiving requirements of the customers, the delivery task is highly challenging.\n\n**Specific Requirements:**\n\n1.  **Delivery Task**: There are 20 customers requiring delivery service on the day, and the demands of all customers must be met.\n2.  **Vehicle Constraints**: The company can use at most 5 trucks, and the capacity of each truck is 200 units.\n3.  **Capacity Constraint**: The total demand of all customers on a single route must not exceed the truck's maximum capacity (200 units).\n4.  **Time Window Constraint**: Each customer has a strict 'hard time window.' Service must begin within this specified time window. Early arrivals must wait, and late arrivals are not permitted.\n5.  **Service Time**: Due to the complex handover procedures at customer sites, a fixed service time of 90 minutes is required for unloading, handover, and paperwork at each customer location.\n6.  **Optimization Objective**: While satisfying all constraints, the company's objective is to **minimize the total distance traveled by all vehicles** to reduce operational costs.\n\n**Data Details:**\n\n* **Central Depot (Depot 0)**:\n    * Coordinates: (40, 50)\n    * Operating Time Window: [0, 1236] (minutes)\n* **Customer Locations (Customers 1-20)**: The coordinates, demand, service time window, and service duration for each customer are shown in the table below.\n\n| Customer ID | Coordinates (X, Y) | Demand (units) | Time Window (minutes) | Service Duration (minutes) |\n| :--- | :--- | :--- |:--- | :--- |\n| 1 | (45, 68) | 10 | [912, 967] | 90 |\n| 2 | (45, 70) | 30 | [825, 870] | 90 |\n| 3 | (42, 66) | 10 | [65, 146] | 90 |\n| 4 | (42, 68) | 10 | [727, 782] | 90 |\n| 5 | (42, 65) | 10 | [15, 67] | 90 |\n| 6 | (40, 69) | 20 | [621, 702] | 90 |\n| 7 | (40, 66) | 20 | [170, 225] | 90 |\n| 8 | (38, 68) | 20 | [255, 324] | 90 |\n| 9 | (38, 70) | 10 | [534, 605] | 90 |\n| 10 | (35, 66) | 10 | [357, 410] | 90 |\n| 11 | (35, 69) | 10 | [448, 505] | 90 |\n| 12 | (25, 85) | 20 | [652, 721] | 90 |\n| 13 | (22, 75) | 30 | [30, 92] | 90 |\n| 14 | (22, 85) | 10 | [567, 620] | 90 |\n| 15 | (20, 80) | 40 | [384, 429] | 90 |\n| 16 | (20, 85) | 40 | [475, 528] | 90 |\n| 17 | (18, 75) | 20 | [99, 148] | 90 |\n| 18 | (15, 75) | 20 | [179, 254] | 90 |\n| 19 | (15, 80) | 10 | [278, 345] | 90 |\n| 20 | (30, 50) | 10 | [10, 73] | 90 |\n\nNow, please provide an operations research model for this VRPHTW.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "175.37",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 34 (MIT)"
+  },
+  {
+    "id": "lpmilp-036-production-planning-problem",
+    "question": "A factory produces two types of microcomputers, A and B. Each type of microcomputer requires the same two production processes. The processing time, profit from sales, and the maximum weekly processing capacity for each type are shown in Table 3.1.\n\nTable 3.1\n\n| Process | Model |  | Maximum Weekly Processing Capacity |\n| :---: | :---: | :---: | :---: |\n|  | $\\\\mathrm{A}$ | $\\\\mathrm{B}$ |  |\n| I (hours / unit) | 4 | 6 | 150 |\n| II (hours / unit) | 3 | 2 | 70 |\n| Profit ($ per unit) | 300 | 450 |  |\n\nThe expected values for the factory's operational goals are as follows:\n\n$p_{1}$: The total weekly profit must not be less than $10,000.\n\n$p_{2}$: Due to contractual requirements, at least 10 units of Model A and at least 15 units of Model B must be produced per week.\n\n$p_{3}$: The weekly production time for Process I should be exactly 150 hours, and the production time for Process II should be fully utilized, with potential overtime if necessary.\n\nTry to establish the mathematical programming model for this problem in oder to maximize total profit.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "11250.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 35 (MIT)"
+  },
+  {
+    "id": "lpmilp-037-flow-shop-scheduling",
+    "question": "There are three different products to be processed on three machine tools. Each product must first be processed on machine 1, then sequentially on machines 2 and 3. The order of processing the three products on each machine should remain the same. Assuming $t_{ij}$ represents the time to process the $i$-th product on the $j$-th machine, how should the schedule be arranged to minimize the total processing cycle for the three products? The timetable is as follows:\n| Product | Machine 1 | Machine 2 | Machine 3 |\n|---------|-----------|-----------|-----------|\n| Product 1 | 2           | 3           | 1           |\n| Product 2 | 4           | 2           | 3           |\n| Product 3 | 3           | 5           | 2           |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "14.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 36 (MIT)"
+  },
+  {
+    "id": "lpmilp-038-transportation-airline-industry",
+    "question": "A company plans to transport goods between the city and the suburb and needs to choose the most environmentally friendly transportation method. The company can choose from the following three methods: motorcycle, small truck, and large truck. Each motorcycle trip produces 40 units of pollution, each small truck trip produces 70 units of pollution, and each large truck trip produces 100 units of pollution. The company's goal is to minimize total pollution.\n\nThe company can only choose two out of these three transportation methods.\n\nDue to certain road restrictions, the number of motorcycle trips cannot exceed 8.\n\nEach motorcycle trip can transport 10 units of products, each small truck trip can transport 20 units of products, and each large truck trip can transport 50 units of products. The company needs to transport at least 300 units of products.\n\nThe total number of trips must be less than or equal to 20.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "600.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 37 (MIT)"
+  },
+  {
+    "id": "lpmilp-039-production-planning-problem",
+    "question": "The independent country of Carelland mainly exports four commodities: steel, engines, electronic components, and plastic. Carelland's Minister of Finance (i.e., Minister of Economy) wants to maximize exports and minimize imports. The unit prices of steel, engines, electronics, and plastic on the world market are, in local currency (Klunz), 500, 1500, 300, 1200 respectively. Producing 1 unit of steel requires 0.02 units of engines, 0.01 units of plastic, 250 Klunz of other imported goods, and 6 person-months of labor. Producing 1 unit of engines requires 0.8 units of steel, 0.15 units of electronic components, 0.11 units of plastic, 300 Klunz of imported goods, and 1 person-year. One unit of electronics requires: 0.01 units of steel, 0.01 units of engines, 0.05 units of plastic, 50 Klunz of imported goods, and 6 person-months of labor. One unit of plastic requires: 0.03 units of engines, 0.2 units of steel, 0.05 units of electronic components, 300 Klunz of imported goods, and 2 person-years. Engine production is limited to 650000 units, and plastic production is limited to 60000 units. The total available labor force per year is 830000 person-months. Write a mathematical program to maximize domestic GDP and solve the problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "36288567.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 38 (MIT)"
+  },
+  {
+    "id": "lpmilp-040-profit-maximization-problem",
+    "question": "A person has a fund of 500,000 yuan and the following investment projects available in the next three years:\n\n(1) Investment can be made at the beginning of each year within three years, and the annual profit is 20% of the investment amount.\n\n(2) Investment is only allowed at the beginning of the first year, and can be recovered at the end of the second year, with the total principal and interest being 150% of the investment amount. However, this type of investment is limited to no more than 120,000 yuan.\n\n(3) Investment at the beginning of the second year, recoverable at the end of the second year, with the total principal and interest being 160% of the investment amount. This type of investment is limited to 150,000 yuan.\n\n(4) Investment is allowed at the beginning of the third year, recoverable in one year, with a profit of 40%, and the investment limit is 100,000 yuan.\n\nDetermine an investment plan for the person that maximizes the total principal and interest by the end of the third year.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "964640.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 39 (MIT)"
+  },
+  {
+    "id": "lpmilp-041-production-planning-problem",
+    "question": "Two steel furnaces at a steel plant each use two methods of steelmaking simultaneously. The first method takes $a=2$ hours per furnace and costs $m=50$ in fuel expenses; the second method takes $b=3$ hours per furnace and costs $n=70$ in fuel expenses. Assuming each furnace produces $k=10$ tons of steel regardless of the method used, and that at least $d=30$ tons of steel must be produced within $c=12$ hours, how should these two methods be allocated to minimize fuel expenses? Formulate this problem as a linear programming model.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "150.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 40 (MIT)"
+  },
+  {
+    "id": "lpmilp-042-transportation-problem",
+    "question": "A production base needs to extract raw materials from warehouses A and B every day for production. The required raw materials are: at least 240 pieces of raw material A, at least 80 kg of raw material B, and at least 120 tons of raw material C. It is known that: Each truck from warehouse A can transport back to the production base 4 pieces of raw material A, 2 kg of raw material B, 6 tons of raw material C, with a freight cost of 200 yuan per truck; each truck from warehouse B can transport back to the production base 7 pieces of raw material A, 2 kg of raw material B, 2 tons of raw material C per day, with a freight cost of 160 yuan per truck. Question: In order to meet production needs, how many trucks should be dispatched daily from warehouse A and warehouse B to minimize the total freight cost?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "6800.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 41 (MIT)"
+  },
+  {
+    "id": "lpmilp-043-capacitated-facility-location-pr",
+    "question": "Given that there are $m=2$ production points for a certain type of material, where the output at the $i$-th point $(i=1,2)$ is $a_i$, $a_1 = 100$, and $a_2 = 150$. This material is to be shipped to $n=2$ demand points, where the demand at the $j$-th point $(j=1, 2)$ is $b_j$, $b_1 = 80$, and $b_2 = 120$. It is known that $\\sum_i a_i \\geqslant \\sum_j b_j$. It is also known that when shipping from production points to demand points, it must pass through one of the $p=2$ intermediate marshaling stations. If the $k$-th $(k=1, 2)$ intermediate marshaling station is used, a fixed cost $f_k$ is incurred regardless of the transshipment volume, where $f_1 = 10$ and $f_2 = 15$. The $k$-th intermediate marshaling station has a maximum transshipment capacity limitation $q_k$, where $q_1 = 100$ and $q_2 = 100$. Let $c_{i k}$ and $c'_{k j}$ denote the unit transportation cost from $i$ to $k$ and from $k$ to $j$, respectively, where $c_{11}=2$, $c_{12}=3$, $c_{21}=4$, $c_{22}=1$, $c'_{11}=3$, $c'_{12}=2$, $c'_{21}=1$, and $c'_{22}=4$. Try to determine a transportation plan for this material that minimizes the total cost.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "685.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 42 (MIT)"
+  },
+  {
+    "id": "lpmilp-044-production-planning-problem",
+    "question": "A factory produces three types of products, A, B, and C. Each unit of product A requires 1 hour for technical preparation, 10 hours of direct labor, and 3 kg of materials. Each unit of product B requires 2 hours for technical preparation, 4 hours of labor, and 2 kg of materials. Each unit of product C requires 1 hour for technical preparation, 5 hours of labor, and 1 kg of materials. The available technical preparation time is 100 hours, labor time is 700 hours, and materials are 400 kg. The company offers larger discounts for bulk purchases, as detailed in Table 1-22. Determine the company's production plan to maximize profit.\nTable 1-22\n| Product A       |           | Product B       |           | Product C       |           |\n|:---------------|:---------:|:---------------|:---------:|:---------------|:---------:|\n| Sales Volume (pieces) | Profit (yuan) | Sales Volume (pieces) | Profit (yuan) | Sales Volume (pieces) | Profit (yuan) |\n| 0 ~ 40         | 10        | 0 ~ 50         | 6         | 0 ~ 100        | 5         |\n| 40 ~ 100       | 9         | 50 ~ 100       | 4         | Above 100      | 4         |\n| 100 ~ 150      | 8         | Above 100      | 3         |                |           |\n| Above 150      | 7         |                |           |                |           |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "712.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 43 (MIT)"
+  },
+  {
+    "id": "lpmilp-045-assignment-problem",
+    "question": "A university computer lab hires 4 undergraduates (designated 1, 2, 3, and 4) and 2 graduate students (designated 5 and 6) for duty answering questions. The maximum duty hours from Monday to Friday and the hourly wage for each person are shown in Table 5-9.\n\nTable 5-9\nStudent ID | Wage (CNY/h) | Monday | Tuesday | Wednesday | Thursday | Friday\n1 | 10.0 | 6 | 0 | 6 | 0 | 7\n2 | 10.0 | 0 | 6 | 0 | 6 | 7\n3 | 9.9 | 4 | 8 | 4 | 0 | 5\n4 | 9.8 | 5 | 5 | 6 | 0 | 4\n5 | 10.8 | 4 | 0 | 4 | 8 | 0\n6 | 11.3 | 5 | 6 | 0 | 6 | 3\n\nThe lab operates from 8:00 AM to 10:00 PM, and there must be one and only one student on duty during open hours. It is also required that each undergraduate must work at least 8 hours per week, and each graduate student must work at least 7 hours per week. Additionally, each student can work no more than 2 shifts per week, and no more than 3 students can be scheduled for duty each day.\n\nBased on these conditions, establish a mathematical model to determine the work schedule that satisfies all requirements.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "717.9",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 44 (MIT)"
+  },
+  {
+    "id": "lpmilp-046-farm-planning",
+    "question": "A certain farm has 100 hectares of land and 15,000 yuan in funds for production development. The labor force situation on the farm is 3,500 person-days in autumn and winter, and 4,000 person-days in spring and summer. If the labor force itself is not fully utilized, they can work externally, earning 2.1 yuan/person-day in spring and summer and 1.8 yuan/person-day in autumn and winter.\n\nThe farm cultivates three types of crops: soybeans, corn, and wheat, and also raises dairy cows and chickens. Crop cultivation requires no specialized investment, but raising animals involves an investment of 400 yuan per dairy cow and 3 yuan per chicken. Raising dairy cows requires allocating 1.5 hectares of land per cow to grow feed, and involves 100 person-days in autumn and winter, and 50 person-days in spring and summer per cow. The annual net income is 400 yuan per dairy cow. Raising chickens does not use land, requires 0.6 person-days in autumn and winter, and 0.3 person-days in spring and summer per chicken. Annual net income is 2 yuan per chicken. The current chicken coop can accommodate up to 3,000 chickens, and the cow barn can accommodate up to 32 dairy cows. The labor and income requirements for the three types of crops per year are shown in Table 1-9.\n\nTable 1-9\n| Item           | Soybean | Corn | Wheat |\n|----------------|---------|------|-------|\n| Person-days (Autumn/Winter) | 20      | 35   | 10    |\n| Person-days (Spring/Summer) | 50      | 75   | 40    |\n| Annual Net Income (Yuan/hectare) | 175     | 300   | 120   |\n\nDetermine the farm's operating plan to maximize annual net income. Please note that workers can only work externally for full days, fractions are not allowed. It is not possible to change the crop and animal raising plans from season to season.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "20241.8",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 45 (MIT)"
+  },
+  {
+    "id": "lpmilp-047-production-planning-problem",
+    "question": "A factory produces two models of microcomputers, A and B. Each model requires the same two processes. The processing time, sales profit, and the factory’s maximum weekly processing capacity for each model are shown in Table 3.1.\n\nTable 3.1\n\n| Process | Model | | Maximum Weekly Processing Capacity |\n| :---: | :---: | :---: | :---: |\n| | $A$ | $B$ | |\n| I (hours/unit) | 4 | 6 | 150 |\n| II (hours/unit) | 3 | 2 | 70 |\n| Profit (yuan/unit) | 300 | 450 | |\n\nGiven the factory's business goals:\n\n$p_{1}$: The total weekly profit should not be less than 10,000 yuan;\n\n$p_{2}$: Due to contract requirements, at least 10 units of model A and at least 15 units of model B must be produced each week;\n\n$p_{3}$: The processing time for Process I should be exactly 150 hours per week, and the processing time for Process II should ideally be fully utilized, with potential for appropriate overtime;\n\n$p_{4}$: If products are produced during overtime in Process II, the profit per unit is reduced by 20 yuan for model A and 25 yuan for model B, and the maximum overtime for Process II is 30 hours per week. Formulate the mathematical model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "11250.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 46 (MIT)"
+  },
+  {
+    "id": "lpmilp-048-lot-sizing-problem",
+    "question": "A factory must rent warehouse space to cover storage needs over the next four months. The required storage areas are:\nMonth 1: 1500 m²\nMonth 2: 1000 m²\nMonth 3: 2000 m²\nMonth 4: 1200 m²\n\nWarehouse space can be rented via contracts of fixed duration. A contract of length k months (k ? {1, 2, 3, 4}) may start at the beginning of any month t provided it ends no later than Month 4 (i.e., t + k ? 1 ? 4). A contract starting in month t covers months t through t + k ? 1. The rental fee is charged per square meter per month and depends on the contract length as follows:\n1-month contract: 22 yuan per m² per month\n2-month contract: 21 yuan per m² per month\n3-month contract: 20 yuan per m² per month\n4-month contract: 19 yuan per m² per month\n\nAdditional rules and assumptions:\n\nYou may sign any number of contracts.\n\nRented area is divisible (you may rent any nonnegative real number of m²).\n\nSupply is unlimited at the listed rates.\n\nIn each month, the total active rented area must be at least the required area for that month.\n\nYou pay for the entire area specified in each contract for every month it is active, even if some capacity is unused.\n\nYour task is to choose the start times, durations, and areas of contracts to minimize the total rental cost over the four-month horizon while satisfying the monthly area requirements.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "113000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 47 (MIT)"
+  },
+  {
+    "id": "lpmilp-049-lot-sizing-problem",
+    "question": "A store has formulated a purchase and sales plan for a certain product from July to December. It is known that the warehouse capacity must not exceed 500 units, with 200 units in stock at the end of June. Thereafter, purchases are made at the beginning of each month. Assume the purchase and selling prices of this product for each month are shown in Table 1-21. How much should be purchased and sold each month to maximize the total revenue?\n\nTable 1-21\n| Month | 7  | 8  | 9  | 10 | 11 | 12 |\n|-------|----|----|----|----|----|----|\n| Buy   | 28 | 24 | 25 | 27 | 23 | 23 |\n| Sell  | 29 | 24 | 26 | 28 | 22 | 25 |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "9100.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 48 (MIT)"
+  },
+  {
+    "id": "lpmilp-050-military-personnel-deployment-pr",
+    "question": "The number of nurses required in each time period over 24 hours at a certain hospital is as follows: 2:00-6:00 - 10 people, 6:00-10:00 - 15 people, 10:00-14:00 - 25 people, 14:00-18:00 - 20 people, 18:00-22:00 - 18 people, 22:00-2:00 - 12 people. Nurses start shifts in 6 batches at 2:00, 6:00, 10:00, 14:00, 18:00, and 22:00 and work continuously for 8 hours. Please determine: If the hospital can hire contract nurses with the same working hours as regular nurses, and if the pay for regular nurses is 10 yuan/hour and for contract nurses is 15 yuan/hour, should the hospital hire contract nurses and if so, how many?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "4240.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 49 (MIT)"
+  },
+  {
+    "id": "lpmilp-051-set-multi-cover",
+    "question": "For a certain 24-hour bus service, the number of drivers and crew members required during different time periods each day is shown in Table 1-2:\nTable 1-2\n\\begin{tabular}{|c|c|c||c|c|c|}\n\\hline Shift & Time & Required number & Shift & Time & Required number \\\\\n\\hline 1 & $6: 00 \\sim 10: 00$ & 60 & 4 & $18 ; 00 \\sim 22 ; 00$ & 50 \\\\\n\\hline 2 & $10 ; 00 \\sim 14 ; 00$ & 70 & 5 & $22 ; 00 \\sim 2 ; 00$ & 20 \\\\\n\\hline 3 & $14 ; 00 \\sim 18 ; 00$ & 60 & 6 & $2: 00 \\sim 6 ; 00$ & 30 \\\\\n\\hline\n\\end{tabular}\n\nAssuming that drivers and crew members start their shifts at the beginning of each time period and work continuously for 8 hours, determine the minimum number of drivers and crew members needed for this bus route. Formulate the linear programming model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "150.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 50 (MIT)"
+  },
+  {
+    "id": "lpmilp-052-knapsack",
+    "question": "The Zhang family has 6 children: Harry, Hermione, Ron, Fred, George, and Ginny. The cost of taking Harry is $1200, Hermione is $1650, Ron is $750, Fred is $800, George is $800, and Ginny is $1500. Which children should the couple take to minimize the total cost of taking the children? They can take up to four children on the upcoming trip.\n\nGinny is the youngest, so the Zhang family will definitely take her.\n\nIf the couple takes Harry, they will not take Fred because Harry does not get along with him.\n\nIf the couple takes Harry, they will not take George because Harry does not get along with him.\n\nIf they take George, they must also take Fred.\n\nIf they take George, they must also take Hermione.\n\nEven though it will cost them a lot of money, the Zhang family has decided to take at least three children.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "3050.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 51 (MIT)"
+  },
+  {
+    "id": "lpmilp-053-production-planning-problem",
+    "question": "Given that a certain factory plans to produce three types of products, I, II, and III, each product needs to be processed on equipment $A, B, C$ as shown in Table 2-3:\n\nTable 2-3\n| Equipment Code | I  | II | III | Effective Monthly Equipment Hours |\n|----------------|----|----|-----|----------------------------------|\n| A              | 8  | 2  | 10  | 300                              |\n| B              | 10 | 5  | 8   | 400                              |\n| C              | 2  | 13 | 10  | 420                              |\n| Unit Product Profit (per thousand yuan) | 3  | 2  | 2.9 |           |\n\nHow can the equipment capacity be fully utilized to maximize production profit? The quantity of each product must be an integer.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "134.5",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 52 (MIT)"
+  },
+  {
+    "id": "lpmilp-054-set-multi-cover",
+    "question": "A master's student in Operations Research at a certain university is required to select two courses in mathematics, two in operations research, and two in computer science from a total of seven courses: Calculus, Operations Research, Data Structures, Management Statistics, Computer Simulation, Computer Programming, and Forecasting. Some courses belong to only one category: Calculus falls under Mathematics, Computer Programming under Computer Science. However, some courses fall under multiple categories: Operations Research can be considered both Operations Research and Mathematics, Data Structures both Computer Science and Mathematics, Management Statistics both Mathematics and Operations Research, Computer Simulation both Computer Science and Operations Research, and Forecasting both Operations Research and Mathematics. Courses that fall under multiple categories can fulfill the requirement of both categories simultaneously. Additionally, some courses have prerequisites: Computer Simulation or Data Structures requires Computer Programming first, Management Statistics requires Calculus first, and Forecasting requires Management Statistics first. The question is: What is the minimum number of courses a master's student must take, and which specific courses, to meet the above requirements?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "4.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 53 (MIT)"
+  },
+  {
+    "id": "lpmilp-055-lot-sizing-problem",
+    "question": "A trading company specializes in the wholesale business of certain grains. The company currently has a warehouse with a capacity of 5000 dan. On January 1, the company has 1000 dan of grain in stock and 20,000 yuan in funds. The estimated grain prices for the first quarter are shown in Table 1-8.\n\nTable 1-8\n| Month | Purchase Price (yuan/dan) | Selling Price (yuan/dan) |\n|-------|---------------------------|--------------------------|\n| 1     | 2.85                      | 3.10                     |\n| 2     | 3.05                      | 3.25                     |\n| 3     | 2.90                      | 2.95                     |\n\nThe purchased grains will be delivered in the same month but can only be sold in the next month, and payment is required upon delivery. The company hopes to have an inventory of 2000 dan at the end of the quarter. What purchasing and selling strategy should be adopted to maximize the total profit over the three months?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "-700.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 54 (MIT)"
+  },
+  {
+    "id": "lpmilp-056-cutting-stock-problem",
+    "question": "Assuming a paper mill receives three orders for rolls of paper, with length and width requirements as shown in Table 1.2.\n\nTable 1.2\n\n| Order Number | Width (meters) | Length (meters) |\n| :---: | :---: | :---: |\n| 1 | 0.5 | 1000 |\n| 2 | 0.7 | 3000 |\n| 3 | 0.9 | 2000 |\n\nThe mill produces rolls of paper with standard widths of 1 meter and 2 meters. Assuming the length of the rolls is unlimited and can be spliced to reach the required length, how should the rolls be cut to minimize the area of waste?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "600.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 55 (MIT)"
+  },
+  {
+    "id": "lpmilp-057-farm-planning",
+    "question": "Vicky and David have just bought a farm in the Yarra Valley, and they are considering using it to grow apples, pears, oranges, and lemons. The profit for growing one acre of apples is $2000, for one acre of pears is $1800, for one acre of oranges is $2200, and for one acre of lemons is $3000. To achieve maximum profit, how many acres of land should they use to grow each type of fruit? Vicky and David have just bought a farm in the Yarra Valley with a total area of 120 acres.\n\nThe land used to grow apples should be at least twice the land used to grow pears.\n\nThe land used to grow apples should be at least three times the land used to grow lemons.\n\nThe land used to grow oranges must be twice the land used to grow lemons if lemons are grown. If no lemons are grown, then we do not have this constraint.\n\nVicky and David are unwilling to grow more than two types of fruit.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "264000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 56 (MIT)"
+  },
+  {
+    "id": "lpmilp-058-blending-problem",
+    "question": "A candy factory uses raw materials A, B, and C to process three different brands of candies, A, B, and C. It is known that the content of A, B, and C in each brand of candy, the cost of raw materials, the monthly limit of each raw material, and the unit processing fee and selling price of the three brands of candies are shown in Table 1-7.\n\nTable 1-7\n\n| Item            | A               | B               | C               | Raw Material Cost (Yuan/kg) | Monthly Limit (kg) |\n|:----------------|:---------------|:---------------|:---------------|:-----------------------------|:-------------------|\n| A               | ? 60%          | ? 15%          |                | 2.00                        | 2000               |\n| B               |                |                |                | 1.50                        | 2500               |\n| C               | ? 20%          | ? 60%          | ? 50%          | 1.00                        | 1200               |\n| Processing Fee (Yuan/kg) | 0.50         | 0.40           | 0.30           |                             |                     |\n| Selling Price (Yuan/kg)   | 3.40         | 2.85           | 2.25           |                             |                     |\n\nHow many kilograms of each of the three brands of candies should the factory produce each month to maximize the profit?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "6160.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 57 (MIT)"
+  },
+  {
+    "id": "lpmilp-059-travelingsalesman",
+    "question": "A traveling salesman must visit 7 customers at 7 different locations, with the (symmetric) distance matrix as follows:\n\n|  | 1 | 2 | 3 | 4 | 5 | 6 | 7 |\n| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n| 1 | - | 86 | 49 | 57 | 31 | 69 | 50 |\n| 2 |  | - | 68 | 79 | 93 | 24 | 5 |\n| 3 |  |  | - | 16 | 7 | 72 | 67 |\n| 4 |  |  |  | - | 90 | 69 | 1 |\n| 5 |  |  |  |  | - | 86 | 59 |\n| 6 |  |  |  |  |  | - | 81 |\n\nFormulate a mathematical program to determine the visiting order starting and ending at location 1 to minimize the travel distance.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "153.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 58 (MIT)"
+  },
+  {
+    "id": "lpmilp-060-capacitated-facility-location-pr",
+    "question": "A product can be processed on any one of the four devices: A, B, C, or D. The preparation completion costs when each device is enabled, the unit production cost for the product, and the maximum processing capacity of each device are shown in Table 5-7. If 2000 units of the product need to be produced, how can the total cost be minimized? Try to establish a mathematical model.\n\nTable 5-7\n| Device | Prep Completion Cost (Yuan) | Unit Production Cost (Yuan/Unit) | Maximum Processing Capacity (Units) |\n|--------|------------------------------|----------------------------------|------------------------------------|\n| A      | 1000                         | 20                               | 900                                |\n| B      | 920                          | 24                               | 1000                               |\n| C      | 800                          | 16                               | 1200                               |\n| D      | 700                          | 28                               | 1600                               |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "37000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 59 (MIT)"
+  },
+  {
+    "id": "lpmilp-061-knapsack",
+    "question": "The Zhang family is deciding to invest in several different restaurants. The annual revenue of Restaurant A is $15,000, Restaurant B is $40,000, Restaurant C is $30,000, and Restaurant D is $50,000. They need to decide whether to purchase each restaurant, with each restaurant being able to be purchased only once. Help them decide which restaurants to buy to maximize their annual income.\nThe cost of Restaurant A is 1.6 million, Restaurant B is 2.5 million, Restaurant C is 1.8 million, and Restaurant D is 3 million. The Zhang family's investment budget is 6 million.\n\nIf they purchase Restaurant D, then they cannot purchase Restaurant A.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "90000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 60 (MIT)"
+  },
+  {
+    "id": "lpmilp-062-transportation-problem",
+    "question": "A farmer needs to transport 1000 units of fresh produce from the farm to a nearby market. The farmer has three transportation options: a horse, a bicycle, and a handcart. Since both the bicycle and handcart are very physically demanding, the farmer wants to choose only one of these two transportation methods. The horse generates 80 units of pollution per trip, the bicycle generates 0 units of pollution, and the handcart generates 0 units of pollution. The total amount of pollution generated by all trips must not exceed 1000 units. At least 8 trips must be made using the horse. The horse, bicycle, and handcart can carry 55 units, 30 units, and 40 units of produce per trip respectively. The farmer needs to ensure that the total amount of transported produce is at least 1000 units while minimizing the total amount of pollution. What is the minimum amount of pollution that the farmer can achieve?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "640.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 61 (MIT)"
+  },
+  {
+    "id": "lpmilp-063-knapsack",
+    "question": "A company needs to decide whether to hire some of the five candidates to join their R&D team. The salary requirements for candidates F, G, H, I, and J are $12,000, $15,000, $18,000, $5,000, and $10,000 respectively. The company wants to minimize the total amount paid to candidates without exceeding the budget.\n\nThe company's budget is $40,000 and they wish to hire a maximum of 4 new employees.\n\nThe skill levels of the candidates are as follows:\nCandidate F: Level 2\nCandidate G: Level 3\nCandidate H: Level 4\nCandidate I: Level 1\nCandidate J: Level 2\n\nThe company needs to ensure that the total skill level of the hired employees is at least 8.\n\nThe project management experience years of each candidate are as follows:\nCandidate F: 1 year\nCandidate G: 2 years\nCandidate H: 2 years\nCandidate I: 5 years\nCandidate J: 4 years\n\nThey hope the total project management experience of the team is at least 8 years.\n\nDue to the similar technical background of candidates G and J, the company can choose at most one of them.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "38000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 62 (MIT)"
+  },
+  {
+    "id": "lpmilp-064-production-planning-problem",
+    "question": "A company produces two types of products: microwave ovens and water heaters, which are manufactured in both workshops A and B. It is known that apart from the purchased parts, the production of one microwave oven requires 2 hours of processing in workshop A and 1 hour of assembly in workshop B. The production of one water heater requires 1 hour of processing in workshop A and 3 hours of assembly in workshop B. After production, both products need inspection, sales, and other procedures. The inspection and sales cost for each microwave oven is 30 yuan, and for each water heater is 50 yuan. Workshop A has 250 hours of available production time per month, with each hour costing 80 yuan; workshop B has 150 hours of available production time per month, with each hour costing 20 yuan. It is estimated that an average of 80 microwave ovens and 50 water heaters can be sold per month next year. Based on these actual conditions, the company has established the following monthly plan constraints:\n\n1. Inspection and sales costs should not exceed 5500 yuan per month;\n2. At least 80 microwave ovens should be sold per month;\n3. The production hours of both workshops A and B should be fully utilized, and overtime for workshop A and B are allowed.\n4. Overtime in workshop A should not exceed 20 hours; we do not have upper limit on workshop B's overtime.\n5. At least 50 water heaters should be sold per month.\n\nTry to determine the monthly production plan for the company.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "30500.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 63 (MIT)"
+  },
+  {
+    "id": "lpmilp-065-production-planning-problem",
+    "question": "A toy company manufactures three types of tabletop golf toys, each requiring different manufacturing techniques. The high-end type requires 17 hours of manufacturing labor, 8 hours of inspection, and yields a profit of 300 yuan per unit. The mid-range type requires 10 hours of labor, 4 hours of inspection, and yields a profit of 200 yuan per unit. The low-end type requires 2 hours of labor, 2 hours of inspection, and yields a profit of 100 yuan per unit. Available labor hours are 1000, and available inspection hours are 500. Additionally, market forecasts indicate a demand of no more than 50 units for the high-end type, no more than 80 units for the mid-range type, and no more than 150 units for the low-end type. Determine the production plan for the company to maximize profit.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "25000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 64 (MIT)"
+  },
+  {
+    "id": "lpmilp-066-lot-sizing-problem",
+    "question": "The market demand for products I and II is as follows: Product I requires 10,000 units per month from January to April, 30,000 units per month from May to September, and 100,000 units per month from October to December. Product II requires 15,000 units per month from March to September and 50,000 units per month during other months. The cost of producing these two products at a certain factory is as follows: Product I costs 5 yuan per unit to produce from January to May, and 4.50 yuan per unit from June to December; Product II costs 8 yuan per unit to produce from January to May, and 7 yuan per unit from June to December. The factory's combined production capacity for both products should not exceed 120,000 units per month. Product I has a volume of 0.2 cubic meters per unit, Product II has a volume of 0.4 cubic meters per unit, and the factory's warehouse capacity is 15,000 cubic meters. If the factory's warehouse space is insufficient, external warehouse space can be rented. Using the factory’s own warehouse costs 1 yuan per cubic meter per month, while renting an external warehouse increases this cost to 1.5 yuan per cubic meter per month. Given that the initial inventory of both products at the beginning of July is zero, how should production be scheduled from July to December to minimize the total production and inventory costs while meeting market demand?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "3160500.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 65 (MIT)"
+  },
+  {
+    "id": "lpmilp-067-transportation-problem",
+    "question": "There are two coal yards A and B, each receiving no less than 80 tons and 100 tons of coal per month, respectively. They are responsible for supplying coal to three residential areas, which need 55 tons, 75 tons, and 50 tons of coal per month, respectively. Coal yard A is located 10 kilometers, 5 kilometers, and 6 kilometers from these three residential areas. Coal yard B is located 4 kilometers, 8 kilometers, and 15 kilometers from these three residential areas. How should these two coal yards distribute coal to the three residential areas to minimize the ton-kilometers of transportation?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "1030.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 66 (MIT)"
+  },
+  {
+    "id": "lpmilp-068-cutting-stock-problem",
+    "question": "A steel reinforcement workshop produces a batch of steel bars (with the same diameter), consisting of 90 pieces of 3 meters in length and 60 pieces of 4 meters in length. It is known that each piece of raw steel bar used is 10 meters in length. How can the raw material be cut most efficiently? Establish a linear programming model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "53.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 67 (MIT)"
+  },
+  {
+    "id": "lpmilp-069-travelingsalesman",
+    "question": "The famous Traveling Salesman Problem (TSP) in operations research can be described as follows: A traveling salesman departs from a certain city, and must visit each city exactly once before returning to the original starting city. The distances between the cities are provided in the table below (the entry at row i and column j represents the cost of going from city i to city j)\n| City |    1    |    2    |    3    |    4    |\n| ---- | ------ | ------ | ------ | ------ |\n| 1    | 0    | 10   | 20   | 12   |\n| 2    | 10   | 0    | 5    | 10   |\n| 3    | 20   | 5    | 0    | 8    |\n| 4    | 15   | 12   | 8    | 0    |\n\nWhat route should the salesman choose to travel in order to minimize the total distance? Try to formulate an integer programming model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "35.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 68 (MIT)"
+  },
+  {
+    "id": "lpmilp-070-assignment-problem",
+    "question": "Consider assigning $n=2$ factories to $n$ locations. The transportation volume between factory $i$ and factory $j$ is $d_{ij}$, and the unit transportation cost from location $p$ to location $q$ is $c_{pq}$. The specific values are shown in the following table: Table 1.1\n\n|        | Transportation volume to Location 1 | Transportation volume to Location 2 | Transportation cost to Location 1 | Transportation cost to Location 2 |\n| :----: | :---------------------------------: | :---------------------------------: | :-------------------------------: | :-------------------------------: |\n| Factory 1 | 10 | 20 | 5 | 8 |\n| Factory 2 | 30 | 40 | 6 | 7 |\n\nIn order to minimize the total transportation cost, formulate this problem as an integer model.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "330.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 69 (MIT)"
+  },
+  {
+    "id": "lpmilp-071-knapsack",
+    "question": "The Li family plans to invest their retirement fund in commercial real estate. The annual income from Property 1 is $12,500, Property 2 is $35,000, Property 3 is $23,000, and Property 4 is $100,000. The decision to be made is whether to buy each property or not, rather than how many to buy, as there is only one of each property available. Help them decide which properties to purchase to maximize their annual income.\n\nThe cost of Property 1 is $1.5 million, Property 2 is $2.1 million, Property 3 is $2.3 million, and Property 4 is $4.2 million. The Li family's budget is $7 million.\n\nIf they purchase Property 4, they cannot purchase Property 3.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "135000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 70 (MIT)"
+  },
+  {
+    "id": "lpmilp-072-knapsack",
+    "question": "The Li family has 5 children: Alice, Bob, Charlie, Diana, and Ella. The cost to take Alice is $1000, Bob is $900, Charlie is $600, Diana is $500, and Ella is $700. Which children should the couple take to minimize the total cost of taking the children?\n\nThey can take up to 3 children on the upcoming trip.\n\nBob is the youngest, so the Li family will definitely take him.\n\nIf the couple takes Alice, they will not take Diana because Alice does not get along with her.\n\nIf the couple takes Bob, they will not take Charlie because Bob does not get along with him.\n\nIf they take Charlie, they must also take Diana.\n\nIf they take Diana, they must also take Ella.\n\nDespite the cost, the Li family has decided to take at least two children.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "1600.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 71 (MIT)"
+  },
+  {
+    "id": "lpmilp-073-operations-optimization",
+    "question": "A project includes the following 7 activities, with their durations (in days) as follows: $A(4), B(3), C(5), D(2), E(10), F(10), G(1)$. The precedence relationships are also given as: $A \\rightarrow G, D ; E, G \\rightarrow F; D, F \\rightarrow C ; F \\rightarrow B$. The cost of work per day is 1000 Euros; additionally, a special machine must be rented from the start of activity $A$ to the end of activity $B$, costing 5000 Euros per day. Formulate this as a linear programming problem to minimize cost and complete all activities.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "115000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 72 (MIT)"
+  },
+  {
+    "id": "lpmilp-074-production-planning-problem",
+    "question": "There are $\\mathrm{A}$ and $\\mathrm{B}$ two products, both requiring two successive chemical reaction processes. Each unit of product $\\mathrm{A}$ needs 2 hours for the first process and 3 hours for the second process. Each unit of product $\\mathrm{B}$ needs 3 hours for the first process and 4 hours for the second process. Available time for the first process is 16 hours, and available time for the second process is 24 hours.\n\nFor each unit of product $\\mathrm{B}$ produced, 2 units of by-product $\\mathrm{C}$ are generated simultaneously, requiring no additional cost. By-product $\\mathrm{C}$ can be sold up to 5 units, and the rest must be disposed of at a cost of 2 yuan per unit.\n\nEach unit of product $\\mathrm{A}$ sold yields a profit of 4 yuan, each unit of product $\\mathrm{B}$ yields a profit of 10 yuan, and each unit of by-product $\\mathrm{C}$ sold yields a profit of 3 yuan.\n\nIn order to maximize total profit, establish the linear programming model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "57.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 73 (MIT)"
+  },
+  {
+    "id": "lpmilp-075-lot-sizing-problem",
+    "question": "A timber storage and transport company has a large warehouse for storing and transporting timber for sale. Due to seasonal price fluctuations, the company purchases timber at the beginning of each quarter, with part of it being sold within the quarter and part being stored for future sales. It is known that the maximum storage capacity of the company's warehouse is 200,000 m³, and the storage cost is $(a+b u)$ yuan/m³, where $a=70$, $b=100$, and $u$ is the storage time (in quarters). The purchase and sale prices for each quarter and the estimated maximum sales volumes are shown in Table 1-18.\n\nTable 1-18\n| Quarter | Purchase Price (10,000 yuan/10,000 m²) | Sale Price (10,000 yuan/10,000 m²) | Estimated Maximum Sales Volume (10,000 m³) |\n|---------|----------------------------------------|------------------------------------|---------------------------------------------|\n| Winter  | 410                                    | 425                                | 100                                         |\n| Spring  | 430                                    | 440                                | 140                                         |\n| Summer  | 460                                    | 465                                | 200                                         |\n| Autumn  | 450                                    | 455                                | 160                                         |\n\nSince timber is not suitable for long-term storage, all inventory should be sold by the end of autumn. Try to establish a linear programming model for this problem to maximize the company's annual profit. Return your answer in the unit of 10000 yuan.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "4700.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 74 (MIT)"
+  },
+  {
+    "id": "lpmilp-076-capacitated-facility-location-pr",
+    "question": "There are 10 different parts, and they can all be processed on machine \\( A \\), machine \\( B \\), or machine \\( C \\). The unit processing costs are shown in Table 5-6. Additionally, as long as any part is processed on the aforementioned machines, a one-time setup cost will be incurred regardless of whether one or multiple types of parts are processed, with the respective costs being \\( d_A = 100 \\), \\( d_B = 135 \\), and \\( d_C = 200 \\) yuan. If the requirements are:\n\n1. One piece of each of the aforementioned 10 types of parts needs to be processed;\n2. If the 1st part is processed on machine \\( A \\), then the 2nd part must be processed on machine \\( B \\) or \\( C \\); conversely, if the 1st part is processed on machine \\( B \\) or \\( C \\), then the 2nd part must be processed on machine \\( A \\);\n3. Parts 3, 4, and 5 must be processed on machines A, B, and C respectively;\n4. The number of parts processed on machine \\( C \\) should not exceed 3 types.\n\nTry to establish an integer programming mathematical model for this problem with the objective of minimizing the total cost.\n\nTable 5-6\n| Machine/Part | 1   | 2   | 3   | 4   | 5   | 6   | 7   | 8   | 9   | 10  |\n|--------------|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|\n| A            | $10$ | $20$ | $30$ | $40$ | $50$ | $60$ | $70$ | $80$ | $90$ | $100$ |\n| B            | $15$ | $25$ | $35$ | $45$ | $55$ | $65$ | $75$ | $85$ | $95$ | $105$ |\n| C            | $20$ | $30$ | $40$ | $50$ | $60$ | $70$ | $80$ | $90$ | $100$ | $110$ |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "1005.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 75 (MIT)"
+  },
+  {
+    "id": "lpmilp-077-operations-optimization",
+    "question": "A shoe store employs 5 full-time sales clerks and 4 part-time sales clerks. Their working hours and wage conditions are shown in Table 3.3.\n\nTable 3.3\n\n|  | Monthly Working Hours | Sales Volume (Pairs/Hour) | Wage (Yuan/Hour) | Overtime Pay (Yuan/Hour) |\n| :---: | :---: | :---: | :---: | :---: |\n| Full-time | 160 | 5 | 1 | 1.5 |\n| Part-time | 80 | 2 | 0.6 | 0.7 |\n\nEach pair of shoes sold earns a profit of 0.3 yuan. The store has set the following goals:\n\n$p_{1}$: Achieve monthly sales of 5500 pairs;\n\n$p_{2}$: Ensure full employment of all sales clerks;\n\n$p_{3}$: Minimize overtime hours.\n\nTry to establish a model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "172.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 76 (MIT)"
+  },
+  {
+    "id": "lpmilp-078-production-planning-problem",
+    "question": "A furniture factory needs to decide how many tables, chairs, and bookshelves to produce in order to maximize its profit. The factory can sell each table for $200, each chair for $50, and each bookshelf for $150. The manufacturing costs for each table, chair, and bookshelf are $120, $20, and $90 respectively. The profit is the difference between the selling price and the manufacturing cost. Each table, chair, and bookshelf occupy 5, 2, and 3 square meters of warehouse space respectively. Due to limited warehouse space, the total space cannot exceed 500 square meters. In addition, due to market demand, the factory needs to produce at least 10 tables and 20 bookshelves. Finally, the total number of items produced by the factory cannot exceed 200.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "9800.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 77 (MIT)"
+  },
+  {
+    "id": "lpmilp-079-operations-optimization",
+    "question": "A company requires skilled workers and laborers for three tasks. The first task can be completed by one skilled worker alone, or by a group of one skilled worker and two laborers. The second task can be done by one skilled worker or one laborer alone. The third task can be completed by a group of five laborers, or by one skilled worker leading three laborers. The weekly wages for skilled workers and laborers are 100 yuan and 80 yuan respectively. They work 48 hours per week, but their actual effective working hours are 42 hours and 36 hours respectively. To complete these tasks, the company needs a total effective working time of 8400 hours for the first task, 10800 hours for the second task, and 18000 hours for the third task per week. The number of workers that can be recruited is limited to a maximum of 400 skilled workers and 800 laborers. Establish a mathematical model to determine how many skilled workers and laborers should be hired in order to minimize the total wage expenditure.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "84000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 78 (MIT)"
+  },
+  {
+    "id": "lpmilp-080-assignment-problem",
+    "question": "On Danzig Street, vehicles can park on both sides of the street. Mr. Edmonds, who lives at No. 1, is organizing a party with about 30 participants, and they will arrive in 15 cars. The length of the i-th car is ?_i, in meters, as follows:\n\n| i  | 1  | 2   | 3  | 4   | 5   | 6   | 7   | 8   | 9   | 10  | 11  | 12  | 13  | 14  | 15  |\n|----|----|-----|----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|\n| ?_i | 4  | 4.5 | 5  | 4.1 | 2.4 | 5.2 | 3.7 | 3.5 | 3.2 | 4.5 | 2.3 | 3.3 | 3.8 | 4.6 | 3   |\n\nIn order to avoid disturbing the neighbors, Mr. Edmonds wants to arrange parking on both sides of the street so that the total length of the street occupied by his friends' vehicles is minimized. Please provide a mathematical programming formulation and solve this problem.\nHow does the program change if the cars on one side of the street cannot occupy more than 30 meters?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "28.6",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 79 (MIT)"
+  },
+  {
+    "id": "lpmilp-081-knapsack",
+    "question": "Changjiang Comprehensive Shopping Mall has 5000 m² of space for lease and plans to attract the following 5 types of stores as tenants. The table below shows the area occupied by each type of store for one shop, the minimum and maximum number of shops for each type within the mall, and the expected annual profit (in ten thousand yuan) per store for different numbers of stores. Each store pays 20% of its annual profit as rent to the mall. Question: How many of each type of store should the mall lease to maximize total rental income?\n\nTable 5-12\n\n| Code | Store Type | Area per Shop / m² | Min | Max | 1 Store | 2 Stores | 3 Stores |\n|------|------------|--------------------|-----|-----|---------|----------|----------|\n| 1    | Jewelry    | 250                | 1   | 3   | 9       | 8        | 7        |\n| 2    | Shoes & Hats | 350              | 1   | 2   | 10      | 9        | -        |\n| 3    | General Merchandise | 800      | 1   | 3   | 27      | 21       | 20       |\n| 4    | Bookstore  | 400                | 0   | 2   | 16      | 10       | -        |\n| 5    | Catering   | 500                | 1   | 3   | 17      | 15       | 12       |",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "28.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 80 (MIT)"
+  },
+  {
+    "id": "lpmilp-082-set-multi-cover",
+    "question": "A certain restaurant operates around the clock, and the number of waiters needed in 24 hours is shown in Table 1.1.\n\nTable 1.1\n\n| Time        | Minimum Number of Waiters Needed | Time        | Minimum Number of Waiters Needed |\n|:-----------:|:-------------------------------:|:-----------:|:-------------------------------:|\n| $2 \\sim 6$  | 4                                | $14 \\sim 18$| 7                                |\n| $6 \\sim 10$ | 8                                | $18 \\sim 22$| 12                               |\n| $10 \\sim 14$| 10                               | $22 \\sim 2$ | 4                                |\n\nEach waiter works continuously for 8 hours a day. The goal is to find the minimum number of waiters that meet the above conditions and represent this problem as a linear programming model.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "26.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 81 (MIT)"
+  },
+  {
+    "id": "lpmilp-083-knapsack",
+    "question": "A company hopes to recruit new employees for its team. The salary requirements for candidates A, B, C, D, and E are $8100, $20000, $21000, $3000, and $8000 respectively. They need to decide whether to hire each candidate. The team wants to minimize the total amount paid to the candidates.\n\nThey hope to hire a maximum of 3 new employees.\n\nThe team has a limited budget of $35,000. They need to ensure that the total payment to the selected candidates does not exceed the budget.\n\nThe qualifications of the five candidates are as follows:\nCandidate A: Bachelor's degree;\nCandidate B: Master's degree;\nCandidate C: Doctoral degree;\nCandidate D: No degree;\nCandidate E: No degree.\nThey will select at least one candidate with a Master's or Doctoral degree.\n\nThe work experience of the five candidates is as follows:\nCandidate A: 3 years of work experience;\nCandidate B: 10 years of work experience;\nCandidate C: 4 years of work experience;\nCandidate D: 3 years of work experience;\nCandidate E: 7 years of work experience.\nThey hope the total work experience of the selected candidates is no less than 12 years.\n\nDue to the equivalent professional skills of candidates A and E, the company will choose at most one from the two.\n\nThey will hire at least 2 new employees.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "23000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 82 (MIT)"
+  },
+  {
+    "id": "lpmilp-084-production-planning-problem",
+    "question": "A company is producing two products (X and Y). The resources required for the production of X and Y are divided into two parts: machine time for automated processing and craftsman time for manual finishing. The table below shows the number of minutes required for each product:\n\n| Item | Machine Time (minutes) | Craftsman Time (minutes) |\n| :---: | :---: | :---: |\n| X | 13 | 20 |\n| Y | 19 | 29 |\n\nThe company has 40 hours of machine time available in the next working week, but only 35 hours of craftsman time. The cost of machine time is £10 per hour, and the cost of craftsman time is £2 per hour. Idle time for machines and craftsmen incurs no cost. For each product produced (all products produced will be sold), the revenue for product X is £20, and the revenue for product Y is £30. Products can only be produced in whole units. The company has a specific contract that requires 10 units of product X to be produced for a customer each week. Formulate a model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "1861.466667",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 83 (MIT)"
+  },
+  {
+    "id": "lpmilp-085-profit-maximization-problem",
+    "question": "Healthy Pet Foods Company produces two types of dog food: Meaties and Yummies. Each pack of Meaties contains 2 pounds of grains and 3 pounds of meat; each pack of Yummies contains 3 pounds of grains and 1.5 pounds of meat. The company believes it can sell any quantity of dog food that it can produce. Meaties sell for $2.80 per pack, and Yummies sell for $2.00 per pack. The company's production is subject to several constraints. First, a maximum of 400,000 pounds of grains can be purchased each month at a price of $0.20 per pound of grains. A maximum of 300,000 pounds of meat can be purchased each month at a price of $0.50 per pound of meat. Additionally, a special machine is required to produce Meaties, with a monthly capacity of 90,000 packs. The variable costs for mixing and packaging dog food are $0.25 per pack (Meaties) and $0.20 per pack (Yummies). Detailed information is provided in Table B-1.\n\n**Table B-1 Healthy Pet Foods Data**\n\n|                    | Meaties      | Yummies    |\n|--------------------|--------------|------------|\n| Price per pack     | $2.80        | $2.00      |\n| Raw materials      |              |            |\n| - Grains           | 2.0 lbs      | 3.0 lbs    |\n| - Meat             | 3.0 lbs      | 1.5 lbs    |\n| Variable cost      | $0.25/pack   | $0.20/pack |\n| Resources          |              |            |\n| Meaties capacity   | 90,000 packs/month |       |\n| Monthly available grains | 400,000 lbs |      |\n| Monthly available meat | 300,000 lbs |        |\n\nAssume you are the manager of the dog food department at Healthy Pet Foods Company. Your salary is based on the department's profit, so you will try to maximize profit. How should you operate the department to maximize both the profit and your salary?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "77500.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 84 (MIT)"
+  },
+  {
+    "id": "lpmilp-086-multi-commodity-transportation-p",
+    "question": "A transportation company has two types of trucks, Type A and Type B. Type A trucks have 20 cubic meters of refrigerated capacity and 40 cubic meters of non-refrigerated capacity. In contrast, Type B trucks have the same total capacity, but the capacities for refrigerated and non-refrigerated cargo are equal. A grocer needs to rent trucks to transport 3000 cubic meters of refrigerated cargo and 4000 cubic meters of non-refrigerated cargo. The rental cost per kilometer for Type A trucks is £30, while the rental cost per kilometer for Type B trucks is £40. How many of each type of truck should the grocer rent to minimize the total cost?\n\nTry to formulate a model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "4170.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 85 (MIT)"
+  },
+  {
+    "id": "lpmilp-087-production-planning-problem",
+    "question": "A company uses two machines (Machine 1 and Machine 2) to produce two types of products (liquid fertilizer and solid fertilizer). To produce one unit of liquid fertilizer, it takes 50 minutes on Machine 1 and 30 minutes on Machine 2. To produce one unit of solid fertilizer, it takes 24 minutes on Machine 1 and 33 minutes on Machine 2. Fertilizers must be produced in whole units, and fractional amounts are not allowed. At the beginning of the week, there are 30 units of liquid fertilizer and 90 units of solid fertilizer in inventory. The available processing time for Machine 1 this week is expected to be 40 hours, and for Machine 2 it is expected to be 35 hours. The demand for liquid fertilizer this week is estimated at 75 units, and for solid fertilizer at 95 units. The company's policy is to maximize the total number of units of liquid fertilizer and solid fertilizer in inventory at the end of the week.\n\nFormulate a model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "1.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 86 (MIT)"
+  },
+  {
+    "id": "lpmilp-088-production-planning-problem",
+    "question": "A company produces product A and product B. Each unit of product A sold generates a profit of £30, while each unit of product B sold generates a profit of £10. The company can allocate a maximum of 40 hours per week for production. Producing one unit of product A requires 6 hours, while producing one unit of product B requires 3 hours, and products can only be produced in whole units. Market demand requires that the quantity of product B produced must be at least three times the quantity of product A. The storage space occupied by product A is four times that of product B. The storage space's capacity is such that it can store 4 units of product A when only product A is stored.\n\nFormulate a model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "140.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 87 (MIT)"
+  },
+  {
+    "id": "lpmilp-089-revenue-management-problem",
+    "question": "A store wants to clear out 200 shirts and 100 pairs of pants from last season. They decide to introduce two promotional packages, A and B. Package A includes one shirt and two pairs of pants, priced at £30. Package B includes three shirts and one pair of pants, priced at £50. The store does not want to sell fewer than 20 A packages and 10 B packages. How many of each package do they need to sell to maximize the revenue from the promotion?\n\nTry to establish a model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "3600.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 88 (MIT)"
+  },
+  {
+    "id": "lpmilp-090-profit-maximization-problem",
+    "question": "A company produces two products (A and B), with a profit of £3 and £5 per unit sold, respectively. Each product must be assembled on a specific machine, requiring 12 minutes of assembly time per unit for product A and 25 minutes per unit for product B. The company's estimated effective machine working time per week is only 30 hours (due to maintenance or malfunctions). Technical constraints mean that for every five units of product A produced, at least two units of product B must be produced.\n\nTry to formulate a model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "408.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 89 (MIT)"
+  },
+  {
+    "id": "lpmilp-091-transportation-airline-industry",
+    "question": "A school is preparing a trip for 400 students. The transportation company has 10 buses with 50 seats each and 8 minibuses with 40 seats each, but only 9 drivers are available. The rental cost for a bus is £800, and the rental cost for a minibus is £600. Calculate how many of each type of bus should be used to achieve the lowest cost.\n\nTry to formulate a model for this problem.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "6200.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 90 (MIT)"
+  },
+  {
+    "id": "lpmilp-092-production-planning-problem",
+    "question": "A dairy processing plant uses milk to produce two dairy products, \\( A_{1} \\) and \\( A_{2} \\). One barrel of milk can be processed into 3 kg of \\( A_{1} \\) in 12 hours on Type A equipment or into 4 kg of \\( A_{2} \\) in 8 hours on Type B equipment. According to market demand, all produced \\( A_{1} \\) and \\( A_{2} \\) can be sold. The profit is 24 yuan per kilogram of \\( A_{1} \\) and 16 yuan per kilogram of \\( A_{2} \\). The processing plant can get a daily supply of 50 barrels of milk, with a total of 480 hours of labor time available from regular workers each day. The Type A equipment can process up to 100 kg of \\( A_{1} \\) per day, while the processing capacity of Type B equipment is not limited. Formulate a production plan for the plant to maximize daily profit.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "3360.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 91 (MIT)"
+  },
+  {
+    "id": "lpmilp-093-blending-problem",
+    "question": "A company blends two types of crude oil (A and B) to produce two types of gasoline (Type I and Type II). The minimum proportion of crude oil A in gasoline Types I and II is 50% and 60%, respectively. The selling prices are 4800 yuan/t and 5600 yuan/t, respectively. The company has current inventories of 500 t of crude oil A and 1000 t of crude oil B, and they can purchase up to 1500 t of crude oil A from the market. The market price for crude oil A is: 10,000 yuan/t for purchases up to 500 t; 8,000 yuan/t for the portion exceeding 500 t but not exceeding 1000 t; 6,000 yuan/t for the portion exceeding 1000 t. How should the company plan its purchasing and processing of crude oil? Return the maximized profit in yuan.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "5000000.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 92 (MIT)"
+  },
+  {
+    "id": "lpmilp-094-capacitated-lot-sizing-problem-c",
+    "question": "A beverage factory produces a kind of beverage to meet market demand. According to market forecasts, the sales department of the factory has determined the demand for the beverage for the next 4 weeks. The planning department, based on the actual situation of the factory, has provided the production capacity and production cost for the next 4 weeks, as shown in Table 1. When there is a surplus of beverages after meeting the demand each week, a storage cost of 0.2 thousand yuan per week per thousand boxes of beverages needs to be paid. How should the production plan be arranged to minimize the total cost (the sum of production cost and storage cost) over the four weeks while meeting the weekly market demand?\n\nTable 1 Beverage Production and Demand Data:\n\n\\begin{tabular}{c|c|c|c}\n\\hline \nWeek & Demand/1000 boxes & Production Capacity/1000 boxes & Cost per 1000 boxes/1000 yuan \\\\\n\\hline \n1 & 15 & 30 & 5.0 \\\\\n\\hline \n2 & 25 & 40 & 5.1 \\\\\n\\hline \n3 & 35 & 45 & 5.4 \\\\\n\\hline \n4 & 25 & 20 & 5.5 \\\\\n\\hline \nTotal & 100 & 135 & \\\\\n\\hline\n\\end{tabular}",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "528.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 93 (MIT)"
+  },
+  {
+    "id": "lpmilp-095-cutting-stock-problem",
+    "question": "A steel pipe retailer sources raw steel pipes from a steel pipe factory, cuts the pipes according to customer requirements, and sells them. The raw steel pipes obtained from the factory are all 1850 mm in length. A customer now needs 15 pieces of 290 mm, 28 pieces of 315 mm, 21 pieces of 350 mm, and 30 pieces of 455 mm steel pipes. To simplify the production process, it is required that no more than 4 types of cutting patterns are used. The most frequently used cutting pattern incurs an additional cost of 1/10 of the value of a raw steel pipe, the second most frequent incurs an additional cost of 2/10, and so on. Moreover, the number of cuts for each pattern cannot be too many (a single raw steel pipe can produce up to 5 products). Additionally, to minimize waste, the leftover material for each cutting pattern should not exceed 100 mm. How should the material be cut to minimize total cost, and what is the total cost in this case?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "21.5",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 94 (MIT)"
+  },
+  {
+    "id": "lpmilp-096-blending-problem",
+    "question": "A company mixes four types of liquid raw materials with different sulfur contents (denoted as A, B, C, and D, respectively) to produce two products (denoted as \\( \\mathrm{A} \\) and \\( \\mathrm{B} \\)). According to the production process requirements, raw materials A, B, and D must first be mixed in a mixing tank, and then the mixed liquid is further mixed with raw material C to produce \\( \\mathrm{A} \\) and \\( \\mathrm{B} \\). The sulfur contents of raw materials A, B, C, and D are \\( 3\\%, 1\\%, 2\\%, 1\\% \\) respectively, and their purchase prices are 6, 16, 10, 15 (thousand yuan per ton) respectively. The sulfur content of products \\( \\mathrm{A} \\) and \\( \\mathrm{B} \\) must not exceed \\( 2.5\\% \\) and \\( 1.5\\% \\) respectively, and their selling prices are 9, 15 (thousand yuan per ton) respectively. According to market information, there is no limit to the supply of raw materials A, B, and C, but the supply of raw material D is limited to a maximum of 50 tons. The market demand for products \\( \\mathrm{A} \\) and \\( \\mathrm{B} \\) is 100 tons and 200 tons respectively. How should the production be arranged to maximize the total profit?",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "450.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 95 (MIT)"
+  },
+  {
+    "id": "lpmilp-097-production-planning-problem",
+    "question": "A company uses steel and aluminum as raw materials to produce two products (A and B). A single unit of product A requires 6 kg of steel, 8 kg of aluminum, 11 hours of labor, and yields a profit of 5000 yuan (excluding worker overtime pay). A single unit of product B requires 12 kg of steel, 20 kg of aluminum, 24 hours of labor, and yields a profit of 11000 yuan (excluding worker overtime pay). Products can only be produced in whole units. The company currently has 200 kg of steel, 300 kg of aluminum, and 300 hours of labor available. If workers need to work overtime, the overtime pay is 100 yuan per hour. Please develop a production plan to maximize the company's overall profit taking into account worker overtime.",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "165900.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 96 (MIT)"
+  },
+  {
+    "id": "lpmilp-098-knapsack",
+    "question": "An electronic system is composed of 3 types of components. The system operates normally if all three components function properly. By installing one or more spare parts for any of the components, the reliability of the components can be improved. The system's operational reliability is the product of the reliabilities of each component, and the reliability of each component is a function of the number of spare parts installed. The first half of the table below shows the function relationship between the number of spare parts and the reliability of a specific component. The prices and weights of the 3 types of components are shown in rows 8 to 9 of the table. Given that the total budget for all spare parts is limited to 150 yuan, and the weight limit is 20 kg, how should spare parts be installed to maximize the system's operational reliability? \n\n\\begin{table}[h]\n\\centering\n\\begin{tabular}{|c|c|c|c|}\n\\hline\n\\textbf{Component Number} & \\textbf{1} & \\textbf{2} & \\textbf{3} \\\\ \\hline\n\\textbf{Number of Spares} &             &             &             \\\\ \\hline\n0                & 0.5         & 0.6         & 0.7         \\\\ \\hline\n1                & 0.6         & 0.75        & 0.9         \\\\ \\hline\n2                & 0.7         & 0.95        & 1.0         \\\\ \\hline\n3                & 0.8         & 1.0         & 1.0         \\\\ \\hline\n4                & 0.9         & 1.0         & 1.0         \\\\ \\hline\n5                & 1.0         & 1.0         & 1.0         \\\\ \\hline\n\\textbf{Unit Price (yuan)}  & 20           & 30           & 40           \\\\ \\hline\n\\textbf{Unit Weight (kg)}  & 2            & 4            & 6            \\\\ \\hline\n\\end{tabular}\n\\caption{Spare Component Data Table}\n\\end{table}",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "0.6075",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 97 (MIT)"
+  },
+  {
+    "id": "lpmilp-099-network-optimization",
+    "question": "In network communication services, bandwidth plays an important role. Below is a bandwidth communication table between several communication nodes, showing the bandwidth between any two nodes. If two nodes cannot be directly connected, the corresponding bandwidth is $0$. It is required to establish a link between node $A$ and node $E$ that must pass through service node $C$ (without loops). The bandwidth of this link is defined as the minimum bandwidth value on the link. Please propose a reasonable link arrangement to maximize the bandwidth of this link and find out the maximum bandwidth.\n\n\\begin{table}[h]\n    \\centering\n    \\begin{tabular}{|c|c|c|c|c|c|}\n        \\hline\n        & A & B & C & D & E \\\\\n        \\hline\n        A & 0 & 90 & 85 & 0 & 65 \\\\\n        \\hline\n        B & 95 & 0 & 70 & 65 & 34 \\\\\n        \\hline\n        C & 60 & 0 & 0 & 88 & 80 \\\\\n        \\hline\n        D & 67 & 30 & 25 & 0 & 84 \\\\\n        \\hline\n        E & 0 & 51 & 0 & 56 & 0 \\\\\n        \\hline\n    \\end{tabular}\n\\end{table}",
+    "expected_skill": "cuopt-numerical-optimization-api-python",
+    "expected_script": null,
+    "ground_truth": "84.0",
+    "expected_behavior": [
+      "Reports an optimal objective value that exactly matches the ground_truth to the precision shown (no rounding tolerance is allowed)"
+    ],
+    "source": "microsoft/OptiGuide optimind_cleaned_classified_industryor.csv row 98 (MIT)"
+  }
+]

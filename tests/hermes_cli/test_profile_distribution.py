@@ -33,6 +33,7 @@ from hermes_cli.profile_distribution import (
     update_distribution,
     write_manifest,
 )
+from hermes_cli.profiles import backfill_profile_envs
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +353,99 @@ class TestInstall:
         with pytest.raises(DistributionError, match="No distribution.yaml"):
             plan_install(str(bogus), tmp_path / "work", override_name="x")
 
+
+    def test_install_seeds_empty_env_sentinel(self, profile_env):
+        """Fresh dist installs must get a placeholder .env like create_profile.
+
+        Without it, hermes update's backfill_profile_envs copies the default
+        profile's secrets into the new install (credential isolation break).
+        """
+        import stat
+
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="seeded")
+        env_path = plan.target_dir / ".env"
+        assert env_path.is_file()
+        content = env_path.read_text(encoding="utf-8")
+        assert all(
+            line.startswith("#") or not line.strip()
+            for line in content.splitlines()
+        )
+        assert not any(
+            (not line.startswith("#")) and ("=" in line)
+            for line in content.splitlines()
+            if line.strip()
+        )
+        assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+
+    def test_install_env_seed_blocks_default_secret_backfill(self, profile_env):
+        """Installed dist profile must not receive default .env on backfill."""
+        default_home = profile_env / ".hermes"
+        (default_home / ".env").write_text(
+            "OPENAI_API_KEY=sk-SECRET-DEFAULT\nTELEGRAM_BOT_TOKEN=tok-SECRET\n",
+            encoding="utf-8",
+        )
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="telem")
+
+        backfilled = backfill_profile_envs(quiet=True)
+
+        assert "telem" not in backfilled
+        assert not backfilled
+        content = (plan.target_dir / ".env").read_text(encoding="utf-8")
+        assert "sk-SECRET-DEFAULT" not in content
+        assert "tok-SECRET" not in content
+        assert all(
+            line.startswith("#") or not line.strip()
+            for line in content.splitlines()
+        )
+
+    def test_install_force_preserves_existing_env(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="keepenv")
+        (plan.target_dir / ".env").write_text("OPENAI_API_KEY=sk-user\n", encoding="utf-8")
+
+        install_distribution(str(staged), name="keepenv", force=True)
+
+        assert (plan.target_dir / ".env").read_text(encoding="utf-8") == (
+            "OPENAI_API_KEY=sk-user\n"
+        )
+
+    def test_install_raises_if_env_seed_write_fails(self, profile_env, monkeypatch):
+        staged = _make_staging_dir(profile_env, "src")
+        real_write = Path.write_text
+
+        def boom(self, *args, **kwargs):
+            if self.name == ".env":
+                raise OSError("disk full")
+            return real_write(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", boom)
+        with pytest.raises(DistributionError, match=r"seed per-profile \.env"):
+            install_distribution(str(staged), name="noseed")
+        assert not (profile_env / ".hermes" / "profiles" / "noseed").exists()
+
+    def test_backfill_seeds_empty_env_for_distribution_profile(self, profile_env):
+        """Pre-fix dist installs (no .env) must not receive default secrets."""
+        default_home = profile_env / ".hermes"
+        (default_home / ".env").write_text(
+            "OPENAI_API_KEY=sk-SECRET-DEFAULT\n", encoding="utf-8"
+        )
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="legacy-dist")
+        (plan.target_dir / ".env").unlink()  # simulate pre-fix install
+
+        backfilled = backfill_profile_envs(quiet=True)
+
+        assert "legacy-dist" in backfilled
+        assert backfilled.placeholder == ("legacy-dist",)
+        assert backfilled.copied == ()
+        content = (plan.target_dir / ".env").read_text(encoding="utf-8")
+        assert "sk-SECRET-DEFAULT" not in content
+        assert all(
+            line.startswith("#") or not line.strip()
+            for line in content.splitlines()
+        )
 
     def test_install_enforces_hermes_requires(self, profile_env, monkeypatch):
         # Pin current Hermes version to something well below the requirement

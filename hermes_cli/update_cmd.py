@@ -4426,18 +4426,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
             pass  # profiles module not available or no profiles
 
         # Backfill per-profile .env files for profiles created before the
-        # .env-seeding fix (#44792). Copies the default install's .env so
-        # those profiles keep the credentials they were effectively using.
+        # .env-seeding fix (#44792). Legacy named profiles get a copy of the
+        # default install's .env; distribution profiles get a placeholder so
+        # credentials stay isolated.
         try:
-            from hermes_cli.profiles import backfill_profile_envs
+            from hermes_cli.profiles import (
+                backfill_profile_envs,
+                format_backfill_env_summary,
+            )
 
             backfilled = backfill_profile_envs(quiet=True)
             if backfilled:
                 print()
-                print(
-                    f"→ Seeded .env for {len(backfilled)} profile(s) "
-                    f"(copied from default): {', '.join(backfilled)}"
-                )
+                print(format_backfill_env_summary(backfilled))
         except Exception:
             pass  # profiles module not available or no profiles
 

@@ -194,6 +194,12 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
     monkeypatch.delenv("VERCEL_PROJECT_ID", raising=False)
     monkeypatch.setenv("VERCEL_TEAM_ID", "team")
     monkeypatch.setattr(doctor_mod.importlib.util, "find_spec", lambda name: object() if name == "vercel" else None)
+    # Pin container detection to False: doctor.py's run_doctor() imports
+    # is_container locally and, when True, overrides TERMINAL_ENV to "local"
+    # (skipping the Vercel section entirely). On container-like hosts (WSL,
+    # CI containers) is_container() is True, so this test's Vercel assertions
+    # only passed on bare-metal machines — a host-dependent failure.
+    monkeypatch.setattr("hermes_constants.is_container", lambda: False)
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),

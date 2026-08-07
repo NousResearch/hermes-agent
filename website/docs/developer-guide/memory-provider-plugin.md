@@ -12,9 +12,34 @@ Memory provider plugins give Hermes Agent persistent, cross-session knowledge be
 Memory providers are one of two **provider plugin** types. The other is [Context Engine Plugins](/developer-guide/context-engine-plugin), which replace the built-in context compressor. Both follow the same pattern: single-select, config-driven, managed via `hermes plugins`.
 :::
 
-## Directory Structure
+## Installation Layouts
 
-Each memory provider lives in `plugins/memory/<name>/`:
+Hermes discovers memory providers from four sources, in this precedence order:
+
+| Source | Location | Notes |
+|---|---|---|
+| Bundled | `plugins/memory/<name>/` | Ships with Hermes. Closed to new providers — see [CONTRIBUTING](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md). |
+| User | `$HERMES_HOME/plugins/<name>/` | Dropped in by the user, per profile. |
+| Project | `./.hermes/plugins/<name>/` | Opt-in via `HERMES_ENABLE_PROJECT_PLUGINS=1`. |
+| Package | `hermes_agent.memory_providers` entry point | `pip install`, nothing to copy. |
+
+Earlier sources win on a name collision, so a directory dropped into a working
+tree can never shadow a shipped provider.
+
+:::note
+This is the reverse of the general plugin system's later-wins order. A memory
+provider is activated by *name* (`memory.provider`), so shadowing would
+silently redirect the agent's memory rather than merely override a tool.
+:::
+
+Discovery only *enumerates* — it never imports a provider. Nothing runs until
+`memory.provider` names it.
+
+### Directory Provider
+
+A directory provider lives in `plugins/memory/<name>/` when bundled with
+Hermes, in `$HERMES_HOME/plugins/<name>/` when installed by a user, or in
+`./.hermes/plugins/<name>/` for a project-local one:
 
 ```
 plugins/memory/my-provider/
@@ -22,6 +47,28 @@ plugins/memory/my-provider/
 ├── plugin.yaml      # Metadata (name, description, hooks)
 └── README.md        # Setup instructions, config reference, tools
 ```
+
+### Packaged Provider
+
+A pip-installed provider publishes an entry point in the
+`hermes_agent.memory_providers` group. The entry-point name is the provider
+name users select in `memory.provider`; its value points to the provider's
+`register(ctx)` function:
+
+```toml title="pyproject.toml"
+[project.entry-points."hermes_agent.memory_providers"]
+my-provider = "my_provider:register"
+```
+
+Point the entry point at the **package**, or at a `register(ctx)` inside it, and
+keep your implementation, skills, and other resources in the normal Python
+package layout. No copy under `$HERMES_HOME/plugins/` is required.
+
+A package entry point gets everything a directory install does, including the
+two files Hermes reads from disk rather than importing — `config_schema.py`
+(the dashboard config panel) and `cli.py` (your `hermes <provider>`
+subcommands). Both are found next to your package's `__init__.py`, so point the
+entry point at a package rather than a single module if you ship either.
 
 ## The MemoryProvider ABC
 
@@ -138,6 +185,27 @@ def register(ctx) -> None:
     """Called by the memory plugin discovery system."""
     ctx.register_memory_provider(MyMemoryProvider())
 ```
+
+A provider may also expose read-only skills from the same callback. Skills are
+qualified by the entry-point name and are loaded only when that memory provider
+is active:
+
+```python
+from pathlib import Path
+
+SKILLS_DIR = Path(__file__).parent / "skills"
+
+def register(ctx) -> None:
+    ctx.register_memory_provider(MyMemoryProvider())
+    ctx.register_skill(
+        "maintenance",
+        SKILLS_DIR / "maintenance" / "SKILL.md",
+        "Maintain the provider's memory store",
+    )
+```
+
+With the `my-provider` entry point active, the skill is available as
+`my-provider:maintenance` through `skill_view()`.
 
 ## plugin.yaml
 

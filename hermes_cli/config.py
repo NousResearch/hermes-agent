@@ -4980,6 +4980,67 @@ def set_config_value(key: str, value: str, force: bool = False):
                     file=sys.stderr,
                 )
                 sys.exit(1)
+    # Guard against list-valued keys (#76138): ``hermes config set`` always
+    # writes a scalar, which corrupts list-typed settings (writes a quoted
+    # YAML string instead of a YAML sequence).  Check both the existing
+    # user-config value and the declared default — either being a list is
+    # enough to refuse (unless --force).
+    if not force and "." not in key:
+        _existing_for_list = user_config.get(key)
+        _default_for_list = _default_value_for_key(key)
+        _list_val = _existing_for_list if isinstance(_existing_for_list, list) else _default_for_list
+        if isinstance(_list_val, list):
+            print(
+                f"✗ '{key}' is a list-valued setting.  `hermes config set` writes a\n"
+                f"  scalar and would corrupt it (quoted string instead of YAML list).\n"
+                f"  Edit config.yaml directly, or use `hermes config edit`.",
+                file=sys.stderr,
+            )
+            print(
+                f"  Example — in config.yaml:\n"
+                f"    {key}:\n"
+                f"      - item1\n"
+                f"      - item2",
+                file=sys.stderr,
+            )
+            print(
+                f"  Or use --force to overwrite with a scalar anyway:",
+                file=sys.stderr,
+            )
+            print(
+                f"    hermes config set --force {key} {value!r}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    elif not force and "." in key:
+        # For dotted keys, walk user_config to find the parent's existing value.
+        _parts = key.split(".")
+        _parent = user_config
+        for _p in _parts[:-1]:
+            if isinstance(_parent, dict):
+                _parent = _parent.get(_p)
+            else:
+                _parent = None
+                break
+        _leaf_existing = _parent.get(_parts[-1]) if isinstance(_parent, dict) else None
+        _leaf_default = _default_value_for_key(key)
+        _list_val = _leaf_existing if isinstance(_leaf_existing, list) else _leaf_default
+        if isinstance(_list_val, list):
+            print(
+                f"✗ '{key}' is a list-valued setting.  `hermes config set` writes a\n"
+                f"  scalar and would corrupt it (quoted string instead of YAML list).\n"
+                f"  Edit config.yaml directly, or use `hermes config edit`.",
+                file=sys.stderr,
+            )
+            print(
+                f"  Or use --force to overwrite with a scalar anyway:",
+                file=sys.stderr,
+            )
+            print(
+                f"    hermes config set --force {key} {value!r}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     _set_nested(user_config, key, value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical

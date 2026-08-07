@@ -386,6 +386,54 @@ class TestShellFileOpsHelpers:
         assert result.error is None
         assert result.content == "alpha\n"
 
+    def test_no_trailing_newline_counts_final_line(self, mock_env):
+        """wc -l undercounts when the final line has no trailing newline."""
+        content = "alpha\nbravo\ncharlie"  # 3 lines, no final LF
+
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": f"{len(content)}\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": content[:1000], "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": content + "\n", "returncode": 0}
+            if command.startswith("wc -l"):
+                # newline count only — two LF characters
+                return {"output": "2\n", "returncode": 0}
+            if command.startswith("tail -c 1"):
+                # last byte is 'e' (0x65), not 0x0a
+                return {"output": "65\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/no_nl.txt")
+        assert result.error is None
+        assert result.total_lines == 3
+
+    def test_trailing_newline_does_not_double_count(self, mock_env):
+        """Files that already end in LF must keep wc -l's count."""
+        content = "alpha\nbravo\ncharlie\n"
+
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": f"{len(content)}\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": content[:1000], "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": content, "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "3\n", "returncode": 0}
+            if command.startswith("tail -c 1"):
+                return {"output": "0a\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/with_nl.txt")
+        assert result.error is None
+        assert result.total_lines == 3
+
 
 class TestSearchPathValidation:
     """Test that search() returns an error for non-existent paths."""

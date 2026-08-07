@@ -2264,3 +2264,46 @@ button[data-slot='aui_msg-reactions'] svg {
     opacity: 0.4;
   }
 }
+
+/* Native `<select>` dropdown contrast (issue #77429).
+ *
+ * The Quick Entry overlay and any other surface that uses a plain HTML
+ * `<select>` renders its `<option>` list in a browser-native popup that
+ * does NOT inherit the `<select>`'s `color` style on Chromium — options
+ * fall back to OS default colors, which against a dark skin paint at very
+ * low contrast (faded purple/grey that nearly matches the popover fill).
+ *
+ * This rule gives the native popup a sensible default that tracks the same
+ * skin tokens the rest of the surface uses, so a `<select>` rendered with
+ * `--foreground`/`--background` (or their plain-color fallbacks) reads
+ * correctly on dark *and* light skins without each surface having to wire
+ * up a custom Radix-style listbox.
+ *
+ * Browser support: Chromium / Electron honors `option` color and
+ * background-color on the open popup on macOS / Windows 10+ / most Linux
+ * Blink builds. Firefox honors it too. The native arrow UI still uses OS
+ * chrome, which is the intended compromise.
+ */
+select {
+  color: var(--foreground, #e6e6e6);
+  background-color: var(--background, transparent);
+}
+
+option {
+  color: var(--ui-text-primary, #e6e6e6);
+  background-color: var(--ui-bg-elevated, var(--ui-bg-chrome, #1f1f23));
+}
+
+/* The selected option in the open popup gets the same accent as the
+ * closed `<select>` for a continuous "this is the current value" cue
+ * across open/close states. */
+option:checked {
+  color: var(--dt-foreground, #fcfcfc);
+  background-color: var(--dt-primary, #4f8cff);
+}
+
+/* Disabled options (e.g. an offline session in the picker) should not read
+ * as primary text — match the muted-foreground token. */
+option:disabled {
+  color: var(--muted-foreground, #8a8a8a);
+}

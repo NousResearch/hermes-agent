@@ -89,13 +89,15 @@ Cursor-style SecretRef syntax is also accepted: `${env:VAR_NAME}` resolves exact
 
 For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/integrations/providers).
 
-### Provider Timeouts
+### Provider Timeouts and Streaming Retries
 
 You can set `providers.<id>.request_timeout_seconds` for a provider-wide request timeout, plus `providers.<id>.models.<model>.timeout_seconds` for a model-specific override. Applies to the primary turn client on every transport (OpenAI-wire, native Anthropic, Anthropic-compatible), the fallback chain, rebuilds after credential rotation, and (for OpenAI-wire) the per-request timeout kwarg — so the configured value wins over the legacy `HERMES_API_TIMEOUT` env var.
 
-You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming stale-call detector, plus `providers.<id>.models.<model>.stale_timeout_seconds` for a model-specific override. This wins over the legacy `HERMES_API_CALL_STALE_TIMEOUT` env var.
+You can also set `providers.<id>.stale_timeout_seconds` for provider-wide stale-call detection, plus `providers.<id>.models.<model>.stale_timeout_seconds` for a model-specific override. This setting applies to the non-streaming detector and the OpenAI/Anthropic streaming watchdog, and wins over their legacy environment defaults.
 
-Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
+Set `providers.<id>.stream_retries` for provider-wide transport reconnects, or `providers.<id>.models.<model>.stream_retries` for a model-specific override. `0` is valid and disables transport-local retries, allowing the outer credential/provider fallback loop to react immediately. This applies to OpenAI-wire chat completions, native Anthropic streaming, and Codex Responses streaming, and takes priority over `HERMES_STREAM_RETRIES`. Codex keeps its historical one-retry default when this config is absent.
+
+Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s, and the existing transport-specific streaming retry defaults). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. An explicit provider/model `stale_timeout_seconds` is honored as written rather than raised by local, context-size, or reasoning-model floors. Provider timeout configuration is not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
 ## Update Behavior
 
@@ -1014,13 +1016,16 @@ Hermes has separate timeout layers for streaming, plus a stale detector for non-
 | Timeout | Default | Local providers | Config / env |
 |---------|---------|----------------|--------------|
 | Socket read timeout | 120s | Auto-raised to 1800s | `HERMES_STREAM_READ_TIMEOUT` |
-| Stale stream detection | 180s | Raised to a 900s ceiling (`agent.local_stream_stale_timeout`) | `HERMES_STREAM_STALE_TIMEOUT` |
+| Stale stream detection | 180s | Raised to a 900s ceiling (`agent.local_stream_stale_timeout`) | `providers.<id>.stale_timeout_seconds` / per-model `stale_timeout_seconds`, or `HERMES_STREAM_STALE_TIMEOUT` |
+| Streaming reconnects | Transport-specific | Unchanged | `providers.<id>.stream_retries` / per-model `stream_retries`, or `HERMES_STREAM_RETRIES` |
 | Stale non-stream detection | 90s | Auto-disabled when left implicit | `providers.<id>.stale_timeout_seconds` or `HERMES_API_CALL_STALE_TIMEOUT` |
 | API call (non-streaming) | 1800s | Unchanged | `providers.<id>.request_timeout_seconds` / `timeout_seconds` or `HERMES_API_TIMEOUT` |
 
 The **socket read timeout** controls how long httpx waits for the next chunk of data from the provider. Local LLMs can take minutes for prefill on large contexts before producing the first token, so Hermes raises this to 30 minutes when it detects a local endpoint. If you explicitly set `HERMES_STREAM_READ_TIMEOUT`, that value is always used regardless of endpoint detection.
 
-The **stale stream detection** kills connections that receive SSE keep-alive pings but no actual content. For local providers (which don't send keep-alive pings during prefill) the default is raised to a finite 900-second ceiling instead of the 180s base — configurable via `agent.local_stream_stale_timeout` or the `HERMES_LOCAL_STREAM_STALE_TIMEOUT` env var.
+The **stale stream detection** kills connections that receive SSE keep-alive pings but no actual content. For local providers (which don't send keep-alive pings during prefill) the default is raised to a finite 900-second ceiling instead of the 180s base — configurable via `agent.local_stream_stale_timeout` or the `HERMES_LOCAL_STREAM_STALE_TIMEOUT` env var. Explicit provider/model `stale_timeout_seconds` values are operator contracts and are not raised by this local default, context-size scaling, or reasoning-model floors.
+
+**Streaming reconnects** retry transient transport failures inside the active provider before the outer agent loop rotates credentials or activates fallback. Provider/model `stream_retries` overrides the environment setting; use `0` when immediate failover is preferable to reconnecting the same provider.
 
 The **stale non-stream detection** kills non-streaming calls that produce no response for too long. By default Hermes disables this on local endpoints to avoid false positives during long prefills. If you explicitly set `providers.<id>.stale_timeout_seconds`, `providers.<id>.models.<model>.stale_timeout_seconds`, or `HERMES_API_CALL_STALE_TIMEOUT`, that explicit value is honored even on local endpoints.
 

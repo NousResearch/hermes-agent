@@ -468,6 +468,50 @@ class TestStreamingFallback:
         # Connection cleanup should happen for each failed retry
         assert mock_close.call_count >= 2
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_model_stream_retries_zero_overrides_env(
+        self, mock_close, mock_create, monkeypatch, tmp_path
+    ):
+        """The real chat streaming loop must preserve a configured zero."""
+        from run_agent import AIAgent
+        import httpx
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "4")
+        (tmp_path / "config.yaml").write_text(
+            "providers:\n"
+            "  test-provider:\n"
+            "    stream_retries: 2\n"
+            "    models:\n"
+            "      test/model:\n"
+            "        stream_retries: 0\n",
+            encoding="utf-8",
+        )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = httpx.ConnectError(
+            "connection reset"
+        )
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            provider="test-provider",
+            api_key="test-key",
+            base_url="https://api.example.com/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+
+        with pytest.raises(httpx.ConnectError):
+            agent._interruptible_streaming_api_call(
+                {"model": "test/model", "messages": []}
+            )
+
+        assert mock_client.chat.completions.create.call_count == 1
+
 
 
 # ── Test: Reasoning Streaming ────────────────────────────────────────────
@@ -626,6 +670,47 @@ class TestCodexStreamCallbacks:
         # 1 initial + 1 retry = 2 calls
         assert call_count["n"] == 2
 
+    def test_codex_model_stream_retries_zero_overrides_env(
+        self, monkeypatch, tmp_path
+    ):
+        """Codex's independent Responses retry loop must honor configured zero."""
+        from run_agent import AIAgent
+        import httpx
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "4")
+        (tmp_path / "config.yaml").write_text(
+            "providers:\n"
+            "  openai-codex:\n"
+            "    stream_retries: 2\n"
+            "    models:\n"
+            "      gpt-test:\n"
+            "        stream_retries: 0\n",
+            encoding="utf-8",
+        )
+
+        agent = AIAgent(
+            provider="openai-codex",
+            api_key="test-key",
+            base_url="https://chatgpt.com/backend-api/codex",
+            model="gpt-test",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        mock_client = MagicMock()
+        mock_client.responses.create.side_effect = httpx.RemoteProtocolError(
+            "connection dropped"
+        )
+
+        with pytest.raises(httpx.RemoteProtocolError):
+            agent._run_codex_stream(
+                {"model": "gpt-test", "input": []}, client=mock_client
+            )
+
+        assert mock_client.responses.create.call_count == 1
+
     def test_codex_create_stream_fallback_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent
 
@@ -674,6 +759,37 @@ class TestCodexStreamCallbacks:
         )
 
         assert touch_calls.count("receiving stream response") == len(events)
+
+
+def test_explicit_provider_stream_stale_timeout_is_not_raised(
+    monkeypatch, tmp_path
+):
+    """Explicit stale timeout remains an operator contract for streams."""
+    from agent.chat_completion_helpers import _resolve_stream_stale_timeout
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "providers:\n"
+        "  local-reasoning:\n"
+        "    stale_timeout_seconds: 7\n",
+        encoding="utf-8",
+    )
+    agent = AIAgent(
+        provider="local-reasoning",
+        api_key="test-key",
+        base_url="http://127.0.0.1:11434/v1",
+        model="nvidia/nemotron-3-ultra-550b-a55b",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    huge_request = {
+        "model": agent.model,
+        "messages": [{"role": "user", "content": "x" * 500_000}],
+    }
+
+    assert _resolve_stream_stale_timeout(agent, huge_request) == 7.0
 
 
 class TestAnthropicStreamCallbacks:
@@ -732,6 +848,50 @@ class TestAnthropicStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == len(events)
         mock_stream.close.assert_called_once()
+
+    def test_provider_stream_retries_zero_overrides_env(
+        self, monkeypatch, tmp_path
+    ):
+        """The native Anthropic streaming loop must preserve a configured zero."""
+        import httpx
+
+        from run_agent import AIAgent
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "4")
+        (tmp_path / "config.yaml").write_text(
+            "providers:\n"
+            "  anthropic-test:\n"
+            "    stream_retries: 0\n",
+            encoding="utf-8",
+        )
+
+        agent = AIAgent(
+            provider="anthropic-test",
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            model="claude-test",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+
+        request_client = MagicMock()
+        request_client.messages.stream.side_effect = httpx.ConnectError(
+            "connection reset"
+        )
+        agent._create_request_anthropic_client = (
+            lambda *args, **kwargs: request_client
+        )
+
+        with pytest.raises(httpx.ConnectError):
+            agent._interruptible_streaming_api_call(
+                {"model": "claude-test", "messages": []}
+            )
+
+        assert request_client.messages.stream.call_count == 1
 
     @patch("run_agent.AIAgent._rebuild_anthropic_client")
     @patch("run_agent.AIAgent._replace_primary_openai_client")

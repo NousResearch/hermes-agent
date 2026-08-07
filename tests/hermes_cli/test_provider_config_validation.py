@@ -67,4 +67,23 @@ class TestNormalizeCustomProviderEntry:
         assert result is not None
         assert result["base_url"] == "${PROVIDER_A_BASE_URL}"
 
+    def test_stream_retries_is_a_known_provider_key(self, caplog):
+        entry = {
+            "name": "provider-a",
+            "base_url": "https://api.example.com/v1",
+            "stream_retries": 0,
+        }
+
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(
+                entry, provider_key="provider-a"
+            )
+
+        assert result is not None
+        assert not any(
+            "stream_retries" in record.message
+            and "unknown config keys" in record.message.lower()
+            for record in caplog.records
+        )
+
 

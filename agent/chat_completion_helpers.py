@@ -27,7 +27,11 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from hermes_cli.timeouts import (
+    get_provider_request_timeout,
+    get_provider_stale_timeout,
+    get_provider_stream_retries,
+)
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.errors import EmptyStreamError
@@ -158,6 +162,59 @@ def openai_codex_stale_timeout_floor(est_tokens: int) -> float:
     if est_tokens > 10_000:
         return 600.0
     return 0.0
+
+
+def _resolve_stream_stale_timeout(agent, api_kwargs: dict) -> float:
+    """Resolve the stream watchdog timeout for the active provider/model.
+
+    An explicit provider/model value is an operator contract. Context scaling,
+    local-provider defaults, and reasoning-model floors only adjust the legacy
+    implicit/env path.
+    """
+    configured = get_provider_stale_timeout(agent.provider, agent.model)
+    if configured is not None:
+        return configured
+
+    stale_timeout_base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
+    if (
+        stale_timeout_base == 180.0
+        and agent.base_url
+        and is_local_endpoint(agent.base_url)
+    ):
+        local_default = 900.0
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly()
+            agent_config = config.get("agent") if isinstance(config, dict) else None
+            if isinstance(agent_config, dict):
+                value = agent_config.get("local_stream_stale_timeout")
+                if isinstance(value, (int, float)):
+                    local_default = float(value)
+        except Exception:
+            pass
+        timeout = env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", local_default)
+        logger.debug(
+            "Local provider detected (%s) — stale stream timeout set to %.0fs",
+            agent.base_url,
+            timeout,
+        )
+        return timeout
+
+    estimated_tokens = estimate_request_context_tokens(api_kwargs)
+    if estimated_tokens > 100_000:
+        timeout = max(stale_timeout_base, 300.0)
+    elif estimated_tokens > 50_000:
+        timeout = max(stale_timeout_base, 240.0)
+    else:
+        timeout = stale_timeout_base
+
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+
+    reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
+    if reasoning_floor is not None:
+        timeout = max(timeout, reasoning_floor)
+    return timeout
 
 
 def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
@@ -3962,7 +4019,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     def _call():
         import httpx as _httpx
 
-        _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
+        _configured_stream_retries = get_provider_stream_retries(
+            agent.provider, agent.model
+        )
+        _max_stream_retries = (
+            _configured_stream_retries
+            if _configured_stream_retries is not None
+            else env_int("HERMES_STREAM_RETRIES", 2)
+        )
 
         try:
             for _stream_attempt in range(_max_stream_retries + 1):
@@ -4291,65 +4355,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 else "stream_error_cleanup"
             )
 
-    # Provider-configured stale timeout takes priority over env default.
-    _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
-    if _cfg_stale is not None:
-        _stream_stale_timeout_base = _cfg_stale
-    else:
-        _stream_stale_timeout_base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
-    # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
-    # for prefill on large contexts, so tolerate far longer silence than
-    # the cloud default — but a wedged local server must EVENTUALLY trip the
-    # detector rather than hang forever (an infinite timeout meant a crashed
-    # or deadlocked local endpoint stalled the session indefinitely).  900s
-    # tolerates slow prefill while still bounding a hung endpoint.  Applies
-    # unless the user explicitly set HERMES_STREAM_STALE_TIMEOUT; override the
-    # local ceiling with HERMES_LOCAL_STREAM_STALE_TIMEOUT (documented in
-    # website/docs/reference/environment-variables.md).
-    if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
-        # Read config.yaml ``agent.local_stream_stale_timeout`` (default 900),
-        # env var ``HERMES_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch.
-        _local_default = 900.0
-        try:
-            from hermes_cli.config import load_config_readonly
-
-            _cfg = load_config_readonly()  # read-only consumer — no deepcopy
-            _agent_cfg = _cfg.get("agent") if isinstance(_cfg, dict) else None
-            if isinstance(_agent_cfg, dict):
-                _v = _agent_cfg.get("local_stream_stale_timeout")
-                if isinstance(_v, (int, float)):
-                    _local_default = float(_v)
-        except Exception:
-            pass
-        _stream_stale_timeout = env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", _local_default)
-        logger.debug(
-            "Local provider detected (%s) — stale stream timeout set to %.0fs",
-            agent.base_url, _stream_stale_timeout,
-        )
-    else:
-        # Scale the stale timeout for large contexts: slow models (like Opus)
-        # can legitimately think for minutes before producing the first token
-        # when the context is large.  Without this, the stale detector kills
-        # healthy connections during the model's thinking phase, producing
-        # spurious RemoteProtocolError ("peer closed connection").
-        _est_tokens = estimate_request_context_tokens(api_kwargs)
-        if _est_tokens > 100_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
-        elif _est_tokens > 50_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
-        else:
-            _stream_stale_timeout = _stream_stale_timeout_base
-        # Reasoning-model floor: known reasoning models (Nemotron 3 Ultra,
-        # OpenAI o1/o3, Anthropic Opus 4.x thinking, DeepSeek R1, Qwen QwQ,
-        # xAI Grok reasoning, etc.) routinely exceed the default 180s chat-
-        # model threshold during their thinking phase.  The cloud gateway
-        # upstream kills the socket first, surfacing as BrokenPipeError.
-        # Raises the floor only — never overrides explicit user config
-        # (handled by get_provider_stale_timeout above).
-        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-        _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
-        if _reasoning_floor is not None:
-            _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
+    _stream_stale_timeout = _resolve_stream_stale_timeout(agent, api_kwargs)
 
     t = threading.Thread(target=_context_thread_target(_call), daemon=True)
     t.start()

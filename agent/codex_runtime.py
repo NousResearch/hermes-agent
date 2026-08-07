@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from hermes_cli.timeouts import get_provider_stream_retries
 
 logger = logging.getLogger(__name__)
 
@@ -1257,7 +1258,16 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     from agent import relay_llm
 
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
-    max_stream_retries = 1
+    configured_stream_retries = get_provider_stream_retries(
+        agent.provider, agent.model
+    )
+    # Codex historically retries once independently of HERMES_STREAM_RETRIES.
+    # Preserve that default when provider config is absent.
+    max_stream_retries = (
+        configured_stream_retries
+        if configured_stream_retries is not None
+        else 1
+    )
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
 

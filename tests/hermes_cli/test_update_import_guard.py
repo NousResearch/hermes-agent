@@ -235,3 +235,51 @@ def test_probe_and_hint_share_one_first_party_definition():
     # Lookalikes stay out of both.
     for lookalike in ("agents", "agentops", "toolsets_x", "hermesx"):
         assert not is_first_party_module(lookalike)
+
+
+def _declared_top_level_modules() -> list[str]:
+    """Top-level modules the wheel actually ships, per pyproject."""
+    import tomllib
+
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    modules = (
+        data.get("tool", {})
+        .get("setuptools", {})
+        .get("py-modules", [])
+    )
+    return [str(m) for m in modules]
+
+
+def test_roster_covers_every_shipped_top_level_module():
+    """Consistency between the two consumers is not enough — the roster has to
+    be complete.
+
+    A module we ship but omit here reads as third-party in both directions:
+    the probe scores its ModuleNotFoundError as "dependencies aren't installed"
+    and keeps a skewed tree, and the hint stays silent on the very crash it
+    exists to explain. This asserts the relationship (everything shipped is
+    claimed), not a snapshot of the roster, so adding a module is fine as long
+    as it is claimed too.
+    """
+    from hermes_constants import is_first_party_module
+
+    shipped = _declared_top_level_modules()
+    assert shipped, "sanity: expected pyproject to declare top-level py-modules"
+
+    unclaimed = sorted(m for m in shipped if not is_first_party_module(m))
+    assert not unclaimed, (
+        "shipped top-level modules missing from FIRST_PARTY_MODULE_ROOTS: "
+        f"{unclaimed}"
+    )
+
+
+@pytest.mark.parametrize(
+    "modname",
+    ["batch_runner", "mcp_serve", "toolset_distributions", "trajectory_compressor"],
+)
+def test_hint_fires_for_shipped_root_level_modules(modname):
+    """These ship in the wheel, so an ImportError naming one is our skew."""
+    exc = ImportError("cannot import name 'X'")
+    exc.name = modname
+    assert partial_update_hint(exc), f"expected guidance for {modname}"

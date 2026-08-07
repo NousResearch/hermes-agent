@@ -1413,19 +1413,31 @@ def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
 # third-party problem with different remediation. Single source of truth —
 # `hermes_cli.update_cmd`'s post-update probe consumes this same set so the
 # guard that BLOCKS and the hint that EXPLAINS can never disagree.
+#
+# The roster must cover every top-level module we ship: a shipped module that
+# is missing here reads as third-party, so the probe scores its
+# ModuleNotFoundError as "dependencies aren't installed" instead of "our tree
+# is skewed", and the hint stays silent on the crash it exists to explain.
+# ``tests/hermes_cli/test_update_import_guard.py`` pins the roster against
+# pyproject's declared ``py-modules`` so a newly shipped module cannot drift
+# out of it.
 FIRST_PARTY_MODULE_ROOTS = frozenset(
     {
         "agent",
         "acp_adapter",
+        "batch_runner",
         "cli",
         "cron",
         "gateway",
+        "mcp_serve",
         "model_tools",
         "plugins",
         "providers",
         "tools",
+        "toolset_distributions",
         "toolsets",
         "run_agent",
+        "trajectory_compressor",
         "tui_gateway",
         "utils",
     }

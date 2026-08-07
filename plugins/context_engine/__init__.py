@@ -180,7 +180,17 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
             if collector.engine:
                 return collector.engine
         except Exception as e:
-            logger.debug("register() failed for %s: %s", name, e)
+            # WARNING with traceback, not debug: when engine construction
+            # fails, every session silently falls back to the built-in
+            # compressor and this log line is the only breadcrumb. At debug
+            # level the real exception (e.g. a SQLite schema error in the
+            # engine's storage init) is invisible in production, so the
+            # degradation looks like a mystery instead of pointing at the
+            # actual cause.
+            logger.warning(
+                "register() failed for context engine %r: %s", name, e,
+                exc_info=True,
+            )
 
     # Fallback: find a ContextEngine subclass and instantiate it
     from agent.context_engine import ContextEngine

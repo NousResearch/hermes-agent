@@ -1,0 +1,47 @@
+# Hermes static-message catalog -- English, "friendly" register
+#
+# This is a register overlay: only keys that have a friendly variant appear
+# here.  Any key NOT listed here falls through to the base English catalog
+# (en.yaml) unchanged, so the friendly register never breaks a message --
+# it just makes some of them warmer.
+#
+# A register translates the SAME information into a different tone.  It does
+# not suppress content, add disclaimers, or change meaning.  Placeholders
+# ({count}, {model}, etc.) must match the base catalog exactly.
+#
+# When adding a new key here, ensure the {placeholder} tokens match en.yaml.
+# The catalog parity test (tests/agent/test_i18n.py) checks the BASE catalogs
+# only; register overlays are validated by the register-specific tests.
+
+gateway:
+  # Restart drain notice — shown when a gateway restart is waiting on
+  # active agents.  The friendly version softens the technical phrasing
+  # while keeping the count and the "please wait" meaning.
+  draining: "⏳ Restarting soon — just waiting for {count} active task(s) to finish up..."
+
+  # /reset command output — the session reset confirmation.
+  reset:
+    header_default: "✨ Fresh start! New session ready."
+    header_new: "✨ New session started!"
+    header_titled: "✨ New session started: {title}"
+
+  # /stop command — when the user stops a running agent.
+  stop:
+    stopped_pending: "⚡ Stopped — the agent hadn't started yet, so you're good to go."
+    stopped: "⚡ Stopped! You can pick up where you left off anytime."
+
+  # /goal command — goal lifecycle messages.
+  goal:
+    no_goal_set: "No goal set right now."
+    paused: "⏸ Paused your goal: {goal}"
+    resumed: "▶ Back at it! Goal resumed: {goal}\nSend a message to continue, or I'll take the next step on the next turn."
+
+  # /model command — model switch confirmation.
+  model:
+    switched: "Model switched to `{model}`"
+
+  # /voice command — voice mode toggles.
+  voice:
+    enabled_short: "Voice mode on!"
+    disabled_short: "Voice mode off — text only."
+    tts_enabled: "Auto-TTS on! All replies will include a voice message."

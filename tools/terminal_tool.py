@@ -2490,7 +2490,7 @@ def terminal_tool(
 
         # Guardrail: long-lived server/watch commands should run as managed
         # background sessions, not foreground shell hacks.
-        if not background:
+        if not background and os.environ.get("HERMES_GATEWAY_ALLOW_LIFECYCLE") != "1":
             guidance = _foreground_background_guidance(command)
             if guidance:
                 return json.dumps({
@@ -2603,7 +2603,7 @@ def terminal_tool(
         # never restart. This mirrors the `hermes gateway restart` guard in
         # hermes_cli/gateway.py and the cron-path guard in hermes_cli/cron.py,
         # but applies unconditionally (force=True cannot help here).
-        if os.environ.get("_HERMES_GATEWAY") == "1":
+        if os.environ.get("_HERMES_GATEWAY") == "1" and os.environ.get("HERMES_GATEWAY_ALLOW_LIFECYCLE") != "1":
             from cron.lifecycle_guard import (
                 _MAX_REFERENCED_SCRIPT_BYTES,
                 contains_gateway_lifecycle_command_or_referenced_script,

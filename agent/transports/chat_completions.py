@@ -84,9 +84,9 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
         "gpt-5.6" in (model or "").lower()
         and str(reasoning_config.get("effort") or "").strip().lower() == "ultra"
     ):
-        normalized = dict(reasoning_config)
-        normalized["effort"] = "max"
-        return normalized
+        # Preserve "ultra" for providers that support it (e.g. fyapis, ccvibe).
+        # The provider plugin will validate and clamp at the transport boundary.
+        return reasoning_config
     return reasoning_config
 
 

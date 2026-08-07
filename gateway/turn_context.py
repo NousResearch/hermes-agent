@@ -129,3 +129,6 @@ class TurnContext:
     _step_callback_sync: Optional[Callable] = None
     _event_callback_sync: Optional[Callable] = None
     _status_callback_sync: Optional[Callable] = None
+    # Provider-error status send futures, tracked so the final-response path
+    # can avoid sending the same sanitized error a second time.
+    _provider_error_status_futures: List[tuple] = field(default_factory=list)

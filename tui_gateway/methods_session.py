@@ -1516,7 +1516,7 @@ def _(rid, params: dict) -> dict:
         except Exception:
             pet_cfg = {}
 
-        if not bool(pet_cfg.get("enabled")):
+        if not is_truthy_value(pet_cfg.get("enabled"), default=False):
             return _ok(rid, {"enabled": False})
 
         pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
@@ -1669,7 +1669,7 @@ def _(rid, params: dict) -> dict:
         return _ok(
             rid,
             {
-                "enabled": bool(pet_cfg.get("enabled")),
+                "enabled": is_truthy_value(pet_cfg.get("enabled"), default=False),
                 "active": str(pet_cfg.get("slug", "") or ""),
                 "pets": gallery,
             },

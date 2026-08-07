@@ -706,8 +706,30 @@ class TestSpawnEnvSanitization:
         assert session.pid is None
         assert session.output_buffer == "syntax error"
         fake_thread.start.assert_not_called()
-        # A failed launch must not be exposed as a running/tracked session.
+        # A failed launch must not be exposed as a running/tracked session...
         assert session.id not in registry._running
+        # ...but it must still be discoverable as a finished/failed record
+        # (#75675): otherwise the session id handed back to the caller is a
+        # dead end for any later process(action='list'/'poll') lookup, and
+        # the only failure signal is whatever the immediate caller does with
+        # the return value in-process.
+        assert registry._finished.get(session.id) is session
+
+    def test_spawn_via_env_exception_registers_finished_session(self, registry):
+        class RaisingEnv:
+            def execute(self, command, **kwargs):
+                raise RuntimeError("sandbox unreachable")
+
+        fake_thread = MagicMock()
+        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_via_env(RaisingEnv(), "echo hello")
+
+        assert session.exited is True
+        assert session.completion_reason == "failed_start"
+        assert "sandbox unreachable" in session.output_buffer
+        assert session.id not in registry._running
+        assert registry._finished.get(session.id) is session
 
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")
@@ -741,6 +763,72 @@ class TestSpawnEnvSanitization:
         assert env.commands[0][0] == "cat '/path with spaces/hermes_bg.log' 2>/dev/null"
         assert env.commands[1][0] == "kill -0 \"$(cat '/path with spaces/hermes_bg.pid' 2>/dev/null)\" 2>/dev/null; echo $?"
         assert env.commands[2][0] == "cat '/path with spaces/hermes_bg.exit' 2>/dev/null"
+
+
+# =========================================================================
+# Local-startup observation window (#75675, local-spawn follow-up)
+# =========================================================================
+
+class TestObserveLocalStartup:
+    """``spawn_local`` always succeeds at the Popen level (the login shell
+    launches fine) even when the wrapped command itself fails almost
+    instantly. ``observe_local_startup`` gives the caller a brief chance to
+    see that before reporting blanket "started" success.
+
+    Real subprocesses are used here (not mocked) since the whole point is to
+    exercise actual shell-startup timing. A generous ``timeout`` is passed
+    explicitly (rather than relying on the short production default) so the
+    test is not flaky on slower CI/dev hosts where a login shell can take a
+    few hundred ms to spawn and exit.
+    """
+
+    def test_observes_immediate_failure(self, registry, tmp_path):
+        session = registry.spawn_local("false", cwd=str(tmp_path))
+        try:
+            registry.observe_local_startup(session, timeout=5.0, interval=0.02)
+            assert session.exited is True
+            assert session.exit_code == 1
+            # A real launch that ran and failed is NOT a "failed_start" --
+            # the shell/process genuinely started.
+            assert session.completion_reason != "failed_start"
+        finally:
+            registry.kill_process(session.id)
+
+    def test_observes_immediate_success(self, registry, tmp_path):
+        session = registry.spawn_local("true", cwd=str(tmp_path))
+        try:
+            registry.observe_local_startup(session, timeout=5.0, interval=0.02)
+            assert session.exited is True
+            assert session.exit_code == 0
+        finally:
+            registry.kill_process(session.id)
+
+    def test_does_not_block_a_long_lived_process(self, registry, tmp_path):
+        """A genuinely long-lived process must not be misclassified as exited
+        just because the observation window elapsed -- it simply outlives it
+        and falls through to the normal "running" path unaffected."""
+        session = registry.spawn_local("sleep 30", cwd=str(tmp_path))
+        try:
+            registry.observe_local_startup(session, timeout=0.2, interval=0.02)
+            assert session.exited is False
+        finally:
+            registry.kill_process(session.id)
+
+    def test_noop_on_already_exited_session(self, registry):
+        session = _make_session(exited=True, exit_code=0)
+        # Should return immediately without touching a (nonexistent) process.
+        registry.observe_local_startup(session, timeout=5.0, interval=0.02)
+        assert session.exited is True
+
+    def test_noop_without_a_popen_handle(self, registry):
+        """PTY sessions (and anything else without ``session.process``) must
+        not pay the observation window at all -- there's nothing to poll."""
+        session = _make_session(exited=False)
+        assert session.process is None
+        start = time.monotonic()
+        registry.observe_local_startup(session, timeout=5.0, interval=0.02)
+        assert time.monotonic() - start < 0.5
+        assert session.exited is False
 
 
 # =========================================================================

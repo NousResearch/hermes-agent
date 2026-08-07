@@ -1164,6 +1164,72 @@ ClawRouter requires a USDC-funded wallet on Base or Solana for payment. All requ
 
 ---
 
+### Neon AI Gateway — Branch-Scoped Hosted Models
+
+[Neon AI Gateway](https://neon.com/docs/ai-gateway/overview) is an OpenAI-compatible inference gateway provided by Neon. One Neon credential reaches models from OpenAI, Meta, Databricks, and Alibaba without separate provider accounts. Best for: projects already running on Neon that want the same credential for the database and for inference.
+
+The services in [Other Compatible Providers](#other-compatible-providers) each have one account-wide URL. Neon does not. Every branch gets its own gateway host, so a custom endpoint here points at exactly one branch.
+
+**Get the credential and the host.** In the [Neon Console](https://console.neon.tech/), select your branch, click **Credentials** under **APP BACKEND**, then **Create credential** with the `ai_gateway:invoke` scope. The token starts with `nt_live_` and is shown once. Neon publishes the branch's gateway host next to it as `NEON_AI_GATEWAY_BASE_URL`, which is not the database connection string. If you use the Neon CLI, `neon env pull --file .env` writes both values for the current branch.
+
+`NEON_AI_GATEWAY_BASE_URL` is a bare host with no path, and Hermes posts to `{base_url}/chat/completions`, so append `/v1` yourself. Copy the bare host out of `NEON_AI_GATEWAY_BASE_URL` and put it where `<your-neon-branch-host>` stands below; the placeholder resolves to nothing on its own:
+
+```yaml
+# ~/.hermes/config.yaml
+providers:
+  neon:
+    api: "https://<your-neon-branch-host>/v1"   # NEON_AI_GATEWAY_BASE_URL plus /v1
+    key_env: NEON_AI_GATEWAY_TOKEN
+    models:
+      gpt-5-mini:
+        context_length: 400000
+
+model:
+  default: gpt-5-mini
+  provider: custom:neon
+```
+
+```bash
+# ~/.hermes/.env
+NEON_AI_GATEWAY_TOKEN=nt_live_your-neon-credential
+```
+
+Only the token belongs in `.env`. The branch host is not a secret and stays in `config.yaml`, even though `neon env pull` writes both into the same file.
+
+`hermes model` → Custom endpoint builds the same kind of entry interactively: paste the branch host with `/v1` appended, then the credential, then a model ID. It writes the credential to `.env` under a name generated from the host, not `NEON_AI_GATEWAY_TOKEN`.
+
+**Model IDs** are short and carry no vendor prefix: `gpt-5-mini`, `llama-4-maverick`, `gpt-oss-120b`, `qwen3-next-80b-a3b-instruct`. Neon answers `GET /v1/models`, so `hermes model` can populate the model list for you to choose from. It returns more IDs than those four, and not all of them run from Hermes: for one hosted family Neon rewrites the call into a native dialect that has no `stream_options` field, and Hermes sends `stream_options` on every OpenAI-compatible stream, so those models come back as `400 Unknown name "stream_options"`. Bare `/model custom` is a different path: it auto-selects only when an endpoint reports exactly one model, and Neon returns many, so name the model you want. Context windows and prices are in [Neon's model catalog](https://neon.com/docs/ai-gateway/models), which is also browsable on [models.dev](https://models.dev/providers/neon/).
+
+**Set `context_length` per model.** Neon returns `null` for `context_length` in its model list, so [context detection](#context-length-detection) has nothing to read from the endpoint and falls through to Hermes' broad family patterns, which know nothing about Neon. Some IDs land right and some do not: `llama-4-maverick` matches the generic Llama entry and comes out at 131,072 against a real 1M window, and `gpt-oss-120b` matches no family at all, so it takes the 256,000 probe-down default while the model actually stops at 131K. Neon's catalog gives 400K for `gpt-5-mini`, 1M for `llama-4-maverick`, and 131K for `gpt-oss-120b` and `qwen3-next-80b-a3b-instruct`. Those figures are rounded, so configure the rounded-down value (`131000`, `400000`, `1000000`) to stay inside the real window.
+
+**Several branches.** A credential works on the branch it was created on and on every branch descended from it, so one token covers a lineage. Give each branch its own named provider:
+
+```yaml
+providers:
+  neon-main:
+    api: "https://<your-main-branch-host>/v1"
+    key_env: NEON_AI_GATEWAY_TOKEN
+  neon-preview:
+    api: "https://<your-preview-branch-host>/v1"
+    key_env: NEON_AI_GATEWAY_TOKEN
+```
+
+Switch between them with `/model custom:neon-preview:gpt-5-mini`. A branch outside that lineage needs its own credential and its own `key_env`.
+
+:::warning Beta constraints
+Neon AI Gateway is in beta, requires a paid Neon plan, and runs only in AWS US East (Ohio) (`aws-us-east-2`). Outside a credential's branch lineage the gateway returns `403` with `credential not authorized for this branch`. The beta caps usage at 200,000 tokens per minute per account, counting input and output together.
+:::
+
+:::info Codex models are Responses-only
+`gpt-5-3-codex`, `gpt-5-2-codex`, `gpt-5-1-codex-max`, and `gpt-5-1-codex-mini` are served through the OpenAI Responses API, which Neon exposes under `/openai/v1` instead of `/v1`. A chat-completions custom endpoint cannot reach them.
+:::
+
+:::note Response content shape
+Neon documents that a few of its models, `gpt-oss-120b` and `qwen35-122b-a10b` among them, return `message.content` as an array of typed content blocks rather than a plain string. If a model replies with nothing visible, that is the first thing to check. `gpt-5-mini` returns a plain string.
+:::
+
+---
+
 ### Other Compatible Providers
 
 Any service with an OpenAI-compatible API works. Some popular options:

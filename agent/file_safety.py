@@ -138,10 +138,38 @@ def _classify_write_denial(path: str) -> Optional[str]:
                 return "credential"
         except Exception:
             pass
+        # gateway/pairing.py resolves the live pairing store via
+        # get_hermes_dir("platforms/pairing", "pairing") — new installs (and
+        # any install whose legacy `pairing/` is empty) use the consolidated
+        # `platforms/pairing/` location, not the legacy one. Block both so a
+        # write is denied regardless of which layout is currently active.
+        for pairing_rel in ("pairing", os.path.join("platforms", "pairing")):
+            try:
+                pairing_real = os.path.realpath(os.path.join(base_real, pairing_rel))
+                if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
+                    return "credential"
+            except Exception:
+                pass
+        # Multiplex gateways serve secondary profiles via
+        # PairingStore(profile=name) (gateway/pairing.py), which resolves a
+        # profile's store the same way the default-home lookup above does:
+        # the legacy <HERMES_HOME>/profiles/<name>/pairing/ layout, or (for a
+        # freshly created profile, or one whose legacy dir is empty) the
+        # consolidated <HERMES_HOME>/profiles/<name>/platforms/pairing/
+        # layout. Profile names aren't known ahead of time, so match the
+        # shape of the path rather than a fixed name.
         try:
-            pairing_real = os.path.realpath(os.path.join(base_real, "pairing"))
-            if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
-                return "credential"
+            profiles_real = os.path.realpath(os.path.join(base_real, "profiles"))
+            if resolved == profiles_real or resolved.startswith(profiles_real + os.sep):
+                rel_parts = os.path.relpath(resolved, profiles_real).split(os.sep)
+                if len(rel_parts) >= 2 and rel_parts[1] == "pairing":
+                    return "credential"
+                if (
+                    len(rel_parts) >= 3
+                    and rel_parts[1] == "platforms"
+                    and rel_parts[2] == "pairing"
+                ):
+                    return "credential"
         except Exception:
             pass
 

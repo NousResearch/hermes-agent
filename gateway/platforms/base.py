@@ -1378,8 +1378,15 @@ def _media_delivery_denied_paths() -> List[Path]:
     # this pairs the media-delivery (exfil) side so a prompt-injection MEDIA
     # tag can't deliver a live bearer token as a native attachment.
     # (session/kanban SQLite stores are handled by #41071 — kept out here.)
+    #
+    # pairing/ covers both possible DM-pairing store layouts: gateway/pairing.py
+    # resolves the live directory via get_hermes_dir("platforms/pairing",
+    # "pairing"), so new installs (and any install whose legacy pairing/ is
+    # empty) use platforms/pairing/ instead of the legacy pairing/ — both are
+    # blocked here regardless of which one is currently active.
     _ROOT_CREDENTIAL_DIRS = (
         "pairing",
+        os.path.join("platforms", "pairing"),
         "mcp-tokens",
     )
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
@@ -1420,6 +1427,40 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
         if home is not None and resolved_denied == home:
             continue
         return True
+    return _is_profile_pairing_path(resolved)
+
+
+def _is_profile_pairing_path(resolved: Path) -> bool:
+    """True if ``resolved`` sits under a profile's pairing store.
+
+    Multiplex gateways serve secondary profiles via ``PairingStore(profile=name)``
+    (``gateway/pairing.py``), which resolves a profile's store the same way the
+    root-level lookup above does: the legacy
+    ``<hermes_root>/profiles/<name>/pairing/`` layout, or (for a freshly
+    created profile, or one whose legacy dir is empty) the consolidated
+    ``<hermes_root>/profiles/<name>/platforms/pairing/`` layout. The fixed
+    denylist above can't enumerate either shape since profile names aren't
+    known at import time, so this matches the shape of the path instead.
+    """
+    for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
+        try:
+            profiles_root = (hermes_root / "profiles").resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if not _path_is_within(resolved, profiles_root):
+            continue
+        try:
+            rel_parts = resolved.relative_to(profiles_root).parts
+        except ValueError:
+            continue
+        if (
+            len(rel_parts) >= 3
+            and rel_parts[1] == "platforms"
+            and rel_parts[2] == "pairing"
+        ):
+            return True
+        if len(rel_parts) >= 2 and rel_parts[1] == "pairing":
+            return True
     return False
 
 

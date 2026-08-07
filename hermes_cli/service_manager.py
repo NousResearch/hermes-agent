@@ -560,20 +560,45 @@ class S6Error(RuntimeError):
 class GatewayNotRegisteredError(S6Error):
     """Raised when a lifecycle method targets a slot that doesn't exist.
 
-    Most commonly: ``hermes -p typo gateway start`` when no profile
-    ``typo`` exists. Carries the unprefixed profile name (not the
-    full ``gateway-<profile>`` service-dir name) so callers can phrase
-    a user-facing message like "no such gateway 'typo'".
+    Two distinct causes share this slot-missing symptom, and they need
+    different advice:
+
+    * The profile itself doesn't exist — most commonly a typo
+      (``hermes -p typo gateway start``). ``hermes profile create`` is
+      the right fix.
+    * The profile exists but has no *local* s6 slot — e.g. a split
+      gateway/dashboard container deployment, where
+      ``container_boot._is_dashboard_container()`` deliberately skips
+      slot registration in the dashboard container, or a best-effort
+      registration failure on a non-s6 host (issue #78803). Telling the
+      operator to (re)create an already-existing profile is actively
+      wrong here — for ``default`` it's not even possible.
+
+    ``profile_exists`` (cheap to check via
+    :func:`hermes_cli.profiles.profile_exists`) selects between the two
+    messages. Carries the unprefixed profile name (not the full
+    ``gateway-<profile>`` service-dir name) so callers can phrase a
+    user-facing message like "no such gateway 'typo'".
     """
 
-    def __init__(self, profile: str) -> None:
+    def __init__(self, profile: str, *, profile_exists: bool = False) -> None:
         self.profile = profile
-        super().__init__(
-            f"no such gateway {profile!r}: register it with "
-            f"`hermes profile create {profile}` first, or pass "
-            "an existing profile name via `-p <name>`",
-            service=f"gateway-{profile}",
-        )
+        self.profile_exists = profile_exists
+        if profile_exists:
+            message = (
+                f"gateway {profile!r} is not registered as a supervised "
+                "service in this container. If the gateway actually runs "
+                "elsewhere (e.g. a split gateway/dashboard deployment), "
+                "restart it there instead — this container has no local "
+                "slot for it to restart."
+            )
+        else:
+            message = (
+                f"no such gateway {profile!r}: register it with "
+                f"`hermes profile create {profile}` first, or pass "
+                "an existing profile name via `-p <name>`"
+            )
+        super().__init__(message, service=f"gateway-{profile}")
 
 
 class S6CommandError(S6Error):
@@ -835,7 +860,11 @@ class S6ServiceManager:
                 if name.startswith(S6_SERVICE_PREFIX)
                 else name
             )
-            raise GatewayNotRegisteredError(profile)
+            # Local import: hermes_cli.profiles already imports this module
+            # (locally, for the same reason) to reach the s6 backend, so a
+            # module-level import here would cycle.
+            from hermes_cli.profiles import profile_exists
+            raise GatewayNotRegisteredError(profile, profile_exists=profile_exists(profile))
 
         try:
             subprocess.run(

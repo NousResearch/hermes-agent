@@ -220,7 +220,17 @@ def _(rid, params: dict) -> dict:
             # Fail closed: refuse the turn and leave memory/DB unchanged.
             if (db := _get_db()) is not None:
                 try:
-                    db.replace_messages(session["session_key"], truncated)
+                    # active_only=True: replace only the live (active=1) rows.
+                    # In-place compaction (#38763) keeps the pre-compaction
+                    # transcript as active=0/compacted=1 rows under this same
+                    # session key; a bare replace_messages() would DELETE that
+                    # durable archive on every edit/regenerate — the same bug
+                    # class #80216 fixed for /retry. On an uncompacted session
+                    # all rows are active=1, so this is behaviorally identical
+                    # to the full replace.
+                    db.replace_messages(
+                        session["session_key"], truncated, active_only=True
+                    )
                 except Exception as exc:
                     logger.error(
                         "prompt.submit: replace_messages failed for session %s "

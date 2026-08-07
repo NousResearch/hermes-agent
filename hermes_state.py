@@ -7228,9 +7228,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def has_archived_messages(self, session_id: str) -> bool:
         """Return True if the session has any soft-archived (``active = 0``) rows.
 
-        Used by callers (e.g. the ACP adapter's ``_persist``) that must decide
-        whether a full-history :meth:`replace_messages` would destroy durable
-        compaction-archived turns. Cheap existence probe — does not load rows.
+        Cheap existence probe — does not load rows. NOTE: production rewrite
+        paths no longer branch on this (they pass ``active_only=True``
+        unconditionally — a probe can fail open or race a concurrent
+        ``archive_and_compact``, #80216); kept for tests and diagnostics.
         """
         with self._lock:
             cursor = self._conn.execute(

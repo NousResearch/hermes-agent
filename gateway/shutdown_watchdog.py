@@ -1,6 +1,6 @@
 """Out-of-loop shutdown and event-loop liveness backstops (#66892, #69089).
 
-When the asyncio loop freezes mid-drain, every asyncio-based recovery path is
+|When the asyncio loop freezes mid-drain, every asyncio-based recovery path is
 structurally unable to fire: the drain deadline, status rewrites, and forensics
 all need the same loop that is stuck. launchd/systemd KeepAlive only restarts a
 *dead* process, so a wedged-but-alive gateway sits as a zombie until manual
@@ -15,9 +15,13 @@ This module provides:
 2. An event-loop heartbeat file at ``<HERMES_HOME>/state/gateway.heartbeat`` so
    external supervision can distinguish "process alive" from "loop frozen"
    (``gateway_state.json`` alone can't — it only rewrites on transitions/turns).
-3. A lifetime thread watchdog that can still diagnose and hard-exit when the
+3. A background OS-thread heartbeat writer (``start_background_heartbeat``) that
+   keeps the heartbeat file fresh even when the asyncio event loop is GIL-starved
+   — ``time.sleep()`` and file I/O both release the GIL, so external monitors
+   can distinguish "process alive but loop frozen" from "process dead" (#72707).
+4. A lifetime thread watchdog that can still diagnose and hard-exit when the
    event loop is too frozen to run its own heartbeat or timeout callbacks.
-4. A self-rescheduling floor timer that keeps the loop selector's timeout
+5. A self-rescheduling floor timer that keeps the loop selector's timeout
    finite, giving existing async recovery tasks a chance to resume.
 """
 
@@ -455,3 +459,91 @@ async def loop_heartbeat_forever(
         if should_continue is not None and not should_continue():
             return
         write_loop_heartbeat(start_time=start_time, home=home)
+
+
+# ── Background OS-thread heartbeat (GIL-immune) ──────────────────────────
+# The async loop_heartbeat_forever stops writing when the event loop
+# freezes (GIL pressure, #72707).  This thread-based writer keeps the
+# heartbeat file fresh even during extended stalls, so external monitors
+# can distinguish "process alive but loop frozen" from "process dead".
+# time.sleep() and file I/O both release the GIL, so the thread stays
+# responsive regardless of what the main thread is doing.
+
+BACKGROUND_HEARTBEAT_INTERVAL_S = 2.0
+"""Interval at which the background heartbeat thread writes the heartbeat
+file.  More frequent than the async loop heartbeat (30s) so that a short
+GIL stall (<10s) never causes the file to appear stale."""
+
+_background_heartbeat_thread: threading.Thread | None = None
+_background_heartbeat_stop = threading.Event()
+
+
+def start_background_heartbeat(
+    *,
+    interval_s: float = BACKGROUND_HEARTBEAT_INTERVAL_S,
+    start_time: float | None = None,
+    home: Path | None = None,
+) -> None:
+    """Start a daemon thread that writes the loop heartbeat file every
+    *interval_s* seconds.
+
+    Unlike :func:`loop_heartbeat_forever` (which runs as an asyncio task on
+    the event loop), this thread is immune to GIL pressure: ``time.sleep()``
+    and file I/O both release the GIL, so the heartbeat file stays fresh even
+    when the main thread's event loop is frozen by CPU-bound agent work.
+
+    Idempotent: subsequent calls are no-ops while the thread is alive.
+    The thread is a daemon so it never prevents process exit.
+    """
+    global _background_heartbeat_thread
+    if _background_heartbeat_thread is not None and _background_heartbeat_thread.is_alive():
+        return
+    _background_heartbeat_stop.clear()
+
+    def _worker() -> None:
+        _write_initial = True
+        while not _background_heartbeat_stop.is_set():
+            # Write thread_monotonic so consumers can compare it against
+            # the async-loop-written monotonic field — if the async field
+            # is stale but the thread field is fresh, the process is alive
+            # but the event loop is GIL-starved.
+            write_loop_heartbeat(
+                start_time=start_time,
+                home=home,
+                extra={"thread_monotonic": time.monotonic()},
+            )
+            if _write_initial:
+                _write_initial = False
+                logger.debug(
+                    "Background heartbeat thread started (interval=%.1fs)",
+                    interval_s,
+                )
+            # time.sleep() releases the GIL, so this thread remains
+            # responsive even when the main thread is CPU-bound.
+            _background_heartbeat_stop.wait(timeout=interval_s)
+
+    thread = threading.Thread(
+        target=_worker,
+        daemon=True,
+        name="gateway-background-heartbeat",
+    )
+    _background_heartbeat_thread = thread
+    thread.start()
+
+
+def stop_background_heartbeat() -> None:
+    """Signal the background heartbeat thread to exit and join it."""
+    _background_heartbeat_stop.set()
+    thread = _background_heartbeat_thread
+    if thread is not None:
+        thread.join(timeout=5.0)
+
+
+def is_background_heartbeat_alive() -> bool:
+    """Return True if the background heartbeat thread is running.
+
+    A live thread means the OS process is responsive (not fully hung),
+    even if the asyncio event loop is temporarily GIL-starved.
+    """
+    thread = _background_heartbeat_thread
+    return thread is not None and thread.is_alive()

@@ -173,9 +173,20 @@ class WSTransport:
             # write (the "subagent window shows zero streaming" bug). Unblock
             # the worker thread and keep the transport alive; _safe_send_many
             # latches on a real socket error when the frame actually fails.
+            # Check whether the background OS-thread heartbeat is still alive
+            # as additional evidence that this is a transient GIL stall, not a
+            # hung process (#72707).
+            _hb_alive = False
+            try:
+                from gateway.shutdown_watchdog import is_background_heartbeat_alive
+                _hb_alive = is_background_heartbeat_alive()
+            except Exception:
+                pass
             _log.warning(
-                "ws write slow (loop stalled >%ss) peer=%s — frame left in flight",
+                "ws write slow (loop stalled >%ss) peer=%s — frame left in flight"
+                " (background heartbeat: %s)",
                 _WS_WRITE_TIMEOUT_S, self._peer,
+                "alive" if _hb_alive else "dead/unknown",
             )
             return not self._closed
         except Exception as exc:

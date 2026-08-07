@@ -2418,6 +2418,7 @@ from gateway.shutdown_watchdog import (
     arm_shutdown_watchdog,
     loop_heartbeat_forever,
     resolve_shutdown_watchdog_delay,
+    start_background_heartbeat,
     start_loop_liveness_watchdog,
 )
 from gateway.restart import (
@@ -11517,6 +11518,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # stops refreshing ``state/gateway.heartbeat``. Cancelled with the
         # other background tasks during stop(). Best-effort — a liveness probe
         # must never be able to abort startup.
+        #
+        # Also start a background OS-thread heartbeat that keeps the file fresh
+        # even when the event loop is GIL-starved (#72707). The async task's
+        # monotonic field goes stale during stalls; the thread's
+        # ``thread_monotonic`` field stays fresh, letting consumers distinguish
+        # "process alive but loop frozen" from "process dead".
         try:
             _existing_hb = getattr(self, "_loop_heartbeat_task", None)
             if _existing_hb is None or _existing_hb.done():
@@ -11532,6 +11539,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._loop_heartbeat_task.add_done_callback(_bg.discard)
         except Exception:
             logger.debug("Failed to start gateway loop heartbeat", exc_info=True)
+        try:
+            start_background_heartbeat(
+                start_time=getattr(self, "_gateway_started_at", 0.0),
+            )
+        except Exception:
+            logger.debug("Failed to start gateway background heartbeat", exc_info=True)
 
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)

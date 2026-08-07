@@ -98,6 +98,7 @@ from gateway.status import (
     read_runtime_status,
     resolve_gateway_liveness,
 )
+from gateway.shutdown_watchdog import start_background_heartbeat
 from utils import env_var_enabled
 
 try:
@@ -17763,6 +17764,15 @@ def start_server(
             _hb_loop.call_later(
                 _hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval
             )
+
+            # ── Background OS-thread heartbeat (GIL-immune) ───────────────
+            # Start a daemon thread that independently writes the heartbeat
+            # file every 2s. time.sleep() and file I/O both release the GIL,
+            # so the file stays fresh even when the event loop is starved by
+            # CPU-bound agent work (see #72707). The thread_monotonic field
+            # in the heartbeat lets consumers distinguish "process alive but
+            # loop frozen" from "process dead".
+            start_background_heartbeat(start_time=time.time())
 
             await server.main_loop()
             if server.started:

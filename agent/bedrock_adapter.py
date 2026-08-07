@@ -1049,7 +1049,14 @@ def build_converse_kwargs(
 
     if not _forbids_sampling_params(model):
         if temperature is not None:
-            kwargs["inferenceConfig"]["temperature"] = temperature
+            if 0.0 <= temperature <= 1.0:
+                kwargs["inferenceConfig"]["temperature"] = temperature
+            else:
+                logger.warning(
+                    "Bedrock temperature %s is outside its supported [0.0, 1.0] range; "
+                    "omitting it and using the model default.",
+                    temperature,
+                )
 
         if top_p is not None:
             kwargs["inferenceConfig"]["topP"] = top_p

@@ -217,6 +217,56 @@ class TestBuildApiKwargsOpenRouter:
         }
         assert "extra_body" not in kwargs["extra_body"]
 
+    def test_model_temperature_config_reaches_gemini_native_client(self, monkeypatch):
+        """model.temperature must be emitted for Gemini's native transport."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"model": {"temperature": 0.2}},
+        )
+        agent = _make_agent(
+            monkeypatch,
+            "gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            model="gemini-3-flash-preview",
+        )
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert agent.temperature == 0.2
+        assert kwargs["temperature"] == 0.2
+
+    def test_out_of_range_temperature_falls_back_without_crashing(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"model": {"temperature": 10**400}},
+        )
+
+        agent = _make_agent(monkeypatch, "gemini", model="gemini-3-flash-preview")
+
+        assert agent.temperature is None
+
+    def test_model_fixed_temperature_wins_for_registered_profile(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"model": {"temperature": 0.2}},
+        )
+        agent = _make_agent(monkeypatch, "openrouter", model="arcee-ai/trinity-large-thinking")
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert kwargs["temperature"] == 0.5
+
+    def test_model_temperature_is_omitted_when_registered_profile_requires_it(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"model": {"temperature": 0.2}},
+        )
+        agent = _make_agent(monkeypatch, "openrouter", model="moonshotai/kimi-k2.5")
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert "temperature" not in kwargs
+
 
     def test_should_sanitize_tool_calls_codex_vs_chat(self, monkeypatch):
         """Codex API should NOT sanitize, all other APIs should sanitize."""

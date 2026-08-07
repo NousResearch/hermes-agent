@@ -67,6 +67,7 @@ class AnthropicTransport(ProviderTransport):
             messages=messages,
             tools=tools,
             max_tokens=params.get("max_tokens", 16384),
+            temperature=params.get("temperature"),
             reasoning_config=params.get("reasoning_config"),
             tool_choice=params.get("tool_choice"),
             is_oauth=params.get("is_oauth", False),

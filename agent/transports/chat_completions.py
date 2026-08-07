@@ -438,6 +438,16 @@ class ChatCompletionsTransport(ProviderTransport):
             "messages": sanitized,
         }
 
+        # Model-specific constraints take precedence over the configured
+        # default. Otherwise send the configured value only when the user set
+        # one, preserving the provider/model native default when it is absent.
+        if not params.get("omit_temperature", False):
+            temperature = params.get("fixed_temperature")
+            if temperature is None:
+                temperature = params.get("temperature")
+            if temperature is not None:
+                api_kwargs["temperature"] = temperature
+
         timeout = params.get("timeout")
         if timeout is not None:
             api_kwargs["timeout"] = timeout
@@ -623,13 +633,16 @@ class ChatCompletionsTransport(ProviderTransport):
             "messages": sanitized,
         }
 
-        # Temperature
-        if profile.fixed_temperature is OMIT_TEMPERATURE:
+        # Temperature. Both profile- and model-specific contracts override the
+        # configured default; the latter is passed by build_api_kwargs for every
+        # provider path (including registered profiles).
+        if params.get("omit_temperature", False) or profile.fixed_temperature is OMIT_TEMPERATURE:
             pass  # Don't include temperature at all
         elif profile.fixed_temperature is not None:
             api_kwargs["temperature"] = profile.fixed_temperature
+        elif params.get("fixed_temperature") is not None:
+            api_kwargs["temperature"] = params["fixed_temperature"]
         else:
-            # Use caller's temperature if provided
             temp = params.get("temperature")
             if temp is not None:
                 api_kwargs["temperature"] = temp

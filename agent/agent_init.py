@@ -843,6 +843,7 @@ def init_agent(
     
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
+    agent.temperature = None  # None = let the provider/model choose its default
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
     agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
@@ -2130,6 +2131,36 @@ def init_agent(
                     file=sys.stderr,
                 )
     agent._session_init_model_config["max_tokens"] = agent.max_tokens
+
+    # Read an optional sampling-temperature override. The OpenAI-compatible
+    # and Gemini native APIs accept the shared [0, 2] range; leave it unset to
+    # preserve each model's native default. Provider profiles can still pin or
+    # omit the field for models with stricter sampling contracts.
+    if isinstance(_model_cfg, dict):
+        _config_temperature = _model_cfg.get("temperature")
+    else:
+        _config_temperature = None
+    if _config_temperature is not None:
+        try:
+            if isinstance(_config_temperature, bool):
+                raise ValueError
+            _parsed_temperature = float(_config_temperature)
+            if not 0.0 <= _parsed_temperature <= 2.0:
+                raise ValueError
+            agent.temperature = _parsed_temperature
+        except (TypeError, ValueError, OverflowError):
+            _ra().logger.warning(
+                "Invalid model.temperature in config.yaml: %r — "
+                "must be a number from 0.0 to 2.0. Falling back to the provider default.",
+                _config_temperature,
+            )
+            print(
+                f"\n⚠ Invalid model.temperature in config.yaml: {_config_temperature!r}\n"
+                "  Must be a number from 0.0 to 2.0.\n"
+                "  Falling back to the provider default.\n",
+                file=sys.stderr,
+            )
+    agent._session_init_model_config["temperature"] = agent.temperature
 
     # Read explicit context_length override from model config
     if isinstance(_model_cfg, dict):

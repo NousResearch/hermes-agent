@@ -29,9 +29,30 @@ from agent.anthropic_adapter import (
 from agent.transports import get_transport
 
 
-# ---------------------------------------------------------------------------
-# Auth helpers
-# ---------------------------------------------------------------------------
+def test_temperature_is_included_for_anthropic_models_that_allow_sampling():
+    kwargs = build_anthropic_kwargs(
+        model="claude-sonnet-4-6",
+        messages=[{"role": "user", "content": "Hi"}],
+        tools=None,
+        max_tokens=1024,
+        reasoning_config=None,
+        temperature=0.2,
+    )
+
+    assert kwargs["temperature"] == 0.2
+
+
+def test_temperature_is_omitted_for_anthropic_models_that_forbid_sampling():
+    kwargs = build_anthropic_kwargs(
+        model="claude-opus-4-7",
+        messages=[{"role": "user", "content": "Hi"}],
+        tools=None,
+        max_tokens=1024,
+        reasoning_config=None,
+        temperature=0.2,
+    )
+
+    assert "temperature" not in kwargs
 
 
 class TestIsOAuthToken:

@@ -198,11 +198,13 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
     response = client.chat.completions.create(
         model="gemini-2.5-flash",
         messages=[{"role": "user", "content": "Hello"}],
+        temperature=0.2,
     )
 
     assert recorded["url"] == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     assert recorded["headers"]["x-goog-api-key"] == "AIza-test"
     assert "Authorization" not in recorded["headers"]
+    assert recorded["json"]["generationConfig"]["temperature"] == 0.2
     assert response.choices[0].message.content == "hello"
 
 

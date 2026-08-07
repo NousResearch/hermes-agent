@@ -25,6 +25,7 @@ Design:
 
 import json
 import logging
+import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -85,6 +86,11 @@ from tools.threat_patterns import first_threat_message as _first_threat_message
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
+    if ENTRY_DELIMITER in content:
+        return (
+            "Blocked memory content containing the reserved entry delimiter. "
+            "Save it as ordinary multiline text without a standalone § separator."
+        )
     return _first_threat_message(content, scope="strict")
 
 
@@ -319,7 +325,7 @@ class MemoryStore:
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
-    def _reload_target(self, target: str, *, skip_drift: bool = False):
+    def _reload_target(self, target: str):
         """Re-read entries from disk into in-memory state.
 
         Called under file lock to get the latest state before mutating.
@@ -338,9 +344,8 @@ class MemoryStore:
         file. A failed read reported as ``[]`` turned ``add`` into a full-file
         rewrite down to a single entry.
 
-        When *skip_drift* is True the round-trip / entry-size check is
-        bypassed.  Used by the ``add`` action which appends without
-        rewriting, so existing content is never clobbered.
+        Every mutating action persists the complete parsed entry list, so every
+        action, including add, must refuse external drift before rewriting.
         """
         path = self._path_for(target)
         raw, read_ok = self._read_raw_checked(path)
@@ -354,7 +359,7 @@ class MemoryStore:
         # checked reload and the drift check let replace/remove/apply_batch
         # rewrite the file from a stale view, silently discarding whatever an
         # external writer had just added. One read, one snapshot, no window.
-        bak = None if skip_drift else self._detect_external_drift(target, raw)
+        bak = self._detect_external_drift(target, raw)
         fresh = self._parse_entries(raw)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
@@ -399,20 +404,14 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
-            # Re-read from disk under lock to pick up writes from other sessions.
-            # For add (append-only), we skip the drift guard — appending never
-            # clobbers existing content, so round-trip mismatches from prior
-            # tool-written entries in the same session are harmless.  The drift
-            # guard remains active for replace/remove where full-file rewrite
-            # would discard un-roundtrippable content (issue #26045).
-            #
-            # But "append never clobbers" only holds when the reload actually
-            # read the file. add rewrites the WHOLE file from the parsed
-            # entries, so a file that exists but read as empty (transient lock,
-            # permission blip, I/O error) would be rewritten down to just the
-            # new entry — wiping every prior memory. Refuse instead.
-            if self._reload_target(target, skip_drift=True) is _READ_FAILED:
+            # Re-read one checked raw snapshot under lock. add rewrites the
+            # complete file, so it receives the same read-failure and drift
+            # protection as replace/remove/apply_batch.
+            bak = self._reload_target(target)
+            if bak is _READ_FAILED:
                 return _read_failed_error(self._path_for(target))
+            if bak:
+                return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)
@@ -440,9 +439,7 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries.append(content)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            self._persist_entries(target, new_entries)
 
         return self._success_response(target, "Entry added.")
 
@@ -511,9 +508,7 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries[idx] = new_content
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            self._persist_entries(target, test_entries)
 
         return self._success_response(target, "Entry replaced.")
 
@@ -553,9 +548,9 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
-            entries.pop(idx)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            new_entries = entries.copy()
+            new_entries.pop(idx)
+            self._persist_entries(target, new_entries)
 
         return self._success_response(target, "Entry removed.")
 
@@ -662,11 +657,14 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            # Commit.
-            self._set_entries(target, working)
-            self.save_to_disk(target)
+            self._persist_entries(target, working)
 
         return self._success_response(target, f"Applied {len(operations)} operation(s).")
+
+    def _persist_entries(self, target: str, entries: List[str]) -> None:
+        """Persist a candidate state before publishing it to the live store."""
+        self._write_file(self._path_for(target), entries)
+        self._set_entries(target, entries)
 
     def _batch_error(self, target: str, message: str) -> Dict[str, Any]:
         """Build a batch-abort error that reports live (uncommitted) state."""
@@ -845,20 +843,47 @@ class MemoryStore:
         char_limit = self._char_limit(target)
         max_entry_len = max((len(e) for e in parsed), default=0)
 
-        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
+        drift_detected = (raw != roundtrip) or (max_entry_len > char_limit)
         if not drift_detected:
             return None
 
         # Drift confirmed — snapshot the file so the operator can recover
         # whatever the external writer added, then return the .bak path so
         # the caller can refuse the mutation.
+        raw_bytes = raw.encode("utf-8")
+        for existing in sorted(path.parent.glob(path.name + ".bak.*")):
+            try:
+                if existing.read_bytes() == raw_bytes:
+                    return str(existing)
+            except (OSError, IOError):
+                continue
+
         ts = int(time.time())
-        bak_path = path.with_suffix(path.suffix + f".bak.{ts}")
-        try:
-            bak_path.write_text(raw, encoding="utf-8")
-        except (OSError, IOError):
-            return str(bak_path) + " (BACKUP FAILED — file unchanged on disk)"
-        return str(bak_path)
+        for counter in range(10_000):
+            suffix = "" if counter == 0 else f".{counter}"
+            bak_path = path.with_suffix(path.suffix + f".bak.{ts}{suffix}")
+            try:
+                with bak_path.open("xb") as backup:
+                    backup.write(raw_bytes)
+                    backup.flush()
+                    os.fsync(backup.fileno())
+                return str(bak_path)
+            except FileExistsError:
+                try:
+                    if bak_path.read_bytes() == raw_bytes:
+                        return str(bak_path)
+                except (OSError, IOError):
+                    pass
+                continue
+            except (OSError, IOError):
+                return (
+                    str(bak_path)
+                    + " (BACKUP FAILED — file unchanged on disk)"
+                )
+        return (
+            str(path)
+            + ".bak (BACKUP FAILED — collision limit reached; file unchanged on disk)"
+        )
 
     @staticmethod
     def _write_file(path: Path, entries: List[str]):
@@ -921,24 +946,28 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
 
     try:
         from tools import write_approval as wa
+
+        # Build a small inline summary/detail for the foreground approval prompt.
+        label = "user profile" if target == "user" else "memory"
+        if action == "add":
+            summary = f"add to {label}"
+            detail = content or ""
+        elif action == "replace":
+            summary = f"replace in {label}"
+            detail = f"old: {old_text}\nnew: {content}"
+        else:  # remove
+            summary = f"remove from {label}"
+            detail = old_text or ""
+
+        decision = wa.evaluate_gate(
+            wa.MEMORY, inline_summary=summary, inline_detail=detail
+        )
     except Exception:
-        # If the gate module can't load, fail open (current behaviour) rather
-        # than blocking all memory writes.
-        return None
-
-    # Build a small inline summary/detail for the foreground approval prompt.
-    label = "user profile" if target == "user" else "memory"
-    if action == "add":
-        summary = f"add to {label}"
-        detail = content or ""
-    elif action == "replace":
-        summary = f"replace in {label}"
-        detail = f"old: {old_text}\nnew: {content}"
-    else:  # remove
-        summary = f"remove from {label}"
-        detail = old_text or ""
-
-    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
+        logger.exception("Memory write approval gate unavailable; refusing mutation")
+        return tool_error(
+            "Memory write approval gate is unavailable; refusing mutation.",
+            success=False,
+        )
 
     if decision.allow:
         return None
@@ -953,11 +982,18 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         "content": content,
         "old_text": old_text,
     }
-    record = wa.stage_write(
-        wa.MEMORY, payload,
-        summary=f"{summary}: {detail[:120]}",
-        origin=wa.current_origin(),
-    )
+    try:
+        record = wa.stage_write(
+            wa.MEMORY, payload,
+            summary=f"{summary}: {detail[:120]}",
+            origin=wa.current_origin(),
+        )
+    except Exception:
+        logger.exception("Memory write approval staging failed; refusing mutation")
+        return tool_error(
+            "Memory write approval staging failed; no pending write was saved.",
+            success=False,
+        )
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},
@@ -974,24 +1010,32 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
     """
     try:
         from tools import write_approval as wa
+
+        label = "user profile" if target == "user" else "memory"
+        summary = f"apply {len(operations)} op(s) to {label}"
+        detail_lines = []
+        for op in operations:
+            op = op or {}
+            act = op.get("action", "?")
+            if act == "remove":
+                detail_lines.append(f"- remove: {op.get('old_text', '')}")
+            elif act == "replace":
+                detail_lines.append(
+                    f"- replace: {op.get('old_text', '')} -> {op.get('content', '')}"
+                )
+            else:
+                detail_lines.append(f"- {act}: {op.get('content', '')}")
+        detail = "\n".join(detail_lines)
+
+        decision = wa.evaluate_gate(
+            wa.MEMORY, inline_summary=summary, inline_detail=detail
+        )
     except Exception:
-        return None
-
-    label = "user profile" if target == "user" else "memory"
-    summary = f"apply {len(operations)} op(s) to {label}"
-    detail_lines = []
-    for op in operations:
-        op = op or {}
-        act = op.get("action", "?")
-        if act == "remove":
-            detail_lines.append(f"- remove: {op.get('old_text', '')}")
-        elif act == "replace":
-            detail_lines.append(f"- replace: {op.get('old_text', '')} -> {op.get('content', '')}")
-        else:
-            detail_lines.append(f"- {act}: {op.get('content', '')}")
-    detail = "\n".join(detail_lines)
-
-    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
+        logger.exception("Memory batch approval gate unavailable; refusing mutation")
+        return tool_error(
+            "Memory write approval gate is unavailable; refusing mutation.",
+            success=False,
+        )
 
     if decision.allow:
         return None
@@ -1000,11 +1044,18 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
         return tool_error(decision.message, success=False)
 
     payload = {"action": "batch", "target": target, "operations": operations}
-    record = wa.stage_write(
-        wa.MEMORY, payload,
-        summary=f"{summary}: {detail[:120]}",
-        origin=wa.current_origin(),
-    )
+    try:
+        record = wa.stage_write(
+            wa.MEMORY, payload,
+            summary=f"{summary}: {detail[:120]}",
+            origin=wa.current_origin(),
+        )
+    except Exception:
+        logger.exception("Memory batch approval staging failed; refusing mutation")
+        return tool_error(
+            "Memory write approval staging failed; no pending write was saved.",
+            success=False,
+        )
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},
@@ -1170,7 +1221,7 @@ MEMORY_SCHEMA = {
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
         "notes (environment, conventions, tool quirks, lessons).\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
-        "completed-work logs, temporary TODO state (use session_search for those). Reusable "
+        "completed-work logs, temporary task state (use session_search for those). Reusable "
         "procedures belong in a skill, not memory."
     ),
     "parameters": {
@@ -1234,7 +1285,4 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
 

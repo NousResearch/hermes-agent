@@ -149,6 +149,45 @@ _SKILL = (
 # Pending store CRUD
 # ---------------------------------------------------------------------------
 
+def test_stage_write_raises_when_pending_record_is_not_durable(
+    hermes_home, monkeypatch
+):
+    from tools import write_approval as wa
+
+    def fail_atomic_write(*args, **kwargs):
+        raise OSError("simulated pending-store write failure")
+
+    monkeypatch.setattr(wa, "atomic_write_text", fail_atomic_write)
+
+    with pytest.raises(OSError, match="pending-store write failure"):
+        wa.stage_write(
+            "memory",
+            {"action": "add", "target": "user", "content": "save me"},
+            summary="save me",
+            origin="foreground",
+        )
+
+    assert wa.pending_count("memory") == 0
+
+
+def test_discard_pending_moves_record_to_recovery_archive(hermes_home):
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        "memory",
+        {"action": "add", "target": "user", "content": "save me"},
+        summary="save me",
+        origin="foreground",
+    )
+
+    assert wa.discard_pending("memory", record["id"]) is True
+    assert wa.pending_count("memory") == 0
+    assert wa.get_pending("memory", record["id"]) is None
+
+    archived = list(wa._discarded_dir("memory").glob(f"{record['id']}.*.json"))
+    assert len(archived) == 1
+    assert json.loads(archived[0].read_text(encoding="utf-8"))["id"] == record["id"]
+
 
 # ---------------------------------------------------------------------------
 # Shared command handler

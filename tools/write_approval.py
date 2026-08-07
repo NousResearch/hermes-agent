@@ -44,13 +44,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,10 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _discarded_dir(subsystem: str) -> Path:
+    return get_hermes_home() / "pending" / "discarded" / subsystem
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
                 *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
@@ -125,9 +129,11 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
             entry text itself.
         origin: ``foreground`` or ``background_review`` — recorded for audit.
 
-    Returns a dict with ``id`` and metadata. Best-effort: on disk failure it
-    logs and still returns a record (the write is simply lost, which is the
-    safe failure for an approval gate — nothing is silently committed).
+    Returns a dict with ``id`` and metadata after the pending record is durable.
+
+    Raises:
+        OSError: If the pending record cannot be persisted. Callers must not
+            report a staged success unless this function returns normally.
     """
     pid = uuid.uuid4().hex[:8]
     record = {
@@ -139,15 +145,14 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         "created_at": time.time(),
         "payload": payload,
     }
-    try:
-        d = _pending_dir(subsystem)
-        d.mkdir(parents=True, exist_ok=True)
-        path = d / f"{pid}.json"
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
-    except Exception as e:  # pragma: no cover - disk failure path
-        logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+    d = _pending_dir(subsystem)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{pid}.json"
+    atomic_write_text(
+        path,
+        json.dumps(record, ensure_ascii=False, indent=2),
+        tmp_prefix=f".{pid}.",
+    )
     return record
 
 
@@ -178,11 +183,14 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
 
 
 def discard_pending(subsystem: str, pending_id: str) -> bool:
-    """Delete a pending record. Returns True if it existed."""
+    """Remove a record from the pending queue into a recovery archive."""
     path = _pending_dir(subsystem) / f"{pending_id}.json"
     try:
         if path.exists():
-            path.unlink()
+            archive_dir = _discarded_dir(subsystem)
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            archive_path = archive_dir / f"{pending_id}.{uuid.uuid4().hex}.json"
+            path.replace(archive_path)
             return True
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)

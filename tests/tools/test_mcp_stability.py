@@ -3,7 +3,7 @@
 import asyncio
 import os
 import signal
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 

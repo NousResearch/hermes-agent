@@ -22,6 +22,10 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 
+class EditApprovalTimeout(Exception):
+    """Raised when an ACP edit approval request times out."""
+
+
 @dataclass(frozen=True)
 class EditProposal:
     """A proposed single-file edit that can be shown to an ACP client."""
@@ -252,6 +256,9 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
 
     try:
         approved = bool(requester(proposal))
+    except EditApprovalTimeout as exc:
+        logger.warning("ACP edit approval timed out: %s", exc)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
     except Exception as exc:
         logger.warning("ACP edit approval requester failed: %s", exc)
         approved = False
@@ -325,9 +332,17 @@ def make_acp_edit_approval_requester(
             return False
         try:
             response = future.result(timeout=timeout)
-        except (FutureTimeout, Exception) as exc:
+        except FutureTimeout:
             future.cancel()
-            logger.warning("Edit approval request timed out or failed: %s", exc)
+            logger.warning(
+                "Edit approval request timed out after %ss", timeout,
+            )
+            raise EditApprovalTimeout(
+                f"Edit approval timed out after {timeout}s; file was not modified."
+            ) from None
+        except Exception as exc:
+            future.cancel()
+            logger.warning("Edit approval request failed: %s", exc)
             return False
         outcome = getattr(response, "outcome", None)
         return (

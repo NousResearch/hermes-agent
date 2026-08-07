@@ -78,3 +78,22 @@ test('matchesAllowedUser rejects everyone when allowlist is empty (#8389)', () =
     rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+test('matchesAllowedUser accepts phone JID from senderPn when no lid-mapping file exists (#63415)', () => {
+  // Regression for #63415: a first-contact LID sender arrives with
+  // msg.key.senderPn = "19175395595" but no lid-mapping file exists
+  // yet.  The bridge constructs "19175395595@s.whatsapp.net" from
+  // senderPn and passes it through matchesAllowedUser as a fallback.
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
+
+  try {
+    // Allowlist contains the phone number, but NO lid-mapping files exist.
+    const allowedUsers = parseAllowedUsers('19175395595');
+    // This simulates the phone JID the bridge constructs from msg.key.senderPn
+    assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', allowedUsers, sessionDir), true);
+    // Unlisted phone still rejected
+    assert.equal(matchesAllowedUser('188012763865257@s.whatsapp.net', allowedUsers, sessionDir), false);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});

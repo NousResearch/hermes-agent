@@ -1139,6 +1139,12 @@ code {
     height: 0.25rem;
   }
 
+  [data-sidebar="content"]::-webkit-scrollbar,
+  [data-sidebar="content"] *::-webkit-scrollbar {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+
   .scrollbar-dt::-webkit-scrollbar-track,
   .scrollbar-dt::-webkit-scrollbar-corner,
   .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-track,

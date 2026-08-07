@@ -4686,6 +4686,17 @@ def run_conversation(
                     # every subsequent message queued behind the stuck turn —
                     # the P1 in issue #21160. The 404 passes the 4xx gate below.
                     "no endpoints found that support image input",
+                    # Kimi / Moonshot / other OpenAI-compatible Chinese
+                    # providers reject truncated or corrupt image bytes with
+                    # HTTP 400 "Invalid request: prepare image failed ...
+                    # failed to decode image: invalid or unsupported image
+                    # format". Like the Codex case above, the bad bytes are
+                    # baked into immutable conversation history and re-sent on
+                    # every retry, wedging the session. Strip the images so the
+                    # turn recovers instead of exhausting retries. (issue
+                    # #76884; complements the proactive full-decode validation
+                    # in tools/vision_tools._normalize_to_supported_image)
+                    "failed to decode image",
                 )
                 _err_lower = _err_body.lower()
                 _looks_like_image_rejection = any(

@@ -371,6 +371,21 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     translated to ``C:\\Users\\...`` before resolution so file tools don't
     treat them as relative ``\\c\\Users\\...`` under the process cwd.
     """
+    # SSH backend: a leading ``~`` must reach the remote unexpanded.
+    # Expanding it here resolves against the GATEWAY process's HOME, but the
+    # path is executed on the ssh remote where that directory may not exist
+    # (#71201). Leave it intact so ShellFileOperations._expand_path() resolves
+    # it against the remote $HOME at execution time (it runs ``echo $HOME``
+    # through the live environment for every file op).
+    #
+    # This guard sits ABOVE the container-paths branch on purpose: if ssh is
+    # ever folded into the POSIX/container path set (e.g. #57998), that branch
+    # would call _expand_tilde() and return before this guard is reached,
+    # silently reverting the fix. Hoisting keeps the two changes composable
+    # regardless of merge order.
+    if filepath.startswith("~") and _terminal_env_type_for_task(task_id) == "ssh":
+        return PurePosixPath(filepath)
+
     container_paths = _uses_container_paths(task_id)
     if container_paths:
         expanded = _expand_tilde(filepath)

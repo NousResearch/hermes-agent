@@ -1,5 +1,6 @@
 """Random tips shown at CLI session start to help users discover features."""
 
+import os
 import random
 
 
@@ -478,8 +479,132 @@ TIPS = [
 def get_random_tip(exclude_recent: int = 0) -> str:
     """Return a random tip string.
 
+    Language is determined by HERMES_LANGUAGE env var, then
+    config.yaml display.language, defaulting to English.
+
     Args:
         exclude_recent: not used currently; reserved for future
             deduplication across sessions.
     """
+    lang = os.environ.get("HERMES_LANGUAGE") or ""
+    if not lang:
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+            lang = (config.get("display", {}) or {}).get("language", "") or ""
+        except Exception:
+            lang = ""
+    if lang in ("zh", "zh-hant"):
+        return random.choice(TIPS_ZH)
     return random.choice(TIPS)
+
+
+TIPS_ZH = [
+    "/background <提示>（别名 /bg 或 /btw）在独立会话中运行任务，当前会话保持可用。",
+    "/branch 分叉当前会话，让你可以在不丢失进度的情况下探索不同方向。",
+    "/compress 手动压缩对话上下文，当对话过长时使用。",
+    "/rollback 列出文件系统检查点 — 将代理修改的文件恢复到之前的状态。",
+    "/rollback diff 2 预览检查点 2 以来的更改，不恢复任何内容。",
+    "/rollback 2 src/file.py 从特定检查点恢复单个文件。",
+    '/title "我的项目" 命名你的会话 — 之后可以用 /resume 或 hermes -c 恢复。',
+    "/resume 恢复之前命名会话的进度。",
+    "/queue <提示> 将消息排队到下一轮，不中断当前会话。",
+    "/undo 从对话中移除最后一次用户/助手交互。",
+    "/retry 重新发送你的最后一条消息 — 当代理响应不够好时有用。",
+    "/verbose 循环切换工具进度显示：关 → 新 → 全部 → 详细。",
+    "/reasoning high 增加模型的思考深度。/reasoning show 显示推理过程。",
+    "/fast 切换优先处理以获得更快的 API 响应（取决于提供商）。",
+    "/yolo 跳过本次会话剩余的所有危险命令批准提示。",
+    "/model 让你在会话中途切换模型 — 尝试 /model sonnet 或 /model gpt-5。",
+    "/model --global 永久更改你的默认模型。",
+    "/personality pirate 设置有趣的个性 — 14 个内置选项，从可爱到莎士比亚风格。",
+    "/skin 更改 CLI 主题 — 尝试 ares、mono、slate、poseidon 或 charizard。",
+    "/statusbar 切换持久栏，显示模型、令牌、上下文填充%、成本和持续时间。",
+    "/tools disable browser 临时为当前会话移除浏览器工具。",
+    "/browser connect 将浏览器工具连接到你运行的 Chromium 系列浏览器（通过 CDP）。",
+    "/plugins 列出已安装的插件及其状态。",
+    "/cron 管理计划任务 — 设置定期提示，并投递到任何平台。",
+    "/reload-mcp 热重载 MCP 服务器配置，无需重启。",
+    "/usage 显示令牌使用、成本细分和会话持续时间。",
+    "/insights 显示最近 30 天的使用分析。",
+    "/paste 检查剪贴板是否有图像，并将其附加到你的下一条消息。",
+    "/profile 显示当前激活的配置文件及其主目录。",
+    "/config 概览你的当前配置。",
+    "/stop 终止代理生成的所有运行中的后台进程。",
+    "@file:path/to/file.py 将文件内容直接注入到你的消息中。",
+    "@file:main.py:10-50 仅注入文件的 10-50 行。",
+    "@folder:src/ 注入目录树列表。",
+    "@diff 将你未暂存的 git 更改注入到消息中。",
+    "@staged 注入你已暂存的 git 更改（git diff --staged）。",
+    "@git:5 注入最近 5 次提交及其完整补丁。",
+    "@url:https://example.com 获取并注入网页内容。",
+    "输入 @ 会触发文件系统路径补全 — 交互式导航到任何文件。",
+    "组合多个引用：审查 @file:main.py 和 @file:test.py 以确保一致性。",
+    "Alt+Enter 插入换行符用于多行输入。（Windows Terminal 会拦截 Alt+Enter — 请改用 Ctrl+Enter。）",
+    "Ctrl+C 中断代理。2 秒内双按以强制退出。",
+    "Ctrl+Z 将 Hermes 挂起到后台 — 在 shell 中运行 fg 以恢复。",
+    "Tab 接受自动建议的影子文本或自动补全斜杠命令。",
+    "在代理工作时输入新消息以中断并重定向它。",
+    "Alt+V 将剪贴板中的图像粘贴到对话中。",
+    "粘贴 5+ 行会自动保存到文件，并插入一个紧凑的引用。",
+    '/hermes -c 恢复你最近的 CLI 会话。hermes -c "项目名称" 按标题恢复。',
+    "/hermes -w 创建一个独立的 git worktree — 非常适合并行代理工作流。",
+    '/hermes -w -q "修复问题 #42" 结合 worktree 隔离和一次性查询。',
+    "/hermes chat -t web,terminal 仅启用特定工具集以进行专注的会话。",
+    "/hermes chat -s github-pr-workflow 在启动时预加载一个技能。",
+    '/hermes chat -q "查询" 运行单个非交互式查询并退出。',
+    "/hermes chat --max-turns 200 覆盖每轮默认的 90 次迭代限制。",
+    "/hermes chat --checkpoints 在每次破坏性文件更改前启用文件系统快照。",
+    "/hermes --yolo 为整个会话绕过所有危险命令批准提示。",
+    "/hermes chat --source telegram 为会话打标签，以便在 hermes sessions list 中过滤。",
+    "/hermes -p work chat 在特定配置文件下运行，而不更改你的默认配置。",
+    "/hermes doctor --fix 诊断并自动修复配置和依赖问题。",
+    "/hermes dump 输出紧凑的设置摘要 — 非常适合错误报告。",
+    "/hermes config set KEY VALUE 自动将密钥路由到 .env，其他所有内容路由到 config.yaml。",
+    "/hermes config edit 在你的默认编辑器中打开 config.yaml。",
+    "/hermes config check 扫描缺失或过时的配置选项。",
+    "/hermes sessions browse 打开一个带搜索功能的交互式会话选择器。",
+    "/hermes sessions stats 显示按平台分类的会话计数和数据库大小。",
+    "/hermes sessions prune --older-than 30 清理旧会话。",
+    "/hermes skills search react --source skills-sh 在 skills.sh 公共目录中搜索。",
+    "/hermes skills check 扫描已安装的 hub 技能是否有上游更新。",
+    "/hermes skills tap add myorg/skills-repo 添加自定义 GitHub 技能源。",
+    "/hermes skills snapshot export setup.json 导出你的技能配置以进行备份或共享。",
+    "/hermes mcp add github --command npx 从命令行添加 MCP 服务器。",
+    "/hermes mcp serve 将 Hermes 本身作为其他代理的 MCP 服务器运行。",
+    "/hermes auth add 允许你添加多个 API 密钥用于凭证池轮换。",
+    "/hermes completion bash >> ~/.bashrc 为所有命令和配置文件启用 Tab 补全。",
+    "/hermes logs -f 实时跟踪 agent.log。--level WARNING --since 1h 过滤输出。",
+    "/hermes backup 创建整个 Hermes 主目录的 zip 备份。",
+    "/hermes profile create coder 创建一个隔离的配置文件，成为自己的命令。",
+    "/hermes profile create work --clone 将你的当前配置和密钥复制到新配置文件。",
+    "/hermes update 自动将新的捆绑技能同步到所有配置文件。",
+    "/hermes gateway install 将 Hermes 设置为系统服务（systemd/launchd）。",
+    "/hermes import 恢复由 sessions export 或 profile export 生成的会话导出或配置文件归档。",
+    "/hermes fallback 交互式管理 fallback_model 链 — 无需手动编辑 config.yaml。",
+    "/hermes pairing 轮换 DM 配对令牌 — 轮换后的第一个消息者将获得对机器人的访问权限。",
+    "/hermes setup 通过一个交互式流程引导首次用户完成提供商、密钥和平台连接。",
+    "/hermes status --deep 对每个组件运行完整的健康扫描；纯 hermes status 是快速视图。",
+    "HERMES_AGENT_TIMEOUT=0 禁用对运行中代理的网关不活动终止 — 用于长时间研究运行。",
+    "HERMES_ENABLE_PROJECT_PLUGINS=1 自动加载仓库本地插件（来自 ./.hermes/plugins/）— 设计为信任门控。",
+    '/HERMES_DISABLE_FILE_STATE_GUARD=1 关闭 patch 和 write_file 上的"文件自你读取后已更改"保护。',
+    "HERMES_ALLOW_PRIVATE_URLS=true 允许 web 工具访问 localhost 和私有网络 — 网关模式下默认关闭。",
+    "HERMES_OPTIONAL_SKILLS=name1,name2 在首次运行时自动为每个配置文件安装额外的可选目录技能。",
+    "HERMES_BUNDLED_SKILLS 指向自定义捆绑技能树 — 由 Homebrew 和 Nix 打包使用。",
+    "HERMES_DUMP_REQUEST_STDOUT=1 将每个 API 请求负载转储到 stdout 而不是日志文件。",
+    "HERMES_OAUTH_TRACE=*** 记录已编辑的 OAuth 令牌交换和刷新尝试，用于调试提供商身份验证。",
+    "HERMES_STREAM_RETRIES（默认 3）控制在瞬态网络错误时中间流重连尝试次数。",
+    "HERMES_GATEWAY_BUSY_ACK_ENABLED=false 在用户向忙碌的代理发送消息时静默 ⚡/⏳/⏩ 确认消息。",
+    "HERMES_AGENT_NOTIFY_INTERVAL（默认 180s）设置网关在长轮次中多久 ping 一次进度。",
+    "HERMES_RESTART_DRAIN_TIMEOUT（默认 900s）限制 /restart 在强制前等待进行中运行的时间。",
+    "HERMES_CHECKPOINT_TIMEOUT（默认 30s）限制文件系统检查点创建 — 在大型 monorepo 上增加。",
+    "config.yaml 中的 image_gen.model 选择 FAL 模型：flux-2/klein、gpt-image-2、nano-banana-pro 等。",
+    "image_gen.provider 通过插件（OpenAI Images、Codex、FAL）路由图像生成，而不是默认路由。",
+    "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY 将视觉分析指向任何 OpenAI 兼容端点。",
+    "security.tirith_fail_open: false 当 tirith 扫描器本身出错时，让 Hermes 阻止命令。",
+    "TIRITH_FAIL_OPEN 环境变量覆盖 tirith_fail_open 配置 — 快速切换而无需编辑 config.yaml。",
+    "--source tool 聊天默认从 hermes sessions list 中排除 — 显式设置 --source 以查看它们。",
+    "会话 ID 带有前缀时间戳（20250305_091523_abcd），因此排序在 ls 和 jq 中自然工作。",
+    "API_SERVER_MODEL_NAME 自定义 /v1/models 上的模型名称 — 对于多配置文件 Open WebUI 设置必不可少。",
+    "Dashboard 插件从 /dashboard-plugins/<name>/ 提供服务 — 将文件放入 ~/.hermes/dashboard-plugins/。",
+]

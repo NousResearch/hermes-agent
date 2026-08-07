@@ -289,6 +289,18 @@ _HERMES_CONFIG_PATH = (
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'config\.yaml\b'
 )
+# Profile configs are also security-sensitive: they carry per-profile model
+# routes, provider fallbacks, credential pools, and approval settings. A
+# rewrite of ~/.hermes/profiles/*/config.yaml is a fleet-wide config change
+# that must not slip past approval as "benign script execution" (the
+# 2026-08-07 incident: a specialist bot rewrote 61 live profiles + 51 repo
+# agents configs via a python script that smart-approval auto-approved).
+_HERMES_PROFILE_CONFIG_PATH = (
+    r'(?:~\/\.hermes/|'
+    r'(?:\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'profiles/[^/\s"\']+/config\.yaml\b'
+)
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = (
@@ -315,6 +327,7 @@ _SENSITIVE_WRITE_TARGET = (
     rf'{_SSH_SENSITIVE_PATH}|'
     rf'{_HERMES_ENV_PATH}|'
     rf'{_HERMES_CONFIG_PATH}|'
+    rf'{_HERMES_PROFILE_CONFIG_PATH}|'
     rf'{_SHELL_RC_FILES}|'
     rf'{_CREDENTIAL_FILES})'
 )
@@ -873,12 +886,14 @@ DANGEROUS_PATTERNS = [
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
     (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
     (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
-    # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or
-    # .env). sed -i bypasses the redirection/tee patterns above because it
-    # mutates the file directly. Pairs the file_tools write_file/patch deny so
-    # the terminal side is not an open door. See #14639.
-    (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
-    (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
+    # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml,
+    # ~/.hermes/profiles/*/config.yaml, or .env). sed -i bypasses the
+    # redirection/tee patterns above because it mutates the file directly.
+    # Pairs the file_tools write_file/patch deny so the terminal side is not
+    # an open door. Profile configs added 2026-08-07: a bot rewrote 61 live
+    # profiles via script; sed -i on a profile config must also be gated.
+    (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_PROFILE_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
+    (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_PROFILE_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
     # perl -i and ruby -i perform the same in-place mutation as sed -i but are
     # not caught by the -e/-c script-execution pattern above (which targets code
     # evaluation, not file mutation). Pairs the sed -i coverage from #14639.

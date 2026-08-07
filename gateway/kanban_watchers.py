@@ -1483,6 +1483,63 @@ class GatewayKanbanWatchersMixin:
                         if attempted >= auto_decompose_per_tick:
                             break
                         attempted += 1
+                        # R3 (2026-08-07): gate side-effect tasks before
+                        # auto-decompose. Tasks that touch config, credentials,
+                        # providers, or fleet-wide settings must not fan out
+                        # into autonomous work without human sign-off — a bot
+                        # rewriting 61 live profiles + 51 repo configs was the
+                        # trigger. Such tasks are moved out of triage to
+                        # blocked (needs_human_approval) so the decomposer
+                        # skips them and a human must unblock.
+                        #
+                        # Note: we use a direct status transition + event,
+                        # NOT request_human_approval, because block_task's
+                        # UPDATEs only cover running/ready (a triage task has
+                        # no run to close, and fabricating one is wrong).
+                        try:
+                            with _kb.connect_closing() as gconn:
+                                gtask = _kb.get_task(gconn, tid)
+                                gtext = f"{getattr(gtask, 'title', None) or ''} {getattr(gtask, 'body', None) or ''}".lower()
+                                _SIDE_EFFECT_KEYWORDS = (
+                                    "config.yaml", "fallback_provider", "provider",
+                                    "credential", "api_key", "approvals",
+                                    "dispatch_in_gateway", "profile config",
+                                    "agents/*/config", "hermes config",
+                                )
+                                _is_side_effect = any(
+                                    kw in gtext for kw in _SIDE_EFFECT_KEYWORDS
+                                )
+                                if _is_side_effect:
+                                    _reason = (
+                                        "needs_human_approval: auto-decompose "
+                                        "gate: task touches config/credentials/"
+                                        "providers; requires human approval "
+                                        "before fan-out"
+                                    )
+                                    _cur = gconn.execute(
+                                        "UPDATE tasks SET status='blocked', "
+                                        "claim_lock=NULL, claim_expires=NULL, "
+                                        "worker_pid=NULL, status_reason=? "
+                                        "WHERE id=? AND status='triage'",
+                                        (_reason, tid),
+                                    )
+                                    if _cur.rowcount == 1:
+                                        _kb._append_event(
+                                            gconn, tid, "blocked",
+                                            {"reason": _reason},
+                                        )
+                                        logger.info(
+                                            "kanban auto-decompose [%s]: %s "
+                                            "blocked for human approval "
+                                            "(side-effect task)",
+                                            slug, tid,
+                                        )
+                                    continue
+                        except Exception:
+                            logger.debug(
+                                "kanban auto-decompose [%s]: side-effect check failed on %s",
+                                slug, tid,
+                            )
                         try:
                             outcome = _decomp.decompose_task(
                                 tid, author="auto-decomposer",

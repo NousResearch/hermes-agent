@@ -651,6 +651,17 @@ _SENSITIVE_PATH_PREFIXES = (
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
+# Profile configs are security-sensitive (model routes, provider fallbacks,
+# credential pools, approval settings). A fleet-wide profile-config rewrite
+# must not be writable via file tools — the 2026-08-07 incident had a bot
+# rewrite 61 live profiles + 51 repo agent configs via script. This blocks
+# the file-tool side (write_file/patch); the terminal side is blocked by
+# approval.py's _HERMES_PROFILE_CONFIG_PATH in _SENSITIVE_WRITE_TARGET.
+_HERMES_PROFILE_CONFIG_PREFIXES = (
+    os.path.expanduser("~/.hermes/profiles/"),
+    os.path.expanduser("~/.hermes/profiles"),
+)
+
 _hermes_config_resolved: str | None = None
 _hermes_config_resolved_loaded = False
 
@@ -685,6 +696,11 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     )
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
+            return _err
+    for prefix in _HERMES_PROFILE_CONFIG_PREFIXES:
+        if (resolved.startswith(prefix) or normalized.startswith(prefix)) and (
+            resolved.endswith("/config.yaml") or normalized.endswith("/config.yaml")
+        ):
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err

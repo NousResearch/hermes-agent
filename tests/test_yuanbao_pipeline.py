@@ -43,6 +43,7 @@ from gateway.platforms.yuanbao import (
     QuoteContextMiddleware,
     MediaResolveMiddleware,
     PatchAnchorsMiddleware,
+    RecallGuardMiddleware,
     DispatchMiddleware,
     InboundPipelineBuilder,
     YuanbaoAdapter,
@@ -674,6 +675,25 @@ class TestAutoSetHomeAfterGroupAtGuard:
 
         assert "YUANBAO_HOME_CHANNEL" not in os.environ
         assert not (tmp_path / "config.yaml").exists()
+
+
+def test_recall_control_event_remains_interrupt_eligible():
+    """A user recall is explicit control, not an internal completion."""
+    adapter = make_adapter()
+    session_key = "agent:main:yuanbao:dm:alice"
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    RecallGuardMiddleware._interrupt_for_recall(
+        adapter,
+        session_key,
+        recalled_id="msg-recalled",
+        group_code="",
+        from_account="alice",
+    )
+
+    pending = adapter._pending_messages[session_key]
+    assert pending.internal is False
+    assert adapter.has_pending_interrupt(session_key) is True
 
 
 # ============================================================

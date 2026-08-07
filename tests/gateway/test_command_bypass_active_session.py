@@ -367,6 +367,22 @@ class TestNonBypassStillQueued:
             "Regular text should not produce a direct response"
         )
 
+    @pytest.mark.parametrize("text", ["/approve", "restart gateway"])
+    @pytest.mark.asyncio
+    async def test_internal_command_shaped_text_is_queued_opaque(self, text):
+        """Synthetic completion text is agent evidence, never gateway input."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+        event = _make_event(text)
+        event.internal = True
+
+        await adapter.handle_message(event)
+
+        assert adapter._pending_messages[sk] is event
+        assert adapter._pending_messages[sk].text == text
+        assert adapter.sent_responses == []
+
 
 # ---------------------------------------------------------------------------
 # Tests: no active session — commands go through normally

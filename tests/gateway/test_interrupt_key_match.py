@@ -76,4 +76,20 @@ class TestInterruptKeyConsistency:
         # Using chat_id → NOT found (this was the bug)
         assert adapter.has_pending_interrupt(source.chat_id) is False
 
+    def test_internal_pending_event_is_not_an_interrupt_signal(self):
+        """Synthetic completion evidence may be queued, never barge in."""
+        adapter = StubAdapter()
+        source = _source("123456", "dm")
+        session_key = build_session_key(source)
+        interrupt_event = asyncio.Event()
+        interrupt_event.set()
+        adapter._active_sessions[session_key] = interrupt_event
+        adapter._pending_messages[session_key] = MessageEvent(
+            text="synthetic completion",
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+
+        assert adapter.has_pending_interrupt(session_key) is False
 

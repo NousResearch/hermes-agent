@@ -133,3 +133,22 @@ def test_no_pending_approval_does_not_consume_conversational_yes():
     _clear_approval_state()
 
 
+def test_internal_approval_shaped_text_does_not_resolve_blocking_approval():
+    """Synthetic completion output is never dangerous-tool authorization."""
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+    event = _make_event("yes")
+    event.internal = True
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(event, session_key)
+    )
+
+    assert handled is False
+    assert entry.event.is_set() is False
+    assert entry.result is None
+    assert event.text == "yes"
+    adapter._send_with_retry.assert_not_awaited()
+    _clear_approval_state()
+

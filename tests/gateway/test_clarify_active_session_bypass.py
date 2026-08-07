@@ -87,3 +87,31 @@ async def test_active_session_routes_typed_choice_clarify_reply_to_runner_not_bu
     assert adapter._pending_messages == {}
 
 
+@pytest.mark.asyncio
+async def test_internal_text_skips_clarify_bypass_and_stays_queued():
+    """Synthetic evidence must not enter the user clarify-response lane."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _ClarifyBypassAdapter()
+    adapter._message_handler = AsyncMock(return_value="")
+    adapter._busy_session_handler = AsyncMock(return_value=False)
+    event = _event("synthetic completion answer")
+    event.internal = True
+    session_key = build_session_key(
+        event.source,
+        group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+        thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+    )
+    adapter._active_sessions[session_key] = asyncio.Event()
+    entry = cm.register("clarify-internal", session_key, "Pick one", ["A", "B"])
+
+    try:
+        await adapter.handle_message(event)
+
+        adapter._message_handler.assert_not_awaited()
+        assert entry.event.is_set() is False
+        assert adapter._pending_messages[session_key] is event
+    finally:
+        _clear_clarify_state()
+

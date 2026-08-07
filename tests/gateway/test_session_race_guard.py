@@ -9,6 +9,7 @@ duplicate agent.
 """
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -170,6 +171,119 @@ async def test_recent_telegram_followups_append_in_pending_queue():
     fake_agent.interrupt.assert_not_called()
     adapter = runner.adapters[Platform.TELEGRAM]
     assert adapter._pending_messages[session_key].text == "part one\npart two"
+
+
+@pytest.mark.asyncio
+async def test_internal_event_does_not_answer_pending_update_prompt(tmp_path):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    event = _make_event(text="y")
+    event.internal = True
+    session_key = build_session_key(event.source)
+    runner._update_prompt_pending[session_key] = True
+    prompt_path = tmp_path / ".update_prompt.json"
+    prompt_path.write_text('{"prompt": "continue?"}', encoding="utf-8")
+    inner = AsyncMock(return_value="agent turn")
+
+    with (
+        patch.object(gateway_run, "_hermes_home", tmp_path),
+        patch.object(GatewayRunner, "_handle_message_with_agent", inner),
+    ):
+        result = await runner._handle_message(event)
+
+    assert result == "agent turn"
+    assert runner._update_prompt_pending[session_key] is True
+    assert prompt_path.exists()
+    assert not (tmp_path / ".update_response").exists()
+    inner.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_internal_event_does_not_resolve_pending_clarify():
+    from tools import clarify_gateway as clarify_mod
+
+    with clarify_mod._lock:
+        clarify_mod._entries.clear()
+        clarify_mod._session_index.clear()
+        clarify_mod._notify_cbs.clear()
+
+    runner = _make_runner()
+    event = _make_event(text="synthetic completion answer")
+    event.internal = True
+    session_key = build_session_key(event.source)
+    entry = clarify_mod.register(
+        "clarify-internal", session_key, "Continue?", choices=None,
+    )
+    inner = AsyncMock(return_value="agent turn")
+
+    try:
+        with patch.object(GatewayRunner, "_handle_message_with_agent", inner):
+            result = await runner._handle_message(event)
+
+        assert result == "agent turn"
+        assert entry.event.is_set() is False
+        assert entry.response is None
+        assert clarify_mod.get_pending_for_session(session_key) is entry
+        inner.assert_awaited_once()
+    finally:
+        with clarify_mod._lock:
+            clarify_mod._entries.clear()
+            clarify_mod._session_index.clear()
+            clarify_mod._notify_cbs.clear()
+
+
+@pytest.mark.asyncio
+async def test_internal_event_does_not_resolve_or_clear_slash_confirm():
+    from tools import slash_confirm as confirm_mod
+
+    runner = _make_runner()
+    event = _make_event(text="/approve")
+    event.internal = True
+    session_key = build_session_key(event.source)
+    handler = AsyncMock(return_value="reset done")
+    confirm_mod.clear(session_key)
+    confirm_mod.register(session_key, "confirm-internal", "new", handler)
+    inner = AsyncMock(return_value="agent turn")
+
+    try:
+        with patch.object(GatewayRunner, "_handle_message_with_agent", inner):
+            result = await runner._handle_message(event)
+
+        assert result == "agent turn"
+        assert confirm_mod.get_pending(session_key)["confirm_id"] == "confirm-internal"
+        handler.assert_not_awaited()
+        inner.assert_awaited_once()
+    finally:
+        confirm_mod.clear(session_key)
+
+
+@pytest.mark.asyncio
+async def test_internal_event_joins_busy_fifo_without_steering_or_interrupting():
+    runner = _make_runner()
+    event = _make_event(text="synthetic completion")
+    event.internal = True
+    session_key = build_session_key(event.source)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    head = _make_event(text="first queued user reply")
+    adapter._pending_messages[session_key] = head
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    fake_agent.steer.return_value = True
+    runner._running_agents[session_key] = fake_agent
+    runner._running_agents_ts[session_key] = time.time() - 10
+    runner._busy_input_mode = "steer"
+    runner._busy_text_mode = "interrupt"
+
+    result = await runner._handle_message(event)
+
+    assert result is None
+    fake_agent.steer.assert_not_called()
+    fake_agent.redirect.assert_not_called()
+    fake_agent.interrupt.assert_not_called()
+    assert adapter._pending_messages[session_key] is head
+    assert runner._session_state(session_key).conversation.queued_events == [event]
 
 
 # ------------------------------------------------------------------

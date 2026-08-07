@@ -8851,6 +8851,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return (enriched_text or text).strip()
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        # Internal completions are opaque agent evidence, not user input. Let
+        # the base adapter queue them for the next turn without consulting any
+        # authorization, approval, steer, interrupt, or acknowledgement path.
+        if getattr(event, "internal", False):
+            return False
+
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;
@@ -8974,20 +8980,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter = self._adapter_for_source(event.source)
         if not adapter:
             return False  # let default path handle it
-
-        # --- Internal synthetic events must never interrupt/steer ---
-        # Async-delegation completions (delegate_task(background=true)) and
-        # background-process completions (terminal notify_on_complete) re-enter
-        # the originating session as internal MessageEvents. When the session
-        # is busy, treating them like a user TEXT message means interrupt-mode
-        # (the default busy_text_mode) aborts the active turn AND sends a "⚡
-        # Interrupting current task" ack — exactly the opposite of the design
-        # invariant that a completion surfaces as a NEW turn only when idle and
-        # never splices into a running turn. Fall through to the base adapter,
-        # which queues internal events silently (no interrupt, no ack) so they
-        # cascade after the current turn finishes.
-        if getattr(event, "internal", False):
-            return False
 
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
@@ -14740,7 +14732,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
         _up_state = self._peek_session_state(_quick_key)
-        if _up_state is not None and _up_state.persistent.update_prompt_pending:
+        if (
+            not is_internal
+            and _up_state is not None
+            and _up_state.persistent.update_prompt_pending
+        ):
             raw = (event.text or "").strip()
             # Accept /approve and /deny as shorthand for yes/no
             cmd = event.get_command()
@@ -14812,13 +14808,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # to the second option, arbitrary text becomes a custom answer). Slash
         # commands still bypass this path so /stop and friends keep working.
         _clarify_mod = None
-        try:
-            from tools import clarify_gateway as _clarify_mod
-            _pending_clarify = _clarify_mod.get_pending_for_session(
-                _quick_key, include_choice_prompts=True,
-            )
-        except Exception:
-            _pending_clarify = None
+        _pending_clarify = None
+        if not is_internal:
+            try:
+                from tools import clarify_gateway as _clarify_mod
+                _pending_clarify = _clarify_mod.get_pending_for_session(
+                    _quick_key, include_choice_prompts=True,
+                )
+            except Exception:
+                _pending_clarify = None
         if _pending_clarify is not None and _clarify_mod is not None:
             _clarify_has_audio = bool(self._pending_event_audio_paths(event))
             _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
@@ -14874,13 +14872,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # precedence — /approve there unblocks the waiting tool thread.
         # Slash-confirm only catches /approve when no tool approval is live.
         from tools import slash_confirm as _slash_confirm_mod
-        _pending_confirm = _slash_confirm_mod.get_pending(_quick_key)
+        _pending_confirm = None
         _tool_approval_live = False
-        try:
-            from tools.approval import has_blocking_approval
-            _tool_approval_live = has_blocking_approval(_quick_key)
-        except Exception:
-            _tool_approval_live = False
+        if not is_internal:
+            _pending_confirm = _slash_confirm_mod.get_pending(_quick_key)
+            try:
+                from tools.approval import has_blocking_approval
+                _tool_approval_live = has_blocking_approval(_quick_key)
+            except Exception:
+                _tool_approval_live = False
         if _pending_confirm and not _tool_approval_live:
             _raw_reply = (event.text or "").strip()
             # Accept bang-prefixed replies (`!always`, `!cancel`) verbatim.
@@ -14975,6 +14975,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_running_agent_state(_quick_key)
 
         if self._is_session_running(_quick_key):
+            if is_internal:
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return None
+
             # Resolve the command once; every command's mid-run behavior is
             # declared on its CommandDef (busy_policy / busy_handler in
             # hermes_cli/commands.py) and dispatched through the single
@@ -15177,7 +15181,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
 
         # Check for commands
-        command = event.get_command()
+        command = None if is_internal else event.get_command()
 
         from hermes_cli.commands import (
             GATEWAY_KNOWN_COMMANDS,
@@ -26049,7 +26053,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # as user input.  The primary fix is in base.py (commands bypass the
             # active-session guard), but this catches edge cases where command
             # text leaks through the interrupt_message fallback.
-            if pending and pending.strip().startswith("/"):
+            if (
+                pending
+                and not getattr(pending_event, "internal", False)
+                and pending.strip().startswith("/")
+            ):
                 _pending_parts = pending.strip().split(None, 1)
                 _pending_cmd_word = _pending_parts[0][1:].lower() if _pending_parts else ""
                 if _pending_cmd_word:

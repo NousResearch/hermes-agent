@@ -1108,7 +1108,9 @@ class RecallGuardMiddleware(InboundMiddleware):
             text=recall_text,
             message_type=MessageType.TEXT,
             source=cls._build_source(adapter, group_code, from_account),
-            internal=True,
+            # A recall is explicit cancellation control, not opaque completion
+            # evidence, so it must remain eligible for the interrupt monitor.
+            internal=False,
         )
         # Set pending + signal directly (bypass handle_message to avoid busy-ack).
         # May overwrite a user message pending in the same ~200ms window — acceptable.

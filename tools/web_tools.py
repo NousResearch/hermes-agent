@@ -97,7 +97,12 @@ from tools.tool_backend_helpers import (  # noqa: F401
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
-from tools.url_safety import async_is_safe_url, normalize_url_for_request, sensitive_query_param_name
+from tools.url_safety import (
+    async_is_safe_url,
+    has_url_userinfo,
+    normalize_url_for_request,
+    sensitive_query_param_name,
+)
 import sys
 
 logger = logging.getLogger(__name__)
@@ -793,6 +798,16 @@ async def web_extract_tool(
             }
             continue
         normalized_url = normalize_url_for_request(_url)
+        if has_url_userinfo(normalized_url):
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "Blocked: URL contains embedded userinfo credentials. "
+                    "Web extract backends are third-party readers; remove the "
+                    "userinfo or use a local browser session when authenticated "
+                    "access is explicitly required."
+                ),
+            })
         if (
             _PREFIX_RE.search(_url)
             or _PREFIX_RE.search(unquote(_url))

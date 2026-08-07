@@ -230,6 +230,26 @@ def test_missing_explicit_config_does_not_fall_back_to_discovery(
         host.shutdown()
 
 
+def test_malformed_explicit_config_does_not_fall_back_to_discovery(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    config = tmp_path / "plugins.toml"
+    config.write_text("[[components]\nkind =", encoding="utf-8")
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    relay = _FakeRelay()
+
+    with caplog.at_level("WARNING"):
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    try:
+        assert not host.managed_execution_enabled()
+        assert relay.events == []
+        assert "continuing without Relay plugins" in caplog.text
+    finally:
+        host.shutdown()
+
+
 def test_two_profile_hosts_initialize_once_and_clear_after_final_shutdown(
     explicit_static_config,
 ):
@@ -834,9 +854,8 @@ def test_real_binding_loads_explicit_config_and_exports_native_activity(
         pytest.skip("NeMo Relay native binding is unavailable on this platform")
     from agent import relay_llm, relay_tools
 
-    project_root = tmp_path / "project"
-    working_directory = project_root / "workspace"
-    config_directory = project_root / ".nemo-relay"
+    working_directory = tmp_path / "project" / "workspace"
+    config_directory = tmp_path / "selected-config"
     atof_dir = tmp_path / "atof"
     atif_dir = tmp_path / "atif"
     working_directory.mkdir(parents=True)

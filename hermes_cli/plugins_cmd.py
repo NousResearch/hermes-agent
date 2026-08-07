@@ -1336,14 +1336,14 @@ def _save_enabled_set(enabled: set) -> None:
 def _resolve_plugin_key(name: str) -> Optional[str]:
     """Resolve a user-supplied plugin identifier to its canonical registry key.
 
-    Accepts either the bare manifest name (``nemo_relay``), the directory
-    name, or the full path-derived key (``observability/nemo_relay``) and
+    Accepts either the bare manifest name (``langfuse``), the directory
+    name, or the full path-derived key (``observability/langfuse``) and
     returns the canonical key the loader gates on (``manifest.key`` or, for a
     flat plugin, the bare name). Returns ``None`` when no plugin matches.
 
     This is the single normalization point so ``hermes plugins enable`` /
     ``disable`` write the same key that ``PluginManager`` matches against —
-    nested category plugins (e.g. ``observability/nemo_relay``) included.
+    nested category plugins (e.g. ``observability/langfuse``) included.
     """
     entries = _discover_all_plugins()
     # 1. Exact match on canonical key or manifest name — always unambiguous.
@@ -1351,8 +1351,8 @@ def _resolve_plugin_key(name: str) -> Optional[str]:
         # entry = (name, version, description, source, dir_path, key)
         if name == entry[5] or name == entry[0]:
             return entry[5]
-    # 2. Fall back to a bare leaf-name match (e.g. "nemo_relay" ->
-    #    "observability/nemo_relay"), but only when it resolves to exactly one
+    # 2. Fall back to a bare leaf-name match (e.g. "langfuse" ->
+    #    "observability/langfuse"), but only when it resolves to exactly one
     #    plugin so we never silently pick the wrong same-named nested plugin.
     leaf_matches = [entry[5] for entry in entries if name == entry[5].split("/")[-1]]
     if len(leaf_matches) == 1:

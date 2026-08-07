@@ -56,6 +56,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | Plugin | Kind | Purpose |
 |---|---|---|
 | `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
+| `session_continuity` | hook + slash command | On the first turn of a fresh session, inject a compact summary of the most recent previous visible session into the current user message |
 | `security-guidance` | hooks | Pattern-match dangerous code on `write_file`/`patch` and append a security warning (or block) — 25 rules (Apache-2.0 fork of Anthropic's `claude-plugins-official` patterns) |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `observability/nemo_relay` | hooks | Relay observability events (turns / LLM calls / tools) to an NVIDIA NeMo endpoint |
@@ -117,6 +118,24 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 **Enabling:** `hermes plugins enable disk-cleanup` (or check the box in `hermes plugins`).
 
 **Disabling again:** `hermes plugins disable disk-cleanup`.
+
+### session_continuity
+
+Restores lightweight continuity across fresh sessions without changing the cached system prompt. On the first turn only, the plugin finds the most recent previous visible session, takes its title/source/date/session prefix plus a few recent user/assistant messages, and returns it from `pre_llm_call` as `{"context": "..."}`. Hermes appends that context to the current user message at API-call time.
+
+It skips subagent, tool, cron, curator/catalog, archived, child, current, and empty sessions. By default it recalls from the same surface/source (for example Telegram recalls Telegram sessions, CLI recalls CLI sessions), and when both sessions have a user id it requires that user id to match. Tool messages and tool-call-only assistant messages are not included. No LLM calls are made.
+
+**Enabling:** `hermes plugins enable session_continuity`.
+
+Optional config:
+
+```yaml
+session_continuity:
+  max_chars: 2000
+  message_limit: 6
+```
+
+**Slash command:** `/continuity status` shows the current candidate; `/continuity reset` is a no-op because the plugin keeps no persistent state.
 
 ### security-guidance
 

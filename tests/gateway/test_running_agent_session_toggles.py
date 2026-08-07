@@ -1,4 +1,4 @@
-"""Regression tests: /yolo and /verbose dispatch mid-agent-run.
+"""Regression tests for session commands dispatched during an agent run.
 
 When an agent is running, the gateway's running-agent guard rejects most
 slash commands with "⏳ Agent is running — /{cmd} can't run mid-turn"
@@ -9,14 +9,12 @@ slash commands with "⏳ Agent is running — /{cmd} can't run mid-turn"
   * /verbose — cycles the per-platform tool-progress display mode;
     affects the ongoing stream.
 
-Commands whose handlers say "takes effect on next message" stay on the
-catch-all by design:
+Config-only commands still reject changes during the active turn:
 
-  * /fast — writes config.yaml only
-  * /reasoning — writes config.yaml only
+  * /fast — uses the generic busy response
+  * /reasoning — uses a busy response that reports the active level
 
-These tests lock in both behaviors so the allowlist doesn't silently
-grow or shrink.
+These tests lock in the dispatch and rejection behaviors.
 """
 
 from datetime import datetime
@@ -104,6 +102,7 @@ def _make_runner():
         "api_call_count": 1,
         "max_iterations": 60,
     }
+    agent_mock.reasoning_config = {"enabled": True, "effort": "high"}
     runner._running_agents[sk] = agent_mock
     runner._running_agents_ts[sk] = time.time()
     return runner
@@ -135,3 +134,102 @@ async def test_verbose_dispatches_mid_run(monkeypatch):
     assert "can't run mid-turn" not in (result or "")
 
 
+
+
+@pytest.mark.asyncio
+async def test_fast_rejected_mid_run():
+    """/fast remains config-only and rejected while a turn is active."""
+    runner = _make_runner()
+    runner._handle_fast_command = AsyncMock(
+        side_effect=AssertionError("/fast should not dispatch mid-run")
+    )
+
+    result = await runner._handle_message(_make_event("/fast"))
+
+    runner._handle_fast_command.assert_not_awaited()
+    assert result is not None
+    assert "can't run mid-turn" in result
+    assert "/fast" in result
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_change_reports_active_level_mid_run():
+    """/reasoning effort changes report the active level without applying."""
+    runner = _make_runner()
+    runner._apply_reasoning_selection = MagicMock(
+        side_effect=AssertionError("effort must not change mid-turn")
+    )
+
+    result = await runner._handle_message(_make_event("/reasoning ultra"))
+
+    runner._apply_reasoning_selection.assert_not_called()
+    assert result is not None
+    assert "running on **high** reasoning" in result
+    assert "can't change effort mid-turn" in result
+
+
+@pytest.mark.asyncio
+async def test_reasoning_pending_agent_uses_session_resolution():
+    """A pending turn resolves reasoning from that session's model state."""
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    runner._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+    runner._session_model_overrides = {session_key: {"model": "model-a"}}
+    runner._resolve_session_reasoning_config = MagicMock(
+        return_value={"enabled": False}
+    )
+
+    result = await runner._handle_message(_make_event("/reasoning"))
+
+    assert result is not None
+    assert "running on **none (disabled)** reasoning" in result
+    runner._resolve_session_reasoning_config.assert_called_once_with(
+        source=_make_source(),
+        session_key=session_key,
+        model="model-a",
+    )
+
+
+@pytest.mark.asyncio
+async def test_reasoning_default_does_not_leak_from_another_running_session():
+    """An explicit agent default must not fall back to runner-global state."""
+    runner = _make_runner()
+    active_key = build_session_key(_make_source())
+    runner._running_agents[active_key].reasoning_config = None
+
+    other_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u2",
+        chat_id="c2",
+        user_name="other",
+        chat_type="dm",
+    )
+    other_agent = MagicMock()
+    other_agent.reasoning_config = {"enabled": True, "effort": "ultra"}
+    runner._running_agents[build_session_key(other_source)] = other_agent
+    runner._reasoning_config = other_agent.reasoning_config
+
+    result = await runner._handle_message(_make_event("/reasoning"))
+
+    assert result is not None
+    assert "running on **medium (default)** reasoning" in result
+    assert "ultra" not in result
+
+
+@pytest.mark.asyncio
+async def test_reasoning_display_toggle_applies_mid_run():
+    """/reasoning hide is display-only and may affect the active response."""
+    runner = _make_runner()
+    runner._show_reasoning = True
+    runner._save_gateway_config_key = MagicMock(return_value=True)
+
+    result = await runner._handle_message(_make_event("/reasoning hide"))
+
+    assert result is not None
+    assert "can't change effort mid-turn" not in result
+    assert runner._show_reasoning is False
+    runner._save_gateway_config_key.assert_called_once_with(
+        "display.platforms.telegram.show_reasoning", False
+    )

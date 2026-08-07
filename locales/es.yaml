@@ -188,6 +188,7 @@ gateway:
   reasoning:
     level_default:             "medium (predeterminado)"
     level_disabled:            "none (deshabilitado)"
+    busy_mid_turn:             "⏳ El agente está ejecutándose con razonamiento **{level}** — `/reasoning` no puede cambiar el nivel durante el turno. Para cambiarlo, espera la respuesta actual o usa `/stop` primero."
     scope_session:             "anulación de sesión"
     scope_global:              "configuración global"
     status:                    "🧠 **Ajustes de razonamiento**\n\n**Esfuerzo:** `{level}`\n**Alcance:** {scope}\n**Visualización:** {display}\n\n_Uso:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"

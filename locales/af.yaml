@@ -188,6 +188,7 @@ gateway:
   reasoning:
     level_default:             "medium (verstek)"
     level_disabled:            "none (gedeaktiveer)"
+    busy_mid_turn:             "⏳ Die agent gebruik tans **{level}**-redenering — `/reasoning` kan nie die vlak midde-in 'n beurt verander nie. Om dit te verander, wag vir die huidige antwoord of gebruik eers `/stop`."
     scope_session:             "sessie-oorskryf"
     scope_global:              "globale konfigurasie"
     status:                    "🧠 **Redenering-instellings**\n\n**Inspanning:** `{level}`\n**Bereik:** {scope}\n**Vertoon:** {display}\n\n_Gebruik:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"

@@ -211,6 +211,7 @@ gateway:
   reasoning:
     level_default:             "medium (افتراضي)"
     level_disabled:            "none (مُعطّل)"
+    busy_mid_turn:             "⏳ يعمل الوكيل حاليًا بمستوى استدلال **{level}** — لا يمكن لـ `/reasoning` تغيير مستوى الاستدلال أثناء الدور. لتغييره، انتظر الرد الحالي أو استخدم `/stop` أولًا."
     scope_session:             "تجاوز الجلسة"
     scope_global:              "الإعدادات العامة"
     status:                    "🧠 **إعدادات التفكير**\n\n**الجهد:** `{level}`\n**النطاق:** {scope}\n**العرض:** {display}\n\n_الاستخدام:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"

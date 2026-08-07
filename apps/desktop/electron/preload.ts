@@ -139,6 +139,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setKeepAwake: on => ipcRenderer.send('hermes:keep-awake', on),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
+  openResponseLink: url => ipcRenderer.invoke('hermes:openResponseLink', url),
   openPreviewInBrowser: url => ipcRenderer.invoke('hermes:openPreviewInBrowser', url),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
   sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('hermes:workspace:sanitize', cwd),

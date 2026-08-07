@@ -15,7 +15,8 @@ import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { detectArtifact } from '@/lib/artifact-detect'
-import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { desktopTargetFromMarkdownHref, remarkDesktopLinks } from '@/lib/desktop-links'
+import { ExternalLink, normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -51,6 +52,7 @@ import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } fro
 // `singleDollarTextMath: true` enables `$x^2$` for inline math (de-facto
 // LLM convention). The default false-setting only accepts `$$...$$`.
 const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
+const remarkPlugins = [remarkDesktopLinks]
 
 // `@streamdown/code` statically imports ALL of shiki (every grammar + theme —
 // the single largest chunk in the renderer), so it must never sit on the
@@ -254,6 +256,24 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 
   if (mediaPath) {
     return <MediaAttachment path={mediaPath} />
+  }
+
+  const desktopTarget = desktopTargetFromMarkdownHref(href)
+
+  if (desktopTarget) {
+    return (
+      <ExternalLink
+        className={cn('wrap-anywhere', className)}
+        href={desktopTarget}
+        onClick={event => {
+          event.preventDefault()
+          void window.hermesDesktop?.openResponseLink?.(desktopTarget)
+        }}
+        {...props}
+      >
+        {children}
+      </ExternalLink>
+    )
   }
 
   const previewTarget = previewTargetFromMarkdownHref(href)
@@ -612,6 +632,7 @@ function MarkdownTextSurface({
       parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
       plugins={plugins}
       preprocess={preprocessWithTailRepair}
+      remarkPlugins={remarkPlugins}
     />
   )
 }

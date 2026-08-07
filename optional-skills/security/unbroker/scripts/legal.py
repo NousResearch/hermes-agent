@@ -61,3 +61,18 @@ def render_request(kind: str, broker: dict, fields: dict) -> str:
     ctx["listing_urls"] = _join_listings(fields.get("listing_urls"))
     ctx["my_identifiers"] = _join_identifiers(fields.get("my_identifiers"))
     return render(template, ctx)
+
+
+def render_complaint(regime: str, fields: dict) -> str:
+    """Render a regulator-complaint DRAFT for a broker that ignored a request past
+    its statutory deadline. regime: ccpa (CA AG / CPPA) | gdpr (national DPA).
+
+    Draft only - the operator files it; unbroker never submits a complaint itself.
+    """
+    template = {
+        "ccpa": "emails/ccpa-complaint.txt",
+        "gdpr": "emails/gdpr-complaint.txt",
+    }.get(regime)
+    if not template:
+        raise ValueError(f"no complaint template for regime {regime!r} (expected ccpa|gdpr)")
+    return render(template, fields)

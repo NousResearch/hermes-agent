@@ -131,6 +131,7 @@ breaks reading the dossier).
 | `$PDD tasks <subject>` | ONE consolidated human-task digest (present at END of run) |
 | `$PDD status <subject>` | Markdown status report |
 | `$PDD report <subject> --sheets` | Rows for the Google Sheets tracker |
+| `$PDD complaints <subject>` | Draft a regulator complaint for each broker that ignored a request past its statutory deadline (CCPA 45d / GDPR 30d). **Draft-only - you file it**; CA/EU-UK subjects only |
 
 ## Batch operation (two-phase: crawl-all, then delete)
 
@@ -263,7 +264,12 @@ recording `found` and before any deletion.
     verifying re-scan shows the listing gone - never off the submission flow's own confirmation page.
 7. **Wrap up (once per run).** When `next` returns no actions: present `$PDD tasks <subject>` (the
    consolidated human digest) if non-empty, then `$PDD status <subject>`; if the Sheets tracker is
-   on, append `$PDD report <subject> --sheets` rows via the `google-workspace` skill.
+   on, append `$PDD report <subject> --sheets` rows via the `google-workspace` skill. If `status`
+   flags requests **past the statutory deadline** (a broker that never confirmed removal within the
+   CCPA 45-day / GDPR 30-day window), run `$PDD complaints <subject>` to render a ready-to-file
+   regulator-complaint draft for each. These are **drafts only** - surface them in the digest for the
+   operator to review and file; unbroker never files a complaint automatically (a consequential,
+   outward-facing legal action), and only CA (CCPA) and EU/UK (GDPR) subjects can invoke one.
 8. **Schedule the next wake-up.** `next` returns `next_wake_at` (earliest due re-check). Create ONE
    `cronjob` that re-runs this skill's loop for the subject (a prompt like: *"run the
    unbroker loop for <subject_id>: `$PDD next` and execute all actions"*). Processing

@@ -1,6 +1,9 @@
 """Tests for tools/skill_manager_tool.py — skill creation, editing, and deletion."""
 
 import json
+import os
+import shutil
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -947,3 +950,331 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+# ---------------------------------------------------------------------------
+# Staging preflight — validate create/edit payloads before they become pending
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _approval_home(monkeypatch, enabled):
+    """HERMES_HOME on a temp dir with skills.write_approval set to ``enabled``.
+
+    Always writes the flag explicitly: reading the operator's real config would
+    make gate-on/gate-off assertions depend on the machine.
+    """
+    d = tempfile.mkdtemp(prefix="hermes_skill_gate_test_")
+    home = os.path.join(d, ".hermes")
+    os.makedirs(home)
+    monkeypatch.setenv("HERMES_HOME", home)
+    import hermes_cli.config as cfg
+    config = cfg.load_config()
+    config.setdefault("skills", {})["write_approval"] = enabled
+    cfg.save_config(config)
+    try:
+        yield home
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _desc_of_length(n):
+    """A one-sentence description padded to exactly ``n`` characters."""
+    head = "Use when staging a skill "
+    return head + "a" * (n - len(head) - 1) + "."
+
+
+def _desc_with_quoted_tail(budgeted_len):
+    """A plain-YAML description ending in a quote character.
+
+    YAML leaves the quote in the parsed value, but the budget check measures
+    ``desc.strip().strip("'\\"")`` — so the parsed value is one char longer
+    than the length the limit is actually applied to. Used to pin the reported
+    count to the measured one.
+    """
+    head = "Use when the user says "
+    return head + '"' + "a" * (budgeted_len - len(head) - 1) + '"'
+
+
+def _skill_md(desc, name="budget-skill"):
+    return f"---\nname: {name}\ndescription: {desc}\n---\n\n# Budget Skill\n\nStep 1.\n"
+
+
+def _skill_on_disk(tmp_path, name="budget-skill"):
+    """Materialize a valid skill so disk-state checks pass and payload
+    validation is what decides the outcome."""
+    skill = tmp_path / name
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(
+        _skill_md(_desc_of_length(SKILL_PROMPT_DESC_LIMIT), name=name), encoding="utf-8"
+    )
+    return skill
+
+
+class TestStagedWritePreflight:
+    """An invalid write payload must be rejected before it is staged.
+
+    Staging defers the real write — and the validation inside the action
+    handlers — to approval replay, so validation that only runs there surfaces
+    the failure after the user already reviewed and approved the pending
+    record.
+    """
+
+    def test_over_budget_description_is_not_staged(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        over = _desc_of_length(SKILL_PROMPT_DESC_LIMIT + 1)
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="create", name="budget-skill", content=_skill_md(over),
+            ))
+            assert result.get("success") is False, result
+            assert result.get("staged") is not True
+            assert wa.pending_count(wa.SKILLS) == 0
+            # The rejection must name the real count, the limit, and the fix.
+            error = result["error"]
+            assert f"Description is {SKILL_PROMPT_DESC_LIMIT + 1} chars" in error
+            assert f"{SKILL_PROMPT_DESC_LIMIT}-char system-prompt budget" in error
+            assert "Move detail into the skill body." in error
+
+    def test_at_budget_description_stages_normally(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        at_limit = _desc_of_length(SKILL_PROMPT_DESC_LIMIT)
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="create", name="budget-skill", content=_skill_md(at_limit),
+            ))
+            assert result["staged"] is True, result
+            assert result["pending_id"]
+            assert wa.pending_count(wa.SKILLS) == 1
+
+    def test_edit_over_budget_still_stages(self, tmp_path, monkeypatch):
+        """The 60-char rule is create-only, so edit must keep staging —
+        otherwise existing over-limit skills become uneditable."""
+        from tools import write_approval as wa
+        over = _desc_of_length(SKILL_PROMPT_DESC_LIMIT + 40)
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="edit", name="budget-skill", content=_skill_md(over),
+            ))
+            assert result["staged"] is True, result
+            assert wa.pending_count(wa.SKILLS) == 1
+
+    def test_patch_merged_result_is_not_preflighted(self, tmp_path, monkeypatch):
+        """A patch's merged result does not exist until replay, so approval-time
+        validation stays its only checkpoint — even for a patch that will break
+        the frontmatter once applied."""
+        from tools import write_approval as wa
+        _skill_on_disk(tmp_path)
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="patch", name="budget-skill",
+                old_string="name: budget-skill", new_string="",
+            ))
+            assert result["staged"] is True, result
+            assert wa.pending_count(wa.SKILLS) == 1
+
+    def test_patch_on_missing_skill_still_stages(self, tmp_path, monkeypatch):
+        """Whether the skill exists is disk state, which can change between
+        staging and approval — so it stays a replay-time check."""
+        from tools import write_approval as wa
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="patch", name="budget-skill",
+                old_string="Step 1.", new_string="Step 2.",
+            ))
+            assert result["staged"] is True, result
+            assert wa.pending_count(wa.SKILLS) == 1
+
+    def test_missing_content_is_not_staged(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(action="create", name="budget-skill"))
+            assert result.get("success") is False, result
+            assert "content is required for 'create'" in result["error"]
+            assert wa.pending_count(wa.SKILLS) == 0
+
+    def test_invalid_category_is_not_staged(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        ok = _desc_of_length(SKILL_PROMPT_DESC_LIMIT)
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="create", name="budget-skill", content=_skill_md(ok),
+                category="../escape",
+            ))
+            assert result.get("success") is False, result
+            assert "Invalid category '../escape'" in result["error"]
+            assert wa.pending_count(wa.SKILLS) == 0
+
+    def test_malformed_frontmatter_is_not_staged(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="create", name="budget-skill", content="# No frontmatter\n",
+            ))
+            assert result.get("success") is False, result
+            assert "must start with YAML frontmatter" in result["error"]
+            assert wa.pending_count(wa.SKILLS) == 0
+
+    def test_gate_off_writes_through_unchanged(self, tmp_path, monkeypatch):
+        """With the gate off nothing stages and the create still lands."""
+        from tools import write_approval as wa
+        ok = _desc_of_length(SKILL_PROMPT_DESC_LIMIT)
+        with _approval_home(monkeypatch, False), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="create", name="budget-skill", content=_skill_md(ok),
+            ))
+            assert result["success"] is True, result
+            assert result.get("staged") is not True
+            assert wa.pending_count(wa.SKILLS) == 0
+        assert (tmp_path / "budget-skill" / "SKILL.md").exists()
+
+    def test_reported_count_is_the_measured_count(self, tmp_path, monkeypatch):
+        """The budget is applied to the quote-stripped description, so the
+        rejection must report that length — not the raw parsed one."""
+        over = _desc_with_quoted_tail(SKILL_PROMPT_DESC_LIMIT + 1)
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="create", name="budget-skill", content=_skill_md(over),
+            ))
+            assert result.get("success") is False, result
+            error = result["error"]
+            assert f"Description is {SKILL_PROMPT_DESC_LIMIT + 1} chars" in error
+            assert f"Description is {SKILL_PROMPT_DESC_LIMIT + 2} chars" not in error
+
+    def test_patch_params_are_preflighted(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        _skill_on_disk(tmp_path)
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="patch", name="budget-skill", new_string="Step 2.",
+            ))
+            assert result.get("success") is False, result
+            assert "old_string is required for 'patch'" in result["error"]
+            assert wa.pending_count(wa.SKILLS) == 0
+
+    def test_patch_file_path_traversal_is_not_staged(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        _skill_on_disk(tmp_path)
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="patch", name="budget-skill", file_path="../escape.md",
+                old_string="Step 1.", new_string="Step 2.",
+            ))
+            assert result.get("success") is False, result
+            assert "Path traversal" in result["error"]
+            assert wa.pending_count(wa.SKILLS) == 0
+
+    def test_write_file_traversal_is_not_staged(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="write_file", name="budget-skill",
+                file_path="../escape.md", file_content="pwned\n",
+            ))
+            assert result.get("success") is False, result
+            assert "Path traversal" in result["error"]
+            assert wa.pending_count(wa.SKILLS) == 0
+
+    def test_write_file_over_byte_limit_is_not_staged(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        from tools.skill_manager_tool import MAX_SKILL_FILE_BYTES
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="write_file", name="budget-skill",
+                file_path="references/big.md", file_content="a" * (MAX_SKILL_FILE_BYTES + 1),
+            ))
+            assert result.get("success") is False, result
+            assert "1 MiB" in result["error"]
+            assert wa.pending_count(wa.SKILLS) == 0
+
+    def test_write_file_missing_content_is_not_staged(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="write_file", name="budget-skill", file_path="references/a.md",
+            ))
+            assert result.get("success") is False, result
+            assert "file_content is required for 'write_file'" in result["error"]
+            assert wa.pending_count(wa.SKILLS) == 0
+
+    def test_write_file_empty_content_still_stages(self, tmp_path, monkeypatch):
+        """An empty supporting file is a legal write, so the preflight must not
+        be stricter than the handler it stands in for."""
+        from tools import write_approval as wa
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="write_file", name="budget-skill",
+                file_path="references/a.md", file_content="",
+            ))
+            assert result["staged"] is True, result
+            assert wa.pending_count(wa.SKILLS) == 1
+
+    def test_remove_file_traversal_is_not_staged(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="remove_file", name="budget-skill", file_path="../escape.md",
+            ))
+            assert result.get("success") is False, result
+            assert "Path traversal" in result["error"]
+            assert wa.pending_count(wa.SKILLS) == 0
+
+    def test_delete_stages_without_preflight(self, tmp_path, monkeypatch):
+        """Delete carries no payload beyond the name, whose existence is disk
+        state — nothing to preflight."""
+        from tools import write_approval as wa
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(action="delete", name="budget-skill"))
+            assert result["staged"] is True, result
+            assert wa.pending_count(wa.SKILLS) == 1
+
+    @pytest.mark.parametrize("kwargs", [
+        pytest.param(
+            {"action": "create", "content": _skill_md(_desc_of_length(SKILL_PROMPT_DESC_LIMIT + 1))},
+            id="create-over-budget",
+        ),
+        pytest.param({"action": "create"}, id="create-missing-content"),
+        pytest.param(
+            {"action": "create", "content": _skill_md(_desc_of_length(SKILL_PROMPT_DESC_LIMIT)),
+             "category": "../escape"},
+            id="create-bad-category",
+        ),
+        pytest.param(
+            {"action": "patch", "new_string": "Step 2."}, id="patch-missing-old-string",
+        ),
+        pytest.param(
+            {"action": "patch", "file_path": "../escape.md",
+             "old_string": "Step 1.", "new_string": "Step 2."},
+            id="patch-traversal",
+        ),
+        pytest.param(
+            {"action": "write_file", "file_path": "../escape.md", "file_content": "x"},
+            id="write-file-traversal",
+        ),
+        pytest.param(
+            {"action": "write_file", "file_path": "notes/a.md", "file_content": "x"},
+            id="write-file-bad-subdir",
+        ),
+        pytest.param({"action": "write_file", "file_path": "references/a.md"},
+                     id="write-file-missing-content"),
+        pytest.param({"action": "remove_file", "file_path": "../escape.md"},
+                     id="remove-file-traversal"),
+    ])
+    def test_gated_and_ungated_rejections_are_identical(self, tmp_path, monkeypatch, kwargs):
+        """The preflight must be the gate-off path's validation, not a parallel
+        copy of it: the same payload has to produce the same error either way.
+
+        Divergence is the real hazard here — a preflight that is stricter than
+        replay rejects writes approval would have accepted, and one that is
+        laxer re-introduces the round trip this exists to remove.
+        """
+        _skill_on_disk(tmp_path)
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            gated = json.loads(skill_manage(name="budget-skill", **kwargs))
+        with _approval_home(monkeypatch, False), _skill_dir(tmp_path):
+            ungated = json.loads(skill_manage(name="budget-skill", **kwargs))
+
+        assert gated.get("success") is False, gated
+        assert gated.get("staged") is not True, gated
+        assert ungated.get("success") is False, ungated
+        assert gated["error"] == ungated["error"]

@@ -126,6 +126,21 @@ class TestControlSocketPath:
         assert SSHEnvironment(host="g", user="u", port=22).control_socket != base
 
 
+
+    def test_control_dir_mode_is_private(self, tmp_path, monkeypatch):
+        """ControlPath directory must be 0o700 so other local users cannot
+        plant sockets under /tmp/hermes-ssh (#80284)."""
+        monkeypatch.setattr(
+            "tools.environments.ssh.tempfile.gettempdir",
+            lambda: str(tmp_path),
+        )
+        env = SSHEnvironment(host="example.com", user="alice")
+        assert env.control_dir == tmp_path / "hermes-ssh"
+        assert env.control_dir.is_dir()
+        mode = env.control_dir.stat().st_mode & 0o777
+        assert mode == 0o700, f"expected 0o700, got {oct(mode)}"
+
+
 class TestTerminalToolConfig:
     def test_ssh_persistent_default_true(self, monkeypatch):
         """SSH persistent defaults to True (via TERMINAL_PERSISTENT_SHELL)."""

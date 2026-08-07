@@ -473,11 +473,17 @@ def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optiona
     multiple custom providers share the same base_url but have different API keys).
     Falls back to base_url matching when no name match is found.
 
+    URL matching uses ``normalize_route_base_url`` so credential scope follows
+    route identity (path case and query values matter; full-string ``rstrip("/")``
+    must not conflate ``?tenant=a/`` with ``?tenant=a``).
+
     Returns None if no match is found.
     """
     if not base_url:
         return None
-    normalized_url = base_url.strip().rstrip("/")
+    from hermes_cli.route_identity import normalize_route_base_url
+
+    normalized_url = normalize_route_base_url(str(base_url).strip())
 
     # When a provider name is given, try to match by name first.
     # This fixes the P1 bug where two custom providers sharing the same
@@ -490,7 +496,7 @@ def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optiona
 
     # Fall back to base_url matching (original behavior)
     for norm_name, entry in _iter_custom_providers():
-        entry_url = str(entry.get("base_url") or "").strip().rstrip("/")
+        entry_url = normalize_route_base_url(str(entry.get("base_url") or "").strip())
         if entry_url and entry_url == normalized_url:
             return f"{CUSTOM_POOL_PREFIX}{norm_name}"
     return None
@@ -3024,7 +3030,7 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
     cp_config = _get_custom_provider_config(pool_key)
     if cp_config:
         api_key = str(cp_config.get("api_key") or "").strip()
-        base_url = str(cp_config.get("base_url") or "").strip().rstrip("/")
+        base_url = str(cp_config.get("base_url") or "").strip()
         name = str(cp_config.get("name") or "").strip()
         if api_key:
             source = f"config:{name}"
@@ -3049,7 +3055,7 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
         model_cfg = config.get("model") if config else None
         if isinstance(model_cfg, dict):
             model_provider = str(model_cfg.get("provider") or "").strip().lower()
-            model_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            model_base_url = str(model_cfg.get("base_url") or "").strip()
             model_api_key = ""
             for k in ("api_key", "api"):
                 v = model_cfg.get(k)

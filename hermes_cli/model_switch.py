@@ -1681,13 +1681,33 @@ def switch_model(
             pass
 
     # --- Direct alias override: use exact base_url from the alias if set ---
+    # Always re-resolve credentials for the alias host. The custom short-circuit
+    # above copies current_api_key/current_base_url; a non-empty foreign key
+    # (e.g. OpenRouter session → model_aliases → ollama.com) must not survive
+    # the old `if not api_key: api_key = "no-key-required"` fill-in. Passing
+    # explicit_base_url runs host-gated key selection in runtime_provider.
     if resolved_alias:
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
         if _da is not None and _da.base_url:
             base_url = _da.base_url
             api_mode = ""  # clear so determine_api_mode re-detects from URL
-            if not api_key:
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=target_provider,
+                    explicit_base_url=_da.base_url,
+                    target_model=new_model,
+                )
+                api_key = runtime.get("api_key", "") or "no-key-required"
+                if runtime.get("base_url"):
+                    base_url = runtime["base_url"]
+                if runtime.get("api_mode"):
+                    api_mode = runtime.get("api_mode", "")
+            except Exception as e:
+                logger.debug(
+                    "direct-alias credential re-resolve failed for %s: %s",
+                    resolved_alias, e,
+                )
                 api_key = "no-key-required"
 
     # --- Resolve api_mode from the final (provider, base_url) before validation ---

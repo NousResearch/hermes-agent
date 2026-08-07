@@ -368,7 +368,9 @@ def _run_agent(
                 effective_model = direct.model
                 effective_provider = direct.provider
                 if direct.base_url:
-                    explicit_base_url_from_alias = direct.base_url.rstrip("/")
+                    # Preserve raw alias URL for credential-scope comparison.
+                    # Full-string rstrip("/") mutates query values (?tenant=a/).
+                    explicit_base_url_from_alias = direct.base_url.strip()
             else:
                 cfg_provider = ""
                 if isinstance(model_cfg, dict):

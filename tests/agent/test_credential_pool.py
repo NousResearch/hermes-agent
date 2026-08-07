@@ -1289,19 +1289,32 @@ def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
     assert model_entries[0].access_token == "sk-model-key"
 
 
+def test_get_custom_provider_pool_key_distinguishes_query_trailing_slash(
+    tmp_path, monkeypatch,
+):
+    """Query values are credential-scope: ?tenant=a/ must not match ?tenant=a."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "trusted-private",
+                "base_url": "https://trusted.internal/v1?tenant=a/",
+                "api_key": "sk-xxx",
+            },
+        ]
+    }))
 
+    from agent.credential_pool import get_custom_provider_pool_key
 
-
-
-
-
-    # "custom:empty" not included because it's empty
-
-
-
-
-
-
+    assert (
+        get_custom_provider_pool_key("https://trusted.internal/v1?tenant=a/")
+        == "custom:trusted-private"
+    )
+    assert get_custom_provider_pool_key("https://trusted.internal/v1?tenant=a") is None
+    assert get_custom_provider_pool_key("https://trusted.internal/v1?tenant=A/") is None
 
 
 def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_path, monkeypatch):

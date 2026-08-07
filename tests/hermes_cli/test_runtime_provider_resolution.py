@@ -1553,3 +1553,288 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     assert resolved["source"] == "pool:lmstudio-pool"
     assert resolved["provider"] == "custom"
     assert resolved["requested_provider"] == "custom:lmstudio"
+
+
+def test_named_custom_explicit_base_url_mismatch_drops_provider_key(monkeypatch):
+    """Alias override to a different host must not inherit the named provider key.
+
+    model_aliases may set provider: custom:trusted-private together with a
+    base_url that is not that provider's configured endpoint. The configured
+    api_key/key_env are scoped to the configured host and must not follow the
+    provider name to the overridden URL.
+    """
+    secret = "PRIVATE-PROVIDER-SECRET"
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "trusted-private",
+                    "base_url": "https://trusted.internal/v1",
+                    "api_key": secret,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("resolve_provider should not run for named custom providers")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom:trusted-private",
+        explicit_base_url="https://attacker.example/v1",
+    )
+
+    assert resolved["base_url"] == "https://attacker.example/v1"
+    assert resolved["api_key"] != secret
+    assert resolved["api_key"] == "no-key-required"
+    assert resolved["source"] == "direct-alias"
+
+
+def test_named_custom_explicit_base_url_match_keeps_provider_key(monkeypatch):
+    """Matching explicit_base_url still admits the named provider's api_key."""
+    secret = "PRIVATE-PROVIDER-SECRET"
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "trusted-private",
+                    "base_url": "https://trusted.internal/v1",
+                    "api_key": secret,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("resolve_provider should not run for named custom providers")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom:trusted-private",
+        explicit_base_url="https://trusted.internal/v1/",
+    )
+
+    assert resolved["base_url"].rstrip("/") == "https://trusted.internal/v1"
+    assert resolved["api_key"] == secret
+
+
+def test_named_custom_explicit_base_url_path_case_mismatch_drops_provider_key(
+    monkeypatch,
+):
+    """Path case is significant: /v1 and /V1 are different credential scopes."""
+    secret = "PRIVATE-PROVIDER-SECRET"
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "trusted-private",
+                    "base_url": "https://trusted.internal/v1",
+                    "api_key": secret,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("resolve_provider should not run for named custom providers")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom:trusted-private",
+        explicit_base_url="https://trusted.internal/V1",
+    )
+
+    assert resolved["base_url"] == "https://trusted.internal/V1"
+    assert resolved["api_key"] != secret
+    assert resolved["api_key"] == "no-key-required"
+    assert resolved["source"] == "direct-alias"
+
+
+def test_named_custom_explicit_base_url_query_trailing_slash_mismatch_drops_key(
+    monkeypatch,
+):
+    """Query values are part of route identity: ?tenant=a/ != ?tenant=a."""
+    secret = "PRIVATE-PROVIDER-SECRET"
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "trusted-private",
+                    "base_url": "https://trusted.internal/v1?tenant=a/",
+                    "api_key": secret,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("resolve_provider should not run for named custom providers")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom:trusted-private",
+        explicit_base_url="https://trusted.internal/v1?tenant=a",
+    )
+
+    assert resolved["base_url"] == "https://trusted.internal/v1?tenant=a"
+    assert resolved["api_key"] != secret
+    assert resolved["api_key"] == "no-key-required"
+    assert resolved["source"] == "direct-alias"
+
+
+def test_named_custom_exact_query_trailing_slash_keeps_provider_key(monkeypatch):
+    """Exact ?tenant=a/ match still admits the named provider secret."""
+    secret = "PRIVATE-PROVIDER-SECRET"
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "trusted-private",
+                    "base_url": "https://trusted.internal/v1?tenant=a/",
+                    "api_key": secret,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("resolve_provider should not run for named custom providers")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom:trusted-private",
+        explicit_base_url="https://trusted.internal/v1?tenant=a/",
+    )
+
+    assert resolved["base_url"] == "https://trusted.internal/v1?tenant=a/"
+    assert resolved["api_key"] == secret
+
+
+def test_named_custom_query_slash_mismatch_does_not_admit_pool_secret(
+    monkeypatch, tmp_path,
+):
+    """Fallthrough bare-custom must not pool-match via full-string rstrip on query.
+
+    Named comparison correctly rejects ?tenant=a/ vs ?tenant=a, but the
+    subsequent _try_resolve_from_custom_pool URL lookup must also treat them
+    as distinct scopes (do not mock that helper away).
+    """
+    from types import SimpleNamespace
+
+    named_secret = "NAMED-PROVIDER-SECRET"
+    pool_secret = "POOLED-PROVIDER-SECRET"
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    import yaml
+
+    providers = [
+        {
+            "name": "trusted-private",
+            "base_url": "https://trusted.internal/v1?tenant=a/",
+            "api_key": named_secret,
+        }
+    ]
+    (hermes_home / "config.yaml").write_text(yaml.dump({"custom_providers": providers}))
+    monkeypatch.setattr(rp, "load_config", lambda: {"custom_providers": providers})
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("resolve_provider should not run for named custom providers")
+        ),
+    )
+
+    load_pool_calls: list[str] = []
+
+    class _FakePool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return SimpleNamespace(
+                runtime_api_key=pool_secret,
+                access_token=pool_secret,
+            )
+
+    def _fake_load_pool(key):
+        load_pool_calls.append(key)
+        return _FakePool()
+
+    monkeypatch.setattr(rp, "load_pool", _fake_load_pool)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom:trusted-private",
+        explicit_base_url="https://trusted.internal/v1?tenant=a",
+    )
+
+    assert resolved["base_url"] == "https://trusted.internal/v1?tenant=a"
+    assert resolved["api_key"] not in {named_secret, pool_secret}
+    assert resolved["api_key"] == "no-key-required"
+    assert resolved["source"] == "direct-alias"
+    assert load_pool_calls == []
+
+
+def test_normalize_base_url_for_match_preserves_path_case():
+    """Scheme/host case and trailing slash collapse; path case does not."""
+    assert rp._normalize_base_url_for_match(
+        "HTTPS://Trusted.Internal/v1/"
+    ) == rp._normalize_base_url_for_match("https://trusted.internal/v1")
+    assert rp._normalize_base_url_for_match(
+        "https://trusted.internal/v1"
+    ) != rp._normalize_base_url_for_match("https://trusted.internal/V1")
+
+
+def test_normalize_base_url_for_match_preserves_query_trailing_slash():
+    """Full-string rstrip must not collapse distinct query values."""
+    assert rp._normalize_base_url_for_match(
+        "https://trusted.internal/v1?tenant=a/"
+    ) != rp._normalize_base_url_for_match("https://trusted.internal/v1?tenant=a")
+    # Query case is also significant.
+    assert rp._normalize_base_url_for_match(
+        "https://trusted.internal/v1?tenant=A/"
+    ) != rp._normalize_base_url_for_match("https://trusted.internal/v1?tenant=a/")

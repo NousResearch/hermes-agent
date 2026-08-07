@@ -13,6 +13,7 @@ import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropRespon
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
+import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
 import { resolveEditor } from '../lib/editor.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
@@ -103,6 +104,10 @@ export function looksLikeDroppedPath(text: string): boolean {
   }
 
   return false
+}
+
+export function shouldSuppressClipboardFallbackForDashboard(dashboardTuiMode = DASHBOARD_TUI_MODE): boolean {
+  return dashboardTuiMode
 }
 
 export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions): UseComposerStateResult {
@@ -332,6 +337,15 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         return readPreferredText.then(async preferredText => {
           if (isUsableClipboardText(preferredText)) {
             return handleResolvedPaste({ bracketed: false, cursor, text: preferredText, value })
+          }
+
+          if (shouldSuppressClipboardFallbackForDashboard()) {
+            // Browser-embedded chat cannot safely read the user's local clipboard
+            // from the server-side Ink process. If a paste chord leaks through
+            // here, the dashboard's browser handler missed it; do not fall into
+            // the image-clipboard path, which only produces the misleading
+            // "No image found in clipboard" curse instead of inserting text.
+            return null
           }
 
           // No text on the clipboard — an image paste looks exactly like this.

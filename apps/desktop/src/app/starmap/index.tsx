@@ -46,7 +46,12 @@ export function StarmapView({ onClose }: { onClose: () => void }) {
       ) : shown && shown.nodes.length === 0 && !imported ? (
         <PanelEmpty description={t.starmap.emptyDesc} icon="lightbulb" title={t.starmap.emptyTitle} />
       ) : shown ? (
-        <StarMap graph={shown} imported={imported !== null} onImport={setImported} onResetMap={() => setImported(null)} />
+        <StarMap
+          graph={shown}
+          imported={imported !== null}
+          onImport={setImported}
+          onResetMap={() => setImported(null)}
+        />
       ) : null}
     </Panel>
   )

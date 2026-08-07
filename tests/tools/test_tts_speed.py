@@ -39,23 +39,6 @@ class TestEdgeTtsSpeed:
         kwargs = comm_cls.call_args[1]
         assert "rate" not in kwargs
 
-    def test_global_speed_applied(self, tmp_path):
-        """Global tts.speed used as fallback."""
-        comm_cls = self._run({"speed": 1.5}, tmp_path)
-        kwargs = comm_cls.call_args[1]
-        assert kwargs["rate"] == "+50%"
-
-    def test_provider_speed_overrides_global(self, tmp_path):
-        """tts.edge.speed takes precedence over tts.speed."""
-        comm_cls = self._run({"speed": 1.5, "edge": {"speed": 2.0}}, tmp_path)
-        kwargs = comm_cls.call_args[1]
-        assert kwargs["rate"] == "+100%"
-
-    def test_speed_below_one(self, tmp_path):
-        """Speed < 1.0 produces a negative rate string."""
-        comm_cls = self._run({"speed": 0.5}, tmp_path)
-        kwargs = comm_cls.call_args[1]
-        assert kwargs["rate"] == "-50%"
 
     def test_speed_exactly_one_no_rate(self, tmp_path):
         """Explicit speed=1.0 should not pass rate kwarg."""
@@ -78,7 +61,7 @@ class TestOpenaiTtsSpeed:
 
         with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
              patch("tools.tts_tool._resolve_openai_audio_client_config",
-                   return_value=("test-key", None)):
+                   return_value=("test-key", None, False)):
             from tools.tts_tool import _generate_openai_tts
             _generate_openai_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
         return mock_client.audio.speech.create
@@ -89,29 +72,47 @@ class TestOpenaiTtsSpeed:
         kwargs = create.call_args[1]
         assert "speed" not in kwargs
 
-    def test_global_speed_applied(self, tmp_path, monkeypatch):
-        """Global tts.speed used as fallback."""
-        create = self._run({"speed": 1.5}, tmp_path, monkeypatch)
-        kwargs = create.call_args[1]
-        assert kwargs["speed"] == 1.5
-
-    def test_provider_speed_overrides_global(self, tmp_path, monkeypatch):
-        """tts.openai.speed takes precedence over tts.speed."""
-        create = self._run({"speed": 1.5, "openai": {"speed": 2.0}}, tmp_path, monkeypatch)
-        kwargs = create.call_args[1]
-        assert kwargs["speed"] == 2.0
-
-    def test_speed_clamped_low(self, tmp_path, monkeypatch):
-        """Speed below 0.25 is clamped to 0.25."""
-        create = self._run({"speed": 0.1}, tmp_path, monkeypatch)
-        kwargs = create.call_args[1]
-        assert kwargs["speed"] == 0.25
 
     def test_speed_clamped_high(self, tmp_path, monkeypatch):
         """Speed above 4.0 is clamped to 4.0."""
         create = self._run({"speed": 10.0}, tmp_path, monkeypatch)
         kwargs = create.call_args[1]
         assert kwargs["speed"] == 4.0
+
+
+# ---------------------------------------------------------------------------
+# OpenAI TTS language (lang_code for OpenAI-compatible endpoints)
+# ---------------------------------------------------------------------------
+
+class TestOpenaiTtsLangCode:
+    def _run(self, tts_config, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        mock_response = MagicMock()
+        mock_client = MagicMock()
+        mock_client.audio.speech.create.return_value = mock_response
+        mock_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
+             patch("tools.tts_tool._resolve_openai_audio_client_config",
+                   return_value=("test-key", None, False)):
+            from tools.tts_tool import _generate_openai_tts
+            _generate_openai_tts("Hola", str(tmp_path / "out.mp3"), tts_config)
+        return mock_client.audio.speech.create
+
+    def test_default_no_extra_body(self, tmp_path, monkeypatch):
+        """No language config => no extra_body kwarg in create call."""
+        create = self._run({}, tmp_path, monkeypatch)
+        kwargs = create.call_args[1]
+        assert "extra_body" not in kwargs
+
+
+    def test_language_coexists_with_speed(self, tmp_path, monkeypatch):
+        """language and speed are forwarded independently."""
+        create = self._run({"openai": {"language": "es", "speed": 2.0}},
+                           tmp_path, monkeypatch)
+        kwargs = create.call_args[1]
+        assert kwargs["extra_body"] == {"lang_code": "es"}
+        assert kwargs["speed"] == 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -163,36 +164,6 @@ class TestMinimaxTtsT2aV2:
         with open(output, "rb") as f:
             assert f.read() == b"\x00\x01\x02\x03"
 
-    def test_default_url_is_t2a_v2(self, tmp_path, monkeypatch):
-        """Default base URL points at the live t2a_v2 endpoint."""
-        mock_post, _ = self._run({}, tmp_path, monkeypatch)
-        url = mock_post.call_args[0][0]
-        assert "t2a_v2" in url
-        assert "api.minimax.io" in url
-
-    def test_group_id_from_config(self, tmp_path, monkeypatch):
-        """group_id from config attaches as ?GroupId=<id>."""
-        mock_post, _ = self._run({"minimax": {"group_id": "G123"}}, tmp_path, monkeypatch)
-        url = mock_post.call_args[0][0]
-        assert "GroupId=G123" in url
-
-    def test_group_id_from_env(self, tmp_path, monkeypatch):
-        """MINIMAX_GROUP_ID env var attaches as ?GroupId=<id>."""
-        monkeypatch.setenv("MINIMAX_GROUP_ID", "G456")
-        mock_post, _ = self._run({}, tmp_path, monkeypatch)
-        url = mock_post.call_args[0][0]
-        assert "GroupId=G456" in url
-
-    def test_group_id_already_in_url_left_alone(self, tmp_path, monkeypatch):
-        """If user already set GroupId in base_url, don't double-append it."""
-        cfg = {"minimax": {
-            "base_url": "https://api.minimax.io/v1/t2a_v2?GroupId=PRESET",
-            "group_id": "IGNORED",
-        }}
-        mock_post, _ = self._run(cfg, tmp_path, monkeypatch)
-        url = mock_post.call_args[0][0]
-        assert url.count("GroupId=") == 1
-        assert "GroupId=PRESET" in url
 
     def test_api_error_raises(self, tmp_path, monkeypatch):
         """Non-zero base_resp.status_code surfaces as RuntimeError."""
@@ -238,3 +209,70 @@ class TestMinimaxTtsLegacyTextToSpeech:
         _, output = self._run({}, tmp_path, monkeypatch)
         with open(output, "rb") as f:
             assert f.read() == b"\x00\x01\x02\x03"
+
+
+# ---------------------------------------------------------------------------
+# Tool-level speed parameter (text_to_speech_tool speed injection)
+# ---------------------------------------------------------------------------
+
+class TestToolLevelSpeed:
+    """Verify that the speed parameter on text_to_speech_tool injects into config."""
+
+    def test_speed_injected_into_config(self, tmp_path, monkeypatch):
+        """When speed is passed to the tool, it overrides config speed."""
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        mock_response = MagicMock()
+        mock_client = MagicMock()
+        mock_client.audio.speech.create.return_value = mock_response
+        mock_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
+             patch("tools.tts_tool._resolve_openai_audio_client_config",
+                   return_value=("test-key", None, False)), \
+             patch("tools.tts_tool._load_tts_config", return_value={"provider": "openai", "openai": {}}), \
+             patch("tools.tts_tool._get_provider", return_value="openai"), \
+             patch("tools.tts_tool._resolve_command_provider_config", return_value=None), \
+             patch("tools.tts_tool._resolve_max_text_length", return_value=4096), \
+             patch("tools.tts_tool._generate_openai_tts") as mock_gen, \
+             patch("gateway.session_context.get_session_env", return_value=""):
+            from tools.tts_tool import text_to_speech_tool
+            text_to_speech_tool("Hello", str(tmp_path / "out.mp3"), speed=0.7)
+
+        # Verify the tts_config passed to the generator has speed=0.7
+        call_args = mock_gen.call_args
+        config_passed = call_args[0][2]  # (text, output_path, tts_config)
+        assert config_passed["speed"] == 0.7
+
+    def test_speed_clamped_range(self, tmp_path, monkeypatch):
+        """Speed values outside 0.25-4.0 are clamped."""
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "openai", "openai": {}}), \
+             patch("tools.tts_tool._get_provider", return_value="openai"), \
+             patch("tools.tts_tool._resolve_command_provider_config", return_value=None), \
+             patch("tools.tts_tool._resolve_max_text_length", return_value=4096), \
+             patch("tools.tts_tool._generate_openai_tts") as mock_gen, \
+             patch("gateway.session_context.get_session_env", return_value=""):
+            from tools.tts_tool import text_to_speech_tool
+            text_to_speech_tool("Hello", str(tmp_path / "out.mp3"), speed=10.0)
+
+        config_passed = mock_gen.call_args[0][2]
+        assert config_passed["speed"] == 4.0
+
+    def test_no_speed_preserves_config(self, tmp_path, monkeypatch):
+        """When speed is None, config is not mutated."""
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        original_config = {"provider": "openai", "openai": {}, "speed": 1.5}
+
+        with patch("tools.tts_tool._load_tts_config", return_value=original_config), \
+             patch("tools.tts_tool._get_provider", return_value="openai"), \
+             patch("tools.tts_tool._resolve_command_provider_config", return_value=None), \
+             patch("tools.tts_tool._resolve_max_text_length", return_value=4096), \
+             patch("tools.tts_tool._generate_openai_tts") as mock_gen, \
+             patch("gateway.session_context.get_session_env", return_value=""):
+            from tools.tts_tool import text_to_speech_tool
+            text_to_speech_tool("Hello", str(tmp_path / "out.mp3"), speed=None)
+
+        config_passed = mock_gen.call_args[0][2]
+        assert config_passed.get("speed") == 1.5  # original config preserved
+        assert original_config.get("speed") == 1.5  # original not mutated

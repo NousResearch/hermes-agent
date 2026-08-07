@@ -27,33 +27,26 @@ class TestInterruptModule:
         set_interrupt(False)
         assert not is_interrupted()
 
-    def test_thread_safety(self):
-        """Set from one thread targeting another thread's ident."""
-        from tools.interrupt import set_interrupt, is_interrupted, _interrupted_threads, _lock
-        set_interrupt(False)
-        # Clear any stale thread idents left by prior tests in this worker.
+
+    def test_clear_current_thread_interrupt_leaves_other_threads(self):
+        """clear_current_thread_interrupt only touches the calling thread."""
+        from tools.interrupt import (
+            set_interrupt, is_interrupted, clear_current_thread_interrupt,
+            _interrupted_threads, _lock,
+        )
         with _lock:
             _interrupted_threads.clear()
+        other_tid = threading.get_ident() + 1  # an ident that isn't us
+        set_interrupt(True, thread_id=other_tid)
+        set_interrupt(True)  # current thread
+        assert is_interrupted()
 
-        seen = {"value": False}
+        clear_current_thread_interrupt()
 
-        def _checker():
-            while not is_interrupted():
-                time.sleep(0.01)
-            seen["value"] = True
-
-        t = threading.Thread(target=_checker, daemon=True)
-        t.start()
-
-        time.sleep(0.05)
-        assert not seen["value"]
-
-        # Target the checker thread's ident so it sees the interrupt
-        set_interrupt(True, thread_id=t.ident)
-        t.join(timeout=1)
-        assert seen["value"]
-
-        set_interrupt(False, thread_id=t.ident)
+        assert not is_interrupted()  # ours cleared
+        with _lock:
+            assert other_tid in _interrupted_threads  # other thread untouched
+            _interrupted_threads.discard(other_tid)
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +86,11 @@ class TestPreToolCheck:
         agent._interrupt_requested = True
         agent.log_prefix = ""
         agent._persist_session = MagicMock()
+        # PR #72425: execute_tool_calls_* read _incremental_persistence_failed
+        # via getattr at loop top. A bare MagicMock auto-creates a truthy value
+        # for any attribute access, which would short-circuit the interrupt
+        # skip path before any cancelled-tool messages are appended.
+        agent._incremental_persistence_failed = False
 
         # Import and call the method
         import types

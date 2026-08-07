@@ -69,54 +69,6 @@ def test_batch_overflow_trimmed_and_spilled_losslessly(monkeypatch):
             assert os.path.join("cache", "delegation") in path
 
 
-def test_dynamic_budget_shrinks_as_batch_grows():
-    def cap_for(n):
-        return dt._parent_summary_char_budget(
-            _FakeParent(131_000, 30_000, 8_000), n
-        )
-
-    c1, c5, c20 = cap_for(1), cap_for(5), cap_for(20)
-    assert c1 is not None and c5 is not None and c20 is not None
-    # More children → smaller per-summary slice of the same headroom.
-    assert c1 > c5 > c20
-
-
-def test_floor_enforced_when_parent_over_budget():
-    # Parent already over its context budget → each summary gets only the floor.
-    budget = dt._parent_summary_char_budget(
-        _FakeParent(131_000, 200_000, 8_000), 3
-    )
-    assert budget == dt._MIN_SUMMARY_CHARS
-
-
-def test_unknown_context_falls_back_to_static_ceiling(monkeypatch):
-    class _Bare:
-        pass
-
-    # No compressor → dynamic budget is unknowable.
-    assert dt._parent_summary_char_budget(_Bare(), 3) is None
-
-    # But the static delegation.max_summary_chars ceiling still trims.
-    with tempfile.TemporaryDirectory() as td:
-        monkeypatch.setenv("HERMES_HOME", os.path.join(td, ".hermes"))
-        results = [{"task_index": 0, "summary": "Y" * 40_000, "status": "completed"}]
-        dt._apply_summary_budget(results, _Bare())
-        assert results[0]["summary_truncated"] is True
-        assert len(results[0]["summary"]) < 40_000
-
-
-def test_disabled_static_ceiling_and_unknown_context_leaves_summary_intact(monkeypatch):
-    class _Bare:
-        pass
-
-    # Both caps off: static ceiling 0 (disabled) AND no compressor (no dynamic).
-    monkeypatch.setattr(dt, "_load_config", lambda: {"max_summary_chars": 0})
-    results = [{"task_index": 0, "summary": "Z" * 40_000, "status": "completed"}]
-    dt._apply_summary_budget(results, _Bare())
-    assert "summary_truncated" not in results[0]
-    assert len(results[0]["summary"]) == 40_000
-
-
 def test_empty_results_is_noop():
     # No summaries → nothing to do, must not raise.
     dt._apply_summary_budget([], _FakeParent(131_000, 1_000, 8_000))

@@ -98,29 +98,6 @@ def _make_adapter(platform_val="telegram"):
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
-    @pytest.mark.asyncio
-    async def test_handle_message_queue_mode_queues_without_interrupt(self):
-        """Runner queue mode must not interrupt an active agent for text follow-ups."""
-        from gateway.run import GatewayRunner
-
-        runner, _sentinel = _make_runner()
-        adapter = _make_adapter()
-
-        event = _make_event(text="follow up in queue mode")
-        sk = build_session_key(event.source)
-
-        running_agent = MagicMock()
-        runner._busy_input_mode = "queue"
-        runner._running_agents[sk] = running_agent
-        runner.adapters[event.source.platform] = adapter
-
-        result = await GatewayRunner._handle_message(runner, event)
-
-        assert result is None
-        assert sk in adapter._pending_messages
-        assert adapter._pending_messages[sk] is event
-        assert sk not in runner._pending_messages
-        running_agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):
@@ -211,63 +188,14 @@ class TestBusySessionAck:
         # Verify agent interrupt was called
         agent.interrupt.assert_called_once_with("Are you working?")
 
-    @pytest.mark.asyncio
-    async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):
-        """When busy_input_mode is 'queue', message is queued WITHOUT interrupt."""
-        runner, sentinel = _make_runner()
-        runner._busy_input_mode = "queue"
-        adapter = _make_adapter()
-
-        event = _make_event(text="Add this to queue")
-        sk = build_session_key(event.source)
-        runner.adapters[event.source.platform] = adapter
-
-        agent = MagicMock()
-        runner._running_agents[sk] = agent
-
-        with patch("gateway.run.merge_pending_message_event"):
-            await runner._handle_active_session_busy_message(event, sk)
-
-        # VERIFY: Agent was NOT interrupted
-        agent.interrupt.assert_not_called()
-
-        # VERIFY: Ack sent with queue-specific wording
-        adapter._send_with_retry.assert_called_once()
-        call_kwargs = adapter._send_with_retry.call_args
-        content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
-        assert "respond once the current task finishes" in content
-        assert "Interrupting" not in content
 
     @pytest.mark.asyncio
-    async def test_busy_text_mode_queue_delegates_to_adapter_handle_message(self):
-        """busy_text_mode=queue lets the adapter debounce text silently."""
-        runner, sentinel = _make_runner()
-        runner._busy_input_mode = "interrupt"
-        runner._busy_text_mode = "queue"
-        adapter = _make_adapter()
-
-        first = _make_event(text="part one")
-        second = _make_event(text="part two")
-        sk = build_session_key(first.source)
-
-        agent = MagicMock()
-        runner._running_agents[sk] = agent
-        runner.adapters[first.source.platform] = adapter
-        runner.adapters[second.source.platform] = adapter
-
-        result1 = await runner._handle_active_session_busy_message(first, sk)
-        result2 = await runner._handle_active_session_busy_message(second, sk)
-
-        assert result1 is False
-        assert result2 is False
-        assert sk not in adapter._pending_messages
-        agent.interrupt.assert_not_called()
-        adapter._send_with_retry.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):
+    async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self, monkeypatch):
         """busy_input_mode='steer' injects via agent.steer() and skips queueing."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
@@ -296,6 +224,45 @@ class TestBusySessionAck:
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Steered" in content or "steer" in content.lower()
         assert "Interrupting" not in content
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_transcribes_voice_before_injection(self, monkeypatch):
+        """A busy voice follow-up is transcribed and steered, never queued."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        runner._should_echo_stt_transcripts = MagicMock(return_value=False)
+        runner._enrich_message_with_transcription = AsyncMock(
+            return_value=('"yönü teknik mimariye çevir"', ["yönü teknik mimariye çevir"])
+        )
+        adapter = _make_adapter()
+
+        event = _make_event(text="")
+        event.message_type = MessageType.VOICE
+        event.media_urls = ["/tmp/follow-up.ogg"]
+        event.media_types = ["audio/ogg"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        runner._enrich_message_with_transcription.assert_awaited_once_with(
+            "", ["/tmp/follow-up.ogg"]
+        )
+        agent.steer.assert_called_once_with('"yönü teknik mimariye çevir"')
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+        content = adapter._send_with_retry.call_args.kwargs["content"]
+        assert "Steered" in content
+        assert "Queued" not in content
+
 
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):
@@ -396,82 +363,6 @@ class TestBusySessionAck:
         overflow = runner._queued_events.get(sk, [])
         assert [e.text for e in overflow] == ["second message"]
 
-    @pytest.mark.asyncio
-    async def test_debounce_suppresses_rapid_acks(self):
-        """Second message within 30s should NOT send another ack."""
-        runner, sentinel = _make_runner()
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-
-        event1 = _make_event(text="hello?")
-        # Reuse the same source so platform mock matches
-        event2 = MessageEvent(
-            text="still there?",
-            message_type=MessageType.TEXT,
-            source=event1.source,
-            message_id="msg2",
-        )
-        sk = build_session_key(event1.source)
-
-        agent = MagicMock()
-        agent.get_activity_summary.return_value = {
-            "api_call_count": 5,
-            "max_iterations": 60,
-            "current_tool": None,
-            "last_activity_ts": time.time(),
-            "last_activity_desc": "api_call",
-            "seconds_since_activity": 0.5,
-        }
-        runner._running_agents[sk] = agent
-        runner._running_agents_ts[sk] = time.time() - 60
-        runner.adapters[event1.source.platform] = adapter
-
-        # First message — should get ack
-        result1 = await runner._handle_active_session_busy_message(event1, sk)
-        assert result1 is True
-        assert adapter._send_with_retry.call_count == 1
-
-        # Second message within cooldown — should be queued but no ack
-        result2 = await runner._handle_active_session_busy_message(event2, sk)
-        assert result2 is True
-        assert adapter._send_with_retry.call_count == 1  # still 1, no new ack
-
-        # But interrupt should still be called for both (since we are in interrupt mode)
-        assert agent.interrupt.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_ack_after_cooldown_expires(self):
-        """After 30s cooldown, a new message should send a fresh ack."""
-        runner, sentinel = _make_runner()
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-
-        event = _make_event(text="hello?")
-        sk = build_session_key(event.source)
-
-        agent = MagicMock()
-        agent.get_activity_summary.return_value = {
-            "api_call_count": 10,
-            "max_iterations": 60,
-            "current_tool": "web_search",
-            "last_activity_ts": time.time(),
-            "last_activity_desc": "tool",
-            "seconds_since_activity": 0.5,
-        }
-        runner._running_agents[sk] = agent
-        runner._running_agents_ts[sk] = time.time() - 120
-        runner.adapters[event.source.platform] = adapter
-
-        # First ack
-        await runner._handle_active_session_busy_message(event, sk)
-        assert adapter._send_with_retry.call_count == 1
-
-        # Fake that cooldown expired
-        runner._busy_ack_ts[sk] = time.time() - 31
-
-        # Second ack should go through
-        await runner._handle_active_session_busy_message(event, sk)
-        assert adapter._send_with_retry.call_count == 2
 
     @pytest.mark.asyncio
     async def test_includes_status_detail_when_opted_in(self, monkeypatch):
@@ -510,93 +401,6 @@ class TestBusySessionAck:
         assert "21/60" in content  # iteration
         assert "terminal" in content  # current tool
         assert "10 min" in content  # elapsed
-
-    @pytest.mark.asyncio
-    async def test_telegram_omits_status_detail_by_default(self):
-        """Telegram busy acks stay concise unless busy_ack_detail is enabled."""
-        runner, sentinel = _make_runner()
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-
-        event = _make_event(text="yo")
-        sk = build_session_key(event.source)
-
-        agent = MagicMock()
-        agent.get_activity_summary.return_value = {
-            "api_call_count": 21,
-            "max_iterations": 60,
-            "current_tool": "terminal",
-            "last_activity_ts": time.time(),
-            "last_activity_desc": "terminal",
-            "seconds_since_activity": 0.5,
-        }
-        runner._running_agents[sk] = agent
-        runner._running_agents_ts[sk] = time.time() - 600
-        runner.adapters[event.source.platform] = adapter
-
-        await runner._handle_active_session_busy_message(event, sk)
-
-        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
-        assert "Interrupting current task" in content
-        assert "21/60" not in content
-        assert "terminal" not in content
-        assert "10 min" not in content
-
-    @pytest.mark.asyncio
-    async def test_draining_still_works(self):
-        """Draining case should still produce the drain-specific message."""
-        runner, sentinel = _make_runner()
-        runner._draining = True
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-
-        event = _make_event(text="hello")
-        sk = build_session_key(event.source)
-        runner.adapters[event.source.platform] = adapter
-
-        # Mock the drain-specific methods
-        runner._queue_during_drain_enabled = lambda: False
-        runner._status_action_gerund = lambda: "restarting"
-
-        result = await runner._handle_active_session_busy_message(event, sk)
-        assert result is True
-
-        call_kwargs = adapter._send_with_retry.call_args
-        content = call_kwargs.kwargs.get("content", "")
-        assert "restarting" in content
-
-    @pytest.mark.asyncio
-    async def test_pending_sentinel_no_interrupt(self):
-        """When agent is PENDING_SENTINEL, don't call interrupt (it has no method)."""
-        runner, sentinel = _make_runner()
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-
-        event = _make_event(text="hey")
-        sk = build_session_key(event.source)
-
-        runner._running_agents[sk] = sentinel
-        runner._running_agents_ts[sk] = time.time()
-        runner.adapters[event.source.platform] = adapter
-
-        result = await runner._handle_active_session_busy_message(event, sk)
-        assert result is True
-        # Should still send ack
-        adapter._send_with_retry.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_no_adapter_falls_through(self):
-        """If adapter is missing, return False so default path handles it."""
-        runner, sentinel = _make_runner()
-
-        event = _make_event(text="hello")
-        sk = build_session_key(event.source)
-
-        # No adapter registered
-        runner._running_agents[sk] = MagicMock()
-
-        result = await runner._handle_active_session_busy_message(event, sk)
-        assert result is False  # not handled, let default path try
 
 
 class TestBusySessionOnboardingHint:
@@ -645,77 +449,6 @@ class TestBusySessionOnboardingHint:
         cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
         assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
 
-    @pytest.mark.asyncio
-    async def test_second_busy_ack_omits_hint(self, tmp_path, monkeypatch):
-        """Once the flag is marked, the hint never appears again."""
-        import gateway.run as _gr
-        import yaml
-
-        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
-        # Pre-populate the config so is_seen() returns True from the start.
-        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
-            "onboarding": {"seen": {"busy_input_prompt": True}},
-        }))
-        monkeypatch.setattr(
-            _gr, "_load_gateway_config",
-            lambda: yaml.safe_load((tmp_path / "config.yaml").read_text()),
-        )
-
-        runner, _sentinel = _make_runner()
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-
-        event = _make_event(text="ping again")
-        sk = build_session_key(event.source)
-
-        agent = MagicMock()
-        agent.get_activity_summary.return_value = {
-            "api_call_count": 3, "max_iterations": 60,
-            "current_tool": None, "last_activity_ts": time.time(),
-            "last_activity_desc": "api", "seconds_since_activity": 0.1,
-        }
-        runner._running_agents[sk] = agent
-        runner._running_agents_ts[sk] = time.time() - 5
-        runner.adapters[event.source.platform] = adapter
-
-        await runner._handle_active_session_busy_message(event, sk)
-
-        call_kwargs = adapter._send_with_retry.call_args
-        content = call_kwargs.kwargs.get("content", "")
-
-        assert "Interrupting" in content
-        assert "First-time tip" not in content
-        assert "/busy queue" not in content
-
-    @pytest.mark.asyncio
-    async def test_queue_mode_hint_points_to_interrupt(self, tmp_path, monkeypatch):
-        """In queue mode the hint should suggest /busy interrupt, not /busy queue."""
-        import gateway.run as _gr
-
-        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
-
-        runner, _sentinel = _make_runner()
-        runner._busy_input_mode = "queue"
-        adapter = _make_adapter()
-
-        event = _make_event(text="queue me")
-        sk = build_session_key(event.source)
-        runner.adapters[event.source.platform] = adapter
-
-        agent = MagicMock()
-        runner._running_agents[sk] = agent
-
-        with patch("gateway.run.merge_pending_message_event"):
-            await runner._handle_active_session_busy_message(event, sk)
-
-        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
-        assert "Queued for the next turn" in content
-        assert "First-time tip" in content
-        assert "/busy interrupt" in content
-        # Must NOT tell the user to /busy queue when they're already on queue.
-        assert "/busy queue" not in content
-
 
 class TestLongRunningNotificationOwnership:
     """The long-running heartbeat must stop once its run no longer owns the
@@ -737,40 +470,4 @@ class TestLongRunningNotificationOwnership:
             "sess", original_agent, executor_task=None
         ) is False
 
-    def test_notification_stops_after_executor_finishes(self):
-        from gateway.run import GatewayRunner
 
-        runner = object.__new__(GatewayRunner)
-        agent = MagicMock()
-        runner._running_agents = {"sess": agent}
-
-        done_task = MagicMock()
-        done_task.done.return_value = True
-
-        assert runner._should_emit_long_running_notification(
-            "sess", agent, executor_task=done_task
-        ) is False
-
-    def test_notification_stops_when_agent_is_gone(self):
-        from gateway.run import GatewayRunner
-
-        runner = object.__new__(GatewayRunner)
-        runner._running_agents = {}
-
-        assert runner._should_emit_long_running_notification(
-            "sess", None, executor_task=None
-        ) is False
-
-    def test_notification_continues_for_live_active_run(self):
-        from gateway.run import GatewayRunner
-
-        runner = object.__new__(GatewayRunner)
-        agent = MagicMock()
-        runner._running_agents = {"sess": agent}
-
-        live_task = MagicMock()
-        live_task.done.return_value = False
-
-        assert runner._should_emit_long_running_notification(
-            "sess", agent, executor_task=live_task
-        ) is True

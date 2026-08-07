@@ -1,0 +1,167 @@
+import { useStore } from '@nanostores/react'
+
+import { StatusPulse } from '@/components/ui/status-pulse'
+import { type Translations, useI18n } from '@/i18n'
+import { useStoreSelector } from '@/lib/use-session-slice'
+import { cn } from '@/lib/utils'
+import { $backgroundRunningSessionIds } from '@/store/composer-status'
+import { $unreadFinishedSessionIds } from '@/store/session'
+import { $sessionColorById, sessionColorFor } from '@/store/session-color'
+import { $attentionSessionIds, $stalledSessionIds, $workingSessionIds } from '@/store/session-states'
+import type { SessionInfo } from '@/types/hermes'
+
+import { type SessionDotState, sessionDotState } from './sidebar/session-row-state'
+
+// A pure lookup table: each state maps to its className, aria-label, and title.
+// No priority resolution here — sessionDotState already picked one. Label/title
+// resolve from sidebar.row translations, keyed by name.
+type DotVariant = {
+  ariaLabel?: (r: Translations['sidebar']['row']) => string
+  className: string
+  pulse?: {
+    className: string
+    opacity: number
+  }
+  role?: 'status'
+  title?: (r: Translations['sidebar']['row']) => string
+}
+
+// Shared base for every active dot; idle is smaller and uses its own class.
+const DOT_BASE = 'relative size-1.5 rounded-full'
+
+const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
+  // Amber steady — a clarify/approval is blocking the turn. Steady (not
+  // pulsing) reads as "your turn", distinct from the accent pulse of a turn.
+  'needs-input': {
+    ariaLabel: r => r.needsInput,
+    className: `${DOT_BASE} quest-glow bg-amber-500`,
+    role: 'status',
+    title: r => r.waitingForAnswer
+  },
+  // Accent pulse — the LLM turn is actively running.
+  working: {
+    ariaLabel: r => r.sessionRunning,
+    className: `${DOT_BASE} bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)]`,
+    pulse: {
+      className: 'absolute inset-0 rounded-full bg-(--ui-accent) opacity-0',
+      opacity: 0.7
+    },
+    role: 'status'
+  },
+  // Quiet accent pulse — the turn is still authoritative-running, but no
+  // stream activity has arrived for the watchdog window.
+  stalled: {
+    ariaLabel: r => r.sessionRunning,
+    className: `${DOT_BASE} bg-(--ui-accent) opacity-70`,
+    pulse: {
+      className: 'absolute inset-0 rounded-full bg-(--ui-accent) opacity-0',
+      opacity: 0.4
+    },
+    role: 'status',
+    title: r => r.sessionRunning
+  },
+  // Pulsing gray — a terminal(background=true) process is alive while the LLM
+  // is idle. Gray (not accent) reads as "something chugging along". Brighter
+  // than muted-foreground so it's visible against the surface.
+  background: {
+    ariaLabel: r => r.backgroundRunning,
+    className: `${DOT_BASE} bg-muted-foreground/80`,
+    pulse: {
+      className: 'absolute inset-0 rounded-full bg-muted-foreground/80 opacity-0',
+      opacity: 0.6
+    },
+    role: 'status',
+    title: r => r.backgroundRunning
+  },
+  // Steady green — a background session's turn completed and the user hasn't
+  // opened it since. "Something new here, go look."
+  unread: {
+    ariaLabel: r => r.finishedUnread,
+    className: `${DOT_BASE} bg-emerald-500`,
+    role: 'status',
+    title: r => r.finishedUnread
+  },
+  idle: {
+    className: 'size-1 rounded-full bg-(--ui-text-quaternary) opacity-80'
+  }
+}
+
+export interface SessionStatusDotProps {
+  /** The STORED session id — the key every live-state atom (working /
+   *  attention / stalled / unread / background) is keyed by, on BOTH surfaces:
+   *  the sidebar row's `session.id` and a pane tile's `storedSessionId` are the
+   *  same stored id (`$workingSessionIds` et al. map `storedSessionId`). */
+  storedSessionId: string
+  /** The session row for color resolution — recents OR the project tree. Both
+   *  call sites already hold it; passing it lets the idle dot inherit the
+   *  project color even for a session older than the paginated recents page
+   *  (which has no `$sessionColorById` entry). */
+  session?: null | SessionInfo
+  /** TUI-style tree stem for a branched session (`└─ ` / `├─ `). */
+  branchStem?: string
+  /** Applied to the OUTER wrapper (stem + dot) — e.g. hover-fade on the
+   *  reorder handle. */
+  className?: string
+}
+
+/**
+ * SESSION STATUS DOT — the ONE primitive both the sidebar row and the pane tab
+ * render, so a session's status/color can never disagree between the two
+ * surfaces. It reads every signal itself from the shared stores keyed by the
+ * stored session id: live state (working / needs-input / stalled / unread /
+ * background, mutually exclusive via `sessionDotState`) and the resolved color
+ * (override → project color, via `sessionColorFor`). An idle session shows its
+ * project color; the active states own the dot with their semantic color so an
+ * attention cue is never masked by the inherited tint.
+ */
+export function SessionStatusDot({ storedSessionId, session, branchStem, className }: SessionStatusDotProps) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+
+  // Subscribe to the shared color map for reactivity; sessionColorFor falls
+  // back to the resolver for a session outside the recents page.
+  useStore($sessionColorById)
+  const color = sessionColorFor(session) ?? null
+
+  // Per-session membership as booleans via useStoreSelector: these arrays tick
+  // on every stream delta (any session working/stalled/etc changes the array
+  // reference), but a given dot only repaints when ITS OWN membership flips.
+  // A plain useStore(array).includes(id) re-rendered every dot on every tick.
+  const needsInput = useStoreSelector($attentionSessionIds, ids => ids.includes(storedSessionId))
+  const isWorking = useStoreSelector($workingSessionIds, ids => ids.includes(storedSessionId))
+  const isStalled = useStoreSelector($stalledSessionIds, ids => ids.includes(storedSessionId))
+  const isUnread = useStoreSelector($unreadFinishedSessionIds, ids => ids.includes(storedSessionId))
+  const hasBackground = useStoreSelector($backgroundRunningSessionIds, ids => ids.includes(storedSessionId))
+
+  const dotState = sessionDotState({ hasBackground, isStalled, isUnread, isWorking, needsInput })
+  const variant = DOT_VARIANTS[dotState]
+
+  return (
+    <span className={cn('flex items-center gap-0.5', className)}>
+      {branchStem ? (
+        <span aria-hidden className="shrink-0 font-mono text-[0.625rem] leading-none text-(--ui-text-quaternary)">
+          {branchStem}
+        </span>
+      ) : null}
+      {dotState === 'idle' && color ? (
+        <span aria-hidden="true" className="size-1 rounded-full" style={{ backgroundColor: color }} />
+      ) : (
+        <span
+          aria-label={variant.ariaLabel?.(r)}
+          className={variant.className}
+          role={variant.role}
+          title={variant.title?.(r)}
+        >
+          {variant.pulse ? (
+            <StatusPulse
+              aria-hidden="true"
+              className={variant.pulse.className}
+              kind="ping"
+              opacity={variant.pulse.opacity}
+            />
+          ) : null}
+        </span>
+      )}
+    </span>
+  )
+}

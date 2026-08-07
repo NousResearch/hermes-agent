@@ -1,21 +1,35 @@
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
-import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
-import { $composerAttachments, type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
+import { type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { isBrowsingHistory } from '@/store/composer-input-history'
 
-import { cloneAttachments, DRAFT_PERSIST_DEBOUNCE_MS, type QueueEditState } from '../composer-utils'
+import {
+  cloneAttachments,
+  DRAFT_PERSIST_DEBOUNCE_MS,
+  isPendingDraftPersistCurrent,
+  type QueueEditState
+} from '../composer-utils'
 import {
   type ComposerInsertMode,
   focusComposerInput,
   markActiveComposer,
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
-  onComposerInsertRequest
+  onComposerInsertRequest,
+  releaseActiveComposer
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
-import { composerPlainText, placeCaretEnd, renderComposerContents } from '../rich-editor'
+import {
+  composerPlainText,
+  normalizeComposerEditorDom,
+  placeCaretEnd,
+  REF_RE,
+  renderComposerContents
+} from '../rich-editor'
+import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
 interface UseComposerDraftArgs {
@@ -45,6 +59,8 @@ export function useComposerDraft({
 }: UseComposerDraftArgs) {
   const aui = useAui()
   const composerRuntime = useComposerRuntime()
+  // Which composer this is on the focus bus + which attachment set it owns.
+  const { attachments: attachmentScope, target } = useComposerScope()
 
   // Coarse edges only — these flip rarely (empty↔non-empty, the `?` help sigil,
   // steerable-vs-slash), so typing within a line costs no render.
@@ -77,6 +93,13 @@ export function useComposerDraft({
   const draftPersistTimerRef = useRef<number | undefined>(undefined)
   const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
   activeQueueSessionKeyRef.current = activeQueueSessionKey
+  // Owned only by the swap effect below — unlike activeQueueSessionKeyRef this
+  // does NOT update on every render, so it always reflects the session whose
+  // text is actually loaded in the editor. Async work (debounce timers,
+  // pagehide flush) must persist against this, not the render-time ref, or a
+  // session switch mid-flight files one session's draft under another's key
+  // (#54527).
+  const draftScopeRef = useRef(activeQueueSessionKey)
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
   const queueEditStateRef = useRef<QueueEditState | null>(queueEditRef.current)
@@ -86,8 +109,8 @@ export function useComposerDraft({
 
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)
-    markActiveComposer('main')
-  }, [])
+    markActiveComposer(target)
+  }, [target])
 
   const requestMainFocus = useCallback(() => {
     setFocusRequestId(id => id + 1)
@@ -105,7 +128,7 @@ export function useComposerDraft({
       const editor = editorRef.current
 
       if (editor) {
-        renderComposerContents(editor, next)
+        renderComposerContents(editor, next, { trailingCommitted: true })
         placeCaretEnd(editor)
       }
 
@@ -138,19 +161,37 @@ export function useComposerDraft({
     }
   }, [focusInput, focusKey, focusRequestId, inputDisabled])
 
+  // The mirror of the `markActiveComposer` above: give the key back when this
+  // composer goes away (a session tile closing, a pane unmounting). Covers both
+  // claim sites for this composer — `focusInput` here and ChatBar's `onFocus` —
+  // since they mark the same scope target. Without it `'active'` keeps
+  // resolving to a dead tile and every routed focus/insert request is dropped.
+  // (Heal-to-visible in focus.ts covers the keep-alive-tab case where the pane
+  // stays mounted behind the front tab; this covers true unmounts.)
+  useEffect(() => () => releaseActiveComposer(target), [target])
+
   useEffect(() => {
     if (inputDisabled) {
       return undefined
     }
 
-    const offFocus = onComposerFocusRequest(target => {
-      if (target === 'main') {
-        setFocusRequestId(id => id + 1)
+    const offFocus = onComposerFocusRequest(({ target: requested, typeChar }) => {
+      if (requested !== target) {
+        return
       }
+
+      // Type-to-focus appends at end; bare Enter just focuses.
+      if (typeChar) {
+        paintDraft(`${draftRef.current}${typeChar}`, true)
+
+        return
+      }
+
+      setFocusRequestId(id => id + 1)
     })
 
-    const offInsert = onComposerInsertRequest(({ mode, target, text }) => {
-      if (target === 'main') {
+    const offInsert = onComposerInsertRequest(({ mode, target: requested, text }) => {
+      if (requested === target) {
         appendExternalText(text, mode)
       }
     })
@@ -159,13 +200,28 @@ export function useComposerDraft({
       offFocus()
       offInsert()
     }
-  }, [appendExternalText, inputDisabled])
+  }, [appendExternalText, inputDisabled, paintDraft, target])
 
-  const stashAt = (scope: string | null, text = draftRef.current, attachments = $composerAttachments.get()) =>
+  const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
     stashSessionDraft(scope, text, attachments)
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
-    $composerAttachments.set(cloneAttachments(attachments))
+    // Diagnostic breadcrumb for #59305-class reports: identifies WHAT kind of
+    // state got restored into the composer (session switch, queue-edit
+    // restore, history browse) without logging any raw content. REF_RE has the
+    // global flag — testing against a throwaway clone avoids mutating the
+    // shared instance's lastIndex, which would otherwise corrupt this check on
+    // the next call.
+    if (attachments.length > 0 || new RegExp(REF_RE.source, REF_RE.flags).test(text)) {
+      console.debug('[composer-rehydrate]', {
+        attachmentCount: attachments.length,
+        attachmentKinds: attachments.map(a => a.kind),
+        hasTextRefs: new RegExp(REF_RE.source, REF_RE.flags).test(text),
+        scope: activeQueueSessionKeyRef.current
+      })
+    }
+
+    attachmentScope.$attachments.set(cloneAttachments(attachments))
     paintDraft(text, false)
   }
 
@@ -188,7 +244,13 @@ export function useComposerDraft({
       return draftRef.current
     }
 
-    const text = composerPlainText(editor)
+    // Same normalize-then-sanitize the rAF flush does. An emptied editor still
+    // holds the placeholder <br> that keeps the contenteditable from collapsing
+    // to a sliver, and that serializes as "\n" — so an editor the user just
+    // cleared would otherwise stash a one-newline draft and come back non-empty.
+    normalizeComposerEditorDom(editor)
+
+    const text = sanitizeComposerInput(composerPlainText(editor))
 
     if (text !== draftRef.current) {
       draftRef.current = text
@@ -207,6 +269,7 @@ export function useComposerDraft({
   // source otherwise), and (3) schedule the debounced per-session stash.
   // Browsing history / editing a queued prompt suppress the stash so recalled
   // text never clobbers the draft.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const sync = () => {
       const text = composerRuntime.getState().text
@@ -215,17 +278,27 @@ export function useComposerDraft({
       const editor = editorRef.current
 
       if (editor && document.activeElement !== editor && composerPlainText(editor) !== text) {
-        renderComposerContents(editor, text)
+        renderComposerContents(editor, text, { trailingCommitted: true })
       }
 
       if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) {
         return
       }
 
-      const scope = activeQueueSessionKeyRef.current
-      pendingDraftPersistRef.current = { scope, text }
+      const scope = draftScopeRef.current
+      const entry = { scope, text }
+      pendingDraftPersistRef.current = entry
       window.clearTimeout(draftPersistTimerRef.current)
       draftPersistTimerRef.current = window.setTimeout(() => {
+        // Integrity guard (defense-in-depth, #54527): only commit if this is
+        // still the pending write on file. A session swap or a newer
+        // keystroke clears/replaces it before firing in the normal case; this
+        // catches any future call site that skips that bookkeeping instead of
+        // silently filing text under the wrong session.
+        if (!isPendingDraftPersistCurrent(pendingDraftPersistRef.current, entry)) {
+          return
+        }
+
         pendingDraftPersistRef.current = null
         stashAt(scope, text)
       }, DRAFT_PERSIST_DEBOUNCE_MS)
@@ -274,17 +347,35 @@ export function useComposerDraft({
   insertInlineRefsRef.current = insertInlineRefs
 
   useEffect(() => {
-    return onComposerInsertRefsRequest(({ refs, target }) => {
-      if (target === 'main') {
+    return onComposerInsertRefsRequest(({ refs, target: requested }) => {
+      if (requested === target) {
         insertInlineRefsRef.current(refs)
       }
     })
-  }, [])
+  }, [target])
 
   // Per-thread draft swap — the composer's only session coupling. Lifecycle
   // never clears composer state; this effect alone stashes on leave, restores
   // on enter. Keyed writes are idempotent, so no skip-sentinel.
-  useEffect(() => {
+  //
+  // MUST be a layout effect, not a passive one: it swaps attachmentScope's
+  // module-level $attachments atom, and a passive effect fires only after the
+  // browser paints the new session's view — leaving a window where the DOM
+  // already shows session B while $attachments (and therefore ChatBar's
+  // `attachments` prop) still holds session A's chips. A submit fired in that
+  // window (e.g. a fast session switch immediately followed by Enter) would
+  // ship A's attachments into B's turn (#59305). useLayoutEffect closes the
+  // window by running before paint.
+
+  useLayoutEffect(() => {
+    // A pending debounce timer from the outgoing session is now stale — its
+    // scope was correct when scheduled, but the authoritative stash below
+    // (and the cleanup on the way out) already covers that text. Letting it
+    // fire later would just clobber with an older snapshot.
+    window.clearTimeout(draftPersistTimerRef.current)
+    pendingDraftPersistRef.current = null
+    draftScopeRef.current = activeQueueSessionKey
+
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
     loadIntoComposer(text, attachments)
 
@@ -302,9 +393,10 @@ export function useComposerDraft({
 
   // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
   // inside the debounce/rAF window would drop trailing keystrokes without this.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const flushPendingDraftPersist = () => {
-      const scope = activeQueueSessionKeyRef.current
+      const scope = draftScopeRef.current
       const editing = queueEditStateRef.current
 
       if (editing?.sessionKey === scope || isBrowsingHistory(sessionIdRef.current)) {
@@ -339,6 +431,7 @@ export function useComposerDraft({
     requestMainFocus,
     sessionIdRef,
     setComposerText,
-    stashAt
+    stashAt,
+    syncDraftFromEditor
   }
 }

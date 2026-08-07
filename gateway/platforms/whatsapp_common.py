@@ -37,6 +37,26 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_wsecret(name, default=None):
+    """Scope-aware WHATSAPP_* read with the default-profile startup fallback.
+
+    Secondary profiles run under ``_profile_runtime_scope`` -- the scope is
+    authoritative and a scoped miss returns ``default`` (no cross-profile
+    borrow). The DEFAULT profile's adapter constructs and sends *unscoped*
+    under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash its WhatsApp path; there ``os.environ``
+    is that profile's own value, so fall back to it. Same pattern as the
+    Slack ``SLACK_APP_TOKEN`` read (#59739).
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +76,24 @@ class WhatsAppBehaviorMixin:
 
     DEFAULT_REPLY_PREFIX: str = "⚕ *Hermes Agent*\n────────────\n"
 
+    _OUTBOUND_INVISIBLE_CHARS_RE = re.compile(r"[\u200b\u2060\u2063\ufeff]")
+    _OUTBOUND_ODD_SPACE_RE = re.compile(r"[\u00a0\u1680\u180e\u2000-\u200a\u202f\u205f\u3000]")
+
+    @classmethod
+    def _sanitize_outbound_text(cls, content: str) -> str:
+        """Remove invisible formatting chars that leak badly in WhatsApp.
+
+        Some provider/gateway formatting paths can emit unicode like WORD
+        JOINER (U+2060) plus NARROW NO-BREAK SPACE (U+202F). WhatsApp may
+        render those as mojibake-looking prefixes (``⁠ text``) instead of
+        invisible spacing. Keep normal text and emoji joiners intact, but
+        strip known zero-width format chars and normalize odd unicode spaces.
+        """
+        if not content:
+            return content
+        content = cls._OUTBOUND_INVISIBLE_CHARS_RE.sub("", content)
+        return cls._OUTBOUND_ODD_SPACE_RE.sub(" ", content)
+
     @property
     def enforces_own_access_policy(self) -> bool:
         """WhatsApp gates DM/group access at intake via dm_policy/group_policy."""
@@ -69,12 +107,12 @@ class WhatsAppBehaviorMixin:
         adapter) can override this to always return ``""`` or apply a
         different policy.
         """
-        whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
+        whatsapp_mode = _get_wsecret("WHATSAPP_MODE", default="self-chat") or "self-chat"
         if whatsapp_mode != "self-chat":
             return ""
         if self._reply_prefix is not None:
             return self._reply_prefix.replace("\\n", "\n")
-        env_prefix = os.getenv("WHATSAPP_REPLY_PREFIX")
+        env_prefix = _get_wsecret("WHATSAPP_REPLY_PREFIX")
         if env_prefix is not None:
             return env_prefix.replace("\\n", "\n")
         return self.DEFAULT_REPLY_PREFIX
@@ -92,7 +130,7 @@ class WhatsAppBehaviorMixin:
             if isinstance(configured, str):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("WHATSAPP_REQUIRE_MENTION", "false").lower() in {
+        return (_get_wsecret("WHATSAPP_REQUIRE_MENTION", default="false") or "false").lower() in {
             "true",
             "1",
             "yes",
@@ -102,7 +140,7 @@ class WhatsAppBehaviorMixin:
     def _whatsapp_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
-            raw = os.getenv("WHATSAPP_FREE_RESPONSE_CHATS", "")
+            raw = _get_wsecret("WHATSAPP_FREE_RESPONSE_CHATS", default="") or ""
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -115,6 +153,28 @@ class WhatsAppBehaviorMixin:
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _live_dm_allow_from(self) -> set[str]:
+        """Allowlist currently enforced for DM intake / strict DM auth.
+
+        Source precedence matches construction: explicit config wins over any
+        env carrier. When the adapter was seeded from an env var, re-read that
+        same key so pairing approve/revoke takes effect without restart
+        (including an empty value while the key is still present). When the key
+        is absent — sole-entry revoke calls ``remove_env_value`` — treat the
+        allowlist as empty instead of falling back to the construction-time
+        snapshot. Config-seeded adapters keep the in-memory snapshot, which
+        pairing revoke purges in place — a lower-precedence or stale env value
+        must not broaden access.
+        """
+        source = getattr(self, "_dm_allowlist_source", None)
+        if isinstance(source, str) and source != "config":
+            if source in os.environ:
+                return self._coerce_allow_list(os.environ.get(source, ""))
+            # Key removed (e.g. sole-entry pairing revoke) — do not revive the
+            # stale construction snapshot.
+            return set()
+        return set(self._allow_from or ())
 
     # ------------------------------------------------------------------ JID helpers
     @staticmethod
@@ -150,7 +210,7 @@ class WhatsAppBehaviorMixin:
     def _open_dm_opted_in(self) -> bool:
         if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
             return True
-        return os.getenv("WHATSAPP_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        return (_get_wsecret("WHATSAPP_ALLOW_ALL_USERS", default="") or "").lower() in {"true", "1", "yes"}
 
     @staticmethod
     def _matches_whatsapp_allowlist(candidate: str, allow_from) -> bool:
@@ -196,7 +256,7 @@ class WhatsAppBehaviorMixin:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(sender_id, self._allow_from)
+            return self._matches_whatsapp_allowlist(sender_id, self._live_dm_allow_from())
         if self._dm_policy == "open":
             return self._open_dm_opted_in()
         return False
@@ -209,7 +269,7 @@ class WhatsAppBehaviorMixin:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(principal, self._allow_from)
+            return self._matches_whatsapp_allowlist(principal, self._live_dm_allow_from())
         if self._dm_policy == "pairing":
             return True
         if self._dm_policy == "open":
@@ -231,7 +291,7 @@ class WhatsAppBehaviorMixin:
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
-            raw = os.getenv("WHATSAPP_MENTION_PATTERNS", "").strip()
+            raw = (_get_wsecret("WHATSAPP_MENTION_PATTERNS", default="") or "").strip()
             if raw:
                 try:
                     patterns = json.loads(raw)
@@ -375,6 +435,8 @@ class WhatsAppBehaviorMixin:
         if not content:
             return content
 
+        content = self._sanitize_outbound_text(content)
+
         # --- 1. Protect fenced code blocks from formatting changes ---
         _FENCE_PH = "\x00FENCE"
         fences: list[str] = []
@@ -396,12 +458,19 @@ class WhatsAppBehaviorMixin:
         result = re.sub(r"`[^`\n]+`", _save_code, result)
 
         # --- 3. Convert markdown formatting to WhatsApp syntax ---
+        # Italic: standard Markdown *text* → WhatsApp _text_.  Do this before
+        # bold conversion so **bold** does not become italic by accident.  The
+        # lookarounds avoid list bullets and bold delimiters.
+        result = re.sub(
+            r"(?<!\*)\*(?!\s|\*)([^*\n]*?\S[^*\n]*?)\*(?!\*)",
+            r"_\1_",
+            result,
+        )
         # Bold: **text** or __text__ → *text*
         result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", result)
         result = re.sub(r"__(.+?)__", r"*\1*", result)
         # Strikethrough: ~~text~~ → ~text~
         result = re.sub(r"~~(.+?)~~", r"~\1~", result)
-        # Italic: *text* is already WhatsApp italic — leave as-is
         # _text_ is already WhatsApp italic — leave as-is
 
         # --- 4. Convert markdown headers to bold text ---

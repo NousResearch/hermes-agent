@@ -1,14 +1,14 @@
 ---
-title: "Simpo Training — Simple Preference Optimization for LLM alignment"
+title: "Simpo Training — Reference-free preference alignment, simpler than DPO"
 sidebar_label: "Simpo Training"
-description: "Simple Preference Optimization for LLM alignment"
+description: "Reference-free preference alignment, simpler than DPO"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Simpo Training
 
-Simple Preference Optimization for LLM alignment. Reference-free alternative to DPO with better performance (+6.4 points on AlpacaEval 2.0). No reference model needed, more efficient than DPO. Use for preference alignment when want simpler, faster training than DPO/PPO.
+Reference-free preference alignment, simpler than DPO.
 
 ## Skill metadata
 

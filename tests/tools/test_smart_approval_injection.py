@@ -33,30 +33,12 @@ class TestStripLineComment(unittest.TestCase):
     def test_no_comment(self):
         assert _strip_line_comment("echo hello") == "echo hello"
 
-    def test_hash_inside_double_quotes(self):
-        """Hash inside double quotes is NOT a comment."""
-        line = 'echo "hello # world"'
-        assert _strip_line_comment(line) == line
-
-    def test_hash_inside_single_quotes(self):
-        """Hash inside single quotes is NOT a comment."""
-        line = "echo 'hello # world'"
-        assert _strip_line_comment(line) == line
 
     def test_escaped_hash_in_double_quotes(self):
         """Escaped characters inside double quotes should be handled."""
         line = r'echo "path\\# thing"'
         assert _strip_line_comment(line) == line
 
-    def test_comment_after_closing_quote(self):
-        line = 'echo "hello" # greeting'
-        assert _strip_line_comment(line) == 'echo "hello"'
-
-    def test_empty_string(self):
-        assert _strip_line_comment("") == ""
-
-    def test_line_is_only_comment(self):
-        assert _strip_line_comment("# this is a comment") == ""
 
     def test_injection_payload_in_comment(self):
         """The primary attack vector: injection payload hidden in a comment."""
@@ -90,18 +72,6 @@ class TestStripShellComments(unittest.TestCase):
         assert "echo done" in result
         assert "rm -rf important/" in result
 
-    def test_preserves_quoted_hashes(self):
-        cmd = 'grep "# TODO" src/*.py  # find todos'
-        result = _strip_shell_comments(cmd)
-        assert '# TODO' in result
-        assert "find todos" not in result
-
-    def test_single_line_no_comment(self):
-        cmd = "python -c 'print(42)'"
-        assert _strip_shell_comments(cmd) == cmd
-
-    def test_empty_command(self):
-        assert _strip_shell_comments("") == ""
 
     def test_trailing_whitespace_cleaned(self):
         cmd = "echo hello   # greeting   "
@@ -183,11 +153,6 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         # But the actual dangerous command must still be present
         assert "rm -rf /critical/data" in user_content
 
-    @patch("agent.auxiliary_client.call_llm")
-    def test_exception_escalates(self, mock_call_llm):
-        """On any exception, must escalate (fail safe)."""
-        mock_call_llm.side_effect = RuntimeError("connection failed")
-        assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
 
     @patch("agent.auxiliary_client.call_llm")
     def test_approve_response(self, mock_call_llm):

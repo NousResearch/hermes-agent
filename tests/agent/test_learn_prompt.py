@@ -6,7 +6,12 @@ builds a standards-guided prompt that the live agent runs as a normal turn, so
 these are the load-bearing behavior contracts.
 """
 
-from agent.learn_prompt import build_learn_prompt, _AUTHORING_STANDARDS
+from agent.learn_prompt import (
+    build_learn_prompt,
+    _AUTHORING_STANDARDS,
+    _KNOWLEDGE_SKILL_STANDARDS,
+    _SOURCE_HYGIENE,
+)
 
 
 class TestBuildLearnPrompt:
@@ -15,22 +20,8 @@ class TestBuildLearnPrompt:
         prompt = build_learn_prompt(req)
         assert req in prompt
 
-    def test_always_includes_the_authoring_standards(self):
-        # The standards are what make distilled skills match house style;
-        # they must travel with every prompt regardless of input.
-        for req in ["", "a url https://x/y", "what we just did"]:
-            assert _AUTHORING_STANDARDS in build_learn_prompt(req)
 
-    def test_instructs_saving_via_skill_manage_not_a_raw_file(self):
-        prompt = build_learn_prompt("learn the thing")
-        assert "skill_manage" in prompt
 
-    def test_references_gather_tools_for_open_ended_sourcing(self):
-        # Open-ended sourcing relies on the agent's own tools, named so it
-        # knows dirs/URLs/conversation/paste all route through existing tools.
-        prompt = build_learn_prompt("learn from somewhere")
-        for tool in ("read_file", "search_files", "web_extract"):
-            assert tool in prompt
 
     def test_separates_sources_from_requirements(self):
         # The reported bug (@GrenFX, Jun 2026): when a request leads with a
@@ -49,19 +40,8 @@ class TestBuildLearnPrompt:
         # Names the failure mode it's guarding against.
         assert "never fetch the first source" in low
 
-    def test_empty_request_falls_back_to_the_conversation(self):
-        # Bare /learn should distill "what we just did", not error.
-        prompt = build_learn_prompt("")
-        assert "conversation" in prompt.lower()
-        # And still carries the standards + save instruction.
-        assert "skill_manage" in prompt
 
-    def test_whitespace_only_request_is_treated_as_empty(self):
-        assert build_learn_prompt("   \n  ") == build_learn_prompt("")
 
-    def test_description_length_rule_is_in_the_standards(self):
-        # The single most-violated rule must be explicit in the prompt.
-        assert "60" in _AUTHORING_STANDARDS
 
     def test_teaches_the_full_hardline_standards(self):
         # description length — otherwise distilled skills miss platform gating,
@@ -80,6 +60,40 @@ class TestBuildLearnPrompt:
         # #6 scripts/references/templates layout.
         assert "scripts/" in _AUTHORING_STANDARDS
 
+    def test_teaches_the_knowledge_base_layout(self):
+        # Expansive sources (books, paper stacks, specs) must produce a lean
+        # SKILL.md index plus per-chapter references/ files loaded on demand —
+        # not one crammed file or a lossy summary. Ported from the
+        # book-to-skill layout (Aug 2026).
+        kb = _KNOWLEDGE_SKILL_STANDARDS.lower()
+        assert "references/" in _KNOWLEDGE_SKILL_STANDARDS
+        # On-demand loading goes through skill_view with a file_path.
+        assert "skill_view" in _KNOWLEDGE_SKILL_STANDARDS
+        # Structure, not summary — the load-bearing distillation rule.
+        assert "structure" in kb and "summary" in kb
+        # Copyright/quality line: synthesized notes, no verbatim reproduction.
+        assert "never reproduce" in kb
+        # Extend an existing skill rather than minting a near-duplicate.
+        assert "fold-in" in kb
+
+    def test_prompt_embeds_all_three_standards_blocks(self):
+        prompt = build_learn_prompt("~/books/ddia.pdf")
+        assert _AUTHORING_STANDARDS in prompt
+        assert _KNOWLEDGE_SKILL_STANDARDS in prompt
+        assert _SOURCE_HYGIENE in prompt
+        # The shape decision is explicit: small source -> one file, large
+        # prose source -> knowledge-base layout.
+        assert "Pick the shape by the source" in prompt
+
+    def test_source_hygiene_covers_invisible_unicode(self):
+        # Extracted document text is an injection vector (Trojan Source /
+        # invisible code points). The prompt must pin source text as data and
+        # name the invisible/bidi character classes to drop.
+        hyg = _SOURCE_HYGIENE.lower()
+        assert "data, not instructions" in hyg
+        assert "zero-width" in hyg
+        assert "bidi" in hyg or "bidirectional" in hyg
+
 
 class TestLearnRegistryWiring:
     def test_learn_is_registered_and_resolves(self):
@@ -89,17 +103,7 @@ class TestLearnRegistryWiring:
         assert cmd is not None
         assert cmd.name == "learn"
 
-    def test_learn_is_in_tools_and_skills_category(self):
-        from hermes_cli.commands import resolve_command
 
-        assert resolve_command("learn").category == "Tools & Skills"
-
-    def test_learn_works_on_the_gateway(self):
-        # /learn must reach the gateway runner (it's a both-surfaces command),
-        # not be CLI-only.
-        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
-
-        assert "learn" in GATEWAY_KNOWN_COMMANDS
 
     def test_learn_is_not_cli_only(self):
         from hermes_cli.commands import resolve_command

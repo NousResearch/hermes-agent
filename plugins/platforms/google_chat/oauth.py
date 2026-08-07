@@ -65,8 +65,11 @@ import secrets
 import stat
 import subprocess
 import sys
+from importlib.metadata import version as _distribution_version
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
+
+from packaging.requirements import Requirement
 
 # Pin the legacy logger name so operator-side log filters keep matching
 # after the in-tree → plugin migration. See adapter.py for context.
@@ -157,11 +160,15 @@ SCOPES: List[str] = [
     "https://www.googleapis.com/auth/chat.messages.create",
 ]
 
-# Pip packages required for the OAuth flow.
+# Pip packages required by the Google Chat adapter and its OAuth flow.
 _REQUIRED_PACKAGES = [
-    "google-api-python-client",
-    "google-auth-oauthlib",
-    "google-auth-httplib2",
+    "google-cloud-pubsub==2.39.0",
+    "google-api-python-client==2.194.0",
+    "google-auth==2.55.1",
+    "google-auth-oauthlib==1.3.1",
+    "google-auth-httplib2==0.3.1",
+    "httplib2==0.32.0",
+    "pyasn1==0.6.4",
 ]
 
 # Out-of-band redirect: Google deprecated the ``urn:ietf:wg:oauth:2.0:oob``
@@ -193,13 +200,21 @@ def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
     if not token_path.exists():
         return None
 
+    # Same class as slack_tokens.json: hand-provisioned or legacy-written
+    # token files commonly end up 0o644. Warn so the owner tightens them.
+    from utils import warn_if_credential_file_broadly_readable
+
+    warn_if_credential_file_broadly_readable(
+        token_path, label="[google_chat_user_oauth]", log=logger
+    )
+
     try:
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
     except ImportError:
         logger.warning(
             "[google_chat_user_oauth] google-auth not installed; user-OAuth "
-            "attachment delivery is disabled. Install hermes-agent[google_chat]."
+            "attachment delivery is disabled. Run `hermes setup` to install Google Chat support."
         )
         return None
 
@@ -359,36 +374,49 @@ def _write_private_json(path: Path, data: Any) -> None:
 
 
 def _ensure_deps() -> None:
-    """Check deps available; install if not; exit on failure."""
-    try:
-        import googleapiclient  # noqa: F401
-        import google_auth_oauthlib  # noqa: F401
-    except ImportError:
-        if not install_deps():
-            sys.exit(1)
+    """Check exact dependency versions; install if stale; exit on failure."""
+    if _missing_required_packages() and not install_deps():
+        sys.exit(1)
+
+
+def _missing_required_packages() -> List[str]:
+    """Return exact requirements absent or stale in this interpreter."""
+    missing = []
+    for spec in _REQUIRED_PACKAGES:
+        requirement = Requirement(spec)
+        try:
+            installed = _distribution_version(requirement.name)
+            satisfied = requirement.specifier.contains(installed, prereleases=True)
+        except Exception:
+            satisfied = False
+        if not satisfied:
+            missing.append(spec)
+    return missing
 
 
 def install_deps() -> bool:
-    try:
-        import googleapiclient  # noqa: F401
-        import google_auth_oauthlib  # noqa: F401
+    missing = _missing_required_packages()
+    if not missing:
         print("Dependencies already installed.")
         return True
-    except ImportError:
-        pass
 
-    print("Installing Google Chat OAuth dependencies...")
+    print("Installing Google Chat dependencies...")
     try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet"] + _REQUIRED_PACKAGES,
-            stdout=subprocess.DEVNULL,
-        )
+        from hermes_cli.tools_config import _pip_install
+
+        result = _pip_install(["--quiet"] + missing)
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or "install failed").strip()[:300])
+        remaining = _missing_required_packages()
+        if remaining:
+            raise RuntimeError(
+                "dependencies remain stale after install: " + " ".join(remaining)
+            )
         print("Dependencies installed.")
         return True
-    except subprocess.CalledProcessError as exc:
+    except Exception as exc:
         print(f"ERROR: Failed to install dependencies: {exc}")
-        print("Or install via the optional extra:")
-        print("  pip install 'hermes-agent[google_chat]'")
+        print("Run `hermes setup` to repair the managed installation, then retry.")
         return False
 
 
@@ -419,7 +447,7 @@ def store_client_secret(path: str) -> None:
         sys.exit(1)
 
     try:
-        data = json.loads(src.read_text())
+        data = json.loads(src.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         print("ERROR: File is not valid JSON.")
         sys.exit(1)
@@ -459,7 +487,7 @@ def _load_pending_auth(email: Optional[str] = None) -> dict:
         print("ERROR: No pending OAuth session found. Run --auth-url first.")
         sys.exit(1)
     try:
-        data = json.loads(pending.read_text())
+        data = json.loads(pending.read_text(encoding="utf-8"))
     except Exception as exc:
         print(f"ERROR: Could not read pending OAuth session: {exc}")
         print("Run --auth-url again to start a fresh session.")

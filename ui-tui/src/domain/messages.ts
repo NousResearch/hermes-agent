@@ -1,23 +1,8 @@
 import { LONG_MSG } from '../config/limits.js'
-import { buildToolTrailLine, fmtK } from '../lib/text.js'
+import { buildToolTrailLine } from '../lib/text.js'
 import type { Msg, SessionInfo } from '../types.js'
 
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
-
-export const imageTokenMeta = (info?: ImageMeta | null) => {
-  const { width, height, token_estimate: t } = info ?? {}
-
-  return [width && height ? `${width}x${height}` : '', (t ?? 0) > 0 ? `~${fmtK(t!)} tok` : '']
-    .filter(Boolean)
-    .join(' · ')
-}
-
-export const attachedImageNotice = (info?: ({ name?: string } & ImageMeta) | null) => {
-  const meta = imageTokenMeta(info)
-  const label = info?.name ? `📎 Attached image: ${info.name}` : '📎 Attached image'
-
-  return `${label}${meta ? ` · ${meta}` : ''}`
-}
 
 export const userDisplay = (text: string) => {
   if (text.length <= LONG_MSG) {
@@ -44,7 +29,7 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    const { context, name, role, text } = row as TranscriptRow
+    const { context, display_kind, name, role, text } = row as TranscriptRow
 
     if (role === 'tool') {
       pending.push(buildToolTrailLine(name ?? 'tool', context ?? ''))
@@ -53,6 +38,41 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (typeof text !== 'string' || !text.trim()) {
+      continue
+    }
+
+    // Display-only timeline events: render as dim ◈ markers instead of
+    // opaque user messages. Hidden compaction handoffs are skipped entirely.
+    if (display_kind === 'hidden') {
+      continue
+    }
+
+    if (display_kind === 'model_switch') {
+      out.push({ kind: 'event', role: 'system', text: 'model changed' })
+      pending = []
+
+      continue
+    }
+
+    if (display_kind === 'auto_continue') {
+      out.push({ kind: 'event', role: 'system', text: 'resumed interrupted turn' })
+      pending = []
+
+      continue
+    }
+
+    if (display_kind === 'async_delegation_complete') {
+      const meta = (row as TranscriptRow).display_metadata
+      const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
+
+      const label =
+        count === undefined
+          ? 'background agent work finished'
+          : `${count} background agent${count === 1 ? '' : 's'} finished`
+
+      out.push({ kind: 'event', role: 'system', text: label })
+      pending = []
+
       continue
     }
 
@@ -77,14 +97,10 @@ export const fmtDuration = (ms: number) => {
   return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
-interface ImageMeta {
-  height?: number
-  token_estimate?: number
-  width?: number
-}
-
 interface TranscriptRow {
   context?: string
+  display_kind?: string
+  display_metadata?: { task_count?: number; [key: string]: unknown }
   name?: string
   role?: string
   text?: string

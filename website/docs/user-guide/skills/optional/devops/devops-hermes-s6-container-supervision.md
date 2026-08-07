@@ -1,14 +1,14 @@
 ---
-title: "Hermes S6 Container Supervision"
+title: "Hermes S6 Container Supervision — Modify or debug s6 services in the Hermes Docker image"
 sidebar_label: "Hermes S6 Container Supervision"
-description: "Modify, debug, or extend the s6-overlay supervision tree inside the Hermes Agent Docker image — adding new services, debugging profile gateways, understandin..."
+description: "Modify or debug s6 services in the Hermes Docker image"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Hermes S6 Container Supervision
 
-Modify, debug, or extend the s6-overlay supervision tree inside the Hermes Agent Docker image — adding new services, debugging profile gateways, understanding the Architecture B main-program pattern.
+Modify or debug s6 services in the Hermes Docker image.
 
 ## Skill metadata
 
@@ -21,7 +21,7 @@ Modify, debug, or extend the s6-overlay supervision tree inside the Hermes Agent
 | License | MIT |
 | Platforms | linux |
 | Tags | `docker`, `s6`, `supervision`, `gateway`, `profiles` |
-| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), `hermes-agent-dev` |
+| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
 
 ## Reference: full SKILL.md
 

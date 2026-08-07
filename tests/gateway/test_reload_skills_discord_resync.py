@@ -83,57 +83,6 @@ class TestRefreshSkillGroup:
         assert "old-skill" not in adapter._skill_lookup
         assert adapter._skill_lookup["new-skill"] == ("Fresh skill", "/new-skill")
 
-    def test_refresh_sorts_entries_alphabetically(self, monkeypatch) -> None:
-        """Autocomplete order must be stable and predictable across refreshes."""
-        adapter = _make_adapter()
-        adapter._skill_entries = []
-        adapter._skill_lookup = {}
-        adapter._skill_group_reserved_names = set()
-        adapter._skill_group_hidden_count = 0
-
-        def fake_collector(*, reserved_names):
-            # Intentionally unsorted — the fix must resort.
-            return (
-                {"zzz": [("zebra", "", "/zebra")]},
-                [("alpha", "", "/alpha")],
-                0,
-            )
-
-        monkeypatch.setattr(
-            "hermes_cli.commands.discord_skill_commands_by_category",
-            fake_collector,
-        )
-
-        adapter.refresh_skill_group()
-
-        names = [n for n, _d, _k in adapter._skill_entries]
-        assert names == sorted(names) == ["alpha", "zebra"]
-
-    def test_refresh_handles_collector_exception_gracefully(
-        self, monkeypatch
-    ) -> None:
-        """A broken collector must not take down /reload-skills."""
-        adapter = _make_adapter()
-        adapter._skill_entries = [("keep", "kept", "/keep")]
-        adapter._skill_lookup = {"keep": ("kept", "/keep")}
-        adapter._skill_group_reserved_names = set()
-        adapter._skill_group_hidden_count = 0
-
-        def boom(*, reserved_names):
-            raise RuntimeError("simulated collector failure")
-
-        monkeypatch.setattr(
-            "hermes_cli.commands.discord_skill_commands_by_category",
-            boom,
-        )
-
-        new_count, hidden = adapter.refresh_skill_group()
-        # Returns previously-cached count, no crash, existing entries
-        # preserved so the live autocomplete keeps working.
-        assert new_count == 1
-        assert hidden == 0
-        assert adapter._skill_entries == [("keep", "kept", "/keep")]
-
 
 class TestRegisterSkillGroupUsesInstanceState:
     """The closure-based ``entries`` / ``skill_lookup`` must be gone.

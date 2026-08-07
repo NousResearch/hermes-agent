@@ -7,16 +7,12 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { capitalize } from '@/lib/text'
 import type { TodoStatus } from '@/lib/todos'
 import { cn } from '@/lib/utils'
 import type { ComposerStatusItem } from '@/store/composer-status'
 
-const toolLabel = (name: string) =>
-  name
-    .split('_')
-    .filter(Boolean)
-    .map(part => part[0]!.toUpperCase() + part.slice(1))
-    .join(' ') || name
+const toolLabel = (name: string) => name.split('_').filter(Boolean).map(capitalize).join(' ') || name
 
 // Todo rows speak checkbox, not spinner-and-dot: a dashed ring while the item
 // is still open (pending), codicons once it resolves, a live spinner only on
@@ -29,6 +25,24 @@ const TODO_GLYPHS: Record<Exclude<TodoStatus, 'in_progress' | 'pending'>, { icon
 // Left slot: braille spinner while running, otherwise a small status dot
 // (green = done, red = failed) so the slot is always filled and rows align.
 function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']): ReactNode {
+  if (item.type === 'goal') {
+    if (item.goalStatus === 'paused') {
+      return <Codicon className="text-muted-foreground/60" name="debug-pause" size="0.8rem" />
+    }
+
+    if (item.goalStatus === 'done') {
+      return <Codicon className="text-emerald-500/80" name="pass-filled" size="0.8rem" />
+    }
+
+    return (
+      <GlyphSpinner
+        ariaLabel={s.running}
+        className="text-[0.85rem] leading-none text-emerald-500/80"
+        spinner="braille"
+      />
+    )
+  }
+
   if (item.todoStatus === 'pending') {
     return (
       <span
@@ -139,6 +153,11 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
         {item.type === 'subagent' && item.currentTool && (
           <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">
             {toolLabel(item.currentTool)}
+          </span>
+        )}
+        {item.type === 'goal' && item.currentTool && (
+          <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">
+            {item.currentTool}
           </span>
         )}
         {failed && typeof item.exitCode === 'number' && item.exitCode !== 0 && (

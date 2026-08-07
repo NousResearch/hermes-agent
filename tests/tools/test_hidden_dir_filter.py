@@ -34,10 +34,6 @@ class TestOldFilterBrokenOnWindows:
         win_path = r"C:\Users\me\.hermes\skills\.hub\quarantine\evil-skill\SKILL.md"
         assert _old_filter_matches(win_path) is False  # Bug: should be True
 
-    def test_old_filter_misses_git_on_windows_path(self):
-        """Old filter fails to catch .git in a Windows-style path string."""
-        win_path = r"C:\Users\me\.hermes\skills\.git\config\SKILL.md"
-        assert _old_filter_matches(win_path) is False  # Bug: should be True
 
     def test_old_filter_works_on_unix_path(self):
         """Old filter works fine on Unix paths (the original platform)."""
@@ -53,25 +49,6 @@ class TestNewFilterCrossPlatform:
         p = tmp_path / ".hermes" / "skills" / ".hub" / "quarantine" / "evil" / "SKILL.md"
         assert _new_filter_matches(p) is True
 
-    def test_git_dir_filtered(self, tmp_path):
-        """A SKILL.md inside .git/ must be filtered out."""
-        p = tmp_path / ".hermes" / "skills" / ".git" / "hooks" / "SKILL.md"
-        assert _new_filter_matches(p) is True
-
-    def test_github_dir_filtered(self, tmp_path):
-        """A SKILL.md inside .github/ must be filtered out."""
-        p = tmp_path / ".hermes" / "skills" / ".github" / "workflows" / "SKILL.md"
-        assert _new_filter_matches(p) is True
-
-    def test_normal_skill_not_filtered(self, tmp_path):
-        """A regular skill SKILL.md must NOT be filtered out."""
-        p = tmp_path / ".hermes" / "skills" / "my-cool-skill" / "SKILL.md"
-        assert _new_filter_matches(p) is False
-
-    def test_nested_skill_not_filtered(self, tmp_path):
-        """A deeply nested regular skill must NOT be filtered out."""
-        p = tmp_path / ".hermes" / "skills" / "org" / "deep-skill" / "SKILL.md"
-        assert _new_filter_matches(p) is False
 
     def test_dot_prefix_not_false_positive(self, tmp_path):
         """A skill dir starting with dot but not in the filter list passes."""

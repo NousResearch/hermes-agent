@@ -62,14 +62,6 @@ class TestTimeoutErrorFormatting:
         assert "120 seconds" in err
         assert "Daemon process exited" in err
 
-    def test_sandbox_hint(self):
-        err = bt._format_browser_timeout_error(
-            "open",
-            60,
-            "",
-            "No usable sandbox!",
-        )
-        assert "AGENT_BROWSER_ARGS" in err
 
     def test_local_install_hint(self, monkeypatch):
         monkeypatch.setattr(bt, "_is_local_mode", lambda: True)

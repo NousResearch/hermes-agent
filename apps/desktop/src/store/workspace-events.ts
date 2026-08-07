@@ -9,6 +9,33 @@ import { atom } from 'nanostores'
 
 export const $workspaceChangeTick = atom(0)
 
+// What changed since the last consume. The file tree targets `dirs` (surgical
+// subtree re-reads) and only falls back to a whole-tree rescan when `full` is
+// set — an opaque mutation (a terminal command, or a path we can't resolve to
+// the tree's absolute ids) whose touched paths we can't enumerate. Coarse
+// subscribers (coding rail, review) ignore this and just react to the tick.
+let pendingDirs = new Set<string>()
+let pendingFull = false
+
+/** Drain the accumulated change since the previous call (the tree's consumer). */
+export function consumeWorkspaceChange(): { dirs: string[]; full: boolean } {
+  const change = { dirs: [...pendingDirs], full: pendingFull }
+  pendingDirs = new Set()
+  pendingFull = false
+
+  return change
+}
+
+// Parent dir of an ABSOLUTE path (POSIX or `C:/…`); null for a relative path we
+// can't anchor to the tree — the caller treats null as "rescan to be safe".
+function dirOf(path: string): null | string {
+  const p = path.replace(/\\/g, '/').replace(/\/+$/, '')
+  const absolute = p.startsWith('/') || /^[a-z]:\//i.test(p)
+  const slash = p.lastIndexOf('/')
+
+  return absolute && slash >= 0 ? p.slice(0, slash) : null
+}
+
 // Throttle so a burst of edits in one turn coalesces: fire on the leading edge
 // for instant feedback, then at most once per window (a trailing fire catches
 // the last edit of the burst).
@@ -21,7 +48,17 @@ function fire(): void {
   $workspaceChangeTick.set($workspaceChangeTick.get() + 1)
 }
 
-export function notifyWorkspaceChanged(): void {
+/** @param changedPath absolute path a tool touched; omit (or pass a relative /
+ *  unknowable path) to force a full-tree rescan. */
+export function notifyWorkspaceChanged(changedPath?: string): void {
+  const dir = changedPath ? dirOf(changedPath) : null
+
+  if (dir) {
+    pendingDirs.add(dir)
+  } else {
+    pendingFull = true
+  }
+
   const since = Date.now() - lastFired
 
   if (since >= MIN_INTERVAL_MS) {
@@ -57,4 +94,30 @@ export function toolMayMutateFiles(payload: { name?: unknown; tool?: unknown; in
   const name = String(payload.name ?? payload.tool ?? '')
 
   return MUTATING_TOOL_RE.test(name)
+}
+
+// Common arg keys a single-file writer/mover uses for its target. A hit lets the
+// tree target that dir; a miss (terminal, multi-path, odd schema) → full rescan.
+const PATH_ARG_KEYS = ['path', 'file_path', 'filename', 'file', 'target_file', 'new_path', 'dest', 'destination']
+
+/** Best-effort absolute path a finished tool touched, from its args — or
+ *  undefined (→ full rescan) for terminal/opaque/multi-path mutations. */
+export function toolChangedPath(payload: { args?: unknown; arguments?: unknown }): string | undefined {
+  const args = payload.args ?? payload.arguments
+
+  if (!args || typeof args !== 'object') {
+    return undefined
+  }
+
+  const record = args as Record<string, unknown>
+
+  for (const key of PATH_ARG_KEYS) {
+    const value = record[key]
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim()
+    }
+  }
+
+  return undefined
 }

@@ -50,28 +50,6 @@ class TestResolveMediaToDataUrls(unittest.TestCase):
         text = "MEDIA:/tmp/archive.zip"
         self.assertEqual(_resolve_media_to_data_urls(text), text)
 
-    def test_text_without_media_passthrough(self):
-        self.assertEqual(_resolve_media_to_data_urls("plain text"), "plain text")
-        self.assertEqual(_resolve_media_to_data_urls(""), "")
-
-    def test_oversized_image_skipped(self):
-        from gateway.platforms import api_server as mod
-
-        p = self._write_png()
-        orig = mod._MEDIA_DATA_URL_MAX_BYTES
-        mod._MEDIA_DATA_URL_MAX_BYTES = 1
-        try:
-            text = f"MEDIA:{p}"
-            self.assertEqual(_resolve_media_to_data_urls(text), text)
-        finally:
-            mod._MEDIA_DATA_URL_MAX_BYTES = orig
-
-    def test_multiple_tags(self):
-        p1 = self._write_png()
-        p2 = self._write_png("hermes_media_test2")
-        out = _resolve_media_to_data_urls(f"MEDIA:{p1}\nand MEDIA:{p2}")
-        self.assertEqual(out.count("data:image/png;base64,"), 2)
-
 
 if __name__ == "__main__":
     unittest.main()

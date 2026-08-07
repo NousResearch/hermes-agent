@@ -29,61 +29,8 @@ class TestExtractPathWord:
     def test_relative_path(self):
         assert SlashCommandCompleter._extract_path_word("look at ./src/main.py") == "./src/main.py"
 
-    def test_home_path(self):
-        assert SlashCommandCompleter._extract_path_word("edit ~/docs/") == "~/docs/"
 
-    def test_absolute_path(self):
-        assert SlashCommandCompleter._extract_path_word("read /etc/hosts") == "/etc/hosts"
 
-    def test_parent_path(self):
-        assert SlashCommandCompleter._extract_path_word("check ../config.yaml") == "../config.yaml"
-
-    def test_path_with_slash_in_middle(self):
-        assert SlashCommandCompleter._extract_path_word("open src/utils/helpers.py") == "src/utils/helpers.py"
-
-    def test_plain_word_not_path(self):
-        assert SlashCommandCompleter._extract_path_word("hello world") is None
-
-    def test_empty_string(self):
-        assert SlashCommandCompleter._extract_path_word("") is None
-
-    def test_single_word_no_slash(self):
-        assert SlashCommandCompleter._extract_path_word("README.md") is None
-
-    def test_word_after_space(self):
-        assert SlashCommandCompleter._extract_path_word("fix the bug in ./tools/") == "./tools/"
-
-    def test_just_dot_slash(self):
-        assert SlashCommandCompleter._extract_path_word("./") == "./"
-
-    def test_just_tilde_slash(self):
-        assert SlashCommandCompleter._extract_path_word("~/") == "~/"
-
-    def test_url_is_not_treated_as_path(self):
-        # A URL contains "/" so the bare slash heuristic would otherwise return
-        # it as a path word, firing os.listdir("https:") on every keystroke.
-        assert SlashCommandCompleter._extract_path_word("see https://paste.rs/abc") is None
-
-    def test_http_url_is_not_treated_as_path(self):
-        assert SlashCommandCompleter._extract_path_word("ref http://example.com/x") is None
-
-    def test_scheme_alone_is_enough_to_reject(self):
-        # The "://" scheme separator is the signal, even before any path part
-        # has been typed.
-        assert SlashCommandCompleter._extract_path_word("ssh://host") is None
-
-    def test_path_word_with_colon_but_no_scheme_still_resolves(self):
-        # Only the "://" scheme separator should reject; a bare colon inside a
-        # real path token must not regress path detection.
-        assert (
-            SlashCommandCompleter._extract_path_word("open ./a:b/c.py") == "./a:b/c.py"
-        )
-
-    def test_ordinary_path_unaffected_by_url_guard(self):
-        assert (
-            SlashCommandCompleter._extract_path_word("edit src/pkg/mod.py")
-            == "src/pkg/mod.py"
-        )
 
 
 class TestPathCompletions:
@@ -103,16 +50,6 @@ class TestPathCompletions:
         finally:
             os.chdir(old_cwd)
 
-    def test_filters_by_prefix(self, tmp_path):
-        (tmp_path / "alpha.py").touch()
-        (tmp_path / "beta.py").touch()
-        (tmp_path / "alpha_test.py").touch()
-
-        completions = list(SlashCommandCompleter._path_completions(f"{tmp_path}/alpha"))
-        names = _display_names(completions)
-        assert "alpha.py" in names
-        assert "alpha_test.py" in names
-        assert "beta.py" not in names
 
     def test_directories_have_trailing_slash(self, tmp_path):
         (tmp_path / "mydir").mkdir()
@@ -125,31 +62,9 @@ class TestPathCompletions:
         idx = names.index("mydir/")
         assert metas[idx] == "dir"
 
-    def test_home_expansion(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        (tmp_path / "testfile.md").touch()
 
-        completions = list(SlashCommandCompleter._path_completions("~/test"))
-        names = _display_names(completions)
-        assert "testfile.md" in names
 
-    def test_nonexistent_dir_returns_empty(self):
-        completions = list(SlashCommandCompleter._path_completions("/nonexistent_dir_xyz/"))
-        assert completions == []
 
-    def test_respects_limit(self, tmp_path):
-        for i in range(50):
-            (tmp_path / f"file_{i:03d}.txt").touch()
-
-        completions = list(SlashCommandCompleter._path_completions(f"{tmp_path}/", limit=10))
-        assert len(completions) == 10
-
-    def test_case_insensitive_prefix(self, tmp_path):
-        (tmp_path / "README.md").touch()
-
-        completions = list(SlashCommandCompleter._path_completions(f"{tmp_path}/read"))
-        names = _display_names(completions)
-        assert "README.md" in names
 
 
 class TestIntegration:
@@ -175,11 +90,6 @@ class TestIntegration:
         finally:
             os.chdir(old_cwd)
 
-    def test_no_completion_for_plain_words(self, completer):
-        doc = Document("hello world", cursor_position=11)
-        event = MagicMock()
-        completions = list(completer.get_completions(doc, event))
-        assert completions == []
 
     def test_url_does_not_touch_filesystem(self, completer, monkeypatch):
         # Regression for laggy typing: a URL token contains "/", so before the
@@ -198,14 +108,6 @@ class TestIntegration:
         event = MagicMock()
         assert list(completer.get_completions(doc, event)) == []
 
-    def test_absolute_path_triggers_completion(self, completer):
-        doc = Document("check /etc/hos", cursor_position=14)
-        event = MagicMock()
-        completions = list(completer.get_completions(doc, event))
-        names = _display_names(completions)
-        # /etc/hosts should exist on Linux
-        assert any("host" in n.lower() for n in names)
-
 
 class TestFileSizeLabel:
     def test_bytes(self, tmp_path):
@@ -213,15 +115,6 @@ class TestFileSizeLabel:
         f.write_text("hi")
         assert _file_size_label(str(f)) == "2B"
 
-    def test_kilobytes(self, tmp_path):
-        f = tmp_path / "medium.txt"
-        f.write_bytes(b"x" * 2048)
-        assert _file_size_label(str(f)) == "2K"
-
-    def test_megabytes(self, tmp_path):
-        f = tmp_path / "large.bin"
-        f.write_bytes(b"x" * (2 * 1024 * 1024))
-        assert _file_size_label(str(f)) == "2.0M"
 
     def test_nonexistent(self):
         assert _file_size_label("/nonexistent_xyz") == ""

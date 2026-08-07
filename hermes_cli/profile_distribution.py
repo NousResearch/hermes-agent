@@ -67,10 +67,11 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_cli._subprocess_compat import noninteractive_git_env
 
 
 # ---------------------------------------------------------------------------
@@ -250,12 +251,6 @@ def _load_yaml(text: str) -> Any:
     return yaml.safe_load(text)
 
 
-def _dump_yaml(data: Any) -> str:
-    import yaml
-
-    return yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
-
-
 def read_manifest(profile_dir: Path) -> Optional[DistributionManifest]:
     """Return the manifest for *profile_dir*, or None if it isn't a distribution."""
     mf_path = profile_dir / MANIFEST_FILENAME
@@ -270,7 +265,28 @@ def read_manifest(profile_dir: Path) -> Optional[DistributionManifest]:
 
 def write_manifest(profile_dir: Path, manifest: DistributionManifest) -> Path:
     mf_path = profile_dir / MANIFEST_FILENAME
-    mf_path.write_text(_dump_yaml(manifest.to_dict()), encoding="utf-8")
+    # Route through the shared atomic YAML writer (temp file + fsync + atomic
+    # replace, preserving mode/owner and symlinks). A bare write_text()
+    # truncates distribution.yaml before the dump lands, and read_manifest()
+    # treats a missing-or-unparseable manifest as "not a distribution" -- so an
+    # interrupted install/update silently demotes the profile, losing update
+    # tracking and env_requires with no error surfaced anywhere.
+    from utils import atomic_yaml_write
+
+    # create_mode=0o644: _materialize() reaches this line with no manifest on
+    # disk whenever a distribution declares an explicit `distribution_owned`
+    # allowlist that does not list distribution.yaml itself, so the file is
+    # never copied out of the staged tree. The manifest is a shareable
+    # descriptor rather than a secret and used to land at the umask default,
+    # so don't leave a freshly created one at mkstemp's 0600. An existing
+    # file's mode is preserved as before.
+    atomic_yaml_write(
+        mf_path,
+        manifest.to_dict(),
+        sort_keys=False,
+        default_flow_style=False,
+        create_mode=0o644,
+    )
     return mf_path
 
 
@@ -381,6 +397,8 @@ def _git_clone(url: str, dest: Path) -> None:
             ["git", "clone", "--depth", "1", url, str(dest)],
             check=True,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
     except FileNotFoundError as exc:
         raise DistributionError("git is required for git-URL installs") from exc
@@ -554,22 +572,16 @@ def _copy_dist_payload(
     ``preserve_config`` is False (fresh install or ``--force-config`` update).
     ``.env.template`` is renamed to ``.env.EXAMPLE`` in the target to avoid
     shadowing a real ``.env``.
+
+    When the manifest declares an explicit ``distribution_owned`` list, only
+    those paths are copied (path-aware: nested entries such as
+    ``skills/research`` or ``cron/digest.json`` are honoured).  When the list
+    is omitted the legacy behaviour is preserved: every staged entry outside
+    ``USER_OWNED_EXCLUDE`` is copied.
     """
     target.mkdir(parents=True, exist_ok=True)
 
-    for entry in staged.iterdir():
-        name = entry.name
-
-        if name in USER_OWNED_EXCLUDE:
-            continue
-        if name == ENV_TEMPLATE_FILENAME:
-            shutil.copy2(entry, target / ENV_EXAMPLE_FILENAME)
-            continue
-        if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
-            # Leave user's config.yaml alone on update
-            continue
-
-        dest = target / name
+    def _copy_entry(entry: Path, dest: Path) -> None:
         if entry.is_dir():
             if dest.exists():
                 shutil.rmtree(dest)
@@ -585,6 +597,50 @@ def _copy_dist_payload(
             )
         else:
             shutil.copy2(entry, dest)
+
+    explicit_owned = [p.strip().strip("/") for p in manifest.distribution_owned]
+    explicit_owned = [p for p in explicit_owned if p]
+
+    if explicit_owned:
+        # Path-aware allowlist: copy exactly the declared paths.
+        for rel in explicit_owned:
+            rel_parts = PurePosixPath(rel).parts
+            if not rel_parts or rel_parts[0] in USER_OWNED_EXCLUDE:
+                continue
+            if ".." in rel_parts or PurePosixPath(rel).is_absolute():
+                continue
+            src = staged.joinpath(*rel_parts)
+            if not src.exists():
+                continue
+            if len(rel_parts) == 1:
+                name = rel_parts[0]
+                if name == ENV_TEMPLATE_FILENAME:
+                    shutil.copy2(src, target / ENV_EXAMPLE_FILENAME)
+                    continue
+                if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
+                    # Leave user's config.yaml alone on update
+                    continue
+            dest = target.joinpath(*rel_parts)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _copy_entry(src, dest)
+    else:
+        # Legacy behaviour: no explicit allowlist means the whole staged
+        # payload (minus USER_OWNED_EXCLUDE) is distribution-owned.  Do NOT
+        # narrow to DEFAULT_DIST_OWNED here — existing distributions ship
+        # arbitrary extra top-level paths without declaring them.
+        for entry in staged.iterdir():
+            name = entry.name
+
+            if name in USER_OWNED_EXCLUDE:
+                continue
+            if name == ENV_TEMPLATE_FILENAME:
+                shutil.copy2(entry, target / ENV_EXAMPLE_FILENAME)
+                continue
+            if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
+                # Leave user's config.yaml alone on update
+                continue
+
+            _copy_entry(entry, target / name)
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():

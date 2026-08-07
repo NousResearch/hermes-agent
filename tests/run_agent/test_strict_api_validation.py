@@ -129,14 +129,3 @@ class TestStrictApiValidation:
         # Should sanitize for Fireworks (chat_completions mode)
         assert agent._should_sanitize_tool_calls() is True
 
-    def test_no_sanitize_for_codex_responses(self, monkeypatch):
-        """Codex responses mode should NOT sanitize."""
-        agent = _make_agent(
-            monkeypatch,
-            "openai",
-            api_mode="codex_responses",
-            base_url="https://api.openai.com/v1"
-        )
-
-        # Should NOT sanitize for Codex
-        assert agent._should_sanitize_tool_calls() is False

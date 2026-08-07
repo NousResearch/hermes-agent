@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
+import { composeTabTitle, fmtCwdBranch, fmtProjectCwdBranch, shortCwd, shortProject } from '../domain/paths.js'
 
 describe('shortCwd', () => {
   const origHome = process.env.HOME
@@ -66,6 +66,40 @@ describe('fmtCwdBranch', () => {
     const out = fmtCwdBranch('/Users/bb/p', 'a-very-long-feature-branch-name')
     expect(out).toMatch(/^~\/p \(…/)
     expect(out).toContain(')')
+  })
+})
+
+describe('shortProject', () => {
+  it('trims whitespace', () => {
+    expect(shortProject('  website  ')).toBe('website')
+  })
+
+  it('truncates long project names from the right', () => {
+    expect(shortProject('a-very-long-project-name', 10)).toBe('a-very-lo…')
+  })
+})
+
+describe('fmtProjectCwdBranch', () => {
+  const origHome = process.env.HOME
+
+  beforeEach(() => {
+    process.env.HOME = '/Users/bb'
+  })
+
+  afterEach(() => {
+    process.env.HOME = origHome
+  })
+
+  it('prefixes the cwd/branch label with the project name', () => {
+    expect(fmtProjectCwdBranch('/Users/bb/proj', 'main', 'website', 28)).toBe('website · ~/proj (main)')
+  })
+
+  it('falls back to the cwd/branch label when no project is known', () => {
+    expect(fmtProjectCwdBranch('/Users/bb/proj', 'main', null, 28)).toBe('~/proj (main)')
+  })
+
+  it('keeps the project visible when space is tight', () => {
+    expect(fmtProjectCwdBranch('/Users/bb/proj', 'main', 'hermes-agent', 12)).toBe('hermes-agent')
   })
 })
 

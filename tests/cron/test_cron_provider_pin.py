@@ -210,45 +210,30 @@ class TestCreateJobSnapshot:
 
         assert job["provider_snapshot"] is None
 
-    def test_unpinned_model_captures_model_snapshot(self, monkeypatch, tmp_path):
-        """An unpinned model captures config.yaml model.default into model_snapshot."""
-        jobs = self._isolate_storage(monkeypatch)
-        (tmp_path / "config.yaml").write_text("model:\n  default: llama-3.3-70b:free\n")
-        monkeypatch.setattr(
-            "cron.jobs.get_hermes_home", lambda: tmp_path, raising=True
-        )
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value={"provider": "openrouter"},
-        ):
-            job = jobs.create_job(prompt="do a thing", schedule="every 1 hour")
-        assert job["model"] is None
-        assert job["model_snapshot"] == "llama-3.3-70b:free"
 
-    def test_pinned_model_skips_model_snapshot(self, monkeypatch, tmp_path):
-        """An explicit model → pinned → no model_snapshot captured."""
-        jobs = self._isolate_storage(monkeypatch)
-        (tmp_path / "config.yaml").write_text("model:\n  default: llama-3.3-70b:free\n")
-        monkeypatch.setattr(
-            "cron.jobs.get_hermes_home", lambda: tmp_path, raising=True
-        )
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value={"provider": "openrouter"},
-        ):
-            job = jobs.create_job(
-                prompt="do a thing", schedule="every 1 hour", model="my-model"
-            )
-        assert job["model"] == "my-model"
-        assert job["model_snapshot"] is None
-
-
-def _run_with_current_provider_and_model(job, current_provider, current_model, tmp_path):
+def _run_with_current_provider_and_model(
+    job,
+    current_provider,
+    current_model,
+    tmp_path,
+    *,
+    model_drift_guard=None,
+    cron_model=None,
+    cron_model_provider=None,
+):
     """Drive run_job with resolved provider pinned and config.yaml model.default
     set to ``current_model`` (the unpinned-model fire-time source)."""
-    (tmp_path / "config.yaml").write_text(
-        f"model:\n  default: {current_model}\n"
-    )
+    config_yaml = f"model:\n  default: {current_model}\n"
+    cron_lines = []
+    if model_drift_guard is not None:
+        cron_lines.append(f"  model_drift_guard: {str(model_drift_guard).lower()}")
+    if cron_model is not None:
+        cron_lines.append(f"  model: {cron_model}")
+    if cron_model_provider is not None:
+        cron_lines.append(f"  model_provider: {cron_model_provider}")
+    if cron_lines:
+        config_yaml += "cron:\n" + "\n".join(cron_lines) + "\n"
+    (tmp_path / "config.yaml").write_text(config_yaml)
     fake_db = MagicMock()
     with patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler._get_hermes_home", return_value=tmp_path), \
@@ -297,33 +282,6 @@ class TestModelDriftGuard:
         assert "llama-3.3-70b-instruct:free" in blob
         assert "44585" in blob
 
-    def test_model_snapshot_matches_runs(self, tmp_path):
-        # Default model unchanged → runs normally.
-        job = _base_job(
-            provider_snapshot="openrouter",
-            model_snapshot="llama-3.3-70b-instruct:free",
-        )
-        success, output, final_response, error, agent_constructed = \
-            _run_with_current_provider_and_model(
-                job, "openrouter", "llama-3.3-70b-instruct:free", tmp_path
-            )
-        assert agent_constructed is True
-        assert success is True
-
-    def test_pinned_model_bypasses_guard(self, tmp_path):
-        # Explicit job["model"] → not unpinned → no model-drift skip even if the
-        # global default differs from any snapshot.
-        job = _base_job(
-            provider_snapshot="openrouter",
-            model_snapshot="old-model",
-            model="my-pinned-model",
-        )
-        success, output, final_response, error, agent_constructed = \
-            _run_with_current_provider_and_model(
-                job, "openrouter", "claude-fable-5", tmp_path
-            )
-        assert agent_constructed is True
-        assert success is True
 
     def test_no_model_snapshot_backcompat(self, tmp_path):
         # Pre-existing job without model_snapshot → no model-drift skip.
@@ -334,3 +292,105 @@ class TestModelDriftGuard:
             )
         assert agent_constructed is True
         assert success is True
+
+    def test_explicit_opt_out_allows_provider_and_model_drift(self, tmp_path):
+        """The opt-out lets large unpinned fleets track changing defaults."""
+        job = _base_job(
+            provider_snapshot="old-provider",
+            model_snapshot="old-model",
+        )
+        success, output, final_response, error, agent_constructed = \
+            _run_with_current_provider_and_model(
+                job,
+                "new-provider",
+                "new-model",
+                tmp_path,
+                model_drift_guard=False,
+            )
+
+        assert agent_constructed is True
+        assert success is True
+        assert final_response == "ok"
+        assert error is None
+
+
+class TestCronFleetDefaultModel:
+    """cron.model / cron.model_provider — an explicit cron-fleet default is
+    NOT drift: unpinned jobs run on it and the #44585 guard stays quiet for
+    the covered axis."""
+
+    def test_cron_model_skips_model_drift_guard_and_is_used(self, tmp_path):
+        # Snapshot says old free model, global default swapped to a premium
+        # model — but cron.model is set, so the job deliberately follows it.
+        job = _base_job(
+            provider_snapshot="openrouter",
+            model_snapshot="llama-3.3-70b-instruct:free",
+        )
+        success, output, final_response, error, agent_constructed = \
+            _run_with_current_provider_and_model(
+                job,
+                "openrouter",
+                "claude-fable-5",
+                tmp_path,
+                cron_model="qwen-2.5-7b:free",
+            )
+        assert agent_constructed is True
+        assert success is True
+        assert final_response == "ok"
+
+
+    def test_per_job_pin_still_beats_cron_model(self, tmp_path):
+        job = _base_job(
+            provider_snapshot="openrouter",
+            model_snapshot="old-model",
+            model="my-pinned-model",
+        )
+        success, output, final_response, error, agent_constructed = \
+            _run_with_current_provider_and_model(
+                job,
+                "openrouter",
+                "claude-fable-5",
+                tmp_path,
+                cron_model="qwen-2.5-7b:free",
+            )
+        assert agent_constructed is True
+        assert success is True
+
+
+class TestRuntimeResolutionTargetModel:
+    """run_job must resolve the primary provider against the model the job
+    will actually run (per-job pin > env > config default), so providers with
+    model-specific api_mode routing (e.g. OpenCode Zen/Go) pick the mode for
+    the pinned model instead of the stale persisted default."""
+
+    def test_primary_resolution_passes_effective_model(self, tmp_path):
+        job = _base_job(model="my-pinned-model", provider="openrouter")
+        captured = {}
+
+        def _capture(**kwargs):
+            captured.update(kwargs)
+            return {
+                "api_key": "test-key",
+                "base_url": "https://example.invalid/v1",
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+            }
+
+        fake_db = MagicMock()
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 side_effect=_capture,
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        assert captured.get("target_model") == "my-pinned-model"
+        assert captured.get("requested") == "openrouter"

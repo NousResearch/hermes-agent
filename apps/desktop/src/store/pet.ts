@@ -39,6 +39,53 @@ export interface PetInfo {
   stateRows?: string[]
 }
 
+export interface PetInfoMeta {
+  enabled: boolean
+  slug?: string
+  displayName?: string
+  scale?: number
+  spritesheetRevision?: string
+}
+
+export function hasPetSpriteForMeta(info: PetInfo, meta: PetInfoMeta): boolean {
+  return (
+    meta.enabled &&
+    info.enabled &&
+    Boolean(info.spritesheetBase64) &&
+    info.slug === meta.slug &&
+    Boolean(info.spritesheetRevision) &&
+    info.spritesheetRevision === meta.spritesheetRevision
+  )
+}
+
+export function mergePetInfoMeta(info: PetInfo, meta: PetInfoMeta): PetInfo {
+  if (!meta.enabled) {
+    return info.enabled ? { enabled: false } : info
+  }
+
+  // Fast-path: nothing changed — return the same reference so callers can
+  // skip the store update (nanostores fires on .set() regardless of deep
+  // equality; returning `info` avoids a redundant re-render on every poll).
+  if (
+    info.enabled &&
+    info.slug === meta.slug &&
+    info.displayName === meta.displayName &&
+    info.scale === meta.scale &&
+    info.spritesheetRevision === meta.spritesheetRevision
+  ) {
+    return info
+  }
+
+  return {
+    ...info,
+    enabled: true,
+    slug: meta.slug,
+    displayName: meta.displayName,
+    scale: meta.scale,
+    spritesheetRevision: meta.spritesheetRevision
+  }
+}
+
 export interface PetActivity {
   busy?: boolean
   awaitingInput?: boolean
@@ -91,6 +138,9 @@ export function derivePetState(activity: PetActivity): PetState {
 
 export const $petInfo = atom<PetInfo>({ enabled: false })
 export const $petActivity = atom<PetActivity>({})
+
+/** Pet installed + enabled with a loaded spritesheet (ready to show/react). */
+export const $petActive = computed($petInfo, info => info.enabled && Boolean(info.spritesheetBase64))
 
 /**
  * Profile the pet RPCs should resolve against. Pets are per-profile — the active

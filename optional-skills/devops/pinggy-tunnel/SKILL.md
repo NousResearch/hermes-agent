@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Pinggy, Tunnel, Networking, SSH, Webhook, Localhost]
-    related_skills: [cloudflared-quick-tunnel, webhook-subscriptions]
+    related_skills: []
 ---
 
 # Pinggy Tunnel Skill

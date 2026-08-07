@@ -97,9 +97,6 @@ packaging/
 plans/
 .plans/
 
-# ACP registry manifest (icon + agent.json) — not consumed at runtime
-acp_registry/
-
 # Repo-level dotfiles that are git-only or dev-tooling config
 .env.example
 .envrc

@@ -130,3 +130,103 @@ class TestExhaustionArmsCooldown:
             assert agent._try_activate_fallback() is False
             cooldown = getattr(agent, "_rate_limited_until", 0)
         assert cooldown == far_future
+
+
+class TestRateLimitBackoffEscalation:
+    """Exponential backoff for consecutive rate-limit failures (#29702).
+
+    The first rate-limit keeps the historical 60s cooldown; each consecutive
+    rate-limit within one degradation window doubles it (60 → 120 → 240 → ...)
+    capped at 4h (14400s).  A successful primary restore resets the counter.
+    """
+
+    @staticmethod
+    def _back_on_primary(agent, snapshot):
+        """Simulate the primary provider rate-limiting again on a later turn
+        (without a successful restore, which would reset the counter): put
+        the agent's identity back on the primary and reset the turn-scoped
+        fallback chain state."""
+        agent.provider, agent.model, agent.base_url = snapshot
+        agent._fallback_activated = False
+        agent._fallback_index = 0
+
+    def test_backoff_doubles_per_consecutive_rate_limit(self):
+        """Each consecutive primary rate-limit doubles the cooldown:
+        60s, then 120s, then 240s."""
+        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        agent = _make_agent(fallback_model=fbs)
+        agent._rate_limited_until = 0
+        snapshot = (agent.provider, agent.model, agent.base_url)
+        frozen = 1_000.0
+        with (
+            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), "resolved"),
+            ),
+        ):
+            expected = [60, 120, 240]
+            for n, want in enumerate(expected):
+                self._back_on_primary(agent, snapshot)
+                agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+                assert agent._rate_limited_until == frozen + want, (
+                    f"backoff #{n + 1}: expected {want}s cooldown"
+                )
+                assert agent._rate_limit_backoff_count == n + 1
+
+    def test_backoff_caps_at_four_hours(self):
+        """Escalation is capped at 14400s (4h) no matter how many
+        consecutive rate-limits occurred."""
+        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        agent = _make_agent(fallback_model=fbs)
+        agent._rate_limited_until = 0
+        # 60 * 2**10 = 61440s, far past the cap.
+        agent._rate_limit_backoff_count = 10
+        frozen = 1_000.0
+        with (
+            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), "resolved"),
+            ),
+        ):
+            agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+        assert agent._rate_limited_until == frozen + 14400
+
+    def test_backoff_counter_resets_on_successful_primary_restore(self):
+        """A successful restore_primary_runtime resets the backoff counter,
+        so the next rate-limit starts back at the 60s base."""
+        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        agent = _make_agent(fallback_model=fbs)
+        snapshot = (agent.provider, agent.model, agent.base_url)
+        frozen = 1_000.0
+        with (
+            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), "resolved"),
+            ),
+        ):
+            # Two consecutive rate-limits escalate the counter to 2.
+            agent._rate_limited_until = 0
+            agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+            self._back_on_primary(agent, snapshot)
+            agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+            assert agent._rate_limit_backoff_count == 2
+
+        # Cooldown expired; the primary restores successfully.
+        agent._fallback_activated = True
+        agent._rate_limited_until = 0
+        assert agent._restore_primary_runtime() is True
+        assert agent._rate_limit_backoff_count == 0
+
+        # The next rate-limit is treated as a fresh first failure: 60s.
+        with (
+            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), "resolved"),
+            ),
+        ):
+            agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+        assert agent._rate_limited_until == frozen + 60

@@ -46,6 +46,8 @@ from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 
+from hermes_cli.urllib_security import open_credentialed_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -158,7 +160,7 @@ def _http_get_json(url: str,
     _apply_auth_headers(req, token, mode)
     req.add_header("User-Agent", "hermes-agent/azure-detect")
     try:
-        with urllib_request.urlopen(req, timeout=timeout) as resp:
+        with open_credentialed_url(req, timeout=timeout) as resp:
             body = resp.read()
             try:
                 return resp.status, json.loads(body.decode("utf-8", errors="replace"))
@@ -269,7 +271,7 @@ def _probe_anthropic_messages(base_url: str,
     req.add_header("content-type", "application/json")
     req.add_header("User-Agent", "hermes-agent/azure-detect")
     try:
-        with urllib_request.urlopen(req, timeout=6.0) as resp:
+        with open_credentialed_url(req, timeout=6.0) as resp:
             # Should never 200 — "probe" isn't a real deployment.  But
             # if it does, the endpoint definitely speaks Anthropic.
             return resp.status < 500

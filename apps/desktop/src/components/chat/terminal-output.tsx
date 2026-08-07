@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
+import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
 
 interface TerminalOutputProps {
@@ -22,14 +23,24 @@ const NEAR_BOTTOM_PX = 24
 export function TerminalOutput({ className, text }: TerminalOutputProps) {
   const ref = useRef<HTMLDivElement>(null)
 
-  // On open: jump straight to the latest output (no animation, before paint).
-  useLayoutEffect(() => {
+  // On open: jump straight to the latest output. Rides the ResizeObserver's
+  // initial delivery (layout-clean, still before paint) instead of a layout
+  // effect — a sync scrollHeight read there forces a reflow per instance, and
+  // a tool-heavy transcript mounts dozens of these on a session switch.
+  const jumpedRef = useRef(false)
+
+  const jumpToBottom = useCallback(() => {
     const el = ref.current
 
-    if (el) {
+    // First delivery only; later box resizes must not yank the user back
+    // down while they're scrolled up reading earlier output.
+    if (el && !jumpedRef.current) {
+      jumpedRef.current = true
       el.scrollTop = el.scrollHeight
     }
   }, [])
+
+  useResizeObserver(jumpToBottom, ref)
 
   // On growth: tail only when already pinned near the bottom.
   useEffect(() => {

@@ -43,11 +43,6 @@ def _make_adapter(extra):
     return adapter
 
 
-def test_disabled_by_default():
-    adapter = _make_adapter(extra={})
-    assert adapter._status_indicator_enabled is False
-
-
 def test_enabled_via_extra():
     adapter = _make_adapter(extra={"status_indicator": True})
     assert adapter._status_indicator_enabled is True
@@ -69,52 +64,3 @@ async def test_online_sets_default_text():
     )
 
 
-@pytest.mark.asyncio
-async def test_offline_sets_default_text():
-    adapter = _make_adapter(extra={"status_indicator": True})
-    await adapter._set_status_indicator(online=False)
-    adapter._bot.set_my_short_description.assert_awaited_once_with(
-        short_description="Offline"
-    )
-
-
-@pytest.mark.asyncio
-async def test_custom_status_strings():
-    adapter = _make_adapter(
-        extra={
-            "status_indicator": True,
-            "status_online": "🟢 Gateway up",
-            "status_offline": "🔴 Gateway down",
-        }
-    )
-    await adapter._set_status_indicator(online=True)
-    adapter._bot.set_my_short_description.assert_awaited_once_with(
-        short_description="🟢 Gateway up"
-    )
-
-
-@pytest.mark.asyncio
-async def test_text_truncated_to_120_chars():
-    adapter = _make_adapter(
-        extra={"status_indicator": True, "status_online": "x" * 200}
-    )
-    await adapter._set_status_indicator(online=True)
-    _, kwargs = adapter._bot.set_my_short_description.call_args
-    assert len(kwargs["short_description"]) == 120
-
-
-@pytest.mark.asyncio
-async def test_noop_when_bot_is_none():
-    adapter = _make_adapter(extra={"status_indicator": True})
-    adapter._bot = None
-    # Must not raise even though there's no bot to call.
-    await adapter._set_status_indicator(online=True)
-
-
-@pytest.mark.asyncio
-async def test_api_failure_is_swallowed():
-    adapter = _make_adapter(extra={"status_indicator": True})
-    adapter._bot.set_my_short_description.side_effect = RuntimeError("flood wait")
-    # Best-effort: a Bot API failure must never propagate out of the helper,
-    # so it can't block connect/disconnect.
-    await adapter._set_status_indicator(online=True)

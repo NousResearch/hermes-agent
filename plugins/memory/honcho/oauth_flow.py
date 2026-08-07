@@ -62,6 +62,7 @@ class OAuthEndpoints:
     token_url: str  # API /oauth/token
     client_id: str
     scope: str
+    device_authorization_url: str = ""  # API /oauth/device_authorization
 
 
 # Cloud (production) hosts; dashboard serves /authorize, API serves /oauth/token.
@@ -107,11 +108,15 @@ def resolve_endpoints(
         default_token = f"{base_url.rstrip('/')}/oauth/token"
 
     dashboard = os.environ.get("HONCHO_OAUTH_DASHBOARD", default_dashboard).rstrip("/")
+    token_url = os.environ.get("HONCHO_OAUTH_TOKEN_URL", default_token)
+    # Device authorization rides the token endpoint's origin.
+    default_device = f"{token_url.rsplit('/', 1)[0]}/device_authorization"
     return OAuthEndpoints(
         authorize_url=os.environ.get("HONCHO_OAUTH_AUTHORIZE_URL", f"{dashboard}/authorize"),
-        token_url=os.environ.get("HONCHO_OAUTH_TOKEN_URL", default_token),
+        token_url=token_url,
         client_id=os.environ.get("HONCHO_OAUTH_CLIENT_ID", _DEFAULT_CLIENT_ID),
         scope=os.environ.get("HONCHO_OAUTH_SCOPE", "write"),
+        device_authorization_url=os.environ.get("HONCHO_OAUTH_DEVICE_AUTH_URL", default_device),
     )
 
 
@@ -240,6 +245,14 @@ _CALLBACK_HTML = (
     b"<div>Connected to Honcho. You can close this tab and return to Hermes.</div>"
 )
 
+_CALLBACK_ERROR_HTML = (
+    "<!doctype html><meta charset=utf-8>"
+    "<title>Honcho sign-in failed</title>"
+    "<body style='font:14px ui-monospace,monospace;background:#0b0e14;color:#c9d1d9;"
+    "display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
+    "<div>Sign-in was not completed ({error}). You can close this tab and re-run setup.</div>"
+)
+
 
 def _bind_loopback_server() -> tuple[HTTPServer, dict[str, str]]:
     """Bind the one-shot callback server, returning it and its capture dict.
@@ -262,10 +275,17 @@ def _bind_loopback_server() -> tuple[HTTPServer, dict[str, str]]:
             captured["code"] = (params.get("code") or [""])[0]
             captured["state"] = (params.get("state") or [""])[0]
             captured["error"] = (params.get("error") or [""])[0]
+            captured["error_description"] = (params.get("error_description") or [""])[0]
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(_CALLBACK_HTML)
+            if captured["error"]:
+                import html as _html
+
+                page = _CALLBACK_ERROR_HTML.format(error=_html.escape(captured["error"]))
+                self.wfile.write(page.encode("utf-8"))
+            else:
+                self.wfile.write(_CALLBACK_HTML)
 
         def log_message(self, *args):  # silence stdlib request logging
             return
@@ -296,7 +316,9 @@ def capture_loopback_code(
         server.server_close()
 
     if captured.get("error"):
-        raise ValueError(f"authorization denied: {captured['error']}")
+        detail = captured.get("error_description")
+        suffix = f" ({detail})" if detail else ""
+        raise ValueError(f"authorization denied: {captured['error']}{suffix}")
     if "code" not in captured:
         raise TimeoutError("no OAuth callback received before timeout")
     return captured["code"], captured.get("state", "")
@@ -350,6 +372,209 @@ def authorize_via_loopback(
         host=host,
         apply_config=apply_config,
     )
+
+
+# — Device authorization grant (RFC 8628), for headless / remote-VM clients —
+# The loopback flow needs the browser on the same machine; here the CLI prints
+# a short user code, the user approves from any browser (dashboard /device),
+# and the device polls the token endpoint until the grant lands.
+
+DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+
+# RFC 8628 §3.5: slow_down adds 5s per response; cap matches the server's
+# DEVICE_POLL_INTERVAL_MAX so a misbehaving clock can't inflate past it.
+_SLOW_DOWN_STEP = 5
+_POLL_INTERVAL_CAP = 60
+
+# RFC 8414 authorization-server metadata; advertising the device grant is what
+# distinguishes a host that can do device login from one that can't.
+_AS_METADATA_PATH = "/.well-known/oauth-authorization-server"
+
+
+class DeviceFlowError(RuntimeError):
+    """A device-flow request failed. ``error`` is the RFC error code when known."""
+
+    def __init__(self, error: str, description: str | None = None):
+        self.error = error
+        self.description = description
+        super().__init__(f"{error}: {description}" if description else error)
+
+
+class AccessDenied(DeviceFlowError):
+    """The user denied the authorization request."""
+
+
+class DeviceCodeExpired(DeviceFlowError):
+    """The device code expired before the user approved it."""
+
+
+class AuthorizationTimeout(DeviceFlowError):
+    """Polling ran past the device code's lifetime with no decision."""
+
+
+@dataclass(frozen=True)
+class DeviceCode:
+    """RFC 8628 §3.2 device authorization response."""
+
+    device_code: str
+    user_code: str
+    verification_uri: str
+    verification_uri_complete: str
+    expires_in: int
+    interval: int
+
+
+def supports_device_login(endpoints: OAuthEndpoints, *, timeout: float = 5.0) -> bool:
+    """Whether the host advertises the device grant in its RFC 8414 metadata.
+
+    Fails closed: any connection error, non-200, or missing capability returns
+    False, so hosts without the device grant simply don't offer the option.
+    """
+    origin = endpoints.token_url.rsplit("/oauth/", 1)[0]
+    try:
+        body = oauth._http_get_json(f"{origin}{_AS_METADATA_PATH}", timeout)
+    except Exception:
+        return False
+    grants = body.get("grant_types_supported")
+    return isinstance(grants, list) and DEVICE_GRANT_TYPE in grants
+
+
+def request_device_code(
+    endpoints: OAuthEndpoints, *, source: str | None = None
+) -> DeviceCode:
+    """Request a device + user code pair (RFC 8628 §3.1)."""
+    if not endpoints.device_authorization_url:
+        raise ValueError("no device authorization endpoint resolved")
+    data = {"client_id": endpoints.client_id, "scope": endpoints.scope}
+    if source:
+        data["source"] = source
+    status, body = oauth._http_post_form_status(
+        endpoints.device_authorization_url, data, oauth._REFRESH_TIMEOUT_SECONDS
+    )
+    if status != 200:
+        error = str(body.get("error") or f"http_{status}")
+        raise DeviceFlowError(error, body.get("error_description"))
+    try:
+        verification_uri = body["verification_uri"]
+        return DeviceCode(
+            device_code=body["device_code"],
+            user_code=body["user_code"],
+            verification_uri=verification_uri,
+            verification_uri_complete=body.get(
+                "verification_uri_complete",
+                f"{verification_uri}?user_code={body['user_code']}",
+            ),
+            expires_in=int(body["expires_in"]),
+            # RFC 8628 §3.2: interval is optional; clients default to 5s.
+            interval=int(body.get("interval", 5)),
+        )
+    except (KeyError, TypeError, ValueError) as e:
+        raise DeviceFlowError(
+            "invalid_response", f"malformed device authorization response: {e}"
+        ) from e
+
+
+def poll_for_token(
+    endpoints: OAuthEndpoints,
+    device: DeviceCode,
+    *,
+    on_poll: Callable[[], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> dict[str, object]:
+    """Poll the token endpoint until the grant is approved (RFC 8628 §3.4/§3.5).
+
+    Sleeps ``interval`` before each poll, bumping it on ``slow_down``. Raises
+    ``AccessDenied`` / ``DeviceCodeExpired`` on the terminal server outcomes and
+    ``AuthorizationTimeout`` when ``expires_in`` elapses with no decision.
+    ``sleep`` / ``monotonic`` are injectable for tests.
+    """
+    import httpx
+
+    interval = max(1, min(device.interval, _POLL_INTERVAL_CAP))
+    deadline = monotonic() + max(1, device.expires_in)
+    while True:
+        if monotonic() + interval >= deadline:
+            raise AuthorizationTimeout(
+                "expired_token", "timed out waiting for approval"
+            )
+        sleep(interval)
+        if on_poll:
+            on_poll()
+        try:
+            status, body = oauth._http_post_form_status(
+                endpoints.token_url,
+                {
+                    "grant_type": DEVICE_GRANT_TYPE,
+                    "device_code": device.device_code,
+                    "client_id": endpoints.client_id,
+                },
+                oauth._REFRESH_TIMEOUT_SECONDS,
+            )
+        except httpx.TransportError as e:
+            # A network blip mid-poll shouldn't kill a 10-minute wait.
+            logger.debug("device token poll transport error, retrying: %s", e)
+            continue
+
+        if status == 200:
+            if not body.get("access_token"):
+                raise DeviceFlowError("invalid_response", "token response missing access_token")
+            return body
+        error = str(body.get("error") or f"http_{status}")
+        description = body.get("error_description")
+        if error == "authorization_pending":
+            continue
+        if error == "slow_down":
+            interval = min(interval + _SLOW_DOWN_STEP, _POLL_INTERVAL_CAP)
+            continue
+        if error == "access_denied":
+            raise AccessDenied(error, description)
+        if error == "expired_token":
+            raise DeviceCodeExpired(error, description)
+        raise DeviceFlowError(error, description)
+
+
+def authorize_via_device_code(
+    *,
+    config_path: Path | None = None,
+    host: str | None = None,
+    source: str | None = None,
+    apply_config: bool = True,
+    display: Callable[[DeviceCode], None] | None = None,
+    open_url: Callable[[str], None] | None = None,
+    on_poll: Callable[[], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> oauth.OAuthCredential:
+    """Drive the full device flow: request codes → show user code → poll → persist.
+
+    ``display`` shows the user code + verification URL. ``open_url`` (if given)
+    receives ``verification_uri_complete`` — there is no default browser open,
+    since the approving browser may be on another machine.
+    """
+    endpoints = resolve_endpoints()
+    path = config_path or resolve_config_path()
+    target_host = host or resolve_active_host()
+
+    device = request_device_code(endpoints, source=source)
+    if display:
+        display(device)
+    if open_url:
+        open_url(device.verification_uri_complete)
+
+    grant = poll_for_token(endpoints, device, on_poll=on_poll, sleep=sleep)
+    cred = oauth.install_grant(
+        path,
+        target_host,
+        grant,
+        client_id=endpoints.client_id,
+        token_endpoint=endpoints.token_url,
+        apply_config=apply_config,
+    )
+    from plugins.memory.honcho.client import reset_honcho_client
+
+    reset_honcho_client()
+    logger.info("Honcho OAuth device grant installed for host %s", target_host)
+    return cred
 
 
 # — Background launcher + status, for the desktop "Connect" button —

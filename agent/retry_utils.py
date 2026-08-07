@@ -8,7 +8,9 @@ rate-limited provider concurrently.
 import random
 import threading
 import time
-from typing import Any
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, Optional
 
 # Monotonic counter for jitter seed uniqueness within the same process.
 # Protected by a lock to avoid race conditions in concurrent retry paths
@@ -23,6 +25,66 @@ _jitter_lock = threading.Lock()
 # cap interactive-friendly: a simple TUI message should fail visibly in minutes,
 # not sit silent for 20+ minutes.
 _ZAI_CODING_OVERLOAD_LONG_BACKOFF = (30.0, 60.0, 90.0, 120.0)
+
+# Number of initial short retries before the adaptive long-backoff tier kicks
+# in. Shared by ``adaptive_rate_limit_backoff`` (which walks the long table
+# starting at attempt ``short_attempts + 1``) and
+# ``zai_coding_overload_retry_ceiling`` (which sizes the retry loop so every
+# long-tier entry is reachable). Keeping it a single module constant prevents
+# the two from silently desyncing if the short-retry count is ever tuned.
+_ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = 3
+
+
+def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
+    """Parse a ``Retry-After`` value into non-negative seconds.
+
+    Accepts either a raw header value (numeric string / HTTP-date / number)
+    or a headers mapping, in which case the ``Retry-After`` key is looked up
+    case-insensitively (``.get`` on dict-like objects tries both common
+    casings; real HTTP header containers like httpx/requests are already
+    case-insensitive).
+
+    Returns:
+        Seconds as a ``float`` (negative deltas clamped to ``0.0``), or
+        ``None`` when the header is absent or unparseable.
+    """
+    raw = value_or_headers
+    if raw is not None and not isinstance(raw, (str, int, float)):
+        # Looks like a headers mapping — pull the header out of it.
+        getter = getattr(raw, "get", None)
+        if callable(getter):
+            try:
+                value = getter("Retry-After")
+                if value is None:
+                    value = getter("retry-after")
+            except Exception:
+                return None
+            raw = value
+        else:
+            return None
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return max(0.0, float(raw))
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return max(0.0, float(text))
+    except (TypeError, ValueError):
+        pass
+    # HTTP-date form (RFC 7231): seconds until that instant, clamped at 0.
+    try:
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
 
 def jittered_backoff(
@@ -104,7 +166,7 @@ def adaptive_rate_limit_backoff(
     model: str | None,
     error: Any,
     default_wait: float,
-    short_attempts: int = 3,
+    short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS,
 ) -> tuple[float, str | None]:
     """Provider-aware rate-limit backoff.
 
@@ -127,3 +189,20 @@ def adaptive_rate_limit_backoff(
     # A smaller jitter ratio keeps long waits readable while still avoiding
     # synchronized retry storms across concurrent Hermes sessions.
     return jittered_backoff(1, base_delay=base_delay, max_delay=base_delay, jitter_ratio=0.2), "zai_coding_overload_long"
+
+
+def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS) -> int:
+    """Retry-loop ceiling needed for the full Z.AI overload backoff schedule.
+
+    The adaptive policy runs ``short_attempts`` short retries, then walks the
+    long-backoff table one entry per subsequent attempt. The retry loop gives
+    up as soon as ``retry_count >= ceiling`` — and that check runs *before* the
+    attempt's backoff is computed — so the ceiling must sit one past the final
+    long-backoff entry for every long tier to actually execute.
+
+    With the default ``api_max_retries`` (3) equal to ``short_attempts`` (3),
+    the loop always gave up before reaching the long tier, leaving the whole
+    long-backoff schedule as dead code. Callers extend the ceiling to this
+    value for Z.AI Coding overload 429s so the 30/60/90/120s waits run.
+    """
+    return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1

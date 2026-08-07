@@ -21,7 +21,7 @@
 .ha-pills button.active, .ha-pills button:hover { color: var(--color-foreground); border-color: var(--ha-tier, var(--color-ring)); background: color-mix(in srgb, var(--color-primary) 16%, var(--color-card)); }
 .ha-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: .9rem; }
 .ha-card { --ha-tier: var(--color-border); position: relative; overflow: hidden; min-height: 214px; border: 1px solid color-mix(in srgb, var(--ha-tier) 46%, var(--color-border)); background: radial-gradient(circle at 2.6rem 2.2rem, color-mix(in srgb, var(--ha-tier) 16%, transparent), transparent 34%), linear-gradient(180deg, rgba(255,255,255,.04), transparent), color-mix(in srgb, var(--color-card) 92%, #000); transition: transform .16s ease, border-color .16s ease, opacity .16s ease, box-shadow .16s ease; }
-.ha-card:hover { transform: translateY(-2px); border-color: var(--ha-tier); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ha-tier) 16%, transparent); }
+.ha-card:hover { border-color: var(--ha-tier); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ha-tier) 16%, transparent); }
 .ha-card-content { position: relative; z-index: 1; padding: 1rem !important; display: flex; flex-direction: column; gap: .75rem; height: 100%; }
 .ha-card-head { display: grid; grid-template-columns: 3.1rem minmax(0, 1fr) auto; gap: .85rem; align-items: start; }
 .ha-icon { display: grid; place-items: center; width: 2.9rem; height: 2.9rem; color: var(--ha-tier); }

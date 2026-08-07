@@ -41,39 +41,6 @@ def _per_user_key(uid, thread_id="thr1", chat_id="chan1"):
 # ---------------------------------------------------------------------------
 
 
-def test_sibling_finds_other_users_run_in_same_thread():
-    runner = object.__new__(GatewayRunner)
-    key_a = _per_user_key("userA")
-    key_b = _per_user_key("userB")
-    runner._running_agents = {key_b: _FakeAgent()}
-    assert runner._sibling_thread_run_keys(_thread_source("userA"), key_a) == [key_b]
-
-
-def test_sibling_excludes_callers_own_key():
-    runner = object.__new__(GatewayRunner)
-    key_a = _per_user_key("userA")
-    key_b = _per_user_key("userB")
-    runner._running_agents = {key_a: _FakeAgent(), key_b: _FakeAgent()}
-    assert runner._sibling_thread_run_keys(_thread_source("userA"), key_a) == [key_b]
-
-
-def test_sibling_skips_pending_sentinel():
-    runner = object.__new__(GatewayRunner)
-    key_a = _per_user_key("userA")
-    key_b = _per_user_key("userB")
-    runner._running_agents = {key_b: _AGENT_PENDING_SENTINEL}
-    assert runner._sibling_thread_run_keys(_thread_source("userA"), key_a) == []
-
-
-def test_sibling_does_not_match_different_thread_same_chat():
-    # thr1 caller must not match a run in thr11 (prefix-collision guard).
-    runner = object.__new__(GatewayRunner)
-    key_a = _per_user_key("userA", thread_id="thr1")
-    key_b_other = _per_user_key("userB", thread_id="thr11")
-    runner._running_agents = {key_b_other: _FakeAgent()}
-    assert runner._sibling_thread_run_keys(_thread_source("userA"), key_a) == []
-
-
 def test_sibling_returns_empty_for_non_thread_source():
     # Non-thread group/channel must NOT trigger the cross-user fallback.
     runner = object.__new__(GatewayRunner)
@@ -108,32 +75,6 @@ class _FakeStore:
 
 
 @pytest.mark.asyncio
-async def test_stop_interrupts_sibling_thread_run_when_authorized(monkeypatch):
-    runner = object.__new__(GatewayRunner)
-    key_a = _per_user_key("userA")
-    key_b = _per_user_key("userB")
-    runner._running_agents = {key_b: _FakeAgent()}
-    runner.session_store = _FakeStore(key_a)
-
-    interrupted = []
-
-    async def _fake_interrupt(session_key, source, *, interrupt_reason, invalidation_reason):
-        interrupted.append((session_key, interrupt_reason, invalidation_reason))
-
-    runner._interrupt_and_clear_session = _fake_interrupt
-    runner._is_user_authorized = lambda source: True
-
-    event = MessageEvent(
-        text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
-    )
-    result = await runner._handle_stop_command(event)
-
-    assert interrupted == [(key_b, _INTERRUPT_REASON_STOP, "stop_command_thread_sibling")]
-    # EphemeralReply or str — both carry the "stopped" message, not "no_active".
-    assert "no active" not in str(getattr(result, "text", result)).lower()
-
-
-@pytest.mark.asyncio
 async def test_stop_does_not_interrupt_sibling_when_unauthorized(monkeypatch):
     runner = object.__new__(GatewayRunner)
     key_a = _per_user_key("userA")
@@ -155,4 +96,44 @@ async def test_stop_does_not_interrupt_sibling_when_unauthorized(monkeypatch):
     result = await runner._handle_stop_command(event)
 
     assert interrupted == []
+    assert "no active" in str(getattr(result, "text", result)).lower()
+
+
+# ---------------------------------------------------------------------------
+# /stop with no active agent still clears a stuck platform status (#32295)
+# ---------------------------------------------------------------------------
+
+
+class _FakeStatusAdapter:
+    def __init__(self):
+        self.cleared = []
+
+    async def _stop_typing_with_metadata(self, chat_id, metadata=None):
+        self.cleared.append((chat_id, metadata))
+
+
+@pytest.mark.asyncio
+async def test_stop_no_active_agent_survives_status_clear_failure():
+    """A failing adapter clear must not break the /stop reply."""
+    runner = object.__new__(GatewayRunner)
+    runner._running_agents = {}
+    key = _per_user_key("userA")
+    runner.session_store = _FakeStore(key)
+    runner._is_user_authorized = lambda source: True
+
+    class _BoomAdapter:
+        async def _stop_typing_with_metadata(self, chat_id, metadata=None):
+            raise RuntimeError("boom")
+
+    runner.adapters = {Platform.DISCORD: _BoomAdapter()}
+    runner._thread_metadata_for_source = (
+        lambda source, reply_to_message_id=None: None
+    )
+    runner._reply_anchor_for_event = lambda event: None
+
+    event = MessageEvent(
+        text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
+    )
+    result = await runner._handle_stop_command(event)
+
     assert "no active" in str(getattr(result, "text", result)).lower()

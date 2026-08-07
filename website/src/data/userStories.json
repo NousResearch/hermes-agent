@@ -2880,5 +2880,16 @@
     "headline": "Recursively built a Supabase-backed CRM dashboard where each build reuses prior components",
     "quote": "Used the Hermes Desktop App to recursively generate a CRM dashboard where each build reuses components from prior generations; it can also build full videos using official HyperFrame skills — HTML-native, full control over scenes, animations, and rendering.",
     "size": "sm"
+  },
+  {
+    "id": "ronihelppi-hermes-kindle-magazine",
+    "source": "blog",
+    "author": "Roni Helppi",
+    "url": "https://ronihelppi.com/writing/every-monday-my-agent-ships-me-a-magazine/",
+    "date": "2026-07-30",
+    "category": "personal-assistant",
+    "headline": "Every Monday, my agent ships me a magazine",
+    "quote": "Every Monday at 9AM, a cron job fires on my private server, and a new issue of The Home Desk lands on my Kindle: a weekly magazine of interesting blog posts, articles, and essays, compiled and published by my AI agent. Hermes has chosen the pieces, found a theme, written a short editorial foreword, built an epub, and shipped it to my Kindle.",
+    "size": "md"
   }
 ]

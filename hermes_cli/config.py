@@ -4496,10 +4496,20 @@ def edit_config():
                 break
     
     if not editor:
+        # Reached only after the candidate probe above ran, so ``candidates`` is
+        # in scope.  Failing here is fine — there genuinely is no editor — but a
+        # bare "No editor found" is a dead end, so name the three cheap exits.
         print("No editor found. Config file is at:")
         print(f"  {config_path}")
+        print()
+        print(f"  Tried: {', '.join(candidates)} (none found on PATH).")
+        print()
+        print("  Next steps:")
+        print("    • Set an editor:    install one, then set EDITOR to <its command>")
+        print("    • Edit without one: hermes config set <key> <value>")
+        print("    • Print the path:   hermes config path")
         return
-    
+
     print(f"Opening {config_path} in {editor}...")
     subprocess.run([editor, str(config_path)])
 

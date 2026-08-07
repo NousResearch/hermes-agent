@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -196,6 +197,149 @@ class TestTraceScopeKey:
         assert key_a != key_b
         assert "turn:turn-a" in key_a
         assert "turn:turn-b" in key_b
+
+
+class TestCronTraceTagging:
+    """Stable cron-job aggregation must not replace run-specific sessions."""
+
+    @staticmethod
+    def _fresh_plugin():
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    @staticmethod
+    def _recording_client(started):
+        class _Span:
+            def set_trace_io(self, **kwargs):
+                pass
+
+        class _RootCM:
+            def __enter__(self):
+                return _Span()
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return f"trace::{seed}"
+
+            def start_as_current_observation(self, **kwargs):
+                started.append(kwargs)
+                return _RootCM()
+
+        return _Client()
+
+    @pytest.mark.parametrize(
+        ("session_id", "job_id"),
+        [
+            ("cron_a21a08cee82d_20260730_183452", "a21a08cee82d"),
+            ("cron_0123456789ab_20260101_000000", "0123456789ab"),
+        ],
+    )
+    def test_parse_supported_cron_session_id(self, session_id, job_id):
+        assert self._fresh_plugin()._parse_cron_session_id(session_id) == job_id
+
+    @pytest.mark.parametrize("session_id", [
+        "",
+        "cron_a21a08cee82d_20260730_18345",
+        "cron_a21a08cee82d_20261330_183452",
+        "cron_a21a08cee82d_20260231_183452",
+        "cron_A21A08CEE82D_20260730_183452",
+        "cron_a21a08cee82d_extra_20260730_183452",
+        "cron_job-name_20260730_183452",
+        "cron_a21a08cee82d_20260730_246000",
+        "cron_a21a08cee82d_20260730_183452_suffix",
+    ])
+    def test_malformed_cron_like_session_fails_open(self, session_id):
+        assert self._fresh_plugin()._parse_cron_session_id(session_id) is None
+
+    def test_cron_root_trace_has_stable_aggregation_attributes(self, monkeypatch):
+        mod = self._fresh_plugin()
+        propagation = []
+
+        @contextmanager
+        def record_propagation(**kwargs):
+            propagation.append(kwargs)
+            yield
+
+        started = []
+        monkeypatch.setattr(mod, "propagate_attributes", record_propagation)
+        session_id = "cron_a21a08cee82d_20260730_183452"
+        mod._start_root_trace(
+            "task", task_id="task", session_id=session_id, platform="cron",
+            provider="provider", model="model", api_mode="chat",
+            messages=[{"role": "user", "content": "run"}],
+            client=self._recording_client(started),
+        )
+
+        assert propagation == [{
+            "session_id": session_id,
+            "trace_name": "cron:a21a08cee82d",
+            "tags": ["hermes", "langfuse", "cron", "cron-job:a21a08cee82d"],
+        }]
+        assert started[0]["name"] == "cron:a21a08cee82d"
+        assert started[0]["trace_context"]["session_id"] == session_id
+        assert started[0]["metadata"] == {
+            "source": "hermes", "task_id": "task", "turn_id": "",
+            "api_request_id": "", "platform": "cron", "provider": "provider",
+            "model": "model", "api_mode": "chat", "workload_type": "cron",
+            "cron_job_id": "a21a08cee82d", "cron_run_session": session_id,
+        }
+
+    def test_runs_keep_unique_sessions_and_share_only_their_stable_job_tag(self, monkeypatch):
+        mod = self._fresh_plugin()
+        propagation, started = [], []
+
+        @contextmanager
+        def record_propagation(**kwargs):
+            propagation.append(kwargs)
+            yield
+
+        monkeypatch.setattr(mod, "propagate_attributes", record_propagation)
+        client = self._recording_client(started)
+        for session_id in (
+            "cron_a21a08cee82d_20260730_183452",
+            "cron_a21a08cee82d_20260731_183452",
+            "cron_b21a08cee82d_20260730_183452",
+        ):
+            mod._start_root_trace(
+                session_id, task_id=session_id, session_id=session_id, platform="",
+                provider="", model="", api_mode="", messages=[], client=client,
+            )
+
+        assert [item["session_id"] for item in propagation] == [
+            "cron_a21a08cee82d_20260730_183452",
+            "cron_a21a08cee82d_20260731_183452",
+            "cron_b21a08cee82d_20260730_183452",
+        ]
+        assert propagation[0]["tags"][-1] == propagation[1]["tags"][-1] == "cron-job:a21a08cee82d"
+        assert propagation[2]["tags"][-1] == "cron-job:b21a08cee82d"
+        assert [item["name"] for item in started] == [
+            "cron:a21a08cee82d", "cron:a21a08cee82d", "cron:b21a08cee82d",
+        ]
+
+    @pytest.mark.parametrize("session_id", ["interactive-session", ""])
+    def test_non_cron_or_absent_session_preserves_trace_shape(self, monkeypatch, session_id):
+        mod = self._fresh_plugin()
+        propagation, started = [], []
+
+        @contextmanager
+        def record_propagation(**kwargs):
+            propagation.append(kwargs)
+            yield
+
+        monkeypatch.setattr(mod, "propagate_attributes", record_propagation)
+        mod._start_root_trace(
+            "task", task_id="task", session_id=session_id, platform="telegram",
+            provider="provider", model="model", api_mode="chat", messages=[],
+            client=self._recording_client(started),
+        )
+
+        assert propagation[0]["trace_name"] == "Hermes turn"
+        assert propagation[0]["tags"] == ["hermes", "langfuse"]
+        assert started[0]["name"] == "Hermes turn"
+        assert not {"workload_type", "cron_job_id", "cron_run_session"} & set(started[0]["metadata"])
 
 
 # ---------------------------------------------------------------------------

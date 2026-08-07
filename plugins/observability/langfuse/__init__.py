@@ -29,6 +29,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,14 @@ _LANGFUSE_CLIENT = None
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
+# Cron jobs are created with ``uuid.uuid4().hex[:12]`` and scheduler.py emits
+# sessions as ``cron_<job-id>_<YYYYMMDD_HHMMSS>``. Keep this deliberately
+# narrow: a cron-like interactive session must retain ordinary trace behavior.
+_CRON_SESSION_ID_RE = re.compile(
+    r"^cron_([0-9a-f]{12})_"
+    r"([12]\d{3}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])_"
+    r"(?:[01]\d|2[0-3])[0-5]\d[0-5]\d)$"
+)
 
 # Langfuse-issued keys always carry these prefixes (cloud or self-hosted —
 # the prefix is baked into the server-side issuance flow, not a UI hint).
@@ -99,6 +108,25 @@ def _debug_enabled() -> bool:
 def _debug(message: str) -> None:
     if _debug_enabled():
         logger.info("Langfuse tracing: %s", message)
+
+
+def _parse_cron_session_id(session_id: str) -> Optional[str]:
+    """Return the stable job ID from a supported scheduler cron session.
+
+    The scheduler owns the session format. Invalid, legacy, or merely
+    cron-looking values intentionally return ``None`` so observability falls
+    back to the ordinary trace shape without affecting the Hermes runtime.
+    """
+    if not isinstance(session_id, str):
+        return None
+    match = _CRON_SESSION_ID_RE.fullmatch(session_id)
+    if not match:
+        return None
+    try:
+        datetime.strptime(match.group(2), "%Y%m%d_%H%M%S")
+    except ValueError:
+        return None
+    return match.group(1)
 
 
 # Sentinel: "_get_langfuse() has tried and failed". Lets us short-circuit
@@ -605,6 +633,11 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
                       turn_id: str = "", api_request_id: str = "") -> TraceState:
     trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
     trace_input = _extract_last_user_message(messages)
+    cron_job_id = _parse_cron_session_id(session_id)
+    trace_name = f"cron:{cron_job_id}" if cron_job_id else "Hermes turn"
+    tags = ["hermes", "langfuse"]
+    if cron_job_id:
+        tags.extend(["cron", f"cron-job:{cron_job_id}"])
     metadata = {
         "source": "hermes",
         "task_id": task_id,
@@ -615,6 +648,12 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         "model": model,
         "api_mode": api_mode,
     }
+    if cron_job_id:
+        metadata.update({
+            "workload_type": "cron",
+            "cron_job_id": cron_job_id,
+            "cron_run_session": session_id,
+        })
 
     # session_id must be passed in trace_context for Langfuse session grouping.
     trace_ctx: Dict[str, Any] = {"trace_id": trace_id}
@@ -625,12 +664,12 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         try:
             with propagate_attributes(
                 session_id=session_id or task_key,
-                trace_name="Hermes turn",
-                tags=["hermes", "langfuse"],
+                trace_name=trace_name,
+                tags=tags,
             ):
                 root_ctx = client.start_as_current_observation(
                     trace_context=trace_ctx,
-                    name="Hermes turn",
+                    name=trace_name,
                     as_type="chain",
                     input=trace_input,
                     metadata=metadata,
@@ -640,7 +679,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         except Exception:
             root_ctx = client.start_as_current_observation(
                 trace_context=trace_ctx,
-                name="Hermes turn",
+                name=trace_name,
                 as_type="chain",
                 input=trace_input,
                 metadata=metadata,
@@ -650,7 +689,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     else:
         root_ctx = client.start_as_current_observation(
             trace_context=trace_ctx,
-            name="Hermes turn",
+            name=trace_name,
             as_type="chain",
             input=trace_input,
             metadata=metadata,

@@ -8861,14 +8861,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return inner + 2
 
         def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
-            wrapped = textwrap.wrap(
-                text,
-                width=max(8, width),
-                replace_whitespace=False,
-                drop_whitespace=False,
-                subsequent_indent=subsequent_indent,
-            )
-            return wrapped or [""]
+            result: list[str] = []
+            for line in text.split("\n"):
+                wrapped = textwrap.wrap(
+                    line,
+                    width=max(8, width),
+                    replace_whitespace=False,
+                    drop_whitespace=False,
+                    subsequent_indent=subsequent_indent,
+                )
+                result.extend(wrapped or [""])
+            return result or [""]
 
         def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
             inner_width = max(0, box_width - 2)
@@ -13485,14 +13488,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return inner + 2
 
         def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
-            wrapped = textwrap.wrap(
-                text,
-                width=max(8, width),
-                replace_whitespace=False,
-                drop_whitespace=False,
-                subsequent_indent=subsequent_indent,
-            )
-            return wrapped or [""]
+            result: list[str] = []
+            for line in text.split("\n"):
+                wrapped = textwrap.wrap(
+                    line,
+                    width=max(8, width),
+                    replace_whitespace=False,
+                    drop_whitespace=False,
+                    subsequent_indent=subsequent_indent,
+                )
+                result.extend(wrapped or [""])
+            return result or [""]
 
         def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
             inner_width = max(0, box_width - 2)
@@ -16694,14 +16700,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return inner + 2  # account for the single leading/trailing spaces inside borders
 
         def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
-            wrapped = textwrap.wrap(
-                text,
-                width=max(8, width),
-                break_long_words=False,
-                break_on_hyphens=False,
-                subsequent_indent=subsequent_indent,
-            )
-            return wrapped or [""]
+            result: list[str] = []
+            for line in text.split("\n"):
+                wrapped = textwrap.wrap(
+                    line,
+                    width=max(8, width),
+                    break_long_words=False,
+                    break_on_hyphens=False,
+                    subsequent_indent=subsequent_indent,
+                )
+                result.extend(wrapped or [""])
+            return result or [""]
 
         def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
             inner_width = max(0, box_width - 2)

@@ -206,15 +206,34 @@ class HonchoSessionManager:
                 observe_others=self._ai_observe_others,
             )
 
-            session.add_peers([(user_peer, user_config), (assistant_peer, ai_config)])
+            peer_configs = [(user_peer, user_config), (assistant_peer, ai_config)]
+            session.add_peers(peer_configs)
 
-            # Sync back: server-side config (set via Honcho UI) wins over
-            # local defaults. Read the effective config after add_peers.
-            # Note: observation booleans are manager-scoped, not per-session.
-            # Last session init wins. Fine for CLI; gateway should scope per-session.
-            try:
-                server_user = session.get_peer_configuration(user_peer)
-                server_ai = session.get_peer_configuration(assistant_peer)
+            server_user = session.get_peer_configuration(user_peer)
+            server_ai = session.get_peer_configuration(assistant_peer)
+            if getattr(self._config, "observation_explicit", False) is True:
+                configured_peers = [
+                    (user_peer, user_config, server_user),
+                    (assistant_peer, ai_config, server_ai),
+                ]
+                updates = [
+                    (peer, local_config)
+                    for peer, local_config, server_config in configured_peers
+                    if (
+                        server_config.observe_me,
+                        server_config.observe_others,
+                    ) != (
+                        local_config.observe_me,
+                        local_config.observe_others,
+                    )
+                ]
+                # Disable observers before enabling others so the server's
+                # observer limit is never exceeded during a handoff.
+                updates.sort(key=lambda update: update[1].observe_others is True)
+                for peer, local_config in updates:
+                    session.set_peer_configuration(peer, local_config)
+            else:
+                # Without an explicit local policy, retain server-managed values.
                 if server_user.observe_me is not None:
                     self._user_observe_me = server_user.observe_me
                 if server_user.observe_others is not None:
@@ -223,16 +242,9 @@ class HonchoSessionManager:
                     self._ai_observe_me = server_ai.observe_me
                 if server_ai.observe_others is not None:
                     self._ai_observe_others = server_ai.observe_others
-                logger.debug(
-                    "Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
-                    self._user_observe_me, self._user_observe_others,
-                    self._ai_observe_me, self._ai_observe_others,
-                )
-            except Exception as e:
-                logger.debug("Honcho get_peer_configuration failed (using local config): %s", e)
         except Exception as e:
             logger.warning(
-                "Honcho session '%s' add_peers failed (non-fatal): %s",
+                "Honcho session '%s' peer configuration failed (non-fatal): %s",
                 session_id, e,
             )
 

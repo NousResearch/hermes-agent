@@ -9,6 +9,7 @@ Verifies that the agent cache correctly:
 - Preserves frozen system prompt across turns
 """
 
+import json
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -173,6 +174,144 @@ class TestExtractCacheBustingConfig:
         out = GatewayRunner._extract_cache_busting_config({})
 
         assert out["tools.registry_generation"] == 12345
+
+    def test_resolved_observation_edit_changes_signature_but_unrelated_edit_does_not(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.run import GatewayRunner
+        from plugins.memory.honcho import client as honcho_client
+
+        config_path = tmp_path / "honcho.json"
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        monkeypatch.setattr(honcho_client, "resolve_config_path", lambda: config_path)
+        monkeypatch.setattr(GatewayRunner, "_HONCHO_CACHE_BUSTING_MEMO", {})
+
+        config_path.write_text(
+            json.dumps({"observationMode": "unified"}), encoding="utf-8"
+        )
+        before = GatewayRunner._extract_honcho_cache_busting_config()
+        before_signature = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=before
+        )
+
+        config_path.write_text(
+            json.dumps({
+                "observationMode": "unified",
+                "observation": {"ai": {"observeMe": True}},
+            }),
+            encoding="utf-8",
+        )
+        after = GatewayRunner._extract_honcho_cache_busting_config()
+        after_signature = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=after
+        )
+
+        assert before["honcho.ai_observe_me"] is False
+        assert after["honcho.ai_observe_me"] is True
+        assert after_signature != before_signature
+
+        config_path.write_text(
+            json.dumps({
+                "observationMode": "unified",
+                "observation": {"ai": {"observeMe": True}},
+                "unrelated": "edit",
+            }),
+            encoding="utf-8",
+        )
+        unrelated = GatewayRunner._extract_honcho_cache_busting_config()
+        unrelated_signature = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=unrelated
+        )
+
+        assert unrelated == after
+        assert unrelated_signature == after_signature
+
+    @pytest.mark.parametrize(
+        ("config", "cache_key", "expected"),
+        [
+            ({"contextTokens": 1024}, "honcho.context_tokens", 1024),
+            ({"writeFrequency": "turn"}, "honcho.write_frequency", "turn"),
+            (
+                {"dialecticReasoningLevel": "medium"},
+                "honcho.dialectic_reasoning_level",
+                "medium",
+            ),
+            ({"dialecticDynamic": False}, "honcho.dialectic_dynamic", False),
+            ({"dialecticMaxChars": 700}, "honcho.dialectic_max_chars", 700),
+            ({"dialecticDepth": 2}, "honcho.dialectic_depth", 2),
+            (
+                {"dialecticDepth": 2, "dialecticDepthLevels": ["low", "high"]},
+                "honcho.dialectic_depth_levels",
+                ["low", "high"],
+            ),
+            ({"reasoningHeuristic": False}, "honcho.reasoning_heuristic", False),
+            ({"reasoningLevelCap": "max"}, "honcho.reasoning_level_cap", "max"),
+            ({"messageMaxChars": 20000}, "honcho.message_max_chars", 20000),
+            (
+                {"dialecticMaxInputChars": 8000},
+                "honcho.dialectic_max_input_chars",
+                8000,
+            ),
+        ],
+    )
+    def test_provider_construction_setting_changes_signature(
+        self, monkeypatch, tmp_path, config, cache_key, expected
+    ):
+        from gateway.run import GatewayRunner
+        from plugins.memory.honcho import client as honcho_client
+
+        config_path = tmp_path / "honcho.json"
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        monkeypatch.setattr(honcho_client, "resolve_config_path", lambda: config_path)
+        monkeypatch.setattr(GatewayRunner, "_HONCHO_CACHE_BUSTING_MEMO", {})
+
+        config_path.write_text("{}", encoding="utf-8")
+        before = GatewayRunner._extract_honcho_cache_busting_config()
+        before_signature = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=before
+        )
+
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        after = GatewayRunner._extract_honcho_cache_busting_config()
+        after_signature = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=after
+        )
+
+        assert after[cache_key] == expected
+        assert after_signature != before_signature
+
+    def test_explicit_observation_policy_busts_signature_when_values_match_defaults(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.run import GatewayRunner
+        from plugins.memory.honcho import client as honcho_client
+
+        config_path = tmp_path / "honcho.json"
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        monkeypatch.setattr(honcho_client, "resolve_config_path", lambda: config_path)
+        monkeypatch.setattr(GatewayRunner, "_HONCHO_CACHE_BUSTING_MEMO", {})
+
+        config_path.write_text("{}", encoding="utf-8")
+        implicit = GatewayRunner._extract_honcho_cache_busting_config()
+        implicit_signature = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=implicit
+        )
+
+        config_path.write_text(
+            json.dumps({"observationMode": "directional"}), encoding="utf-8"
+        )
+        explicit = GatewayRunner._extract_honcho_cache_busting_config()
+        explicit_signature = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=explicit
+        )
+
+        assert explicit["honcho.user_observe_me"] == implicit["honcho.user_observe_me"]
+        assert explicit["honcho.user_observe_others"] == implicit["honcho.user_observe_others"]
+        assert explicit["honcho.ai_observe_me"] == implicit["honcho.ai_observe_me"]
+        assert explicit["honcho.ai_observe_others"] == implicit["honcho.ai_observe_others"]
+        assert implicit["honcho.observation_explicit"] is False
+        assert explicit["honcho.observation_explicit"] is True
+        assert explicit_signature != implicit_signature
 
 
 class TestAgentCacheLifecycle:

@@ -63,6 +63,20 @@ let streamMessageSeq = 0
 
 const nextStreamMessageId = (prefix: string) => `${prefix}-${Date.now()}-${++streamMessageSeq}`
 
+export function applyReasoningAvailable(parts: ChatMessagePart[], text: string): ChatMessagePart[] {
+  if (parts.some(part => part.type === 'reasoning')) {
+    return parts
+  }
+
+  const textIndex = parts.findIndex(part => part.type === 'text')
+
+  if (textIndex < 0) {
+    return [...parts, reasoningPart(text)]
+  }
+
+  return [...parts.slice(0, textIndex), reasoningPart(text), ...parts.slice(textIndex)]
+}
+
 export function useMessageStream({
   activeGatewayProfile = 'default',
   activeSessionIdRef,
@@ -417,20 +431,32 @@ export function useMessageStream({
       mutateStream(
         sessionId,
         (parts, message) => {
-          if (replace && chatMessageText(message).trim()) {
+          if (chatMessageText(message).trim()) {
             return parts
           }
 
-          if (replace) {
-            return [...parts.filter(part => part.type !== 'reasoning'), reasoningPart(delta)]
-          }
-
-          return appendReasoningPart(parts, delta)
+          return [...parts.filter(part => part.type !== 'reasoning'), reasoningPart(delta)]
         },
         () => [reasoningPart(delta)]
       )
     },
     [flushQueuedDeltas, mutateStream, queueDelta]
+  )
+
+  const appendReasoningAvailable = useCallback(
+    (sessionId: string, text: string) => {
+      if (!text) {
+        return
+      }
+
+      flushQueuedDeltas(sessionId)
+      mutateStream(
+        sessionId,
+        parts => applyReasoningAvailable(parts, text),
+        () => [reasoningPart(text)]
+      )
+    },
+    [flushQueuedDeltas, mutateStream]
   )
 
   const upsertToolCall = useCallback(
@@ -753,6 +779,7 @@ export function useMessageStream({
   const handleGatewayEvent = useGatewayEventHandler({
     activeGatewayProfile,
     appendAssistantDelta,
+    appendReasoningAvailable,
     appendReasoningDelta,
     activeSessionIdRef,
     compactedTurnRef,

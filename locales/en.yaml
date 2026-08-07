@@ -60,6 +60,9 @@ gateway:
     usage_switch_model:     "`/model <name>` — switch model"
     usage_switch_provider:  "`/model <name> --provider <slug>` — switch provider"
     usage_persist:          "`/model <name> --global` — persist"
+    usage_reset:            "`/model reset` — clear this session's override"
+    reset_done:             "Session model override cleared — now using `{model}` (the channel/global default). Conversation history kept."
+    reset_none:             "No session model override is active — already using `{model}` (the channel/global default)."
 
   agents:
     header:                "🤖 **Active Agents & Tasks**"

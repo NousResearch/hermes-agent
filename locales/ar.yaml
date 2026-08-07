@@ -68,6 +68,9 @@ gateway:
     usage_switch_model:     "`/model <name>` — تبديل النموذج"
     usage_switch_provider:  "`/model <name> --provider <slug>` — تبديل المزوّد"
     usage_persist:          "`/model <name> --global` — حفظ دائم"
+    usage_reset:            "`/model reset` — مسح تجاوز هذه الجلسة"
+    reset_done:             "تم مسح تجاوز نموذج الجلسة — يُستخدم الآن `{model}` (الافتراضي للقناة/العام). تم الاحتفاظ بسجل المحادثة."
+    reset_none:             "لا يوجد تجاوز نموذج نشط لهذه الجلسة — يُستخدم بالفعل `{model}` (الافتراضي للقناة/العام)."
 
   agents:
     header:                "🤖 **الوكلاء والمهام النشطة**"

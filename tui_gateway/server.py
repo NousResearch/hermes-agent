@@ -4426,7 +4426,9 @@ def _apply_model_switch(
         parse_model_switch_args,
         resolve_persist_behavior,
         switch_model,
+        is_model_reset_request,
         MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL,
+        MODEL_SWITCH_ERR_RESET_WITH_FLAGS,
         MODEL_SWITCH_ERROR_TEXT,
     )
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -4447,6 +4449,19 @@ def _apply_model_switch(
     # using the canonical error copy.
     if is_global_flag and one_turn:
         raise ValueError(MODEL_SWITCH_ERROR_TEXT[MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL])
+    if (
+        hasattr(parsed_flags, "errors")
+        and MODEL_SWITCH_ERR_RESET_WITH_FLAGS in getattr(parsed_flags, "errors", ())
+    ):
+        raise ValueError(MODEL_SWITCH_ERROR_TEXT[MODEL_SWITCH_ERR_RESET_WITH_FLAGS])
+    # /model reset — clear the session pin (session["model_override"]) so the
+    # config.yaml default applies again, without touching conversation
+    # history. A pinned override persists to the session DB row and is
+    # restored on session.resume, so before this the only escape from a stale
+    # pin was /new (NS-563). Gateway parity: GatewaySlashCommandsMixin.
+    # _handle_model_reset.
+    if hasattr(parsed_flags, "target") and is_model_reset_request(parsed_flags):
+        return _reset_session_model_override(sid, session)
     persist_global = (
         persist_override
         if persist_override is not None
@@ -4623,6 +4638,70 @@ def _apply_model_switch(
         "warning": result.warning_message or "",
         "confirm_required": False,
         "scope": "once" if one_turn else ("global" if persist_global else "session"),
+    }
+
+
+def _reset_session_model_override(sid: str, session: dict) -> dict:
+    """Handle ``/model reset`` — clear this session's model pin only.
+
+    Clears ``session["model_override"]`` (and a queued one-turn restore that
+    would re-plant it), switches the live agent back to the config.yaml
+    default via the normal adopt-sync path, and persists the row so
+    ``session.resume`` can't resurrect the stale pin. Conversation history is
+    untouched — unlike ``/new``, which was previously the only escape from a
+    stale pin (NS-563).
+    """
+    had_override = session.get("model_override") is not None
+    session.pop("model_override", None)
+    session.pop("one_turn_model_restore", None)
+    # Force the adopt-sync to run even if it already saw this config target
+    # while the pin was active (it records config_model_seen before the
+    # pin-check early-return does not — see _sync_agent_model_with_config).
+    session.pop("config_model_seen", None)
+
+    default_model, default_provider = _config_model_target()
+    agent = session.get("agent")
+    if default_model and agent is not None and (
+        default_model != getattr(agent, "model", "")
+        or (default_provider and default_provider != getattr(agent, "provider", ""))
+    ):
+        raw = (
+            f"{default_model} --provider {default_provider}"
+            if default_provider
+            else default_model
+        )
+        # pin_session_override=False: this restores the default; it must not
+        # create a fresh pin. persist_override=False: adopting the config
+        # default must never write config back (same rationale as
+        # _sync_agent_model_with_config).
+        _apply_model_switch(
+            sid,
+            session,
+            raw,
+            confirm_expensive_model=False,
+            pin_session_override=False,
+            persist_override=False,
+        )
+    # Persist the cleared state so the durable session row stops carrying the
+    # pinned model (otherwise session.resume restores it).
+    _persist_live_session_runtime(session)
+
+    shown = default_model or getattr(agent, "model", "") or _resolve_model() or "unknown"
+    if had_override:
+        warning = (
+            f"Session model override cleared — now using {shown} "
+            "(the configured default). Conversation history kept."
+        )
+    else:
+        warning = (
+            f"No session model override is active — already using {shown} "
+            "(the configured default)."
+        )
+    return {
+        "value": shown,
+        "warning": warning,
+        "confirm_required": False,
+        "scope": "session",
     }
 
 

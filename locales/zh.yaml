@@ -45,6 +45,9 @@ gateway:
     usage_switch_model:     "`/model <name>` — 切换模型"
     usage_switch_provider:  "`/model <name> --provider <slug>` — 切换提供方"
     usage_persist:          "`/model <name> --global` — 永久保存"
+    usage_reset:            "`/model reset` — 清除本会话的模型覆盖"
+    reset_done:             "已清除本会话的模型覆盖 — 现在使用 `{model}`（频道/全局默认）。会话历史已保留。"
+    reset_none:             "本会话没有激活的模型覆盖 — 已在使用 `{model}`（频道/全局默认）。"
 
   agents:
     header:                "🤖 **活跃代理与任务**"

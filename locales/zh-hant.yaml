@@ -45,6 +45,9 @@ gateway:
     usage_switch_model:     "`/model <name>` — 切換模型"
     usage_switch_provider:  "`/model <name> --provider <slug>` — 切換提供方"
     usage_persist:          "`/model <name> --global` — 永久儲存"
+    usage_reset:            "`/model reset` — 清除本工作階段的模型覆寫"
+    reset_done:             "已清除本工作階段的模型覆寫 — 現在使用 `{model}`（頻道/全域預設）。對話歷史已保留。"
+    reset_none:             "本工作階段沒有啟用的模型覆寫 — 已在使用 `{model}`（頻道/全域預設）。"
 
   agents:
     header:                "🤖 **作用中的代理與任務**"

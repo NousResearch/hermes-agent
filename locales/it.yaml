@@ -45,6 +45,9 @@ gateway:
     usage_switch_model:     "`/model <name>` — cambia modello"
     usage_switch_provider:  "`/model <name> --provider <slug>` — cambia provider"
     usage_persist:          "`/model <name> --global` — rendi permanente"
+    usage_reset:            "`/model reset` — rimuovi l'override di questa sessione"
+    reset_done:             "Override del modello di sessione rimosso — ora in uso `{model}` (predefinito del canale/globale). Cronologia della conversazione conservata."
+    reset_none:             "Nessun override del modello attivo in questa sessione — già in uso `{model}` (predefinito del canale/globale)."
 
   agents:
     header:                "🤖 **Agenti e attività attivi**"

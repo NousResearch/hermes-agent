@@ -45,6 +45,9 @@ gateway:
     usage_switch_model:     "`/model <name>` — mudar de modelo"
     usage_switch_provider:  "`/model <name> --provider <slug>` — mudar de fornecedor"
     usage_persist:          "`/model <name> --global` — guardar permanentemente"
+    usage_reset:            "`/model reset` — limpar o override desta sessão"
+    reset_done:             "Override de modelo da sessão removido — agora usando `{model}` (o padrão do canal/global). Histórico da conversa mantido."
+    reset_none:             "Nenhum override de modelo ativo nesta sessão — já está usando `{model}` (o padrão do canal/global)."
 
   agents:
     header:                "🤖 **Agentes e tarefas ativos**"

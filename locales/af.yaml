@@ -45,6 +45,9 @@ gateway:
     usage_switch_model:     "`/model <name>` — verander model"
     usage_switch_provider:  "`/model <name> --provider <slug>` — verander verskaffer"
     usage_persist:          "`/model <name> --global` — stoor permanent"
+    usage_reset:            "`/model reset` — verwyder hierdie sessie se oorheersing"
+    reset_done:             "Sessie-modeloorheersing verwyder — gebruik nou `{model}` (die kanaal-/globale verstek). Gespreksgeskiedenis behou."
+    reset_none:             "Geen sessie-modeloorheersing is aktief nie — gebruik reeds `{model}` (die kanaal-/globale verstek)."
 
   agents:
     header:                "🤖 **Aktiewe Agente & Take**"

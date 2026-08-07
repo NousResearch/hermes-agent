@@ -308,6 +308,95 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "openai-codex":
+        # Multi-account import: if the user points us at a directory of
+        # auth*.json files (e.g. ~/.codex/), import every valid account
+        # found. This supports the "log in Account A → copy auth.json →
+        # log in Account B" workflow without running the device-code flow
+        # per account.
+        codex_dir = (getattr(args, "codex_dir", None) or "").strip()
+        if codex_dir:
+            imported = auth_mod._import_codex_cli_tokens_from_directory(codex_dir)
+            if not imported:
+                raise SystemExit(
+                    f"No valid Codex tokens found in {codex_dir}. "
+                    "Expected auth*.json files with access_token + refresh_token."
+                )
+            # Accounts already in the pool are skipped so re-running the
+            # import (or pointing at a directory overlapping an earlier one)
+            # doesn't append a second entry for the same account. Two entries
+            # sharing one single-use Codex refresh token strand each other on
+            # the first rotation.
+            existing = {
+                auth_mod.codex_credential_identity({
+                    "access_token": e.access_token or "",
+                    "refresh_token": e.refresh_token or "",
+                })
+                for e in pool.entries()
+            }
+            added = 0
+            skipped = 0
+            for tokens in imported:
+                if auth_mod.codex_credential_identity(tokens) in existing:
+                    skipped += 1
+                    continue
+                label = (getattr(args, "label", None) or "").strip() or label_from_token(
+                    tokens["access_token"],
+                    _oauth_default_label(provider, len(pool.entries()) + 1),
+                )
+                entry = PooledCredential(
+                    provider=provider,
+                    id=uuid.uuid4().hex[:6],
+                    label=label,
+                    auth_type=AUTH_TYPE_OAUTH,
+                    priority=0,
+                    source=SOURCE_MANUAL_DEVICE_CODE,
+                    access_token=tokens["access_token"],
+                    refresh_token=tokens["refresh_token"],
+                    base_url=tokens.get("base_url"),
+                    last_refresh=tokens.get("last_refresh"),
+                )
+                pool.add_entry(entry)
+                added += 1
+            if added:
+                auth_mod.mark_provider_active_if_unset(provider)
+            summary = f'Imported {added} {provider} OAuth credential(s) from {codex_dir}'
+            if skipped:
+                summary += f' ({skipped} already in the pool)'
+            print(summary)
+            return
+
+        # Single-file import: --auth-file points at one auth.json to adopt.
+        auth_file = (getattr(args, "auth_file", None) or "").strip()
+        if auth_file:
+            tokens = auth_mod._import_codex_cli_tokens(auth_file)
+            if tokens is None:
+                raise SystemExit(
+                    f"No valid Codex tokens found at {auth_file}. "
+                    "File must contain access_token + refresh_token and not be expired."
+                )
+            label = (getattr(args, "label", None) or "").strip() or label_from_token(
+                tokens["access_token"],
+                _oauth_default_label(provider, len(pool.entries()) + 1),
+            )
+            entry = PooledCredential(
+                provider=provider,
+                id=uuid.uuid4().hex[:6],
+                label=label,
+                auth_type=AUTH_TYPE_OAUTH,
+                priority=0,
+                source=SOURCE_MANUAL_DEVICE_CODE,
+                access_token=tokens["access_token"],
+                refresh_token=tokens["refresh_token"],
+                base_url=tokens.get("base_url"),
+                last_refresh=tokens.get("last_refresh"),
+            )
+            first_credential = not pool.entries()
+            pool.add_entry(entry)
+            if first_credential:
+                auth_mod.mark_provider_active_if_unset(provider)
+            print(f'Imported {provider} OAuth credential: "{entry.label}"')
+            return
+
         creds = auth_mod._codex_device_code_login()
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],

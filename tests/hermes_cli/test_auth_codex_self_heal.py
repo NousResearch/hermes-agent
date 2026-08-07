@@ -38,7 +38,7 @@ def test_self_heals_on_stale_refresh_token(monkeypatch):
         )
 
     monkeypatch.setattr(auth, "refresh_codex_oauth_pure", _rejected)
-    monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda: dict(fresh))
+    monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda *a, **k: dict(fresh))
     monkeypatch.setattr(auth, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
 
     out = _refresh_codex_auth_tokens(STALE, 20.0)

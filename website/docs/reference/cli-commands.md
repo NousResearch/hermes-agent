@@ -543,6 +543,37 @@ hermes auth spotify                                      # Authenticate Hermes w
 
 Subcommands: `add`, `list`, `remove`, `reset`, `status`, `logout`, `spotify`. When called with no subcommand, launches the interactive management wizard.
 
+### Importing multiple Codex subscriptions
+
+`hermes auth add openai-codex` accepts two flags for adopting ChatGPT Codex
+credentials that the Codex CLI already holds, so a second subscription can be
+pooled without running the device-code flow again:
+
+| Option | Description |
+|--------|-------------|
+| `--auth-file <path>` | Import one account from a specific `auth.json` (e.g. `~/.codex/auth.account-b.json`). |
+| `--codex-dir <dir>` | Import every account found in a directory of `auth*.json` files (e.g. `~/.codex`). |
+
+```bash
+# Adopt a single saved account
+hermes auth add openai-codex --auth-file ~/.codex/auth.account-b.json
+
+# Adopt every account in ~/.codex at once
+hermes auth add openai-codex --codex-dir ~/.codex
+```
+
+`--codex-dir` takes precedence when both are given. Expired tokens are rejected
+at import time, since they can no longer be refreshed. Each imported account
+becomes its own pool entry, so the usual rotation strategies handle rate-limit
+failover between subscriptions.
+
+Duplicates are collapsed: the copy-then-relogin workflow routinely leaves the
+same account in both `auth.json` and a labelled copy of it, and re-running the
+import would otherwise append a second entry for an account already pooled.
+Because Codex refresh tokens are single-use, two entries sharing one token
+would strand each other on the first rotation, so accounts are de-duplicated by
+their `chatgpt_account_id` (falling back to the refresh token).
+
 ## `hermes status`
 
 ```bash

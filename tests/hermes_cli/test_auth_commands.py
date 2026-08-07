@@ -26,6 +26,18 @@ def _jwt_with_email(email: str) -> str:
     return f"{header}.{payload}.signature"
 
 
+def _jwt_with_account(email: str, account_id: str) -> str:
+    """JWT carrying the ``chatgpt_account_id`` claim Codex identity keys on."""
+    header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+    payload = base64.urlsafe_b64encode(
+        json.dumps({
+            "email": email,
+            "https://api.openai.com/auth": {"chatgpt_account_id": account_id},
+        }).encode()
+    ).rstrip(b"=").decode()
+    return f"{header}.{payload}.signature"
+
+
 def _codex_pool_only_store(*, exhausted: bool = False) -> dict:
     entry = {
         "id": "codex-1",
@@ -769,3 +781,308 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
     assert is_source_suppressed("copilot", "env:GITHUB_TOKEN")
 
 
+def test_auth_add_codex_auth_file_imports_single_account(tmp_path, monkeypatch):
+    """`hermes auth add openai-codex --auth-file <path>` imports a single
+    Codex account from a specific auth.json file instead of running the
+    device-code flow. Enables the multi-account workflow where the user
+    copies auth.json between logins."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    # Create a fake Codex CLI auth.json with valid tokens
+    codex_auth = tmp_path / "auth.account-b.json"
+    codex_auth.write_text(json.dumps({
+        "tokens": {
+            "access_token": _jwt_with_email("account-b@example.com"),
+            "refresh_token": "refresh-token-b",
+        },
+    }))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_add_command
+
+    auth_add_command(SimpleNamespace(
+        provider="openai-codex",
+        auth_type="oauth",
+        api_key=None,
+        label=None,
+        auth_file=str(codex_auth),
+        codex_dir=None,
+    ))
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["source"] == "manual:device_code"
+    assert entry["access_token"] == _jwt_with_email("account-b@example.com")
+    assert entry["refresh_token"] == "refresh-token-b"
+    assert payload["active_provider"] == "openai-codex"
+
+
+def test_auth_add_codex_auth_file_rejects_expired_tokens(tmp_path, monkeypatch):
+    """`--auth-file` rejects expired tokens — importing stale tokens leaves
+    the user stuck with "Login successful!" but no working credentials."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    # Create an expired token (exp in the past)
+    import time
+    expired_jwt = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        "eyJzdWIiOiIxMjM0NTY3ODkwIiwiZW1haWwiOiJleHBpcmVkQGV4YW1wbGUuY29tIiwiZXhwIjoxNjAwMDAwMDAwfQ."
+        "invalid-signature"
+    )
+    codex_auth = tmp_path / "auth.expired.json"
+    codex_auth.write_text(json.dumps({
+        "tokens": {
+            "access_token": expired_jwt,
+            "refresh_token": "refresh-token",
+        },
+    }))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_add_command
+
+    with pytest.raises(SystemExit, match="No valid Codex tokens"):
+        auth_add_command(SimpleNamespace(
+            provider="openai-codex",
+            auth_type="oauth",
+            api_key=None,
+            label=None,
+            auth_file=str(codex_auth),
+            codex_dir=None,
+        ))
+
+
+def test_auth_add_codex_dir_imports_multiple_accounts(tmp_path, monkeypatch):
+    """`hermes auth add openai-codex --codex-dir <dir>` imports all valid
+    Codex accounts from a directory of auth*.json files. Supports the
+    "log in A → copy auth.json → log in B" workflow."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": _jwt_with_email("account-a@example.com"),
+            "refresh_token": "refresh-a",
+        },
+    }))
+    (codex_dir / "auth.account-b.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": _jwt_with_email("account-b@example.com"),
+            "refresh_token": "refresh-b",
+        },
+    }))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_add_command
+
+    auth_add_command(SimpleNamespace(
+        provider="openai-codex",
+        auth_type="oauth",
+        api_key=None,
+        label=None,
+        auth_file=None,
+        codex_dir=str(codex_dir),
+    ))
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    assert len(entries) == 2
+    labels = {e["label"] for e in entries}
+    assert "account-a@example.com" in labels
+    assert "account-b@example.com" in labels
+    assert payload["active_provider"] == "openai-codex"
+
+
+def test_auth_add_codex_dir_dedupes_same_account_across_files(tmp_path, monkeypatch):
+    """The documented workflow leaves one account in two files.
+
+    After "log in A -> copy auth.json -> log in B", a user who also keeps a
+    labelled copy of B ends up with auth.json (B), auth.account-a.json (A)
+    and auth.account-b.json (B). That must yield two pool entries, not
+    three: Codex refresh tokens are single-use, so two entries sharing a
+    pair strand each other on the first rotation.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    account_b = json.dumps({
+        "tokens": {
+            "access_token": _jwt_with_email("account-b@example.com"),
+            "refresh_token": "refresh-b",
+        },
+    })
+    (codex_dir / "auth.json").write_text(account_b)
+    (codex_dir / "auth.account-b.json").write_text(account_b)
+    (codex_dir / "auth.account-a.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": _jwt_with_email("account-a@example.com"),
+            "refresh_token": "refresh-a",
+        },
+    }))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_add_command
+
+    auth_add_command(SimpleNamespace(
+        provider="openai-codex",
+        auth_type="oauth",
+        api_key=None,
+        label=None,
+        auth_file=None,
+        codex_dir=str(codex_dir),
+    ))
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    assert len(entries) == 2
+    assert {e["label"] for e in entries} == {
+        "account-a@example.com", "account-b@example.com",
+    }
+    # The single-use refresh tokens must each appear exactly once.
+    assert sorted(e["refresh_token"] for e in entries) == ["refresh-a", "refresh-b"]
+
+
+def test_auth_add_codex_dir_dedupes_by_account_id_not_just_token(tmp_path, monkeypatch):
+    """Same account re-authenticated in two files = different token pairs.
+
+    Keying only on the refresh token would let this through, so identity
+    prefers the JWT's chatgpt_account_id claim.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": _jwt_with_account("same@example.com", "acct-1"),
+            "refresh_token": "refresh-newer",
+        },
+    }))
+    (codex_dir / "auth.older.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": _jwt_with_account("same@example.com", "acct-1"),
+            "refresh_token": "refresh-older",
+        },
+    }))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_add_command
+
+    auth_add_command(SimpleNamespace(
+        provider="openai-codex",
+        auth_type="oauth",
+        api_key=None,
+        label=None,
+        auth_file=None,
+        codex_dir=str(codex_dir),
+    ))
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert len(payload["credential_pool"]["openai-codex"]) == 1
+
+
+def test_auth_add_codex_dir_rerun_does_not_duplicate_pool_entries(tmp_path, monkeypatch):
+    """Re-running the import is idempotent - accounts already pooled are skipped."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": _jwt_with_email("account-a@example.com"),
+            "refresh_token": "refresh-a",
+        },
+    }))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_add_command
+
+    args = SimpleNamespace(
+        provider="openai-codex",
+        auth_type="oauth",
+        api_key=None,
+        label=None,
+        auth_file=None,
+        codex_dir=str(codex_dir),
+    )
+    auth_add_command(args)
+    auth_add_command(args)
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert len(payload["credential_pool"]["openai-codex"]) == 1
+
+
+def test_auth_add_codex_dir_rejects_empty_directory(tmp_path, monkeypatch):
+    """`--codex-dir` with no valid auth*.json files returns an error."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "auth.empty.json").write_text(json.dumps({
+        "tokens": {"access_token": "", "refresh_token": ""},
+    }))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_add_command
+
+    with pytest.raises(SystemExit, match="No valid Codex tokens"):
+        auth_add_command(SimpleNamespace(
+            provider="openai-codex",
+            auth_type="oauth",
+            api_key=None,
+            label=None,
+            auth_file=None,
+            codex_dir=str(codex_dir),
+        ))
+
+
+def test_auth_add_codex_auth_file_and_dir_are_mutually_exclusive(tmp_path, monkeypatch):
+    """`--auth-file` and `--codex-dir` should not be used together; when both
+    are provided, `--codex-dir` takes precedence (it is the broader import)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": _jwt_with_email("dir-account@example.com"),
+            "refresh_token": "refresh-dir",
+        },
+    }))
+
+    single_file = tmp_path / "auth.single.json"
+    single_file.write_text(json.dumps({
+        "tokens": {
+            "access_token": _jwt_with_email("single@example.com"),
+            "refresh_token": "refresh-single",
+        },
+    }))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_add_command
+
+    auth_add_command(SimpleNamespace(
+        provider="openai-codex",
+        auth_type="oauth",
+        api_key=None,
+        label=None,
+        auth_file=str(single_file),
+        codex_dir=str(codex_dir),
+    ))
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    # --codex-dir wins: only the directory account is imported
+    assert len(entries) == 1
+    assert entries[0]["label"] == "dir-account@example.com"

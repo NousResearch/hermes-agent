@@ -3743,9 +3743,9 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         _save_auth_store(auth_store)
 
 
-def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
+def _recover_codex_tokens_from_cli(reason: str, auth_path: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
-    imported = _import_codex_cli_tokens()
+    imported = _import_codex_cli_tokens(auth_path)
     # Require BOTH tokens before adopting: persisting a payload without a
     # usable refresh_token would only break the next refresh cycle.
     if not (
@@ -3937,20 +3937,27 @@ def _refresh_codex_auth_tokens(
     return updated_tokens
 
 
-def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
+def _import_codex_cli_tokens(auth_path: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Try to read tokens from ~/.codex/auth.json (Codex CLI shared file).
-    
+
     Returns tokens dict if valid and not expired, None otherwise.
     Does NOT write to the shared file.
+
+    When ``auth_path`` is provided, reads from that path instead of the
+    default ``~/.codex/auth.json``. This enables importing multiple Codex
+    accounts from separate auth files (e.g. after logging out of Account A
+    and logging into Account B in the Codex CLI).
     """
-    codex_home = os.getenv("CODEX_HOME", "").strip()
-    if not codex_home:
-        codex_home = str(Path.home() / ".codex")
-    auth_path = Path(codex_home).expanduser() / "auth.json"
-    if not auth_path.is_file():
+    if auth_path is None:
+        codex_home = os.getenv("CODEX_HOME", "").strip()
+        if not codex_home:
+            codex_home = str(Path.home() / ".codex")
+        auth_path = str(Path(codex_home).expanduser() / "auth.json")
+    path = Path(auth_path).expanduser()
+    if not path.is_file():
         return None
     try:
-        payload = json.loads(auth_path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
         tokens = payload.get("tokens")
         if not isinstance(tokens, dict):
             return None
@@ -3963,12 +3970,90 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         # but no working credentials.
         if _codex_access_token_is_expiring(access_token, 0):
             logger.debug(
-                "Codex CLI tokens at %s are expired — skipping import.", auth_path,
+                "Codex CLI tokens at %s are expired — skipping import.", path,
             )
             return None
         return dict(tokens)
     except Exception:
         return None
+
+
+def _codex_chatgpt_account_id(access_token: Any) -> Optional[str]:
+    """Best-effort ``chatgpt_account_id`` claim from a Codex OAuth JWT.
+
+    Returns None when the token is not a JWT or carries no account claim.
+    """
+    auth_claims = _decode_jwt_claims(access_token).get("https://api.openai.com/auth")
+    if not isinstance(auth_claims, dict):
+        return None
+    account_id = auth_claims.get("chatgpt_account_id")
+    if isinstance(account_id, str) and account_id.strip():
+        return account_id.strip()
+    return None
+
+
+def codex_credential_identity(tokens: Dict[str, str]) -> str:
+    """Stable identity for a Codex credential, for de-duplication.
+
+    Prefers the JWT's ``chatgpt_account_id`` so two auth files holding
+    *different* token pairs for the same ChatGPT account still collapse to
+    one credential. Falls back to the refresh token — the material that
+    actually must not be duplicated, since Codex refresh tokens are
+    single-use — and then to the access token.
+    """
+    account_id = _codex_chatgpt_account_id(tokens.get("access_token"))
+    if account_id:
+        return f"account:{account_id}"
+    refresh_token = (tokens.get("refresh_token") or "").strip()
+    if refresh_token:
+        return f"refresh:{refresh_token}"
+    return f"access:{(tokens.get('access_token') or '').strip()}"
+
+
+def _import_codex_cli_tokens_from_directory(directory: str) -> list[Dict[str, str]]:
+    """Import all valid Codex token pairs from a directory of auth files.
+
+    Scans ``directory`` for ``auth*.json`` files (e.g. ``auth.json``,
+    ``auth.account-a.json``, ``auth.account-b.json``) and imports each
+    valid, non-expired token pair found. Returns a list of token dicts
+    (each with ``access_token`` and ``refresh_token``), **one per distinct
+    account**.
+
+    This enables the multi-account workflow: the user logs into Account A
+    in the Codex CLI (``~/.codex/auth.json``), copies it to
+    ``~/.codex/auth.account-a.json``, logs into Account B
+    (``~/.codex/auth.json``), and Hermes imports both.
+
+    That workflow routinely leaves the *same* account in two files — the
+    live ``auth.json`` plus the labelled copy the user kept of it. Returning
+    it twice would create two pool entries sharing one refresh token, and
+    Codex refresh tokens are single-use: the first rotation consumes the
+    pair and strands the duplicate on dead credentials. So results are
+    de-duplicated by ``codex_credential_identity()``, keeping whichever
+    file sorts first — for a labelled copy that is ``auth.<label>.json``,
+    which sorts ahead of the bare ``auth.json``.
+    """
+    dir_path = Path(directory).expanduser()
+    if not dir_path.is_dir():
+        return []
+    results: list[Dict[str, str]] = []
+    seen: set[str] = set()
+    for auth_file in sorted(dir_path.glob("auth*.json")):
+        tokens = _import_codex_cli_tokens(str(auth_file))
+        if tokens is None:
+            continue
+        identity = codex_credential_identity(tokens)
+        if identity in seen:
+            logger.debug(
+                "Codex import: %s duplicates an account already read from "
+                "this directory — skipping.", auth_file.name,
+            )
+            continue
+        seen.add(identity)
+        # Tag the entry with the source filename for debugging
+        tokens["_source_file"] = auth_file.name
+        results.append(tokens)
+    return results
 
 
 def resolve_codex_runtime_credentials(
@@ -4217,14 +4302,9 @@ def _probe_codex_quota_restored(
         }
         # Best-effort ChatGPT-Account-Id from the JWT (the backend requires it
         # for some account shapes; harmless to omit for others).
-        claims = _decode_jwt_claims(token)
-        account_id = (
-            claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
-            if isinstance(claims.get("https://api.openai.com/auth"), dict)
-            else None
-        )
-        if isinstance(account_id, str) and account_id.strip():
-            headers["ChatGPT-Account-Id"] = account_id.strip()
+        account_id = _codex_chatgpt_account_id(token)
+        if account_id:
+            headers["ChatGPT-Account-Id"] = account_id
         with httpx.Client(timeout=10.0) as client:
             response = client.get(_codex_usage_probe_url(base_url), headers=headers)
         if response.status_code == 200:

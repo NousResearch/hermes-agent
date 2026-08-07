@@ -6844,6 +6844,14 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    skipped_shared_tree: list[tuple[str, list[str]]] = field(default_factory=list)
+    """Tasks deferred this tick because another scratch task is running on
+    the same shared source tree (board default_workdir). Each entry is
+    ``(task_id, running_scratch_task_ids)``. Scratch tasks serialize when
+    the board has a git-repo default_workdir, preventing concurrent edits to
+    the same checkout. NOT an operator-actionable failure — the task will be
+    picked up on a subsequent tick when the running scratch worker finishes.
+    Worktree tasks are always exempt (they have their own isolated checkout)."""
     skipped_locked: bool = False
     """True when this tick was skipped because another process already held
     the board's dispatch lock (issue #35240). A losing dispatcher does no
@@ -8461,7 +8469,7 @@ def _dispatch_once_locked(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, workspace_kind FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -8500,6 +8508,33 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             _per_profile_running[prow["assignee"]] = int(prow["n"])
+
+    # Shared-tree serialization guard: when the board has a git-repo
+    # default_workdir, at most ONE scratch task may run at a time. Scratch
+    # workers routinely cd into the shared checkout and edit files
+    # concurrently — without this guard, two sibling scratch tasks race on
+    # the same files and the first to commit sweeps the other's
+    # half-finished work into their commit (shared-tree collision, see
+    # audit 2026-07-26 / kanban-worker pitfall #13). Worktree tasks are
+    # exempt: they each get an isolated checkout at <repo>/.worktrees/<id>.
+    _shared_tree_root: Optional[str] = None
+    _running_scratch_ids: list[str] = []
+    _board_slug = board if board else get_current_board()
+    if _board_slug:
+        try:
+            _board_meta = read_board_metadata(_board_slug)
+            _bd = (_board_meta.get("default_workdir") or "").strip()
+            if _bd and Path(_bd).expanduser().is_dir():
+                _shared_tree_root = _bd
+        except Exception:
+            pass
+    if _shared_tree_root:
+        _running_scratch_ids = [
+            r["id"] for r in conn.execute(
+                "SELECT id FROM tasks "
+                "WHERE status = 'running' AND workspace_kind = 'scratch'"
+            ).fetchall()
+        ]
     # Normalize default_assignee once: empty/whitespace string → None so the
     # rest of the loop can use ``if default_assignee:`` as a single check.
     # We also resolve profile_exists once here for the same reason.
@@ -8599,6 +8634,35 @@ def _dispatch_once_locked(
                     (row["id"], row_assignee, current)
                 )
                 continue
+        # Shared-tree serialization guard: if this board has a git-repo
+        # default_workdir and this is a scratch task, defer it when another
+        # scratch task is already running. Prevents concurrent edits to the
+        # same shared checkout (shared-tree collision, audit 2026-07-26).
+        # Worktree tasks are exempt — each gets an isolated checkout.
+        row_workspace_kind = row["workspace_kind"] or "scratch"
+        if (
+            _shared_tree_root
+            and row_workspace_kind == "scratch"
+            and _running_scratch_ids
+        ):
+            result.skipped_shared_tree.append(
+                (row["id"], list(_running_scratch_ids))
+            )
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn, row["id"], "shared_tree_deferred",
+                        {
+                            "blocked_by": list(_running_scratch_ids),
+                            "board_workdir": _shared_tree_root,
+                            "message": (
+                                "Deferred: another scratch task is running on "
+                                "the same shared tree. Use workspace_kind=worktree "
+                                "for parallel tasks on the same repo."
+                            ),
+                        },
+                    )
+            continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -8630,6 +8694,10 @@ def _dispatch_once_locked(
                 _per_profile_running[row_assignee] = (
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
+            # Same for the shared-tree guard: a dry_run spawn still
+            # "occupies" the scratch slot for the rest of this tick.
+            if _shared_tree_root and row_workspace_kind == "scratch":
+                _running_scratch_ids.append(row["id"])
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -8685,6 +8753,13 @@ def _dispatch_once_locked(
                 _per_profile_running[claimed.assignee] = (
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
+            # Track spawned scratch tasks so the shared-tree guard
+            # correctly defers a second scratch task in the same tick.
+            if (
+                _shared_tree_root
+                and (claimed.workspace_kind or "scratch") == "scratch"
+            ):
+                _running_scratch_ids.append(claimed.id)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),

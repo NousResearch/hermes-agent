@@ -8103,6 +8103,46 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+# How long to suppress repeated same-reason ``respawn_guarded`` events for a
+# task. The dispatcher ticks roughly every minute; without a throttle, a card
+# held by a persistent guard (e.g. ``active_pr`` while a PR waits in review)
+# accumulates hundreds of identical event rows. One event per material state
+# change plus an hourly heartbeat keeps the tail diagnosable without spam
+# (t_de3555cc).
+_RESPAWN_GUARD_EVENT_THROTTLE_SECONDS = 3600
+
+
+def _should_log_respawn_guard(
+    conn: sqlite3.Connection, task_id: str, reason: str
+) -> bool:
+    """Return True if a ``respawn_guarded`` event should be appended now.
+
+    Logs when (a) the task has no prior ``respawn_guarded`` event, (b) the
+    most recent one carries a DIFFERENT reason (material state change), or
+    (c) the most recent same-reason event is older than
+    ``_RESPAWN_GUARD_EVENT_THROTTLE_SECONDS`` (periodic heartbeat).
+    Never weakens the guard itself — callers still skip the spawn either way.
+    """
+    row = conn.execute(
+        "SELECT payload, created_at FROM task_events "
+        "WHERE task_id = ? AND kind = 'respawn_guarded' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return True
+    try:
+        prev_reason = (json.loads(row["payload"]) or {}).get("reason")
+    except Exception:
+        prev_reason = None
+    if prev_reason != reason:
+        return True
+    return (
+        int(time.time()) - int(row["created_at"])
+        >= _RESPAWN_GUARD_EVENT_THROTTLE_SECONDS
+    )
+
+
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -8613,7 +8653,18 @@ def _dispatch_once_locked(
             # Emit an event so operators can see why the task was
             # skipped when reading `hermes kanban tail` — without
             # this the task appears stuck in ready with no diagnosis.
-            if not dry_run:
+            # Throttled: the dispatcher ticks every minute, so a card
+            # held by a persistent guard (e.g. active_pr while a PR sits
+            # in review for hours) would otherwise accumulate hundreds
+            # of identical events. We append only when the guard reason
+            # CHANGED since the last recorded guard event, or when the
+            # last same-reason event is older than the throttle window
+            # — one visible event per material state change, plus a
+            # periodic heartbeat so the tail still shows the hold is
+            # current (t_de3555cc).
+            if not dry_run and _should_log_respawn_guard(
+                conn, row["id"], guard_reason
+            ):
                 with write_txn(conn):
                     _append_event(
                         conn, row["id"], "respawn_guarded",

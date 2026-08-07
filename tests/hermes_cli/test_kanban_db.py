@@ -502,6 +502,101 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def test_respawn_guard_event_throttled_for_repeated_active_pr(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """Repeated same-reason (active_pr) guarded passes must NOT append a new
+    respawn_guarded event every dispatcher tick — only the first pass records
+    one, until the throttle window elapses (t_de3555cc)."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 6_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="pr-held", assignee="alice")
+        kb.add_comment(
+            conn, t, "w", "opened https://github.com/acme/repo/pull/42"
+        )
+
+        # First guarded pass: event recorded, no spawn.
+        res = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+        assert (t, "active_pr") in res.respawn_guarded
+        events = [e for e in kb.list_events(conn, t) if e.kind == "respawn_guarded"]
+        assert len(events) == 1
+        assert events[0].payload.get("reason") == "active_pr"
+
+        # Simulate 5 more dispatcher ticks a minute apart: still guarded
+        # (no spawn), but no new events appended.
+        for i in range(1, 6):
+            monkeypatch.setattr(_kb.time, "time", lambda i=i: now + i * 60)
+            res = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+            assert (t, "active_pr") in res.respawn_guarded
+        events = [e for e in kb.list_events(conn, t) if e.kind == "respawn_guarded"]
+        assert len(events) == 1, (
+            f"expected repeated same-reason passes to be throttled; "
+            f"got {len(events)} events"
+        )
+
+        # After the throttle window elapses, one heartbeat event is allowed.
+        monkeypatch.setattr(
+            _kb.time,
+            "time",
+            lambda: now + _kb._RESPAWN_GUARD_EVENT_THROTTLE_SECONDS + 60,
+        )
+        kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+        events = [e for e in kb.list_events(conn, t) if e.kind == "respawn_guarded"]
+        assert len(events) == 2
+
+
+def test_respawn_guard_event_logged_on_reason_change(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A material state change (guard reason changes) is recorded even inside
+    the throttle window."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 6_100_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reason-change", assignee="alice")
+        # blocker_auth first: quota-flavored last failure error.
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("quota exceeded", t),
+        )
+        kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+        events = [e for e in kb.list_events(conn, t) if e.kind == "respawn_guarded"]
+        assert [e.payload.get("reason") for e in events] == ["blocker_auth"]
+
+        # Reason changes to active_pr (clear error, add PR comment) one
+        # minute later — still well inside the throttle window, but the
+        # reason changed, so a new event must be appended.
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = NULL WHERE id = ?", (t,)
+        )
+        kb.add_comment(
+            conn, t, "w", "PR: https://github.com/acme/repo/pull/7"
+        )
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 60)
+        res = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+        assert (t, "active_pr") in res.respawn_guarded
+        events = [e for e in kb.list_events(conn, t) if e.kind == "respawn_guarded"]
+        assert [e.payload.get("reason") for e in events] == [
+            "blocker_auth",
+            "active_pr",
+        ]
+
+
+def test_should_log_respawn_guard_first_event_always_logs(kanban_home):
+    """No prior respawn_guarded event -> log."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fresh", assignee="alice")
+        assert kb._should_log_respawn_guard(conn, t, "active_pr") is True
+
+
+
 
 
 

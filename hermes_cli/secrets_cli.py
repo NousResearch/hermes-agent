@@ -192,10 +192,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
             "you pasted something other than a BSM access token.  Continuing anyway.[/yellow]"
         )
 
-    save_env_value(token_env, token)
-    os.environ[token_env] = token  # so the test fetch below sees it
-    console.print(f"  [green]✓[/green] stored in {get_env_path()} as {token_env}")
-
     # ------------------------------------------------------------------ region
     console.print()
     console.print("[bold]Step 3[/bold]  Pick a Bitwarden region")
@@ -285,6 +281,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
         console.print(f"  [yellow]warning:[/yellow] {w}")
 
     # ------------------------------------------------------------------- save
+    save_env_value(token_env, token)
+    os.environ[token_env] = token
+    console.print(f"  [green]✓[/green] stored in {get_env_path()} as {token_env}")
+
     secrets_cfg["enabled"] = True
     secrets_cfg["project_id"] = project_id
     secrets_cfg["server_url"] = server_url

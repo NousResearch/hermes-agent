@@ -24,6 +24,10 @@ from hermes_cli.colors import Colors, color
 from cron.lifecycle_guard import (  # noqa: F401  (re-exported for terminal_tool)
     contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command,
 )
+from cron.scheduler_readiness import (
+    active_cron_provider_name as _shared_active_cron_provider_name,
+    scheduler_readiness_warning,
+)
 
 
 def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
@@ -55,12 +59,7 @@ def _active_cron_provider_name() -> str:
     provider's ``is_available()`` contract forbids network). Returns 'builtin'
     on any failure so callers fall back to the historical ticker-based checks.
     """
-    try:
-        from cron.scheduler_provider import resolve_cron_scheduler
-
-        return resolve_cron_scheduler().name or "builtin"
-    except Exception:
-        return "builtin"
+    return _shared_active_cron_provider_name()
 
 
 def _warn_if_gateway_not_running() -> None:
@@ -78,22 +77,11 @@ def _warn_if_gateway_not_running() -> None:
     any non-builtin provider; the gateway-process heuristic only speaks to the
     built-in ticker's trigger.
     """
-    try:
-        if _active_cron_provider_name() != "builtin":
-            return
-
-        from hermes_cli.gateway import find_gateway_pids
-
-        if find_gateway_pids():
-            return
-    except Exception:
-        # If we can't determine gateway state, stay quiet rather than nag.
+    warning = scheduler_readiness_warning(_active_cron_provider_name())
+    if not warning:
         return
 
-    print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
-    print(color("     Start it with: hermes gateway install", Colors.DIM))
-    print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
-    print(color("     Check status:  hermes cron status", Colors.DIM))
+    print(color(f"  ⚠  {warning}", Colors.YELLOW))
 
 
 def cron_list(show_all: bool = False):

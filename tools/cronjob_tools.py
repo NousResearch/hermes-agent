@@ -50,6 +50,9 @@ from cron.jobs import (
     resume_job,
     update_job,
 )
+from cron.scheduler_readiness import (
+    scheduler_readiness_warning as _scheduler_readiness_warning,
+)
 
 
 def _notify_provider_jobs_changed_safe() -> None:
@@ -1145,22 +1148,25 @@ def cronjob(
             _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
             if _local_notice:
                 _create_message = f"{_create_message} {_local_notice}"
-            return json.dumps(
-                {
-                    "success": True,
-                    "job_id": job["id"],
-                    "name": job["name"],
-                    "skill": job.get("skill"),
-                    "skills": job.get("skills", []),
-                    "schedule": job["schedule_display"],
-                    "repeat": _repeat_display(job),
-                    "deliver": job.get("deliver", "local"),
-                    "next_run_at": job["next_run_at"],
-                    "job": _format_job(job),
-                    "message": _create_message,
-                },
-                indent=2,
-            )
+            _scheduler_warning = _scheduler_readiness_warning()
+            if _scheduler_warning:
+                _create_message = f"{_create_message} {_scheduler_warning}"
+            _create_response = {
+                "success": True,
+                "job_id": job["id"],
+                "name": job["name"],
+                "skill": job.get("skill"),
+                "skills": job.get("skills", []),
+                "schedule": job["schedule_display"],
+                "repeat": _repeat_display(job),
+                "deliver": job.get("deliver", "local"),
+                "next_run_at": job["next_run_at"],
+                "job": _format_job(job),
+                "message": _create_message,
+            }
+            if _scheduler_warning:
+                _create_response["scheduler_warning"] = _scheduler_warning
+            return json.dumps(_create_response, indent=2)
 
         if normalized == "list":
             jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]

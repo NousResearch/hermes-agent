@@ -2214,6 +2214,27 @@ function Install-Venv {
     }
 
     Write-Info "Creating virtual environment with Python $PythonVersion..."
+
+    # Desktop self-update invokes this script again. Preserve an existing venv
+    # when it already has the requested Python minor; Install-Dependencies will
+    # sync packages and Repair-ManagedRuntime will verify SQLite afterwards.
+    # Probe failures fall through to the existing fail-closed recreation path.
+    $preserveExistingVenv = $false
+    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if (Test-Path $venvPythonExe) {
+        $previousEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $existingPythonVersion = (& $venvPythonExe -I -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null | Select-Object -Last 1)
+            $probeExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousEAP
+        }
+        if ($probeExitCode -eq 0 -and ("$existingPythonVersion").Trim() -eq $PythonVersion) {
+            $preserveExistingVenv = $true
+            $env:UV_PYTHON = $venvPythonExe
+        }
+    }
     
     Push-Location $InstallDir
 
@@ -2223,14 +2244,23 @@ function Install-Venv {
     $gatewayTasksDisabled = @()
     try {
     if (Test-Path "venv") {
-        Write-Info "Virtual environment already exists, recreating..."
+        if ($preserveExistingVenv) {
+            Write-Info "Compatible virtual environment already exists; preserving it..."
+        } else {
+            Write-Info "Virtual environment already exists, recreating..."
+        }
         # On Windows, native Python extensions (e.g. _bcrypt.pyd, tornado's
         # speedups.pyd) are loaded as DLLs by any running hermes process.
         # Windows denies deletion of loaded DLLs, so every process running out
         # of this venv must be stopped before removing it -- otherwise
         # Remove-Item fails with "Access to the path '...' is denied" and the
         # whole install/update aborts at this stage.
+        # Preserving the live venv means dependency sync will mutate it in place.
+        # On Windows that is safe only after process-holder discovery and stop
+        # have been verified; recreation has its own rename/delete failure gate.
+        $holderSweepVerified = $true
         if ($env:OS -eq "Windows_NT") {
+            $holderSweepVerified = $false
             $myPid = $PID
             Write-Info "Stopping any running hermes processes before recreating venv..."
             # Disarm the respawner FIRST: the gateway autostart Scheduled Task
@@ -2292,44 +2322,52 @@ function Install-Venv {
                         ForEach-Object {
                             $found++
                             Write-Info "  stopping PID $($_.ProcessId) ($($_.Name)) running from venv"
-                            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                            Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
                         }
                 } catch {
-                    Write-Warn "Could not enumerate venv processes: $($_.Exception.Message)"
+                    Write-Warn "Could not verify or stop venv processes: $($_.Exception.Message)"
                     break
                 }
                 if ($found -eq 0) { $cleanPasses++ } else { $cleanPasses = 0 }
                 Start-Sleep -Milliseconds 400
             }
-        }
-        # Rename-then-delete: on Windows a directory RENAME succeeds even while
-        # files inside it are mapped as DLLs (only in-place delete/replace of
-        # the mapped file is denied, and only same-volume renames are atomic
-        # moves). Moving the old venv aside means `uv venv` can create a fresh
-        # one immediately even if some straggler still holds a .pyd from the
-        # old tree; the renamed dir is deleted best-effort (now, and by the
-        # cleanup pass below on the NEXT install if a handle outlives this one).
-        $staleName = "venv.stale.{0}" -f (Get-Date -Format "yyyyMMddHHmmss")
-        $renamed = $false
-        try {
-            Rename-Item -Path "venv" -NewName $staleName -ErrorAction Stop
-            $renamed = $true
-        } catch {
-            Write-Warn "Could not rename venv aside ($($_.Exception.Message)); falling back to in-place delete"
-        }
-        if ($renamed) {
-            Remove-Item -Recurse -Force $staleName -ErrorAction SilentlyContinue
-            if (Test-Path $staleName) {
-                Write-Warn "Old venv parked at $staleName (a process still holds files in it); it will be cleaned up on the next install"
+            if ($cleanPasses -ge 3) {
+                $holderSweepVerified = $true
             }
-        } else {
-            Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
-            # A killed process can take a moment to release its file handles, so a
-            # first Remove-Item may still hit a locked .pyd. Retry once after a short
-            # pause before giving up and letting the stage fail loudly.
-            if (Test-Path "venv") {
-                Start-Sleep -Seconds 2
-                Remove-Item -Recurse -Force "venv"
+        }
+        if ($preserveExistingVenv -and -not $holderSweepVerified) {
+            throw "Cannot safely preserve virtual environment: running process holders could not be cleared"
+        }
+        if (-not $preserveExistingVenv) {
+            # Rename-then-delete: on Windows a directory RENAME succeeds even while
+            # files inside it are mapped as DLLs (only in-place delete/replace of
+            # the mapped file is denied, and only same-volume renames are atomic
+            # moves). Moving the old venv aside means `uv venv` can create a fresh
+            # one immediately even if some straggler still holds a .pyd from the
+            # old tree; the renamed dir is deleted best-effort (now, and by the
+            # cleanup pass below on the NEXT install if a handle outlives this one).
+            $staleName = "venv.stale.{0}" -f (Get-Date -Format "yyyyMMddHHmmss")
+            $renamed = $false
+            try {
+                Rename-Item -Path "venv" -NewName $staleName -ErrorAction Stop
+                $renamed = $true
+            } catch {
+                Write-Warn "Could not rename venv aside ($($_.Exception.Message)); falling back to in-place delete"
+            }
+            if ($renamed) {
+                Remove-Item -Recurse -Force $staleName -ErrorAction SilentlyContinue
+                if (Test-Path $staleName) {
+                    Write-Warn "Old venv parked at $staleName (a process still holds files in it); it will be cleaned up on the next install"
+                }
+            } else {
+                Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
+                # A killed process can take a moment to release its file handles, so a
+                # first Remove-Item may still hit a locked .pyd. Retry once after a short
+                # pause before giving up and letting the stage fail loudly.
+                if (Test-Path "venv") {
+                    Start-Sleep -Seconds 2
+                    Remove-Item -Recurse -Force "venv"
+                }
             }
         }
     }
@@ -2340,18 +2378,19 @@ function Install-Venv {
         Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
     }
     
-    # uv creates the venv and pins the Python version in one step.  uv emits
-    # normal progress such as "Using CPython ..." on stderr; under Windows
-    # PowerShell 5.1 with EAP=Stop that stderr is a NativeCommandError unless
-    # we temporarily relax EAP and trust $LASTEXITCODE for real failures.
-    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $PythonVersion }
-    # Relaxing EAP above means a *genuine* uv-venv failure (exit != 0) no longer
-    # aborts on its own. Capture $LASTEXITCODE immediately and fail fast, so the
-    # `venv` stage can't falsely report success (and Invoke-Stage can't emit
-    # ok=true) when the venv was never created.
-    $venvExitCode = $LASTEXITCODE
-    if ($venvExitCode -ne 0) {
-        throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
+    if (-not $preserveExistingVenv) {
+        # uv creates the venv and pins the Python version in one step. uv emits
+        # normal progress such as "Using CPython ..." on stderr; under Windows
+        # PowerShell 5.1 with EAP=Stop that stderr is a NativeCommandError unless
+        # we temporarily relax EAP and trust $LASTEXITCODE for real failures.
+        Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $PythonVersion }
+        # Relaxing EAP above means a genuine uv-venv failure (exit != 0) no longer
+        # aborts on its own. Capture $LASTEXITCODE immediately and fail fast, so the
+        # venv stage cannot falsely report success when creation failed.
+        $venvExitCode = $LASTEXITCODE
+        if ($venvExitCode -ne 0) {
+            throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
+        }
     }
 
     # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
@@ -2862,6 +2901,44 @@ You are Hermes Agent, an intelligent AI assistant created by Nous Research. You 
             }
         }
     }
+}
+
+function Repair-ManagedRuntime {
+    if ($NoVenv) {
+        return
+    }
+
+    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPythonExe)) {
+        throw "Cannot verify managed SQLite runtime: $venvPythonExe is missing"
+    }
+
+    Write-Info "Verifying managed Python/SQLite runtime..."
+    $repairScript = @'
+import sys
+from pathlib import Path
+
+import hermes_cli.main  # Register the Windows venv-holder detector.
+from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+result = repair_vulnerable_runtime(sys.argv[1], project_root=Path(sys.argv[2]))
+if result.status not in {"safe", "repaired"}:
+    detail = result.detail or "runtime safety could not be established"
+    print(f"Managed SQLite runtime verification failed: {detail}", file=sys.stderr)
+    raise SystemExit(1)
+'@
+    Invoke-NativeWithRelaxedErrorAction {
+        & $venvPythonExe -I -c $repairScript $UvCmd $InstallDir
+    }
+    $repairExitCode = $LASTEXITCODE
+    if ($repairExitCode -ne 0) {
+        throw "Managed Python/SQLite runtime is not safe"
+    }
+
+    # The repair may atomically replace the venv. Pin later uv invocations to
+    # the newly installed live interpreter rather than this stage's old process.
+    $env:UV_PYTHON = $venvPythonExe
+    Write-Success "Managed Python/SQLite runtime verified"
 }
 
 function Install-NodeDeps {
@@ -4002,7 +4079,7 @@ function Stage-Node             {
 function Stage-SystemPackages   { Install-SystemPackages }
 function Stage-Repository       { Install-Repository }
 function Stage-Venv             { Resolve-UvCmd; Install-Venv }
-function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies }
+function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies; Repair-ManagedRuntime }
 function Stage-NodeDeps         { Install-NodeDeps }
 function Stage-Desktop          { Install-DesktopVoiceDeps; Install-Desktop }
 function Stage-Path             { Set-PathVariable }

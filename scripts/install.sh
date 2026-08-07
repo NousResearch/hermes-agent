@@ -1418,8 +1418,27 @@ setup_venv() {
 
     log_info "Creating virtual environment with Python $PYTHON_VERSION..."
 
+    # Desktop self-update invokes install.sh again. Preserve an existing venv
+    # when it already has the requested Python minor: install_deps() will sync
+    # packages and repair a vulnerable SQLite runtime atomically afterwards.
+    # Recreating unconditionally used to discard that repaired runtime and let
+    # uv's minor-only resolver select an older cached Python/SQLite again.
+    if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        local existing_python_version
+        if existing_python_version="$(
+            "$INSTALL_DIR/venv/bin/python" -I -c \
+                'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' \
+                2>/dev/null
+        )" && [ "$existing_python_version" = "$PYTHON_VERSION" ]; then
+            log_info "Compatible virtual environment already exists; preserving it..."
+            export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+            log_success "Virtual environment ready (Python $PYTHON_VERSION)"
+            return 0
+        fi
+    fi
+
     if [ -d "venv" ]; then
-        log_info "Virtual environment already exists, recreating..."
+        log_info "Existing virtual environment is incompatible; recreating..."
         rm -rf venv
     fi
 
@@ -1438,6 +1457,41 @@ setup_venv() {
     fi
 
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
+}
+
+repair_managed_runtime() {
+    if [ "$USE_VENV" != true ] || [ "$DISTRO" = "termux" ]; then
+        return 0
+    fi
+
+    local venv_python="$INSTALL_DIR/venv/bin/python"
+    if [ ! -x "$venv_python" ]; then
+        log_error "Cannot verify managed SQLite runtime: $venv_python is missing"
+        return 1
+    fi
+
+    log_info "Verifying managed Python/SQLite runtime..."
+    if ! "$venv_python" -I - "$UV_CMD" "$INSTALL_DIR" <<'PY'
+import sys
+from pathlib import Path
+
+from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+result = repair_vulnerable_runtime(sys.argv[1], project_root=Path(sys.argv[2]))
+if result.status not in {"safe", "repaired"}:
+    detail = result.detail or "runtime safety could not be established"
+    print(f"  ✗ Managed SQLite runtime verification failed: {detail}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+    then
+        log_error "Managed Python/SQLite runtime is not safe"
+        return 1
+    fi
+
+    # repair_vulnerable_runtime may have atomically replaced the venv. Keep all
+    # later uv commands pinned to the newly installed live interpreter.
+    export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+    log_success "Managed Python/SQLite runtime verified"
 }
 
 install_deps() {
@@ -3215,6 +3269,7 @@ run_stage_body() {
             install_uv
             check_python
             install_deps
+            repair_managed_runtime
             ;;
         node-deps)
             detect_os
@@ -3336,6 +3391,7 @@ main() {
     clone_repo
     setup_venv
     install_deps
+    repair_managed_runtime
     install_node_deps
     setup_path
     copy_config_templates

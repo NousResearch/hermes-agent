@@ -1,9 +1,5 @@
 """Phase 22 tests: federation ops layer (health monitoring + lost-contact SOS)."""
-import sys
-import os
 import time
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from gateway.federation.federation_ops import (
     HealthMonitor,

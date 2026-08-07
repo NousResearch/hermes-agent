@@ -1463,6 +1463,59 @@ def _sysctl_value(name: str) -> str:
         return ""
 
 
+def _register_nvidia_dll_dirs() -> None:
+    """Register pip-installed NVIDIA wheel DLL dirs on Windows.
+
+    faster-whisper (ctranslate2) loads cuBLAS/CuDNN at first ``transcribe()``.
+    On Windows those DLLs ship in ``site-packages/nvidia/*/bin`` and are NOT on
+    the default DLL search path, so the load fails with ``Library cublas64_12.dll
+    is not found`` and we silently fall back to CPU. Registering the dirs with
+    ``os.add_dll_directory`` lets a pip-installed ``nvidia-cublas-cu12`` /
+    ``nvidia-cudnn-cu12`` runtime actually be used. No-op on non-Windows and on
+    hosts without the nvidia wheels.
+    """
+    if platform.system() != "Windows":
+        return
+    try:
+        import site
+        import sys
+        from pathlib import Path
+        # On Windows venvs getsitepackages()[0] can be the venv root, not
+        # Lib/site-packages — scan every candidate for the nvidia dir.
+        candidates = [Path(p) for p in site.getsitepackages()]
+        candidates += [Path(p) for p in (sys.path if sys.path else [])]
+        nvidia_root = None
+        for cand in candidates:
+            probe = cand / "nvidia"
+            if probe.is_dir():
+                nvidia_root = probe
+                break
+        if nvidia_root is None:
+            return
+        registered = []
+        for pkg_dir in nvidia_root.iterdir():
+            bin_dir = pkg_dir / "bin"
+            if bin_dir.is_dir():
+                # ctranslate2 resolves cuBLAS/CuDNN via the standard LoadLibrary
+                # search path (incl. PATH), which os.add_dll_directory alone does
+                # NOT cover — prepend the dirs to PATH so first transcribe() finds
+                # them even when the gateway was started without them.
+                bin_path = str(bin_dir)
+                cur = os.environ.get("PATH", "")
+                if bin_path not in cur.split(os.pathsep):
+                    os.environ["PATH"] = bin_path + os.pathsep + cur
+                try:
+                    os.add_dll_directory(bin_path)
+                except (OSError, ValueError):
+                    pass
+                registered.append(bin_dir.name)
+        if registered:
+            logger.debug("Registered NVIDIA DLL dirs for STT: %s", ", ".join(registered))
+    except Exception:
+        # Best-effort only — never break STT because DLL registration failed.
+        pass
+
+
 def _should_force_faster_whisper_cpu() -> bool:
     """Avoid faster-whisper device autodetection paths known to hard-abort.
 
@@ -1587,6 +1640,7 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
     We try the requested config first (fast CUDA path when it works), and on
     any CUDA library load failure fall back to CPU + int8.
     """
+    _register_nvidia_dll_dirs()
     force_cpu = _should_force_faster_whisper_cpu()
     if force_cpu:
         # Importing ctranslate2/faster-whisper itself can abort on some

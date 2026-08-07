@@ -10,9 +10,10 @@ from agent.web_search_provider import WebSearchProvider, get_provider_env
 class DeepSeekWebSearchProvider(WebSearchProvider):
     """Expose ``web.search_backend: deepseek`` to the provider registry.
 
-    Search execution happens inside the active DeepSeek V4 Flash Responses
-    request. A local dispatch means the active route cannot provide that native
-    capability, so return an actionable error rather than silently falling back.
+    Search execution happens inside an active, capability-enabled DeepSeek
+    Responses request. A local dispatch means the active route cannot provide
+    that native capability, so return an actionable error rather than silently
+    falling back.
 
     This backend is intentionally opt-in because a server-side search turn can
     consume substantially more tokens than a normal model turn::
@@ -49,12 +50,16 @@ class DeepSeekWebSearchProvider(WebSearchProvider):
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         del query, limit
+        from hermes_cli.providers import deepseek_native_web_search_models
+
+        enabled_models = ", ".join(deepseek_native_web_search_models()) or "none"
         return {
             "success": False,
             "error": (
-                "DeepSeek native web search requires the active model to be "
-                "deepseek-v4-flash on the DeepSeek Responses API. Select a "
-                "client web backend such as Firecrawl or Tavily for other models."
+                "DeepSeek native web search requires an active DeepSeek model "
+                "with both Responses API and native web-search capabilities "
+                f"enabled (currently: {enabled_models}). Select a client web "
+                "backend such as Firecrawl or Tavily for other models."
             ),
         }
 

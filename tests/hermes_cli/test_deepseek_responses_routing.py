@@ -1,12 +1,17 @@
-"""DeepSeek V4 Flash model-aware Responses routing contracts."""
+"""DeepSeek model capability and Responses routing contracts."""
 
 from types import SimpleNamespace
 
 import pytest
 
+from hermes_cli import providers as provider_registry
 from hermes_cli import runtime_provider as rp
 from hermes_cli.providers import (
+    DeepSeekModelCapabilities,
     deepseek_api_mode,
+    deepseek_model_capabilities,
+    deepseek_native_web_search_models,
+    deepseek_supports_native_web_search,
     deepseek_supports_responses,
     determine_api_mode,
     normalize_deepseek_base_url,
@@ -23,6 +28,7 @@ from hermes_cli.providers import (
 )
 def test_only_v4_flash_supports_responses(model):
     assert deepseek_supports_responses(model)
+    assert deepseek_supports_native_web_search(model)
     assert deepseek_api_mode(model) == "codex_responses"
     assert determine_api_mode("deepseek", "https://api.deepseek.com/v1", model) == "codex_responses"
 
@@ -32,6 +38,7 @@ def test_only_v4_flash_supports_responses(model):
     [
         "",
         "deepseek-v4-pro",
+        "deepseek-v4-pro-20260801",
         "deepseek-chat",
         "deepseek-reasoner",
         "deepseek-v4-flash-20260423",
@@ -40,7 +47,55 @@ def test_only_v4_flash_supports_responses(model):
 )
 def test_other_deepseek_models_stay_on_chat_completions(model):
     assert not deepseek_supports_responses(model)
+    assert not deepseek_supports_native_web_search(model)
     assert deepseek_api_mode(model) == "chat_completions"
+
+
+def test_v4_pro_has_explicit_disabled_capability_reservation():
+    assert deepseek_model_capabilities("deepseek-v4-pro") == DeepSeekModelCapabilities(
+        responses_api=False,
+        native_web_search=False,
+    )
+    assert deepseek_native_web_search_models() == ("deepseek-v4-flash",)
+
+
+def test_v4_pro_future_enablement_is_localized_to_capability_entry(monkeypatch):
+    monkeypatch.setitem(
+        provider_registry._DEEPSEEK_MODEL_CAPABILITIES,
+        "deepseek-v4-pro",
+        DeepSeekModelCapabilities(
+            responses_api=True,
+            native_web_search=True,
+        ),
+    )
+
+    assert deepseek_api_mode("deepseek-v4-pro") == "codex_responses"
+    assert deepseek_api_mode("deepseek/deepseek-v4-pro") == "codex_responses"
+    assert deepseek_supports_native_web_search("deepseek-v4-pro")
+    assert deepseek_supports_native_web_search("DEEPSEEK/DEEPSEEK-V4-PRO")
+    assert determine_api_mode(
+        "deepseek",
+        "https://api.deepseek.com/v1",
+        "deepseek-v4-pro",
+    ) == "codex_responses"
+    assert deepseek_native_web_search_models() == (
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+    )
+
+
+def test_native_search_capability_fails_closed_without_responses(monkeypatch):
+    monkeypatch.setitem(
+        provider_registry._DEEPSEEK_MODEL_CAPABILITIES,
+        "deepseek-v4-pro",
+        DeepSeekModelCapabilities(
+            responses_api=False,
+            native_web_search=True,
+        ),
+    )
+
+    assert not deepseek_supports_native_web_search("deepseek-v4-pro")
+    assert deepseek_api_mode("deepseek-v4-pro") == "chat_completions"
 
 
 @pytest.mark.parametrize(

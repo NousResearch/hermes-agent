@@ -199,6 +199,75 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.auth
         assert result.should_fallback is True
 
+    # ── Region-restricted opt-in (OpenCode Go RegionError) ──
+
+    def test_403_region_opt_in_classified_as_provider_policy_blocked(self):
+        """OpenCode Go returns 403 RegionError when a China-hosted model
+        (e.g. deepseek-v4-flash) requires an account-level opt-in. The
+        credentials are valid, so this must NOT classify as ``auth``
+        (which would surface misleading API-key guidance) — the error
+        body already carries the fix URL. Fallback must stay enabled:
+        the same model is reachable via other providers without opt-in."""
+        e = MockAPIError(
+            "Forbidden",
+            status_code=403,
+            body={
+                "error": {
+                    "type": "RegionError",
+                    "message": (
+                        "The latest version of this model is only available "
+                        "hosted in China and requires explicit opt in: "
+                        "https://opencode.ai/workspace/wrk_test/go"
+                    ),
+                }
+            },
+        )
+        result = classify_api_error(e, provider="opencode-go", model="deepseek-v4-flash")
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.is_auth is False
+
+    def test_403_region_opt_in_matches_message_only(self):
+        """Match on the message pattern even when the structured body is
+        absent (SDKs sometimes surface the provider message only through
+        str(error)). Both phrase fragments must be present."""
+        e = MockAPIError(
+            "The latest version of this model is only available hosted in China "
+            "and requires explicit opt in: https://opencode.ai/workspace/wrk_test/go",
+            status_code=403,
+        )
+        result = classify_api_error(e, provider="opencode-go")
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_403_region_error_code_alone_classifies(self):
+        """The structured ``error.type: RegionError`` is a definitive
+        signal even when the message wording is trimmed by the relay."""
+        e = MockAPIError(
+            "Forbidden",
+            status_code=403,
+            body={"error": {"type": "RegionError", "message": "region restriction"}},
+        )
+        result = classify_api_error(e, provider="opencode-go")
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    @pytest.mark.parametrize("fragment", ["only available hosted in", "requires explicit opt in"])
+    def test_403_single_opt_in_fragment_stays_auth(self, fragment):
+        """A 403 mentioning only one fragment (e.g. any model that happens
+        to be region-hosted) must remain ``auth`` — the opt-in exception
+        requires both phrase signals or the structured RegionError code."""
+        e = MockAPIError(
+            f"model {fragment} for region ap-east-1",
+            status_code=403,
+        )
+        result = classify_api_error(e, provider="opencode-go")
+        assert result.reason == FailoverReason.auth
+        assert result.should_fallback is True
+
 
 
 

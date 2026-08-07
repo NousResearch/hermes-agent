@@ -431,6 +431,33 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = [
     "no endpoints found matching your data policy",
 ]
 
+# Region-restricted model opt-in patterns.
+#
+# Some providers host the latest model versions only inside their home
+# region and gate access from elsewhere behind an explicit account-level
+# opt-in. OpenCode Go does this for China-hosted DeepSeek models:
+#
+#   "The latest version of this model is only available hosted in China
+#    and requires explicit opt in:
+#    https://opencode.ai/workspace/<workspace_id>/go"
+#
+# The credentials are valid — this is a geo/entitlement gate, not an auth
+# failure. Classified as ``provider_policy_blocked`` so the provider's own
+# fix URL in the error body is surfaced instead of generic (and
+# misleading) API-key guidance. Unlike the OpenRouter privacy-guardrail
+# case, provider fallback IS useful here: the same model stays reachable
+# via DeepSeek direct, OpenRouter, etc., so callers keep
+# ``should_fallback=True``.
+#
+# Matching is deliberately narrow: BOTH phrase fragments are required
+# (the real OpenCode message contains both), or the structured error
+# ``type`` is exactly ``RegionError``. A 403 mentioning only a
+# region-hosted model — without the opt-in wording — stays ``auth``.
+_REGION_OPT_IN_PATTERNS = [
+    "requires explicit opt in",
+    "only available hosted in",
+]
+
 # Provider content-policy / safety-filter blocks. Distinct from
 # ``provider_policy_blocked`` above (which is an OpenRouter *account*-level
 # data/privacy guardrail) — these are *per-prompt* safety decisions made by
@@ -1048,6 +1075,23 @@ def _classify_by_status(
                 FailoverReason.billing,
                 retryable=False,
                 should_rotate_credential=True,
+                should_fallback=True,
+            )
+        # Region-restricted model requiring account-level opt-in (e.g.
+        # OpenCode Go RegionError for China-hosted DeepSeek). The error
+        # body already contains the fix URL, so surface it as
+        # ``provider_policy_blocked`` instead of ``auth`` — the generic
+        # auth guidance ("is your API key valid?") is misleading here.
+        # Fallback stays enabled: the model is reachable via other
+        # providers without any opt-in.
+        # Narrow match: both phrase fragments (the real OpenCode message
+        # has both) OR the structured error type "RegionError".
+        if error_code.lower() == "regionerror" or all(
+            p in error_msg for p in _REGION_OPT_IN_PATTERNS
+        ):
+            return result_fn(
+                FailoverReason.provider_policy_blocked,
+                retryable=False,
                 should_fallback=True,
             )
         return result_fn(

@@ -243,7 +243,9 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         ]
 
     def default_model(self) -> Optional[str]:
-        return self._resolve_model()
+        # This is the catalog default, not the effective runtime model.
+        # Runtime overrides are resolved separately by _resolve_model_chain().
+        return DEFAULT_MODEL
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return dict(self._setup_schema)

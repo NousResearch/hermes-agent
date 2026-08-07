@@ -95,6 +95,17 @@ class TestProviderClass:
             # Default must be an image-output model id (provider/model form).
             assert "/" in DEFAULT_MODEL and "image" in DEFAULT_MODEL
 
+    def test_default_model_ignores_runtime_overrides(self, monkeypatch):
+        """Catalog defaults must not inherit another provider's saved model."""
+        from plugins.image_gen.openrouter import DEFAULT_MODEL
+
+        monkeypatch.setenv("OPENROUTER_IMAGE_MODEL", "custom/provider-image-model")
+        stale = {"model": "gpt-image-2-medium"}
+        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=stale):
+            provider = _openrouter()
+            assert provider.default_model() == DEFAULT_MODEL
+            assert provider._resolve_model() == "custom/provider-image-model"
+
 
     def test_model_env_override(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_IMAGE_MODEL", "black-forest-labs/flux.2-pro")

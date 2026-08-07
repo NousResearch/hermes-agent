@@ -15,6 +15,8 @@ import {
   buildInteractiveSshArgs,
   buildMasterArgs,
   classifySshError,
+  CONTROL_FORWARD_KEEPALIVE_MS,
+  CONTROL_PERSIST_SECONDS,
   controlSocketPath,
   createSshProbeConnection,
   forwardSpec,
@@ -520,22 +522,23 @@ test('mux forward keeps the ControlPersist master alive until the final forward 
 
     const conn = new SshConnection(
       { host: 'box', user: 'me' },
-      { spawnFn, controlDir: '/tmp/d', controlKeepaliveMs: 1_000 }
+      { spawnFn, controlDir: '/tmp/d' }
     )
 
     await conn.forward(5000, 6000)
     await conn.forward(5001, 6001)
-    await vi.advanceTimersByTimeAsync(1_000)
+    assert.ok(CONTROL_FORWARD_KEEPALIVE_MS < CONTROL_PERSIST_SECONDS * 1_000)
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
 
     const checks = () => spawnFn.calls.filter(args => args[0] === '-O' && args[1] === 'check').length
     assert.equal(checks(), 1, 'a tracked forward refreshes the ControlPersist timer')
 
     await conn.cancelForward(5000, 6000)
-    await vi.advanceTimersByTimeAsync(1_000)
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS)
     assert.equal(checks(), 2, 'cancelling one of several forwards keeps the refresh active')
 
     await conn.cancelForward(5001, 6001)
-    await vi.advanceTimersByTimeAsync(2_000)
+    await vi.advanceTimersByTimeAsync(CONTROL_FORWARD_KEEPALIVE_MS * 2)
     assert.equal(checks(), 2, 'cancelling the final forward stops the refresh timer')
   } finally {
     vi.useRealTimers()

@@ -110,6 +110,33 @@ class TestCmdUpdateNpmLockfileCache:
         )
         assert hm._npm_lockfile_changed(tmp_path) is True
 
+    def test_update_installs_nested_ink_workspace(self, tmp_path, monkeypatch):
+        """The updater must install the nested Ink workspace without desktop."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        (tmp_path / "package.json").write_text("{}")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "/usr/bin/npm")
+        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda _root: True)
+        monkeypatch.setattr(update_cmd, "_record_npm_lockfile_hash", lambda _root: None)
+
+        calls = []
+
+        def fake_install(*args, **kwargs):
+            calls.append((args, kwargs))
+            return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        monkeypatch.setattr(hm, "_run_npm_install_deterministic", fake_install)
+
+        assert hm._update_node_dependencies() == []
+        assert len(calls) == 2
+        workspace_args = calls[1][1]["extra_args"]
+        assert "ui-tui" in workspace_args
+        assert "ui-tui/packages/hermes-ink" in workspace_args
+        assert "web" in workspace_args
+        assert "apps/desktop" not in workspace_args
+
 
 
 

@@ -14,7 +14,7 @@
     "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",
     "install:root": "npm install --workspaces=false",
     "install:web": "npm install --workspace web",
-    "install:tui": "npm install --workspace ui-tui",
+    "install:tui": "npm install --workspace ui-tui --workspace ui-tui/packages/hermes-ink",
     "install:desktop": "npm install --workspace apps/desktop",
     "audit:root": "npm audit --workspaces=false",
     "audit:web": "npm audit --workspace web",

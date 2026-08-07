@@ -2022,13 +2022,24 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
         npm_cwd = _workspace_root(tui_dir)
-        # --workspace ui-tui avoids resolving apps/desktop (Electron + node-pty).
-        # See #38772.
+        # Scope the install to the TUI and its nested @hermes/ink workspace so
+        # npm does not resolve apps/desktop (Electron + node-pty). Selecting
+        # only ui-tui leaves @hermes/ink's runtime dependencies uninstalled on
+        # npm 11, and the subsequent esbuild step cannot resolve them.
         # When ui-tui/ has its own package-lock.json (e.g. curl install),
         # _workspace_root() returns tui_dir itself.  Passing --workspace in
         # that case fails because npm cannot find a workspace named "ui-tui"
         # inside ui-tui/.  See #42973.
-        npm_workspace_args: tuple[str, ...] = () if npm_cwd == tui_dir else ("--workspace", "ui-tui")
+        npm_workspace_args: tuple[str, ...] = (
+            ()
+            if npm_cwd == tui_dir
+            else (
+                "--workspace",
+                "ui-tui",
+                "--workspace",
+                "ui-tui/packages/hermes-ink",
+            )
+        )
         if termux_startup:
             npm_cwd, npm_workspace_args = _termux_workspace_install_context(
                 tui_dir,

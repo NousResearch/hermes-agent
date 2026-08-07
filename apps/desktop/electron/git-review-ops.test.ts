@@ -13,7 +13,10 @@ import {
   resolveRenamePath,
   REVIEW_FILE_CAP,
   reviewDiff,
-  reviewList
+  reviewList,
+  reviewRevert,
+  reviewStage,
+  reviewUnstage
 } from './git-review-ops'
 
 const tempDirs: string[] = []
@@ -290,15 +293,75 @@ test('reviewDiff shows the real conflict body for an unmerged file', async () =>
   assert.match(diff, /other side/)
 })
 
-test('reviewDiff does not pull in neighbours of a file whose name looks like a glob', async () => {
+// A filename containing pathspec wildcards is matched as a GLOB by default, so
+// `weird[1].txt` also selects `weird1.txt`. That leaked across every git call in
+// this module: reads showed the wrong file's body, and the mutations changed the
+// wrong file on disk. The decoy here is TRACKED and MODIFIED - the nastiest
+// shape, with a real worktree diff to leak and real edits to destroy.
+function makeGlobRepo() {
   const dir = makeRepo()
 
+  fs.writeFileSync(path.join(dir, 'weird1.txt'), 'neighbour original\n')
+  execFileSync('git', ['add', 'weird1.txt'], { cwd: dir })
+  execFileSync('git', ['commit', '-qm', 'add neighbour'], { cwd: dir })
+  fs.writeFileSync(path.join(dir, 'weird1.txt'), 'neighbour MODIFIED\n')
   fs.writeFileSync(path.join(dir, 'weird[1].txt'), 'clicked file\n')
-  // Matches the GLOB `weird[1].txt`, so a non-literal pathspec would sweep it in.
-  fs.writeFileSync(path.join(dir, 'weird1.txt'), 'DECOY neighbour\n')
 
+  return dir
+}
+
+test('reviewDiff does not pull in neighbours of a file whose name looks like a glob', async () => {
+  const dir = makeGlobRepo()
+
+  // Without --literal-pathspecs the worktree probe `git diff -- weird[1].txt`
+  // returns the TRACKED neighbour's diff, so the pane renders a file the user
+  // never clicked.
   const diff = await uncommittedDiff(dir, 'weird[1].txt')
 
   assert.match(diff, /\+clicked file/)
-  assert.doesNotMatch(diff, /DECOY neighbour/)
+  assert.doesNotMatch(diff, /neighbour MODIFIED/)
+  assert.doesNotMatch(diff, /weird1\.txt/)
+})
+
+test('fileDiffVsHead does not pull in glob neighbours either', async () => {
+  const dir = makeGlobRepo()
+  const diff = await fileDiffVsHead(dir, 'weird[1].txt', 'git')
+
+  assert.match(diff, /\+clicked file/)
+  assert.doesNotMatch(diff, /neighbour MODIFIED/)
+})
+
+test('reviewStage stages only the selected file, not its glob neighbours', async () => {
+  const dir = makeGlobRepo()
+
+  await reviewStage(dir, 'weird[1].txt', 'git')
+
+  const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: dir }).toString()
+
+  assert.match(staged, /weird\[1\]\.txt/)
+  assert.doesNotMatch(staged, /^weird1\.txt$/m)
+})
+
+test('reviewUnstage unstages only the selected file, not its glob neighbours', async () => {
+  const dir = makeGlobRepo()
+
+  execFileSync('git', ['add', '-A'], { cwd: dir })
+  await reviewUnstage(dir, 'weird[1].txt', 'git')
+
+  const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: dir }).toString()
+
+  // The neighbour must stay staged; only the clicked file comes back out.
+  assert.match(staged, /^weird1\.txt$/m)
+  assert.doesNotMatch(staged, /weird\[1\]\.txt/)
+})
+
+test('reviewRevert does not discard edits to a glob neighbour', async () => {
+  const dir = makeGlobRepo()
+
+  // The destructive one: `git checkout HEAD -- 'weird[1].txt'` also restored
+  // weird1.txt, silently throwing away the user's uncommitted edits.
+  await reviewRevert(dir, 'weird[1].txt', 'git')
+
+  assert.equal(fs.readFileSync(path.join(dir, 'weird1.txt'), 'utf8'), 'neighbour MODIFIED\n')
+  assert.equal(fs.existsSync(path.join(dir, 'weird[1].txt')), false)
 })

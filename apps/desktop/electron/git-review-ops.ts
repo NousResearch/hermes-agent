@@ -20,6 +20,22 @@ const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 // An untracked directory arrives as ONE row, so opening it can mean diffing an
 // unbounded subtree (a build output, a browser profile). Cap the expansion.
 const UNTRACKED_DIR_FILE_CAP = 50
+const UNTRACKED_LIST_MAX_BYTES = 4 * 1024 * 1024
+
+// EVERY pathspec this module hands git is a literal path that came out of
+// `git status` — never a glob the user typed. Without this flag a real filename
+// containing pathspec wildcards (`weird[1].txt`) also matches its neighbours
+// (`weird1.txt`), so the pane showed a different file's diff and — far worse —
+// `add` / `reset` / `checkout` / `clean` mutated files the user never selected
+// (`checkout HEAD -- 'weird[1].txt'` silently discarded edits to `weird1.txt`).
+//
+// It has to LEAD the argv: git rejects `--literal-pathspecs` after the
+// subcommand, which is why the pathspec-taking reads go through `raw()` rather
+// than simple-git's typed `.diff()`. It deliberately is NOT set via simple-git's
+// `.env()` either: that REPLACES the child environment instead of merging it,
+// which would strip the PATH this file works hard to keep alive for
+// GUI-launched Electron (plus HOME, and with it the user's gitconfig).
+const LITERAL_PATHSPECS = '--literal-pathspecs'
 
 // GUI-launched Electron apps on macOS inherit only a minimal PATH (no
 // /opt/homebrew/bin or /usr/local/bin), so `gh` — and the `git` gh shells out
@@ -347,18 +363,29 @@ function synthesizeAddDiff(cwd, gitBin, filePath): Promise<string> {
 // escape the repo. An untracked FILE resolves to itself; an untracked DIRECTORY
 // resolves to its descendants; a nested git repo stays opaque and resolves to
 // the `dir/` row itself (nothing to expand).
-// `--literal-pathspecs` because these paths come from `git status`, not from a
-// user typing a glob: without it a real filename containing pathspec wildcards
-// (`weird[1].txt`) also matches its neighbours (`weird1.txt`), which would pull
-// files the user never clicked into the payload.
-async function untrackedPathsUnder(git, pathspec): Promise<string[]> {
-  const raw = await git
-    .raw(['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '-z', '--', pathspec])
-    .catch(() => '')
+//
+// Bounded by maxBuffer rather than buffered whole: the point of listing with
+// `--untracked-files=normal` is that an untracked tree can be a browser profile
+// with hundreds of thousands of entries, and expanding one on click shouldn't
+// re-introduce that cost. On overflow node kills git and hands back truncated
+// stdout, which still fills the capped preview.
+function untrackedPathsUnder(cwd, gitBin, pathspec): Promise<string[]> {
+  return new Promise(resolve => {
+    execFile(
+      gitBin || 'git',
+      [LITERAL_PATHSPECS, 'ls-files', '--others', '--exclude-standard', '-z', '--', pathspec],
+      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: UNTRACKED_LIST_MAX_BYTES },
+      (_err, stdout) => {
+        const parts = String(stdout || '').split('\0')
 
-  return String(raw || '')
-    .split('\0')
-    .filter(Boolean)
+        // Entries are NUL-TERMINATED, so the tail is either '' (complete run)
+        // or a half-written path (truncated run). Neither is a usable entry.
+        parts.pop()
+
+        resolve(parts.filter(Boolean))
+      }
+    )
+  })
 }
 
 // All-add diff for an untracked row, which may be a file OR a directory.
@@ -369,8 +396,8 @@ async function untrackedPathsUnder(git, pathspec): Promise<string[]> {
 // stdout. That left the pane rendering "No diff to show" under a fully
 // populated header. Expand the row to the files git actually sees underneath
 // and concatenate their all-add diffs into one multi-file payload.
-async function untrackedDiff(cwd, git, gitBin, filePath): Promise<string> {
-  const entries = await untrackedPathsUnder(git, filePath)
+async function untrackedDiff(cwd, gitBin, filePath): Promise<string> {
+  const entries = await untrackedPathsUnder(cwd, gitBin, filePath)
 
   // A plain untracked file resolves to itself — the common case, one diff.
   if (entries.length === 1 && entries[0] === filePath) {
@@ -413,7 +440,8 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin): P
   }
 
   const git = gitFor(cwd, gitBin)
-  const safe = args => git.diff(args).catch(() => '')
+  // `raw` rather than `.diff()` so LITERAL_PATHSPECS can lead the argv.
+  const safe = args => git.raw([LITERAL_PATHSPECS, 'diff', ...args]).catch(() => '')
 
   if (scope === 'branch') {
     const base = await branchBase(git)
@@ -446,7 +474,7 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin): P
     return worktree
   }
 
-  return untrackedDiff(cwd, git, gitBin, filePath)
+  return untrackedDiff(cwd, gitBin, filePath)
 }
 
 // Working-tree-vs-HEAD diff for ONE file — the "what changed since the last
@@ -463,7 +491,7 @@ async function fileDiffVsHead(repoPath, filePath, gitBin): Promise<string> {
   }
 
   const git = gitFor(cwd, gitBin)
-  const head = await git.diff(['HEAD', '--', filePath]).catch(() => '')
+  const head = await git.raw([LITERAL_PATHSPECS, 'diff', 'HEAD', '--', filePath]).catch(() => '')
 
   if (head.trim()) {
     return head
@@ -471,7 +499,7 @@ async function fileDiffVsHead(repoPath, filePath, gitBin): Promise<string> {
 
   // No tracked changes vs HEAD. Only synthesize an all-add diff for a file git
   // doesn't know yet; a clean tracked file must return empty.
-  const status = await git.raw(['status', '--porcelain', '--', filePath]).catch(() => '')
+  const status = await git.raw([LITERAL_PATHSPECS, 'status', '--porcelain', '--', filePath]).catch(() => '')
 
   if (!status.trim().startsWith('??')) {
     return ''
@@ -479,13 +507,13 @@ async function fileDiffVsHead(repoPath, filePath, gitBin): Promise<string> {
 
   // Same directory caveat as reviewDiff: an untracked row can be a collapsed
   // directory, which --no-index cannot diff against /dev/null.
-  return untrackedDiff(cwd, git, gitBin, filePath)
+  return untrackedDiff(cwd, gitBin, filePath)
 }
 
 async function reviewStage(repoPath, filePath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review stage' })
 
-  await gitFor(cwd, gitBin).raw(filePath ? ['add', '--', filePath] : ['add', '-A'])
+  await gitFor(cwd, gitBin).raw([LITERAL_PATHSPECS, 'add', ...(filePath ? ['--', filePath] : ['-A'])])
 
   return { ok: true }
 }
@@ -493,7 +521,7 @@ async function reviewStage(repoPath, filePath, gitBin) {
 async function reviewUnstage(repoPath, filePath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review unstage' })
 
-  await gitFor(cwd, gitBin).raw(filePath ? ['reset', '-q', 'HEAD', '--', filePath] : ['reset', '-q', 'HEAD'])
+  await gitFor(cwd, gitBin).raw([LITERAL_PATHSPECS, 'reset', '-q', 'HEAD', ...(filePath ? ['--', filePath] : [])])
 
   return { ok: true }
 }
@@ -505,11 +533,11 @@ async function reviewRevert(repoPath, filePath, gitBin) {
   const git = gitFor(cwd, gitBin)
 
   if (filePath) {
-    await git.raw(['checkout', 'HEAD', '--', filePath]).catch(() => undefined)
-    await git.raw(['clean', '-fd', '--', filePath]).catch(() => undefined)
+    await git.raw([LITERAL_PATHSPECS, 'checkout', 'HEAD', '--', filePath]).catch(() => undefined)
+    await git.raw([LITERAL_PATHSPECS, 'clean', '-fd', '--', filePath]).catch(() => undefined)
   } else {
-    await git.raw(['checkout', 'HEAD', '--', '.']).catch(() => undefined)
-    await git.raw(['clean', '-fd']).catch(() => undefined)
+    await git.raw([LITERAL_PATHSPECS, 'checkout', 'HEAD', '--', '.']).catch(() => undefined)
+    await git.raw([LITERAL_PATHSPECS, 'clean', '-fd']).catch(() => undefined)
   }
 
   return { ok: true }

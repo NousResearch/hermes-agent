@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
@@ -70,6 +71,8 @@ export function useSlashCompletions(options: {
   loading: boolean
 } {
   const { gateway, skinThemes, activeSkin } = options
+  const { t } = useI18n()
+  const commandDescs = t.composer.commandDescs
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
 
@@ -143,7 +146,8 @@ export function useSlashCompletions(options: {
       try {
         if (!query) {
           const catalog = filterDesktopCommandsCatalog(
-            await cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+            await cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog')),
+            commandDescs
           )
 
           // Prefer the categorized layout so the popover renders section headers
@@ -215,7 +219,7 @@ export function useSlashCompletions(options: {
             // blurb). Only command rows get the registry description — looking
             // one up for `/personality none` would clobber it with the parent
             // command's text.
-            meta: isArgCompletion ? textValue(item.meta) : desktopSlashDescription(item.text, textValue(item.meta))
+            meta: isArgCompletion ? textValue(item.meta) : desktopSlashDescription(item.text, textValue(item.meta), commandDescs)
           }))
 
         // Keep each group contiguous so headers render once: Commands before
@@ -249,7 +253,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin]
+    [gateway, skinThemes, activeSkin, commandDescs]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {

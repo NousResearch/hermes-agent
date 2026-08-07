@@ -232,6 +232,31 @@ describe('desktop slash command curation', () => {
     expect(filtered.skill_count).toBe(2)
   })
 
+  it('uses i18n commandDescs when filtering the catalog for /help and the composer popover', () => {
+    const zh = {
+      '/new': '开始新桌面对话',
+      '/skin': '切换桌面主题或循环到下一个',
+      '/yolo': '切换 YOLO 模式'
+    }
+
+    const filtered = filterDesktopCommandsCatalog(
+      {
+        categories: [
+          { name: 'Session', pairs: [['/new', 'Start a new session']] },
+          { name: 'Display', pairs: [['/skin', 'Show or change the display skin/theme']] },
+          { name: 'Safety', pairs: [['/yolo', 'Enable or disable YOLO']] }
+        ]
+      },
+      zh
+    )
+
+    expect(filtered.categories).toEqual([
+      { name: 'Session', pairs: [['/new', '开始新桌面对话']] },
+      { name: 'Display', pairs: [['/skin', '切换桌面主题或循环到下一个']] },
+      { name: 'Safety', pairs: [['/yolo', '切换 YOLO 模式']] }
+    ])
+  })
+
   it('uses desktop-specific labels for commands with different UI behavior', () => {
     expect(desktopSlashDescription('/branch', 'Branch the current session')).toBe(
       'Branch the latest message into a new chat'
@@ -239,6 +264,34 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashDescription('/skin', 'Show or change the display skin/theme')).toBe(
       'Switch desktop theme or cycle to the next one'
     )
+  })
+
+  it('prioritises i18n commandDescs over the built-in desktop spec', () => {
+    const zh = {
+      '/new': '开始新桌面对话',
+      '/branch': '分支当前会话（探索不同路径）',
+      '/yolo': '切换 YOLO 模式'
+    }
+
+    expect(desktopSlashDescription('/new', 'Start a new session', zh)).toBe('开始新桌面对话')
+    expect(desktopSlashDescription('/branch', 'Branch the current session', zh)).toBe(
+      '分支当前会话（探索不同路径）'
+    )
+    expect(desktopSlashDescription('/yolo', 'Enable or disable YOLO', zh)).toBe('切换 YOLO 模式')
+  })
+
+  it('falls back to the built-in desktop spec when commandDescs lacks a translation', () => {
+    const zh = { '/new': '开始新桌面对话' }
+
+    // /skin has a desktop-specific override but no i18n entry
+    expect(desktopSlashDescription('/skin', 'Show or change the display skin/theme', zh)).toBe(
+      'Switch desktop theme or cycle to the next one'
+    )
+  })
+
+  it('falls back to the backend catalog description when neither source provides one', () => {
+    // /gif-search is an extension command — no i18n entry, no desktop spec
+    expect(desktopSlashDescription('/gif-search', 'Search for a gif', {})).toBe('Search for a gif')
   })
 
   it('builds /skin completions from desktop themes', () => {

@@ -324,8 +324,8 @@ export function friendlyRemoteAttachError(err: unknown, label: string): Error {
   return new Error(`${label} is too large to upload to the remote gateway${cap}.`)
 }
 
-export function renderCommandsCatalog(catalog: CommandsCatalogLike, copy: Translations['desktop']): string {
-  const desktopCatalog = filterDesktopCommandsCatalog(catalog)
+export function renderCommandsCatalog(catalog: CommandsCatalogLike, copy: Translations['desktop'], commandDescs?: Record<string, string>): string {
+  const desktopCatalog = filterDesktopCommandsCatalog(catalog, commandDescs)
 
   const sections = desktopCatalog.categories?.length
     ? desktopCatalog.categories

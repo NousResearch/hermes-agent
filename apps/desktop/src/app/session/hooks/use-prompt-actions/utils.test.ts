@@ -14,6 +14,7 @@ import {
   isSessionIdCandidate,
   isSessionNotFoundError,
   readFileDataUrlForAttach,
+  renderCommandsCatalog,
   renderRpcResult,
   SessionRecoveryAborted,
   slashStatusText,
@@ -355,6 +356,55 @@ describe('visible user ordinals', () => {
   it('maps an ordinal back to a message index, skipping hidden', () => {
     expect(visibleUserIndexAtOrdinal(messages, 1)).toBe(3)
     expect(visibleUserIndexAtOrdinal(messages, 5)).toBe(-1)
+  })
+})
+
+describe('renderCommandsCatalog', () => {
+  const copy = {
+    desktopCommands: 'Desktop Commands',
+    skillCommandsAvailable: (n: number) => `${n} skill commands available`,
+    warningLine: (msg: string) => msg
+  } as any
+
+  it('renders /help catalog with i18n descriptions when commandDescs is provided', () => {
+    const zh = {
+      '/new': '开始新桌面对话',
+      '/yolo': '切换 YOLO 模式（跳过危险命令审批）'
+    }
+
+    const result = renderCommandsCatalog(
+      {
+        pairs: [
+          ['/new', 'Start a new session'],
+          ['/yolo', 'Enable or disable YOLO']
+        ]
+      },
+      copy,
+      zh
+    )
+
+    expect(result).toContain('/new               开始新桌面对话')
+    expect(result).toContain('/yolo              切换 YOLO 模式（跳过危险命令审批）')
+    expect(result).toContain('Desktop Commands:')
+  })
+
+  it('uses the desktop-spec fallback when commandDescs lacks an entry', () => {
+    const zh = { '/new': '开始新桌面对话' }
+
+    const result = renderCommandsCatalog(
+      {
+        pairs: [
+          ['/new', 'Start a new session'],
+          ['/branch', 'Branch the current session']
+        ]
+      },
+      copy,
+      zh
+    )
+
+    // /new uses i18n; /branch uses the desktop spec fallback
+    expect(result).toContain('/new               开始新桌面对话')
+    expect(result).toContain('/branch            Branch the latest message into a new chat')
   })
 })
 

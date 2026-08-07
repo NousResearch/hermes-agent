@@ -500,8 +500,9 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
   return null
 }
 
-export function desktopSlashDescription(command: string, fallback = ''): string {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command))?.description || fallback
+export function desktopSlashDescription(command: string, fallback = '', commandDescs?: Record<string, string>): string {
+  const canonical = canonicalDesktopSlashCommand(command)
+  return commandDescs?.[canonical] ?? SPEC_BY_NAME.get(canonical)?.description ?? fallback
 }
 
 export function desktopSlashCommandArgumentMode(command: string): DesktopSlashArgumentMode | null {
@@ -577,19 +578,19 @@ export function rankSkillCommands<T extends { text: string }>(
   return kept.sort((a, b) => usageOf(b) - usageOf(a) || a.text.localeCompare(b.text))
 }
 
-export function filterDesktopCommandsCatalog(catalog: CommandsCatalogLike): CommandsCatalogLike {
+export function filterDesktopCommandsCatalog(catalog: CommandsCatalogLike, commandDescs?: Record<string, string>): CommandsCatalogLike {
   const categories = catalog.categories
     ?.map(section => ({
       ...section,
       pairs: section.pairs
         .filter(([command]) => isDesktopSlashSuggestion(command))
-        .map(([command, description]) => [command, desktopSlashDescription(command, description)] as [string, string])
+        .map(([command, description]) => [command, desktopSlashDescription(command, description, commandDescs)] as [string, string])
     }))
     .filter(section => section.pairs.length > 0)
 
   const pairs = catalog.pairs
     ?.filter(([command]) => isDesktopSlashSuggestion(command))
-    .map(([command, description]) => [command, desktopSlashDescription(command, description)] as [string, string])
+    .map(([command, description]) => [command, desktopSlashDescription(command, description, commandDescs)] as [string, string])
 
   // Recount skill commands from the filtered output so /help's footer reflects
   // what the user actually sees. Backend's skill_count includes commands the

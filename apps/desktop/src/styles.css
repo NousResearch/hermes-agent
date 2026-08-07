@@ -244,7 +244,12 @@
       var(--theme-neutral-card)
     );
     --ui-bg-card: color-mix(in srgb, var(--ui-accent) 4%, color-mix(in srgb, var(--ui-base) 4%, transparent));
-    --ui-bg-input: #fcfcfc;
+    /* Input-field fill. Derived from the editor surface (itself card-seed +
+       neutral-card, both opaque and theme-driven) so the field flips with the
+       skin's dark palette — the old hardcoded `#fcfcfc` painted a white input
+       in every dark theme. Plugins use this for inset text fields; core
+       inputs take `.desktop-input-chrome` instead. */
+    --ui-bg-input: var(--ui-bg-editor);
     --ui-bg-primary: color-mix(
       in srgb,
       var(--ui-accent) var(--theme-fill-primary-accent-mix),

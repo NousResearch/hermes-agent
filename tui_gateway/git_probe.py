@@ -141,6 +141,14 @@ def common_repo_root(cwd: str) -> str:
     splits every worktree into a separate "repo". The common ``.git`` dir
     (``--git-common-dir``) is shared by a repo and all its worktrees, so its
     parent is the one true repo root; fall back to the toplevel root otherwise.
+
+    The returned path is normalized to git's forward-slash spelling so it can be
+    compared against :func:`repo_root` (which returns raw ``--show-toplevel``
+    output). ``os.path.realpath`` rewrites separators to the platform's native
+    ``\\`` on Windows, so without this the SAME directory came back spelled two
+    ways and the repo's own checkout compared unequal to its common root — the
+    main checkout was then misread as a linked worktree and the desktop sidebar
+    rendered it twice (a dir-labeled lane plus a branch-labeled ``main`` lane).
     """
     if not cwd:
         return ""
@@ -150,7 +158,7 @@ def common_repo_root(cwd: str) -> str:
         if gitdir:
             gitdir = os.path.realpath(gitdir)
             if os.path.basename(gitdir) == ".git":
-                return os.path.dirname(gitdir)
+                return os.path.dirname(gitdir).replace(os.sep, "/")
         return repo_root(cwd)
 
     return _cache.resolve(f"common:{cwd}", _probe)

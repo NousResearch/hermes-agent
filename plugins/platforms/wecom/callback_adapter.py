@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import socket as _socket
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 # Security: parse untrusted, pre-auth request bodies (WeCom callbacks) with
 # defusedxml to block billion-laughs / entity-expansion (and XXE) DoS. The
@@ -182,7 +184,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
-            self._http_client = httpx.AsyncClient(timeout=20.0, limits=platform_httpx_limits())
+            self._http_client = httpx.AsyncClient(timeout=60.0, limits=platform_httpx_limits())
             # client_max_size rejects oversized bodies at the aiohttp layer
             # (413) before our handler — and before any signature work — runs.
             self._app = web.Application(client_max_size=_MAX_BODY)
@@ -285,6 +287,126 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local image file via WeCom message/send with msgtype=image.
+
+        WeCom requires uploading the file to the media API first to get a
+        ``media_id``, then sending an image message referencing it.
+        """
+        app = self._resolve_app_for_chat(chat_id)
+        touser = chat_id.split(":", 1)[1] if ":" in chat_id else chat_id
+        try:
+            media_id = await self._upload_media(app, image_path, media_type="image")
+            if not media_id:
+                return SendResult(success=False, error="image upload failed")
+            result = await self._send_media_msg(app, touser, "image", media_id)
+            if result.success and caption:
+                await self.send(chat_id, caption, metadata=metadata)
+            return result
+        except Exception as exc:
+            logger.error("[WecomCallback] send_image_file error: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        filename: Optional[str] = None,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a file via WeCom message/send with msgtype=file."""
+        app = self._resolve_app_for_chat(chat_id)
+        touser = chat_id.split(":", 1)[1] if ":" in chat_id else chat_id
+        try:
+            media_id = await self._upload_media(app, file_path, media_type="file")
+            if not media_id:
+                return SendResult(success=False, error="file upload failed")
+            result = await self._send_media_msg(app, touser, "file", media_id)
+            if result.success and caption:
+                await self.send(chat_id, caption, metadata=metadata)
+            return result
+        except Exception as exc:
+            logger.error("[WecomCallback] send_document error: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def _upload_media(self, app: Dict[str, Any], file_path: str, media_type: str = "image") -> Optional[str]:
+        """Upload a file to WeCom media API and return media_id, or None."""
+        import mimetypes
+
+        safe_path = self.validate_media_delivery_path(file_path)
+        if not safe_path:
+            logger.warning("[WecomCallback] Refusing to upload unsafe path: %s", file_path)
+            return None
+
+        fp = Path(safe_path)
+        mime_type = mimetypes.guess_type(str(fp))[0] or "application/octet-stream"
+
+        for _attempt in range(2):
+            token = await self._get_access_token(app)
+            with open(safe_path, "rb") as f:
+                upload_resp = await self._http_client.post(
+                    f"https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token={token}&type={media_type}",
+                    files={"media": (fp.name, f, mime_type)},
+                )
+            upload_data = upload_resp.json()
+            errcode = upload_data.get("errcode")
+            if errcode in {40001, 42001} and _attempt == 0:
+                logger.warning(
+                    "[WecomCallback] Token rejected for media upload (errcode=%s), refreshing",
+                    errcode,
+                )
+                self._access_tokens.pop(app["name"], None)
+                continue
+            if errcode not in (None, 0):
+                logger.warning("[WecomCallback] media upload failed for %s: %s", fp.name, upload_data)
+                return None
+            return upload_data.get("media_id")
+        return None
+
+    async def _send_media_msg(self, app: Dict[str, Any], touser: str, msg_type: str, media_id: str) -> SendResult:
+        """Send a media message (image/file) via WeCom message/send."""
+        payload = {
+            "touser": touser,
+            "msgtype": msg_type,
+            "agentid": int(str(app.get("agent_id") or 0)),
+            msg_type: {"media_id": media_id},
+            "safe": 0,
+        }
+        for _attempt in range(2):
+            token = await self._get_access_token(app)
+            resp = await self._http_client.post(
+                f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}",
+                json=payload,
+            )
+            data = resp.json()
+            errcode = data.get("errcode")
+            if errcode in {40001, 42001} and _attempt == 0:
+                logger.warning(
+                    "[WecomCallback] Token rejected for %s send (errcode=%s), refreshing",
+                    msg_type, errcode,
+                )
+                self._access_tokens.pop(app["name"], None)
+                continue
+            if errcode != 0:
+                return SendResult(success=False, error=str(data))
+            return SendResult(
+                success=True,
+                message_id=str(data.get("msgid", "")),
+                raw_response=data,
+            )
+        return SendResult(success=False, error=f"{msg_type} send failed after token refresh")
+
     def _resolve_app_for_chat(self, chat_id: str) -> Dict[str, Any]:
         """Pick the app associated with *chat_id*, falling back sensibly."""
         app_name = self._user_app_map.get(chat_id)
@@ -339,7 +461,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 decrypted = self._decrypt_request(
                     app, body, msg_signature, timestamp, nonce,
                 )
-                event = self._build_event(app, decrypted)
+                event = await self._build_event(app, decrypted)
                 if event is not None:
                     # Deduplicate: WeCom retries callbacks on timeout,
                     # producing duplicate inbound messages (#10305).
@@ -396,7 +518,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         crypt = self._crypt_for_app(app)
         return crypt.decrypt(msg_signature, timestamp, nonce, encrypt).decode("utf-8")
 
-    def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
+    async def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
         root = ET.fromstring(xml_text)
         msg_type = (root.findtext("MsgType") or "").lower()
         # Silently acknowledge lifecycle events.
@@ -404,15 +526,12 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             event_name = (root.findtext("Event") or "").lower()
             if event_name in {"enter_agent", "subscribe"}:
                 return None
-        if msg_type not in {"text", "event"}:
+        if msg_type not in {"text", "event", "image"}:
             return None
 
         user_id = root.findtext("FromUserName", default="")
         corp_id = root.findtext("ToUserName", default=app.get("corp_id", ""))
         scoped_chat_id = self._user_app_key(corp_id, user_id)
-        content = root.findtext("Content", default="").strip()
-        if not content and msg_type == "event":
-            content = "/start"
         msg_id = (
             root.findtext("MsgId")
             or f"{user_id}:{root.findtext('CreateTime', default='0')}"
@@ -424,6 +543,26 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_id,
         )
+
+        if msg_type == "image":
+            # Return None so _handle_callback does NOT queue a placeholder
+            # event.  The image is downloaded in the background and queued
+            # as a single PHOTO event when the download completes — this
+            # avoids producing two agent turns for one inbound image
+            # (sweeper review: double-event bug).
+            pic_url = root.findtext("PicUrl", default="")
+            media_id = root.findtext("MediaId", default="")
+            task = asyncio.create_task(
+                self._cache_and_queue_image(pic_url, media_id, source, msg_id, xml_text)
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            return None
+
+        content = root.findtext("Content", default="").strip()
+        if not content and msg_type == "event":
+            content = "/start"
+
         return MessageEvent(
             text=content,
             message_type=MessageType.TEXT,
@@ -431,6 +570,40 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             raw_message=xml_text,
             message_id=msg_id,
         )
+
+    async def _cache_and_queue_image(
+        self,
+        pic_url: str,
+        media_id: str,
+        source: Any,
+        msg_id: str,
+        xml_text: str,
+    ) -> None:
+        """Download an inbound image and queue exactly one PHOTO event.
+
+        Uses the shared ``cache_image_from_url`` helper from base.py which
+        provides SSRF protection, bounded reads, image validation, and
+        retry with exponential backoff (sweeper review: security).
+        """
+        cached_path = None
+        if pic_url:
+            try:
+                # Reuse the shared, SSRF-safe media cache helper rather
+                # than a bare httpx.get + write_bytes (sweeper review).
+                from gateway.platforms.base import cache_image_from_url
+                cached_path = await cache_image_from_url(pic_url, ext=".jpg")
+            except Exception as exc:
+                logger.warning("[WecomCallback] Inbound image download failed: %s", exc)
+
+        event = MessageEvent(
+            text="" if cached_path else "[图片]",
+            message_type=MessageType.PHOTO,
+            source=source,
+            raw_message=xml_text,
+            message_id=msg_id,
+            media_urls=[cached_path] if cached_path else [],
+        )
+        await self._message_queue.put(event)
 
     def _crypt_for_app(self, app: Dict[str, Any]) -> WXBizMsgCrypt:
         return WXBizMsgCrypt(

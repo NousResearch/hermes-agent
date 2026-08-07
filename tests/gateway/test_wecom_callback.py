@@ -6,6 +6,7 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import MessageType
 from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt
 
@@ -46,7 +47,8 @@ class TestWecomCrypto:
 
 
 class TestWecomCallbackEventConstruction:
-    def test_build_event_extracts_text_message(self):
+    @pytest.mark.asyncio
+    async def test_build_event_extracts_text_message(self):
         adapter = WecomCallbackAdapter(_config())
         xml_text = """
         <xml>
@@ -58,13 +60,37 @@ class TestWecomCallbackEventConstruction:
           <MsgId>123456789</MsgId>
         </xml>
         """
-        event = adapter._build_event(_app(), xml_text)
+        event = await adapter._build_event(_app(), xml_text)
         assert event is not None
         assert event.source is not None
         assert event.source.user_id == "zhangsan"
         assert event.source.chat_id == "ww1234567890:zhangsan"
         assert event.message_id == "123456789"
         assert event.text == "\u4f60\u597d"
+
+    @pytest.mark.asyncio
+    async def test_build_event_image_returns_none_no_double_event(self):
+        """Inbound image must NOT produce a placeholder event — only the
+        background download task queues a single PHOTO event later.
+        (sweeper review: double-event bug)
+        """
+        adapter = WecomCallbackAdapter(_config())
+        xml_text = """
+        <xml>
+          <ToUserName>ww1234567890</ToUserName>
+          <FromUserName>zhangsan</FromUserName>
+          <CreateTime>1710000000</CreateTime>
+          <MsgType>image</MsgType>
+          <PicUrl>https://example.com/photo.jpg</PicUrl>
+          <MediaId>MEDIA123</MediaId>
+          <MsgId>img001</MsgId>
+        </xml>
+        """
+        # _build_event must return None for image — no placeholder event
+        event = await adapter._build_event(_app(), xml_text)
+        assert event is None
+        # The background download task should be tracked in _background_tasks
+        assert len(adapter._background_tasks) > 0
 
 
 class TestWecomCallbackRouting:
@@ -149,7 +175,7 @@ class TestWecomCallbackPollLoop:
             calls.append(event.text)
 
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
-        event = adapter._build_event(
+        event = await adapter._build_event(
             _app(),
             """
             <xml>
@@ -197,5 +223,127 @@ class TestWecomCallbackBodySizeLimit:
         oversized = b"<xml>" + b"A" * (_MAX_BODY + 1) + b"</xml>"
         response = await adapter._handle_callback(self._request(oversized))
         assert response.status == 413
+
+
+class TestWecomCallbackImageSend:
+    """Regression coverage for send_image_file (PR #75341)."""
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_uploads_then_sends(self, tmp_path):
+        adapter = WecomCallbackAdapter(_config())
+        adapter._access_tokens["test-app"] = {"token": "tok", "expires_at": 9999999999}
+        adapter._user_app_map["ww1234567890:alice"] = "test-app"
+
+        # Create a small test image
+        img = tmp_path / "test.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xe0fake JPEG data")
+
+        post_calls = []
+
+        class FakeResponse:
+            def __init__(self, data):
+                self._data = data
+            def json(self):
+                return self._data
+
+        class FakeClient:
+            async def post(self, url, json=None, files=None, **kw):
+                post_calls.append({"url": url, "json": json, "files": files})
+                if "media/upload" in url:
+                    return FakeResponse({"errcode": 0, "media_id": "media-123", "type": "image"})
+                return FakeResponse({"errcode": 0, "msgid": "img-msg-1"})
+
+        adapter._http_client = FakeClient()
+        result = await adapter.send_image_file("ww1234567890:alice", str(img))
+
+        assert result.success is True
+        assert result.message_id == "img-msg-1"
+        assert len(post_calls) == 2  # upload + send
+        assert "media/upload" in post_calls[0]["url"]
+        assert "message/send" in post_calls[1]["url"]
+        assert post_calls[1]["json"]["msgtype"] == "image"
+        assert post_calls[1]["json"]["image"]["media_id"] == "media-123"
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_token_refresh_on_40001(self, tmp_path):
+        """Token refresh must work for image upload path too."""
+        adapter = WecomCallbackAdapter(_config())
+        adapter._access_tokens["test-app"] = {"token": "stale", "expires_at": 9999999999}
+        adapter._user_app_map["ww1234567890:alice"] = "test-app"
+
+        img = tmp_path / "test.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xe0fake JPEG data")
+
+        upload_responses = [
+            {"errcode": 40001, "errmsg": "invalid credential"},
+            {"errcode": 0, "media_id": "fresh-media", "type": "image"},
+        ]
+        send_responses = [{"errcode": 0, "msgid": "img-ok"}]
+        upload_idx = [0]
+        send_idx = [0]
+
+        class FakeResponse:
+            def __init__(self, data):
+                self._data = data
+            def json(self):
+                return self._data
+
+        class FakeClient:
+            async def post(self, url, json=None, files=None, **kw):
+                if "media/upload" in url:
+                    resp = upload_responses[upload_idx[0]]
+                    upload_idx[0] += 1
+                    return FakeResponse(resp)
+                resp = send_responses[send_idx[0]]
+                send_idx[0] += 1
+                return FakeResponse(resp)
+
+            async def get(self, url, params=None, **kw):
+                return FakeResponse({"errcode": 0, "access_token": "fresh-tok", "expires_in": 7200})
+
+        adapter._http_client = FakeClient()
+        result = await adapter.send_image_file("ww1234567890:alice", str(img))
+
+        assert result.success is True
+        assert adapter._access_tokens["test-app"]["token"] == "fresh-tok"
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_rejects_unsafe_path(self):
+        """Path traversal must be rejected by validate_media_delivery_path."""
+        adapter = WecomCallbackAdapter(_config())
+        adapter._access_tokens["test-app"] = {"token": "tok", "expires_at": 9999999999}
+        adapter._user_app_map["ww1234567890:alice"] = "test-app"
+        result = await adapter.send_image_file("ww1234567890:alice", "../../etc/passwd")
+        assert result.success is False
+
+
+class TestWecomCallbackInboundImageFailure:
+    """Regression: cache failure must queue a degraded event, not lose the message."""
+
+    @pytest.mark.asyncio
+    async def test_cache_and_queue_image_failure_still_queues_event(self, monkeypatch):
+        adapter = WecomCallbackAdapter(_config())
+        # Monkey-patch the shared helper to raise (simulates download failure)
+        from gateway.platforms import base as base_mod
+        async def _fail(url, ext=".jpg"):
+            raise RuntimeError("network unreachable")
+        monkeypatch.setattr(base_mod, "cache_image_from_url", _fail)
+
+        from gateway.platforms.base import MessageEvent, MessageType
+        source = adapter.build_source(
+            chat_id="ww1234567890:zhangsan", chat_name="zhangsan",
+            chat_type="dm", user_id="zhangsan", user_name="zhangsan",
+        )
+        await adapter._cache_and_queue_image(
+            "https://example.com/photo.jpg", "MEDIA123",
+            source, "img001", "<xml/>",
+        )
+        # Must have queued exactly one event
+        assert not adapter._message_queue.empty()
+        event = await adapter._message_queue.get()
+        assert event.message_type == MessageType.PHOTO
+        # No cached file → degraded text placeholder
+        assert event.text == "[图片]"
+        assert event.media_urls == []
 
 

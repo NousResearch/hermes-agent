@@ -40,6 +40,7 @@ class CLIAgentSetupMixin:
         try:
             runtime = resolve_runtime_provider(
                 requested=self.requested_provider,
+		target_model=self.model or None,
                 explicit_api_key=self._explicit_api_key,
                 explicit_base_url=self._explicit_base_url,
             )
@@ -59,7 +60,10 @@ class CLIAgentSetupMixin:
                     try:
                         from hermes_cli.fallback_config import resolve_entry_api_key
 
-                        _fb_kwargs = {"requested": _fb_provider}
+                        _fb_kwargs = {
+                            "requested": _fb_provider,
+                            "target_model": _fb_model,
+                        }
                         if _fb.get("base_url"):
                             _fb_kwargs["explicit_base_url"] = _fb["base_url"]
                         _fb_api_key = resolve_entry_api_key(_fb)

@@ -1456,13 +1456,21 @@ class _CuaDriverSession:
                 session_id,
                 self._logical_error_text(revive_result),
             )
+            # Clear stale identity so subsequent calls don't retry the same
+            # dead session in an infinite loop (issue #77489).
+            self._declared_session_id = None
             return first_result
 
         # Return the second result as-is. A second rejection is surfaced; no loop.
-        return self._bridge.run(
+        retry_result = self._bridge.run(
             self._call_tool_async(name, args),
             timeout=timeout,
         )
+        # If the retried call also failed with an ended-session error, clear
+        # the stale identity to prevent a revival loop on the next call.
+        if self._is_ended_session_result(retry_result):
+            self._declared_session_id = None
+        return retry_result
 
     @staticmethod
     def _is_closed_session_error(exc: Exception) -> bool:

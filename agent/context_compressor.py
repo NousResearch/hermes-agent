@@ -2591,13 +2591,27 @@ class ContextCompressor(ContextEngine):
 
             projected_real = last_real + (rough_now - rough_at_last_real)
 
-        Rough growth is itself an overestimate of real growth (every content
-        class is counted at >= its tokenizer cost), so the projection is an
-        upper bound on real usage and deferring below the threshold is safe.
+        For ASCII and CJK-dense scripts rough growth over-counts real growth,
+        making the projection an upper bound. Other non-ASCII scripts
+        (Cyrillic, Greek, Thai, Arabic — chars/4 but ~2-3 chars/token on
+        o200k-family tokenizers) can under-count growth by up to ~2x
+        (#62605's direction), so the projection is NOT a strict upper bound
+        there. That residual risk is bounded by two backstops: any real
+        provider reading at/over the threshold clears the baseline (the
+        post-response should_compress gate then fires on real usage within
+        one API call), and the provider's context-overflow error handler
+        compacts reactively with the authoritative signal, as before.
         Compression fires when the projection — not the raw estimate —
-        crosses the threshold. Should a pathological delta still slip past
-        the threshold, the provider's context-overflow error handler
-        compacts with the authoritative signal, as before.
+        crosses the threshold.
+
+        Callers pass two different measurement bases: the turn prologue
+        estimates RAW messages (turn_context.py) while the baseline recorded
+        by note_request_rough_estimate covers the fully assembled request
+        (api_content/plugin injections, prefills, MoA context). The prologue's
+        smaller basis understates growth and can only OVER-defer there — and
+        the loop's own pre-API pressure check re-runs this projection with
+        the aligned basis before every provider call, so a prologue
+        over-defer never skips a needed compaction.
         """
         if rough_tokens < self.threshold_tokens:
             return False

@@ -435,6 +435,21 @@ def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) 
     return None
 
 
+def _can_rotate_in(entry: PooledCredential) -> bool:
+    """True when *entry* could ever be handed out by ``_available_entries``.
+
+    Sizing a sole-credential cooldown asks "is there another key to rotate
+    to?", so it must only count entries selection can actually return. Two
+    kinds never qualify: DEAD entries, which never re-enter rotation via TTL,
+    and api-key entries with no runtime token — metadata-only rows left by an
+    unhydrated borrowed credential, which ``_available_entries`` skips outright
+    so the pool never leases an empty key.
+    """
+    if entry.last_status == STATUS_DEAD:
+        return False
+    return not (entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key)
+
+
 def _normalize_custom_pool_name(name: str) -> str:
     """Normalize a custom provider name for use as a pool key suffix."""
     return name.strip().lower().replace(" ", "-")
@@ -697,9 +712,7 @@ class CredentialPool:
             # to rotate to, the sole entry's transient throttle cools down in
             # seconds — next_available_at must report that shorter window too,
             # or the fallback restore gate waits an hour for a 60s cooldown.
-            sole_credential = sum(
-                1 for e in self._entries if e.last_status != STATUS_DEAD
-            ) <= 1
+            sole_credential = sum(1 for e in self._entries if _can_rotate_in(e)) <= 1
             candidates: List[float] = []
             for entry in self._entries:
                 if entry.last_status != STATUS_EXHAUSTED:
@@ -1825,12 +1838,12 @@ class CredentialPool:
         # that can block for 20+ seconds.  We collect them under self._lock
         # and refresh outside the lock to avoid stalling all pool consumers.
         pending_refresh: List[tuple] = []  # (entry, sync_entry_fn)
-        # DEAD entries never re-enter rotation, so if at most one non-DEAD entry
-        # exists there is nothing to rotate to: an exhausted sole credential
-        # should cool down briefly rather than bench the only key for an hour.
-        sole_credential = sum(
-            1 for e in self._entries if e.last_status != STATUS_DEAD
-        ) <= 1
+        # Entries that can't be handed out are not something to rotate to, so
+        # if at most one of them remains an exhausted sole credential should
+        # cool down briefly rather than bench the only key for an hour. The
+        # count must match the skips below (DEAD, and empty api-key rows) or a
+        # pool holding one live key plus an unhydrated row reads as multi-key.
+        sole_credential = sum(1 for e in self._entries if _can_rotate_in(e)) <= 1
         for entry in self._entries:
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load.  A stale duplicate row

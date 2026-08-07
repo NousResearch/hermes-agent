@@ -165,6 +165,59 @@ class TestDraftFallbackOnFailure:
         # Final message delivered via the regular send path.
         adapter.send.assert_awaited()
 
+    @pytest.mark.asyncio
+    async def test_got_done_fallback_sends_real_message_not_draft_after_primary_send_fails(self):
+        """When the primary finalize send fails (network blip / proxy drop)
+        and the got_done handler falls through to the _already_sent guard,
+        the fallback must send a real message via adapter.send, never another
+        ephemeral draft.  Regression test for #68313 (PR #48438)."""
+        adapter = _make_draft_capable_adapter()
+        # First adapter.send call (primary finalize at line 941) fails.
+        # Second call (fallback at line 1005) succeeds after fix adds finalize=True.
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=False, error="timeout"),
+            SimpleNamespace(success=True, message_id="msg_fallback"),
+        ])
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta("Streaming ")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta("response")
+        await asyncio.sleep(0.05)
+        # Capture mid-stream draft count before finish() so we can assert
+        # the got_done fallback did NOT send additional drafts.
+        draft_count_before_finish = len(adapter.draft_calls)
+        consumer.finish()
+        await task
+
+        # Drafts animated mid-stream.
+        assert draft_count_before_finish >= 1, (
+            "expected at least one send_draft frame mid-stream"
+        )
+        # adapter.send was called twice: primary failure + fallback success.
+        assert adapter.send.await_count == 2
+        # The second send (fallback) delivered the full accumulated text as a
+        # real message, not an ephemeral draft.
+        final_call = adapter.send.call_args_list[1]
+        sent_content = (
+            final_call.kwargs.get("content")
+            if "content" in final_call.kwargs
+            else final_call.args[1] if len(final_call.args) > 1 else None
+        )
+        assert sent_content == "Streaming response"
+        # Delivery flags are set correctly after fallback succeeds.
+        assert consumer._final_response_sent is True
+        assert consumer._final_content_delivered is True
+        # No extra draft frames were sent during the fallback.
+        assert len(adapter.draft_calls) == draft_count_before_finish, (
+            "fallback must not send additional drafts after the primary send fails"
+        )
+
 
 class TestDraftIdLifecycle:
     """Each response gets its own draft_id (no animation collision across

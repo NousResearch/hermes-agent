@@ -7590,7 +7590,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             tool_status = f"{tool_count} tools"
 
         # Format model name (shorten if needed)
+        from hermes_cli.model_switch import format_model_for_display
         model_short = self.model.split("/")[-1] if "/" in self.model else self.model
+        model_short = format_model_for_display(model_short)
         if len(model_short) > 30:
             model_short = model_short[:27] + "..."
 

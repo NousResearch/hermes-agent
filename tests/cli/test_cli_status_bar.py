@@ -319,3 +319,109 @@ class TestIdleSinceLastTurn:
         assert snapshot["idle_since"].startswith("✓ ")
 
 
+    def test_wide_status_bar_text_includes_idle(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._last_turn_finished_at = time.time() - 42
+        cli_obj._prompt_start_time = None
+        cli_obj._prompt_duration = 7.0
+        text = cli_obj._build_status_bar_text(width=160)
+        assert "✓ 42s" in text
+
+
+class TestBedrockPrefixStripping:
+    """Regression tests for Bedrock cross-region inference-profile prefix stripping."""
+
+    def _f(self, model: str) -> str:
+        from hermes_cli.model_switch import format_model_for_display
+        return format_model_for_display(model)
+
+    # --- All eleven regional prefixes strip to <model> slug ---
+
+    def test_global_prefix_stripped(self):
+        assert self._f("global.anthropic.claude-sonnet-4-6") == "claude-sonnet-4-6"
+
+    def test_us_prefix_stripped(self):
+        assert self._f("us.amazon.nova-pro-v1:0") == "nova-pro-v1:0"
+
+    def test_eu_prefix_stripped(self):
+        assert self._f("eu.meta.llama3-70b") == "llama3-70b"
+
+    def test_apac_prefix_stripped(self):
+        assert self._f("apac.anthropic.claude-3-5") == "claude-3-5"
+
+    def test_ap_prefix_stripped(self):
+        assert self._f("ap.anthropic.claude-3") == "claude-3"
+
+    def test_au_prefix_stripped(self):
+        assert self._f("au.meta.llama3") == "llama3"
+
+    def test_jp_prefix_stripped(self):
+        assert self._f("jp.x.y") == "y"
+
+    def test_ca_prefix_stripped(self):
+        assert self._f("ca.x.y") == "y"
+
+    def test_sa_prefix_stripped(self):
+        assert self._f("sa.x.y") == "y"
+
+    def test_me_prefix_stripped(self):
+        assert self._f("me.x.y") == "y"
+
+    def test_af_prefix_stripped(self):
+        assert self._f("af.x.y") == "y"
+
+    # --- apac. vs ap. ordering trap ---
+
+    def test_apac_does_not_match_ap_leaving_residue(self):
+        # "ap." must NOT match the front of "apac.anthropic.claude-3-5"
+        # because that would produce "ac.anthropic.claude-3-5" (corruption).
+        result = self._f("apac.anthropic.claude-3-5")
+        assert result == "claude-3-5"
+        assert result != "ac.anthropic.claude-3-5"
+
+    # --- Guard / unchanged cases ---
+
+    def test_bare_foundation_model_id_unchanged(self):
+        # No region prefix — bare Bedrock foundation model ID.
+        assert self._f("anthropic.claude-sonnet-4") == "anthropic.claude-sonnet-4"
+
+    def test_us_gguf_unchanged(self):
+        # After stripping "us." the remainder "gguf" has no dot → not stripped.
+        assert self._f("us.gguf") == "us.gguf"
+
+    def test_useful_model_unchanged(self):
+        # "us" is not a dot-delimited segment here.
+        assert self._f("useful-model-v2") == "useful-model-v2"
+
+    def test_slash_model_unchanged(self):
+        assert self._f("meta-llama/Llama-3.3-70B") == "meta-llama/Llama-3.3-70B"
+
+    def test_plain_model_unchanged(self):
+        assert self._f("claude-4-7-opus-20260101") == "claude-4-7-opus-20260101"
+
+    # --- Palantir RID regression ---
+
+    def test_palantir_rid_still_stripped(self):
+        assert self._f(
+            "ri.language-model-service..language-model.anthropic-claude-4-7-opus"
+        ) == "anthropic-claude-4-7-opus"
+
+    # --- End-to-end: status bar snapshot uses the helper ---
+
+    def test_status_bar_snapshot_strips_bedrock_prefix(self):
+        cli_obj = _make_cli(model="global.anthropic.claude-sonnet-4-6")
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["model_short"] == "claude-sonnet-4-6"
+
+    def test_status_bar_snapshot_strips_us_prefix(self):
+        cli_obj = _make_cli(model="us.amazon.nova-pro-v1:0")
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["model_short"] == "nova-pro-v1:0"

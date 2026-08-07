@@ -246,15 +246,36 @@ _OPAQUE_MODEL_PREFIXES: tuple[str, ...] = (
     "ri.language-model-service..language-model.",
 )
 
+# Bedrock cross-region inference profile prefixes in longest-first order so
+# that "apac." is matched before the shorter "ap." — a startswith loop breaks
+# on the first hit, so ordering prevents "apac.anthropic.claude-3-5" from being
+# mangled to "ac.anthropic.claude-3-5".  Sorted by descending length to make
+# the invariant impossible to break silently when the list is extended.
+_BEDROCK_REGIONAL_PREFIXES: tuple[str, ...] = tuple(
+    sorted(
+        ("global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.", "me.", "af."),
+        key=len,
+        reverse=True,
+    )
+)
+
 
 def format_model_for_display(model_name: str) -> str:
     """Return a human-friendly form of *model_name* for CLI status output.
 
     Strips known opaque proxy prefixes (Palantir Foundry's
-    ``ri.language-model-service..language-model.*``) and returns the
-    trailing slug. Falls through to the original string for everything
-    else, so real model IDs (``claude-4-7-opus-20260101``,
-    ``gpt-5-4``, ``meta-llama/Llama-3.3-70B-Instruct``) are untouched.
+    ``ri.language-model-service..language-model.*``) and Bedrock
+    cross-region inference-profile region prefixes
+    (``global.``, ``us.``, ``eu.``, ``apac.``, ``ap.``, ``au.``, ``jp.``,
+    ``ca.``, ``sa.``, ``me.``, ``af.``) and returns the trailing slug.
+    Falls through to the original string for everything else, so real
+    model IDs (``claude-4-7-opus-20260101``, ``gpt-5-4``,
+    ``meta-llama/Llama-3.3-70B-Instruct``) are untouched.
+
+    For Bedrock prefixes, stripping only occurs when the remainder still
+    has a ``<provider>.<model>`` shape (a dot with non-empty text on both
+    sides) — this avoids mangling names like ``us.gguf`` or bare words that
+    happen to begin with a two-letter region code (``useful-model-v2``).
 
     This is a DISPLAY-ONLY helper. Do NOT use the return value for any
     wire-side operation — the proxy expects the full opaque ID, and
@@ -266,6 +287,15 @@ def format_model_for_display(model_name: str) -> str:
         if model_name.startswith(prefix):
             tail = model_name[len(prefix):]
             return tail if tail else model_name
+    for prefix in _BEDROCK_REGIONAL_PREFIXES:
+        if model_name.startswith(prefix):
+            tail = model_name[len(prefix):]
+            # Only strip when what remains is still <provider>.<model>
+            # (a dot with non-empty text on both sides).
+            dot = tail.find(".")
+            if dot > 0 and dot < len(tail) - 1:
+                return tail[dot + 1:]
+            break
     return model_name
 
 

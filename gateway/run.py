@@ -674,6 +674,16 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"|http\s*\d{3}\b"
     r"|incorrect\s+api\s+key"
     r"|invalid\s+api\s+key"
+    # Bare python exception strings. A provider-failure turn can surface the
+    # raw ``str(exc)`` as the reply body (observed live: a MoA aggregator
+    # turn died with "'types.SimpleNamespace' object is not iterable" and
+    # that exact string reached Telegram as assistant prose, because it
+    # matched none of the envelope shapes above). Exception reprs are
+    # infrastructure text, never assistant content — catch the two common
+    # shapes at message start: "'X' object is/has/does ..." and
+    # "SomethingError: ..." / "SomethingException: ...".
+    r"|'[^']+'\s+object\s+(?:is|has|does)"
+    r"|\w*(?:Error|Exception):\s"
     r")",
     re.IGNORECASE,
 )

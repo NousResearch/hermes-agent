@@ -5,12 +5,12 @@
 // AssistantMessage's action bar hide the button entirely when no handler is
 // supplied, matching how onDismissError/onRestoreToMessage already behave.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { Thread } from '.'
 
-const createdAt = new Date('2026-05-01T00:00:00.000Z')
+const defaultCreatedAt = new Date('2026-05-01T00:00:00.000Z')
 
 class TestResizeObserver {
   observe() {}
@@ -28,6 +28,7 @@ Element.prototype.scrollTo = function scrollTo() {}
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
 })
 
 function userMessage(): ThreadMessage {
@@ -36,12 +37,12 @@ function userMessage(): ThreadMessage {
     role: 'user',
     content: [{ type: 'text', text: 'question one' }],
     attachments: [],
-    createdAt,
+    createdAt: defaultCreatedAt,
     metadata: { custom: {} }
   } as ThreadMessage
 }
 
-function assistantMessage(): ThreadMessage {
+function assistantMessage(createdAt = defaultCreatedAt): ThreadMessage {
   return {
     id: 'assistant-1',
     role: 'assistant',
@@ -58,9 +59,15 @@ function assistantMessage(): ThreadMessage {
   } as ThreadMessage
 }
 
-function Harness({ onBranchInNewChat }: { onBranchInNewChat?: (messageId: string) => void }) {
+function Harness({
+  assistantCreatedAt,
+  onBranchInNewChat
+}: {
+  assistantCreatedAt?: Date
+  onBranchInNewChat?: (messageId: string) => void
+}) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistantMessage()],
+    messages: [userMessage(), assistantMessage(assistantCreatedAt)],
     isRunning: false,
     onNew: async () => {}
   })
@@ -71,6 +78,46 @@ function Harness({ onBranchInNewChat }: { onBranchInNewChat?: (messageId: string
     </AssistantRuntimeProvider>
   )
 }
+
+describe('MessageAge', () => {
+  it('advances second-level relative ages on the shared clock without an unrelated render', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-01T00:00:05.000Z'))
+
+    render(<Harness assistantCreatedAt={new Date('2026-05-01T00:00:00.000Z')} />)
+    await act(async () => {})
+
+    expect(screen.getByText('5s ago')).toBeTruthy()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+
+    expect(screen.getByText('6s ago')).toBeTruthy()
+  })
+
+  it('advances minute and hour relative ages on the shared clock without an unrelated render', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-01T00:08:00.000Z'))
+
+    render(<Harness assistantCreatedAt={new Date('2026-05-01T00:00:00.000Z')} />)
+    await act(async () => {})
+
+    expect(screen.getByText('8m ago')).toBeTruthy()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+
+    expect(screen.getByText('9m ago')).toBeTruthy()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(51 * 60_000)
+    })
+
+    expect(screen.getByText('1h ago')).toBeTruthy()
+  })
+})
 
 describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
   it('shows the Branch in new chat button when a handler is provided (open chat)', async () => {

@@ -7,7 +7,7 @@ import {
   useMessageRuntime
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FC, useCallback, useMemo, useState } from 'react'
+import { type FC, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
 import {
@@ -38,6 +38,43 @@ import { $voicePlayback } from '@/store/voice-playback'
 // Stable empty identity for the settled-parts selector — a fresh [] per render
 // would re-derive the changed-files card on every message re-render.
 const EMPTY_PARTS: readonly unknown[] = []
+const MESSAGE_AGE_TICK_MS = 1_000
+
+const messageAgeClockListeners = new Set<(nowMs: number) => void>()
+let messageAgeClockTimer: ReturnType<typeof setInterval> | null = null
+
+function emitMessageAgeTick() {
+  const nowMs = Date.now()
+
+  for (const listener of messageAgeClockListeners) {
+    listener(nowMs)
+  }
+}
+
+function subscribeMessageAgeClock(listener: (nowMs: number) => void) {
+  messageAgeClockListeners.add(listener)
+
+  if (messageAgeClockTimer === null) {
+    messageAgeClockTimer = setInterval(emitMessageAgeTick, MESSAGE_AGE_TICK_MS)
+  }
+
+  return () => {
+    messageAgeClockListeners.delete(listener)
+
+    if (messageAgeClockListeners.size === 0 && messageAgeClockTimer !== null) {
+      clearInterval(messageAgeClockTimer)
+      messageAgeClockTimer = null
+    }
+  }
+}
+
+function useMessageAgeNow() {
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => subscribeMessageAgeClock(setNowMs), [])
+
+  return nowMs
+}
 
 interface MessageActionProps {
   messageId: string
@@ -303,6 +340,7 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
 const MessageAge: FC = () => {
   const { t } = useI18n()
   const createdAt = useAuiState(s => s.message.createdAt)
+  const nowMs = useMessageAgeNow()
   const date = createdAt ? new Date(createdAt) : null
 
   if (!date || Number.isNaN(date.getTime())) {
@@ -315,7 +353,7 @@ const MessageAge: FC = () => {
       className="px-0.5 text-[0.6875rem] tabular-nums text-muted-foreground"
       title={formatMessageTimestamp(date, t.assistant.thread) || undefined}
     >
-      {formatAgo(date.getTime(), t.agents)}
+      {formatAgo(date.getTime(), t.agents, nowMs)}
     </span>
   )
 }

@@ -332,6 +332,51 @@ def _reset_stale_streak(agent) -> None:
         pass
 
 
+def _report_stale_nonstream_kill(
+    agent,
+    api_kwargs: dict,
+    elapsed: float,
+    stale_timeout: float,
+    *,
+    inline: bool = False,
+    hint: Optional[str] = None,
+) -> None:
+    """Emit the user/operator-facing trio for a stale non-streaming kill.
+
+    Shared by the interrupt-worker poll loop and the inline
+    ``direct_api_call`` watchdog so the log line, status message, and
+    activity token stay identical across both paths. Only reporting lives
+    here — the kill/state sequences differ deliberately between the two
+    callers (locking models are not the same).
+    """
+    model = api_kwargs.get("model", "unknown")
+    logger.warning(
+        "%son-streaming API call stale for %.0fs (threshold %.0fs). "
+        "model=%s context=~%s tokens. Killing connection.",
+        "Inline n" if inline else "N",
+        elapsed,
+        stale_timeout,
+        model,
+        f"{estimate_request_context_tokens(api_kwargs):,}",
+    )
+    try:
+        agent._buffer_status(
+            f"⚠️ No response from provider for {int(elapsed)}s "
+            f"(non-streaming, model: {model}). {hint or 'Aborting call.'}"
+        )
+    except Exception:
+        logger.debug("stale status buffering failed", exc_info=True)
+
+
+def _touch_stale_kill_activity(agent, elapsed: float) -> None:
+    try:
+        agent._touch_activity(
+            f"stale non-streaming call killed after {int(elapsed)}s"
+        )
+    except Exception:
+        logger.debug("stale activity touch failed", exc_info=True)
+
+
 def _check_stale_giveup(agent) -> None:
     """Raise immediately when the consecutive-stale streak is past the
     give-up threshold — no network attempt, no stale-timeout wait."""
@@ -576,15 +621,14 @@ def _resolve_direct_stale_timeout(agent, api_kwargs: dict) -> float:
 
     A non-numeric result — an agent stub that never implements the resolver —
     leaves the watchdog disarmed rather than arming it on a bogus budget.
+    A resolver that *raises* propagates, exactly as it does on the worker
+    path's stale detector: swallowing it into ``inf`` would silently disarm
+    the watchdog and reinstate the unbounded hang this exists to fix.
     """
     resolver = getattr(agent, "_compute_non_stream_stale_timeout", None)
     if not callable(resolver):
         return float("inf")
-    try:
-        value = resolver(api_kwargs)
-    except Exception:
-        logger.debug("non-stream stale timeout resolution failed", exc_info=True)
-        return float("inf")
+    value = resolver(api_kwargs)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return float("inf")
     return float(value)
@@ -616,13 +660,23 @@ def direct_api_call(agent, api_kwargs: dict):
     """
     _check_stale_giveup(agent)
     agent._touch_activity("waiting for non-streaming API response")
-    request_client_holder = {"client": None}
+    # Request-lifecycle state, every transition under ``request_client_lock``
+    # (ported from the #75301 design): ``done`` stops a late timer from
+    # bumping the stale streak after the call already unwound; ``cancelled``
+    # marks a user/monitor interrupt as the owner of the outcome so a racing
+    # stale timer cannot misclassify the kill as provider staleness;
+    # ``stale`` is the one-shot stale transition itself.
+    request_state = {"client": None, "done": False, "stale": False, "cancelled": False}
     request_client_lock = threading.Lock()
     activity_hb_stop = threading.Event()
-    stale_fired = threading.Event()
 
-    def _abort_active_request(reason: str) -> None:
-        """Abort the inline request from a watchdog/interrupt thread."""
+    def _abort_active_request(reason: str) -> bool:
+        """Abort the inline request from a watchdog/interrupt thread.
+
+        Returns True when this call owned the stale transition (so the
+        timer callback only reports/bumps once, and never after an
+        interrupt or a completed request).
+        """
         # Abort while still holding the holder lock: the instant it is
         # released, the inline finally may pop + cache the client for reuse
         # and the NEXT call check it out — a late abort would then poison
@@ -630,9 +684,33 @@ def direct_api_call(agent, api_kwargs: dict):
         # (same atomicity contract as _close_request_client_once in the
         # interruptible variants; the abort itself never blocks).
         with request_client_lock:
-            request_client = request_client_holder["client"]
+            if request_state["done"]:
+                return False
+            if reason == "stale_call_kill" and request_state["cancelled"]:
+                return False
+            if reason != "stale_call_kill":
+                # A user interrupt/redirect that wins this lock owns the
+                # request outcome. Do not let a later timer misclassify the
+                # cancelled call as provider staleness and advance the
+                # cross-turn circuit breaker.
+                request_state["cancelled"] = True
+            newly_stale = reason == "stale_call_kill" and not request_state["stale"]
+            if newly_stale:
+                request_state["stale"] = True
+                # Advance the breaker before releasing the lock: the inline
+                # owner can unwind the moment the socket abort lands, and a
+                # fast retry's success/reset must not be overtaken by this
+                # older timer restoring the streak afterwards.
+                _bump_stale_streak(agent)
+            request_client = request_state["client"]
             if request_client is not None:
-                agent._abort_request_openai_client(request_client, reason=reason)
+                try:
+                    agent._abort_request_openai_client(request_client, reason=reason)
+                except Exception:
+                    logger.debug(
+                        "Inline request abort failed (%s)", reason, exc_info=True
+                    )
+            return newly_stale
 
     def _make_client(reason: str, kind: str = "openai"):
         # direct_api_call only runs for OpenAI-wire chat_completions cron
@@ -640,8 +718,33 @@ def direct_api_call(agent, api_kwargs: dict):
         # the dispatch — the only caller that passes kind — is never reached
         # here; the ``kind`` parameter exists purely for signature parity.
         client = agent._create_request_openai_client(reason=reason, api_kwargs=api_kwargs)
+        stale_before_dispatch = False
         with request_client_lock:
-            request_client_holder["client"] = client
+            request_state["client"] = client
+            if request_state["stale"]:
+                # The timer expired while client construction was in flight
+                # (registration race): the abort found no sockets to kill, so
+                # handing this client to dispatch would open a brand-new
+                # socket after the only watchdog already fired. Abort it here
+                # and fail the call instead. (The residual window — timer
+                # firing between this registration and httpx opening its
+                # socket — is accepted: it is ms-scale against a >=90s budget
+                # and self-bounds at the OS connect-retry cap.)
+                stale_before_dispatch = True
+                try:
+                    agent._abort_request_openai_client(
+                        client, reason="stale_call_kill"
+                    )
+                except Exception:
+                    logger.debug(
+                        "Inline abort after late client registration failed",
+                        exc_info=True,
+                    )
+        if stale_before_dispatch:
+            raise TimeoutError(
+                "Non-streaming API call timed out before request dispatch "
+                f"(threshold: {int(stale_timeout)}s)"
+            )
         agent._active_request_abort = _abort_active_request
         return client
 
@@ -660,46 +763,28 @@ def direct_api_call(agent, api_kwargs: dict):
         name="direct-api-activity-hb",
         daemon=True,
     )
-    activity_hb.start()
-
+    # Resolve the budget BEFORE starting the heartbeat: the resolver may
+    # raise (fail-closed contract), and a raise after start() would leak the
+    # heartbeat thread — ticking last_activity_ts forever and masking real
+    # stalls from the stall monitor.
     call_start = time.time()
     stale_timeout = _resolve_direct_stale_timeout(agent, api_kwargs)
+    activity_hb.start()
 
     def _on_stale() -> None:
         # Runs on the timer thread. It only aborts the in-flight sockets —
         # it never issues a request — so the inline / no-worker property that
-        # fixes #62151 and #60203 is preserved.
-        if stale_fired.is_set():
+        # fixes #62151 and #60203 is preserved. The abort helper owns the
+        # stale transition under the request lock: it returns False (and this
+        # callback stays silent) when the request already finished or a user
+        # interrupt owns the outcome.
+        if not _abort_active_request("stale_call_kill"):
             return
-        stale_fired.set()
         elapsed = time.time() - call_start
-        model = api_kwargs.get("model", "unknown")
-        logger.warning(
-            "Inline non-streaming API call stale for %.0fs (threshold %.0fs). "
-            "model=%s context=~%s tokens. Killing connection.",
-            elapsed,
-            stale_timeout,
-            model,
-            f"{estimate_request_context_tokens(api_kwargs):,}",
+        _report_stale_nonstream_kill(
+            agent, api_kwargs, elapsed, stale_timeout, inline=True
         )
-        try:
-            agent._buffer_status(
-                f"⚠️ No response from provider for {int(elapsed)}s "
-                f"(non-streaming, model: {model}). Aborting call."
-            )
-        except Exception:
-            logger.debug("stale status buffering failed", exc_info=True)
-        _bump_stale_streak(agent)
-        try:
-            agent._touch_activity(
-                f"stale non-streaming call killed after {int(elapsed)}s"
-            )
-        except Exception:
-            logger.debug("stale activity touch failed", exc_info=True)
-        try:
-            _abort_active_request("stale_call_kill")
-        except Exception:
-            logger.debug("stale abort failed", exc_info=True)
+        _touch_stale_kill_activity(agent, elapsed)
 
     stale_watchdog = None
     if math.isfinite(stale_timeout) and stale_timeout > 0:
@@ -719,7 +804,9 @@ def direct_api_call(agent, api_kwargs: dict):
     except Exception:
         if getattr(agent, "_interrupt_requested", False):
             raise InterruptedError("Agent interrupted during API call") from None
-        if stale_fired.is_set():
+        with request_client_lock:
+            was_stale = request_state["stale"]
+        if was_stale:
             # The transport error is the expected consequence of our own
             # abort. Raise a retryable TimeoutError (never InterruptedError,
             # which the outer loop treats as "the user wants to stop") so the
@@ -733,19 +820,30 @@ def direct_api_call(agent, api_kwargs: dict):
     else:
         if getattr(agent, "_interrupt_requested", False):
             raise InterruptedError("Agent interrupted during API call")
+        # Close the race window against a timer firing between response
+        # arrival and this unwind: marking ``done`` under the lock makes any
+        # later timer callback a no-op, so the reset below cannot be
+        # overwritten by a stray bump after a successful call. A timer that
+        # already won the lock left ``stale`` set — the request still
+        # completed, so return the response (the streak reset undoes the
+        # bump; the poisoned client is discarded by the finally).
+        with request_client_lock:
+            request_state["done"] = True
         _reset_stale_streak(agent)
         succeeded = True
         return response
     finally:
         if stale_watchdog is not None:
             stale_watchdog.cancel()
+        with request_client_lock:
+            request_state["done"] = True
         activity_hb_stop.set()
         activity_hb.join(timeout=2.0)
         if getattr(agent, "_active_request_abort", None) is _abort_active_request:
             agent._active_request_abort = None
         with request_client_lock:
-            request_client = request_client_holder["client"]
-            request_client_holder["client"] = None
+            request_client = request_state["client"]
+            request_state["client"] = None
         if request_client is not None:
             agent._close_request_openai_client(
                 request_client,
@@ -1162,7 +1260,6 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # Stale-call detector: kill the connection if no response
         # arrives within the configured timeout.
         if _elapsed > _stale_timeout:
-            _est_ctx = estimate_request_context_tokens(api_kwargs)
             _silent_hint: Optional[str] = None
             _hint_fn = getattr(agent, "_codex_silent_hang_hint", None)
             if callable(_hint_fn):
@@ -1170,24 +1267,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     _silent_hint = _hint_fn(model=api_kwargs.get("model"))
                 except Exception:
                     _silent_hint = None
-            logger.warning(
-                "Non-streaming API call stale for %.0fs (threshold %.0fs). "
-                "model=%s context=~%s tokens. Killing connection.",
-                _elapsed, _stale_timeout,
-                api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+            _report_stale_nonstream_kill(
+                agent, api_kwargs, _elapsed, _stale_timeout, hint=_silent_hint
             )
-            if _silent_hint:
-                agent._buffer_status(
-                    f"⚠️ No response from provider for {int(_elapsed)}s "
-                    f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"{_silent_hint}"
-                )
-            else:
-                agent._buffer_status(
-                    f"⚠️ No response from provider for {int(_elapsed)}s "
-                    f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"Aborting call."
-                )
             try:
                 # #67142: routes by client kind — anthropic now aborts the
                 # request-local client's sockets from this poll (stranger)
@@ -1198,9 +1280,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             # Circuit breaker (#58962): count the stale kill.  See the
             # canonical comment block above ``_stale_streak()``.
             _bump_stale_streak(agent)
-            agent._touch_activity(
-                f"stale non-streaming call killed after {int(_elapsed)}s"
-            )
+            _touch_stale_kill_activity(agent, _elapsed)
             # Wait briefly for the thread to notice the closed connection.
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:

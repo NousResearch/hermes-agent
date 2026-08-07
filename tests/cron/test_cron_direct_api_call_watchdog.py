@@ -261,3 +261,124 @@ def test_e2e_cron_turn_is_bounded_through_the_real_agent_routing(monkeypatch):
     # The aborted pool is poisoned, so the killed client is really closed
     # instead of being cached for the retry.
     assert wire.close_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Salvage follow-up (#75301 state discipline): locked lifecycle transitions.
+# ---------------------------------------------------------------------------
+
+
+def test_interrupt_abort_is_not_misclassified_as_provider_staleness():
+    """A user/monitor interrupt that kills the call must not advance the
+    cross-turn stale circuit breaker, even if the stale timer fires right
+    after — the ``cancelled`` flag owns the outcome (#75301 design)."""
+    agent = _make_agent(stale_timeout=30.0)
+    release_after_abort = threading.Event()
+    fake_client = MagicMock()
+
+    def _stalled_request(**_kwargs):
+        assert release_after_abort.wait(timeout=5.0)
+        raise ConnectionError("socket shut down")
+
+    fake_client.chat.completions.create.side_effect = _stalled_request
+    agent._create_request_openai_client.return_value = fake_client
+
+    def _abort(client, reason):
+        release_after_abort.set()
+
+    agent._abort_request_openai_client.side_effect = _abort
+
+    interrupt_fired = threading.Event()
+
+    def _interrupt_soon():
+        # Wait until the abort hook is registered, then interrupt like
+        # run_agent.interrupt() does (registered under the same name).
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            hook = agent._active_request_abort
+            if callable(hook) and not isinstance(hook, MagicMock):
+                agent._interrupt_requested = True
+                # interrupt owns the outcome...
+                assert hook("interrupt_abort") is False
+                # ...so a stale timer racing in afterwards is inert:
+                assert hook("stale_call_kill") is False
+                interrupt_fired.set()
+                return
+            time.sleep(0.005)
+
+    worker = threading.Thread(target=_interrupt_soon, daemon=True)
+    worker.start()
+
+    with pytest.raises(InterruptedError):
+        direct_api_call(agent, {"model": "m", "messages": []})
+
+    assert interrupt_fired.wait(timeout=1.0)
+    assert agent._consecutive_stale_streams == 0, (
+        "interrupt was misclassified as provider staleness"
+    )
+
+
+def test_late_stale_timer_after_completion_is_inert():
+    """A timer callback that loses the race to a completed request must not
+    bump the streak: ``done`` is set under the lock before the unwind."""
+    agent = _make_agent(stale_timeout=30.0)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = SimpleNamespace(id="ok")
+    agent._create_request_openai_client.return_value = fake_client
+
+    captured = {}
+    real_timer = threading.Timer
+
+    class CapturingTimer(real_timer):
+        def __init__(self, interval, function, *a, **k):
+            captured["fn"] = function
+            super().__init__(interval, function, *a, **k)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(threading, "Timer", CapturingTimer)
+        assert direct_api_call(agent, {"model": "m", "messages": []}).id == "ok"
+
+    # Fire the (already-cancelled) timer callback manually, simulating a
+    # timer thread that had already dequeued before cancel().
+    captured["fn"]()
+    assert agent._consecutive_stale_streams == 0
+    agent._abort_request_openai_client.assert_not_called()
+
+
+def test_timer_firing_before_client_registration_fails_the_dispatch():
+    """Registration race: if the budget expires while the client is still
+    being constructed, the freshly-registered client is aborted and the call
+    fails with a retryable TimeoutError instead of opening a new socket
+    after the only watchdog was spent."""
+    agent = _make_agent(stale_timeout=0.05)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = SimpleNamespace(id="late")
+
+    def _slow_create(*, reason, api_kwargs):
+        # The timer (50ms budget) fires while construction is in flight.
+        time.sleep(0.4)
+        return fake_client
+
+    agent._create_request_openai_client.side_effect = _slow_create
+
+    with pytest.raises(TimeoutError):
+        direct_api_call(agent, {"model": "m", "messages": []})
+
+    fake_client.chat.completions.create.assert_not_called()
+    agent._abort_request_openai_client.assert_called_once_with(
+        fake_client, reason="stale_call_kill"
+    )
+
+
+def test_resolver_exception_propagates_instead_of_disarming_the_watchdog():
+    """A raising stale-timeout resolver must propagate (fail closed), not be
+    swallowed into an infinite budget that silently reinstates the hang."""
+    agent = _make_agent(stale_timeout=0.2)
+
+    def _broken_resolver(api_payload):
+        raise RuntimeError("resolver regression")
+
+    agent._compute_non_stream_stale_timeout = _broken_resolver
+
+    with pytest.raises(RuntimeError, match="resolver regression"):
+        direct_api_call(agent, {"model": "m", "messages": []})

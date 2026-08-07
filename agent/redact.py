@@ -138,6 +138,18 @@ _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
 )
 
+# A value that is purely a shell expansion carries no literal secret:
+# ``$(cat f)``, ```cat f```, ``$VAR``, ``${VAR}``. Masking it would both
+# over-redact (nothing to leak) and mangle the command (the \S+ value match
+# stops at the first space, stranding `` /root/gh.tok)`` — issue #79413).
+# ``${VAR}x`` (braced var + literal suffix) and ``$1`` (positional param)
+# are the same class — the token is constructed from non-literal parts.
+# A literal secret prefix (``ghp_x``) in the same fragment is masked
+# separately by the prefix sub, so preserving the fragment never leaks.
+_SHELL_EXPANSION_VALUE_RE = re.compile(
+    r"(?:\$\(|`|\$\{?[A-Za-z_]|\$\d)"
+)
+
 # Lowercase / dotted / hyphenated config keys from config files
 # (application.properties, .env, YAML-ish dumps): ``spring.datasource.password=secret``,
 # ``app.api.key=xyz``, ``password=secret``. The uppercase _ENV_ASSIGN_RE above
@@ -433,9 +445,13 @@ _FORM_BODY_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$"
 )
 
-# Compile known prefix patterns into one alternation
+# Compile known prefix patterns into one alternation. A known-prefix
+# literal immediately followed by a shell expansion (``ghp_x$(cat f)``,
+# ``sk-abc$SUFFIX``) is a fragment built from non-literal parts — masking
+# the prefix strands the trailing substitution (issue #79413). The env-value
+# logic preserves such fragments wholesale, so skip them here.
 _PREFIX_RE = re.compile(
-    r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
+    r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])(?!\$|\$\(|`|\$\{?[A-Za-z_]|\$\d)"
 )
 
 
@@ -729,6 +745,33 @@ def redact_sensitive_text(
                 # secret values — masking them corrupts code snippets in
                 # prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
                 if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
+                # Shell expansions carry no literal secret material — masking
+                # them both over-redacts (no secret present) and mangles the
+                # command: ``GH_TOKEN=$(cat /root/gh.tok)`` became
+                # ``GH_TOKEN=*** /root/gh.tok)`` (invalid shell) because the
+                # value match stops at the first space, stranding the rest of
+                # the substitution (issue #79413). ``$VAR`` / ``${VAR}`` /
+                # ``$(...)`` / backticks reference other values; nothing to
+                # redact. Literal secrets (``ghp_...``) still mask normally.
+                # Strip a leading quote before the expansion check. For a
+                # quoted RHS the regex's ``\2`` backreference binds to the
+                # closing quote, so ``quote`` is empty and the value itself
+                # starts with the opening quote (``"$(cat``).
+                _value_unquoted = value[1:] if value[:1] in {'"', "'"} else value
+                # Any expansion marker in the fragment (not just at the
+                # start) means the token is built from non-literal parts.
+                # If a literal secret prefix precedes the expansion, mask
+                # the prefix but keep the substitution intact — preserving
+                # the whole fragment would leak the literal (review #79413).
+                _expansion_match = _SHELL_EXPANSION_VALUE_RE.search(_value_unquoted)
+                if _expansion_match:
+                    _prefix = _value_unquoted[:_expansion_match.start()]
+                    _rest = _value_unquoted[_expansion_match.start():]
+                    if _prefix and _mask_token(_prefix) != _prefix:
+                        # Literal secret before the expansion: mask it,
+                        # preserve the substitution.
+                        return f"{name}={quote}{_mask_token(_prefix)}{_rest}{quote}"
                     return m.group(0)
                 # Keyword must sit at a word boundary within the key —
                 # ``author=Smith`` / ``press.secretary=…`` are prose, not

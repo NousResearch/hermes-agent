@@ -2664,6 +2664,63 @@ function venvHermesShimPath(updateRoot) {
     : path.join(updateRoot, 'venv', 'bin', 'hermes')
 }
 
+// Every entry-point exe under venv\Scripts (generic — not a hardcoded list).
+function venvScriptsExePaths(updateRoot) {
+  const scriptsDir = path.join(updateRoot, 'venv', 'Scripts')
+  try {
+    return fs
+      .readdirSync(scriptsDir)
+      .filter((f) => f.toLowerCase().endsWith('.exe'))
+      .map((f) => path.join(scriptsDir, f))
+  } catch {
+    return []
+  }
+}
+
+// Generic lock probe across EVERY entry-point exe under venv\Scripts, not a
+// hardcoded shim list: any mapped exe (hindsight daemon's pythonw trampoline,
+// a stray CLI, a future helper) blocks the update the same way.
+function isVenvLocked(updateRoot) {
+  if (!IS_WINDOWS) {
+    return false
+  }
+  for (const exe of venvScriptsExePaths(updateRoot)) {
+    if (isShimLocked(exe)) {
+      return true
+    }
+  }
+  return false
+}
+
+// Kill only Hermes-OWNED venv daemons (the memory plugin's hindsight daemon:
+// exe under venv\Scripts AND cmdline containing hindsight_api.main). External
+// holders (a user terminal running `hermes`, unrelated scripts) are NOT killed
+// — scanVenvBlockers reports them and the handoff aborts, per existing design.
+// Path match is an ordinal case-insensitive prefix (PowerShell -like would
+// treat `[`/`]`/`*` as wildcards and `\*` as an escape — a literal check is
+// required, cf. tests/test_install_unmerged_index.py:171-180).
+function killVenvShimHolders(updateRoot) {
+  if (!IS_WINDOWS) {
+    return
+  }
+  const scriptsDir = path.join(updateRoot, 'venv', 'Scripts').replace(/'/g, "''")
+  try {
+    const ps =
+      `$p = Get-CimInstance Win32_Process | Where-Object { ` +
+      `$_.ExecutablePath -and $_.CommandLine -and ` +
+      `$_.ExecutablePath.StartsWith('${scriptsDir}\\', [System.StringComparison]::OrdinalIgnoreCase) ` +
+      `-and $_.CommandLine -match 'hindsight_api\\.main' }; ` +
+      `foreach ($x in $p) { taskkill /PID $($x.ProcessId) /T /F 2>$null | Out-Null }`
+    execFileSync(
+      'powershell',
+      ['-NoProfile', '-Command', ps],
+      hiddenWindowsChildOptions({ stdio: 'ignore' })
+    )
+  } catch {
+    // best-effort: the lock probe below is the real gate
+  }
+}
+
 // Best-effort lock probe mirroring the Rust updater's is_locked(): a running
 // .exe on Windows refuses an O_RDWR open with a sharing violation. On POSIX
 // this practically always succeeds (no mandatory locking), so it returns false
@@ -2783,12 +2840,15 @@ async function releaseBackendLock(updateRoot, tag) {
     forceKillProcessTree(pid)
   }
 
-  const shim = venvHermesShimPath(updateRoot)
+  // Kill every venv\Scripts holder (hindsight daemon, stray CLIs, anything
+  // else) so the updater never races a mapped pythonw/python/hermes shim.
+  killVenvShimHolders(updateRoot)
+
   const deadlineMs = Date.now() + 15000
 
   while (Date.now() < deadlineMs) {
-    if (!isShimLocked(shim)) {
-      rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
+    if (!isVenvLocked(updateRoot)) {
+      rememberLog(`[${tag}] venv shims unlocked; safe to proceed`)
 
       return { unlocked: true }
     }
@@ -2842,11 +2902,13 @@ async function releaseBackendLock(updateRoot, tag) {
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
 async function applyUpdates(opts = {}) {
-  if (updateInFlight) {
+  if (updateInFlight || readLiveUpdateMarker(HERMES_HOME)) {
     throw new Error('An update is already in progress.')
   }
 
   updateInFlight = true
+
+  let handedOff = false
 
   try {
     const updater = resolveUpdaterBinary()
@@ -3037,9 +3099,19 @@ async function applyUpdates(opts = {}) {
       app.quit()
     }, UPDATE_HANDOFF_DWELL_MS)
 
+    handedOff = true
+
     return { ok: true, handedOff: true, updater }
   } finally {
-    updateInFlight = false
+    // Only reset the in-flight flag on failure. On success the process is
+    // about to quit (UPDATE_HANDOFF_DWELL_MS); clearing the flag here would
+    // reopen a ~2.5s window where a second click / renderer retry spawns a
+    // second updater that then trips the cross-process marker and aborts
+    // ("Another Hermes update is already running") — every GUI update then
+    // fails. The flag stays set until the process exits.
+    if (!handedOff) {
+      updateInFlight = false
+    }
   }
 }
 

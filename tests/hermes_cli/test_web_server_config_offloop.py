@@ -48,16 +48,23 @@ class TestGetConfigOffLoop:
 
         hold_s = 1.0
         release = threading.Event()
+        acquired = threading.Event()
 
         def _holder():
             with web_server._SKILLS_PROFILE_LOCK:
+                acquired.set()
                 release.wait(hold_s)
 
         async def _scenario():
             holder = threading.Thread(target=_holder)
             holder.start()
-            # Give the holder time to actually take the lock.
-            await asyncio.sleep(0.05)
+            # Deterministic gate: wait until the holder has actually taken the
+            # lock (signalled from inside the `with` block) before issuing the
+            # request — no sleep-and-hope race on slow CI machines.
+            loop = asyncio.get_running_loop()
+            assert await loop.run_in_executor(None, acquired.wait, 5), (
+                "holder thread never acquired _SKILLS_PROFILE_LOCK"
+            )
 
             ticks = 0
 
@@ -121,15 +128,22 @@ class TestRouterOffLoop:
 
         hold_s = 1.0
         release = threading.Event()
+        acquired = threading.Event()
 
         def _holder():
             with web_server._SKILLS_PROFILE_LOCK:
+                acquired.set()
                 release.wait(hold_s)
 
         async def _scenario():
             holder = threading.Thread(target=_holder)
             holder.start()
-            await asyncio.sleep(0.05)
+            # Deterministic gate: wait until the holder has actually taken the
+            # lock before issuing the request (see TestGetConfigOffLoop).
+            loop = asyncio.get_running_loop()
+            assert await loop.run_in_executor(None, acquired.wait, 5), (
+                "holder thread never acquired _SKILLS_PROFILE_LOCK"
+            )
 
             ticks = 0
 
@@ -190,11 +204,10 @@ class TestConfigMutationLock:
         client = TestClient(web_server.app)
         client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
 
-        # Interleave the two handlers' load→mutate→save spans deterministically:
-        # gate the FIRST writer inside its mutation-lock hold, and assert the
-        # second writer cannot slip its own load in between. With the lock,
-        # writer B waits for writer A's full span; without it, B loads the
-        # pre-A config and its save erases A's write.
+        # Race the two handlers' load→mutate→save spans. This is probabilistic,
+        # not deterministically gated: the slow save_config below widens the
+        # unserialized race window to ~150ms so a lost update is near-certain
+        # without _CONFIG_MUTATION_LOCK, while remaining impossible with it.
         results = []
 
         def _put_theme():
@@ -238,4 +251,68 @@ class TestConfigMutationLock:
         assert dashboard.get("font") == "jetbrains-mono", (
             "font write lost to a concurrent theme write — "
             "read-modify-write span is not serialized"
+        )
+
+    def test_plugin_providers_put_serialized_against_other_writers(self):
+        """PUT /api/dashboard/plugin-providers does config RMW through
+        plugins_cmd._save_context_engine — it must hold the same
+        _CONFIG_MUTATION_LOCK as every other config writer, or a concurrent
+        locked writer's update gets erased by its stale save."""
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli import config as config_mod
+        from hermes_cli import web_server
+        from hermes_cli.config import load_config
+
+        client = TestClient(web_server.app)
+        client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+
+        results = []
+
+        def _put_engine():
+            resp = client.put(
+                "/api/dashboard/plugin-providers", json={"context_engine": "builtin"}
+            )
+            results.append(("engine", resp.status_code))
+
+        def _put_theme():
+            resp = client.put("/api/dashboard/theme", json={"name": "midnight"})
+            results.append(("theme", resp.status_code))
+
+        # Slow down the engine writer's save (resolved at call time from
+        # hermes_cli.config by _save_context_engine's function-local import)
+        # so an unserialized theme write can land inside its RMW span and be
+        # erased by the stale save. With the mutation lock the whole span is
+        # serialized and both writes survive.
+        real_save = config_mod.save_config
+
+        def _slow_save(cfg, **kwargs):
+            time.sleep(0.15)
+            return real_save(cfg, **kwargs)
+
+        threads = []
+        try:
+            config_mod.save_config = _slow_save
+            t_engine = threading.Thread(target=_put_engine)
+            t_theme = threading.Thread(target=_put_theme)
+            threads = [t_engine, t_theme]
+            t_engine.start()
+            time.sleep(0.05)  # let the engine writer enter its RMW span first
+            t_theme.start()
+        finally:
+            for t in threads:
+                t.join()
+            config_mod.save_config = real_save
+
+        assert all(code == 200 for _, code in results), results
+        cfg = load_config()
+        assert (cfg.get("context") or {}).get("engine") == "builtin", (
+            "context.engine write lost — plugin-providers RMW not serialized"
+        )
+        assert (cfg.get("dashboard") or {}).get("theme") == "midnight", (
+            "theme write lost to a concurrent plugin-providers write — "
+            "PUT /api/dashboard/plugin-providers is not holding "
+            "_CONFIG_MUTATION_LOCK around its read-modify-write span"
         )

@@ -944,6 +944,53 @@ class TestCustomProviderCompatibility:
             }
         ]
 
+    def test_compatible_custom_providers_accepts_json_string_form(self, tmp_path):
+        """``custom_providers`` written as a scalar JSON string (what `hermes
+        config set` does for list/dict keys) must still resolve to providers.
+
+        Regression: `get_compatible_custom_providers` returned [] for any
+        non-list custom_providers, silently dropping every custom provider from
+        /model and runtime resolution.
+        """
+        import json as _json
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 26,
+                    "custom_providers": _json.dumps(
+                        [
+                            {"name": "acme", "base_url": "https://acme.example.com/v1", "model": "acme/flash", "api_key": "sk-x"},
+                            {"name": "beta", "base_url": "https://beta.example.com/v1", "model": "beta/pro", "api_key": "sk-y"},
+                        ]
+                    ),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        names = [c.get("name") for c in compatible]
+        assert names == ["acme", "beta"]
+
+    def test_compatible_custom_providers_oserror_malformed_json(self, tmp_path):
+        """A non-list, non-JSON custom_providers value must degrade to [] (not raise)."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 26,
+                    "custom_providers": "definitely: not-json[[",
+                }
+            ),
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+        assert compatible == []
+
 
 class TestInterimAssistantMessageConfig:
     """Test the explicit gateway interim-message config gate."""

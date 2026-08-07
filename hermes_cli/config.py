@@ -1568,8 +1568,21 @@ def get_compatible_custom_providers(
 
     custom_providers = config.get("custom_providers")
     if custom_providers is not None:
+        # `hermes config set` writes list/dict config keys as scalar JSON strings
+        # (double-encoded), so a value loaded from config.yaml may be a JSON
+        # string rather than a native list.  Accept that form here — without
+        # this, custom providers stored via ``config set`` never surface in
+        # /model, the picker, or runtime resolution.
         if not isinstance(custom_providers, list):
-            return []
+            if isinstance(custom_providers, str):
+                try:
+                    custom_providers = json.loads(custom_providers)
+                except Exception:
+                    return []
+                if not isinstance(custom_providers, list):
+                    return []
+            else:
+                return []
         for entry in custom_providers:
             _append_if_new(_normalize_custom_provider_entry(entry))
 
@@ -1593,6 +1606,24 @@ def _coerce_ssl_verify(value: Any) -> Optional[bool]:
     return None
 
 
+def _coerce_custom_providers_list(custom_providers: Any) -> Optional[List[Dict[str, Any]]]:
+    """Coerce ``custom_providers`` to a list of dicts.
+
+    ``hermes config set`` writes list/dict config keys as scalar JSON strings
+    (double-encoded), so the value loaded from config.yaml may be a JSON string
+    rather than a true list.  Return ``None`` when the value cannot be used.
+    """
+    if isinstance(custom_providers, list):
+        return custom_providers
+    if isinstance(custom_providers, str):
+        try:
+            parsed = json.loads(custom_providers)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, list) else None
+    return None
+
+
 def get_custom_provider_tls_settings(
     base_url: str,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
@@ -1603,8 +1634,9 @@ def get_custom_provider_tls_settings(
         try:
             custom_providers = get_compatible_custom_providers(config)
         except Exception:
-            custom_providers = []
-    if not base_url or not isinstance(custom_providers, list):
+            custom_providers = _coerce_custom_providers_list(custom_providers)
+    custom_providers = _coerce_custom_providers_list(custom_providers)
+    if not base_url or not custom_providers:
         return {}
 
     target_url = normalize_route_base_url(base_url)
@@ -1675,8 +1707,9 @@ def get_custom_provider_extra_headers(
         try:
             custom_providers = get_compatible_custom_providers(config)
         except Exception:
-            custom_providers = []
-    if not base_url or not isinstance(custom_providers, list):
+            custom_providers = _coerce_custom_providers_list(custom_providers)
+    custom_providers = _coerce_custom_providers_list(custom_providers)
+    if not base_url or not custom_providers:
         return {}
 
     target_url = normalize_route_base_url(base_url)
@@ -1747,9 +1780,9 @@ def get_custom_provider_context_length(
         except Exception:
             if config is None:
                 return None
-            raw = config.get("custom_providers")
-            custom_providers = raw if isinstance(raw, list) else []
-    if not isinstance(custom_providers, list):
+            custom_providers = _coerce_custom_providers_list(config.get("custom_providers"))
+    custom_providers = _coerce_custom_providers_list(custom_providers)
+    if not custom_providers:
         return None
 
     target_url = normalize_route_base_url(base_url)

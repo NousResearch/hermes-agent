@@ -761,3 +761,166 @@ def test_gateway_cli_origin_event_left_unrouted():
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
 
+
+def test_completed_records_pruned_to_cap():
+    # Run more than the retention cap quickly; ensure list doesn't grow forever.
+    # Delivered records are capped at _MAX_RETAINED_COMPLETED (50); pending
+    # (undelivered) records at _MAX_DURABLE_PENDING (1000).
+    N = ad._MAX_RETAINED_COMPLETED + 10  # 60
+    for i in range(N):
+        ad.dispatch_async_delegation(
+            goal=f"t{i}", context=None, toolsets=None, role="leaf", model="m",
+            session_key="", runner=lambda: {"status": "completed", "summary": "ok"},
+            max_async_children=N + 20,
+        )
+    # let workers finish
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and ad.active_count() > 0:
+        time.sleep(0.05)
+
+    # All 60 are pending (undelivered) → none pruned (60 < 1000).
+    all_records = ad.list_async_delegations()
+    assert len(all_records) == N, (
+        f"expected {N} pending records, got {len(all_records)}"
+    )
+
+    # Acknowledge every record through the public path. The acknowledgement
+    # itself must enforce the delivered cap — no completion finalizer and no
+    # direct call into the private prune helper.
+    for r in all_records:
+        ad.mark_completion_delivered(r["delegation_id"])
+
+    assert len(ad.list_async_delegations()) <= ad._MAX_RETAINED_COMPLETED
+
+
+def test_ack_flips_in_memory_state_even_when_db_row_is_gone(tmp_path, monkeypatch):
+    """In-memory delivery state must not depend on the durable row surviving.
+
+    The DB and the in-memory dict can diverge (a durable prune can drop a
+    delivered row while the in-memory record lives on). If the ack only
+    flipped in-memory state when the DB UPDATE hit a row, such records stayed
+    'pending' forever and were never eligible for the delivered cap.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    N = ad._MAX_RETAINED_COMPLETED + 10
+    for i in range(N):
+        ad.dispatch_async_delegation(
+            goal=f"g{i}", context=None, toolsets=None, role="leaf", model="m",
+            session_key="", runner=lambda: {"status": "completed", "summary": "ok"},
+            max_async_children=N + 20,
+        )
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and ad.active_count() > 0:
+        time.sleep(0.05)
+
+    records = ad.list_async_delegations()
+    # First ack normally, then ack AGAIN — the second round hits rowcount==0
+    # (row already delivered) and must still leave in-memory state delivered.
+    for r in records:
+        ad.mark_completion_delivered(r["delegation_id"])
+    for r in records:
+        ad.mark_completion_delivered(r["delegation_id"])
+
+    remaining = ad.list_async_delegations()
+    assert len(remaining) <= ad._MAX_RETAINED_COMPLETED
+    with ad._records_lock:
+        stuck = [
+            rid for rid, rec in ad._records.items()
+            if rec.get("status") != "running"
+            and rec.get("delivery_state") != "delivered"
+        ]
+    assert not stuck, f"records stuck pending after acknowledgement: {stuck}"
+
+
+def _dispatch_completed_batch(n):
+    """Dispatch *n* trivially-completing delegations and wait for the workers.
+
+    Uses a real session_key/parent so durable rows exist — the
+    claim/complete/drop production paths operate on the durable row, and a
+    session-less dispatch takes the legacy no-row shortcut instead.
+    """
+    for i in range(n):
+        ad.dispatch_async_delegation(
+            goal=f"drop{i}", context=None, toolsets=None, role="leaf", model="m",
+            session_key="owner", parent_session_id="parent",
+            runner=lambda: {"status": "completed", "summary": "ok"},
+            max_async_children=n + 20,
+        )
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and ad.active_count() > 0:
+        time.sleep(0.05)
+    return ad.list_async_delegations()
+
+
+def test_dropped_deliveries_fall_to_terminal_cap(tmp_path, monkeypatch):
+    """Sweeper (blocking): `dropped` is terminal too. The gateway drops
+    completions whose owner session is permanently gone
+    (drop_completion_delivery); those records must be capped with terminal
+    history, not squat in the 1,000-item pending budget forever."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    records = _dispatch_completed_batch(ad._MAX_RETAINED_COMPLETED + 10)
+
+    for r in records:
+        did = r["delegation_id"]
+        claim = f"test:{did}"
+        assert ad.claim_completion_delivery(did, claim)
+        ad.drop_completion_delivery(did, claim)
+
+    assert len(ad.list_async_delegations()) <= ad._MAX_RETAINED_COMPLETED
+    with ad._records_lock:
+        stuck = [
+            rid for rid, rec in ad._records.items()
+            if rec.get("status") != "running"
+            and rec.get("delivery_state") not in ("delivered", "dropped")
+        ]
+    assert not stuck, f"dropped records left in the pending bucket: {stuck}"
+
+
+def test_production_claim_complete_path_converges_and_caps(tmp_path, monkeypatch):
+    """Sweeper ask: cover the production acknowledgement path — the gateway
+    claims a completion, injects it, then calls complete_completion_delivery
+    (not mark_completion_delivered). The cap must converge on that path too."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    records = _dispatch_completed_batch(ad._MAX_RETAINED_COMPLETED + 10)
+
+    for r in records:
+        did = r["delegation_id"]
+        claim = f"consumer:{did}"
+        assert ad.claim_completion_delivery(did, claim)
+        acked = ad.complete_completion_delivery(did, claim)
+        # The DURABLE row may already be gone: _prune_durable_records counts
+        # all terminal rows against the history cap regardless of delivery
+        # state (that durable-side defect is #65860's scope, not this PR's).
+        # The ack must report True whenever the row still exists — and the
+        # IN-MEMORY record must converge either way.
+        if ad.get_durable_delegation(did) is not None:
+            assert acked, f"claimed completion failed to ack with row present: {did}"
+
+    assert len(ad.list_async_delegations()) <= ad._MAX_RETAINED_COMPLETED
+    with ad._records_lock:
+        stuck = [
+            rid for rid, rec in ad._records.items()
+            if rec.get("status") != "running"
+            and rec.get("delivery_state") != "delivered"
+        ]
+    assert not stuck
+
+
+def test_exhausted_attempts_release_converges_in_memory(tmp_path, monkeypatch):
+    """The second drop path: release after the attempt budget is exhausted
+    converges the durable row to `dropped` — the in-memory record must
+    follow, or it stays `pending` forever."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(ad, "_MAX_DELIVERY_ATTEMPTS", 1)
+    records = _dispatch_completed_batch(1)
+    did = records[0]["delegation_id"]
+
+    claim = "consumer:exhausted"
+    assert ad.claim_completion_delivery(did, claim)  # attempts -> 1
+    assert ad.release_completion_delivery(did, claim)  # capped -> dropped
+
+    with ad._records_lock:
+        rec = ad._records.get(did)
+    assert rec is not None and rec.get("delivery_state") == "dropped", (
+        f"exhausted-attempt drop did not converge in memory: {rec and rec.get('delivery_state')}"
+    )

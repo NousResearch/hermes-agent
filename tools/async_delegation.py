@@ -377,7 +377,39 @@ def mark_completion_delivered(delegation_id: str) -> bool:
                WHERE delegation_id=? AND delivery_state!='delivered'""",
             (now, now, delegation_id),
         )
-        return cur.rowcount == 1
+        acked = cur.rowcount == 1
+    # Unconditionally: the in-memory dict is the state the prune reads, and it
+    # can diverge from the DB (a durable prune may have dropped the delivered
+    # row while the in-memory record survives). Gating on the DB rowcount left
+    # such records 'pending' forever — uncapped retention under the pending
+    # budget and never eligible for the delivered cap.
+    _mark_in_memory_delivered(delegation_id)
+    return acked
+
+
+def _mark_in_memory_terminal(delegation_id: str, state: str) -> None:
+    """Converge the in-memory record to a terminal delivery state
+    (``delivered`` or ``dropped``), then enforce the terminal-history cap.
+
+    Pruning here (not only in the completion finalizers) means a burst that
+    completed as pending cannot retain more than ``_MAX_RETAINED_COMPLETED``
+    terminal records until some later completion happens to run the prune —
+    the acknowledgement/drop itself converges the cap.
+
+    ``delivered`` is never downgraded to ``dropped``: a drop call racing an
+    earlier successful acknowledgement (its DB UPDATE finds no pending row)
+    must not relabel a delivery that actually happened.
+    """
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is not None:
+            if not (state == "dropped" and record.get("delivery_state") == "delivered"):
+                record["delivery_state"] = state
+            _prune_completed_locked()
+
+
+def _mark_in_memory_delivered(delegation_id: str) -> None:
+    _mark_in_memory_terminal(delegation_id, "delivered")
 
 
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -436,15 +468,23 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                 "marking terminally dropped (result remains queryable).",
                 delegation_id, _MAX_DELIVERY_ATTEMPTS,
             )
-            return True
-        cur = conn.execute(
-            """UPDATE async_delegations SET delivery_claim=NULL,
-                      delivery_claimed_at=NULL, updated_at=?
-               WHERE delegation_id=? AND delivery_state='pending'
-                 AND delivery_claim=?""",
-            (now, delegation_id, claim_id),
-        )
-        return cur.rowcount == 1
+            released = None  # exhausted → terminally dropped, converge below
+        else:
+            released = conn.execute(
+                """UPDATE async_delegations SET delivery_claim=NULL,
+                          delivery_claimed_at=NULL, updated_at=?
+                   WHERE delegation_id=? AND delivery_state='pending'
+                     AND delivery_claim=?""",
+                (now, delegation_id, claim_id),
+            )
+    if released is None:
+        # The in-memory dict is what the prune reads — converge it (outside
+        # the DB transaction, matching the ack paths) so a dropped record is
+        # capped with terminal history instead of squatting in the 1,000-item
+        # pending budget forever.
+        _mark_in_memory_terminal(delegation_id, "dropped")
+        return True
+    return released.rowcount == 1
 
 
 def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -466,7 +506,16 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                  AND delivery_claim=?""",
             (now, delegation_id, claim_id),
         )
-        return cur.rowcount == 1
+        dropped = cur.rowcount == 1
+    # Unconditionally, as in the acknowledgement paths: the gateway has
+    # decided this completion can never be delivered (owner session is
+    # permanently gone). rowcount==0 means the durable row was already
+    # delivered/dropped/pruned — either way the in-memory record must leave
+    # the pending bucket so the terminal-history cap governs it. A racing
+    # earlier delivery is preserved (_mark_in_memory_terminal never
+    # downgrades delivered → dropped).
+    _mark_in_memory_terminal(delegation_id, "dropped")
+    return dropped
 
 
 def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -481,7 +530,15 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                  AND delivery_claim=?""",
             (now, now, delegation_id, claim_id),
         )
-        return cur.rowcount == 1
+        acked = cur.rowcount == 1
+    # Unconditionally, as in mark_completion_delivered: this runs only after
+    # the completion event was actually injected into the consumer's queue.
+    # rowcount==0 here means the durable row was already delivered, dropped,
+    # pruned, or claimed over — none of which change the fact that THIS
+    # consumer received the payload, so the in-memory record must not stay
+    # 'pending' (it would be retained forever and shield the delivered cap).
+    _mark_in_memory_delivered(delegation_id)
+    return acked
 
 
 def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
@@ -631,19 +688,43 @@ def _new_delegation_id() -> str:
 def _prune_completed_locked() -> None:
     """Drop the oldest completed records beyond the retention cap.
 
+    Mirrors ``_prune_durable_records``: terminal records (delivered or
+    dropped) are capped at ``_MAX_RETAINED_COMPLETED`` (50), while
+    undelivered (pending) records enjoy the separate ``_MAX_DURABLE_PENDING``
+    (1000) cap so results are never deleted before the parent agent has
+    consumed them.
+
     Caller must hold ``_records_lock``.
     """
-    completed = [
+    # Step 1 — terminal records (delivered OR dropped): cap at
+    # _MAX_RETAINED_COMPLETED. Dropped is terminal too — the gateway drops
+    # completions whose owner session is permanently gone, and the
+    # exhausted-attempt branch converges undeliverable rows; neither may
+    # squat in the pending budget (sweeper review on this PR).
+    terminal = [
         (rid, r)
         for rid, r in _records.items()
         if r.get("status") != "running"
+        and r.get("delivery_state") in ("delivered", "dropped")
     ]
-    if len(completed) <= _MAX_RETAINED_COMPLETED:
-        return
-    # Oldest-first by completion time (fall back to dispatch time).
-    completed.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
-    for rid, _ in completed[: len(completed) - _MAX_RETAINED_COMPLETED]:
-        _records.pop(rid, None)
+    if len(terminal) > _MAX_RETAINED_COMPLETED:
+        terminal.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
+        for rid, _ in terminal[: len(terminal) - _MAX_RETAINED_COMPLETED]:
+            _records.pop(rid, None)
+
+    # Step 2 — pending (undelivered) records: cap at _MAX_DURABLE_PENDING so a
+    # burst of completions doesn't delete results before the parent reads them.
+    pending = [
+        (rid, r)
+        for rid, r in _records.items()
+        if r.get("status") != "running"
+        and r.get("delivery_state") not in ("delivered", "dropped")
+    ]
+    overflow = max(0, len(pending) - _MAX_DURABLE_PENDING)
+    if overflow:
+        pending.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
+        for rid, _ in pending[:overflow]:
+            _records.pop(rid, None)
 
 
 def _current_origin_session_id() -> str:
@@ -754,6 +835,7 @@ def dispatch_async_delegation(
         "_progress_token": None,
         "_progress_ts": dispatched_at,
         "_interrupted_at": None,
+        "delivery_state": "pending",
     }
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
@@ -994,6 +1076,7 @@ def dispatch_async_delegation_batch(
         "_progress_token": None,
         "_progress_ts": dispatched_at,
         "_interrupted_at": None,
+        "delivery_state": "pending",
     }
     with _records_lock:
         running = sum(

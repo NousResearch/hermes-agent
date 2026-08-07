@@ -363,6 +363,99 @@ class TestBusySessionAck:
         overflow = runner._queued_events.get(sk, [])
         assert [e.text for e in overflow] == ["second message"]
 
+    @pytest.mark.asyncio
+    async def test_reject_mode_discards_and_acknowledges_every_text_followup(self):
+        """Rejected input is never queued, redirected, or interrupted."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "reject"
+        adapter = _make_adapter()
+        event = _make_event(text="do not queue this")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent._active_children = []
+        runner._running_agents[sk] = agent
+        runner._queue_or_replace_pending_event = MagicMock()
+
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+
+        runner._queue_or_replace_pending_event.assert_not_called()
+        agent.redirect.assert_not_called()
+        agent.interrupt.assert_not_called()
+        assert adapter._send_with_retry.await_count == 2
+        for call in adapter._send_with_retry.await_args_list:
+            content = call.kwargs["content"]
+            assert "not accepted" in content
+            assert "resend it after" in content
+
+    @pytest.mark.asyncio
+    async def test_reject_mode_discards_media_in_active_session_path(self):
+        """Media follow-ups are rejected as a whole, including their caption."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "reject"
+        adapter = _make_adapter()
+        event = _make_event(text="photo caption")
+        event.message_type = MessageType.PHOTO
+        event.media_urls = ["/tmp/photo.jpg"]
+        event.media_types = ["image/jpeg"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent._active_children = []
+        runner._running_agents[sk] = agent
+        runner._queue_or_replace_pending_event = MagicMock()
+
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+
+        runner._queue_or_replace_pending_event.assert_not_called()
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+        content = adapter._send_with_retry.await_args.kwargs["content"]
+        assert "not accepted" in content
+        assert "resend it after" in content
+
+    @pytest.mark.asyncio
+    async def test_reject_mode_discards_media_in_priority_path(self):
+        """The runner guard rejects media before the photo queue shortcut."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "reject"
+        runner._busy_ack_enabled = MagicMock(return_value=True)
+        adapter = _make_adapter()
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text="photo caption",
+            message_type=MessageType.PHOTO,
+            source=source,
+            message_id="photo-1",
+            media_urls=["/tmp/photo.jpg"],
+            media_types=["image/jpeg"],
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {"seconds_since_activity": 0.0}
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        assert "not accepted" in result
+        assert "resend it after" in result
+        assert sk not in adapter._pending_messages
+        agent.interrupt.assert_not_called()
+
 
     @pytest.mark.asyncio
     async def test_includes_status_detail_when_opted_in(self, monkeypatch):
@@ -469,5 +562,4 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
-
 

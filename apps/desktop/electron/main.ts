@@ -5306,7 +5306,20 @@ function registerPowerResumeListeners() {
 }
 
 function getAppIconPath() {
-  return APP_ICON_PATHS.find(fileExists)
+  // nativeImage.createFromPath (used by BrowserWindow's `icon` option) does
+  // not support ASAR paths — fileExists sees inside the ASAR archive, but
+  // the image loader cannot read from it. Prefer the unpacked mirror when
+  // the candidate lives inside app.asar; skip it when there is no mirror.
+  for (const candidate of APP_ICON_PATHS) {
+    if (!fileExists(candidate)) continue
+    if (candidate.includes('app.asar') && !candidate.includes('app.asar.unpacked')) {
+      const unpacked = unpackedPathFor(candidate)
+      if (fileExists(unpacked)) return unpacked
+      continue
+    }
+    return candidate
+  }
+  return undefined
 }
 
 function sendOpenUpdatesRequested() {

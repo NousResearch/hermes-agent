@@ -912,6 +912,21 @@ class TestGitHubTokenCheck:
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
         monkeypatch.setenv("HERMES_HOME", str(home))
 
+    def _run_with_mocked_subprocess(self, monkeypatch, tmp_path, mock_run):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
     def test_no_token_and_not_gh_authenticated_shows_warn(self, monkeypatch, tmp_path):
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
@@ -931,41 +946,58 @@ class TestGitHubTokenCheck:
 
 
     def test_gh_authenticated_without_env_token_shows_ok(self, monkeypatch, tmp_path):
-        home = tmp_path / ".hermes"
-        home.mkdir(parents=True, exist_ok=True)
-        self._isolate_home(monkeypatch, home)
-        # No GITHUB_TOKEN or GH_TOKEN
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        monkeypatch.delenv("GH_TOKEN", raising=False)
-
-        # Mock gh to return success
-        import shutil
-        real_which = shutil.which
-        def mock_which(cmd):
-            return "/usr/local/bin/gh" if cmd == "gh" else real_which(cmd)
-        monkeypatch.setattr(shutil, "which", mock_which)
-
+        json_probe = [
+            "gh", "auth", "status", "--json", "hosts", "--hostname", "github.com",
+        ]
         call_log = []
+
         def mock_run(cmd, **kwargs):
             call_log.append(cmd)
-            if cmd[:2] == ["gh", "auth"]:
-                result = types.SimpleNamespace(returncode=0, stdout="", stderr="")
-            else:
-                result = types.SimpleNamespace(returncode=1, stdout="", stderr="")
-            return result
+            if cmd == json_probe:
+                stdout = '{"hosts":{"github.com":[{"active":true,"state":"success"}]}}'
+                return types.SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="")
 
-        import subprocess
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        out = self._run_with_mocked_subprocess(monkeypatch, tmp_path, mock_run)
 
-        from hermes_cli.doctor import run_doctor
-        import io, contextlib
+        assert json_probe in call_log, f"gh not called correctly: {call_log}"
+        assert "GitHub authenticated via gh CLI" in out or "token configured" in out
 
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            run_doctor(Namespace(fix=False))
-        out = buf.getvalue()
+    def test_gh_active_account_auth_failure_shows_warn(self, monkeypatch, tmp_path):
+        json_probe = [
+            "gh", "auth", "status", "--json", "hosts", "--hostname", "github.com",
+        ]
+        call_log = []
 
-        assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
+        def mock_run(cmd, **kwargs):
+            call_log.append(cmd)
+            stdout = '{"hosts":{"github.com":[{"active":true,"state":"failed"}]}}'
+            return types.SimpleNamespace(returncode=0, stdout=stdout, stderr="auth failed")
+
+        out = self._run_with_mocked_subprocess(monkeypatch, tmp_path, mock_run)
+
+        gh_calls = [cmd for cmd in call_log if cmd[:3] == ["gh", "auth", "status"]]
+        assert gh_calls == [json_probe]
+        assert "No GITHUB_TOKEN" in out
+        assert "60 req/hr" in out
+
+    def test_gh_without_json_status_falls_back_to_text_mode(self, monkeypatch, tmp_path):
+        json_probe = [
+            "gh", "auth", "status", "--json", "hosts", "--hostname", "github.com",
+        ]
+        fallback_probe = ["gh", "auth", "status", "--hostname", "github.com"]
+        call_log = []
+
+        def mock_run(cmd, **kwargs):
+            call_log.append(cmd)
+            if cmd == fallback_probe:
+                return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="unknown flag: --json")
+
+        out = self._run_with_mocked_subprocess(monkeypatch, tmp_path, mock_run)
+
+        gh_calls = [cmd for cmd in call_log if cmd[:3] == ["gh", "auth", "status"]]
+        assert gh_calls == [json_probe, fallback_probe]
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
 
 

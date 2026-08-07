@@ -2584,10 +2584,32 @@ def run_doctor(args):
     from hermes_cli.config import get_env_value
 
     def _gh_authenticated() -> bool:
-        """Check if gh CLI is authenticated via token file or device flow."""
+        """Check whether GitHub CLI has a usable active github.com account."""
+        json_command = [
+            "gh", "auth", "status", "--json", "hosts", "--hostname", "github.com",
+        ]
+        fallback_command = ["gh", "auth", "status", "--hostname", "github.com"]
         try:
             result = subprocess.run(
-                ["gh", "auth", "status", "--json", "authenticated"],
+                json_command,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            )
+            if result.returncode == 0:
+                try:
+                    import json
+
+                    accounts = json.loads(result.stdout or "{}").get("hosts", {}).get("github.com", [])
+                    return any(
+                        account.get("active") and account.get("state") == "success"
+                        for account in accounts
+                    )
+                except (ValueError, AttributeError):
+                    pass
+
+            # Older gh releases do not expose JSON auth status. Their text
+            # mode still returns a meaningful exit code for the selected host.
+            result = subprocess.run(
+                fallback_command,
                 capture_output=True, timeout=10,
             )
             return result.returncode == 0

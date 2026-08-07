@@ -407,8 +407,11 @@ describe('FindBar', () => {
     openFindBar()
     renderFindBar()
 
-    const input = await screen.findByRole('textbox', { name: /find in page/i })
+    const input = await screen.findByRole('searchbox', { name: /find in page/i })
     expect(input).toBeTruthy()
+    expect(input.getAttribute('type')).toBe('search')
+    expect(input.getAttribute('role')).toBeNull()
+    expect(screen.getByRole('search').className).toContain('top-[calc(var(--titlebar-height,34px)+0.5rem)]')
     expect(screen.getByRole('button', { name: /close/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /next match/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /previous match/i })).toBeTruthy()
@@ -423,7 +426,7 @@ describe('FindBar', () => {
     openFindBar()
     renderFindBar()
 
-    const input = await screen.findByRole('textbox', { name: /find in page/i })
+    const input = await screen.findByRole('searchbox', { name: /find in page/i })
     // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
     await waitFor(() => expect(document.activeElement).toBe(input))
   })
@@ -435,7 +438,7 @@ describe('FindBar', () => {
       openFindBar()
       renderFindBar()
 
-      const input = screen.getByRole('textbox', { name: /find in page/i })
+      const input = screen.getByRole('searchbox', { name: /find in page/i })
       fireEvent.change(input, { target: { value: 'n' } })
       fireEvent.change(input, { target: { value: 'ne' } })
       fireEvent.change(input, { target: { value: 'nee' } })
@@ -454,6 +457,36 @@ describe('FindBar', () => {
     }
   })
 
+  it('excludes the semantic searchbox only while Chromium indexes the page', async () => {
+    vi.useFakeTimers()
+    let resolveFind: (() => void) | undefined
+    bridge.findInPage.mockReturnValueOnce(new Promise(resolve => (resolveFind = () => resolve({ count: 0 }))))
+
+    try {
+      openFindBar()
+      renderFindBar()
+
+      const input = screen.getByRole('searchbox', { name: /find in page/i }) as HTMLInputElement
+      input.focus()
+      fireEvent.change(input, { target: { value: 'needle' } })
+      input.setSelectionRange(6, 6)
+
+      act(() => vi.advanceTimersByTime(200))
+
+      expect(input.inert).toBe(true)
+      expect(input.type).toBe('search')
+      expect(input.getAttribute('role')).toBeNull()
+
+      await act(async () => resolveFind?.())
+      expect(input.inert).toBe(false)
+      // eslint-disable-next-line no-restricted-globals -- the exclusion cycle must restore real focus
+      expect(document.activeElement).toBe(input)
+      expect(input.selectionStart).toBe(6)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not fire a pending search after the bar closes', async () => {
     vi.useFakeTimers()
 
@@ -461,7 +494,7 @@ describe('FindBar', () => {
       openFindBar()
       renderFindBar()
 
-      fireEvent.change(screen.getByRole('textbox', { name: /find in page/i }), {
+      fireEvent.change(screen.getByRole('searchbox', { name: /find in page/i }), {
         target: { value: 'needle' }
       })
 
@@ -478,7 +511,7 @@ describe('FindBar', () => {
     $findInPage.set({ active: true, query: 'needle', matchOrdinal: 1, matchCount: 4 })
     renderFindBar()
 
-    const input = screen.getByRole('textbox', { name: /find in page/i })
+    const input = screen.getByRole('searchbox', { name: /find in page/i })
 
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(bridge.findInPage).toHaveBeenLastCalledWith('needle', { forward: true, findNext: true })

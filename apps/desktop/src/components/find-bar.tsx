@@ -36,6 +36,7 @@ export function FindBar() {
   const { t } = useI18n()
   const { active, query, matchOrdinal, matchCount } = useStore($findInPage)
   const inputRef = useRef<HTMLInputElement>(null)
+  const nativeSearchRequestRef = useRef(0)
   const [localQuery, setLocalQuery] = useState('')
   const { pathname } = useLocation()
 
@@ -74,11 +75,49 @@ export function FindBar() {
 
   // Debounce search — fire findInPage 200ms after the user stops typing.
   useEffect(() => {
+    const requestId = ++nativeSearchRequestRef.current
+    const input = inputRef.current
+
     if (!active || !localQuery) {
+      if (input?.inert) {
+        input.inert = false
+      }
+
       return undefined
     }
 
-    const id = setTimeout(() => setFindQuery(localQuery), 200)
+    const id = setTimeout(() => {
+      if (!input) {
+        void setFindQuery(localQuery)
+
+        return
+      }
+
+      const hadFocus = document.activeElement === input
+      const selectionStart = input.selectionStart
+      const selectionEnd = input.selectionEnd
+
+      // The HTML inert contract excludes this truthful search control from
+      // find-in-page. Keep it inert until the IPC reply confirms Electron has
+      // started the request, then restore focus and selection.
+      input.inert = true
+
+      void setFindQuery(localQuery).finally(() => {
+        if (nativeSearchRequestRef.current !== requestId) {
+          return
+        }
+
+        input.inert = false
+
+        if (hadFocus && input.isConnected) {
+          input.focus({ preventScroll: true })
+
+          if (selectionStart !== null && selectionEnd !== null) {
+            input.setSelectionRange(selectionStart, selectionEnd)
+          }
+        }
+      })
+    }, 200)
 
     // Cleanup covers every exit: another keystroke, the bar closing, and
     // unmount. Nothing can fire a find after the bar is gone.
@@ -131,7 +170,7 @@ export function FindBar() {
 
     // Empty query: clear highlights immediately rather than after the debounce.
     if (!value) {
-      setFindQuery('')
+      void setFindQuery('')
     }
   }
 
@@ -159,19 +198,23 @@ export function FindBar() {
   return (
     <div
       className={cn(
-        'pointer-events-auto fixed right-4 top-[calc(var(--titlebar-height,0px)+0.5rem)] z-50',
+        // FindBar lives in the global overlay set, outside the shell subtree
+        // that defines this custom property. Keep the real titlebar clearance
+        // when the variable is therefore unavailable.
+        'pointer-events-auto fixed right-4 top-[calc(var(--titlebar-height,34px)+0.5rem)] z-50',
         'flex items-center gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-surface-background) px-2 py-1 shadow-md'
       )}
       role="search"
     >
       <input
         aria-label={t.keybinds.actions['view.findInPage'] ?? 'Find in page'}
+        autoComplete="off"
         className="h-6 w-40 bg-transparent text-xs text-(--ui-text-primary) outline-none placeholder:text-(--ui-text-tertiary)"
         onChange={onInput}
         onKeyDown={onKeyDown}
         placeholder={t.keybinds.actions['view.findInPage'] ?? 'Find in page'}
         ref={inputRef}
-        type="text"
+        type="search"
         value={localQuery}
       />
 

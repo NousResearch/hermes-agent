@@ -92,7 +92,7 @@ import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import { findGitBash as _findGitBash } from './find-git-bash'
-import { installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
+import { installFoundInPageForwarder, performFindAfterIndexingStarted, stopFind } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
@@ -10788,7 +10788,7 @@ function ensureFoundInPageForwarder(sender: Electron.WebContents): void {
   })
 }
 
-ipcMain.handle('hermes:find-in-page', (event, query, options) => {
+ipcMain.handle('hermes:find-in-page', async (event, query, options) => {
   const win = BrowserWindow.fromWebContents(event.sender)
 
   if (!win || win.isDestroyed()) {
@@ -10796,11 +10796,10 @@ ipcMain.handle('hermes:find-in-page', (event, query, options) => {
   }
 
   ensureFoundInPageForwarder(event.sender)
-  performFind(win.webContents, query, options)
+  await performFindAfterIndexingStarted(win.webContents, query, options)
 
-  // The match count arrives asynchronously via `found-in-page`; the
-  // synchronous return value is intentionally `{ count: 0 }` to mirror
-  // Electron's own `findInPage` return semantics (an opaque request id).
+  // The match count still arrives asynchronously via `found-in-page`; this
+  // reply only acknowledges that Chromium has begun returning this request.
   return { count: 0 }
 })
 

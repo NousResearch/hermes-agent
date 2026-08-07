@@ -110,6 +110,83 @@ class TestCreateSession:
 
         assert state.agent.session_cwd == "/tmp/project"
 
+    def test_make_agent_recovers_named_custom_provider_from_restored_endpoint(
+        self, tmp_path, monkeypatch
+    ):
+        """Restored ACP sessions persist provider=custom, so recover the named
+        endpoint before resolving credentials.
+        """
+        restored_base_url = "https://restored.example/api/coding"
+        global_base_url = "https://global.example/api/coding"
+        calls = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.model = kwargs.get("model")
+
+        def fake_resolve_runtime_provider(**kwargs):
+            calls.append(kwargs)
+            return {
+                "provider": "custom",
+                "api_mode": "anthropic_messages",
+                "base_url": restored_base_url,
+                "api_key": "restored-test-key",
+                "command": None,
+                "args": [],
+            }
+
+        config = {
+            "model": {"default": "glm-5.2", "provider": "custom:global-default"},
+            "mcp_servers": {},
+            "custom_providers": [
+                {
+                    "name": "restored-provider",
+                    "base_url": restored_base_url,
+                    "api_key": "restored-key",
+                    "api_mode": "anthropic_messages",
+                    "model": "glm-5.2",
+                },
+                {
+                    "name": "global-default",
+                    "base_url": global_base_url,
+                    "api_key": "global-key",
+                    "api_mode": "chat_completions",
+                    "model": "other-model",
+                },
+            ],
+        }
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda *_: None)
+
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+        agent = manager._make_agent(
+            session_id="restored-acp",
+            cwd="/work",
+            model="glm-5.2",
+            requested_provider="custom",
+            base_url=restored_base_url,
+            api_mode="anthropic_messages",
+        )
+
+        assert calls == [
+            {
+                "requested": "custom:restored-provider",
+                "explicit_base_url": restored_base_url,
+                "target_model": "glm-5.2",
+            }
+        ]
+        assert agent.kwargs["api_key"] == "restored-test-key"
+        assert agent.kwargs["api_mode"] == "anthropic_messages"
+        assert agent.kwargs["base_url"] == restored_base_url
+
 
 
 

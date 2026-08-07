@@ -28,6 +28,7 @@ from hermes_cli.dashboard_auth.base import (
     DashboardAuthProvider,
     ProviderError,
     RefreshExpiredError,
+    is_loopback_peer,
 )
 from hermes_cli.dashboard_auth.cookies import (
     clear_sso_attempt_cookie,
@@ -87,10 +88,23 @@ def _path_is_public(path: str) -> bool:
 
 
 def _client_ip(request: Request) -> str:
+    """Best-effort client IP for the ``ip=`` field on gate audit events.
+
+    Mirrors ``routes._client_ip`` / ``token_auth._client_ip``: X-Forwarded-For
+    is only consulted when the connection peer is loopback (the request came
+    through the local reverse proxy), and then the LAST hop is taken — the
+    element that proxy appended.  Trusting the client-supplied first element
+    lets any caller forge the source IP on every SESSION_VERIFY_FAILURE,
+    REFRESH_FAILURE and LOGIN_START record this module writes.
+    """
+    peer = request.client.host if request.client else ""
+    if not is_loopback_peer(peer):
+        return peer
     fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else ""
+    # Drop empty hops so a trailing separator can't bucket every caller
+    # under one shared key.
+    hops = [h.strip() for h in fwd.split(",") if h.strip()]
+    return hops[-1] if hops else peer
 
 
 def _ordered_session_providers(

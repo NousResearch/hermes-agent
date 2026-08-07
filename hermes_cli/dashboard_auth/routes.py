@@ -35,6 +35,7 @@ from hermes_cli.dashboard_auth.base import (
     InvalidCodeError,
     InvalidCredentialsError,
     ProviderError,
+    is_loopback_peer,
 )
 from hermes_cli.dashboard_auth.cookies import (
     clear_pkce_cookie,
@@ -106,10 +107,28 @@ def _redirect_uri(request: Request) -> str:
 
 
 def _client_ip(request: Request) -> str:
+    """Best-effort client IP: audit ``ip=`` field and login-throttle bucket key.
+
+    Only honours X-Forwarded-For when the connection peer is loopback, i.e.
+    the request actually arrived through the local reverse proxy, and then
+    takes the LAST hop — the one that proxy appended, and the only element
+    it cannot be made to lie about.
+    Trusting the FIRST element instead lets any client mint an arbitrary
+    value: rotating the header hands out a fresh ``_password_rate_limited``
+    bucket per request (defeating the only brute-force control in front of
+    the scrypt verify) and forges the ip on every auth audit event.
+    uvicorn's ``proxy_headers`` (web_server.py, in ``uvicorn.Config``) does
+    not cover this — it rewrites ``request.client``, while this reads the raw
+    header.
+    """
+    peer = request.client.host if request.client else ""
+    if not is_loopback_peer(peer):
+        return peer
     fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else ""
+    # A proxy may emit a trailing separator; an empty last element would
+    # otherwise collapse every caller into one shared throttle bucket.
+    hops = [h.strip() for h in fwd.split(",") if h.strip()]
+    return hops[-1] if hops else peer
 
 
 def _prefix(request: Request) -> str:
@@ -601,10 +620,11 @@ def _validate_post_login_target(raw: str) -> str:
 # password we verify locally, so it's a credential-stuffing target. A
 # simple in-process sliding-window limiter per client IP raises the cost
 # of online guessing without any external dependency. It is intentionally
-# best-effort: process-local (resets on restart), and behind a trusting
-# proxy the IP is the proxy's unless X-Forwarded-For is set — which is why
-# this is defence-in-depth on top of the provider's own constant-time
-# verify, not the only line of defence.
+# best-effort: process-local (resets on restart), and only as granular as
+# ``_client_ip`` can safely make it — behind a proxy that appends no
+# X-Forwarded-For every remote client shares the proxy's single bucket —
+# which is why this is defence-in-depth on top of the provider's own
+# constant-time verify, not the only line of defence.
 
 _PW_RATE_MAX_ATTEMPTS = 10
 _PW_RATE_WINDOW_SEC = 60.0

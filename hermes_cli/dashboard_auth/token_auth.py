@@ -47,7 +47,11 @@ from fastapi.responses import JSONResponse, Response
 
 from hermes_cli.dashboard_auth import list_token_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-from hermes_cli.dashboard_auth.base import ProviderError, TokenPrincipal
+from hermes_cli.dashboard_auth.base import (
+    ProviderError,
+    TokenPrincipal,
+    is_loopback_peer,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -81,10 +85,22 @@ def clear_token_routes() -> None:
 
 
 def _client_ip(request: Request) -> str:
+    """Best-effort client IP for the ``ip=`` field on TOKEN_AUTH_FAILURE events.
+
+    Mirrors ``routes._client_ip``: X-Forwarded-For is only consulted when the
+    connection peer is loopback (the request came through the local reverse
+    proxy), and then the LAST hop is taken — the element that proxy appended.
+    A client-supplied first element is attacker-controlled, so trusting it
+    lets a caller forge the source IP on every failed-token audit record.
+    """
+    peer = request.client.host if request.client else ""
+    if not is_loopback_peer(peer):
+        return peer
     fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else ""
+    # Drop empty hops so a trailing separator can't bucket every caller
+    # under one shared key.
+    hops = [h.strip() for h in fwd.split(",") if h.strip()]
+    return hops[-1] if hops else peer
 
 
 def extract_bearer_token(request: Request) -> str:

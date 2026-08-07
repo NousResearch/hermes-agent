@@ -1,9 +1,31 @@
 """Abstract base + dataclasses + exceptions for dashboard auth providers."""
 from __future__ import annotations
 
+import ipaddress
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
+
+
+def is_loopback_peer(peer: str) -> bool:
+    """True when ``peer`` is this machine talking to itself.
+
+    Gates whether X-Forwarded-For may be believed at all: only a request that
+    genuinely arrived through the local reverse proxy has a trustworthy
+    appended hop.  Lives here so the three copies of ``_client_ip``
+    (``routes``, ``token_auth``, ``middleware``) cannot drift apart — they are
+    three implementations of one security decision.
+
+    Must not be a literal ``("127.0.0.1", "::1")`` membership test: under a
+    dual-stack bind (``--host ::``) an IPv4 loopback proxy peer arrives as the
+    IPv4-mapped ``::ffff:127.0.0.1``, which such a test rejects — discarding
+    XFF and collapsing every client into a single throttle bucket.
+    """
+    try:
+        return ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        # Not an IP literal (unix socket, empty, hostname) — never trusted.
+        return False
 
 
 @dataclass(frozen=True)

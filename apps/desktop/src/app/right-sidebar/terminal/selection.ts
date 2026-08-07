@@ -105,6 +105,14 @@ export function isAddSelectionShortcut(event: KeyboardEvent) {
   return mod && !event.shiftKey && event.key.toLowerCase() === 'l'
 }
 
+/** Whether this terminal session should own a global ⌘/Ctrl+L keydown. */
+export function shouldOwnAddSelectionShortcut(
+  event: KeyboardEvent,
+  opts: { active: boolean; hasSelection: boolean }
+) {
+  return opts.active && opts.hasSelection && isAddSelectionShortcut(event)
+}
+
 export function terminalSelectionLabel(term: Terminal, shellName: string, text: string) {
   const pos = term.getSelectionPosition()
 

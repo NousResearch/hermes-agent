@@ -156,7 +156,7 @@ class TestReportDatabaseJournalModes:
         doctor._report_database_journal_modes(tmp_path, VULNERABLE)
 
         out = capsys.readouterr().out
-        assert "state.db: rollback journal mode (not exposed)" in out
+        assert "state.db: rollback journal mode" in out
         assert EXPOSED_TEXT not in out
 
     @pytest.mark.parametrize("version", FIXED_VERSIONS)
@@ -182,8 +182,8 @@ class TestReportDatabaseJournalModes:
 
         out = capsys.readouterr().out
         assert "state.db is in WAL mode" in out
-        assert "projects.db: rollback journal mode (not exposed)" in out
-        assert "kanban.db: rollback journal mode (not exposed)" in out
+        assert "projects.db: rollback journal mode" in out
+        assert "kanban.db: rollback journal mode" in out
         assert "kanban/boards/myboard/kanban.db is in WAL mode" in out
 
     def test_missing_databases_are_skipped(self, tmp_path, capsys):
@@ -205,7 +205,7 @@ class TestReportDatabaseJournalModes:
             holder.close()
 
         out = capsys.readouterr().out
-        assert "state.db: rollback journal mode (not exposed)" in out
+        assert "state.db: rollback journal mode" in out
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
     @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
@@ -249,3 +249,26 @@ class TestReportDatabaseJournalModes:
 
         assert _sidecars(tmp_path) == []
         assert db.read_bytes() == db_bytes
+
+
+class TestSizeAndRepairHint:
+    def test_exposed_databases_report_size_and_repair_hint(self, tmp_path, capsys):
+        db = tmp_path / "state.db"
+        _make_db(db, journal_mode="WAL")
+        doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+        out = capsys.readouterr().out
+        assert "MB)" in out
+        assert "To clear the exposure:" in out
+
+    def test_no_repair_hint_when_nothing_is_exposed(self, tmp_path, capsys):
+        _make_db(tmp_path / "state.db", journal_mode="DELETE")
+        doctor._report_database_journal_modes(tmp_path, VULNERABLE)
+        assert "To clear the exposure:" not in capsys.readouterr().out
+
+    def test_no_repair_hint_on_a_fixed_runtime(self, tmp_path, capsys):
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        doctor._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+        assert "To clear the exposure:" not in capsys.readouterr().out
+
+    def test_size_failure_does_not_crash(self, tmp_path, capsys):
+        assert doctor._format_db_size(tmp_path / "gone.db") == "size unknown"

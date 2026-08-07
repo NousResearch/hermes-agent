@@ -141,12 +141,20 @@ def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
     return None, f"unrecognized file-format version {header[18]}"
 
 
+def _format_db_size(db_path: Path) -> str:
+    try:
+        mb = db_path.stat().st_size / 1_048_576
+    except OSError:
+        return "size unknown"
+    return f"{mb:.1f} MB" if mb >= 0.1 else "<0.1 MB"
+
+
 def _report_database_journal_modes(
     hermes_home: Path | None = None,
     version_info: tuple[int, ...] | None = None,
 ) -> None:
     """List each database's journal mode; warn on WAL under a vulnerable SQLite."""
-    from hermes_state import is_sqlite_wal_reset_vulnerable
+    from hermes_state import _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable
 
     vulnerable = is_sqlite_wal_reset_vulnerable(version_info)
     home = hermes_home if hermes_home is not None else HERMES_HOME
@@ -155,10 +163,12 @@ def _report_database_journal_modes(
     except Exception as exc:
         check_warn(f"Could not list Hermes databases: {exc}")
         return
+    exposed = []
     for name, path in databases:
         if not path.is_file():
             continue
         mode, error = _read_journal_mode(path)
+        size = _format_db_size(path)
         if error is not None:
             if vulnerable:
                 check_warn(
@@ -169,16 +179,19 @@ def _report_database_journal_modes(
                 check_info(f"{name}: journal mode could not be read ({error})")
         elif mode == "wal":
             if vulnerable:
+                exposed.append(name)
                 check_warn(
-                    f"{name} is in WAL mode",
+                    f"{name} is in WAL mode ({size})",
                     "(exposed to the WAL-reset bug until SQLite is upgraded)",
                 )
             else:
-                check_info(f"{name}: WAL journal mode")
+                check_info(f"{name}: WAL journal mode ({size})")
         elif vulnerable:
-            check_info(f"{name}: rollback journal mode (not exposed)")
+            check_info(f"{name}: rollback journal mode ({size}, not exposed)")
         else:
-            check_info(f"{name}: rollback journal mode")
+            check_info(f"{name}: rollback journal mode ({size})")
+    if exposed:
+        check_info(f"To clear the exposure: {_wal_reset_repair_hint()}")
 
 
 def _safe_which(cmd: str) -> str | None:

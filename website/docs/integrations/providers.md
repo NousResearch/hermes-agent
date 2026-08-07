@@ -53,6 +53,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **MiniMax OAuth** | `hermes model` → "MiniMax (OAuth)" (provider: `minimax-oauth`; browser PKCE login) |
 | **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
+| **Poolside** | `hermes model` → "Custom endpoint" or "OpenRouter" |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
 For the official API-key path, see the dedicated [Google Gemini guide](/guides/google-gemini).
@@ -1161,6 +1162,22 @@ Routing profiles:
 :::note
 ClawRouter requires a USDC-funded wallet on Base or Solana for payment. All requests route through BlockRun's backend API. Run `npx @blockrun/clawrouter doctor` to check wallet status.
 :::
+
+---
+
+### Poolside — Coding Models
+
+[Poolside](https://poolside.ai) provides coding models through Poolside Platform, organization deployments, and OpenRouter.
+
+| Access method | Hermes setup | Base URL | Credential |
+|---------------|--------------|----------|------------|
+| **[Poolside Platform](https://platform.poolside.ai/)** | Custom endpoint | `https://inference.poolside.ai/v1` | Poolside Platform API key |
+| **Your organization's Poolside deployment** | Custom endpoint | `https://<api-domain>/openai/v1` | API key or token supplied by your Poolside administrator |
+| **[OpenRouter](https://openrouter.ai/poolside)** | OpenRouter provider | `https://openrouter.ai/api/v1` | OpenRouter API key |
+
+Configure Hermes with `hermes model` → Custom endpoint → the matching URL above → API key → model ID.
+
+For OpenRouter: `hermes model` → OpenRouter → API key → Enter custom model name → an ID from [Poolside models on OpenRouter](https://openrouter.ai/poolside).
 
 ---
 

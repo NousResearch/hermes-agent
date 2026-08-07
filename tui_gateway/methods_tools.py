@@ -543,15 +543,42 @@ def _(rid, params: dict) -> dict:
 
     try:
         from agent.skill_commands import (
-            scan_skill_commands,
             build_skill_invocation_message,
+            build_stacked_skill_invocation_message,
+            scan_skill_commands,
+            split_stacked_skill_commands,
         )
 
         cmds = scan_skill_commands()
         key = f"/{name}"
         if key in cmds:
+            extra_keys, user_instruction = split_stacked_skill_commands(arg)
+            if extra_keys:
+                stacked = build_stacked_skill_invocation_message(
+                    [key, *extra_keys],
+                    user_instruction,
+                    task_id=session.get("session_key", "") if session else "",
+                )
+                if stacked:
+                    msg, loaded_names, missing = stacked
+                    notice = f"⚡ Loading {len(loaded_names)} stacked skills: {', '.join(loaded_names)}"
+                    if missing:
+                        notice += f"\nSkipped missing skills: {', '.join(missing)}"
+                    return _ok(
+                        rid,
+                        {
+                            "type": "skill",
+                            "message": msg,
+                            "name": cmds[key].get("name", name),
+                            "notice": notice,
+                            "display": _skill_scaffold_projection(msg),
+                        },
+                    )
+
             msg = build_skill_invocation_message(
-                key, arg, task_id=session.get("session_key", "") if session else ""
+                key,
+                user_instruction,
+                task_id=session.get("session_key", "") if session else "",
             )
             if msg:
                 return _ok(

@@ -1,6 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import json
+import sqlite3
 import pytest
 import time
 from unittest.mock import patch, MagicMock
@@ -99,14 +100,43 @@ class TestSummarizeToolResultClarify:
         assert first_summary.endswith("...[truncated]")
         assert second_summary == first_summary
 
-    def test_unpaired_surrogates_are_safe_for_utf8_persistence(self):
-        content = json.dumps({"user_response": "\ud83d" * 1_000})
+    def test_unpaired_surrogates_are_safe_through_pruning_and_sqlite(self, compressor):
+        content = json.dumps({"user_response": "Привет 😀" + "\ud83d" * 1_000})
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "clarify-1",
+                        "type": "function",
+                        "function": {"name": "clarify", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "clarify-1", "content": content},
+            {"role": "user", "content": "recent request"},
+            {"role": "assistant", "content": "recent response"},
+        ]
 
-        summary = _summarize_tool_result("clarify", "{}", content)
+        pruned_messages, pruned_count = compressor._prune_old_tool_results(
+            messages, protect_tail_count=2
+        )
+        summary = pruned_messages[1]["content"]
 
+        assert pruned_count == 1
         assert len(summary) <= 200
         assert summary.encode("utf-8")
+        assert "Привет 😀" in summary
         assert "\\ud83d" in summary
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("CREATE TABLE messages (content TEXT)")
+            connection.execute("INSERT INTO messages VALUES (?)", (summary,))
+            assert connection.execute("SELECT content FROM messages").fetchone()[0] == summary
+
+        pruned_again, _ = compressor._prune_old_tool_results(
+            pruned_messages, protect_tail_count=2
+        )
+        assert pruned_again[1]["content"] == summary
 
     @pytest.mark.parametrize(
         "content",

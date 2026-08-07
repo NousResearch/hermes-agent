@@ -863,16 +863,68 @@ class MemoryManager:
                 )
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        """Notify all providers of session end."""
+        """Notify all providers of session end, with sanitized messages."""
+        sanitized = self._sanitize_session_end_messages(messages)
         for provider in self._providers:
             try:
-                provider.on_session_end(messages)
+                provider.on_session_end(sanitized)
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' on_session_end failed: %s",
                     provider.name, e,
                     exc_info=True,
                 )
+
+    @staticmethod
+    def _sanitize_session_end_messages(
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Strip runtime/model artifacts from messages before passing to memory providers.
+
+        Removes:
+        - Standalone NO_REPLY control markers
+        - Model special-token literals (<|im_start|>, <|im_end|>)
+        - Media placeholders (<media:...>)
+        - Tool-call directives (<tool_call>...</tool_call>)
+        - Tool-use reruns (<tool_use_rerun>)
+        - Lambda-style content blocks ({"type": "tool_use_lambda"|"tool_call"|"media"})
+        """
+        _ARTIFACT_PATTERNS = re.compile(
+            r"^(?:\s*<(?:tool_call|tool_use_rerun|media:image|media:audio|media:video|im_start|im_end)>\s*)*$"
+        )
+
+        sanitized: List[Dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role", "")
+            if role not in ("user", "assistant"):
+                sanitized.append(msg)
+                continue
+
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                if content and _ARTIFACT_PATTERNS.match(content):
+                    continue
+                sanitized.append(msg)
+            elif isinstance(content, list):
+                filtered_content = [
+                    block
+                    for block in content
+                    if isinstance(block, dict)
+                    and block.get("type", "")
+                    not in (
+                        "tool_use_lambda",
+                        "tool_use_rerun",
+                        "tool_call",
+                        "media",
+                    )
+                ]
+                if not filtered_content:
+                    continue
+                sanitized.append({**msg, "content": filtered_content})
+            else:
+                sanitized.append(msg)
+
+        return sanitized
 
     def commit_session_boundary_async(
         self,

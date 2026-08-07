@@ -76,6 +76,55 @@ def _codex_override():
     }
 
 
+def test_no_override_scan_skipped_when_debug_disabled(monkeypatch):
+    """Measured-work pin: the O(n) session scan is lazy.
+
+    ``_resolve_session_agent_runtime``'s no-override branch previously
+    evaluated ``[k for k, st in list(self._sessions_map().items()) ...]`` as
+    an eager ``logger.debug`` argument on every call — even at WARNING level.
+    With the fix, ``_sessions_map()`` must not be touched when debug logging
+    is off, and must still be scanned (producing the override-key preview)
+    when debug logging is on.
+    """
+    import logging
+
+    from gateway.run import GatewayRunner
+
+    scans = {"n": 0}
+
+    def counting_sessions_map(self):
+        scans["n"] += 1
+        return {f"sess_{i}": MagicMock() for i in range(50)}
+
+    # Resolve with no session key -> no-override branch. Stub the seams so
+    # nothing else in the resolver touches real state.
+    monkeypatch.setattr(GatewayRunner, "_sessions_map", counting_sessions_map)
+    monkeypatch.setattr(GatewayRunner, "_session_key_for_source", lambda self, s: None)
+    monkeypatch.setattr(GatewayRunner, "_peek_session_state", lambda self, k: None)
+    monkeypatch.setattr(
+        GatewayRunner, "_rehydrate_session_model_override", lambda self, k: None
+    )
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {})
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = None
+
+    gw_logger = logging.getLogger("gateway.run")
+
+    # At WARNING level the scan must NOT run. setLevel() (not direct .level
+    # assignment) is required: Logger.isEnabledFor consults an internal
+    # level cache that only setLevel() invalidates.
+    monkeypatch.setattr(gw_logger, "disabled", False)
+    gw_logger.setLevel(logging.WARNING)
+    GatewayRunner._resolve_session_agent_runtime(runner, source=None)
+    assert scans["n"] == 0, "session scan ran at WARNING level"
+
+    # At DEBUG level the scan runs and builds the override-key preview.
+    gw_logger.setLevel(logging.DEBUG)
+    GatewayRunner._resolve_session_agent_runtime(runner, source=None)
+    assert scans["n"] == 1, "session scan did not run at DEBUG level"
+
+
 def _explode_runtime_resolution():
     raise AssertionError(
         "global runtime resolution should not run when a complete session override exists"

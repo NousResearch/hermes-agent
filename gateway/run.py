@@ -7013,14 +7013,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 resolved_session_key or "", model, override_model,
             )
         else:
+            if logger.isEnabledFor(logging.DEBUG):
+                # Building this list scans every session state — O(n) with the
+                # session count — so only construct it when debug output will
+                # actually be emitted. Previously it was an eager argument to
+                # logger.debug, evaluated on every call even at WARNING level
+                # (this resolver runs on every inbound message).
+                override_keys = [
+                    _key
+                    for _key, _st in self._sessions_map().items()
+                    if _st.conversation.model_override is not None
+                ][:5] or "[]"
+            else:
+                override_keys = "[]"
             logger.debug(
                 "No session model override: session=%s config_model=%s override_keys=%s",
-                resolved_session_key or "", model,
-                [
-                    _key
-                    for _key, _st in list(self._sessions_map().items())
-                    if _st.conversation.model_override is not None
-                ][:5] or "[]",
+                resolved_session_key or "", model, override_keys,
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()

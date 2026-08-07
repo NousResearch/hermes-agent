@@ -11553,6 +11553,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.warning("Channel directory build failed: %s", e)
         
+        # Wait for adapters with a send-path health gate (e.g. Telegram
+        # polling) to confirm their first receive before firing lifecycle
+        # notifications — otherwise they race the gate and are dropped
+        # locally with "send_path_degraded". Keep this window short: it
+        # blocks the startup sequence, and slow cases (long-poll hanging
+        # on a quiet chat) are covered by the background retry in
+        # _send_restart_notification().
+        await self._wait_for_send_paths_ready(timeout=3.0)
+
         # Check if we're restarting after a /update command. If the update is
         # still running, keep watching so we notify once it actually finishes.
         notified = await self._send_update_notification()
@@ -21493,6 +21502,88 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return True
 
+    async def _wait_for_send_paths_ready(self, timeout: float = 15.0) -> None:
+        """Wait until connected adapters confirm their send path is healthy.
+
+        Some adapters (e.g. Telegram in polling mode) gate send() behind a
+        health flag (_send_path_degraded) until the first successful receive
+        confirms the connection is live. Lifecycle notifications fired right
+        after connect can race this gate and get dropped locally
+        ("send_path_degraded"). Poll briefly until every adapter exposing
+        the flag reports ready; adapters without the flag count as ready.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            pending = [
+                platform for platform, adapter in self.adapters.items()
+                if getattr(adapter, "_send_path_degraded", False)
+            ]
+            if not pending:
+                return
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Send path still degraded after %.0fs on: %s — "
+                    "sending lifecycle notifications anyway",
+                    timeout,
+                    ", ".join(str(getattr(p, "value", p)) for p in pending),
+                )
+                return
+            await asyncio.sleep(0.5)
+
+    async def _retry_restart_notification(
+        self,
+        platform,
+        chat_id: str,
+        *,
+        thread_id=None,
+        chat_type=None,
+        message_id=None,
+        attempts: int = 6,
+        interval: float = 10.0,
+    ) -> None:
+        """Retry the restart notification while the adapter send path is degraded.
+
+        With Telegram long polling the send-path health gate only clears on a
+        getUpdates *response*, which on a quiet chat can take tens of seconds
+        (the poll hangs until an update arrives). A short startup wait cannot
+        cover that, so retry in the background until the gate opens.
+        """
+        platform_str = getattr(platform, "value", str(platform))
+        for attempt in range(1, attempts + 1):
+            await asyncio.sleep(interval)
+            adapter = self.adapters.get(platform)
+            if adapter is None:
+                return
+            if getattr(adapter, "_send_path_degraded", False):
+                continue
+            try:
+                metadata = self._thread_metadata_for_target(
+                    platform,
+                    chat_id,
+                    thread_id,
+                    chat_type=chat_type,
+                    reply_to_message_id=message_id,
+                    adapter=adapter,
+                )
+                result = await adapter.send(
+                    str(chat_id),
+                    "♻ Gateway restarted successfully. Your session continues.",
+                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                )
+                if result is not None and getattr(result, "success", True) is False:
+                    continue
+                logger.info(
+                    "Sent restart notification to %s:%s (retry %d)",
+                    platform_str, chat_id, attempt,
+                )
+                return
+            except Exception as e:
+                logger.debug("Restart notification retry %d failed: %s", attempt, e)
+        logger.warning(
+            "Restart notification to %s:%s gave up after %d retries",
+            platform_str, chat_id, attempts,
+        )
+
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
         notify_path = _hermes_home / ".restart_notify.json"
@@ -21552,12 +21643,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # we must inspect the result before claiming success — otherwise
             # the log line is misleading and hides real delivery failures.
             if result is not None and getattr(result, "success", True) is False:
+                send_error = getattr(result, "error", "send returned success=False")
                 logger.warning(
                     "Restart notification to %s:%s was not delivered: %s",
                     platform_str,
                     chat_id,
-                    getattr(result, "error", "send returned success=False"),
+                    send_error,
                 )
+                if send_error == "send_path_degraded":
+                    # Long-poll health gate can stay closed for tens of
+                    # seconds on a quiet chat — retry in the background
+                    # instead of dropping the notification on the floor.
+                    task = asyncio.create_task(
+                        self._retry_restart_notification(
+                            platform,
+                            str(chat_id),
+                            thread_id=thread_id,
+                            chat_type=chat_type,
+                            message_id=message_id,
+                        )
+                    )
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
                 return None
 
             logger.info(

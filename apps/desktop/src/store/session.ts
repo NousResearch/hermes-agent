@@ -565,13 +565,30 @@ export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStor
 // Written by session-states.ts (handleTransition), cleared here on session open.
 export const $unreadFinishedSessionIds = atom<string[]>([])
 
+/** A session is "read" the moment the user opens it — main-thread resume AND
+ *  tile/tab open both call this, so the green dot can't stick while the user
+ *  is looking at the session. */
+export function markSessionRead(storedSessionId: string) {
+  if ($unreadFinishedSessionIds.get().includes(storedSessionId)) {
+    $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(x => x !== storedSessionId))
+  }
+}
+
+/** Sidebar "mark all as read" — clears every finished-unread dot. Purely
+ *  renderer-local, like the atom itself. */
+export function markAllSessionsRead() {
+  if ($unreadFinishedSessionIds.get().length > 0) {
+    $unreadFinishedSessionIds.set([])
+  }
+}
+
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
   updateAtom($selectedStoredSessionId, next)
   // Opening a session clears its unread state — the user is now looking at it.
   const id = $selectedStoredSessionId.get()
 
-  if (id && $unreadFinishedSessionIds.get().includes(id)) {
-    $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(x => x !== id))
+  if (id) {
+    markSessionRead(id)
   }
 }
 

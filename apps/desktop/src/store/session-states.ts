@@ -36,6 +36,7 @@ import {
   $activeSessionId,
   $selectedStoredSessionId,
   $unreadFinishedSessionIds,
+  markSessionRead,
   setActiveSessionStoredIdRotation
 } from './session'
 import { isSecondaryWindow } from './windows'
@@ -535,6 +536,12 @@ export function openSessionTile(
   before?: null | string
 ) {
   const tiles = $sessionTiles.get()
+
+  // Opening a session in a tab/tile is "reading" it — clear its unread dot
+  // exactly like main-thread resume does. Previously only
+  // setSelectedStoredSessionId cleared unread, so tile-opened sessions kept
+  // their green dot even while the user was reading them.
+  markSessionRead(storedSessionId)
 
   if (storedSessionId === $selectedStoredSessionId.get()) {
     return

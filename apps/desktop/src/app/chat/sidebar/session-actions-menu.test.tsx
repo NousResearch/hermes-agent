@@ -37,6 +37,7 @@ vi.mock('@/i18n', () => ({
           copyIdFailed: 'Failed to copy ID',
           export: 'Export',
           hideTabBar: 'Hide tab bar',
+          markRead: 'Mark as read',
           pin: 'Pin',
           rename: 'Rename',
           renameDesc: 'Leave empty to clear.',
@@ -67,6 +68,8 @@ vi.mock('@/store/session', () => ({
   $activeSessionId: atom<null | string>(null),
   $selectedStoredSessionId: atom<null | string>(null),
   $sessions: atom<unknown[]>([]),
+  $unreadFinishedSessionIds: atom<string[]>([]),
+  markSessionRead: vi.fn(),
   sessionMatchesStoredId: vi.fn(() => false),
   sessionPinId: vi.fn((s: { id: string }) => s.id),
   setSessions: vi.fn()

@@ -16068,11 +16068,37 @@ def _render_active_theme_bootstrap_css() -> str:
             typo = theme.get("typography") or {}
             font_sans = typo.get("fontSans") or _THEME_DEFAULT_TYPOGRAPHY["fontSans"]
             base_size = typo.get("baseSize") or _THEME_DEFAULT_TYPOGRAPHY["baseSize"]
-            # Defensive ``</style>`` escape — current values are well-known
-            # hex/font strings, but this keeps the helper safe if it is
-            # later extended to ship user-authored CSS literals.
+            # Defensive CSS escaping — values arrive from user-authored
+            # dashboard theme YAML and are interpolated into a ``<style>``
+            # block in the dashboard ``<head>``. A ``</``-only escape is
+            # insufficient: CSS values sit inside a declaration context,
+            # so ``;`` / ``}`` terminate the rule and let a malicious
+            # theme inject arbitrary CSS (exfiltration via
+            # ``background:url(//attacker)``, CSS keyloggers, ``@import``
+            # of remote stylesheets, etc.), and ``\\`` / quotes break the
+            # tokenizer in other ways.  Escape every character that can
+            # end a declaration, end a rule, or smuggle markup, plus
+            # backslash so a crafted value cannot re-introduce escapes.
             def _esc(s: str) -> str:
-                return str(s).replace("</", "<\\/")
+                # CSS escape sequences (hex + trailing space). Escaping
+                # ``<``/``>`` as ``\\3C ``/``\\3E `` also guarantees the
+                # output never contains the literal byte sequence
+                # ``</style>``, which the HTML parser would otherwise
+                # treat as the end of this style block regardless of the
+                # CSS tokenizer's view of it.
+                return (
+                    str(s)
+                    .replace("\\", "\\\\")
+                    .replace(";", "\\3B ")
+                    .replace("{", "\\7B ")
+                    .replace("}", "\\7D ")
+                    .replace("<", "\\3C ")
+                    .replace(">", "\\3E ")
+                    .replace('"', '\\22 ')
+                    .replace("'", "\\27 ")
+                    .replace("\n", "\\A ")
+                    .replace("\r", "\\D ")
+                )
             # Variable names MUST match what the bundle actually consumes:
             #   - ``--background-base`` / ``--midground-base`` come from
             #     ``layerVars()`` in ``web/src/themes/context.tsx``.

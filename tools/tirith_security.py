@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -809,8 +810,6 @@ def check_command_security(command: str) -> dict:
     exit_code = result.returncode
     if exit_code == 0:
         action = "allow"
-        # Successful execution — reset circuit breaker
-        _crash_count = 0
     elif exit_code == 1:
         action = "block"
     elif exit_code == 2:
@@ -823,6 +822,13 @@ def check_command_security(command: str) -> dict:
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith exit code {exit_code} (fail-open)"}
         return {"action": "block", "findings": [], "summary": f"tirith exit code {exit_code} (fail-closed)"}
+
+    # tirith ran and returned a real verdict (allow/block/warn) — all three are
+    # successful executions, not crashes, so reset the CONSECUTIVE-failure
+    # circuit breaker. Previously only exit 0 reset it, so spawn/exec failures
+    # interleaved with block/warn verdicts still accumulated and could open the
+    # breaker (fail-open, disabling tirith) despite it working fine in between.
+    _crash_count = 0
 
     # Parse JSON for enrichment (never overrides the exit code verdict)
     findings = []
@@ -855,6 +861,12 @@ def check_command_security(command: str) -> dict:
     return {"action": action, "findings": findings, "summary": summary}
 
 
+# ``.app`` at a hostname boundary: a literal ``.app`` NOT followed by another
+# hostname char (``[a-z0-9-]``). Matches ``example.app`` / a bare ``.app`` /
+# ``'.app'`` in prose, but not ``.appspot`` / ``.apple`` / ``paypal.app-secure.com``.
+_APP_TLD_RE = re.compile(r"\.app(?![a-z0-9-])")
+
+
 def _is_app_tld_finding(finding: dict) -> bool:
     """Return True if this finding is a lookalike_tld warning for the .app TLD only.
 
@@ -867,6 +879,11 @@ def _is_app_tld_finding(finding: dict) -> bool:
         return False
     for field in ("value", "tld", "detail", "description", "message"):
         val = finding.get(field)
-        if val is not None and ".app" in str(val).lower():
+        # Match the ``.app`` gTLD at a hostname boundary, not as a bare
+        # substring: ``.app`` followed by ``[a-z0-9-]`` is a different label
+        # or TLD (``.appspot``, ``.apple``, ``paypal.app-secure.com``) and must
+        # NOT be treated as the benign ``.app`` case, or a real lookalike_tld
+        # warning gets silently swallowed and the command allowed.
+        if val is not None and _APP_TLD_RE.search(str(val).lower()):
             return True
     return False

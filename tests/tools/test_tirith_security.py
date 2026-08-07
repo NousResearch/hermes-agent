@@ -165,6 +165,34 @@ class TestUnknownExitCode:
         assert "exit code 99" in result["summary"]
 
 
+class TestCircuitBreakerReset:
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_block_verdict_resets_consecutive_crash_counter(self, mock_cfg, mock_run):
+        """A block/warn verdict is a successful tirith execution, so it must
+        reset the CONSECUTIVE-failure breaker. Crashes interleaved with real
+        verdicts must not accumulate to open it (fail-open) — regression for
+        the reset previously only happening on exit 0."""
+        import tools.tirith_security as _t
+
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        # crash, block, crash, block, crash — never 3 crashes in a row.
+        mock_run.side_effect = [
+            _mock_run(99, ""),                        # crash -> count 1
+            _mock_run(1, _json_stdout([], "block")),  # block -> reset to 0
+            _mock_run(99, ""),                        # crash -> count 1
+            _mock_run(1, _json_stdout([], "block")),  # block -> reset to 0
+            _mock_run(99, ""),                        # crash -> count 1
+        ]
+        for _ in range(5):
+            check_command_security("cmd")
+
+        # Without the fix the counter would reach 3 and open the breaker.
+        assert _t._circuit_open is False
+        assert _t._crash_count == 1
+
+
 # ---------------------------------------------------------------------------
 # Disabled
 # ---------------------------------------------------------------------------
@@ -676,8 +704,14 @@ class TestIsAppTldFinding:
     @pytest.mark.parametrize("finding, expected", [
         ({"rule_id": "lookalike_tld", "value": ".APP"}, True),   # case-insensitive
         ({"rule_id": "lookalike_tld", "message": "Domain uses '.app' TLD"}, True),
+        ({"rule_id": "lookalike_tld", "value": "example.app"}, True),  # real .app host
         ({"rule_id": "shortened_url", "value": ".app"}, False),  # wrong rule_id
         ({"rule_id": "lookalike_tld", "value": ".zip"}, False),  # other TLD
+        # ``.app`` as a substring of a LONGER label/TLD must NOT be suppressed —
+        # these are real lookalike warnings, not the benign .app gTLD.
+        ({"rule_id": "lookalike_tld", "value": "paypal.app-secure.com"}, False),
+        ({"rule_id": "lookalike_tld", "value": "login.appspot.com"}, False),
+        ({"rule_id": "lookalike_tld", "value": "my.apple-id.com"}, False),
     ])
     def test_app_tld_detection(self, finding, expected):
         from tools.tirith_security import _is_app_tld_finding

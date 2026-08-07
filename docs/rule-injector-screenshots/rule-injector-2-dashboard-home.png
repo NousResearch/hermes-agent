@@ -1,0 +1,1435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rule Injector — Hermes Agent Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0d1b14;
+      --bg-elevated: #14281e;
+      --fg: #e8dcc8;
+      --fg-muted: #8b7d6b;
+      --accent: #c5a572;
+      --accent-hover: #d4b88a;
+      --border: #2a3d31;
+      --danger: #c0392b;
+      --danger-hover: #e74c3c;
+      --success: #27ae60;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      margin: 0;
+      min-height: 100vh;
+    }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+    .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: var(--bg); }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
+    input, select, textarea {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--fg);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-family: inherit;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(197, 165, 114, 0.2);
+    }
+    input::placeholder, textarea::placeholder { color: var(--fg-muted); }
+    button {
+      font-family: inherit;
+      cursor: pointer;
+      border: none;
+      border-radius: 6px;
+      transition: all 0.15s ease;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: var(--bg);
+      font-weight: 600;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary {
+      background: var(--bg-elevated);
+      color: var(--fg);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: var(--border); }
+    .btn-danger {
+      background: var(--danger);
+      color: white;
+    }
+    .btn-danger:hover { background: var(--danger-hover); }
+    .btn-ghost {
+      background: transparent;
+      color: var(--fg-muted);
+    }
+    .btn-ghost:hover { color: var(--fg); background: var(--bg-elevated); }
+    .card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+    .table-container { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      color: var(--fg-muted);
+      font-weight: 500;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: var(--bg);
+    }
+    tr:hover td { background: rgba(197, 165, 114, 0.05); }
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+    }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: var(--border);
+      border-radius: 24px;
+      transition: .3s;
+    }
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 18px; width: 18px;
+      left: 3px; bottom: 3px;
+      background: white;
+      border-radius: 50%;
+      transition: .3s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+    .toggle-switch input:checked + .toggle-slider { background: var(--accent); }
+    .toggle-switch input:checked + .toggle-slider:before { transform: translateX(20px); }
+    .hook-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .hook-pre_llm_call { background: rgba(197, 165, 114, 0.15); color: var(--accent); }
+    .hook-transform_tool_result { background: rgba(39, 174, 96, 0.15); color: var(--success); }
+    .hook-pre_verify { background: rgba(192, 57, 43, 0.15); color: var(--danger); }
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100;
+      padding: 20px;
+    }
+    .modal { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 12px; width: 100%; max-width: 720px; max-height: 90vh; overflow-y: auto; }
+    .trigger-type-select { min-width: 200px; }
+    .json-editor { font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6; min-height: 120px; }
+    .rule-row { transition: background 0.15s; }
+    .rule-row.disabled { opacity: 0.5; }
+    .priority-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px; height: 28px;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 12px;
+    }
+    .priority-high { background: rgba(192, 57, 43, 0.2); color: var(--danger); }
+    .priority-medium { background: rgba(197, 165, 114, 0.2); color: var(--accent); }
+    .priority-low { background: rgba(39, 174, 96, 0.2); color: var(--success); }
+    .toast {
+      position: fixed; bottom: 24px; right: 24px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 20px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+      z-index: 200;
+      animation: slideIn 0.3s ease;
+      display: flex; align-items: center; gap: 12px;
+    }
+    .toast.success { border-left: 4px solid var(--success); }
+    .toast.error { border-left: 4px solid var(--danger); }
+    .toast.info { border-left: 4px solid var(--accent); }
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--fg-muted); }
+    .empty-state svg { width: 64px; height: 64px; margin-bottom: 16px; opacity: 0.5; }
+    .code-preview { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; max-height: 200px; overflow: auto; }
+    .hidden { display: none !important; }
+    .drag-handle { cursor: grab; color: var(--fg-muted); padding: 4px 8px; }
+    .drag-handle:hover { color: var(--accent); }
+    .rule-row.dragging { opacity: 0.5; background: rgba(197, 165, 114, 0.1); }
+    .drop-zone { border: 2px dashed var(--border); transition: border-color 0.15s; }
+    .drop-zone.active { border-color: var(--accent); background: rgba(197, 165, 114, 0.05); }
+    .export-import-btns { display: flex; gap: 8px; }
+  </style>
+<script>window.__HERMES_SESSION_TOKEN__="m22PD0fbW92G29fIX04Z8-wzPXBY6jh5LmMqjKZoP8o";</script></head>
+<body>
+  <!-- Navigation -->
+  <nav class="border-b border-[var(--border)] bg-[var(--bg-elevated)] sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4">
+      <div class="flex items-center justify-between h-16">
+        <a href="/dashboard" class="flex items-center gap-2 text-[var(--accent)] font-bold text-lg">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+          </svg>
+          Hermes Dashboard
+        </a>
+        <div class="flex items-center gap-4">
+          <span class="text-sm text-[var(--fg-muted)]">Rule Injector</span>
+          <a href="/dashboard" class="btn-secondary px-4 py-2 text-sm">Back to Dashboard</a>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <main class="max-w-7xl mx-auto px-4 py-8">
+    <header class="mb-8">
+      <h1 class="text-3xl font-bold mb-2">Rule Injector</h1>
+      <p class="text-[var(--fg-muted)]">Manage contextual hard-rule injection via plugin hooks</p>
+    </header>
+
+    <!-- Toolbar -->
+    <div class="flex flex-wrap items-center justify-between gap-4 mb-6 card p-4">
+      <div class="flex items-center gap-3">
+        <input type="text" id="searchInput" placeholder="Search rules..." class="w-64" oninput="filterRules()">
+        <select id="filterHook" class="w-40" onchange="filterRules()">
+          <option value="">All Hooks</option>
+          <option value="pre_llm_call">pre_llm_call</option>
+          <option value="transform_tool_result">transform_tool_result</option>
+          <option value="pre_verify">pre_verify</option>
+        </select>
+        <select id="filterEnabled" class="w-32" onchange="filterRules()">
+          <option value="">All Status</option>
+          <option value="true">Enabled</option>
+          <option value="false">Disabled</option>
+        </select>
+      </div>
+      <div class="flex items-center gap-3">
+        <div class="export-import-btns">
+          <button class="btn-secondary px-4 py-2" onclick="exportRules()">
+            <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            Export
+          </button>
+          <button class="btn-secondary px-4 py-2" onclick="document.getElementById('importFile').click()">
+            <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+            Import
+          </button>
+          <input type="file" id="importFile" accept=".json" class="hidden" onchange="importRules(event)">
+        </div>
+        <button class="btn-primary px-5 py-2.5" onclick="openModal()">
+          <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+          Add Rule
+        </button>
+      </div>
+    </div>
+
+    <!-- Drag-and-drop indicator -->
+    <div id="dragInfo" class="hidden mb-4 p-3 bg-[var(--accent)]/10 border border-[var(--accent)]/30 rounded-lg text-sm text-[var(--accent)]">
+      <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+      Drag rows to reorder priority. Changes saved automatically.
+    </div>
+
+    <!-- Rules Table -->
+    <div class="card overflow-hidden">
+      <div class="table-container scrollbar-thin">
+        <table id="rulesTable">
+          <thead>
+            <tr>
+              <th class="w-8"></th>
+              <th>Name</th>
+              <th class="w-32">Hook</th>
+              <th class="w-24">Priority</th>
+              <th class="w-40">Trigger Type</th>
+              <th class="w-16"></th>
+            </tr>
+          </thead>
+          <tbody id="rulesBody">
+            <!-- Populated by JS -->
+          </tbody>
+        </table>
+      </div>
+      <div id="emptyState" class="empty-state hidden">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+        </svg>
+        <p class="text-lg">No rules yet</p>
+        <p class="mt-1">Click "Add Rule" to create your first injection rule</p>
+      </div>
+    </div>
+  </main>
+
+  <!-- Add/Edit Rule Modal -->
+  <div id="modalOverlay" class="modal-overlay hidden" onclick="if(event.target===this) closeModal()">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="p-6 border-b border-[var(--border)] flex items-center justify-between">
+        <h2 id="modalTitle" class="text-xl font-bold">Add Rule</h2>
+        <button class="btn-ghost p-2" onclick="closeModal()" aria-label="Close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <form id="ruleForm" class="p-6 space-y-6" onsubmit="saveRule(event)">
+        <input type="hidden" id="ruleId">
+        <input type="hidden" id="ruleCreatedAt">
+
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label class="block text-sm font-medium mb-1">Name</label>
+            <input type="text" id="ruleName" required placeholder="e.g., Load using-agent-skills Router First">
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">Hook</label>
+            <select id="ruleHook" required class="w-full" onchange="updateTriggerFields()">
+              <option value="pre_llm_call">pre_llm_call — Inject context into user message</option>
+              <option value="transform_tool_result">transform_tool_result — Append to tool results</option>
+              <option value="pre_verify">pre_verify — Gate completion</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">Priority</label>
+            <input type="number" id="rulePriority" min="1" max="100" value="10" class="w-full">
+            <p class="text-xs text-[var(--fg-muted)] mt-1">Lower = higher priority (runs first)</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">Status</label>
+            <div class="flex items-center gap-3">
+              <label class="toggle-switch">
+                <input type="checkbox" id="ruleEnabled" checked>
+                <span class="toggle-slider"></span>
+              </label>
+              <span id="enabledLabel" class="text-sm">Enabled</span>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium mb-1">Description</label>
+          <textarea id="ruleDescription" rows="2" placeholder="What does this rule do?"></textarea>
+        </div>
+
+        <!-- Trigger Section -->
+        <fieldset class="border border-[var(--border)] rounded-lg p-4 space-y-4">
+          <legend class="text-sm font-medium text-[var(--accent)] px-2">Trigger Configuration</legend>
+
+          <div>
+            <label class="block text-sm font-medium mb-1">Trigger Type</label>
+            <select id="triggerType" class="w-full trigger-type-select" onchange="renderTriggerFields()">
+              <option value="keyword">Keyword Match — Match keywords in user message or context</option>
+              <option value="keyword_flexible">Keyword (Flexible) — Substring match without word boundaries (JSON/tool results)</option>
+              <option value="regex">Regex Match — Match regex patterns</option>
+              <option value="semantic">Semantic Match — Cosine similarity ≥ threshold (sentence-transformers)</option>
+              <option value="tool_name">Tool Name — Fire when specific tool is called</option>
+              <option value="tool_result_contains">Tool Result Contains — Match keywords in tool output</option>
+              <option value="result_truncated">File Truncated — Fire when read_file returns truncated result</option>
+              <option value="empty_result">Empty Result — Fire when tool returns empty/zero results</option>
+              <option value="attempt_count">Attempt Count — Fire after N fix attempts on same problem</option>
+              <option value="post_compaction">Post Compaction — Fire after conversation compaction</option>
+              <option value="compound">Compound (AND/OR) — Combine multiple sub-conditions</option>
+            </select>
+          </div>
+
+          <div id="triggerFields">
+            <!-- Dynamic fields rendered by JS -->
+          </div>
+        </fieldset>
+
+        <!-- Injection Section -->
+        <fieldset class="border border-[var(--border)] rounded-lg p-4 space-y-4">
+          <legend class="text-sm font-medium text-[var(--accent)] px-2">Injection Content</legend>
+
+          <div>
+            <label class="block text-sm font-medium mb-1">Injected Text</label>
+            <textarea id="injectText" class="json-editor w-full" rows="6" placeholder="[HARD RULE: Pipeline] Load skill_view(name='using-agent-skills') FIRST..."></textarea>
+            <p class="text-xs text-[var(--fg-muted)] mt-1">
+              For <code>pre_llm_call</code> and <code>attempt_count</code>: this is the <code>context</code> injected into the user message.<br>
+              For <code>transform_tool_result</code>: this is the <code>result_suffix</code> appended to tool output.<br>
+              For <code>pre_verify</code>: this is the <code>message</code> shown to prevent completion.
+            </p>
+          </div>
+        </fieldset>
+
+        <div class="flex justify-end gap-3 pt-4 border-t border-[var(--border)]">
+          <button type="button" class="btn-secondary px-5 py-2.5" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn-primary px-5 py-2.5">Save Rule</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Delete Confirmation Modal -->
+  <div id="deleteModalOverlay" class="modal-overlay hidden" onclick="if(event.target===this) closeDeleteModal()">
+    <div class="modal max-w-md" onclick="event.stopPropagation()">
+      <div class="p-6 border-b border-[var(--border)]">
+        <h3 class="text-lg font-bold">Delete Rule?</h3>
+      </div>
+      <div class="p-6">
+        <p class="text-[var(--fg-muted)] mb-4">Are you sure you want to delete <strong id="deleteRuleName"></strong>? This cannot be undone.</p>
+        <div class="flex justify-end gap-3">
+          <button class="btn-secondary px-5 py-2" onclick="closeDeleteModal()">Cancel</button>
+          <button class="btn-danger px-5 py-2" onclick="confirmDelete()">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Mode Modal -->
+  <div id="importModalOverlay" class="modal-overlay hidden" onclick="if(event.target===this) closeImportModal()">
+    <div class="modal max-w-md" onclick="event.stopPropagation()">
+      <div class="p-6 border-b border-[var(--border)]">
+        <h3 class="text-lg font-bold">Import Rules</h3>
+      </div>
+      <div class="p-6 space-y-4">
+        <p class="text-[var(--fg-muted)]">Choose how to merge imported rules:</p>
+        <div class="space-y-2">
+          <label class="flex items-center gap-3">
+            <input type="radio" name="importMode" value="merge" checked class="accent-[var(--accent)]">
+            <span>Merge — update existing by ID, add new (default)</span>
+          </label>
+          <label class="flex items-center gap-3">
+            <input type="radio" name="importMode" value="replace" class="accent-[var(--accent)]">
+            <span>Replace — discard current rules, use imported only</span>
+          </label>
+        </div>
+        <div class="flex justify-end gap-3">
+          <button class="btn-secondary px-5 py-2" onclick="closeImportModal()">Cancel</button>
+          <button class="btn-primary px-5 py-2" onclick="confirmImport()">Import</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // --- State ---
+    let rules = [];
+    let editingRuleId = null;
+    let deleteRuleId = null;
+    let importData = null;
+    let importedRules = [];
+    let dragSrcEl = null;
+
+    // --- Session Token ---
+    function getSessionToken() {
+      // 1. The Hermes dashboard injects the token into window.__HERMES_SESSION_TOKEN__
+      //    when serving index.html. If we're loaded alongside the SPA (same origin),
+      //    the SPA may have already set it.
+      if (window.__HERMES_SESSION_TOKEN__) {
+        localStorage.setItem('hermes_session_token', window.__HERMES_SESSION_TOKEN__);
+        return window.__HERMES_SESSION_TOKEN__;
+      }
+      // 2. Meta tag (if server injects it into this page's HTML)
+      const meta = document.querySelector('meta[name="hermes-session-token"]');
+      if (meta) return meta.content;
+      // 3. localStorage — survives page reloads once any of the above set it
+      return localStorage.getItem('hermes_session_token') || '';
+    }
+
+    // --- Toast ---
+    function showToast(message, type = 'info') {
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+      toast.textContent = message;
+      document.body.appendChild(toast);
+      setTimeout(() => {
+        toast.style.animation = 'slideIn 0.3s ease reverse';
+        setTimeout(() => toast.remove(), 300);
+      }, 3000);
+    }
+
+    // --- API ---
+    async function api(method, path, body = null) {
+      const headers = {
+        'Content-Type': 'application/json',
+        'X-Hermes-Session-Token': getSessionToken()
+      };
+      const res = await fetch(path, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Request failed');
+      return data;
+    }
+
+    // --- Load Rules ---
+    async function loadRules() {
+      try {
+        const data = await api('GET', '/api/rule-injector/rules');
+        rules = data.rules || [];
+        renderRules();
+      } catch (e) {
+        console.error('Failed to load rules:', e);
+        showToast('Failed to load rules: ' + e.message, 'error');
+      }
+    }
+
+    // --- Render Rules Table ---
+    function renderRules() {
+      const tbody = document.getElementById('rulesBody');
+      const emptyState = document.getElementById('emptyState');
+
+      if (rules.length === 0) {
+        tbody.innerHTML = '';
+        emptyState.classList.remove('hidden');
+        return;
+      }
+      emptyState.classList.add('hidden');
+
+      // Enable drag-and-drop
+      document.getElementById('dragInfo').classList.remove('hidden');
+
+      tbody.innerHTML = rules.map((r, index) => `
+        <tr class="rule-row ${!r.enabled ? 'disabled' : ''}" data-id="${r.id}" draggable="true" data-index="${index}">
+          <td>
+            <svg class="drag-handle w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+          </td>
+          <td>
+            <div class="font-medium">${escapeHtml(r.name)}</div>
+            <div class="text-xs text-[var(--fg-muted)] truncate max-w-xs">${escapeHtml(r.description || 'No description')}</div>
+          </td>
+          <td><span class="hook-badge hook-${r.hook}">${r.hook}</span></td>
+          <td>
+            <span class="priority-badge ${r.priority <= 5 ? 'priority-high' : r.priority <= 15 ? 'priority-medium' : 'priority-low'}">
+              ${r.priority}
+            </span>
+          </td>
+          <td class="font-mono text-sm">${formatTrigger(r.trigger)}</td>
+          <td>
+            <div class="flex items-center gap-1">
+              <label class="toggle-switch">
+                <input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleRule('${r.id}', this.checked)">
+                <span class="toggle-slider"></span>
+              </label>
+              <button class="btn-ghost p-1.5" onclick="editRule('${r.id}')" title="Edit">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+              <button class="btn-ghost p-1.5 text-[var(--danger)]" onclick="openDeleteModal('${r.id}', '${escapeHtml(r.name)}')" title="Delete">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+
+      // Add drag-and-drop handlers
+      addDragAndDropHandlers();
+    }
+
+    // --- Drag and Drop ---
+    function addDragAndDropHandlers() {
+      const rows = document.querySelectorAll('#rulesBody tr');
+      rows.forEach(row => {
+        row.addEventListener('dragstart', handleDragStart);
+        row.addEventListener('dragend', handleDragEnd);
+        row.addEventListener('dragover', handleDragOver);
+        row.addEventListener('dragleave', handleDragLeave);
+        row.addEventListener('drop', handleDrop);
+      });
+    }
+
+    function handleDragStart(e) {
+      dragSrcEl = this;
+      this.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', this.dataset.index);
+    }
+
+    function handleDragEnd(e) {
+      this.classList.remove('dragging');
+      document.querySelectorAll('.rule-row').forEach(r => r.classList.remove('drop-zone', 'active'));
+    }
+
+    function handleDragOver(e) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      this.classList.add('drop-zone', 'active');
+      return false;
+    }
+
+    function handleDragLeave(e) {
+      this.classList.remove('drop-zone', 'active');
+    }
+
+    function handleDrop(e) {
+      e.preventDefault();
+      this.classList.remove('drop-zone', 'active');
+      
+      const fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
+      const toIndex = parseInt(this.dataset.index);
+      
+      if (fromIndex === toIndex) return;
+      
+      // Reorder rules array
+      const [movedRule] = rules.splice(fromIndex, 1);
+      rules.splice(toIndex, 0, movedRule);
+      
+      // Save new priority order to server
+      savePriorityOrder();
+      
+      renderRules();
+    }
+
+    async function savePriorityOrder() {
+      try {
+        // Update each rule with its new priority (index-based, lower = higher priority)
+        const updates = rules.map((rule, index) => ({
+          id: rule.id,
+          priority: index + 1
+        }));
+        
+        // Send batch update
+        await api('POST', '/api/rule-injector/reorder', { rules: updates });
+        showToast('Priority order saved', 'success');
+      } catch (err) {
+        showToast('Failed to save priority order: ' + err.message, 'error');
+        loadRules(); // Reload to reset
+      }
+    }
+
+    function formatTrigger(trigger) {
+      if (!trigger || !trigger.type) return '—';
+      const typeLabels = {
+        'keyword': 'Keyword',
+        'keyword_flexible': 'Keyword (Flexible)',
+        'regex': 'Regex',
+        'semantic': 'Semantic (≥' + (trigger.threshold || 0.75) + ')',
+        'tool_name': 'Tool: ' + (trigger.tool_names?.join(', ') || 'any'),
+        'tool_result_contains': 'Tool Result',
+        'result_truncated': 'Truncated File',
+        'empty_result': 'Empty Result',
+        'attempt_count': 'Attempts ≥ ' + (trigger.min_attempts || '2'),
+        'post_compaction': 'Post Compaction',
+        'compound': 'Compound (' + (trigger.operator || 'and').toUpperCase() + ')',
+        'result_contains_keywords': 'Result Has Keywords'
+      };
+      return typeLabels[trigger.type] || trigger.type;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // --- Modal Management ---
+    function openModal(rule = null) {
+      editingRuleId = rule?.id || null;
+      const overlay = document.getElementById('modalOverlay');
+      const form = document.getElementById('ruleForm');
+
+      form.reset();
+      document.getElementById('ruleId').value = '';
+      document.getElementById('ruleCreatedAt').value = '';
+
+      if (rule) {
+        document.getElementById('modalTitle').textContent = 'Edit Rule';
+        document.getElementById('ruleId').value = rule.id;
+        document.getElementById('ruleName').value = rule.name;
+        document.getElementById('ruleDescription').value = rule.description || '';
+        document.getElementById('ruleHook').value = rule.hook;
+        document.getElementById('rulePriority').value = rule.priority;
+        document.getElementById('ruleEnabled').checked = rule.enabled;
+        document.getElementById('enabledLabel').textContent = rule.enabled ? 'Enabled' : 'Disabled';
+        document.getElementById('triggerType').value = rule.trigger?.type || 'keyword';
+        document.getElementById('injectText').value = rule.inject?.context || rule.inject?.result_suffix || rule.inject?.message || '';
+        document.getElementById('ruleCreatedAt').value = rule.created_at || '';
+      } else {
+        document.getElementById('modalTitle').textContent = 'Add Rule';
+        document.getElementById('ruleHook').value = 'pre_llm_call';
+        document.getElementById('triggerType').value = 'keyword';
+        document.getElementById('rulePriority').value = '10';
+        document.getElementById('ruleEnabled').checked = true;
+        document.getElementById('enabledLabel').textContent = 'Enabled';
+      }
+
+      updateTriggerFields();
+      renderTriggerFields();
+      overlay.classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+      setTimeout(() => document.getElementById('ruleName').focus(), 50);
+    }
+
+    function closeModal() {
+      document.getElementById('modalOverlay').classList.add('hidden');
+      document.body.style.overflow = '';
+      editingRuleId = null;
+    }
+
+    function openDeleteModal(id, name) {
+      deleteRuleId = id;
+      document.getElementById('deleteRuleName').textContent = name;
+      document.getElementById('deleteModalOverlay').classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeDeleteModal() {
+      document.getElementById('deleteModalOverlay').classList.add('hidden');
+      document.body.style.overflow = '';
+      deleteRuleId = null;
+    }
+
+    async function confirmDelete() {
+      if (!deleteRuleId) return;
+      try {
+        await api('DELETE', `/api/rule-injector/rules/${deleteRuleId}`);
+        showToast('Rule deleted', 'success');
+        loadRules();
+        closeDeleteModal();
+      } catch (e) {
+        showToast('Failed to delete: ' + e.message, 'error');
+      }
+    }
+
+    // --- Trigger Field Rendering ---
+    function updateTriggerFields() {
+      const hook = document.getElementById('ruleHook').value;
+      const typeSelect = document.getElementById('triggerType');
+
+      // Disable incompatible trigger types based on hook
+      Array.from(typeSelect.options).forEach(opt => {
+        if (hook === 'transform_tool_result') {
+          opt.disabled = !['tool_name', 'tool_result_contains', 'result_truncated', 'empty_result', 'result_contains_keywords', 'compound', 'semantic', 'keyword_flexible'].includes(opt.value);
+        } else if (hook === 'pre_verify') {
+          opt.disabled = !['keyword', 'attempt_count', 'compound', 'semantic', 'keyword_flexible'].includes(opt.value);
+        } else {
+          opt.disabled = false;
+        }
+      });
+
+      // If current selection is disabled, pick first valid
+      if (typeSelect.options[typeSelect.selectedIndex]?.disabled) {
+        for (let opt of typeSelect.options) {
+          if (!opt.disabled) { typeSelect.value = opt.value; break; }
+        }
+      }
+
+      renderTriggerFields();
+    }
+
+    function renderTriggerFields() {
+      const type = document.getElementById('triggerType').value;
+      const container = document.getElementById('triggerFields');
+      const editing = !!editingRuleId;
+      const rule = editing ? rules.find(r => r.id === editingRuleId) : null;
+      const trigger = rule?.trigger || {};
+
+      let html = '';
+
+      switch (type) {
+        case 'keyword':
+        case 'regex':
+          html = `
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label class="block text-sm font-medium mb-1">Scope</label>
+                <select id="triggerScope" class="w-full">
+                  <option value="latest_user_message" ${trigger.scope === 'latest_user_message' ? 'selected' : ''}>Latest User Message</option>
+                  <option value="recent_context" ${trigger.scope === 'recent_context' ? 'selected' : ''}>Recent Context (last 4 messages)</option>
+                  <option value="conversation" ${trigger.scope === 'conversation' ? 'selected' : ''}>Full Conversation (last 6 messages)</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1">Match All (AND instead of OR)</label>
+                <div class="flex items-center gap-3">
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="triggerMatchAll" ${trigger.match_all ? 'checked' : ''}>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">${type === 'keyword' ? 'Keywords (comma-separated)' : 'Regex Patterns (one per line)'}</label>
+              <textarea id="triggerPatterns" class="json-editor w-full" rows="4" placeholder="${type === 'keyword' ? 'build, code, debug, fix' : 'pattern1\\npattern2'}">${(trigger.keywords || trigger.patterns || []).join(type === 'keyword' ? ', ' : '\\n')}</textarea>
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Case Insensitive</label>
+              <div class="flex items-center gap-3">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="triggerCaseInsensitive" ${trigger.case_insensitive !== false ? 'checked' : ''}>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          `;
+          break;
+
+        case 'semantic':
+          html = `
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label class="block text-sm font-medium mb-1">Scope</label>
+                <select id="triggerScope" class="w-full">
+                  <option value="latest_user_message" ${trigger.scope === 'latest_user_message' ? 'selected' : ''}>Latest User Message</option>
+                  <option value="recent_context" ${trigger.scope === 'recent_context' ? 'selected' : ''}>Recent Context (last 4 messages)</option>
+                  <option value="conversation" ${trigger.scope === 'conversation' ? 'selected' : ''}>Full Conversation (last 6 messages)</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1">Threshold (cosine similarity)</label>
+                <div class="flex items-center gap-3">
+                  <input type="range" id="triggerThreshold" min="0" max="1" step="0.05" value="${trigger.threshold || 0.75}" class="flex-1" oninput="document.getElementById('thresholdValue').textContent = this.value">
+                  <span id="thresholdValue" class="font-mono text-sm text-[var(--accent)] min-w-[3rem] text-center">${trigger.threshold || 0.75}</span>
+                </div>
+                <p class="text-xs text-[var(--fg-muted)] mt-1">Lower = more sensitive (0.25 catches paraphrases, 0.75 = close match only)</p>
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Reference Phrases (one per line)</label>
+              <textarea id="triggerReferences" class="json-editor w-full" rows="5" placeholder="Plan is complete, pivot to implementation&#10;The plan is the deliverable, move on to the next task">${(trigger.references || []).join('\n')}</textarea>
+              <p class="text-xs text-[var(--fg-muted)] mt-1">The user's message is compared against each phrase using cosine similarity. Max similarity ≥ threshold = match.</p>
+            </div>
+          `;
+          break;
+
+        case 'keyword_flexible':
+          html = `
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label class="block text-sm font-medium mb-1">Scope</label>
+                <select id="triggerScope" class="w-full">
+                  <option value="latest_user_message" ${trigger.scope === 'latest_user_message' ? 'selected' : ''}>Latest User Message</option>
+                  <option value="recent_context" ${trigger.scope === 'recent_context' ? 'selected' : ''}>Recent Context (last 4 messages)</option>
+                  <option value="conversation" ${trigger.scope === 'conversation' ? 'selected' : ''}>Full Conversation (last 6 messages)</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1">Match All (AND instead of OR)</label>
+                <div class="flex items-center gap-3">
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="triggerMatchAll" ${trigger.match_all ? 'checked' : ''}>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Keywords (comma-separated, substring match)</label>
+              <textarea id="triggerPatterns" class="json-editor w-full" rows="4" placeholder="skill_loaded, background, running">${(trigger.keywords || []).join(', ')}</textarea>
+              <p class="text-xs text-[var(--fg-muted)] mt-1">Uses substring (in) matching instead of \b word boundaries. Works for JSON content, tool results, and hyphenated terms.</p>
+            </div>
+          `;
+          break;
+
+        case 'tool_name':
+          html = `
+            <div>
+              <label class="block text-sm font-medium mb-1">Tool Names (comma-separated)</label>
+              <input type="text" id="triggerToolNames" class="w-full" placeholder="search_files, read_file, terminal" value="${(trigger.tool_names || []).join(', ')}">
+              <p class="text-xs text-[var(--fg-muted)] mt-1">Leave empty to match any tool</p>
+            </div>
+          `;
+          break;
+
+        case 'tool_result_contains':
+          html = `
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label class="block text-sm font-medium mb-1">Tool Names (optional)</label>
+                <input type="text" id="triggerToolNames" class="w-full" placeholder="search_files, read_file" value="${(trigger.tool_names || []).join(', ')}">
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1">Match All (AND)</label>
+                <div class="flex items-center gap-3">
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="triggerMatchAll" ${trigger.match_all ? 'checked' : ''}>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1">Keywords in Result (comma-separated)</label>
+              <textarea id="triggerKeywords" class="json-editor w-full" rows="3" placeholder="error, failed, exception">${(trigger.keywords || []).join(', ')}</textarea>
+            </div>
+          `;
+          break;
+
+        case 'result_truncated':
+          html = `<p class="text-[var(--fg-muted)]">This trigger fires automatically when <code>read_file</code> returns a truncated result (has <code>next_offset</code>). No additional configuration needed.</p>`;
+          break;
+
+        case 'empty_result':
+          html = `<p class="text-[var(--fg-muted)]">This trigger fires when a tool returns an empty/zero result. Works with search_files, web_search, etc. No additional configuration needed.</p>`;
+          break;
+
+        case 'attempt_count':
+          html = `
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label class="block text-sm font-medium mb-1">Minimum Attempts</label>
+                <input type="number" id="triggerMinAttempts" min="1" max="10" value="${trigger.min_attempts || 2}" class="w-full">
+              </div>
+            </div>
+          `;
+          break;
+
+        case 'post_compaction':
+          html = `<p class="text-[var(--fg-muted)]">This trigger fires after a conversation compaction/summary event. No additional configuration needed.</p>`;
+          break;
+
+        case 'compound':
+          html = `
+            <div class="flex items-center gap-4 mb-4">
+              <label class="block text-sm font-medium">Compound Operator:</label>
+              <select id="compoundOperator" class="w-32">
+                <option value="and" ${(trigger.operator || 'and') === 'and' ? 'selected' : ''}>AND (all)</option>
+                <option value="or" ${trigger.operator === 'or' ? 'selected' : ''}>OR (any)</option>
+              </select>
+              <span class="text-xs text-[var(--fg-muted)]">AND = all conditions must match. OR = any condition matches (short-circuits on first match, keyword before semantic for performance).</span>
+            </div>
+            <div id="compoundConditions" class="space-y-4">
+              ${renderCompoundConditions(trigger.conditions || [])}
+            </div>
+            <button type="button" class="btn-secondary text-sm" onclick="addCompoundCondition()">
+              <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+              Add Condition
+            </button>
+          `;
+          break;
+      }
+
+      container.innerHTML = html;
+
+      // Initialize compound conditions if needed
+      if (type === 'compound') {
+        initializeCompoundConditions();
+      }
+    }
+
+    function renderCompoundConditions(conditions) {
+      if (!conditions.length) {
+        return `<div class="compound-condition border border-[var(--border)] rounded-lg p-4" data-index="0">${renderCompoundCondition({}, 0)}</div>`;
+      }
+      return conditions.map((c, i) => `<div class="compound-condition border border-[var(--border)] rounded-lg p-4" data-index="${i}">${renderCompoundCondition(c, i)}</div>`).join('');
+    }
+
+    function renderCompoundCondition(cond, index) {
+      const type = cond.type || 'keyword';
+      return `
+        <div class="flex items-start gap-2">
+          <div class="flex-1">
+            <label class="block text-sm font-medium mb-1">Condition ${index + 1} Type</label>
+            <select class="w-full compound-type" onchange="updateCompoundCondition(this, ${index})">
+              <option value="keyword" ${type === 'keyword' ? 'selected' : ''}>Keyword Match</option>
+              <option value="keyword_flexible" ${type === 'keyword_flexible' ? 'selected' : ''}>Keyword (Flexible)</option>
+              <option value="regex" ${type === 'regex' ? 'selected' : ''}>Regex Match</option>
+              <option value="semantic" ${type === 'semantic' ? 'selected' : ''}>Semantic Match</option>
+              <option value="tool_name" ${type === 'tool_name' ? 'selected' : ''}>Tool Name</option>
+              <option value="tool_result_contains" ${type === 'tool_result_contains' ? 'selected' : ''}>Tool Result Contains</option>
+              <option value="attempt_count" ${type === 'attempt_count' ? 'selected' : ''}>Attempt Count</option>
+            </select>
+          </div>
+          <button type="button" class="btn-ghost p-1.5 text-[var(--danger)] mt-7" onclick="removeCompoundCondition(${index})" title="Remove">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="compound-fields mt-3" id="compoundFields-${index}">
+          ${renderCompoundFields(cond, index)}
+        </div>
+      `;
+    }
+
+    function renderCompoundFields(cond, index) {
+      const type = cond.type || 'keyword';
+      switch (type) {
+        case 'keyword':
+        case 'regex':
+          return `
+            <div class="grid gap-2 sm:grid-cols-3">
+              <div>
+                <label class="text-xs text-[var(--fg-muted)] mb-1">Scope</label>
+                <select class="w-full compound-scope">
+                  <option value="latest_user_message" ${cond.scope === 'latest_user_message' ? 'selected' : ''}>Latest User Message</option>
+                  <option value="recent_context" ${cond.scope === 'recent_context' ? 'selected' : ''}>Recent Context</option>
+                  <option value="conversation" ${cond.scope === 'conversation' ? 'selected' : ''}>Full Conversation</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-[var(--fg-muted)] mb-1">Match All</label>
+                <div class="flex items-center gap-2">
+                  <label class="toggle-switch">
+                    <input type="checkbox" class="compound-match-all" ${cond.match_all ? 'checked' : ''}>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+              <div class="sm:col-span-3">
+                <label class="text-xs text-[var(--fg-muted)] mb-1">${type === 'keyword' ? 'Keywords' : 'Regex Patterns'}</label>
+                <textarea class="json-editor w-full compound-patterns" rows="2" placeholder="${type === 'keyword' ? 'keyword1, keyword2' : 'pattern1\\npattern2'}">${(cond.keywords || cond.patterns || []).join(type === 'keyword' ? ', ' : '\\n')}</textarea>
+              </div>
+            </div>
+          `;
+        case 'semantic':
+          return `
+            <div class="grid gap-2 sm:grid-cols-2">
+              <div>
+                <label class="text-xs text-[var(--fg-muted)] mb-1">Scope</label>
+                <select class="w-full compound-scope">
+                  <option value="latest_user_message" ${cond.scope === 'latest_user_message' ? 'selected' : ''}>Latest User Message</option>
+                  <option value="recent_context" ${cond.scope === 'recent_context' ? 'selected' : ''}>Recent Context</option>
+                  <option value="conversation" ${cond.scope === 'conversation' ? 'selected' : ''}>Full Conversation</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-[var(--fg-muted)] mb-1">Threshold</label>
+                <input type="number" class="w-full compound-threshold" min="0" max="1" step="0.05" value="${cond.threshold || 0.75}">
+              </div>
+            </div>
+            <div class="mt-2">
+              <label class="text-xs text-[var(--fg-muted)] mb-1">Reference Phrases (one per line)</label>
+              <textarea class="json-editor w-full compound-references" rows="3" placeholder="phrase 1&#10;phrase 2">${(cond.references || []).join('\\n')}</textarea>
+            </div>
+          `;
+        case 'keyword_flexible':
+          return `
+            <div class="grid gap-2 sm:grid-cols-3">
+              <div class="sm:col-span-2">
+                <label class="text-xs text-[var(--fg-muted)] mb-1">Scope</label>
+                <select class="w-full compound-scope">
+                  <option value="latest_user_message" ${cond.scope === 'latest_user_message' ? 'selected' : ''}>Latest User Message</option>
+                  <option value="recent_context" ${cond.scope === 'recent_context' ? 'selected' : ''}>Recent Context</option>
+                  <option value="conversation" ${cond.scope === 'conversation' ? 'selected' : ''}>Full Conversation</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-[var(--fg-muted)] mb-1">Match All</label>
+                <div class="flex items-center gap-2">
+                  <label class="toggle-switch">
+                    <input type="checkbox" class="compound-match-all" ${cond.match_all ? 'checked' : ''}>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div class="mt-2">
+              <label class="text-xs text-[var(--fg-muted)] mb-1">Keywords (comma-separated, substring match)</label>
+              <textarea class="json-editor w-full compound-patterns" rows="2" placeholder="keyword1, keyword2">${(cond.keywords || []).join(', ')}</textarea>
+            </div>
+          `;
+        case 'tool_name':
+          return `
+            <div>
+              <label class="text-xs text-[var(--fg-muted)] mb-1">Tool Names (comma-separated)</label>
+              <input type="text" class="w-full compound-tool-names" placeholder="search_files, read_file" value="${(cond.tool_names || []).join(', ')}">
+            </div>
+          `;
+        case 'tool_result_contains':
+          return `
+            <div class="grid gap-2 sm:grid-cols-2">
+              <div>
+                <label class="text-xs text-[var(--fg-muted)] mb-1">Tool Names (optional)</label>
+                <input type="text" class="w-full compound-tool-names" placeholder="search_files, read_file" value="${(cond.tool_names || []).join(', ')}">
+              </div>
+              <div>
+                <label class="text-xs text-[var(--fg-muted)] mb-1">Match All</label>
+                <div class="flex items-center gap-2">
+                  <label class="toggle-switch">
+                    <input type="checkbox" class="compound-match-all" ${cond.match_all ? 'checked' : ''}>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div>
+              <label class="text-xs text-[var(--fg-muted)] mb-1">Keywords in Result</label>
+              <textarea class="json-editor w-full compound-keywords" rows="2" placeholder="error, failed">${(cond.keywords || []).join(', ')}</textarea>
+            </div>
+          `;
+        case 'attempt_count':
+          return `
+            <div>
+              <label class="text-xs text-[var(--fg-muted)] mb-1">Minimum Attempts</label>
+              <input type="number" class="w-24 compound-min-attempts" min="1" max="10" value="${cond.min_attempts || 2}">
+            </div>
+          `;
+        default:
+          return '';
+      }
+    }
+
+    function initializeCompoundConditions() {
+      document.querySelectorAll('.compound-type').forEach((sel, i) => {
+        sel.addEventListener('change', () => updateCompoundCondition(sel, i));
+      });
+    }
+
+    function updateCompoundCondition(sel, index) {
+      const container = document.getElementById(`compoundFields-${index}`);
+      const type = sel.value;
+      let html = '';
+      switch (type) {
+        case 'keyword':
+        case 'regex':
+          html = `
+            <div class="grid gap-2 sm:grid-cols-3">
+              <div><label class="text-xs text-[var(--fg-muted)] mb-1">Scope</label><select class="w-full compound-scope"><option value="latest_user_message">Latest User Message</option><option value="recent_context">Recent Context</option><option value="conversation">Full Conversation</option></select></div>
+              <div><label class="text-xs text-[var(--fg-muted)] mb-1">Match All</label><div class="flex items-center gap-2"><label class="toggle-switch"><input type="checkbox" class="compound-match-all"><span class="toggle-slider"></span></label></div></div>
+              <div class="sm:col-span-3"><label class="text-xs text-[var(--fg-muted)] mb-1">${type === 'keyword' ? 'Keywords' : 'Regex Patterns'}</label><textarea class="json-editor w-full compound-patterns" rows="2" placeholder="${type === 'keyword' ? 'keyword1, keyword2' : 'pattern1\\npattern2'}"></textarea></div>
+            </div>
+          `;
+          break;
+        case 'keyword_flexible':
+          html = `
+            <div class="grid gap-2 sm:grid-cols-3">
+              <div class="sm:col-span-2"><label class="text-xs text-[var(--fg-muted)] mb-1">Scope</label><select class="w-full compound-scope"><option value="latest_user_message">Latest User Message</option><option value="recent_context">Recent Context</option><option value="conversation">Full Conversation</option></select></div>
+              <div><label class="text-xs text-[var(--fg-muted)] mb-1">Match All</label><div class="flex items-center gap-2"><label class="toggle-switch"><input type="checkbox" class="compound-match-all"><span class="toggle-slider"></span></label></div></div>
+            </div>
+            <div><label class="text-xs text-[var(--fg-muted)] mb-1">Keywords (comma-separated)</label><textarea class="json-editor w-full compound-patterns" rows="2" placeholder="keyword1, keyword2"></textarea></div>
+          `;
+          break;
+        case 'semantic':
+          html = `
+            <div class="grid gap-2 sm:grid-cols-2">
+              <div><label class="text-xs text-[var(--fg-muted)] mb-1">Scope</label><select class="w-full compound-scope"><option value="latest_user_message">Latest User Message</option><option value="recent_context">Recent Context</option><option value="conversation">Full Conversation</option></select></div>
+              <div><label class="text-xs text-[var(--fg-muted)] mb-1">Threshold</label><input type="number" class="w-full compound-threshold" min="0" max="1" step="0.05" value="0.75"></div>
+            </div>
+            <div class="mt-2"><label class="text-xs text-[var(--fg-muted)] mb-1">Reference Phrases (one per line)</label><textarea class="json-editor w-full compound-references" rows="3" placeholder="phrase 1&#10;phrase 2"></textarea></div>
+          `;
+          break;
+        case 'tool_name':
+          html = `<div><label class="text-xs text-[var(--fg-muted)] mb-1">Tool Names</label><input type="text" class="w-full compound-tool-names" placeholder="search_files, read_file"></div>`;
+          break;
+        case 'tool_result_contains':
+          html = `
+            <div class="grid gap-2 sm:grid-cols-2">
+              <div><label class="text-xs text-[var(--fg-muted)] mb-1">Tool Names (optional)</label><input type="text" class="w-full compound-tool-names" placeholder="search_files, read_file"></div>
+              <div><label class="text-xs text-[var(--fg-muted)] mb-1">Match All</label><div class="flex items-center gap-2"><label class="toggle-switch"><input type="checkbox" class="compound-match-all"><span class="toggle-slider"></span></label></div></div>
+            </div>
+            <div><label class="text-xs text-[var(--fg-muted)] mb-1">Keywords in Result</label><textarea class="json-editor w-full compound-keywords" rows="2" placeholder="error, failed"></textarea></div>
+          `;
+          break;
+        case 'attempt_count':
+          html = `<div><label class="text-xs text-[var(--fg-muted)] mb-1">Minimum Attempts</label><input type="number" class="w-24 compound-min-attempts" min="1" max="10" value="2"></div>`;
+          break;
+      }
+      container.innerHTML = html;
+    }
+
+    function addCompoundCondition() {
+      const container = document.getElementById('compoundConditions');
+      const index = container.children.length;
+      const div = document.createElement('div');
+      div.className = 'compound-condition border border-[var(--border)] rounded-lg p-4';
+      div.dataset.index = index;
+      div.innerHTML = renderCompoundCondition({}, index);
+      container.appendChild(div);
+      initializeCompoundConditions();
+    }
+
+    function removeCompoundCondition(index) {
+      const container = document.getElementById('compoundConditions');
+      const child = container.querySelector(`[data-index="${index}"]`);
+      if (child && container.children.length > 1) {
+        child.remove();
+        // Re-index remaining
+        Array.from(container.children).forEach((c, i) => {
+          c.dataset.index = i;
+          const sel = c.querySelector('.compound-type');
+          if (sel) sel.setAttribute('onchange', `updateCompoundCondition(this, ${i})`);
+          const btn = c.querySelector('button[onclick^="removeCompoundCondition"]');
+          if (btn) btn.setAttribute('onclick', `removeCompoundCondition(${i})`);
+          const fields = c.querySelector('[id^="compoundFields-"]');
+          if (fields) fields.id = `compoundFields-${i}`;
+        });
+      }
+    }
+
+    // --- Save Rule ---
+    async function saveRule(event) {
+      event.preventDefault();
+
+      const id = document.getElementById('ruleId').value || null;
+      const hook = document.getElementById('ruleHook').value;
+      const triggerType = document.getElementById('triggerType').value;
+      const injectText = document.getElementById('injectText').value;
+
+      // Build trigger object
+      let trigger = { type: triggerType };
+
+      if (triggerType === 'keyword' || triggerType === 'regex') {
+        const patterns = document.getElementById('triggerPatterns').value
+          .split(triggerType === 'keyword' ? ',' : '\n')
+          .map(s => s.trim())
+          .filter(Boolean);
+        trigger = {
+          type: triggerType,
+          scope: document.getElementById('triggerScope').value,
+          [triggerType === 'keyword' ? 'keywords' : 'patterns']: patterns,
+          match_all: document.getElementById('triggerMatchAll').checked,
+          case_insensitive: document.getElementById('triggerCaseInsensitive').checked
+        };
+      } else if (triggerType === 'semantic') {
+        const references = document.getElementById('triggerReferences').value
+          .split('\n').map(s => s.trim()).filter(Boolean);
+        trigger = {
+          type: triggerType,
+          scope: document.getElementById('triggerScope').value,
+          references: references,
+          threshold: parseFloat(document.getElementById('triggerThreshold').value) || 0.75
+        };
+      } else if (triggerType === 'keyword_flexible') {
+        const keywords = document.getElementById('triggerPatterns').value
+          .split(',').map(s => s.trim()).filter(Boolean);
+        trigger = {
+          type: triggerType,
+          scope: document.getElementById('triggerScope').value,
+          keywords: keywords,
+          match_all: document.getElementById('triggerMatchAll').checked
+        };
+      } else if (triggerType === 'tool_name') {
+        const toolNames = document.getElementById('triggerToolNames').value
+          .split(',').map(s => s.trim()).filter(Boolean);
+        trigger = { type: triggerType, tool_names: toolNames };
+      } else if (triggerType === 'tool_result_contains') {
+        const toolNames = document.getElementById('triggerToolNames').value
+          .split(',').map(s => s.trim()).filter(Boolean);
+        const keywords = document.getElementById('triggerKeywords').value
+          .split(',').map(s => s.trim()).filter(Boolean);
+        trigger = {
+          type: triggerType,
+          tool_names: toolNames,
+          keywords: keywords,
+          match_all: document.getElementById('triggerMatchAll').checked
+        };
+      } else if (triggerType === 'result_truncated' || triggerType === 'empty_result' || triggerType === 'post_compaction') {
+        trigger = { type: triggerType };
+      } else if (triggerType === 'attempt_count') {
+        trigger = { type: triggerType, min_attempts: parseInt(document.getElementById('triggerMinAttempts').value) || 2 };
+      } else if (triggerType === 'compound') {
+        const operator = document.getElementById('compoundOperator')?.value || 'and';
+        const conditions = [];
+        document.querySelectorAll('.compound-condition').forEach((cond, i) => {
+          const type = cond.querySelector('.compound-type').value;
+          let c = { type };
+          if (type === 'keyword' || type === 'regex') {
+            const patterns = cond.querySelector('.compound-patterns').value
+              .split(type === 'keyword' ? ',' : '\n')
+              .map(s => s.trim()).filter(Boolean);
+            c = {
+              type,
+              scope: cond.querySelector('.compound-scope').value,
+              [type === 'keyword' ? 'keywords' : 'patterns']: patterns,
+              match_all: cond.querySelector('.compound-match-all').checked
+            };
+          } else if (type === 'keyword_flexible') {
+            const keywords = cond.querySelector('.compound-patterns').value
+              .split(',').map(s => s.trim()).filter(Boolean);
+            c = {
+              type,
+              scope: cond.querySelector('.compound-scope').value,
+              keywords: keywords,
+              match_all: cond.querySelector('.compound-match-all').checked
+            };
+          } else if (type === 'semantic') {
+            const references = cond.querySelector('.compound-references').value
+              .split('\n').map(s => s.trim()).filter(Boolean);
+            c = {
+              type,
+              scope: cond.querySelector('.compound-scope').value,
+              references: references,
+              threshold: parseFloat(cond.querySelector('.compound-threshold').value) || 0.75
+            };
+          } else if (type === 'tool_name') {
+            c = {
+              type,
+              tool_names: cond.querySelector('.compound-tool-names').value
+                .split(',').map(s => s.trim()).filter(Boolean)
+            };
+          } else if (type === 'tool_result_contains') {
+            c = {
+              type,
+              tool_names: cond.querySelector('.compound-tool-names').value
+                .split(',').map(s => s.trim()).filter(Boolean),
+              keywords: cond.querySelector('.compound-keywords').value
+                .split(',').map(s => s.trim()).filter(Boolean),
+              match_all: cond.querySelector('.compound-match-all').checked
+            };
+          } else if (type === 'attempt_count') {
+            c = {
+              type,
+              min_attempts: parseInt(cond.querySelector('.compound-min-attempts').value) || 2
+            };
+          }
+          conditions.push(c);
+        });
+        trigger = { type: 'compound', operator, conditions };
+      }
+
+      // Build inject object based on hook
+      const inject = {};
+      if (hook === 'pre_llm_call') {
+        inject.context = injectText;
+      } else if (hook === 'transform_tool_result') {
+        inject.result_suffix = injectText;
+      } else if (hook === 'pre_verify') {
+        inject.message = injectText;
+      }
+
+      const ruleData = {
+        name: document.getElementById('ruleName').value,
+        description: document.getElementById('ruleDescription').value,
+        enabled: document.getElementById('ruleEnabled').checked,
+        hook,
+        priority: parseInt(document.getElementById('rulePriority').value) || 10,
+        trigger,
+        inject
+      };
+
+      try {
+        if (id) {
+          await api('PUT', `/api/rule-injector/rules/${id}`, ruleData);
+          showToast('Rule updated', 'success');
+        } else {
+          await api('POST', '/api/rule-injector/rules', ruleData);
+          showToast('Rule created', 'success');
+        }
+        closeModal();
+        loadRules();
+      } catch (e) {
+        showToast('Failed to save: ' + e.message, 'error');
+      }
+    }
+
+    // --- Toggle Rule ---
+    async function toggleRule(id, enabled) {
+      try {
+        await api('PATCH', `/api/rule-injector/rules/${id}/toggle`);
+        showToast(enabled ? 'Rule enabled' : 'Rule disabled', 'success');
+        loadRules();
+      } catch (e) {
+        showToast('Failed to toggle: ' + e.message, 'error');
+        loadRules(); // Reload to reset UI
+      }
+    }
+
+    // --- Edit Rule ---
+    function editRule(id) {
+      const rule = rules.find(r => r.id === id);
+      if (rule) openModal(rule);
+    }
+
+    // --- Filter Rules ---
+    function filterRules() {
+      const search = document.getElementById('searchInput').value.toLowerCase();
+      const hookFilter = document.getElementById('filterHook').value;
+      const enabledFilter = document.getElementById('filterEnabled').value;
+
+      document.querySelectorAll('#rulesBody tr').forEach(row => {
+        const rule = rules.find(r => r.id === row.dataset.id);
+        if (!rule) return;
+
+        const matchesSearch = rule.name.toLowerCase().includes(search) ||
+                              (rule.description || '').toLowerCase().includes(search) ||
+                              JSON.stringify(rule.trigger).toLowerCase().includes(search);
+        const matchesHook = !hookFilter || rule.hook === hookFilter;
+        const matchesEnabled = enabledFilter === '' || rule.enabled === (enabledFilter === 'true');
+
+        row.style.display = (matchesSearch && matchesHook && matchesEnabled) ? '' : 'none';
+      });
+    }
+
+    // --- Export/Import ---
+    async function exportRules() {
+      try {
+        const data = await api('GET', '/api/rule-injector/export');
+        const blob = new Blob([JSON.stringify(data.export, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `rule-injector-rules-${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast(`Exported ${data.count} rules`, 'success');
+      } catch (e) {
+        showToast('Export failed: ' + e.message, 'error');
+      }
+    }
+
+    function importRules(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          importData = JSON.parse(e.target.result);
+          if (!importData.export || !importData.export.rules) {
+            throw new Error('Invalid export format');
+          }
+          importedRules = importData.export.rules;
+          document.getElementById('importModalOverlay').classList.remove('hidden');
+          document.body.style.overflow = 'hidden';
+        } catch (err) {
+          showToast('Import failed: ' + err.message, 'error');
+        }
+        event.target.value = ''; // Reset for next time
+      };
+      reader.readAsText(file);
+    }
+
+    function closeImportModal() {
+      document.getElementById('importModalOverlay').classList.add('hidden');
+      document.body.style.overflow = '';
+      importData = null;
+      importedRules = [];
+    }
+
+    async function confirmImport() {
+      if (!importedRules.length) return;
+      const mode = document.querySelector('input[name="importMode"]:checked').value;
+      try {
+        await api('POST', '/api/rule-injector/import', { export: importData.export, mode });
+        showToast(`Imported ${importedRules.length} rules (${mode})`, 'success');
+        closeImportModal();
+        loadRules();
+      } catch (e) {
+        showToast('Import failed: ' + e.message, 'error');
+      }
+    }
+
+    // --- Initialize ---
+    document.addEventListener('DOMContentLoaded', () => {
+      loadRules();
+
+      // Toggle label update
+      document.getElementById('ruleEnabled').addEventListener('change', function() {
+        document.getElementById('enabledLabel').textContent = this.checked ? 'Enabled' : 'Disabled';
+      });
+
+      // Close modals on Escape
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          closeModal();
+          closeDeleteModal();
+          closeImportModal();
+        }
+      });
+    });
+  </script>
+</body>
+</html>

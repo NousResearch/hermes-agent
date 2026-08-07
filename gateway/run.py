@@ -23449,6 +23449,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         state = self._peek_session_state(session_key)
         if state is not None:
             state.conversation.clear()
+        # Drop adapter-side buffered ingress fragments so stale Telegram
+        # batches (text debounce / photo burst / media group / startup slot)
+        # cannot merge into the new conversation (#stale-ingress-boundary).
+        self._invalidate_adapter_ingress(session_key)
         # Legacy plain-dict stores still registered in
         # _CONVERSATION_SCOPED_STATE (not yet folded into SessionState),
         # e.g. _pending_model_notes.  SessionState-backed names resolve to
@@ -23558,6 +23562,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+    def _invalidate_adapter_ingress(self, session_key: str) -> None:
+        """Ask every adapter to drop buffered ingress fragments for a session.
+
+        Adapters that implement ``invalidate_session_ingress`` (e.g. Telegram,
+        which buffers text debounce / photo burst / media-group / startup
+        fragments) clear their per-session buffers and bump a generation so
+        in-flight downloads from the old conversation are rejected instead of
+        merging into the next user turn.  Adapters without the hook are a no-op.
+        """
+        if not session_key:
+            return
+        adapters: List[Any] = []
+        try:
+            adapters = [a for a in (getattr(self, "adapters", None) or {}).values() if a]
+        except Exception:
+            adapters = []
+        for profile_adapter in (getattr(self, "_profile_adapters", None) or {}).values():
+            if profile_adapter and profile_adapter not in adapters:
+                adapters.append(profile_adapter)
+        for adapter in adapters:
+            invalidate = getattr(adapter, "invalidate_session_ingress", None)
+            if not callable(invalidate):
+                continue
+            try:
+                invalidate(session_key)
+            except Exception:
+                logger.debug(
+                    "Adapter ingress invalidation failed for %s", session_key,
+                    exc_info=True,
+                )
+
     async def _interrupt_and_clear_session(
         self,
         session_key: str,
@@ -23606,6 +23641,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 daemon=True,
             ).start()
         adapter = self._adapter_for_source(source)
+        # Drop buffered ingress fragments for this conversation so a late
+        # async download/batch from the interrupted turn cannot merge into
+        # the next user message (production: stale forward merged after /stop).
+        self._invalidate_adapter_ingress(session_key)
         interrupt_session_activity = getattr(
             type(adapter), "interrupt_session_activity", None
         )

@@ -188,6 +188,9 @@ tts-premium = ["elevenlabs==1.59.0"]
 voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime).
   "faster-whisper==1.2.1",
+  # Used directly by voice playback to size system-player timeouts from
+  # container metadata. Keep explicit even though faster-whisper also pulls it.
+  "av==17.0.0",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]

@@ -1771,6 +1771,7 @@ vertex = [
     { name = "google-auth" },
 ]
 voice = [
+    { name = "av" },
     { name = "faster-whisper" },
     { name = "numpy" },
     { name = "sounddevice" },
@@ -1813,6 +1814,7 @@ requires-dist = [
     { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.42" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.87.0" },
     { name = "asyncpg", marker = "extra == 'matrix'", specifier = "==0.31.0" },
+    { name = "av", marker = "extra == 'voice'", specifier = "==17.0.0" },
     { name = "azure-identity", marker = "extra == 'azure-identity'", specifier = "==1.25.3" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
     { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.1" },

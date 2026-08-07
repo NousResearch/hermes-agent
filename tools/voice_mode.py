@@ -5,7 +5,7 @@ STT dispatch via tools.transcription_tools, and TTS playback via
 sounddevice or system audio players.
 
 Dependencies (optional):
-    pip install sounddevice numpy
+    pip install av sounddevice numpy
     or: uv sync --extra voice
 """
 
@@ -42,6 +42,12 @@ def _import_audio():
     import sounddevice as sd
     import numpy as np
     return sd, np
+
+
+def _import_av():
+    """Lazy-import PyAV for container metadata inspection."""
+    import av
+    return av
 
 
 def _import_numpy():
@@ -1559,6 +1565,41 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
 # Global reference to the active playback process so it can be interrupted.
 _active_playback: Optional[subprocess.Popen] = None
 _playback_lock = threading.Lock()
+_SYSTEM_PLAYER_FALLBACK_TIMEOUT = 300.0
+_SYSTEM_PLAYER_TIMEOUT_GRACE = 10.0
+_SYSTEM_PLAYER_MIN_TIMEOUT = 30.0
+_SYSTEM_PLAYER_MAX_TIMEOUT = 6 * 60 * 60.0
+
+
+def _audio_duration(file_path: str) -> Optional[float]:
+    """Return the media container duration in seconds using PyAV."""
+    try:
+        av = _import_av()
+        with av.open(file_path) as container:
+            if container.duration is None:
+                return None
+            duration = float(container.duration / av.time_base)
+    except Exception:
+        return None
+    if not math.isfinite(duration) or duration <= 0:
+        return None
+    return duration
+
+
+def _system_player_timeout(file_path: str) -> float:
+    """Bound player waits while allowing legitimate long-form audio to finish."""
+    duration = _audio_duration(file_path)
+    if duration is None:
+        return _SYSTEM_PLAYER_FALLBACK_TIMEOUT
+    return min(
+        max(duration + _SYSTEM_PLAYER_TIMEOUT_GRACE, _SYSTEM_PLAYER_MIN_TIMEOUT),
+        _SYSTEM_PLAYER_MAX_TIMEOUT,
+    )
+
+
+def _aplay_supports_file(file_path: str) -> bool:
+    """Return whether bare `aplay <file>` is appropriate for this file."""
+    return os.path.splitext(file_path)[1].lower() in {".wav", ".wave"}
 
 
 def stop_playback() -> None:
@@ -1756,9 +1797,10 @@ def _play_audio_file_impl(file_path: str) -> bool:
                 pass  # WSL path resolution failed; fall through to ffplay/aplay
 
     players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
-    if system == "Linux":
+    if system == "Linux" and _aplay_supports_file(file_path):
         players.append(["aplay", "-q", file_path])
 
+    playback_timeout = _system_player_timeout(file_path)
     for cmd in players:
         exe = shutil.which(cmd[0])
         if exe:
@@ -1776,7 +1818,7 @@ def _play_audio_file_impl(file_path: str) -> bool:
                 )
                 with _playback_lock:
                     _active_playback = proc
-                proc.wait(timeout=300)
+                proc.wait(timeout=playback_timeout)
                 rc = proc.returncode
                 with _playback_lock:
                     _active_playback = None
@@ -1789,9 +1831,13 @@ def _play_audio_file_impl(file_path: str) -> bool:
             except subprocess.TimeoutExpired:
                 logger.warning("System player %s timed out, killing process", cmd[0])
                 proc.kill()
-                proc.wait()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
                 with _playback_lock:
                     _active_playback = None
+                return False
             except Exception as e:
                 logger.debug("System player %s failed: %s", cmd[0], e)
                 with _playback_lock:

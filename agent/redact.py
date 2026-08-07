@@ -7,6 +7,7 @@ Short tokens (< 18 chars) are fully masked. Longer tokens preserve
 the first 6 and last 4 characters for debuggability.
 """
 
+import base64
 import logging
 import os
 import re
@@ -654,6 +655,71 @@ def _mask_token_nonreusable(token: str) -> str:
             label = sub
             break
     return f"«redacted:{label}…»" if label else "«redacted-secret»"
+
+
+_BASE64_IMAGE_DATA_URL_RE = re.compile(
+    r"^data:image/[a-z0-9][a-z0-9!#$&^_.+\-]*;base64,[A-Za-z0-9+/]*={0,2}$",
+)
+
+
+def _is_base64_image_data_url(value: str) -> bool:
+    """Return True for a complete, strictly decodable base64 image data URL."""
+    match = _BASE64_IMAGE_DATA_URL_RE.fullmatch(value)
+    if not match:
+        return False
+    try:
+        base64.b64decode(value.split(",", 1)[1], validate=True)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
+def sanitize_provider_image_parts(value: object) -> object:
+    """Redact provider content while preserving typed base64 image bytes.
+
+    Only OpenAI-style image parts receive the exception. Standalone, untyped,
+    logging, persistence, and non-image values retain normal forced redaction.
+    """
+    if isinstance(value, str):
+        return redact_sensitive_text(
+            value,
+            force=True,
+            redact_url_credentials=True,
+        )
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            if (
+                value.get("type") == "image_url"
+                and key == "image_url"
+                and isinstance(item, dict)
+                and set(item) <= {"url", "detail"}
+                and isinstance(item.get("url"), str)
+                and _is_base64_image_data_url(item["url"])
+            ):
+                sanitized[key] = {
+                    nested_key: (
+                        nested_item
+                        if nested_key == "url"
+                        else sanitize_provider_image_parts(nested_item)
+                    )
+                    for nested_key, nested_item in item.items()
+                }
+            elif (
+                value.get("type") == "input_image"
+                and key == "image_url"
+                and isinstance(item, str)
+                and _is_base64_image_data_url(item)
+            ):
+                sanitized[key] = item
+            else:
+                sanitized[key] = sanitize_provider_image_parts(item)
+        return sanitized
+    if isinstance(value, list):
+        return [sanitize_provider_image_parts(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(sanitize_provider_image_parts(item) for item in value)
+    return value
 
 
 def redact_sensitive_text(

@@ -1,10 +1,16 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
+import base64
 import logging
 
 import pytest
 
-from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import (
+    redact_cdp_url,
+    redact_sensitive_text,
+    RedactingFormatter,
+    sanitize_provider_image_parts,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -13,6 +19,93 @@ def _ensure_redaction_enabled(monkeypatch):
     monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
     # Also patch the module-level snapshot so it reflects the cleared env var
     monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+
+
+class TestDataUrls:
+    def test_binary_image_data_url_is_preserved_byte_for_byte(self):
+        payload = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8A"
+            "AusB9Y9ZQmcAAAAASUVORK5CYII="
+        )
+        value = "data:image/png;base64," + payload
+
+        sanitized = sanitize_provider_image_parts(
+            {"type": "input_image", "image_url": value}
+        )
+        assert isinstance(sanitized, dict)
+        redacted = sanitized["image_url"]
+
+        assert redacted == value
+        assert base64.b64decode(redacted.split(",", 1)[1], validate=True)
+
+    def test_canonical_nested_image_url_is_preserved(self):
+        value = (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8A"
+            "AusB9Y9ZQmcAAAAASUVORK5CYII="
+        )
+        sanitized = sanitize_provider_image_parts(
+            {
+                "type": "image_url",
+                "image_url": {"url": value, "detail": "high"},
+            }
+        )
+
+        assert isinstance(sanitized, dict)
+        assert sanitized["image_url"] == {"url": value, "detail": "high"}
+
+    @pytest.mark.parametrize("media_type", ["text/plain", "audio/wav", "application/octet-stream"])
+    def test_non_image_media_does_not_bypass_typed_image_redaction(self, media_type):
+        value = f"data:{media_type};base64," + "AIza" + "A" * 32
+        sanitized = sanitize_provider_image_parts(
+            {"type": "input_image", "image_url": value}
+        )
+
+        assert isinstance(sanitized, dict)
+        assert sanitized["image_url"] != value
+
+    def test_noncanonical_data_url_casing_still_redacts(self):
+        value = "data:image/png;BASE64," + "AIza" + "A" * 32
+        sanitized = sanitize_provider_image_parts(
+            {"type": "input_image", "image_url": value}
+        )
+
+        assert isinstance(sanitized, dict)
+        assert sanitized["image_url"] != value
+
+    def test_malformed_image_data_url_still_redacts(self):
+        payload = "AIza" + "A" * 33
+        value = "data:image/png;base64," + payload
+        sanitized = sanitize_provider_image_parts(
+            {"type": "input_image", "image_url": value}
+        )
+
+        with pytest.raises(ValueError):
+            base64.b64decode(payload, validate=True)
+        assert isinstance(sanitized, dict)
+        assert sanitized["image_url"] != value
+
+    def test_standalone_data_url_credentials_still_redact(self):
+        value = "data:image/png;base64," + "AIza" + "A" * 32
+
+        redacted = redact_sensitive_text(
+            value,
+            force=True,
+            redact_url_credentials=True,
+        )
+
+        assert redacted != value
+
+    def test_non_data_url_credentials_still_redact(self):
+        value = "https://user:***@example.test/private.png"
+
+        redacted = redact_sensitive_text(
+            value,
+            force=True,
+            redact_url_credentials=True,
+        )
+
+        assert "password" not in redacted
 
 
 class TestKnownPrefixes:

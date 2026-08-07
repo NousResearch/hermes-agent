@@ -9167,6 +9167,24 @@ def cmd_update(args):
     _update_lock = UpdateLock()
     if not _update_lock.acquire():
         print(describe_holder(_update_lock.holder))
+        # The single most common cause of this refusal on Windows is a stale
+        # staged hermes-setup.exe: the desktop pre-writes the update marker
+        # with the updater's own PID, the updater spawns `hermes update`, and
+        # a binary built before the HANDOFF_PID fix (8c76fe19f) cannot pass
+        # the lock to its child, so the child refuses its own parent's marker
+        # and leaves it behind. Diagnose that case right here -- on the exact
+        # path the deadlocked user lands -- instead of silently failing.
+        try:
+            from hermes_cli.update_cmd import _windows_updater_is_stale
+            from hermes_cli.update_cmd import _windows_updater_stale_notice_text
+
+            if _windows_updater_is_stale():
+                print(_windows_updater_stale_notice_text())
+        except Exception as _updater_probe_exc:
+            # Never let the probe break the refusal message.
+            logger.debug(
+                "Windows updater staleness notice failed: %s", _updater_probe_exc
+            )
         _finalize_update_output(_update_io_state)
         sys.exit(UPDATE_EXIT_CONCURRENT)
 

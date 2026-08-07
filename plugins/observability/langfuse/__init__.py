@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import atexit
 import re
 import threading
 import time
@@ -64,6 +65,7 @@ _TRACE_STATE: Dict[str, TraceState] = {}
 # to bound the leak from non-finalizing turns, not to limit concurrency.
 _MAX_TRACE_STATE = 256
 _LANGFUSE_CLIENT = None
+_SHUTDOWN_REGISTERED = False
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
@@ -710,6 +712,27 @@ def _merge_trace_output(output: Any, state: TraceState) -> Any:
     return merged
 
 
+def _exit_root_context(state: TraceState) -> None:
+    """Best-effort close the suspended root-observation context manager.
+
+    ``_start_root_trace`` enters ``root_ctx`` manually (``__enter__``) to keep
+    the trace open across multiple LLM/tool hooks. The matching ``__exit__``
+    must run before the Langfuse client shuts down; if it never does, the
+    generator is left suspended at ``yield`` and gets GC'd during interpreter
+    teardown, after ``opentelemetry.trace.Span`` has been nulled out — which
+    surfaces as ``TypeError: isinstance() arg 2 must be a type`` from
+    ``use_span.__exit__`` on shutdown. Ending the span alone is not enough;
+    the generator's ``finally`` block is what detaches the OTel context token.
+    """
+    ctx = getattr(state, "root_ctx", None)
+    if ctx is None:
+        return
+    try:
+        ctx.__exit__(None, None, None)
+    except Exception as exc:  # pragma: no cover - fail-open
+        _debug(f"exit root context failed: {exc}")
+
+
 def _evict_stale_locked() -> None:
     """Drop least-recently-updated trace state to make room for a new entry.
 
@@ -731,7 +754,8 @@ def _evict_stale_locked() -> None:
         try:
             state.root_span.end()
         except Exception as exc:  # pragma: no cover - fail-open
-            _debug(f"evict stale trace failed: {exc}")
+            _debug(f"evict stale trace end failed: {exc}")
+        _exit_root_context(state)
 
 
 def _finish_trace(task_key: str, *, output: Any = None) -> None:
@@ -760,6 +784,7 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"finish trace failed: {exc}")
     finally:
+        _exit_root_context(state)
         try:
             client.flush()
         except Exception:
@@ -1125,6 +1150,29 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
     )
 
 
+def _drain_all_traces() -> None:
+    """Finalize any live traces on process exit.
+
+    Turns whose final assistant message had content + no tool calls are already
+    finished via ``_finish_trace``. This drains the rest — interrupted turns,
+    tool-only final steps, empty final content — so their suspended root context
+    managers are closed cleanly *before* interpreter teardown nukes the
+    ``opentelemetry.trace.Span`` symbol (the source of the
+    ``TypeError: isinstance() arg 2 must be a type`` traceback on exit).
+    """
+    client = _get_langfuse()
+    if client is None:
+        return
+    with _STATE_LOCK:
+        keys = list(_TRACE_STATE.keys())
+    for key in keys:
+        _finish_trace(key)
+    try:
+        client.flush()
+    except Exception:
+        pass
+
+
 def register(ctx) -> None:
     # Register for both hook name variants so the plugin works across
     # Hermes versions.  pre_api_request / post_api_request fire per API
@@ -1135,3 +1183,8 @@ def register(ctx) -> None:
     ctx.register_hook("post_llm_call", on_post_llm_call)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
+
+    global _SHUTDOWN_REGISTERED
+    if not _SHUTDOWN_REGISTERED:
+        _SHUTDOWN_REGISTERED = True
+        atexit.register(_drain_all_traces)

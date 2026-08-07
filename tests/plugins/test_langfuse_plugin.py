@@ -779,3 +779,192 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+
+# ---------------------------------------------------------------------------
+# Shutdown drain (#shutdown-typeerror).
+#
+# Regression: the root observation context manager was entered via
+# ``__enter__`` but only ``span.end()`` was ever called — the matching
+# ``__exit__`` never ran. The suspended generator was left at ``yield``
+# until interpreter teardown GC'd it, by which point
+# ``opentelemetry.trace.Span`` had been nulled out during module
+# finalization, surfacing as
+# ``TypeError: isinstance() arg 2 must be a type`` from
+# ``opentelemetry.trace.use_span.__exit__`` on every CLI exit.
+#
+# The fix: ``_exit_root_context`` calls ``__exit__`` on the stored CM,
+# ``_finish_trace`` and ``_evict_stale_locked`` invoke it, and an
+# ``atexit``-registered ``_drain_all_traces`` finalizes any live traces
+# before teardown. These tests pin all three paths.
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownDrain:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    @staticmethod
+    def _tracking_client():
+        """Langfuse stand-in that records root-CM __exit__ calls."""
+
+        exited: list[str] = []
+
+        class _Span:
+            def update(self, **kw):
+                pass
+
+            def end(self, **kw):
+                pass
+
+            def set_trace_io(self, **kw):
+                pass
+
+            def start_observation(self, **kw):
+                return _Span()
+
+        class _RootCM:
+            def __init__(self, trace_id):
+                self._trace_id = trace_id
+
+            def __enter__(self):
+                return _Span()
+
+            def __exit__(self, *exc):
+                exited.append(self._trace_id)
+                return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return f"trace::{seed}"
+
+            def start_as_current_observation(self, **kw):
+                return _RootCM(kw.get("trace_context", {}).get("trace_id"))
+
+            def flush(self):
+                pass
+
+        return _Client(), exited
+
+    def test_finish_trace_exits_root_context_manager(self, monkeypatch):
+        """_finish_trace must call __exit__ on the root CM, not just span.end()."""
+        mod = self._fresh_plugin()
+        client, exited = self._tracking_client()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        # Start a root trace by firing the pre-LLM request hook.
+        mod.on_pre_llm_request(
+            task_id="task-fin",
+            session_id="sess-fin",
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=1,
+            request_messages=[{"role": "user", "content": "hi"}],
+            turn_id="sess-fin:task-fin:turn1",
+            api_request_id="sess-fin:task-fin:turn1:api:1",
+        )
+        assert not exited, "root CM should still be suspended mid-turn"
+
+        # Finalize the turn — this pops state and must close the CM.
+        mod.on_post_llm_call(
+            task_id="task-fin",
+            session_id="sess-fin",
+            model="m",
+            provider="p",
+            api_mode="chat",
+            api_call_count=1,
+            assistant_content_chars=5,
+            assistant_tool_call_count=0,
+            usage={"input_tokens": 1, "output_tokens": 1},
+            turn_id="sess-fin:task-fin:turn1",
+            api_request_id="sess-fin:task-fin:turn1:api:1",
+        )
+
+        assert len(exited) == 1
+        assert mod._TRACE_STATE == {}
+
+    def test_drain_all_traces_finalizes_live_traces(self, monkeypatch):
+        """_drain_all_traces (atexit handler) closes CMs for non-finalizing turns."""
+        mod = self._fresh_plugin()
+        client, exited = self._tracking_client()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        # Two turns that never finalize (tool-only final step).
+        for n in (1, 2):
+            mod.on_pre_llm_request(
+                task_id=f"task-{n}",
+                session_id="sess-drain",
+                model="m",
+                provider="p",
+                api_mode="chat",
+                api_call_count=1,
+                request_messages=[{"role": "user", "content": "hi"}],
+                turn_id=f"sess-drain:task-{n}:turn{n}",
+                api_request_id=f"sess-drain:task-{n}:turn{n}:api:1",
+            )
+            mod.on_post_llm_call(
+                task_id=f"task-{n}",
+                session_id="sess-drain",
+                model="m",
+                provider="p",
+                api_mode="chat",
+                api_call_count=1,
+                assistant_content_chars=0,
+                assistant_tool_call_count=1,
+                usage={"input_tokens": 1, "output_tokens": 1},
+                turn_id=f"sess-drain:task-{n}:turn{n}",
+                api_request_id=f"sess-drain:task-{n}:turn{n}:api:1",
+            )
+
+        assert len(mod._TRACE_STATE) == 2
+        assert exited == []
+
+        # The atexit drain must finalize both.
+        mod._drain_all_traces()
+
+        assert len(exited) == 2
+        assert mod._TRACE_STATE == {}
+
+    def test_evict_stale_exits_root_context_manager(self, monkeypatch):
+        """LRU eviction must also close the CM, not just end the span."""
+        mod = self._fresh_plugin()
+        client, exited = self._tracking_client()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        monkeypatch.setattr(mod, "_MAX_TRACE_STATE", 4)
+        mod._TRACE_STATE.clear()
+
+        # Overflow the cap so the oldest entry gets evicted.
+        for n in range(6):
+            mod.on_pre_llm_request(
+                task_id=f"task-ev-{n}",
+                session_id="sess-ev",
+                model="m",
+                provider="p",
+                api_mode="chat",
+                api_call_count=1,
+                request_messages=[{"role": "user", "content": "hi"}],
+                turn_id=f"sess-ev:task-ev-{n}:turn{n}",
+                api_request_id=f"sess-ev:task-ev-{n}:turn{n}:api:1",
+            )
+
+        # At least the evicted entries had their CMs closed.
+        assert len(exited) >= 2
+        assert len(mod._TRACE_STATE) <= 4
+
+    def test_drain_is_idempotent(self, monkeypatch):
+        """Calling _drain_all_traces twice must not raise (atexit + explicit)."""
+        mod = self._fresh_plugin()
+        client, _ = self._tracking_client()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        mod._drain_all_traces()  # empty — no-op
+        mod._drain_all_traces()  # still no-op

@@ -8177,7 +8177,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
-        _model_config = CLI_CONFIG.get("model", {})
+        from hermes_cli.config import load_config as _load_fresh_config
+        _model_config = _load_fresh_config().get("model", {})
         _config_model = (
             (_model_config.get("default") or _model_config.get("model") or "")
             if isinstance(_model_config, dict)

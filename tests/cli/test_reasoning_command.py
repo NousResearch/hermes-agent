@@ -177,6 +177,9 @@ class TestHandleReasoningCommand(unittest.TestCase):
             {"model": {"default": "config-default-model", "provider": "openrouter"}},
         ), patch(
             "hermes_cli.model_switch.switch_model", return_value=fake_result
+        ), patch(
+            "hermes_cli.config.load_config",
+            return_value={"model": {"default": "config-default-model", "provider": "openrouter"}, "agent": {"reasoning_effort": "medium", "service_tier": "normal"}},
         ):
             HermesCLI.new_session(stub, silent=True)
 

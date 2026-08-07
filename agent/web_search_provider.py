@@ -59,16 +59,37 @@ from typing import Any, Dict, List, Optional
 def get_provider_env(name: str) -> str:
     """Config-aware env lookup for web providers.
 
-    Resolves *name* via :func:`hermes_cli.config.get_env_value` (checks
-    ``os.environ`` first, then ``~/.hermes/.env``) so credentials set
-    through Hermes' config layer are visible even when they were never
-    exported into the process environment — gateway sessions, delegate
-    children, and subprocess agent runs (issue #40190). Falls back to a
-    bare ``os.getenv`` when the config module is unavailable (stripped
-    installs, early import contexts).
+    Prefers a deliberate ``~/.hermes/.env`` value over a stale/empty value
+    already present in ``os.environ`` (via
+    :func:`hermes_cli.config.get_env_value_prefer_dotenv`). That matches how
+    Hermes-managed provider credentials are rotated: editing ``.env`` must
+    take effect even when a parent shell, TUI host, or multiplexedTimeout
+    process still transports an outdated export — which otherwise surfaces
+    as persistent 401s (Tavily, Firecrawl, Exa, …; issue #65459).
+
+    Falls back to :func:`hermes_cli.config.get_env_value` (process env first)
+    and finally a bare ``os.getenv`` when the prefer-dotenv helper is
+    unavailable (older installs / early import contexts). Still covers the
+    original gateway / delegate / subprocess path (issue #40190).
 
     Returns the stripped value, or ``""`` when unset.
     """
+    # Preferred path: ~/.hermes/.env wins over stale/empty process env.
+    # An empty result here is authoritative — in an active profile scope an
+    # absent key is intentional (secret_scope), so we must NOT re-resolve it
+    # through the environment-first helpers, which could select an unrelated
+    # process-global key. Fallbacks apply only when the prefer-dotenv helper
+    # is genuinely unavailable (older installs / early import contexts).
+    try:
+        from hermes_cli.config import get_env_value_prefer_dotenv
+    except Exception:  # noqa: BLE001 — prefer-dotenv optional on older trees
+        get_env_value_prefer_dotenv = None  # type: ignore[assignment]
+
+    if get_env_value_prefer_dotenv is not None:
+        return (get_env_value_prefer_dotenv(name) or "").strip()
+
+    # Helper unavailable: fall back to the legacy env-first resolver, then a
+    # bare os.getenv (original gateway / delegate / subprocess path, #40190).
     val: Optional[str] = None
     try:
         from hermes_cli.config import get_env_value
@@ -76,7 +97,7 @@ def get_provider_env(name: str) -> str:
         val = get_env_value(name)
     except Exception:  # noqa: BLE001 — config layer optional here
         val = None
-    if val is None:
+    if not val:
         val = os.getenv(name, "")
     return (val or "").strip()
 

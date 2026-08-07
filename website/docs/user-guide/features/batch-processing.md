@@ -15,11 +15,19 @@ The batch runner (`batch_runner.py`) processes a JSONL dataset of prompts, runni
 ## Quick Start
 
 ```bash
-# Basic batch run
+# Basic batch run — inherits the provider and model selected by `hermes model`
 python batch_runner.py \
     --dataset_file=data/prompts.jsonl \
     --batch_size=10 \
     --run_name=my_first_run \
+    --num_workers=4
+
+# Override the configured provider and model for this run
+python batch_runner.py \
+    --dataset_file=data/prompts.jsonl \
+    --batch_size=10 \
+    --run_name=openrouter_run \
+    --provider=openrouter \
     --model=anthropic/claude-sonnet-4.6 \
     --num_workers=4
 
@@ -35,7 +43,7 @@ python batch_runner.py --list_distributions
 ```
 
 :::tip Predictable cost at scale
-Batch runs spin up many concurrent agent sessions, each making model calls and tool calls. A [Nous Portal](/user-guide/features/tool-gateway) subscription bundles model access plus web search, image gen, TTS, and cloud browsers under one bill — useful when you want stable cost-per-trajectory without juggling rate limits across five vendor accounts. Set up with `hermes setup --portal`, then point `--model` at a Nous model.
+Batch runs spin up many concurrent agent sessions, each making model calls and tool calls. A [Nous Portal](/user-guide/features/tool-gateway) subscription bundles model access plus web search, image gen, TTS, and cloud browsers under one bill — useful when you want stable cost-per-trajectory without juggling rate limits across five vendor accounts. Set up with `hermes setup --portal`, then select Nous as your configured provider or pass `--provider=nous --model=<model>` to the batch runner.
 :::
 
 ## Dataset Format
@@ -60,9 +68,11 @@ Entries can optionally include:
 | `--batch_size` | (required) | Prompts per batch |
 | `--run_name` | (required) | Name for this run (used for output dir and checkpointing) |
 | `--distribution` | `"default"` | Toolset distribution to sample from |
-| `--model` | `claude-sonnet-4.6` | Model to use |
-| `--base_url` | `https://openrouter.ai/api/v1` | API base URL |
-| `--api_key` | (env var) | API key for model |
+| `--model` | `config.yaml` | Model override; otherwise uses the configured default model |
+| `--provider` | `config.yaml` | Provider override; otherwise uses the configured provider |
+| `--api_mode` | configured provider | API transport override, such as `codex_responses` |
+| `--base_url` | configured provider | Explicit API endpoint override |
+| `--api_key` | configured credentials | Explicit credential override |
 | `--max_turns` | `10` | Maximum tool-calling iterations per prompt |
 | `--num_workers` | `4` | Parallel worker processes |
 | `--resume` | `false` | Resume from checkpoint |
@@ -70,7 +80,18 @@ Entries can optionally include:
 | `--max_samples` | all | Only process first N samples from dataset |
 | `--max_tokens` | model default | Maximum tokens per model response |
 
-### Provider Routing (OpenRouter)
+### Provider and Credential Resolution
+
+When `--model`, `--provider`, `--api_mode`, `--base_url`, and `--api_key` are omitted, every worker inherits the runtime selected in `config.yaml`, including OAuth-backed providers such as `openai-codex`.
+
+Explicit overrides follow these rules:
+
+- `--api_key` plus `--base_url` defines a complete direct runtime. `--provider` and `--api_mode` may also be supplied when the endpoint requires them.
+- `--provider` selects that provider and resolves its configured credentials. Pair it with `--model` when switching away from the configured provider.
+- `--base_url` by itself takes precedence over the configured provider and is resolved as an explicit custom endpoint. Known hosts such as OpenRouter select their endpoint-scoped credential.
+- `--api_key` by itself requires either `--provider` or a configured `model.provider`; Hermes will not guess a provider from an opaque key.
+
+### OpenRouter Routing Options
 
 | Parameter | Description |
 |-----------|-------------|
@@ -197,6 +218,7 @@ python batch_runner.py \
     --dataset_file=data/coding_prompts.jsonl \
     --batch_size=20 \
     --run_name=coding_v1 \
+    --provider=openrouter \
     --model=anthropic/claude-sonnet-4.6 \
     --num_workers=8 \
     --distribution=default \
@@ -212,6 +234,7 @@ python batch_runner.py \
     --dataset_file=data/eval_suite.jsonl \
     --batch_size=10 \
     --run_name=eval_gpt4 \
+    --provider=openrouter \
     --model=openai/gpt-4o \
     --num_workers=4 \
     --max_turns=10

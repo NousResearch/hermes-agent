@@ -34,6 +34,7 @@ python batch_runner.py \
   --batch_size=5 \
   --run_name="browser_tasks_example" \
   --distribution="browser_tasks" \
+  --provider="openrouter" \
   --model="anthropic/claude-sonnet-4" \
   --base_url="https://openrouter.ai/api/v1" \
   --num_workers=3 \

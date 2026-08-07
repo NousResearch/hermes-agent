@@ -189,7 +189,7 @@ azure-foundry (Microsoft Entra ID):
 ### 限制
 
 - **Anthropic 风格端点使用 httpx 事件 hook。** Anthropic Python SDK（≤ 0.86.0）原生不接受可调用的 `auth_token`。Hermes 在自定义 `httpx.Client` 上安装请求事件 hook，每次出站请求时生成新的 JWT 并重写 `Authorization: Bearer <jwt>`。这在功能上等同于 OpenAI SDK 原生的 `Callable[[], str]` 契约，但多了一层间接调用。如果 Anthropic SDK 在未来版本中添加对可调用认证的原生支持，Hermes 将透明地切换到该方式。
-- **批处理任务与 `multiprocessing.Pool`。** Entra 令牌 provider 是一个闭包，无法跨进程边界序列化。`batch_runner.py` 会自动从 worker 配置中移除该可调用对象，让每个 worker 进程从 `config.yaml` 重建自己的 provider——无需用户操作，但每个 worker 在启动时需要执行一次凭据链遍历。
+- **批处理任务与 `multiprocessing.Pool`。** Entra 令牌 provider 是一个闭包，无法跨进程边界序列化。`batch_runner.py` 会自动从 worker 配置中移除该可调用对象，让每个 worker 进程从 `config.yaml` 重建自己的 provider——无需用户操作。每个 worker 会在处理第一条 prompt 时遍历一次凭据链，后续批次复用该进程内 provider。
 - **不在 `auth.json` 中持久化 Bearer JWT。** Hermes 不复制 `azure-identity` 的内部令牌缓存；冷启动时会在首次推理时遍历凭据链。
 
 ## 配置（写入 `config.yaml`）

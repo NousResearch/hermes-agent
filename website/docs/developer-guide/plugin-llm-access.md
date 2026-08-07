@@ -223,6 +223,7 @@ result = ctx.llm.complete(
     agent_id=None,         # optional, gated
     profile=None,          # optional, gated — explicit auth-profile name
     purpose="optional-audit-string",
+    task=None,             # optional plugin-owned auxiliary slot
 )
 # → PluginLlmCompleteResult(text, provider, model, agent_id, usage, audit)
 ```
@@ -237,6 +238,11 @@ as the host's main config (`model.provider` + `model.model`). Set
 just `model=` to use the user's active provider with a different
 model on it. Set both to switch providers entirely. Either argument
 without operator opt-in raises `PluginLlmTrustError`.
+
+`task=` routes a call through `auxiliary.<task>` rather than the main model.
+Unset, blank, and `"auto"` retain the main-model path. A plugin can always use
+a slot it registered with `ctx.register_auxiliary_task()`; foreign or unknown
+slots are rejected before dispatch.
 
 ### `complete_structured()`
 
@@ -260,6 +266,7 @@ result = ctx.llm.complete_structured(
     agent_id=None,
     profile=None,
     purpose=None,
+    task=None,
 )
 # → PluginLlmStructuredResult(text, provider, model, agent_id,
 #                             usage, parsed, content_type, audit)
@@ -297,7 +304,7 @@ class PluginLlmCompleteResult:
     model: str                   # whatever the provider returned for this call
     agent_id: str                # whose model/auth was used
     usage: PluginLlmUsage        # tokens + cache + cost estimate
-    audit: Dict[str, Any]        # plugin_id, purpose, profile
+    audit: Dict[str, Any]        # plugin_id, purpose, profile, task
 
 @dataclass
 class PluginLlmStructuredResult:
@@ -362,6 +369,10 @@ plugins:
         # Allow the plugin to request a specific stored auth profile
         # (e.g. a different OAuth account on the same provider).
         allow_profile_override: false
+
+        # Allow host-owned built-in auxiliary tasks. Plugin-owned slots do
+        # not require this grant.
+        allow_task_override: false
 ```
 
 The plugin id is the manifest `name:` field for flat plugins, or the
@@ -378,6 +389,7 @@ path-derived key for nested plugins (`image_gen/openai`,
 | ↳ allowlist     | —       | `allowed_models: [...]`          |
 | `agent_id=`     | denied  | `allow_agent_id_override: true`  |
 | `profile=`      | denied  | `allow_profile_override: true`   |
+| built-in `task=` | denied | `allow_task_override: true`      |
 
 Each override is independently gated. Granting `allow_model_override`
 does **not** also grant `allow_provider_override` — a plugin trusted
@@ -394,14 +406,18 @@ it gets the provider gate as well.
   useful work — it just runs against the active provider and model.
   Operators only need to think about `plugins.entries` for plugins
   that want finer routing.
+* A plugin-owned `task=` is authorized by the registered slot owner, not this
+  override flag. A foreign or unknown task always raises `PluginLlmTrustError`.
 
 ## What the host owns
 
 A complete list of the things `ctx.llm` does for the plugin so you
 don't have to:
 
-* **Provider resolution.** Reads `model.provider` + `model.model`
-  from the user's config (or the explicit overrides when trusted).
+* **Provider resolution.** Reads `model.provider` + `model.model` from the
+  user's config, or `auxiliary.<task>` for a task-routed call. Result and audit
+  metadata identify the provider/model that actually served the call, including
+  a successful fallback.
 * **Auth.** Pulls API keys, OAuth tokens, or refresh tokens from
   `~/.hermes/auth.json` / env, including the credential pool when
   one is configured. The plugin never sees them.
@@ -420,7 +436,7 @@ don't have to:
   `jsonschema` is installed; logs a debug line and skips strict
   validation otherwise.
 * **Audit log.** Each call writes one INFO line to `agent.log` with
-  the plugin id, provider/model, purpose, and token totals.
+  the plugin id, selected provider/model, task, purpose, and token totals.
 
 ## What the plugin owns
 
@@ -458,7 +474,8 @@ own model call — for any reason, structured or not — `ctx.llm`.
 ## Reference
 
 * Implementation: [`agent/plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/plugin_llm.py)
-* Tests: [`tests/agent/test_plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/tests/agent/test_plugin_llm.py)
+* Tests: [`tests/agent/test_plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/tests/agent/test_plugin_llm.py) and
+  [`tests/agent/test_plugin_llm_task_routing.py`](https://github.com/NousResearch/hermes-agent/blob/main/tests/agent/test_plugin_llm_task_routing.py)
 * Reference plugins (companion repo):
   * [`plugin-llm-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example) — sync structured extraction with image input
   * [`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example) — async with `asyncio.gather()`

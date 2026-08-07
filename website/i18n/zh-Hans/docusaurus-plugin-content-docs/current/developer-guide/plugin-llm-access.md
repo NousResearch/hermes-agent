@@ -193,6 +193,7 @@ result = ctx.llm.complete(
     agent_id=None,         # 可选，受门控
     profile=None,          # 可选，受门控——显式指定认证 profile 名称
     purpose="optional-audit-string",
+    task=None,             # 可选，plugin 自有辅助模型槽
 )
 # → PluginLlmCompleteResult(text, provider, model, agent_id, usage, audit)
 ```
@@ -200,6 +201,8 @@ result = ctx.llm.complete(
 普通对话补全。`messages` 采用标准 OpenAI 格式——`{"role": "...", "content": "..."}` 字典列表。多轮 prompt（system + few-shot user/assistant 对 + 最终 user）的用法与 OpenAI SDK 完全一致。
 
 `provider=` 和 `model=` 相互独立，格式与宿主主配置（`model.provider` + `model.model`）相同。仅设置 `model=` 可在用户当前激活的 provider 上使用不同模型。同时设置两者则完全切换 provider。任一参数在未获运营人员授权时均会抛出 `PluginLlmTrustError`。
+
+`task=` 会通过 `auxiliary.<task>` 路由调用。未设置、空字符串和 `"auto"` 保持主模型路径。plugin 始终可以使用自己通过 `ctx.register_auxiliary_task()` 注册的槽；外部或未知槽会在分发前被拒绝。
 
 ### `complete_structured()`
 
@@ -223,6 +226,7 @@ result = ctx.llm.complete_structured(
     agent_id=None,
     profile=None,
     purpose=None,
+    task=None,
 )
 # → PluginLlmStructuredResult(text, provider, model, agent_id,
 #                             usage, parsed, content_type, audit)
@@ -252,7 +256,7 @@ class PluginLlmCompleteResult:
     model: str                   # provider 为本次调用返回的模型标识
     agent_id: str                # 使用了哪个 agent 的模型/认证
     usage: PluginLlmUsage        # token 数 + 缓存 + 费用估算
-    audit: Dict[str, Any]        # plugin_id、purpose、profile
+    audit: Dict[str, Any]        # plugin_id、purpose、profile、task
 
 @dataclass
 class PluginLlmStructuredResult(PluginLlmCompleteResult):
@@ -305,6 +309,9 @@ plugins:
         # 允许 plugin 请求特定的存储认证 profile
         # （如同一 provider 上的不同 OAuth 账户）。
         allow_profile_override: false
+
+        # 允许使用宿主内置辅助任务。plugin 自有任务不需要此授权。
+        allow_task_override: false
 ```
 
 Plugin id 对于扁平 plugin 是 manifest 中的 `name:` 字段，对于嵌套 plugin 是路径派生的键（`image_gen/openai`、`memory/honcho` 等）。
@@ -319,6 +326,7 @@ Plugin id 对于扁平 plugin 是 manifest 中的 `name:` 字段，对于嵌套 
 | ↳ 允许列表      | —     | `allowed_models: [...]`          |
 | `agent_id=`     | 拒绝  | `allow_agent_id_override: true`  |
 | `profile=`      | 拒绝  | `allow_profile_override: true`   |
+| 内置 `task=`    | 拒绝  | `allow_task_override: true`      |
 
 每项覆盖独立门控。授予 `allow_model_override` **不会**同时授予 `allow_provider_override`——被信任可选择模型的 plugin，在未获得 provider 门控授权前仍固定在用户当前激活的 provider 上。
 
@@ -326,19 +334,20 @@ Plugin id 对于扁平 plugin 是 manifest 中的 `name:` 字段，对于嵌套 
 
 * 请求塑形参数——`temperature`、`max_tokens`、`timeout`、`system_prompt`、`purpose`、`messages`、`instructions`、`input`、`json_schema`、`schema_name`、`json_mode`——始终允许；它们不涉及凭据或路由选择。
 * 默认拒绝策略意味着未配置的 plugin 仍可完成有用的工作——只是针对当前激活的 provider 和模型运行。运营人员只需在 plugin 明确需要更精细路由时才考虑 `plugins.entries`。
+* plugin 自有的 `task=` 根据已注册任务的所有者授权；外部或未知任务始终抛出 `PluginLlmTrustError`。
 
 ## 宿主负责的内容
 
 以下是 `ctx.llm` 为 plugin 代劳的完整列表，你无需自行处理：
 
-* **Provider 解析。** 从用户配置中读取 `model.provider` + `model.model`（或在受信任时读取显式覆盖值）。
+* **Provider 解析。** 从用户配置中读取 `model.provider` + `model.model`，或在任务路由时读取 `auxiliary.<task>`。结果和审计元数据会标识实际服务调用的 provider/模型，包括成功的回退路由。
 * **认证。** 从 `~/.hermes/auth.json` / 环境变量中提取 API 密钥、OAuth token 或刷新 token，包括配置了凭据池时的处理。Plugin 永远看不到这些内容。
 * **视觉路由。** 当提供图像输入而用户当前激活的文本模型仅支持文本时，宿主自动回退到已配置的视觉模型。
 * **回退链。** 若用户主 provider 返回 5xx 或 429，请求在向 plugin 返回错误前会经过 Hermes 常规的聚合器感知回退流程。
 * **超时。** 遵循你的 `timeout=` 参数，回退到 `auxiliary.<task>.timeout` 配置或全局辅助默认值。
 * **JSON 塑形。** 在你请求 JSON 时向 provider 发送 `response_format`，若 provider 返回了代码围栏格式的响应则在本地重新解析。
 * **Schema 验证。** 安装了 `jsonschema` 时对你的 `json_schema` 进行验证；否则记录一行 debug 日志并跳过严格验证。
-* **审计日志。** 每次调用向 `agent.log` 写入一条 INFO 日志，包含 plugin id、provider/模型、purpose 和 token 总量。
+* **审计日志。** 每次调用向 `agent.log` 写入一条 INFO 日志，包含 plugin id、实际选定的 provider/模型、task、purpose 和 token 总量。
 
 ## Plugin 负责的内容
 
@@ -363,7 +372,8 @@ Plugin id 对于扁平 plugin 是 manifest 中的 `name:` 字段，对于嵌套 
 ## 参考资料
 
 * 实现：[`agent/plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/plugin_llm.py)
-* 测试：[`tests/agent/test_plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/tests/agent/test_plugin_llm.py)
+* 测试：[`tests/agent/test_plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/tests/agent/test_plugin_llm.py) 和
+  [`tests/agent/test_plugin_llm_task_routing.py`](https://github.com/NousResearch/hermes-agent/blob/main/tests/agent/test_plugin_llm_task_routing.py)
 * 参考 plugin（配套仓库）：
   * [`plugin-llm-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example) — 带图像输入的同步结构化提取
   * [`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example) — 使用 `asyncio.gather()` 的异步示例

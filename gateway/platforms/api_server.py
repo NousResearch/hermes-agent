@@ -987,7 +987,10 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    # Browser Extension requests can include profile/session routing headers.
+    # Keep this list explicit (not '*') so CORS remains narrow while allowing
+    # the extension's authenticated local API probes and chat requests.
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Profile, X-Hermes-Session-Id, X-Hermes-Session-Key",
 }
 
 

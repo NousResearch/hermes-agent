@@ -2192,7 +2192,8 @@ class TestCORS:
 
 
     @pytest.mark.asyncio
-    async def test_cors_allows_idempotency_key_header(self):
+    async def test_cors_allows_extension_routing_headers(self):
+        """Configured origins can preflight browser-extension routing headers."""
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -2201,11 +2202,21 @@ class TestCORS:
                 headers={
                     "Origin": "http://localhost:3000",
                     "Access-Control-Request-Method": "POST",
-                    "Access-Control-Request-Headers": "Idempotency-Key",
+                    "Access-Control-Request-Headers": (
+                        "Idempotency-Key, X-Hermes-Profile, X-Hermes-Session-Id, "
+                        "X-Hermes-Session-Key"
+                    ),
                 },
             )
             assert resp.status == 200
-            assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
+            allowed_headers = resp.headers.get("Access-Control-Allow-Headers", "")
+            for header in (
+                "Idempotency-Key",
+                "X-Hermes-Profile",
+                "X-Hermes-Session-Id",
+                "X-Hermes-Session-Key",
+            ):
+                assert header in allowed_headers
 
 
     @pytest.mark.asyncio

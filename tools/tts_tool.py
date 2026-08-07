@@ -731,7 +731,9 @@ def _dispatch_to_plugin_provider(
        a refactor of the caller can't silently break the invariant.
     3. Plugin dispatch fires only when ``provider`` matches a registered
        :class:`TTSProvider` whose ``name`` equals the configured value.
-       Unknown names return None (caller falls through to Edge default).
+       Unknown names return None so the caller can use its Edge fallback.
+       The caller must report that fallback as ``edge``, not as the unknown
+       configured name.
 
     Plugin exceptions are caught and re-raised — the outer
     ``text_to_speech_tool`` try/except converts them to the standard
@@ -2923,8 +2925,21 @@ def text_to_speech_tool(
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_str = str(file_path)
 
+    fallback_from: Optional[str] = None
     try:
-        # Generate audio with the configured provider
+        # Resolve a plugin before native dispatch. An unknown provider has
+        # historically fallen back to Edge; preserve that behavior, but record
+        # the actual backend so result/error reporting is truthful.
+        plugin_path: Optional[str] = None
+        if command_provider_config is None and provider not in BUILTIN_TTS_PROVIDERS:
+            plugin_path = _dispatch_to_plugin_provider(
+                text, file_str, provider, tts_config,
+            )
+            if plugin_path is None:
+                fallback_from = provider
+                provider = DEFAULT_PROVIDER
+
+        # Generate audio with the resolved provider.
         if command_provider_config is not None:
             logger.info(
                 "Generating speech with command TTS provider '%s'...", provider,
@@ -2933,20 +2948,10 @@ def text_to_speech_tool(
                 text, file_str, provider, command_provider_config, tts_config,
             )
 
-        # Plugin-registered TTS backend (issue #30398). Fires when the
-        # configured provider is neither a built-in nor a command-type
-        # entry, AND a plugin is registered under that name. The walrus
-        # binds `_plugin_path` only when the dispatcher returns a path
-        # (i.e. a plugin was actually found); a None return falls
-        # through to the built-in elif chain so unknown names hit the
-        # Edge TTS default at the bottom. The dispatcher itself enforces
-        # built-ins-always-win + command-wins-over-plugin defensively.
-        elif provider not in BUILTIN_TTS_PROVIDERS and (
-            _plugin_path := _dispatch_to_plugin_provider(
-                text, file_str, provider, tts_config,
-            )
-        ) is not None:
-            file_str = _plugin_path
+        # A plugin path was resolved above. Unknown custom names are rewritten
+        # to ``edge`` there, so they use the normal native fallback below.
+        elif plugin_path is not None:
+            file_str = plugin_path
 
         elif provider == "elevenlabs":
             try:
@@ -3132,13 +3137,16 @@ def text_to_speech_tool(
         if voice_compatible:
             media_tag = f"[[audio_as_voice]]\n{media_tag}"
 
-        return json.dumps({
+        response = {
             "success": True,
             "file_path": file_str,
             "media_tag": media_tag,
             "provider": provider,
             "voice_compatible": voice_compatible,
-        }, ensure_ascii=False)
+        }
+        if fallback_from is not None:
+            response["fallback_from"] = fallback_from
+        return json.dumps(response, ensure_ascii=False)
 
     except ValueError as e:
         # Configuration errors (missing API keys, etc.)

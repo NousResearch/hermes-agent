@@ -169,6 +169,7 @@ export {
 } from '@/components/ui/dialog'
 export {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,

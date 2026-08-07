@@ -406,10 +406,11 @@ def get_board(
             workflow_template_id=workflow_template_id,
             current_step_key=current_step_key,
         )
-        # Pre-fetch link counts per task (cheap: one query).
+        # Pre-fetch link counts and dependency-parent identities (one query).
         link_counts: dict[str, dict[str, int]] = {}
+        dependency_parent_ids: dict[str, list[str]] = {}
         for row in conn.execute(
-            "SELECT parent_id, child_id FROM task_links"
+            "SELECT parent_id, child_id FROM task_links ORDER BY parent_id, child_id"
         ).fetchall():
             link_counts.setdefault(row["parent_id"], {"parents": 0, "children": 0})[
                 "children"
@@ -417,6 +418,55 @@ def get_board(
             link_counts.setdefault(row["child_id"], {"parents": 0, "children": 0})[
                 "parents"
             ] += 1
+            dependency_parent_ids.setdefault(row["child_id"], []).append(row["parent_id"])
+
+        # Auto-decomposition deliberately links generated tasks *into* the
+        # workflow root so the root waits for all generated work. That edge
+        # direction is the opposite of the visual owner/child relationship.
+        # The generated task's durable creation event records the owner
+        # explicitly, so derive a presentation-only projection instead of
+        # asking the renderer to guess from dependency direction.
+        decomposition_owner: dict[str, str] = {}
+        generated_children: dict[str, set[str]] = {}
+        board_task_ids = [task.id for task in tasks]
+        provenance_task_ids = set(board_task_ids)
+        for task_id in board_task_ids:
+            # A decomposed root's generated prerequisites can be excluded by
+            # tenant/archived filters while their dependency edges remain.
+            # Include those direct IDs so the root projection can still remove
+            # inverted prerequisite edges without scanning unrelated history.
+            provenance_task_ids.update(dependency_parent_ids.get(task_id, []))
+        canonical_creation_payload: dict[str, tuple[int, Optional[str]]] = {}
+        # Bound lookup work to returned tasks and their direct prerequisites.
+        # idx_events_task(task_id, created_at) services each IN lookup; chunks
+        # stay below SQLite builds with conservative host-parameter limits.
+        ordered_provenance_ids = sorted(provenance_task_ids)
+        for start in range(0, len(ordered_provenance_ids), 400):
+            task_id_chunk = ordered_provenance_ids[start : start + 400]
+            placeholders = ",".join("?" for _ in task_id_chunk)
+            rows = conn.execute(
+                f"SELECT id, task_id, payload FROM task_events "
+                f"WHERE task_id IN ({placeholders}) AND kind = 'created'",
+                task_id_chunk,
+            ).fetchall()
+            for row in rows:
+                current = canonical_creation_payload.get(row["task_id"])
+                if current is None or row["id"] < current[0]:
+                    canonical_creation_payload[row["task_id"]] = (row["id"], row["payload"])
+
+        # The earliest creation event is canonical. Ignore accidental
+        # duplicate/replayed creation events instead of letting the latest
+        # event silently change a task's display owner.
+        for task_id, (_, raw_payload) in canonical_creation_payload.items():
+            try:
+                payload = json.loads(raw_payload) if raw_payload else {}
+            except (TypeError, ValueError):
+                continue
+            owner_id = payload.get("from_decompose_of") if isinstance(payload, dict) else None
+            if not isinstance(owner_id, str) or not owner_id:
+                continue
+            decomposition_owner[task_id] = owner_id
+            generated_children.setdefault(owner_id, set()).add(task_id)
 
         # Comment + event counts (both cheap aggregates).
         comment_counts: dict[str, int] = {
@@ -466,6 +516,21 @@ def get_board(
             )
             d = _task_dict(t, latest_summary=preview)
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
+            owner_id = decomposition_owner.get(t.id)
+            if owner_id:
+                # Every generated task collapses under its workflow owner,
+                # regardless of sibling dependency topology.
+                d["collapse_parent_ids"] = [owner_id]
+            else:
+                # For ordinary dependency graphs, direct parents remain the
+                # visual owners. Exclude generated tasks linked into a
+                # decomposed root; those are prerequisites, not its owners.
+                generated = generated_children.get(t.id, set())
+                d["collapse_parent_ids"] = [
+                    parent_id
+                    for parent_id in dependency_parent_ids.get(t.id, [])
+                    if parent_id not in generated
+                ]
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
             diags = diagnostics_per_task.get(t.id)

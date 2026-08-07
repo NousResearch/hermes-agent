@@ -115,6 +115,109 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_board_includes_collapse_parents_even_when_parents_are_filtered_out(client):
+    """The renderer needs edge identity, not only counts, to avoid orphaning cards."""
+    parent_a = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "parent a", "tenant": "parents"},
+    ).json()["task"]
+    parent_b = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "parent b", "tenant": "parents"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "child",
+            "tenant": "children",
+            "parents": [parent_b["id"], parent_a["id"]],
+        },
+    ).json()["task"]
+
+    response = client.get("/api/plugins/kanban/board?tenant=children")
+
+    assert response.status_code == 200
+    tasks = {
+        task["id"]: task
+        for column in response.json()["columns"]
+        for task in column["tasks"]
+    }
+    assert list(tasks) == [child["id"]]
+    assert tasks[child["id"]]["collapse_parent_ids"] == sorted(
+        [parent_a["id"], parent_b["id"]]
+    )
+    assert tasks[child["id"]]["link_counts"]["parents"] == 2
+
+
+def test_board_projects_decomposed_children_under_workflow_root(client):
+    """Auto-decompose dependency edges must not invert the visual workflow owner."""
+    conn = kb.connect()
+    try:
+        root_id = kb.create_task(conn, title="workflow root", triage=True)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root_id,
+            root_assignee=None,
+            children=[
+                {"title": "research", "parents": []},
+                {"title": "build", "parents": [0]},
+            ],
+            author="test",
+        )
+        assert child_ids is not None
+        other_owner_id = kb.create_task(conn, title="other workflow")
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn,
+                child_ids[0],
+                "created",
+                {"from_decompose_of": other_owner_id},
+            )
+    finally:
+        conn.close()
+
+    response = client.get("/api/plugins/kanban/board")
+    assert response.status_code == 200
+    tasks = {
+        task["id"]: task
+        for column in response.json()["columns"]
+        for task in column["tasks"]
+    }
+
+    # The DB links both generated tasks as dependency parents of the root so
+    # the root waits. The board projection keeps the root visible and groups
+    # each generated card beneath it instead.
+    assert tasks[root_id]["link_counts"]["parents"] == 2
+    assert tasks[root_id]["collapse_parent_ids"] == []
+    assert tasks[child_ids[0]]["collapse_parent_ids"] == [root_id]
+    assert tasks[child_ids[1]]["collapse_parent_ids"] == [root_id]
+
+    # Provenance for direct prerequisites remains available even when one is
+    # removed by a tenant filter and another is omitted as archived. Neither
+    # inverted edge may leak back into the visible root's projection.
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET tenant = 'visible' WHERE id = ?", (root_id,))
+            conn.execute("UPDATE tasks SET tenant = 'hidden' WHERE id = ?", (child_ids[0],))
+            conn.execute(
+                "UPDATE tasks SET tenant = 'visible', status = 'archived' WHERE id = ?",
+                (child_ids[1],),
+            )
+    finally:
+        conn.close()
+
+    filtered_response = client.get("/api/plugins/kanban/board?tenant=visible")
+    assert filtered_response.status_code == 200
+    filtered_tasks = {
+        task["id"]: task
+        for column in filtered_response.json()["columns"]
+        for task in column["tasks"]
+    }
+    assert list(filtered_tasks) == [root_id]
+    assert filtered_tasks[root_id]["collapse_parent_ids"] == []
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")

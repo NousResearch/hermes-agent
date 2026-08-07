@@ -419,6 +419,7 @@ export function useComposerDraft({
   return {
     activeQueueSessionKeyRef,
     clearDraft,
+    draftScopeRef,
     draftRef,
     editorRef,
     focusInput,

@@ -21,6 +21,7 @@ function renderSubmitHook({
   text = ''
 }: SubmitHarnessOptions = {}) {
   const draftRef = { current: text }
+  const draftScopeRef = { current: 'stored-session' as string | null }
   const editor = document.createElement('div')
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
@@ -29,6 +30,8 @@ function renderSubmitHook({
   const onSteer = vi.fn(async () => true)
   const onSubmit = vi.fn(async () => true)
   const queueCurrentDraft = vi.fn(() => true)
+  const loadIntoComposer = vi.fn()
+  const stashAt = vi.fn()
 
   const clearDraft = vi.fn(() => {
     draftRef.current = ''
@@ -38,19 +41,19 @@ function renderSubmitHook({
   const hook = renderHook(() =>
     useComposerSubmit({
       activeQueueSessionKey: 'stored-session',
-      activeQueueSessionKeyRef: { current: 'stored-session' },
       attachments,
       busy,
       compacting,
       clearDraft,
       disabled: false,
+      draftScopeRef,
       draftRef,
       drainNextQueued: vi.fn(async () => false),
       editorRef,
       exitQueuedEdit: vi.fn(() => false),
       focusInput: vi.fn(),
       inputDisabled: false,
-      loadIntoComposer: vi.fn(),
+      loadIntoComposer,
       onCancel,
       onSteer,
       onSubmit,
@@ -59,11 +62,21 @@ function renderSubmitHook({
       queuedPrompts: [],
       sessionId: 'runtime-session',
       setComposerText: vi.fn(),
-      stashAt: vi.fn()
+      stashAt
     })
   )
 
-  return { clearDraft, hook, onCancel, onSteer, onSubmit, queueCurrentDraft }
+  return {
+    clearDraft,
+    draftScopeRef,
+    hook,
+    loadIntoComposer,
+    onCancel,
+    onSteer,
+    onSubmit,
+    queueCurrentDraft,
+    stashAt
+  }
 }
 
 describe('useComposerSubmit busy-turn routing', () => {
@@ -184,6 +197,46 @@ describe('useComposerSubmit busy-turn routing', () => {
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ composerScope: 'stored-session' }))
     )
+  })
+
+  it('keeps a rejected submit out of the composer after switching sessions', async () => {
+    let resolveSubmit!: (accepted: boolean) => void
+
+    const pendingSubmit = new Promise<boolean>(resolve => {
+      resolveSubmit = resolve
+    })
+
+    const { draftScopeRef, hook, loadIntoComposer, onSubmit, stashAt } = renderSubmitHook()
+    onSubmit.mockImplementationOnce(() => pendingSubmit)
+
+    act(() => {
+      hook.result.current.dispatchSubmit('draft from session A')
+    })
+
+    draftScopeRef.current = 'stored-session-b'
+
+    act(() => {
+      resolveSubmit(false)
+    })
+
+    await waitFor(() =>
+      expect(stashAt).toHaveBeenCalledWith('stored-session', 'draft from session A', [])
+    )
+    expect(loadIntoComposer).not.toHaveBeenCalled()
+  })
+
+  it('repaints a rejected submit while its composer remains loaded', async () => {
+    const { hook, loadIntoComposer, onSubmit, stashAt } = renderSubmitHook()
+    onSubmit.mockResolvedValueOnce(false)
+
+    act(() => {
+      hook.result.current.dispatchSubmit('draft from this session')
+    })
+
+    await waitFor(() =>
+      expect(stashAt).toHaveBeenCalledWith('stored-session', 'draft from this session', [])
+    )
+    expect(loadIntoComposer).toHaveBeenCalledWith('draft from this session', [])
   })
 })
 

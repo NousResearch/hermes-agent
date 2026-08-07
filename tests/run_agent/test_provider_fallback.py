@@ -231,6 +231,102 @@ class TestFallbackChainAdvancement:
         assert agent.api_mode == "chat_completions"
         assert agent.client is not None
 
+    def test_named_custom_anthropic_fallback_uses_declared_transport(
+        self, tmp_path, monkeypatch
+    ):
+        """Request-level failover must preserve a named provider's API mode.
+
+        The fallback chain intentionally stores only provider + model.  The
+        named provider declaration remains the source of truth for transport;
+        an arbitrary relay hostname must not downgrade Messages to Chat.
+        """
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "custom_providers:\n"
+            "  - name: castor-fallback\n"
+            "    base_url: https://relay.example.test/v1\n"
+            "    key_env: CASTOR_TEST_KEY\n"
+            "    api_mode: anthropic_messages\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("CASTOR_TEST_KEY", "test-key")
+
+        agent = _make_agent(fallback_model=[{
+            "provider": "custom:castor-fallback",
+            "model": "claude-opus-5",
+        }])
+        built_clients = []
+
+        def _fake_build(api_key, base_url, timeout=None, **kwargs):
+            client = MagicMock(name="anthropic-client")
+            built_clients.append((api_key, base_url, client))
+            return client
+
+        with (
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                side_effect=_fake_build,
+            ),
+            patch(
+                "agent.model_metadata.get_model_context_length",
+                return_value=200_000,
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "custom:castor-fallback"
+        assert agent.model == "claude-opus-5"
+        assert agent.api_mode == "anthropic_messages"
+        assert agent.client is None
+        assert agent._anthropic_client is built_clients[-1][2]
+        assert built_clients[-1][:2] == (
+            "test-key",
+            "https://relay.example.test/v1",
+        )
+
+    def test_bedrock_transport_precedes_generic_anthropic_adapter(self):
+        """Resolved Anthropic wrappers must not override Bedrock Converse."""
+        from agent.auxiliary_client import AnthropicAuxiliaryClient
+
+        model = "anthropic.claude-haiku-4-5-20251001-v1:0"
+        endpoint = "https://bedrock-runtime.us-west-2.amazonaws.com"
+        resolved = AnthropicAuxiliaryClient(
+            MagicMock(name="bedrock-native-client"),
+            model,
+            "aws-sdk",
+            endpoint,
+        )
+        agent = _make_agent(fallback_model=[{
+            "provider": "bedrock",
+            "model": model,
+        }])
+
+        with (
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=None,
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(resolved, model),
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                side_effect=AssertionError(
+                    "Bedrock fallback must not build a plain Anthropic client"
+                ),
+            ),
+            patch(
+                "agent.model_metadata.get_model_context_length",
+                return_value=200_000,
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.api_mode == "bedrock_converse"
+        assert agent.client is resolved
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

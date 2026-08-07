@@ -2006,7 +2006,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     # raw_codex=True because the main agent needs direct responses.stream()
     # access for Codex providers.
     try:
-        from agent.auxiliary_client import resolve_provider_client
+        from agent.auxiliary_client import (
+            AnthropicAuxiliaryClient,
+            resolve_provider_client,
+        )
         # Pass base_url and api_key from fallback config so custom
         # endpoints (e.g. Ollama Cloud) resolve correctly instead of
         # falling through to OpenRouter defaults.
@@ -2041,11 +2044,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 fb_model, fb_provider, _norm_err,
             )
 
-        # Determine api_mode from provider / base URL / model
+        # Honor the transport selected by the centralized resolver before
+        # falling back to provider/URL heuristics. Named custom providers can
+        # declare anthropic_messages on arbitrary relay hostnames; the resolver
+        # represents that decision with AnthropicAuxiliaryClient.
         fb_api_mode = "chat_completions"
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        _fb_is_bedrock = fb_provider == "bedrock" or (
+            base_url_hostname(fb_base_url).startswith("bedrock-runtime.")
+            and base_url_host_matches(fb_base_url, "amazonaws.com")
+        )
+        if _fb_is_bedrock:
+            fb_api_mode = "bedrock_converse"
+        elif isinstance(fb_client, AnthropicAuxiliaryClient):
+            fb_api_mode = "anthropic_messages"
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
             # Portal is dual-wire: anthropic/* must land on /v1/messages.
@@ -2081,11 +2095,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # provider-specific exceptions like Copilot gpt-5-mini on
             # chat completions.
             fb_api_mode = "codex_responses"
-        elif fb_provider == "bedrock" or (
-            base_url_hostname(fb_base_url).startswith("bedrock-runtime.")
-            and base_url_host_matches(fb_base_url, "amazonaws.com")
-        ):
-            fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
         old_provider = agent.provider

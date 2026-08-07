@@ -32,6 +32,16 @@ from gateway.platforms.base import (
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
+from utils import env_var_enabled
+
+
+def _require_mention_enabled() -> bool:
+    """Channel messages require @mention by default.
+
+    Shared falsy aliases (including ``off``) disable the gate so every channel
+    message is processed unless other allowlists still filter it.
+    """
+    return env_var_enabled("MATTERMOST_REQUIRE_MENTION", default="true")
 
 
 def _get_scoped_secret(name, default=None):
@@ -871,9 +881,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 )
                 return
 
-            require_mention = os.getenv(
-                "MATTERMOST_REQUIRE_MENTION", "true"
-            ).lower() not in {"false", "0", "no"}
+            require_mention = _require_mention_enabled()
 
             free_channels_raw = os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}

@@ -384,6 +384,23 @@ class TestMattermostMentionBehavior:
             await self.adapter._handle_ws_event(self._make_event("hello"))
             assert not self.adapter.handle_message.called
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["false", "0", "no", "off", "OFF"])
+    async def test_require_mention_falsy_aliases_allow_without_mention(self, raw):
+        """Falsy aliases (including off) disable the @mention gate."""
+        with patch.dict(os.environ, {"MATTERMOST_REQUIRE_MENTION": raw}):
+            os.environ.pop("MATTERMOST_FREE_RESPONSE_CHANNELS", None)
+            await self.adapter._handle_ws_event(self._make_event("hello"))
+            assert self.adapter.handle_message.called
+
+    @pytest.mark.parametrize("raw", ["false", "0", "no", "off", "TRUE", "1", "yes", "on"])
+    def test_require_mention_helper_aliases(self, raw):
+        from plugins.platforms.mattermost.adapter import _require_mention_enabled
+
+        with patch.dict(os.environ, {"MATTERMOST_REQUIRE_MENTION": raw}):
+            expected = raw.strip().lower() in {"1", "true", "yes", "on"}
+            assert _require_mention_enabled() is expected
+
 
     @pytest.mark.asyncio
     async def test_free_response_channel_responds_without_mention(self):

@@ -34,6 +34,12 @@ export const LOCALE_OPTIONS = [
     name: 'العربية',
     englishName: 'Arabic',
     configValue: 'ar'
+  },
+  {
+    id: 'pt-br',
+    name: 'Português (Brasil)',
+    englishName: 'Brazilian Portuguese',
+    configValue: 'pt-br'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -79,7 +85,16 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   'ar-eg': 'ar',
   ar_eg: 'ar',
   arabic: 'ar',
-  العربية: 'ar'
+  العربية: 'ar',
+  pt: 'pt-br',
+  'pt-br': 'pt-br',
+  pt_br: 'pt-br',
+  portuguese: 'pt-br',
+  português: 'pt-br',
+  portugues: 'pt-br',
+  'brazilian portuguese': 'pt-br',
+  'português brasileiro': 'pt-br',
+  brasileiro: 'pt-br'
 }
 
 export function isLocale(value: unknown): value is Locale {

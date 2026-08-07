@@ -279,6 +279,57 @@ class TestVoiceSpeakResponseReal:
             cli._voice_speak_response("Hello")
             mock_tts.assert_not_called()
 
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.getsize", return_value=1000)
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("cli.os.makedirs")
+    @patch("tools.voice_mode.play_audio_file")
+    @patch("tools.tts_tool.text_to_speech_tool", return_value='{"success": true}')
+    def test_markdown_stripped(self, mock_tts, _play, _mkd, _isf, _gsz, _unl, _cp):
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("## Title\n**bold** and `code`")
+        call_text = mock_tts.call_args.kwargs["text"]
+        assert "##" not in call_text
+        assert "**" not in call_text
+        assert "`" not in call_text
+
+    @patch("cli._cprint")
+    @patch("cli.os.makedirs")
+    @patch("tools.tts_tool.text_to_speech_tool", return_value='{"success": true}')
+    def test_code_blocks_removed(self, mock_tts, _mkd, _cp):
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("```python\nprint('hi')\n```\nSome text")
+        call_text = mock_tts.call_args.kwargs["text"]
+        assert "print" not in call_text
+        assert "```" not in call_text
+        assert "Some text" in call_text
+
+    @patch("cli._cprint")
+    @patch("cli.os.makedirs")
+    def test_empty_after_strip_returns_early(self, _mkd, _cp):
+        cli = _make_voice_cli(_voice_tts=True)
+        with patch("tools.tts_tool.text_to_speech_tool") as mock_tts:
+            cli._voice_speak_response("```python\nprint('hi')\n```")
+            mock_tts.assert_not_called()
+
+    @patch("cli._cprint")
+    @patch("cli.os.makedirs")
+    @patch("tools.tts_tool.text_to_speech_tool", return_value='{"success": true}')
+    def test_long_text_not_pretruncated(self, mock_tts, _mkd, _cp):
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("A" * 5000)
+        call_text = mock_tts.call_args.kwargs["text"]
+        assert len(call_text) == 5000
+
+    @patch("cli._cprint")
+    @patch("cli.os.makedirs")
+    @patch("tools.tts_tool.text_to_speech_tool", side_effect=RuntimeError("tts fail"))
+    def test_exception_sets_done_event(self, _tts, _mkd, _cp):
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_tts_done.clear()
+        cli._voice_speak_response("Hello")
+        assert cli._voice_tts_done.is_set()
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")

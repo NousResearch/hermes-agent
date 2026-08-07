@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
-from hermes_cli.config import get_hermes_home
+from hermes_cli.config import get_hermes_home, _expand_env_vars
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
 from utils import is_truthy_value
 
@@ -1288,6 +1288,7 @@ def load_gateway_config() -> GatewayConfig:
             # the messaging gateway. Fail-open via the shared helper.
             from hermes_cli import managed_scope
             yaml_cfg = managed_scope.apply_managed_overlay(yaml_cfg)
+            yaml_cfg = _expand_env_vars(yaml_cfg)
 
             # Shared nested-fallback source: settings meant to be top-level
             # keys are also accepted when a user nests them under `gateway:`

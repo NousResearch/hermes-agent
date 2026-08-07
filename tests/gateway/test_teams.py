@@ -1,6 +1,7 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
 import json
+import logging
 import sys
 import types
 from types import SimpleNamespace
@@ -596,6 +597,56 @@ class TestTeamsAttachmentClassification:
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.DOCUMENT
         assert len(event.media_urls) == 2
+
+    def _reference_attachment(self, name="notes.md"):
+        # A file attached in a Teams channel arrives as a SharePoint
+        # reference: named, but with no URL this adapter can fetch.
+        att = MagicMock()
+        att.content_type = "reference"
+        att.content_url = None
+        att.name = name
+        att.content = None
+        return att
+
+    @pytest.mark.anyio
+    async def test_unfetchable_attachment_is_logged(self, caplog):
+        """An attachment we cannot fetch must not vanish without a trace."""
+
+        adapter = self._make_adapter()
+        activity = self._make_activity([self._reference_attachment()])
+
+        with caplog.at_level(logging.WARNING):
+            await adapter._on_message(self._make_ctx(activity))
+
+        assert "notes.md" in caplog.text
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []
+
+    @pytest.mark.anyio
+    async def test_file_info_without_download_url_is_logged(self, caplog):
+        adapter = self._make_adapter()
+        attachment = self._file_download_attachment()
+        attachment.content = {"fileType": "pdf"}
+        activity = self._make_activity([attachment])
+
+        with caplog.at_level(logging.WARNING):
+            await adapter._on_message(self._make_ctx(activity))
+
+        assert "report.pdf" in caplog.text
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []
+
+    @pytest.mark.anyio
+    async def test_attachment_inventory_is_logged(self, caplog):
+        adapter = self._make_adapter()
+        activity = self._make_activity([self._reference_attachment()])
+
+        with caplog.at_level(logging.INFO):
+            await adapter._on_message(self._make_ctx(activity))
+
+        assert "inbound attachments (1)" in caplog.text
+        assert "type=reference" in caplog.text
+        assert "url=no" in caplog.text
 
 
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────

@@ -185,6 +185,20 @@ class TestSSRFGuardedHttpxClient:
             with pytest.raises(SSRFConnectionBlocked, match="metadata"):
                 _resolved_http_connect_ips("example.com", 80, "http")
 
+    def test_allow_private_urls_still_blocks_metadata_at_connect(self):
+        """Endpoint-probe mode may dial LAN, but never cloud metadata."""
+        with _resolves_to("169.254.169.254"):
+            with pytest.raises(SSRFConnectionBlocked, match="metadata"):
+                _resolved_http_connect_ips(
+                    "evil.example.com", 80, "http", allow_private_urls=True
+                )
+
+    def test_allow_private_urls_permits_loopback_at_connect(self):
+        with _resolves_to("127.0.0.1"):
+            assert _resolved_http_connect_ips(
+                "127.0.0.1", 11434, "http", allow_private_urls=True
+            ) == ["127.0.0.1"]
+
 
     @pytest.mark.asyncio
     async def test_async_backend_blocks_unix_socket_connects(self):

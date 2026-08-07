@@ -91,18 +91,13 @@ export async function runRewindSubmit(
     )
 
   const submit = async () => {
-    const { sessionId: usedId } = await withSessionNotFoundResume(
-      liveSessionId,
-      recovery?.storedSessionId,
-      submitFor,
-      {
-        requestGateway,
-        onRecovered: recoveredId => {
-          liveSessionId = recoveredId
-          recovery?.onSessionRecovered?.(recoveredId)
-        }
+    const { sessionId: usedId } = await withSessionNotFoundResume(liveSessionId, recovery?.storedSessionId, submitFor, {
+      requestGateway,
+      onRecovered: recoveredId => {
+        liveSessionId = recoveredId
+        recovery?.onSessionRecovered?.(recoveredId)
       }
-    )
+    })
 
     liveSessionId = usedId
   }

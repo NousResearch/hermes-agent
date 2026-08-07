@@ -9358,6 +9358,17 @@ def _wire_agent_terminal_output() -> None:
         return
 
     def _owner_sid_for_process(session) -> str:
+        # Prefer the spawn-time UI owner recorded by terminal_tool: a
+        # delegated child's session_key is the subagent's internal key and
+        # never matches a live TUI session, which used to route its live
+        # output to sid "" — dropped by write_json (#61719). Only honor the
+        # recorded origin while that window is still live; otherwise fall
+        # back to the legacy session_key match.
+        origin_sid = str(getattr(session, "origin_ui_session_id", "") or "")
+        if origin_sid:
+            with _sessions_lock:
+                if origin_sid in _sessions:
+                    return origin_sid
         session_key = str(getattr(session, "session_key", "") or "")
         if not session_key:
             return ""

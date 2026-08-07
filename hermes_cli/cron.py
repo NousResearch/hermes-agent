@@ -6,6 +6,8 @@ pause/resume/run/remove, status, and tick.
 """
 
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -83,8 +85,16 @@ def _warn_if_gateway_not_running() -> None:
             return
 
         from hermes_cli.gateway import find_gateway_pids
+        from hermes_cli.profiles import _get_default_hermes_home
 
-        if find_gateway_pids():
+        # A multiplexed default gateway owns the ticker for all served
+        # secondary profiles.  The profile-local PID/state files are absent by
+        # design in that mode, so the normal profile-scoped process scan
+        # falsely reports a stopped gateway for secondary-profile crons.
+        if find_gateway_pids() or (
+            _active_profile_is_multiplexed(_get_default_hermes_home())
+            and _shared_multiplex_gateway_pid() is not None
+        ):
             return
     except Exception:
         # If we can't determine gateway state, stay quiet rather than nag.
@@ -94,6 +104,50 @@ def _warn_if_gateway_not_running() -> None:
     print(color("     Start it with: hermes gateway install", Colors.DIM))
     print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
     print(color("     Check status:  hermes cron status", Colors.DIM))
+
+
+def _active_profile_is_multiplexed(default_home: Path) -> bool:
+    """Return whether the shared default gateway serves multiple profiles."""
+    try:
+        from hermes_cli.config import read_user_config_raw
+
+        cfg = read_user_config_raw(default_home / "config.yaml")
+        gateway_cfg = cfg.get("gateway") or {}
+        return bool(cfg.get("multiplex_profiles") or gateway_cfg.get("multiplex_profiles"))
+    except Exception:
+        return False
+
+
+def _shared_multiplex_gateway_pid() -> Optional[int]:
+    """Return the live default launchd gateway PID for a multiplexed profile."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", "ai.hermes.gateway"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if fields and fields[0].isdigit() and int(fields[0]) > 0:
+            # Legacy launchctl list format: "<pid>\t<status>\t<label>"
+            return int(fields[0])
+        # Modern format (macOS Sonoma+): plist-style dump with `"PID" = <n>;`.
+        # Without this branch the multiplex check misses the running gateway
+        # and `hermes cron list` falsely warns "Gateway is not running" — the
+        # signal that drives agents to run the killing `kickstart -k` repair.
+        pid_match = re.search(r'^\s*"PID"\s*=\s*(\d+)\s*;', line)
+        if pid_match and int(pid_match.group(1)) > 0:
+            return int(pid_match.group(1))
+    return None
 
 
 def cron_list(show_all: bool = False):
@@ -252,6 +306,28 @@ def cron_status():
         return
 
     pids = find_gateway_pids()
+    if not pids:
+        # In multiplex mode the default gateway owns secondary-profile cron
+        # tickers. It has the root HERMES_HOME and no secondary-profile PID
+        # file, so a profile-local process scan falsely reports "not running".
+        try:
+            from hermes_cli.profiles import _get_default_hermes_home
+            from gateway.status import (
+                get_runtime_status_running_pid,
+                read_runtime_status,
+            )
+            default_home = _get_default_hermes_home()
+            if _active_profile_is_multiplexed(default_home):
+                shared_pid = _shared_multiplex_gateway_pid()
+                if shared_pid is None:
+                    shared_pid = get_runtime_status_running_pid(
+                        read_runtime_status(default_home / "gateway_state.json"),
+                        expected_home=default_home,
+                    )
+                if shared_pid is not None:
+                    pids = [shared_pid]
+        except Exception:
+            pass
     if pids:
         # The gateway PROCESS is alive — but the cron ticker THREAD inside it
         # can die silently, or stay alive while every tick fails. Check both

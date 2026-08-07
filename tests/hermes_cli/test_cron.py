@@ -119,6 +119,70 @@ class TestGatewayNotRunningWarning:
         out = capsys.readouterr().out
         assert "Gateway is not running" in out
 
+    def test_list_accepts_shared_multiplex_gateway(self, tmp_cron_dir, capsys, monkeypatch):
+        create_job(prompt="Daily report", schedule="0 11 * * *")
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr(
+            cron_cli, "_active_profile_is_multiplexed", lambda _home: True
+        )
+        monkeypatch.setattr(cron_cli, "_shared_multiplex_gateway_pid", lambda: 1234)
+        cron_command(Namespace(cron_command="list", all=True))
+        out = capsys.readouterr().out
+        assert "Gateway is not running" not in out
+
+    def test_shared_multiplex_pid_parses_modern_launchctl_format(self, monkeypatch):
+        # macOS Sonoma+ `launchctl list <label>` emits a plist-style dump where
+        # the PID lives on a `"PID" = <n>;` line — no leading bare digit. The
+        # legacy tab-format parser missed it, returning None and falsely
+        # warning "Gateway is not running" (the trigger for the killing
+        # `kickstart -k` repair).
+        modern_dump = (
+            '{\n'
+            '\t"StandardOutPath" = "/Users/x/.hermes/logs/gateway.log";\n'
+            '\t"Label" = "ai.hermes.gateway";\n'
+            '\t"LastExitStatus" = 256;\n'
+            '\t"PID" = 54874;\n'
+            '};\n'
+        )
+        monkeypatch.setattr(
+            cron_cli.subprocess,
+            "run",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout=modern_dump),
+        )
+        assert cron_cli._shared_multiplex_gateway_pid() == 54874
+
+    def test_shared_multiplex_pid_parses_legacy_tab_format(self, monkeypatch):
+        legacy = "54874\t0\tai.hermes.gateway\n"
+        monkeypatch.setattr(
+            cron_cli.subprocess,
+            "run",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout=legacy),
+        )
+        assert cron_cli._shared_multiplex_gateway_pid() == 54874
+
+    def test_shared_multiplex_pid_none_when_gateway_down(self, monkeypatch):
+        down_dump = '{\n\t"Label" = "ai.hermes.gateway";\n\t"LastExitStatus" = 256;\n};\n'
+        monkeypatch.setattr(
+            cron_cli.subprocess,
+            "run",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout=down_dump),
+        )
+        assert cron_cli._shared_multiplex_gateway_pid() is None
+
+    def test_status_reports_shared_multiplex_gateway(self, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr(
+            cron_cli, "_active_profile_is_multiplexed", lambda _home: True
+        )
+        monkeypatch.setattr(cron_cli, "_shared_multiplex_gateway_pid", lambda: 1234)
+        monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "builtin")
+        monkeypatch.setattr("cron.jobs.get_ticker_heartbeat_age", lambda: 1.0)
+        monkeypatch.setattr("cron.jobs.get_ticker_success_age", lambda: 1.0)
+        cron_command(Namespace(cron_command="status"))
+        out = capsys.readouterr().out
+        assert "Gateway is running" in out
+        assert "PID: 1234" in out
+
 
 class TestExternalCronProviderStatus:
     """With an external cron provider (e.g. Chronos), jobs fire via a

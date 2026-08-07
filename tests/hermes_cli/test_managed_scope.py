@@ -34,6 +34,16 @@ def _write_managed(tmp_path, monkeypatch, *, config=None, env=None):
 
 
 
+def test_bare_string_model_pins_model_default(tmp_path, monkeypatch):
+    """Bare ``model: org/locked`` must expose model.default to write guards."""
+    from hermes_cli import managed_scope
+
+    _write_managed(tmp_path, monkeypatch, config="model: org/locked\n")
+    assert managed_scope.managed_config_keys() == {"model.default"}
+    assert managed_scope.is_key_managed("model.default") is True
+    assert managed_scope.is_key_managed("model") is False
+
+
 def test_load_managed_env_and_is_env_managed(tmp_path, monkeypatch):
     from hermes_cli import managed_scope
 

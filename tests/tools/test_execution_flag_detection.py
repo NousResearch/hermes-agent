@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 
 import pytest
@@ -57,8 +58,9 @@ def test_real_binaries_execute_leading_dash_program_payload(
     input_file = tmp_path / "input.txt"
     input_file.write_text("needle\n")
     resolved_args = [arg.format(input=str(input_file)) for arg in args]
+    bulk_count = 300 if sys.platform == "darwin" else 10_000
     input_text = (
-        "\n".join(str(number) for number in range(10_000, 0, -1)) + "\n"
+        "\n".join(str(number) for number in range(bulk_count, 0, -1)) + "\n"
         if stdin == "{bulk}"
         else stdin
     )
@@ -70,7 +72,12 @@ def test_real_binaries_execute_leading_dash_program_payload(
     }
     argv = [tool, *resolved_args]
     if needs_tty:
-        argv = ["script", "-qec", shlex.join(argv), "/dev/null"]
+        if sys.platform == "darwin":
+            if argv[:2] == ["man", "--pager"]:
+                argv[1] = "-P"
+            argv = ["script", "-q", "/dev/null", *argv]
+        else:
+            argv = ["script", "-qec", shlex.join(argv), "/dev/null"]
 
     subprocess.run(argv, input=input_text, text=True, capture_output=True, env=env, timeout=20)
 

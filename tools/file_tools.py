@@ -634,6 +634,22 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
             allowed_counts[file_path] = count
         result.counts = allowed_counts
 
+    for field_name in (
+        "case_insensitive_matches",
+        "hidden_matches",
+        "literal_matches",
+    ):
+        probe_matches = getattr(result, field_name, None)
+        if not probe_matches:
+            continue
+        allowed_probe_matches = []
+        for match in probe_matches:
+            if _search_result_read_block_error(match.path, task_id):
+                omitted += 1
+                continue
+            allowed_probe_matches.append(match)
+        setattr(result, field_name, allowed_probe_matches)
+
     return omitted
 
 

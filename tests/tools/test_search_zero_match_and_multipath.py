@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +27,10 @@ class TestZeroMatchProbe:
         r = json.loads(search_tool("token_alpha", path=str(proj / "proj"), task_id="t-zm"))
         assert r["total_count"] == 0
         assert "case-insensitive" in r.get("warning", "")
+        assert {
+            Path(match["path"]).name: match["count"]
+            for match in r["case_insensitive_matches"]
+        } == {"a.py": 1, "b.py": 1}
 
     def test_regex_metachar_literal_hint(self, proj):
         d = proj / "proj"
@@ -33,6 +38,10 @@ class TestZeroMatchProbe:
         r = json.loads(search_tool("lookup[key+1]", path=str(d), task_id="t-zm"))
         assert r["total_count"] == 0
         assert "literal match" in r.get("warning", "")
+        assert [
+            {"path": Path(match["path"]).name, "count": match["count"]}
+            for match in r["literal_matches"]
+        ] == [{"path": "meta.py", "count": 1}]
 
     def test_true_zero_match_no_hint(self, proj):
         r = json.loads(search_tool("zzz_totally_absent_zzz", path=str(proj / "proj"), task_id="t-zm"))
@@ -46,6 +55,18 @@ class TestZeroMatchProbe:
         r = json.loads(search_tool("HIDDEN_ONLY_TOKEN", path=str(d), task_id="t-zm"))
         assert r["total_count"] == 0
         assert "hidden or gitignored" in r.get("warning", "")
+        assert [
+            {"path": Path(match["path"]).name, "count": match["count"]}
+            for match in r["hidden_matches"]
+        ] == [{"path": "conf.cfg", "count": 1}]
+
+    def test_probe_paths_respect_read_block(self, proj):
+        d = proj / "proj"
+        (d / ".env").write_text("HIDDEN_SECRET_TOKEN=value\n", encoding="utf-8")
+        r = json.loads(search_tool("HIDDEN_SECRET_TOKEN", path=str(d), task_id="t-zm"))
+        assert r["total_count"] == 0
+        assert "hidden_matches" not in r
+        assert "1 result(s) omitted" in r.get("_omitted", "")
 
     def test_matching_search_unaffected(self, proj):
         r = json.loads(search_tool("TOKEN_ALPHA", path=str(proj / "proj"), task_id="t-zm"))
@@ -129,7 +150,11 @@ class TestZeroMatchProbeEngineParity:
             return _real(cmd)
 
         monkeypatch.setattr(ops, "_has_command", only)
-        monkeypatch.setattr(ops, "_zero_match_probe", lambda *a, **k: "SENTINEL_HINT")
+        monkeypatch.setattr(
+            ops,
+            "_zero_match_probe",
+            lambda *a, **k: ("SENTINEL_HINT", "case_insensitive_matches", []),
+        )
         r = ops.search("token_alpha", path=str(proj / "proj"), target="content")
         assert r.total_count == 0
         assert "SENTINEL_HINT" in (r.warning or ""), (
@@ -140,7 +165,11 @@ class TestZeroMatchProbeEngineParity:
         from tools.file_tools import _get_file_ops
 
         ops = _get_file_ops(task_id="t-parity-hit")
-        monkeypatch.setattr(ops, "_zero_match_probe", lambda *a, **k: "SENTINEL_HINT")
+        monkeypatch.setattr(
+            ops,
+            "_zero_match_probe",
+            lambda *a, **k: ("SENTINEL_HINT", "case_insensitive_matches", []),
+        )
         r = ops.search("TOKEN_ALPHA", path=str(proj / "proj"), target="content")
         assert r.total_count > 0
         assert "SENTINEL_HINT" not in (r.warning or "")

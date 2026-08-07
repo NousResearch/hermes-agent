@@ -250,6 +250,13 @@ class SearchMatch:
 
 
 @dataclass
+class SearchProbeMatch:
+    """A path and match count found by a zero-match recovery probe."""
+    path: str
+    count: int
+
+
+@dataclass
 class SearchResult:
     """Result from searching."""
     matches: List[SearchMatch] = field(default_factory=list)
@@ -259,6 +266,9 @@ class SearchResult:
     truncated: bool = False
     limit_reason: Optional[str] = None
     warning: Optional[str] = None
+    case_insensitive_matches: List[SearchProbeMatch] = field(default_factory=list)
+    hidden_matches: List[SearchProbeMatch] = field(default_factory=list)
+    literal_matches: List[SearchProbeMatch] = field(default_factory=list)
     error: Optional[str] = None
     
     # Densify content-mode matches into a path-grouped text block above this
@@ -321,6 +331,17 @@ class SearchResult:
             result["limit_reason"] = self.limit_reason
         if self.warning:
             result["warning"] = self.warning
+        for field_name in (
+            "case_insensitive_matches",
+            "hidden_matches",
+            "literal_matches",
+        ):
+            probe_matches = getattr(self, field_name)
+            if probe_matches:
+                result[field_name] = [
+                    {"path": match.path, "count": match.count}
+                    for match in probe_matches
+                ]
         if self.error:
             result["error"] = self.error
         return result
@@ -2296,9 +2317,23 @@ class ShellFileOperations(FileOperations):
         merged.warning = note
         return merged
 
-    def _zero_match_probe(self, pattern: str, path: str,
-                          file_glob: Optional[str]) -> Optional[str]:
-        """Return a hint for a 0-match content search, or None.
+    @staticmethod
+    def _parse_probe_matches(output: str) -> List[SearchProbeMatch]:
+        """Parse bounded ``rg --count-matches`` output without losing drive colons."""
+        matches = []
+        for line in output.strip().splitlines():
+            match_path, separator, count = line.rpartition(":")
+            if separator and match_path and count.isdigit():
+                matches.append(SearchProbeMatch(path=match_path, count=int(count)))
+        return matches
+
+    def _zero_match_probe(
+        self,
+        pattern: str,
+        path: str,
+        file_glob: Optional[str],
+    ) -> Optional[tuple[str, str, List[SearchProbeMatch]]]:
+        """Return a warning, result field, and paths for a 0-match search.
 
         13.9% of production content searches return zero matches and give
         the model nothing to steer by. Run ONE cheap case-insensitive count
@@ -2315,17 +2350,16 @@ class ShellFileOperations(FileOperations):
             f"2>/dev/null | head -50",
             timeout=30,
         )
-        ci_total = 0
-        ci_files = 0
-        for line in (probe.stdout or "").strip().splitlines():
-            _p, _sep, n = line.rpartition(":")
-            if n.isdigit():
-                ci_total += int(n)
-                ci_files += 1
+        ci_matches = self._parse_probe_matches(probe.stdout or "")
+        ci_total = sum(match.count for match in ci_matches)
         if ci_total > 0:
             return (
-                f"0 exact matches, but {ci_total} case-insensitive match(es) "
-                f"in {ci_files} file(s) — the pattern's casing may be wrong."
+                (
+                    f"0 exact matches, but {ci_total} case-insensitive match(es) "
+                    f"in {len(ci_matches)} file(s) — the pattern's casing may be wrong."
+                ),
+                "case_insensitive_matches",
+                ci_matches,
             )
         # Hidden/ignored probe: rg skips dotdirs and .gitignore'd files by
         # default. When the pattern exists only there, say so instead of
@@ -2337,18 +2371,17 @@ class ShellFileOperations(FileOperations):
             f"2>/dev/null | head -50",
             timeout=30,
         )
-        h_total = 0
-        h_files = 0
-        for line in (hidden.stdout or "").strip().splitlines():
-            _p, _sep, n = line.rpartition(":")
-            if n.isdigit():
-                h_total += int(n)
-                h_files += 1
+        hidden_matches = self._parse_probe_matches(hidden.stdout or "")
+        h_total = sum(match.count for match in hidden_matches)
         if h_total > 0:
             return (
-                f"0 matches in visible files, but {h_total} match(es) in "
-                f"{h_files} hidden or gitignored file(s) — these are excluded "
-                "by default. Search the hidden path explicitly to include them."
+                (
+                    f"0 matches in visible files, but {h_total} match(es) in "
+                    f"{len(hidden_matches)} hidden or gitignored file(s) — these are "
+                    "excluded by default. Search the hidden path explicitly to include them."
+                ),
+                "hidden_matches",
+                hidden_matches,
             )
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
@@ -2357,16 +2390,17 @@ class ShellFileOperations(FileOperations):
                 f"2>/dev/null | head -50",
                 timeout=30,
             )
-            f_total = sum(
-                int(line.rpartition(":")[2])
-                for line in (fixed.stdout or "").strip().splitlines()
-                if line.rpartition(":")[2].isdigit()
-            )
+            literal_matches = self._parse_probe_matches(fixed.stdout or "")
+            f_total = sum(match.count for match in literal_matches)
             if f_total > 0:
                 return (
-                    f"0 regex matches, but {f_total} literal match(es) — the "
-                    "pattern contains regex metacharacters that likely need "
-                    "escaping (or pass a simpler substring)."
+                    (
+                        f"0 regex matches, but {f_total} literal match(es) — the "
+                        "pattern contains regex metacharacters that likely need "
+                        "escaping (or pass a simpler substring)."
+                    ),
+                    "literal_matches",
+                    literal_matches,
                 )
         return None
 
@@ -2528,11 +2562,13 @@ class ShellFileOperations(FileOperations):
         if (not result.error and result.total_count == 0
                 and not result.matches and not result.files and not result.counts):
             try:
-                hint = self._zero_match_probe(pattern, path, file_glob)
+                probe_result = self._zero_match_probe(pattern, path, file_glob)
             except Exception:
-                hint = None
-            if hint:
+                probe_result = None
+            if probe_result:
+                hint, field_name, probe_matches = probe_result
                 result.warning = hint if not result.warning else f"{result.warning} {hint}"
+                setattr(result, field_name, probe_matches)
 
         # rg auto-enables --multiline for \n patterns, so the line-oriented
         # explanation only applies to the grep fallback engine.

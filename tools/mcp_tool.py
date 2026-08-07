@@ -2343,7 +2343,7 @@ class MCPServerTask:
         # ``notifications/tools/list_changed`` → ``_refresh_tools``.
         keepalive_interval = max(
             _MIN_KEEPALIVE_INTERVAL,
-            float(self._config.get("keepalive_interval", _DEFAULT_KEEPALIVE_INTERVAL)),
+            _cfg_float(self._config, "keepalive_interval", _DEFAULT_KEEPALIVE_INTERVAL),
         )
 
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
@@ -2606,8 +2606,8 @@ class MCPServerTask:
                     # until the gateway hits EMFILE. Timing out here converts the
                     # hang into a normal failure, letting the ``finally`` reap the
                     # child. See #59349.
-                    connect_timeout = float(
-                        config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+                    connect_timeout = _cfg_float(
+                        config, "connect_timeout", _DEFAULT_CONNECT_TIMEOUT
                     )
                     self.initialize_result = await asyncio.wait_for(
                         session.initialize(), timeout=connect_timeout
@@ -2857,7 +2857,7 @@ class MCPServerTask:
         # case-insensitive so conventional casing is preserved.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
-        connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        connect_timeout = _cfg_float(config, "connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
         client_cert = _resolve_client_cert(self.name, config)
 
@@ -6948,7 +6948,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         names = list(enabled.keys())
         coros = []
         for name, cfg in enabled.items():
-            ct = cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+            ct = _cfg_float(cfg, "connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
             coros.append(asyncio.wait_for(_connect_server(name, cfg), timeout=ct))
 
         outcomes = await asyncio.gather(*coros, return_exceptions=True)

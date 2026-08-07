@@ -2400,11 +2400,17 @@ class MCPServerTask:
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
-                    t.cancel()
                     try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
+                        t.cancel()
+                    except RuntimeError:
+                        # Event loop is closed during shutdown — the outer
+                        # task was cancelled, these inner tasks are moot.
                         pass
+                    else:
+                        try:
+                            await t
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
         if self._shutdown_event.is_set():
             return "shutdown"
@@ -2444,11 +2450,17 @@ class MCPServerTask:
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
-                    t.cancel()
                     try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
+                        t.cancel()
+                    except RuntimeError:
+                        # Event loop is closed during shutdown — the outer
+                        # task was cancelled, these inner tasks are moot.
                         pass
+                    else:
+                        try:
+                            await t
+                        except (asyncio.CancelledError, Exception):
+                            pass
         if self._shutdown_event.is_set():
             return "shutdown"
         self._reconnect_event.clear()
@@ -3609,11 +3621,17 @@ class MCPServerTask:
         finally:
             for task in (shutdown_task, reconnect_task):
                 if not task.done():
-                    task.cancel()
                     try:
-                        await task
-                    except (asyncio.CancelledError, Exception):
+                        task.cancel()
+                    except RuntimeError:
+                        # Event loop is closed during shutdown — the outer
+                        # task was cancelled, these inner tasks are moot.
                         pass
+                    else:
+                        try:
+                            await task
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
 
 # ---------------------------------------------------------------------------
@@ -7515,6 +7533,12 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
 
         if not stop_owned_by_loop and loop.is_running():
             loop.call_soon_threadsafe(loop.stop)
+        # Cancel all pending tasks on the MCP loop before stopping and
+        # closing it, so that coroutines awaiting the shutdown event don't
+        # hit RuntimeError("Event loop is closed") when their cancel() or
+        # cleanup path calls call_soon() on the dead loop during GC.
+        # These unhandled exceptions print as "Exception ignored in:" to
+        # stderr — noisy but harmless.  Drain them here instead.
         if thread is not None:
             thread.join(timeout=5)
             if thread.is_alive():

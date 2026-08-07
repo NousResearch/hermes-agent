@@ -1347,8 +1347,33 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
         _single_query_finalize_attempted_session_ids.add(session_id)
 
 
+def _suppress_closed_loop_errors(loop, context):
+    """Silently suppress benign errors during event-loop shutdown."""
+    exc = context.get("exception")
+    if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+        return  # silently suppress
+    if isinstance(exc, KeyError) and "is not registered" in str(exc):
+        return  # suppress selector registration failures (#6393)
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.EIO:
+        return  # suppress I/O errors from broken stdout on interrupt (#13710)
+    # Fall back to default handler for everything else
+    loop.default_exception_handler(context)
+
+
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
+    # Install the closed-loop error suppressor for the single-query path
+    # (interactive mode does this in HermesCLI.run()). Without it, httpx/
+    # httpcore transport finalizers fire during Python interpreter teardown
+    # and hit the already-closed event loop, printing RuntimeError to stderr.
+    try:
+        import asyncio as _aio
+        _loop = _aio.get_running_loop()
+        _loop.set_exception_handler(_suppress_closed_loop_errors)
+    except RuntimeError:
+        pass  # No running loop — nothing to patch
+    except Exception:
+        pass
     try:
         _notify_single_query_session_finalize(cli)
         _run_cleanup(notify_session_finalize=False)
@@ -17766,17 +17791,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # neuter_async_httpx_del which disables __del__ entirely.  The
         # KeyError fix handles macOS + uv-managed Python environments where
         # fd 0 is not reliably available to the asyncio selector.
-        def _suppress_closed_loop_errors(loop, context):
-            exc = context.get("exception")
-            if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
-                return  # silently suppress
-            if isinstance(exc, KeyError) and "is not registered" in str(exc):
-                return  # suppress selector registration failures (#6393)
-            if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.EIO:
-                return  # suppress I/O errors from broken stdout on interrupt (#13710)
-            # Fall back to default handler for everything else
-            loop.default_exception_handler(context)
-
         # Validate stdin before launching prompt_toolkit — on macOS with
         # uv-managed Python, fd 0 can be invalid or unregisterable with the
         # asyncio selector, causing "KeyError: '0 is not registered'" (#6393).

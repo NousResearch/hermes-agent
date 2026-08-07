@@ -18634,10 +18634,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
+                return self._format_session_info(source=source)
+        return self._format_session_info(source=source)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, source: Optional[SessionSource] = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
@@ -18680,6 +18680,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     custom_provs = data.get("custom_providers")
         except Exception:
             pass
+
+        # Channel override takes priority over global default (#72838)
+        if source is not None:
+            try:
+                from gateway.run import _get_channel_override
+                chat_id = str(source.chat_id) if source.chat_id else ""
+                thread_id = (
+                    str(source.thread_id)
+                    if getattr(source, "thread_id", None)
+                    else None
+                )
+                parent_id = (
+                    str(source.parent_chat_id)
+                    if getattr(source, "parent_chat_id", None)
+                    else None
+                )
+                ch = _get_channel_override(
+                    self.config,
+                    source.platform,
+                    chat_id,
+                    thread_id=thread_id,
+                    parent_id=parent_id,
+                )
+                if ch:
+                    if ch.model:
+                        model = ch.model
+                    if ch.provider:
+                        provider = ch.provider
+            except Exception:
+                pass
 
         # Resolve runtime credentials for probing
         try:

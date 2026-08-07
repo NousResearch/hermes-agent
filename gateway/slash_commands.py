@@ -1753,6 +1753,35 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
+        # Channel override takes priority over global default (#72838)
+        try:
+            from gateway.run import _get_channel_override
+            chat_id = str(source.chat_id) if source.chat_id else ""
+            thread_id = (
+                str(source.thread_id)
+                if getattr(source, "thread_id", None)
+                else None
+            )
+            parent_id = (
+                str(source.parent_chat_id)
+                if getattr(source, "parent_chat_id", None)
+                else None
+            )
+            ch = _get_channel_override(
+                self.config,
+                source.platform,
+                chat_id,
+                thread_id=thread_id,
+                parent_id=parent_id,
+            )
+            if ch:
+                if ch.model:
+                    current_model = ch.model
+                if ch.provider:
+                    current_provider = ch.provider
+        except Exception:
+            pass
+
         # Check for session override. Normalize the source the same way a normal
         # message turn does
         # (Telegram DM topic recovery) before deriving the override key, so

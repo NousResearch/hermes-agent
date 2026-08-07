@@ -3315,8 +3315,16 @@ def run_conversation(
                                 _tc_boost = _tc_boost_base * (2 ** truncated_tool_call_retries)
                                 _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
                                 if _tc_requested_cap is not None:
-                                    _tc_boost = max(_tc_boost, _tc_requested_cap)
-                                _tc_boost_cap = max(32768, _tc_requested_cap or 0)
+                                    # Compound from the already-requested cap so
+                                    # each retry genuinely increases the budget.
+                                    # Previously we both floored the boost to
+                                    # `_tc_requested_cap` AND capped with the
+                                    # same value (via `max(32768, req)`) —
+                                    # both gave `_tc_requested_cap`, making all
+                                    # retries send an identical max_tokens cap
+                                    # (#72770).
+                                    _tc_boost = _tc_requested_cap + _tc_boost
+                                _tc_boost_cap = max(65536, (_tc_requested_cap or 0) * 3)
                                 agent._ephemeral_max_output_tokens = min(_tc_boost, _tc_boost_cap)
                                 # Don't append the broken response to messages;
                                 # just re-run the same API call from the current
@@ -5854,8 +5862,8 @@ def run_conversation(
             _boost = _boost_base * (2 ** length_continue_retries)
             _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
             if _requested_cap is not None:
-                _boost = max(_boost, _requested_cap)
-            _boost_cap = max(32768, _requested_cap or 0)
+                _boost = _requested_cap + _boost
+            _boost_cap = max(65536, (_requested_cap or 0) * 3)
             agent._ephemeral_max_output_tokens = min(_boost, _boost_cap)
             continue
 

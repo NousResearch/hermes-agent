@@ -27041,7 +27041,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 pass
         else:
             hermes_home = str(get_hermes_home())
-            logger.error(
+            logger.warning(
                 "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
                 "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
                 existing_pid, hermes_home,
@@ -27052,7 +27052,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 f"   or 'hermes gateway stop' to kill it first.\n"
                 f"   Or use 'hermes gateway run --replace' to auto-replace.\n"
             )
-            return False
+            # Gateway is already running — that is the desired end-state.
+            # Return True (not False) so callers don't treat this as a
+            # failure and retry indefinitely (issue #73203).
+            return True
 
     # Sync bundled skills on gateway start (fast -- skips unchanged)
     try:

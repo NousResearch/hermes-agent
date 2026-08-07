@@ -23,6 +23,7 @@ sibling):
 
 import asyncio
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -216,6 +217,105 @@ async def test_bare_local_path_history_dedup_survives_and_logs(tmp_path, monkeyp
     assert any("Suppressing" in r.getMessage() for r in caplog.records), (
         "suppression must be logged (#73771 observability)"
     )
+
+
+@pytest.mark.asyncio
+async def test_plain_text_response_does_not_load_transcript():
+    """Ordinary text delivery must not touch SQLite-backed history at all."""
+    adapter = _DummyAdapter()
+    adapter._keep_typing = _hold_typing
+
+    class _ExplodingStore:
+        calls = 0
+
+        def peek_session_id(self, _session_key):
+            self.calls += 1
+            raise AssertionError("plain text delivery loaded session history")
+
+    store = _ExplodingStore()
+    adapter.set_session_store(store)
+
+    async def handler(_event):
+        return "Plain response with no local attachment path."
+
+    adapter.set_message_handler(handler)
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert store.calls == 0
+    assert any("Plain response" in item["content"] for item in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_bare_path_history_lookup_does_not_block_event_loop(tmp_path, monkeypatch):
+    """A slow transcript read must run outside the platform event loop."""
+    pdf = _allowed_file(tmp_path, monkeypatch, "slow-history.pdf")
+    monkeypatch.setattr("gateway.platforms.base.LOCAL_DELIVERY_SAFE_ROOTS", (pdf.parent,), raising=False)
+    adapter = _DummyAdapter()
+    adapter._keep_typing = _hold_typing
+    monkeypatch.setattr(
+        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths: list(paths))
+    )
+
+    class _SlowStore:
+        def peek_session_id(self, _session_key):
+            return "sess-slow"
+
+        def load_transcript(self, _session_id):
+            time.sleep(0.15)
+            return [{"role": "user", "content": "current"}]
+
+    adapter.set_session_store(_SlowStore())
+
+    async def handler(_event):
+        return f"Generated file: {pdf}"
+
+    adapter.set_message_handler(handler)
+    event = _make_event()
+    delivery = asyncio.create_task(
+        adapter._process_message_background(event, build_session_key(event.source))
+    )
+    await asyncio.sleep(0.02)
+    assert not delivery.done()
+    # If load_transcript ran on the event-loop thread, this 20 ms sleep would
+    # not resume until after the 150 ms blocking read completed.
+    assert not adapter.documents
+    await delivery
+    assert adapter.documents == [str(pdf)]
+
+
+@pytest.mark.asyncio
+async def test_bare_path_history_lookup_timeout_fails_open(tmp_path, monkeypatch):
+    """A wedged transcript read must not hold response delivery indefinitely."""
+    pdf = _allowed_file(tmp_path, monkeypatch, "timeout-history.pdf")
+    monkeypatch.setattr("gateway.platforms.base.LOCAL_DELIVERY_SAFE_ROOTS", (pdf.parent,), raising=False)
+    monkeypatch.setattr("gateway.platforms.base._HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS", 0.02)
+    adapter = _DummyAdapter()
+    adapter._keep_typing = _hold_typing
+    monkeypatch.setattr(
+        type(adapter), "filter_local_delivery_paths", staticmethod(lambda paths: list(paths))
+    )
+
+    class _WedgedStore:
+        def peek_session_id(self, _session_key):
+            return "sess-wedged"
+
+        def load_transcript(self, _session_id):
+            time.sleep(0.2)
+            return []
+
+    adapter.set_session_store(_WedgedStore())
+
+    async def handler(_event):
+        return f"Generated file: {pdf}"
+
+    adapter.set_message_handler(handler)
+    event = _make_event()
+    started = time.monotonic()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert time.monotonic() - started < 0.15
+    assert adapter.documents == [str(pdf)]
 
 
 # ---------------------------------------------------------------------------

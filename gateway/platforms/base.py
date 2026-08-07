@@ -45,6 +45,10 @@ _AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
+# Delivery-time history is best-effort dedup metadata, not canonical state.
+# Keep this comfortably below the Discord heartbeat watchdog window and fail
+# open rather than withholding a legitimate attachment.
+_HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS = 5.0
 
 
 def _platform_name(platform) -> str:
@@ -5892,16 +5896,6 @@ class BasePlatformAdapter(ABC):
                 media_files, response = self.extract_media(response)
                 media_files = self.filter_media_delivery_paths(media_files)
 
-                # Do NOT deduplicate MEDIA tags against prior turns here.
-                # The auto-append path in GatewayRunner._run_agent_inner already
-                # deduplicates auto-appended tags via _collect_auto_append_media_tags
-                # with history_media_paths, so this filter would only catch explicit
-                # MEDIA tags the model deliberately included in its response — which
-                # must be preserved (user asked to resend an image, the model echoed
-                # a path intentionally, etc.).  Bare-file-path dedup still applies
-                # to local_files below via the same _history_media_paths set.
-                _history_media_paths = self._history_media_paths_for_session(session_key)
-
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
                 # Strip any remaining internal directives from message body (fixes #1561).
@@ -5920,6 +5914,30 @@ class BasePlatformAdapter(ABC):
                     # instead of becoming native uploads.
                     local_files, text_content = self.extract_local_files(text_content)
                     local_files = self.filter_local_delivery_paths(local_files)
+                    # Do NOT load the full SQLite transcript for ordinary text or
+                    # explicit MEDIA tags.  History is needed only for bare local
+                    # paths auto-detected above.  Run that synchronous DB/decode
+                    # work off the platform event loop so a slow state.db read
+                    # cannot block Discord heartbeats and trigger the liveness
+                    # watchdog.  On lookup failure the helper returns None and we
+                    # fail open by delivering the candidate file.
+                    _history_media_paths = None
+                    if local_files:
+                        try:
+                            _history_media_paths = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    self._history_media_paths_for_session,
+                                    session_key,
+                                ),
+                                timeout=_HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "[%s] Timed out loading media-delivery history for %s; "
+                                "delivering bare local file path(s) without history dedup",
+                                self.name,
+                                session_key,
+                            )
                     if _history_media_paths:
                         _suppressed = [p for p in local_files if p in _history_media_paths]
                         if _suppressed:

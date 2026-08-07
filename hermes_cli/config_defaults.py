@@ -572,12 +572,16 @@ DEFAULT_CONFIG = {
             "exact_failure": 2,
             "same_tool_failure": 3,
             "idempotent_no_progress": 2,
+            "repeated_result": 3,
         },
         "hard_stop_after": {
             "exact_failure": 5,
             "same_tool_failure": 8,
             "idempotent_no_progress": 5,
+            "repeated_result": 5,
         },
+        # Results shorter than this never count toward repeated_result.
+        "repeated_result_min_chars": 200,
         # Per-turn runaway-loop caps (inspired by Claude Code v2.1.212,
         # Week 29, July 2026). Hard ceilings on how many times a runaway-prone
         # tool may be called within a SINGLE agent loop (turn); the counters

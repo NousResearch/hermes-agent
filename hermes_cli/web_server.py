@@ -2223,6 +2223,35 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
     }
 
 
+def _reject_managed_protected_write(target: Path) -> None:
+    """Block dashboard managed-file mutations of credential/protected paths."""
+    if _is_sensitive_filename(target.name):
+        raise HTTPException(status_code=403, detail="Access to protected files is not allowed")
+
+    try:
+        from agent.file_safety import is_write_denied
+    except Exception:
+        is_write_denied = None
+
+    if is_write_denied is not None and is_write_denied(str(target)):
+        raise HTTPException(status_code=403, detail="Access to protected files is not allowed")
+
+
+def _reject_managed_protected_tree(target: Path) -> None:
+    """Block recursive mutations when any descendant is protected."""
+    _reject_managed_protected_write(target)
+    if not target.is_dir():
+        return
+
+    try:
+        for child in target.rglob("*"):
+            _reject_managed_protected_write(child)
+    except HTTPException:
+        raise
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not inspect path: {exc}")
+
+
 def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, Any]:
     try:
         resolved = target.resolve()
@@ -2456,6 +2485,7 @@ async def download_managed_file(request: Request, path: str):
 @app.post("/api/files/upload")
 async def upload_managed_file(payload: ManagedFileUpload, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
+    _reject_managed_protected_write(target)
     if target.exists() and target.is_dir():
         raise HTTPException(status_code=409, detail="A directory already exists at that path")
     if target.exists() and not payload.overwrite:
@@ -2496,6 +2526,7 @@ async def upload_managed_file_stream(
     overwrite: bool = Form(True),
 ):
     policy, target, display_path = _resolve_managed_path(path, request, for_write=True)
+    _reject_managed_protected_write(target)
     if target.exists() and target.is_dir():
         raise HTTPException(status_code=409, detail="A directory already exists at that path")
     if target.exists() and not overwrite:
@@ -2555,6 +2586,7 @@ async def upload_managed_file_stream(
 @app.post("/api/files/mkdir")
 async def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
+    _reject_managed_protected_write(target)
     if target.exists() and not target.is_dir():
         raise HTTPException(status_code=409, detail="A file already exists at that path")
 
@@ -2580,12 +2612,14 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
     if target.parent == target:
         raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
+    _reject_managed_protected_write(target)
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
 
     try:
         if target.is_dir():
             if payload.recursive:
+                _reject_managed_protected_tree(target)
                 shutil.rmtree(target)
             else:
                 target.rmdir()

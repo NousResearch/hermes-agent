@@ -168,6 +168,13 @@ import {
   revalidateRemoteConnection
 } from './remote-liveness'
 import {
+  REMOTE_PROBE_ATTEMPT_TIMEOUT_MS,
+  REMOTE_PROBE_DEADLINE_MS,
+  createRemoteAvailability,
+  spliceRemoteSessions,
+  waitForBackendReady
+} from './remote-sessions'
+import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
@@ -1062,7 +1069,12 @@ let softRehomeInProgress = false
 // backends spawned lazily when a session belongs to a different profile. A user
 // with no named profiles never populates this map, so their experience is
 // byte-for-byte the single-backend behavior.
-const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt }
+const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt, ready }
+// Cooldown registry for remote-profile backends that failed their reachability
+// probe. The session-list splice consults this so a dead remote is skipped
+// instantly instead of stalling every sidebar refresh; explicit user actions
+// (opening a remote session, switching profiles) still probe for real.
+const remoteAvailability = createRemoteAvailability({ log: line => rememberLog(line) })
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
@@ -4258,6 +4270,17 @@ function fetchJson(url, token, options: any = {}) {
       return
     }
 
+    let settled = false
+    let timeoutTimer = null
+    const timeoutError = () => new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`)
+    const finish = (fn, value) => {
+      if (settled) return
+      settled = true
+      if (timeoutTimer) clearTimeout(timeoutTimer)
+      fn(value)
+    }
+    const fail = error => finish(reject, error)
+    const succeed = value => finish(resolve, value)
     const req = client.request(
       parsed,
       {
@@ -4276,20 +4299,19 @@ function fetchJson(url, token, options: any = {}) {
       },
       res => {
         const chunks = []
-        res.on('error', reject)
+        res.on('error', fail)
         res.on('data', chunk => chunks.push(chunk))
         res.on('end', () => {
+          if (settled) return
           const text = Buffer.concat(chunks).toString('utf8')
 
           if ((res.statusCode || 500) >= 400) {
-            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
-
+            fail(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
             return
           }
 
           if (!text) {
-            resolve(null)
-
+            succeed(null)
             return
           }
 
@@ -4301,7 +4323,7 @@ function fetchJson(url, token, options: any = {}) {
           const contentType = String(res.headers['content-type'] || '')
 
           if (looksHtml || contentType.includes('text/html')) {
-            reject(
+            fail(
               new Error(
                 `Expected JSON from ${url} but got HTML (status ${res.statusCode}). ` +
                   'The endpoint is likely missing on the Hermes backend.'
@@ -4312,18 +4334,24 @@ function fetchJson(url, token, options: any = {}) {
           }
 
           try {
-            resolve(JSON.parse(text))
+            succeed(JSON.parse(text))
           } catch {
-            reject(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
+            fail(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
           }
         })
       }
     )
 
-    req.on('error', reject)
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-    })
+    const abortForTimeout = () => {
+      const error = timeoutError()
+      req.destroy(error)
+      fail(error)
+    }
+    // ClientRequest#setTimeout only covers the assigned socket's idle timeout;
+    // keep a wall-clock guard too so DNS/pre-connect hangs honor timeoutMs.
+    timeoutTimer = setTimeout(abortForTimeout, timeoutMs)
+    req.on('error', fail)
+    req.setTimeout(timeoutMs, abortForTimeout)
 
     if (body) {
       req.write(body)
@@ -4360,6 +4388,17 @@ function fetchPublicJson(url, options: any = {}) {
       return
     }
 
+    let settled = false
+    let timeoutTimer = null
+    const timeoutError = () => new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`)
+    const finish = (fn, value) => {
+      if (settled) return
+      settled = true
+      if (timeoutTimer) clearTimeout(timeoutTimer)
+      fn(value)
+    }
+    const fail = error => finish(reject, error)
+    const succeed = value => finish(resolve, value)
     const req = client.request(
       parsed,
       {
@@ -4373,17 +4412,16 @@ function fetchPublicJson(url, options: any = {}) {
         const chunks = []
         res.on('data', chunk => chunks.push(chunk))
         res.on('end', () => {
+          if (settled) return
           const text = Buffer.concat(chunks).toString('utf8')
 
           if ((res.statusCode || 500) >= 400) {
-            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
-
+            fail(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
             return
           }
 
           if (!text) {
-            resolve(null)
-
+            succeed(null)
             return
           }
 
@@ -4391,7 +4429,7 @@ function fetchPublicJson(url, options: any = {}) {
           const contentType = String(res.headers['content-type'] || '')
 
           if (looksHtml || contentType.includes('text/html')) {
-            reject(
+            fail(
               new Error(
                 `Expected JSON from ${url} but got HTML (status ${res.statusCode}). ` +
                   'The endpoint is likely missing on the Hermes backend.'
@@ -4402,18 +4440,24 @@ function fetchPublicJson(url, options: any = {}) {
           }
 
           try {
-            resolve(JSON.parse(text))
+            succeed(JSON.parse(text))
           } catch {
-            reject(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
+            fail(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
           }
         })
       }
     )
 
-    req.on('error', reject)
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-    })
+    const abortForTimeout = () => {
+      const error = timeoutError()
+      req.destroy(error)
+      fail(error)
+    }
+    // ClientRequest#setTimeout only covers the assigned socket's idle timeout;
+    // keep a wall-clock guard too so DNS/pre-connect hangs honor timeoutMs.
+    timeoutTimer = setTimeout(abortForTimeout, timeoutMs)
+    req.on('error', fail)
+    req.setTimeout(timeoutMs, abortForTimeout)
 
     if (body) {
       req.write(body)
@@ -8046,6 +8090,7 @@ async function ensureBackend(profile) {
     token: null,
     connectionPromise: null,
     lastActiveAt: Date.now(),
+    ready: false,
     remoteBaseUrl: null
   }
 
@@ -8053,6 +8098,14 @@ async function ensureBackend(profile) {
     backendPool.delete(key)
     throw error
   })
+  // Warmness powers the session-splice budget: an established connection gets
+  // more time than a cold spawn/probe (which must never stall the sidebar).
+  entry.connectionPromise.then(
+    () => {
+      entry.ready = true
+    },
+    () => {}
+  )
   backendPool.set(key, entry)
   startPoolIdleReaper()
 
@@ -8143,7 +8196,28 @@ async function spawnPoolBackend(profile, entry) {
   const remote = await resolveRemoteBackend(profile)
 
   if (remote) {
+    // The remote backend is supposed to ALREADY be running — this is a
+    // reachability check, not a boot wait. Fail in milliseconds when nothing
+    // is listening (dead tunnel, sleeping host) instead of polling for the
+    // 45s local-boot deadline, and remember the failure so the session-list
+    // splice skips this profile until the cooldown lapses. Only a hard
+    // "nothing is listening" is fatal here — a gated/slow remote that
+    // answers at all still goes through the full readiness handshake below.
+    try {
+      await waitForBackendReady(
+        () => fetchJson(`${remote.baseUrl}/api/status`, remote.token, { timeoutMs: REMOTE_PROBE_ATTEMPT_TIMEOUT_MS }),
+        { deadlineMs: REMOTE_PROBE_DEADLINE_MS, failFast: true }
+      )
+    } catch (error) {
+      if (String(error?.message || '').startsWith('Hermes backend is not listening')) {
+        remoteAvailability.markDown(profile, error?.message)
+
+        throw error
+      }
+    }
+
     await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode)
+    remoteAvailability.markUp(profile)
 
     // Recorded on the entry so revalidation can probe this descriptor without
     // awaiting connectionPromise, which may still be pending for a sibling.
@@ -9952,11 +10026,16 @@ ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
+  // The user may have just fixed a dead remote's URL/token — forget any
+  // unreachable-remote cooldowns so the next refresh probes the new target.
+  remoteAvailability.clear()
+
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
+  remoteAvailability.clear()
 
   const key = connectionScopeKey(payload?.profile)
   const scope = key || ''
@@ -10203,8 +10282,11 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
 
 // Unified list: primary's local aggregate, with each remote profile's stale local
 // rows/totals swapped for the remote's real ones, re-sorted by recency and
-// re-windowed to the requested page. A dead remote contributes nothing rather
-// than breaking the sidebar.
+// re-windowed to the requested page. A dead or slow remote contributes nothing
+// rather than breaking — or stalling — the sidebar: unreachable remotes sit in
+// a cooldown and are skipped instantly, and a remote that can't answer within
+// its splice budget is deferred to the next refresh (its fetch keeps running
+// in the background, warming the pool). See remote-sessions.cjs.
 async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
@@ -10218,33 +10300,17 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   remoteParams.set('limit', String(limit + offset))
   remoteParams.set('offset', '0')
 
-  const remoteSet = new Set(remoteProfiles)
-  const merged = rowsOf(base).filter(s => !remoteSet.has(s?.profile))
-  const profileTotals = { ...(base.profile_totals || {}) }
-  let total = (Number(base.total) || 0) - remoteProfiles.reduce((n, p) => n + (profileTotals[p] || 0), 0)
-
-  // Swap each remote profile's stale local rows/total for the remote's real ones.
-  await Promise.all(
-    remoteProfiles.map(async name => {
-      const list = await remoteSessionList(name, remoteParams).catch(() => null)
-
-      if (!list) {
-        delete profileTotals[name] // dead remote → drop its stale local total too
-
-        return
-      }
-
-      const rows = rowsOf(list)
-      merged.push(...rows)
-      profileTotals[name] = Number(list.total) || rows.length
-      total += profileTotals[name]
-    })
-  )
-
-  const recency = s => s?.[order] ?? s?.started_at ?? 0
-  merged.sort((a, b) => recency(b) - recency(a))
-
-  return { ...(base as any), sessions: merged.slice(offset, offset + limit), total, profile_totals: profileTotals }
+  return spliceRemoteSessions({
+    base,
+    remoteProfiles,
+    limit,
+    offset,
+    order,
+    availability: remoteAvailability,
+    isWarm: name => Boolean(backendPool.get(String(name ?? '').trim())?.ready),
+    fetchRemote: name => remoteSessionList(name, remoteParams),
+    log: line => rememberLog(line)
+  })
 }
 
 ipcMain.handle('hermes:api', async (_event, request) => {

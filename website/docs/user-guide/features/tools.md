@@ -77,6 +77,32 @@ terminal:
   timeout: 180      # Command timeout in seconds
 ```
 
+### Shell startup files and non-interactive commands
+
+Agent terminal calls run your shell **non-interactively** — there is no TTY and no human at the prompt. Heavy or interactive shell initialisation that you never notice in a normal terminal can break or badly slow every command the agent runs:
+
+- **Slow init (`nvm`, version managers, network-touching prompts):** the classic `nvm.sh` sourcing adds noticeable latency to *every* shell start, and the agent starts many shells. Multi-second rc files turn a quick `git status` into a timeout risk.
+- **TTY-expecting blocks:** anything in `.bashrc`/`.zshrc` that prompts, runs `tmux`/`screen` attach, calls `read`, or prints a menu will hang a non-interactive shell — the command appears to run forever and then times out.
+- **Unconditional output:** rc files that `echo` banners pollute every command's output the agent has to parse.
+
+The fix is the standard guard most distros already ship at the top of `.bashrc` — return early when the shell is non-interactive, and keep anything heavy or interactive below it:
+
+```bash
+# ~/.bashrc — keep this guard near the top
+case $- in
+  *i*) ;;      # interactive: continue
+  *) return;;  # non-interactive: stop here
+esac
+
+# heavy/interactive init goes BELOW the guard
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+```
+
+Zsh users: put login-only setup in `.zprofile` and interactive-only setup in `.zshrc`; keep `.zshenv` minimal, since it runs for every shell including non-interactive ones. If the agent genuinely needs a tool that only your rc file puts on `PATH`, export the `PATH` change *above* the guard (path exports are cheap) or symlink the binary into `~/.local/bin`.
+
+If agent terminal commands hang or time out immediately after working in your own terminal, your shell init is the first suspect.
+
 ### Docker Backend
 
 ```yaml

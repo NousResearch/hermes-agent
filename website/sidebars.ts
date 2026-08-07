@@ -714,6 +714,7 @@ const sidebars: SidebarsConfig = {
         'guides/cron-troubleshooting',
         'guides/work-with-skills',
         'guides/delegation-patterns',
+        'guides/agent-email-address',
         'guides/github-pr-review-agent',
         'guides/webhook-github-pr-review',
         'guides/migrate-from-openclaw',
@@ -738,6 +739,7 @@ const sidebars: SidebarsConfig = {
           label: 'Architecture',
           items: [
             'developer-guide/architecture',
+            'developer-guide/codebase-ownership',
             'developer-guide/agent-loop',
             'developer-guide/prompt-assembly',
             'developer-guide/context-compression-and-caching',

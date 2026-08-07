@@ -457,7 +457,16 @@ def _seed_stale_disk_cache(home, *, secrets, age_seconds, project_id="proj-1",
     }))
 
 
-def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("stderr", "expected_detail"),
+    [
+        ("Error: dns resolution failed", "dns resolution failed"),
+        ("Error: request timed out fetching access token", "timed out"),
+    ],
+)
+def test_stale_disk_cache_returned_when_bws_fails(
+    monkeypatch, tmp_path, stderr, expected_detail,
+):
     """When bws fails and the disk cache is stale, return the stale secrets
     with a warning rather than raising."""
     home = tmp_path / ".hermes"
@@ -470,10 +479,9 @@ def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
     _seed_stale_disk_cache(home, secrets={"OPENAI_API_KEY": "sk-old"},
                            age_seconds=3600)
 
-    # Now simulate a BWS network failure
+    # Now simulate a transient BWS transport failure.
     def fail_run(*a, **kw):
-        return mock.Mock(returncode=1, stdout="",
-                         stderr="Error: dns resolution failed")
+        return mock.Mock(returncode=1, stdout="", stderr=stderr)
     monkeypatch.setattr(bw.subprocess, "run", fail_run)
 
     secrets, warnings = bw.fetch_bitwarden_secrets(
@@ -483,7 +491,7 @@ def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
     assert secrets == {"OPENAI_API_KEY": "sk-old"}
     assert len(warnings) == 1
     assert "stale disk cache" in warnings[0]
-    assert "dns resolution failed" in warnings[0]
+    assert expected_detail in warnings[0]
 
 
 
@@ -517,6 +525,70 @@ def test_stale_fallback_skipped_on_auth_failure(monkeypatch, tmp_path):
             access_token="0.t", project_id="proj-1", binary=fake_binary,
             cache_ttl_seconds=300, home_path=home,
         )
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "Error:\n  0: request timed out\n  1: invalid_client",
+        "Error:\n  0: invalid_client\n  1: request timed out",
+    ],
+)
+def test_auth_failure_outranks_timeout_for_stale_fallback(
+    monkeypatch, tmp_path, stderr,
+):
+    """Mixed diagnostics must fail closed when they contain an auth reject."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+
+    _seed_stale_disk_cache(home, secrets={"K1": "v1"}, age_seconds=3600)
+
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr=stderr,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid_client"):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            cache_ttl_seconds=300, home_path=home,
+        )
+
+
+def test_auth_marker_after_display_limit_blocks_stale_fallback(
+    monkeypatch, tmp_path,
+):
+    """Classification uses full stderr while the surfaced error stays bounded."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+
+    _seed_stale_disk_cache(home, secrets={"K1": "v1"}, age_seconds=3600)
+    stderr = "Error:\n  0: network timed out " + ("x" * 220) + " invalid_client"
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=1, stdout="", stderr=stderr),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            cache_ttl_seconds=300, home_path=home,
+        )
+
+    detail = str(exc_info.value).partition(": ")[2]
+    assert len(detail) == 200
+    assert "invalid_client" not in detail
+    assert bw._classify_bws_exception(exc_info.value) == bw.ErrorKind.AUTH_FAILED
 
 
 

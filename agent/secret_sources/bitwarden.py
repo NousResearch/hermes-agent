@@ -586,7 +586,7 @@ def fetch_bitwarden_secrets(
         #   honor that on the fallback path too.  `ttl_seconds=inf` on the
         #   read bypasses freshness (we explicitly want a stale hit); the
         #   caller's real TTL gates whether we even attempt the read.
-        kind = _classify_bws_error(str(exc))
+        kind = _classify_bws_exception(exc)
         if use_cache and kind in (ErrorKind.NETWORK, ErrorKind.TIMEOUT):
             if encrypted_cache_enabled:
                 stale = _read_encrypted_disk_cache(
@@ -664,6 +664,14 @@ def _summarize_bws_stderr(raw: str) -> str:
     return "; ".join(causes) if causes else text
 
 
+class _BwsCommandError(RuntimeError):
+    """A bounded user-facing bws error carrying its precomputed kind."""
+
+    def __init__(self, message: str, *, error_kind: ErrorKind) -> None:
+        super().__init__(message)
+        self.error_kind = error_kind
+
+
 def _run_bws_list(
     bws: Path, access_token: str, project_id: str, server_url: str = ""
 ) -> Tuple[Dict[str, str], List[str]]:
@@ -710,8 +718,9 @@ def _run_bws_list(
         # "Location:" / "Backtrace omitted" noise.  Strip ANSI and boil it
         # down to the meaningful cause line(s) before surfacing.
         err = _summarize_bws_stderr(proc.stderr or proc.stdout or "")
-        raise RuntimeError(
-            f"bws exited {proc.returncode}: {err[:200]}"
+        raise _BwsCommandError(
+            f"bws exited {proc.returncode}: {err[:200]}",
+            error_kind=_classify_bws_error(err),
         )
 
     raw = proc.stdout.strip()
@@ -969,7 +978,7 @@ class BitwardenSource(SecretSource):
             )
         except RuntimeError as exc:
             result.error = str(exc)
-            result.error_kind = _classify_bws_error(str(exc))
+            result.error_kind = _classify_bws_exception(exc)
             if result.error_kind == ErrorKind.AUTH_FAILED:
                 # Translate the raw OAuth reject into what it actually means
                 # for the user before the mechanics.
@@ -998,12 +1007,10 @@ class BitwardenSource(SecretSource):
 def _classify_bws_error(message: str) -> ErrorKind:
     """Best-effort mapping of bws failure text onto the shared taxonomy."""
     lowered = message.lower()
-    if "timed out" in lowered:
-        return ErrorKind.TIMEOUT
     if "binary not available" in lowered or "failed to invoke" in lowered:
         return ErrorKind.BINARY_MISSING
     if any(tok in lowered for tok in ("unauthorized", "invalid token",
-                                      "access token", "401", "403",
+                                      "401", "403",
                                       # The BSM identity endpoint rejects a
                                       # revoked/expired/deleted machine-account
                                       # token with an OAuth-style
@@ -1011,10 +1018,21 @@ def _classify_bws_error(message: str) -> ErrorKind:
                                       "invalid_client", "invalid_grant",
                                       "400 bad request")):
         return ErrorKind.AUTH_FAILED
+    if "timed out" in lowered:
+        return ErrorKind.TIMEOUT
+    if "access token" in lowered:
+        return ErrorKind.AUTH_FAILED
     if any(tok in lowered for tok in ("network", "connection", "resolve",
                                       "download", "dns")):
         return ErrorKind.NETWORK
     return ErrorKind.INTERNAL
+
+
+def _classify_bws_exception(exc: RuntimeError) -> ErrorKind:
+    """Use a precomputed kind when the displayed bws error was truncated."""
+    if isinstance(exc, _BwsCommandError):
+        return exc.error_kind
+    return _classify_bws_error(str(exc))
 
 
 # ---------------------------------------------------------------------------

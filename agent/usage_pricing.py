@@ -987,6 +987,26 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+_MISSING = object()
+
+
+def _first_present(usage: Any, primary: str, fallback: str) -> Any:
+    """Return usage[primary] when present (even if 0), else usage[fallback].
+
+    Presence-aware so a legitimate primary value of ``0`` is not silently
+    overridden by the fallback. Supports both attribute-style objects and
+    plain dicts.
+    """
+    if isinstance(usage, dict):
+        if primary in usage and usage[primary] is not None:
+            return usage[primary]
+        return usage.get(fallback, 0)
+    value = getattr(usage, primary, _MISSING)
+    if value is _MISSING or value is None:
+        return getattr(usage, fallback, 0)
+    return value
+
+
 def resolve_billing_route(
     model_name: str,
     provider: Optional[str] = None,

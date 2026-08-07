@@ -64,7 +64,8 @@ import {
     messageStore: store,
   });
 
-  assert.deepEqual(content, { text: 'reply text' });
+  // Group reply auto-tags the replied-to author (WhatsApp @ behavior).
+  assert.deepEqual(content, { text: 'reply text', mentions: ['15550001111@s.whatsapp.net'] });
   assert.equal(options.quoted.key.id, 'inbound-1');
   assert.equal(options.quoted.message.conversation, 'original text');
   console.log('  ✓ text replies include Baileys quoted message when resolvable');
@@ -81,6 +82,69 @@ import {
   assert.deepEqual(content, { text: 'plain text' });
   assert.deepEqual(options, {});
   console.log('  ✓ unresolved replyTo falls back to plain text');
+}
+
+// -- mentions (WhatsApp @ tagging) -------------------------------------
+{
+  // DM reply: no key.participant → no auto-mention
+  const store = createBoundedMessageStore(2);
+  store.remember({
+    key: { id: 'dm-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+    message: { conversation: 'dm text' },
+  });
+  const { content } = buildTextSendPayload('dm reply', {
+    chatId: '15551234567@s.whatsapp.net',
+    replyTo: 'dm-1',
+    messageStore: store,
+  });
+  assert.deepEqual(content, { text: 'dm reply' });
+  console.log('  ✓ DM replies do not auto-mention (no participant)');
+}
+
+{
+  // Own message: fromMe → no auto-mention
+  const store = createBoundedMessageStore(2);
+  store.remember({
+    key: {
+      id: 'own-1',
+      remoteJid: '15551234567@s.whatsapp.net',
+      participant: '15550001111@s.whatsapp.net',
+      fromMe: true,
+    },
+    message: { conversation: 'own text' },
+  });
+  const { content } = buildTextSendPayload('reply', {
+    chatId: '15551234567@s.whatsapp.net',
+    replyTo: 'own-1',
+    messageStore: store,
+  });
+  assert.deepEqual(content, { text: 'reply' });
+  console.log('  ✓ replies to own messages do not auto-mention');
+}
+
+{
+  // Explicit mentions pass through and merge with auto-mention (dedup)
+  const store = createBoundedMessageStore(2);
+  store.remember({
+    key: {
+      id: 'grp-1',
+      remoteJid: '15551234567@g.us',
+      participant: '15550001111@s.whatsapp.net',
+      fromMe: false,
+    },
+    message: { conversation: 'grp text' },
+  });
+  const { content } = buildTextSendPayload('@user reply', {
+    chatId: '15551234567@g.us',
+    replyTo: 'grp-1',
+    messageStore: store,
+    mentions: ['15550002222@s.whatsapp.net'],
+  });
+  assert.deepEqual(content, {
+    text: '@user reply',
+    mentions: ['15550002222@s.whatsapp.net', '15550001111@s.whatsapp.net'],
+  });
+  console.log('  ✓ explicit mentions merge with auto-tagged reply author');
 }
 
 // -- inbound quote/media/native metadata --------------------------------

@@ -25,7 +25,7 @@ import subprocess
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Dict, List, Optional, Any
 
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (
@@ -918,12 +918,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        mentions: Optional[List[str]] = None,
     ) -> SendResult:
         """Send a message via the WhatsApp bridge.
 
         Formats markdown for WhatsApp, splits long messages into chunks
         that preserve code block boundaries, and sends each chunk sequentially.
+        ``mentions`` (list of WhatsApp JIDs) @-tags those users on the first
+        chunk; the bridge also auto-tags the author of the replied-to message
+        in a group.
         """
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
@@ -954,6 +958,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     # Only reply-to on the first text chunk, even if the bridge
                     # response omits a parseable message id.
                     payload["replyTo"] = reply_to
+                if mentions and idx == 0:
+                    payload["mentions"] = list(mentions)
 
                 async with self._http_session.post(
                     f"http://127.0.0.1:{self._bridge_port}/send",
@@ -1622,6 +1628,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 metadata["whatsapp_from_owner"] = True
                 if not body.startswith(_OWNER_REPLY_PREFIX):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
+
+            # Surface who this message @mentions (bridge extracts
+            # contextInfo.mentionedJid) so the agent can see who is being
+            # addressed in a group — e.g. "@user, what do you think?".
+            mentioned_ids = data.get("mentionedIds") or []
+            if mentioned_ids:
+                metadata["whatsapp_mentioned_ids"] = list(mentioned_ids)
 
             return MessageEvent(
                 text=body,

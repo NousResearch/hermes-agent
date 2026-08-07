@@ -157,7 +157,7 @@ export function pollUpdateForAggregation({
   return null;
 }
 
-export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
+export function buildTextSendPayload(text, { replyTo, messageStore, mentions = [] } = {}) {
   const content = { text };
   const options = {};
   const quoted = messageStore?.get(replyTo);
@@ -166,6 +166,16 @@ export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
     // message content payload. Keeping this split avoids silently sending a
     // literal/ignored `quoted` field instead of a native WhatsApp reply.
     options.quoted = quoted;
+    // Auto-tag the author of the replied-to message in a group so the user
+    // knows the reply is addressed to them (WhatsApp @ behavior). DM replies
+    // carry no key.participant, and the bot's own messages are skipped.
+    const participant = quoted.key.participant;
+    if (participant && !quoted.key.fromMe && !mentions.includes(participant)) {
+      mentions = [...mentions, participant];
+    }
+  }
+  if (mentions.length) {
+    content.mentions = mentions;
   }
   return { content, options };
 }

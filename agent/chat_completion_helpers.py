@@ -299,14 +299,17 @@ def _provider_stream_error_from_json_decode_error(
     )
 
 
-def _iter_provider_stream_chunks(stream):
+def _iter_provider_stream_chunks(stream, *, response: Any = None):
     """Yield SDK chunks while translating SDK-level SSE decode failures."""
     try:
         yield from stream
     except json.JSONDecodeError as error:
+        stream_response = response() if callable(response) else response
+        if stream_response is None:
+            stream_response = getattr(stream, "response", None)
         raise _provider_stream_error_from_json_decode_error(
             error,
-            response=getattr(stream, "response", None),
+            response=stream_response,
         ) from error
 
 
@@ -3430,6 +3433,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         request_client_holder["diag"] = _diag
         _writer_token = {"value": None}
         attempt_request_client = {"value": None}
+        attempt_stream_response = {"value": None}
 
         def _open_stream(next_api_kwargs: dict[str, Any]):
             stream_kwargs = {
@@ -3458,6 +3462,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         def _stream_created(raw_stream: Any) -> None:
             response = getattr(raw_stream, "response", None)
+            attempt_stream_response["value"] = response
             agent._capture_rate_limits(response)
             agent._capture_credits(response)
             agent._stream_diag_capture_response(_diag, response)
@@ -3565,7 +3570,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     except Exception:
                         pass
 
-        for chunk in _iter_provider_stream_chunks(stream):
+        for chunk in _iter_provider_stream_chunks(
+            stream,
+            response=lambda: attempt_stream_response["value"],
+        ):
             last_chunk_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
 

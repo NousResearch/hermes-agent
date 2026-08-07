@@ -1,0 +1,179 @@
+{
+  "name": "@tencentdb-agent-memory/memory-tencentdb-v2",
+  "version": "2.0.0-beta.1",
+  "description": "Four-layer local memory system plugin for OpenClaw — auto-captures, structures, and profiles conversational knowledge using local LLM + SQLite vector search (L0→L1→L2→L3 pipeline)",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "bin": {
+    "migrate-sqlite-to-tcvdb": "./bin/migrate-sqlite-to-tcvdb.mjs",
+    "export-tencent-vdb": "./bin/export-tencent-vdb.mjs",
+    "read-local-memory": "./bin/read-local-memory.mjs"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "npm run build:plugin && npm run build:scripts",
+    "build:plugin": "tsdown",
+    "build:scripts": "npm run build:migrate-sqlite-to-vdb && npm run build:export-tencent-vdb && npm run build:read-local-memory",
+    "prepack": "npm run build",
+    "build:migrate-sqlite-to-vdb": "tsc -p scripts/migrate-sqlite-to-tcvdb/tsconfig.json --noEmitOnError false",
+    "migrate-sqlite-to-tcvdb": "node ./bin/migrate-sqlite-to-tcvdb.mjs",
+    "build:export-tencent-vdb": "tsc --project scripts/export-tencent-vdb/tsconfig.json",
+    "export-tencent-vdb": "node ./bin/export-tencent-vdb.mjs",
+    "build:read-local-memory": "tsc --project scripts/read-local-memory/tsconfig.json",
+    "read-local-memory": "node ./bin/read-local-memory.mjs",
+    "build:seed-v2": "tsc --project scripts/seed-v2/tsconfig.json",
+    "seed-v2": "node ./bin/seed-v2.mjs",
+    "test": "vitest run",
+    "test:oss": "vitest run -c vitest.oss.config.ts",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:standalone:memory": "bash __tests__/standalone/e2e.sh",
+    "test:standalone:skill": "bash __tests__/standalone/skill-e2e.sh",
+    "test:standalone:conv": "bash __tests__/standalone/all-e2e.sh",
+    "test:standalone:all": "bash scripts/e2e-standalone.sh",
+    "lint:skill-isolation": "bash scripts/ci/check-skill-queue-isolation.sh",
+    "smoke:skill:llm": "tsx scripts/smoke-skill/smoke-skill-llm.ts",
+    "smoke:skill:manage": "tsx scripts/smoke-skill/smoke-skill-manage.ts",
+    "smoke:skill:extract": "tsx scripts/smoke-skill/smoke-skill-extract.ts",
+    "smoke:skill:router": "tsx scripts/smoke-skill/smoke-skill-router.ts",
+    "smoke:skill:inject": "tsx scripts/smoke-skill/smoke-skill-inject.ts",
+    "smoke:skill:all": "tsx scripts/smoke-skill/smoke-skill-all.ts",
+    "import:opik": "tsx scripts/import-opik-to-memory-core/index.ts",
+    "postinstall": "bash scripts/openclaw-after-tool-call-messages.patch.sh 2>/dev/null || true"
+  },
+  "files": [
+    "dist/",
+    "bin/migrate-sqlite-to-tcvdb.mjs",
+    "bin/export-tencent-vdb.mjs",
+    "bin/read-local-memory.mjs",
+    "index.ts",
+    "scripts/migrate-sqlite-to-tcvdb/dist/",
+    "scripts/export-tencent-vdb/dist/",
+    "scripts/read-local-memory/dist/",
+    "scripts/import-opik-to-memory-core/",
+    "scripts/memory-tencentdb-ctl.sh",
+    "scripts/install_hermes_memory_tencentdb.sh",
+    "scripts/install-hermes-plugin-v2.sh",
+    "scripts/install-openclaw-plugin.sh",
+    "scripts/README.memory-tencentdb-ctl.md",
+    "src",
+    "scripts/openclaw-after-tool-call-messages.patch.sh",
+    "scripts/setup-offload.sh",
+    "hermes-plugin/",
+    "openclaw-plugin/",
+    "openclaw.plugin.json",
+    "README.md",
+    "README_CN.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "!src/integrations/",
+    "!src/**/*.test.ts",
+    "!src/**/*.spec.ts",
+    "!src/**/__tests__/",
+    "!hermes-plugin/**/__pycache__/**",
+    "!hermes-plugin/**/*.pyc"
+  ],
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "memory",
+    "ai-memory",
+    "long-term-memory",
+    "vector-search",
+    "sqlite-vec",
+    "llm",
+    "conversation",
+    "persona",
+    "scene-extraction",
+    "embedding"
+  ],
+  "author": "TencentDB Agent Memory Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.53",
+    "@node-rs/jieba": "^2.0.1",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/api-logs": "^0.218.0",
+    "@opentelemetry/exporter-logs-otlp-http": "^0.218.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
+    "@opentelemetry/resources": "^2.7.1",
+    "@opentelemetry/sdk-logs": "^0.218.0",
+    "@opentelemetry/sdk-node": "^0.218.0",
+    "@opentelemetry/sdk-trace-base": "^2.7.1",
+    "@opentelemetry/semantic-conventions": "^1.41.1",
+    "@tencentdb-agent-memory/memory-sdk-ts-v2": "1.0.0-beta.2",
+    "@tencentdb-agent-memory/tcvdb-text": "^0.1.1",
+    "ai": "^6.0.164",
+    "crc-32": "^1.2.2",
+    "dayjs": "^1.11.20",
+    "js-tiktoken": "^1.0.18",
+    "js-yaml": "^4.2.0",
+    "json5": "^2.2.3",
+    "jszip": "^3.10.1",
+    "sqlite-vec": "0.1.7-alpha.2",
+    "tsx": "^4.21.0",
+    "undici": "^8.1.0",
+    "yaml": "^2.8.3",
+    "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "@clickhouse/client": "^1.18.5",
+    "@opentelemetry/context-async-hooks": "^2.7.1",
+    "@opentelemetry/exporter-logs-otlp-grpc": "^0.218.0",
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.218.0",
+    "cos-nodejs-sdk-v5": "^3.0.0",
+    "ioredis": "^5.10.1",
+    "kafkajs": "^2.2.4",
+    "mongodb": "^6.21.0",
+    "opik": "^1.11.14"
+  },
+  "peerDependencies": {
+    "node-llama-cpp": "^3.16.2",
+    "openclaw": ">=2026.3.7"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    },
+    "node-llama-cpp": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.13",
+      "minGatewayVersion": ">=2026.3.13"
+    },
+    "build": {
+      "openclawVersion": "2026.3.13",
+      "pluginSdkVersion": "2026.3.13"
+    },
+    "bundle": {
+      "stageRuntimeDependencies": true
+    }
+  },
+  "devDependencies": {
+    "@kubb/cli": "^4.37.7",
+    "@kubb/core": "^4.37.7",
+    "@kubb/plugin-oas": "^4.37.7",
+    "@kubb/plugin-ts": "^4.37.7",
+    "@kubb/plugin-zod": "^4.37.7",
+    "@types/node": "^25.5.2",
+    "@vitest/coverage-v8": "^4.1.2",
+    "mongodb-memory-server": "^10.4.3",
+    "tsdown": "^0.21.10",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  }
+}

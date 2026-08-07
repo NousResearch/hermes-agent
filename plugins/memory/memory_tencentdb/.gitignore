@@ -1,0 +1,5 @@
+# Build artifacts — regenerate with `npm run build`
+dist/
+
+# Dependencies — regenerate with `npm install`
+node_modules/

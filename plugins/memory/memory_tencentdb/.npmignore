@@ -1,0 +1,26 @@
+# 测试文件
+*.test.ts
+*.test.js
+*.spec.ts
+*.spec.js
+__tests__/
+
+# 开发文档与辅助
+docs/
+benchmark-runs/
+workspace/
+
+# 环境与配置
+.env
+.env.*
+.gitignore
+.codebuddy/
+.coding-ci.yaml
+
+# 运行时产物
+node_modules/
+*.tgz
+*.pyc
+**/*.pyc
+__pycache__/
+**/__pycache__/**

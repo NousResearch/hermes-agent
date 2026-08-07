@@ -1,0 +1,35 @@
+{
+  "name": "@tencentdb-agent-memory/openclaw-plugin-v2",
+  "version": "2.0.0-beta.1",
+  "description": "OpenClaw memory plugin — client mode for TencentDB Agent Memory Gateway",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "clean": "rm -rf dist *.tgz",
+    "build": "tsc",
+    "prepack": "npm run clean && npm install --no-save --no-audit --no-fund && npm run build"
+  },
+  "dependencies": {
+    "@tencentdb-agent-memory/memory-sdk-ts-v2": "1.0.0-beta.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "files": [
+    "dist/",
+    "src/",
+    "index.ts",
+    "openclaw.plugin.json",
+    "README.md"
+  ]
+}

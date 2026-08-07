@@ -2201,6 +2201,22 @@ function Install-Venv {
         return
     }
 
+    # Quick health check: if the venv is already healthy, skip recreation.
+    # Recreation kills the desktop's own backend process, causing a crash loop.
+    $venvPython = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if (Test-Path $venvPython) {
+        $healthy = $false
+        try {
+            & $venvPython -c "import fastapi,uvicorn,pydantic,openai,yaml,cryptography,annotated_doc" 2>$null 1>$null
+            if ($LASTEXITCODE -eq 0) { $healthy = $true }
+        } catch { }
+        if ($healthy) {
+            Write-Info "Virtual environment is healthy, skipping recreation"
+            return
+        }
+        Write-Info "Virtual environment exists but is unhealthy, recreating..."
+    }
+
     # Re-resolve the interpreter before creating the venv.  Under Hermes-Setup.exe
     # each stage runs in its own powershell.exe, so the fallback the `python`
     # stage picked (e.g. 3.12 when 3.11 is absent) did NOT propagate into this

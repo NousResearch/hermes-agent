@@ -1024,6 +1024,16 @@ def _to_openai_base_url(base_url: str) -> str:
             rewritten = url[: -len("/anthropic")] + "/paas/v4"
             logger.debug("Auxiliary client: rewrote ZAI base URL %s → %s", url, rewritten)
             return rewritten
+        # Aliyun MaaS / token-plan / DashScope uses /apps/anthropic (or bare
+        # /anthropic) for Anthropic wire but /compatible-mode/v1 for OpenAI
+        # wire — the generic /v1 rewrite is a 404 on this platform.
+        if "aliyuncs.com" in url or "token-plan" in url:
+            base = url[: -len("/anthropic")]
+            if base.endswith("/apps"):
+                base = base[: -len("/apps")]
+            rewritten = base + "/compatible-mode/v1"
+            logger.debug("Auxiliary client: rewrote Aliyun MaaS base URL %s → %s", url, rewritten)
+            return rewritten
         rewritten = url[: -len("/anthropic")] + "/v1"
         logger.debug("Auxiliary client: rewrote base URL %s → %s", url, rewritten)
         return rewritten

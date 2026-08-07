@@ -1,0 +1,95 @@
+{
+  "id": "memory-tencentdb-client",
+  "name": "Memory TencentDB (Client)",
+  "version": "2.0.0-beta.1",
+  "description": "长期记忆插件（客户端接入版 /v3）— 通过远端 Memory Gateway 提供四层记忆能力",
+  "author": "TDAI Team",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "tdai_memory_search",
+      "tdai_conversation_search",
+      "tdai_read_cos"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "server": {
+        "type": "object",
+        "description": "远端 memory server 连接与 v3 isolation 配置",
+        "properties": {
+          "url": {
+            "type": "string",
+            "default": "http://127.0.0.1:8420",
+            "description": "Memory server URL"
+          },
+          "apiKey": {
+            "type": "string",
+            "default": "local",
+            "description": "API Key（Bearer）；local 模式可用 local"
+          },
+          "instanceId": {
+            "type": "string",
+            "default": "default",
+            "description": "Memory instance id（HTTP header x-tdai-service-id）"
+          },
+          "teamId": {
+            "type": "string",
+            "default": "default",
+            "description": "v3 isolation team_id（local 默认与 DEFAULT_ISOLATION_ID 一致）"
+          },
+          "agentId": {
+            "type": "string",
+            "default": "default",
+            "description": "v3 isolation agent_id"
+          },
+          "userId": {
+            "type": "string",
+            "default": "default",
+            "description": "v3 isolation user_id"
+          },
+          "rejectUnauthorized": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否校验 HTTPS 证书。默认 true；仅自签证书测试环境需要显式设为 false"
+          }
+        }
+      },
+      "recall": {
+        "type": "object",
+        "description": "记忆召回设置",
+        "properties": {
+          "maxResults": {
+            "type": "number",
+            "default": 5,
+            "description": "每轮最多注入多少条 L1 记忆"
+          },
+          "includePersona": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否注入 L3 画像"
+          },
+          "includeSceneNav": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否注入 L2 场景导航索引"
+          }
+        }
+      },
+      "capture": {
+        "type": "object",
+        "description": "对话捕获设置",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否启用自动对话捕获 (L0)"
+          }
+        }
+      }
+    }
+  }
+}

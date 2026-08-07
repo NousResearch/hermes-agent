@@ -1112,7 +1112,9 @@ class GatewayStreamConsumer:
                                 # not duplicate the visible prefix.
                                 await self._send_fallback_final(self._accumulated)
                         elif not self._already_sent:
-                            self._final_response_sent = await self._send_or_edit(self._accumulated)
+                            self._final_response_sent = await self._send_or_edit(
+                                self._accumulated, finalize=True,
+                            )
                             if self._final_response_sent:
                                 self._final_content_delivered = True
                                 self._record_turn_final_payload(self._accumulated)

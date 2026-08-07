@@ -31,7 +31,7 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
     aria-label={label}
     aria-live="polite"
     className={cn(
-      'flex max-w-full items-center gap-1.5 self-start leading-(--conversation-line-height)',
+      'flex min-w-0 max-w-full items-center gap-1.5 self-start leading-(--conversation-line-height)',
       'text-(--conversation-scaffold-text)',
       className
     )}
@@ -47,7 +47,7 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
 const COMPACTION_LABEL = 'Summarizing thread'
 
 const HintText: FC<{ children: ReactNode }> = ({ children }) => (
-  <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 truncate')}>{children}</span>
+  <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 flex-1 truncate')}>{children}</span>
 )
 
 /** These indicators render inside whichever transcript mounted them, so every

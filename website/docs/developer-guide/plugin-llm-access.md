@@ -220,6 +220,7 @@ result = ctx.llm.complete(
     temperature=None,
     max_tokens=None,
     timeout=None,          # seconds
+    reasoning_effort=None, # none|minimal|low|medium|high|xhigh|max|ultra
     agent_id=None,         # optional, gated
     profile=None,          # optional, gated — explicit auth-profile name
     purpose="optional-audit-string",
@@ -237,6 +238,12 @@ as the host's main config (`model.provider` + `model.model`). Set
 just `model=` to use the user's active provider with a different
 model on it. Set both to switch providers entirely. Either argument
 without operator opt-in raises `PluginLlmTrustError`.
+
+`reasoning_effort=` is a provider-neutral per-call bound. Hermes validates the
+named level and translates it for the selected provider; `"none"` explicitly
+disables provider reasoning when that provider supports the control. Omit the
+argument to keep the host/provider default. An unknown explicit value raises
+`ValueError` instead of silently falling back.
 
 ### `complete_structured()`
 
@@ -257,6 +264,7 @@ result = ctx.llm.complete_structured(
     temperature=None,
     max_tokens=None,
     timeout=None,
+    reasoning_effort=None,
     agent_id=None,
     profile=None,
     purpose=None,
@@ -413,6 +421,11 @@ don't have to:
   before it returns an error to the plugin.
 * **Timeout.** Honours your `timeout=` argument, falling back to
   `auxiliary.<task>.timeout` config or the global aux default.
+* **Reasoning control.** Validates `reasoning_effort=` through Hermes' shared
+  provider-neutral policy and records the normalized request in the result
+  audit mapping. The audit proves the request that entered provider translation,
+  not the provider-specific wire payload or what a remote provider chose to do
+  internally.
 * **JSON shaping.** Sends `response_format` to the provider when
   you ask for JSON, then re-parses locally from a code-fenced
   response if the provider returned one.
@@ -429,7 +442,7 @@ don't have to:
 * **Schema.** Whatever shape you want back. The host doesn't infer
   it for you.
 * **Error handling.** `complete_structured()` raises `ValueError` on
-  empty inputs and on schema-validation failure. `PluginLlmTrustError`
+  empty inputs, an unsupported explicit reasoning effort, and schema-validation failure. `PluginLlmTrustError`
   fires when the trust gate denies an override. Anything else
   (provider 5xx, no credentials configured, timeout) raises whatever
   `auxiliary_client.call_llm()` raises.

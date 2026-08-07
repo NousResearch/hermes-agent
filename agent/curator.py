@@ -1874,10 +1874,13 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     _acp_command = None
     _acp_args = None
     _model_name = ""
+    _fallback_model: Any = None
     try:
         from hermes_cli.config import load_config_readonly
+        from hermes_cli.fallback_config import get_auxiliary_fallback_chain
         from hermes_cli.runtime_provider import resolve_runtime_provider
         _cfg = load_config_readonly()
+        _fallback_model = get_auxiliary_fallback_chain(_cfg, "curator") or None
         _binding = _resolve_review_runtime(_cfg)
         _provider, _model_name = _binding.provider, _binding.model
         _rp = resolve_runtime_provider(
@@ -1922,6 +1925,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             api_mode=_api_mode,
             credential_pool=_credential_pool,
             request_overrides=_request_overrides,
+            fallback_model=_fallback_model,
             **_agent_kwargs,
             enabled_toolsets=["skills", "terminal"],
             # Umbrella-building over a large skill collection is worth a

@@ -306,6 +306,7 @@ def test_routed_review_fork_does_not_inherit_reasoning_config():
         "max_tokens": None,
         "command": None,
         "args": [],
+        "fallback_model": [{"provider": "openrouter", "model": "review-backup"}],
         "routed": True,
     }
 
@@ -320,6 +321,7 @@ def test_routed_review_fork_does_not_inherit_reasoning_config():
         )
 
     init_kwargs = captured.get("init_kwargs", {})
+    assert init_kwargs["fallback_model"] == routed_runtime["fallback_model"]
     assert "reasoning_config" not in init_kwargs, (
         f"Routed review fork was passed the parent's reasoning_config "
         f"({init_kwargs.get('reasoning_config')!r}). On the routed path the "

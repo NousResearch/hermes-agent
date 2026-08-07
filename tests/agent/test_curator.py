@@ -654,6 +654,48 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
     assert captured["kwargs"]["request_overrides"] == fake_overrides
 
 
+def test_review_fork_forwards_task_then_global_fallback_chain(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+
+    task_fallback = {"provider": "custom", "model": "curator-backup"}
+    global_fallback = {"provider": "openrouter", "model": "openai/gpt-5.5"}
+    cfg = {
+        "model": {"provider": "custom", "default": "curator-primary"},
+        "auxiliary": {"curator": {"fallback_chain": [task_fallback]}},
+        "fallback_providers": [global_fallback],
+    }
+    captured = {}
+
+    class _StubAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "model": "curator-primary",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    result = curator._run_llm_review("review")
+
+    assert result["error"] is None
+    assert captured.get("fallback_model") == [task_fallback, global_fallback]
+
+
 def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch):
     curator = curator_env["curator"]
     import importlib

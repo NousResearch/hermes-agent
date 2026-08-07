@@ -1,7 +1,48 @@
 """Tests for hermes_cli/fallback_config.py — fallback entry API-key resolution."""
 
 from agent.secret_scope import reset_secret_scope, set_secret_scope
-from hermes_cli.fallback_config import resolve_entry_api_key
+from hermes_cli.fallback_config import (
+    get_auxiliary_fallback_chain,
+    resolve_entry_api_key,
+)
+
+
+def test_auxiliary_fallback_chain_precedes_and_deduplicates_global_chain():
+    task_entry = {
+        "provider": "custom",
+        "model": "review-backup",
+        "base_url": "https://review.example/v1/",
+    }
+    global_entry = {
+        "provider": "openrouter",
+        "model": "openai/gpt-5.5",
+    }
+    config = {
+        "auxiliary": {
+            "curator": {
+                "fallback_chain": [task_entry, {**task_entry, "base_url": "https://review.example/v1"}],
+            },
+        },
+        "fallback_providers": [global_entry],
+    }
+
+    assert get_auxiliary_fallback_chain(config, "curator") == [
+        {**task_entry, "base_url": "https://review.example/v1"},
+        global_entry,
+    ]
+
+
+def test_auxiliary_fallback_chain_ignores_empty_and_malformed_entries():
+    config = {
+        "auxiliary": {
+            "curator": {
+                "fallback_chain": [None, "bad", {}, {"provider": "custom"}],
+            },
+        },
+        "fallback_providers": [42, {"model": "missing-provider"}],
+    }
+
+    assert get_auxiliary_fallback_chain(config, "curator") == []
 
 
 class TestResolveEntryApiKey:

@@ -32,6 +32,7 @@ class _FakeAgent:
         self._credential_pool: Any = None
         self.request_overrides = {}
         self.max_tokens: int | None = None
+        self._fallback_chain: list[dict[str, str]] = []
 
     def _current_main_runtime(self):
         return {
@@ -86,6 +87,71 @@ def test_unrouted_runtime_keeps_parent_pool_and_overrides():
     assert rt["credential_pool"] == "parent-pool"
     assert rt["request_overrides"] == {"service_tier": "priority"}
     assert rt["max_tokens"] == 4096
+
+
+def test_review_runtime_resolves_task_then_global_fallback_chain():
+    agent = _FakeAgent()
+    task_fallback = {"provider": "custom", "model": "review-backup"}
+    global_fallback = {"provider": "openrouter", "model": "openai/gpt-5.5"}
+    cfg = {
+        "auxiliary": {
+            "background_review": {
+                "provider": "auto",
+                "model": "",
+                "fallback_chain": [task_fallback],
+            },
+        },
+        "fallback_providers": [global_fallback],
+    }
+
+    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        rt = br._resolve_review_runtime(agent)
+
+    assert rt["fallback_model"] == [task_fallback, global_fallback]
+
+
+def test_review_runtime_keeps_live_parent_chain_when_config_has_no_chain():
+    agent = _FakeAgent()
+    parent_fallback = {"provider": "custom", "model": "parent-backup"}
+    agent._fallback_chain = [parent_fallback]
+
+    with patch("hermes_cli.config.load_config_readonly", return_value={}):
+        rt = br._resolve_review_runtime(agent)
+
+    assert rt["fallback_model"] == [parent_fallback]
+
+
+def test_routed_review_runtime_keeps_live_parent_chain_when_config_has_no_chain():
+    agent = _FakeAgent()
+    parent_fallback = {"provider": "custom", "model": "parent-backup"}
+    agent._fallback_chain = [parent_fallback]
+    cfg = {
+        "auxiliary": {
+            "background_review": {
+                "provider": "openrouter",
+                "model": "google/gemini-3-flash-preview",
+            },
+        },
+    }
+    fake_rp = {
+        "provider": "openrouter",
+        "model": "google/gemini-3-flash-preview",
+        "api_key": "or-key",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions",
+    }
+
+    with (
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_rp,
+        ),
+    ):
+        rt = br._resolve_review_runtime(agent)
+
+    assert rt["routed"] is True
+    assert rt["fallback_model"] == [parent_fallback]
 
 
 def test_routing_same_model_as_parent_is_not_routed():

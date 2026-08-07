@@ -99,3 +99,37 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
             chain.append(entry)
 
     return chain
+
+
+def get_auxiliary_fallback_chain(
+    config: dict[str, Any] | None,
+    task: str,
+) -> list[dict[str, Any]]:
+    """Return a task's fallback chain followed by the global fallback chain.
+
+    Auxiliary task entries take precedence. Global fallbacks remain the final
+    safety net, with duplicate provider/model/base-url routes removed while
+    preserving the first occurrence and returning fresh dict copies.
+    """
+
+    config = config or {}
+    auxiliary = config.get("auxiliary")
+    if not isinstance(auxiliary, dict):
+        auxiliary = {}
+    task_config = auxiliary.get(task)
+    if not isinstance(task_config, dict):
+        task_config = {}
+
+    chain: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    entries = [
+        *_iter_fallback_entries(task_config.get("fallback_chain")),
+        *get_fallback_chain(config),
+    ]
+    for entry in entries:
+        identity = _entry_identity(entry)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        chain.append(dict(entry))
+    return chain

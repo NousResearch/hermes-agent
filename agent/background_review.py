@@ -68,11 +68,20 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
         "max_tokens": getattr(agent, "max_tokens", None),
         "command": getattr(agent, "acp_command", None),
         "args": list(getattr(agent, "acp_args", []) or []),
+        "fallback_model": copy.deepcopy(getattr(agent, "_fallback_chain", None)) or None,
         "routed": False,
     }
     try:
         from hermes_cli.config import load_config_readonly
+        from hermes_cli.fallback_config import get_auxiliary_fallback_chain
         cfg = load_config_readonly()
+        fallback_model = get_auxiliary_fallback_chain(cfg, "background_review") or None
+        # An explicitly configured task/global chain takes precedence. When
+        # config supplies no chain, retain the live parent agent's already-
+        # resolved fallback chain instead of silently stripping failover from
+        # the background-review fork (#78371).
+        if fallback_model:
+            parent["fallback_model"] = fallback_model
     except Exception:
         return parent
     aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
@@ -104,6 +113,7 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
             "max_tokens": rp.get("max_output_tokens"),
             "command": rp.get("command"),
             "args": list(rp.get("args") or []),
+            "fallback_model": parent["fallback_model"],
             "routed": True,
         }
     except Exception as e:
@@ -733,6 +743,8 @@ def _run_review_in_thread(
             if isinstance(_rt.get("command"), str) and _rt["command"]:
                 _fork_kwargs["acp_command"] = _rt["command"]
                 _fork_kwargs["acp_args"] = _rt.get("args") or []
+            if _rt.get("fallback_model"):
+                _fork_kwargs["fallback_model"] = _rt["fallback_model"]
             # Match parent's reasoning config so the fork's ``thinking`` /
             # ``output_config`` are byte-identical in the request body —
             # Anthropic's cache key is namespaced by ``thinking`` presence.

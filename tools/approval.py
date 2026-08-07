@@ -386,8 +386,13 @@ _CMDPOS = (
     r'(?:^|[\n`]|\$\()'            # start position
     r'\s*'                          # optional whitespace
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
-    r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    # GNU env is intentionally not represented by this flat regex. Its option
+    # abbreviations, terminal modes, and argument ownership require structural
+    # parsing in `_mark_unwrapped_executables` before exposing an executable.
+    # Optional wrappers with unconditional execution semantics. `command` and
+    # `builtin` are parsed structurally by `_mark_unwrapped_executables` because
+    # query mode (`command -v`) and non-builtin operands do not execute argv.
+    r'(?:(?:exec|nohup|setsid|time)\s+(?:-[^\s]+\s+)*)*'
     r'\s*'
 )
 
@@ -531,7 +536,16 @@ def detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(normalized)
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
+    for _, malformed_split in _env_split_string_findings(
+        _mask_quoted_newlines(command)
+    ):
+        if malformed_split:
+            return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
+        if command_variant == _PARSER_LIMIT_VARIANT:
+            return (True, _PARSER_LIMIT_DESCRIPTION)
+        if command_variant == _MALFORMED_EXEC_VARIANT:
+            return (True, _MALFORMED_EXEC_DESCRIPTION)
         variant_lower = command_variant.lower()
         for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
             if pattern_re.search(variant_lower):
@@ -1000,6 +1014,95 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
+# Bash/zsh ANSI-C quoting ($'...') is a special form of single quoting: escapes
+# expand inside the word, but the result stays ONE shell word. `$'\x72\x6d'` is
+# the command name `rm`; `$'\x2f'` is the argument `/`; `rm$'\t'-rf$'\t'/` is a
+# single argv element with embedded tabs — NOT `rm -rf /`. Decode happens in
+# per-word deobfuscation (`_strip_shell_word_syntax` via the all-words and
+# command-word variant passes). Keep `$''` spans intact through the generic
+# backslash strip so `\xNN` survives until that word pass. Unterminated `$'`
+# is left untouched.
+_ANSI_C_ESCAPE_RE = re.compile(
+    r'\\(?:'
+    r'x([0-9A-Fa-f]{1,2})'
+    r'|([0-7]{1,3})'
+    r'|u([0-9A-Fa-f]{1,4})'
+    r'|U([0-9A-Fa-f]{1,8})'
+    r'|([abefnrtv\\\'"?])'
+    r')'
+)
+_ANSI_C_NAMED = {
+    'a': '\a', 'b': '\b', 'e': '\x1b', 'f': '\f', 'n': '\n',
+    'r': '\r', 't': '\t', 'v': '\v', '\\': '\\', "'": "'", '"': '"', '?': '?',
+}
+
+
+def _decode_ansi_c_escapes(body: str) -> str:
+    """Decode escape sequences inside one $'...' body for detection matching."""
+
+    def _sub(match) -> str:
+        hex_digits, octal_digits, u_digits, big_u_digits, named = match.groups()
+        try:
+            if hex_digits is not None:
+                return chr(int(hex_digits, 16))
+            if octal_digits is not None:
+                return chr(int(octal_digits, 8) & 0xFF)
+            if u_digits is not None:
+                return chr(int(u_digits, 16))
+            if big_u_digits is not None:
+                code_point = int(big_u_digits, 16)
+                return chr(code_point) if code_point <= 0x10FFFF else match.group(0)
+            if named is not None:
+                return _ANSI_C_NAMED[named]
+        except (ValueError, OverflowError):
+            return match.group(0)
+        return match.group(0)
+
+    return _ANSI_C_ESCAPE_RE.sub(_sub, body)
+
+
+def _scan_ansi_c_quote_end(text: str, start: int) -> int | None:
+    """Return index past the closing quote of a $'...' span, or None if open.
+
+    *start* must point at the ``$`` of ``$'``. Escaped characters (including
+    ``\\'``) do not terminate the span.
+    """
+    if not text.startswith("$'", start):
+        return None
+    i = start + 2
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2 if i + 1 < len(text) else 1
+            continue
+        if text[i] == "'":
+            return i + 1
+        i += 1
+    return None
+
+
+def _strip_backslash_escapes_for_detection(command: str) -> str:
+    """Strip ``\\X`` escapes while leaving complete ``$'...'`` spans intact."""
+    out: list[str] = []
+    i = 0
+    while i < len(command):
+        if command.startswith("$'", i):
+            end = _scan_ansi_c_quote_end(command, i)
+            if end is None:
+                out.append(command[i])
+                i += 1
+                continue
+            out.append(command[i:end])
+            i = end
+            continue
+        if command[i] == "\\" and i + 1 < len(command) and command[i + 1] != "\n":
+            out.append(command[i + 1])
+            i += 2
+            continue
+        out.append(command[i])
+        i += 1
+    return "".join(out)
+
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
 
@@ -1043,7 +1146,9 @@ def _normalize_command_for_detection(command: str) -> str:
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
-    command = re.sub(r'\\([^\n])', r'\1', command)
+    # Complete $'...' spans are left intact so command-word ANSI-C decode can
+    # still see \xNN / \t (a blind strip would turn $'\x72\x6d' into $'x72x6d').
+    command = _strip_backslash_escapes_for_detection(command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
     command = re.sub(r"''|\"\"", '', command)
     # Collapse $IFS / ${IFS} word-separator expansions to a literal space.
@@ -1180,8 +1285,6 @@ _COMMAND_WRAPPER_WORDS = {
     "nohup",
     "setsid",
     "time",
-    "command",
-    "builtin",
 }
 _SUDO_OPTIONS_WITH_ARG = {
     "-c", "--close-from",
@@ -1190,6 +1293,27 @@ _SUDO_OPTIONS_WITH_ARG = {
     "-p", "--prompt",
     "-u", "--user",
 }
+# GNU env options that consume the following argv word when the value is not
+# attached with `=` (see env(1): -u/--unset, -C/--chdir, -S/--split-string,
+# -a/--argv0). Optional-arg signal flags (--block-signal[=SIG], …) require
+# `=` attachment under getopt_long and must NOT steal the next word.
+_ENV_OPTIONS_WITH_ARG = {
+    "-u", "--unset",
+    "-c", "--chdir",  # env(1) short is -C; compared lowercased
+    "-s", "--split-string",
+    "-a", "--argv0",
+}
+_ENV_LONG_OPTIONS = frozenset({
+    "--argv0", "--block-signal", "--chdir", "--debug", "--default-signal",
+    "--help", "--ignore-environment", "--ignore-signal",
+    "--list-signal-handling", "--null", "--split-string", "--unset",
+    "--version",
+})
+_ENV_SHORT_OPTIONS_WITH_ARG = frozenset("ucsa")
+# Short flag alphabet for env clusters like `-iv` / `-iu` (last char may take
+# an arg). Unknown letters mean a glued value (`-uHOME`) already in-token.
+# Compared against lowercased option bodies.
+_ENV_SHORT_OPTION_CHARS = frozenset("i0vucsa")
 
 _INTERPRETER_EXEC_FLAGS = {
     "python": {"-c"},
@@ -1257,6 +1381,8 @@ _MAX_SEPARATOR_FREE_COMMAND_CHARS = 4_096
 _MAX_DETECTION_SEGMENTS = 25_000
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
+_PARSER_LIMIT_VARIANT = "__hermes_internal_detection_traversal_limit__"
+_MALFORMED_EXEC_VARIANT = "__hermes_internal_malformed_executable__"
 
 
 
@@ -1668,12 +1794,345 @@ def _execution_flag_findings(command: str):
                 found, payload = _bash_exec_payload(tokens[1:])
                 if found:
                     yield ("shell command via -c/-lc flag", payload)
+            if executable_name == "eval" and len(tokens) > 1:
+                eval_args = tokens[1:]
+                if eval_args[:1] == ["--"]:
+                    eval_args = eval_args[1:]
+                payload = " ".join(eval_args)
+                if "$" in payload or "`" in payload:
+                    yield (_MALFORMED_EXEC_DESCRIPTION, None)
+                else:
+                    yield ("shell command via eval builtin", payload)
             tool = executable_name
             if tool in _READ_TOOL_EXEC_FLAGS:
                 finding = _read_tool_exec_flag(tool, tokens[1:])
                 if finding:
                     option, payload = finding
                     yield (f"arbitrary program execution via {tool} {option}", payload)
+
+
+def _strip_gnu_env_split_comment(value: str) -> str:
+    """Remove a GNU env ``-S`` comment without treating embedded ``#`` as one."""
+    quote: str | None = None
+    token_start = True
+    for index, char in enumerate(value):
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            token_start = False
+            continue
+        if char == "#" and token_start:
+            return value[:index]
+        token_start = char.isspace()
+    return value
+
+
+def _resolve_env_split_outer_word(word: str) -> tuple[str | None, bool]:
+    """Resolve deterministic outer-shell syntax without executing expansions."""
+    chars: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(word):
+        char = word[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            else:
+                chars.append(char)
+            index += 1
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = None
+                index += 1
+                continue
+            if char in {"$", "`"}:
+                return "".join(chars), True
+            if char == "\\" and index + 1 < len(word):
+                following = word[index + 1]
+                if following in {'$', '`', '"', "\\"}:
+                    chars.append(following)
+                    index += 2
+                    continue
+            chars.append(char)
+            index += 1
+            continue
+        if word.startswith("$'", index):
+            end = _scan_ansi_c_quote_end(word, index)
+            if end is None:
+                return "".join(chars), True
+            chars.append(_decode_ansi_c_escapes(word[index + 2:end - 1]))
+            index = end
+            continue
+        if char in {"$", "`"}:
+            return "".join(chars), True
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if char == "\\":
+            if index + 1 >= len(word):
+                return "".join(chars), True
+            chars.append(word[index + 1])
+            index += 2
+            continue
+        chars.append(char)
+        index += 1
+    if quote is not None:
+        return "".join(chars), True
+    return "".join(chars), False
+
+
+def _raw_shell_words(command: str, start: int) -> list[str]:
+    """Read raw outer-shell words from one command position."""
+    words: list[str] = []
+    position = start
+    while True:
+        word_start, word_end, word = _read_shell_word(command, position)
+        if word_start == word_end:
+            return words
+        words.append(word)
+        position = word_end
+
+
+def _resolve_env_long_option(option: str) -> str | None:
+    """Resolve a unique GNU env long-option prefix to its canonical spelling."""
+    if not option.startswith("--") or option == "--":
+        return None
+    matches = [candidate for candidate in _ENV_LONG_OPTIONS if candidate.startswith(option)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _classify_env_option(token: str) -> tuple[str, bool]:
+    """Return (status, consumes_next) for a GNU env option token."""
+    option, separator, _ = token.partition("=")
+    if option == "-":
+        return "continue", False
+    if option.startswith("--"):
+        canonical = _resolve_env_long_option(option)
+        if canonical is None:
+            return "invalid", False
+        if canonical in {"--help", "--null", "--version"}:
+            return "terminal", False
+        owns_value = canonical in _ENV_OPTIONS_WITH_ARG
+        if separator and not (owns_value or canonical in {
+            "--block-signal", "--default-signal", "--ignore-signal",
+        }):
+            return "invalid", False
+        return "continue", owns_value and not separator
+    if not option.startswith("-") or len(option) == 1:
+        return "invalid", False
+    chars = option[1:]
+    for index, char in enumerate(chars):
+        if char == "0":
+            return "terminal", False
+        if char in {"i", "v"}:
+            continue
+        if char in {"u", "C", "S", "a"}:
+            return "continue", index == len(chars) - 1
+        return "invalid", False
+    return "continue", False
+
+
+def _env_option_owns_split_value(token: str) -> bool:
+    """Return whether *token* requires a following GNU env split string."""
+    option, separator, _ = token.partition("=")
+    if _resolve_env_long_option(option) == "--split-string":
+        return not separator
+    has_short_split, value, consumed = _env_short_split_value(token, None)
+    return has_short_split and value is None and consumed == 2
+
+
+def _env_option_contains_split(token: str) -> bool:
+    """Return whether a fully or partially resolved option selects ``-S``."""
+    option = token.partition("=")[0]
+    if _resolve_env_long_option(option) == "--split-string":
+        return True
+    return _env_short_split_value(token, None)[0]
+
+
+def _split_gnu_env_string(value: str) -> list[str] | None:
+    """Split the supported literal subset of GNU env ``-S`` syntax.
+
+    GNU-specific escapes and ``${VARNAME}`` expansion are environment-dependent
+    executable input. They fail closed instead of being approximated with shell
+    tokenization and potentially hiding the command that GNU env will execute.
+    """
+    if "\\" in value or "${" in value:
+        return None
+    try:
+        lexer = shlex.shlex(_strip_gnu_env_split_comment(value), posix=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def _env_short_split_value(
+    token: str, following: str | None
+) -> tuple[bool, str | None, int]:
+    """Return whether a valid GNU env short-option cluster contains ``-S``."""
+    if not token.startswith("-") or token.startswith("--"):
+        return False, None, 1
+    for offset, char in enumerate(token[1:], start=1):
+        if char == "S":
+            attached = token[offset + 1:]
+            if attached:
+                return True, attached, 1
+            return True, following, 2
+        if char in "uCa":
+            # The first argument-taking option owns the rest of the token.
+            return False, None, 1
+        if char not in "i0v":
+            return False, None, 1
+    return False, None, 1
+
+
+def _env_split_string_payload(args: list[str]) -> tuple[str | None, bool]:
+    """Return GNU env's executable argv exposed by ``-S``, or malformed=True."""
+    expanded = list(args)
+    index = 0
+    split_count = 0
+    saw_split = False
+    while index < len(expanded):
+        token = expanded[index]
+        if token == "--":
+            index += 1
+            break
+        if _ENV_ASSIGNMENT_RE.fullmatch(token):
+            break
+
+        option_status = "continue"
+        option_consumes_next = False
+        if token.startswith("-"):
+            option_status, option_consumes_next = _classify_env_option(token)
+            if option_status != "continue":
+                return None, False
+
+        split_value: str | None = None
+        consumed = 1
+        long_option, separator, attached_value = token.partition("=")
+        is_split_long_option = (
+            _resolve_env_long_option(long_option) == "--split-string"
+        )
+        if is_split_long_option:
+            if separator:
+                split_value = attached_value
+            elif index + 1 < len(expanded):
+                split_value = expanded[index + 1]
+                consumed = 2
+            else:
+                return None, True
+        else:
+            has_short_split, short_value, consumed = _env_short_split_value(
+                token,
+                expanded[index + 1] if index + 1 < len(expanded) else None,
+            )
+            if has_short_split:
+                if short_value is None:
+                    return None, True
+                split_value = short_value
+
+        if split_value is not None:
+            saw_split = True
+            split_count += 1
+            if split_count > 12:
+                return None, True
+            split_tokens = _split_gnu_env_string(split_value)
+            if split_tokens is None:
+                return None, True
+            expanded[index:index + consumed] = split_tokens
+            continue
+
+        if token.startswith("-"):
+            index += 1
+            if option_consumes_next and index < len(expanded):
+                index += 1
+            continue
+        break
+
+    if not saw_split or index >= len(expanded):
+        return None, False
+    return shlex.join(expanded[index:]), False
+
+
+def _env_split_string_findings(command: str):
+    """Yield executable payloads owned by GNU env ``-S`` options."""
+    pending = [command]
+    seen = {command}
+    finding_count = 0
+    while pending:
+        candidate = pending.pop()
+        for segment in _iter_top_level_shell_segments(candidate):
+            for start, _, word in _iter_shell_command_word_spans(segment):
+                executable = _deobfuscate_shell_word_for_detection(word)
+                if os.path.basename(executable).lower() != "env":
+                    continue
+                raw_words = _raw_shell_words(segment, start)
+                if not raw_words:
+                    continue
+                args: list[str] = []
+                split_value_expected = False
+                option_arg_expected = False
+                option_phase = True
+                malformed_outer_split = False
+                for raw_arg in raw_words[1:]:
+                    resolved, unsupported = _resolve_env_split_outer_word(raw_arg)
+                    if unsupported:
+                        if split_value_expected or (
+                            resolved is not None
+                            and _env_option_contains_split(resolved)
+                        ):
+                            malformed_outer_split = True
+                            break
+                        if option_arg_expected:
+                            args.append("__dynamic_env_option_value__")
+                            option_arg_expected = False
+                            continue
+                        if option_phase:
+                            malformed_outer_split = True
+                            break
+                        args.append("__dynamic_shell_value__")
+                        continue
+                    assert resolved is not None
+                    args.append(resolved)
+                    if option_arg_expected:
+                        option_arg_expected = False
+                        split_value_expected = False
+                        continue
+                    if option_phase and _ENV_ASSIGNMENT_RE.fullmatch(resolved):
+                        option_phase = False
+                        continue
+                    if option_phase and resolved == "--":
+                        option_phase = False
+                        continue
+                    if option_phase and resolved.startswith("-"):
+                        option_status, option_consumes_next = _classify_env_option(resolved)
+                        if option_status != "continue":
+                            break
+                        split_value_expected = _env_option_owns_split_value(resolved)
+                        option_arg_expected = option_consumes_next
+                        continue
+                    option_phase = False
+                    split_value_expected = False
+                if malformed_outer_split:
+                    yield None, True
+                    continue
+                payload, malformed = _env_split_string_payload(args)
+                if malformed:
+                    yield None, True
+                elif payload and payload not in seen:
+                    finding_count += 1
+                    if finding_count > 12:
+                        yield None, True
+                        return
+                    seen.add(payload)
+                    pending.append(payload)
+                    yield payload, False
 
 
 def _skip_shell_whitespace(command: str, pos: int) -> int:
@@ -1744,6 +2203,13 @@ def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
             if ch == quote:
                 quote = None
             i += 1
+            continue
+        if command.startswith("$'", i):
+            end = _scan_ansi_c_quote_end(command, i)
+            if end is None:
+                i += 1
+            else:
+                i = end
             continue
         if ch in ("'", '"'):
             quote = ch
@@ -1868,6 +2334,15 @@ def _strip_shell_word_syntax(word: str) -> str:
             chars.append(ch)
             i += 1
             continue
+        if word.startswith("$'", i):
+            end = _scan_ansi_c_quote_end(word, i)
+            if end is None:
+                chars.append(ch)
+                i += 1
+                continue
+            chars.append(_decode_ansi_c_escapes(word[i + 2:end - 1]))
+            i = end
+            continue
         if ch in ("'", '"'):
             quote = ch
             i += 1
@@ -1885,8 +2360,10 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
     """Approximate how shell syntax can spell a command word.
 
     This is intentionally narrow and non-executing: it only collapses shell
-    quoting/escaping plus simple literal command substitutions that appear in
-    the command word itself.
+    quoting/escaping (including bash/zsh ANSI-C ``$'...'``) plus simple
+    literal command substitutions that appear in the command word itself.
+    Decoded ANSI-C whitespace stays inside the word — callers must not
+    re-tokenize it as argument separators.
     """
     deobfuscated = word
     for _ in range(2):
@@ -1896,6 +2373,92 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
         if deobfuscated == previous:
             break
     return deobfuscated
+
+
+def _expand_ansi_c_quotes_in_word(word: str) -> str:
+    """Expand unquoted ``$'...'`` spans in one word; leave other syntax intact.
+
+    All-argv hardline variants need argument tokens like ``$'\\x2f'`` decoded,
+    but must not strip protective quotes (``"(reboot)"``) or expand
+    ``$(...)`` / ``${...}`` in non-command words (which would promote
+    ``echo $(echo rm)`` into a fake wipe).
+    """
+    chars: list[str] = []
+    quote: str | None = None
+    i = 0
+    changed = False
+    while i < len(word):
+        ch = word[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(word):
+                chars.append(word[i:i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            chars.append(ch)
+            i += 1
+            continue
+        if word.startswith("$'", i):
+            end = _scan_ansi_c_quote_end(word, i)
+            if end is None:
+                chars.append(ch)
+                i += 1
+                continue
+            chars.append(_decode_ansi_c_escapes(word[i + 2:end - 1]))
+            i = end
+            changed = True
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            chars.append(ch)
+            i += 1
+            continue
+        chars.append(ch)
+        i += 1
+    return "".join(chars) if changed else word
+
+
+def _deobfuscate_shell_words_preserving_boundaries(command: str) -> str:
+    """Expand ANSI-C quotes in every shell word without re-tokenizing.
+
+    Bash expands ANSI-C quotes in *argument* words too, so a root wipe spelled
+    ``$'\\x72\\x6d' -rf $'\\x2f'`` reaches the shell as ``rm -rf /``. Hardline
+    matching must see those decoded argument tokens. Only ``$'...'`` is
+    expanded here — full word deobfuscation (quote stripping, substitutions)
+    stays scoped to command-position words. Words whose expansion introduces
+    IFS whitespace keep their original spelling so embedded tabs or spaces
+    (``rm$'\\t'-rf$'\\t'/``) cannot become argument separators.
+    """
+    parts: list[str] = []
+    pos = 0
+    changed = False
+    while pos < len(command):
+        word_start, word_end, word = _read_shell_word(command, pos)
+        if word_start == word_end:
+            if pos >= len(command):
+                break
+            parts.append(command[pos])
+            pos += 1
+            continue
+        if word_start > pos:
+            parts.append(command[pos:word_start])
+        expanded = _expand_ansi_c_quotes_in_word(word)
+        if (
+            expanded
+            and expanded != word
+            and not any(ch.isspace() for ch in expanded)
+        ):
+            parts.append(expanded)
+            changed = True
+        else:
+            parts.append(word)
+        pos = word_end
+    if not changed:
+        return command
+    if pos < len(command):
+        parts.append(command[pos:])
+    return "".join(parts)
 
 
 def _iter_shell_command_starts(command: str):
@@ -1922,6 +2485,13 @@ def _iter_shell_command_starts(command: str):
                 i += 2
                 continue
             i += 1
+            continue
+        if command.startswith("$'", i):
+            end = _scan_ansi_c_quote_end(command, i)
+            if end is None:
+                i += 1
+            else:
+                i = end
             continue
         if ch in ("'", '"'):
             quote = ch
@@ -2005,6 +2575,189 @@ def _mark_command_starts(command: str) -> str:
     return "".join(parts)
 
 
+def _env_option_consumes_next_arg(option_token: str) -> bool:
+    """Return True when a GNU env option token takes the following argv word."""
+    lower = option_token.lower()
+    if "=" in lower or lower in {"-", "--"}:
+        return False
+    if lower.startswith("--"):
+        canonical = _resolve_env_long_option(lower)
+        return canonical in _ENV_OPTIONS_WITH_ARG
+    if not lower.startswith("-") or lower.startswith("--"):
+        return False
+    body = lower[1:]
+    if not body:
+        return False
+    # Pure flag cluster (`-i`, `-iv`, `-iu`): only the final char can take an arg.
+    if all(ch in _ENV_SHORT_OPTION_CHARS for ch in body):
+        return body[-1] in _ENV_SHORT_OPTIONS_WITH_ARG
+    # Glued value form (`-uHOME`, `-CHOME`) — argument already in this token.
+    return False
+
+
+def _wrapper_option_consumes_next_arg(wrapper: str, option_token: str) -> bool:
+    """Return True when *wrapper*'s option consumes the next argv word."""
+    lower = option_token.lower()
+    if "=" in lower:
+        return False
+    if wrapper == "env":
+        return _env_option_consumes_next_arg(lower)
+    if wrapper == "sudo":
+        return lower.split("=", 1)[0] in _SUDO_OPTIONS_WITH_ARG
+    return False
+
+
+def _offset_after_command_wrappers(command: str, pos: int) -> int | None:
+    """Return the start offset of the real executable after sudo/env/… prefixes.
+
+    Walks validated wrapper syntax only (documented options, option arguments,
+    ``NAME=VALUE`` assignments, and ``--``). Returns ``None`` when *pos* has no
+    word, or *pos* itself when the first word is already the executable.
+    """
+    word_start, word_end, word = _read_shell_word(command, pos)
+    if word_start == word_end:
+        return None
+    current = word_start
+    prefix_words = 0
+    skip_next = False
+    while prefix_words < 12:
+        word_start, word_end, word = _read_shell_word(command, current)
+        if word_start == word_end:
+            return None
+        deobfuscated = _deobfuscate_shell_word_for_detection(word)
+        lower_word = deobfuscated.lower()
+        if lower_word == "command":
+            current = word_end
+            prefix_words += 1
+            while prefix_words < 12:
+                opt_start, opt_end, opt_word = _read_shell_word(command, current)
+                if opt_start == opt_end:
+                    return None
+                opt_lower = _deobfuscate_shell_word_for_detection(opt_word).lower()
+                if opt_lower == "--":
+                    current = opt_end
+                    prefix_words += 1
+                    break
+                if opt_lower.startswith("-"):
+                    if "v" in opt_lower[1:].lower():
+                        return None
+                    if set(opt_lower[1:]) <= {"p"}:
+                        current = opt_end
+                        prefix_words += 1
+                        continue
+                    return None
+                return opt_start
+            continue
+        if lower_word == "builtin":
+            builtin_start, _, builtin_word = _read_shell_word(command, word_end)
+            if builtin_start == word_end:
+                return None
+            builtin_name = _deobfuscate_shell_word_for_detection(builtin_word).lower()
+            if builtin_name not in {"command", "eval", "exec"}:
+                return None
+            return builtin_start
+        if lower_word in _COMMAND_WRAPPER_WORDS:
+            wrapper = lower_word
+            current = word_end
+            prefix_words += 1
+            skip_next = False
+            while prefix_words < 12:
+                opt_start, opt_end, opt_word = _read_shell_word(command, current)
+                if opt_start == opt_end:
+                    return None
+                if skip_next:
+                    current = opt_end
+                    prefix_words += 1
+                    skip_next = False
+                    continue
+                opt_deob = _deobfuscate_shell_word_for_detection(opt_word)
+                opt_lower = opt_deob.lower()
+                if wrapper == "env" and _ENV_ASSIGNMENT_RE.fullmatch(opt_deob):
+                    current = opt_end
+                    prefix_words += 1
+                    break
+                if opt_lower == "--" and wrapper in {"env", "exec", "sudo"}:
+                    current = opt_end
+                    prefix_words += 1
+                    break
+                if wrapper == "env" and opt_deob.startswith("-"):
+                    status, consumes_next = _classify_env_option(opt_deob)
+                    if status != "continue":
+                        return None
+                    skip_next = consumes_next
+                    current = opt_end
+                    prefix_words += 1
+                    continue
+                if wrapper == "exec" and opt_lower.startswith("-"):
+                    option_chars = opt_lower[1:]
+                    if not option_chars or not set(option_chars) <= {"a", "c", "l"}:
+                        return None
+                    current = opt_end
+                    prefix_words += 1
+                    if "a" in option_chars:
+                        if not option_chars.endswith("a"):
+                            return None
+                        _, value_end, value_word = _read_shell_word(command, current)
+                        if not value_word:
+                            return None
+                        current = value_end
+                        prefix_words += 1
+                    continue
+                if opt_lower.startswith("-"):
+                    skip_next = _wrapper_option_consumes_next_arg(wrapper, opt_lower)
+                    current = opt_end
+                    prefix_words += 1
+                    continue
+                # First non-option, non-assignment token is the executable.
+                break
+            continue
+        if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
+            # Bare `VAR=VAL cmd` prefix (no `env` keyword).
+            current = word_end
+            prefix_words += 1
+            continue
+        return word_start
+    word_start, word_end, word = _read_shell_word(command, current)
+    resolved_boundary, unsupported_boundary = _resolve_env_split_outer_word(word)
+    if (
+        skip_next
+        or unsupported_boundary
+        or (resolved_boundary is not None and resolved_boundary.startswith("-"))
+    ):
+        return -1
+    return word_start if word_start < word_end else current
+
+
+def _mark_unwrapped_executables(command: str) -> str:
+    """Insert newlines before executables that follow validated wrapper prefixes.
+
+    Flat ``_CMDPOS`` can consume ``env -i`` / ``env --`` / ``env VAR=`` but not
+    separate option-argument words (``env -u HOME rm …``). Rewriting those
+    forms so the real executable sits at a ``_CMDPOS`` start keeps the hardline
+    floor aligned with GNU env / sudo wrapper semantics.
+    """
+    offsets: list[int] = []
+    for start in _iter_shell_command_starts(command):
+        exec_start = _offset_after_command_wrappers(command, start)
+        if exec_start == -1:
+            return _PARSER_LIMIT_VARIANT
+        if (
+            exec_start is not None
+            and exec_start > start
+            and "\n" not in command[start:exec_start]
+        ):
+            offsets.append(exec_start)
+    if not offsets:
+        return command
+    parts: list[str] = []
+    previous = 0
+    for offset in offsets:
+        parts.extend((command[previous:offset], "\n"))
+        previous = offset
+    parts.append(command[previous:])
+    return "".join(parts)
+
+
 def _mask_quoted_newlines(command: str) -> str:
     """Replace raw newlines inside single/double quotes with a space.
 
@@ -2058,6 +2811,7 @@ def _iter_shell_command_word_spans(command: str):
     for command_start in _iter_shell_command_starts(command):
         pos = command_start
         prefix_words = 0
+        active_wrapper: str | None = None
         skip_wrapper_options = False
         skip_next_wrapper_arg = False
         while prefix_words < 12:
@@ -2072,10 +2826,15 @@ def _iter_shell_command_word_spans(command: str):
                 prefix_words += 1
                 continue
             if skip_wrapper_options and lower_word.startswith("-"):
-                option_name = lower_word.split("=", 1)[0]
+                if lower_word == "--" and active_wrapper in {"env", "sudo"}:
+                    skip_wrapper_options = False
+                    active_wrapper = None
+                    pos = word_end
+                    prefix_words += 1
+                    continue
                 skip_next_wrapper_arg = (
-                    "=" not in lower_word
-                    and option_name in _SUDO_OPTIONS_WITH_ARG
+                    active_wrapper is not None
+                    and _wrapper_option_consumes_next_arg(active_wrapper, lower_word)
                 )
                 pos = word_end
                 prefix_words += 1
@@ -2085,11 +2844,16 @@ def _iter_shell_command_word_spans(command: str):
             prefix_words += 1
 
             if lower_word in _COMMAND_WRAPPER_WORDS:
+                active_wrapper = lower_word
                 skip_wrapper_options = lower_word in {"sudo", "env"}
                 pos = word_end
                 continue
             if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
-                skip_wrapper_options = False
+                # Keep scanning after VAR=VAL; for `env` this is still wrapper
+                # syntax, for bare assignments the next word is the command.
+                if active_wrapper != "env":
+                    skip_wrapper_options = False
+                    active_wrapper = None
                 pos = word_end
                 continue
             break
@@ -2108,23 +2872,67 @@ def _command_detection_variants(command: str):
     grep_safe, _ = _grep_safe_detection_variant(normalized)
     seen = {grep_safe}
     yield grep_safe
+    pending = [normalized]
+    for payload, malformed in _env_split_string_findings(
+        _mask_quoted_newlines(command)
+    ):
+        if not malformed and payload and payload not in seen:
+            seen.add(payload)
+            yield payload
+            pending.append(payload)
     # Program-bearing options are parsed in their owning command's context.
     # Surfacing only their payload lets the hardline floor inspect the command
     # that will actually run without promoting similar flags or quoted prose.
-    pending = [normalized]
+    payload_count = 0
     while pending:
         variant = pending.pop()
-        for _, payload in _execution_flag_findings(variant):
-            if payload and payload not in seen:
+        payload_count += 1
+        if payload_count > 24:
+            yield _PARSER_LIMIT_VARIANT
+            break
+
+        payload_variants = [variant]
+        marked_payload = _mark_command_starts(variant)
+        if marked_payload != variant:
+            payload_variants.append(marked_payload)
+        decoded_payload = _deobfuscate_shell_words_preserving_boundaries(variant)
+        if decoded_payload not in payload_variants:
+            payload_variants.append(decoded_payload)
+        for pass_index in range(13):
+            added_unwrapped = False
+            for base in tuple(payload_variants):
+                unwrapped = _mark_unwrapped_executables(base)
+                if unwrapped != base and unwrapped not in payload_variants:
+                    payload_variants.append(unwrapped)
+                    added_unwrapped = True
+            if not added_unwrapped:
+                break
+            if pass_index == 12:
+                yield _PARSER_LIMIT_VARIANT
+                break
+
+        for payload_variant in payload_variants:
+            if payload_variant not in seen:
+                seen.add(payload_variant)
+                yield payload_variant
+
+        for env_source in payload_variants:
+            for nested_payload, malformed in _env_split_string_findings(env_source):
+                if malformed:
+                    yield _MALFORMED_EXEC_VARIANT
+                    continue
+                if nested_payload and nested_payload not in seen:
+                    pending.append(nested_payload)
+
+        for payload_variant in payload_variants:
+            for description, payload in _execution_flag_findings(payload_variant):
+                if description == _MALFORMED_EXEC_DESCRIPTION:
+                    yield _MALFORMED_EXEC_VARIANT
+                    continue
+                if not payload or payload in seen:
+                    continue
                 seen.add(payload)
                 yield payload
-                # A payload can begin with an option-looking program and then
-                # invoke a hardline command after a separator. Mark its real
-                # command starts just as we do for the outer command.
-                marked_payload = _mark_command_starts(payload)
-                if marked_payload != payload and marked_payload not in seen:
-                    seen.add(marked_payload)
-                    yield marked_payload
                 pending.append(payload)
     # Subshell `(cmd)` and brace-group `{ cmd; }` openers put `cmd` at a real
     # command position, but the flat `_CMDPOS`-anchored patterns can't see it:
@@ -2141,18 +2949,70 @@ def _command_detection_variants(command: str):
     if marked != grep_safe and marked not in seen:
         seen.add(marked)
         yield marked
+    # Expand ANSI-C quotes across every argv word (executable AND destructive
+    # arguments/flags) while preserving word boundaries. Command-word-only
+    # decode left `$'\x72\x6d' -rf $'\x2f'` unmatched because the root target
+    # stayed encoded. Intentionally ANSI-C-only: stripping ordinary quotes or
+    # expanding substitutions in argument words false-positives quoted prose
+    # (`echo "(reboot)"`) and promotes `echo $(echo rm)`. Skip words whose
+    # expansion introduces IFS whitespace so embedded tabs/spaces never become
+    # separators.
+    #
+    # Mark command starts on the *pre-decode* spelling, then expand ANSI-C.
+    # Decoding `$'(reboot)'` into `(reboot)` and marking afterward invents a
+    # subshell bash never parsed (`echo $'(reboot)'` only prints text) and
+    # hardline-blocks it. Real `( $'\x72\x6d' -rf / )` still works: mark sees
+    # the opener first, then decode turns the payload into `rm -rf /`.
+    decoded_bases: list[str] = []
+    for base in (grep_safe, normalized):
+        fully_decoded = _deobfuscate_shell_words_preserving_boundaries(base)
+        # ANSI-C decoding can reveal an absolute user/Hermes home path only
+        # after the normalization-time folds have already run. Fold again so
+        # a fully encoded home wipe reaches the canonical ~/ hardline rules.
+        fully_decoded = _rewrite_resolved_hermes_home(fully_decoded)
+        fully_decoded = _rewrite_resolved_user_home(fully_decoded)
+        if fully_decoded != base and fully_decoded not in seen:
+            seen.add(fully_decoded)
+            yield fully_decoded
+            decoded_bases.append(fully_decoded)
+        marked_base = _mark_command_starts(base)
+        if marked_base == base:
+            continue
+        marked_decoded = _deobfuscate_shell_words_preserving_boundaries(marked_base)
+        if marked_decoded == marked_base or marked_decoded in seen:
+            continue
+        seen.add(marked_decoded)
+        yield marked_decoded
+        decoded_bases.append(marked_decoded)
+    # Peel validated sudo/env/exec wrapper prefixes so flat `_CMDPOS` patterns
+    # see the real executable. Needed for `env -u HOME rm …` (option argument
+    # is a separate word) and reinforces `env -i` / `env --` even when the
+    # inline `_CMDPOS` env fragment already covers those forms.
+    for base in (grep_safe, marked, *decoded_bases):
+        unwrapped = _mark_unwrapped_executables(base)
+        if unwrapped != base and unwrapped not in seen:
+            seen.add(unwrapped)
+            yield unwrapped
     # Shell quoting/escaping can spell a dangerous executable name in pieces
-    # (for example r\m or r''m). Keep that deobfuscation scoped to command
-    # words so similarly shaped arguments do not become false positives.
+    # (for example r\m, r''m, or $'\x72\x6d'). Keep that deobfuscation scoped
+    # to command words so similarly shaped arguments do not become false
+    # positives. ANSI-C can embed IFS whitespace inside one word — never splice
+    # those decoded tabs/spaces back into the flat string as token separators.
     for word_start, word_end, word in _iter_shell_command_word_spans(normalized):
         deobfuscated = _deobfuscate_shell_word_for_detection(word)
         if not deobfuscated or deobfuscated == word:
+            continue
+        if any(ch.isspace() for ch in deobfuscated):
             continue
         variant = normalized[:word_start] + deobfuscated + normalized[word_end:]
         if variant in seen:
             continue
         seen.add(variant)
         yield variant
+        unwrapped = _mark_unwrapped_executables(variant)
+        if unwrapped != variant and unwrapped not in seen:
+            seen.add(unwrapped)
+            yield unwrapped
 
 
 def _is_verification_artifact_cleanup(command: str) -> bool:

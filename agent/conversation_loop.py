@@ -1472,6 +1472,11 @@ def run_conversation(
     # A configured SessionDB append failure halts only the affected turn. A
     # cached gateway agent must recover on the next message if storage did.
     agent._incremental_persistence_failed = False
+    # Cause of the most recent persistence failure this turn ('locked',
+    # 'disk', or 'unknown' — see run_agent.classify_persistence_error).
+    # Reset alongside the failure flag so a lock-contention diagnosis from a
+    # previous turn can never leak into this turn's user-facing explanation.
+    agent._last_persistence_error_cause = None
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
@@ -6505,6 +6510,10 @@ def run_conversation(
                     )
                 except Exception as exc:
                     _tool_turn_persisted = False
+                    from run_agent import classify_persistence_error
+                    agent._last_persistence_error_cause = (
+                        classify_persistence_error(exc)
+                    )
                     logger.warning(
                         "Incremental tool-call persistence failed before execution "
                         "(session=%s): %s",
@@ -6517,6 +6526,10 @@ def run_conversation(
                     # run side-effecting tools from state that exists only in
                     # this process. Breaking also avoids retrying the same
                     # unpersisted turn until the iteration budget is exhausted.
+                    # The flush may have classified the cause internally; if
+                    # nothing was recorded, the cause is genuinely unknown.
+                    if getattr(agent, "_last_persistence_error_cause", None) is None:
+                        agent._last_persistence_error_cause = "unknown"
                     _turn_exit_reason = "session_persistence_failed"
                     final_response = ""
                     failed = True

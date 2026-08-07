@@ -279,6 +279,37 @@ _MAX_TOOL_WORKERS = 8
 _DB_PERSISTED_MARKER = "_db_persisted"
 
 
+def classify_persistence_error(exc_or_str) -> str:
+    """Classify a session-persistence failure into a coarse cause bucket.
+
+    Fast-failing a turn on a SessionDB write error is deliberate (the
+    transcript would otherwise be lost on restart), but the *guidance* the
+    user gets must match the cause: sustained SQLite write-lock contention
+    ("database is locked" on a shared state.db) needs "storage was busy,
+    send it again", while a full disk or read-only database needs the
+    disk-space/permissions advice. Returns one of:
+
+    * ``"locked"``  — lock/busy contention (another process holds the write
+      lock); transient, retry-later guidance applies.
+    * ``"disk"``    — disk full / read-only / permission-shaped failures.
+    * ``"unknown"`` — anything else (or no visible exception at all).
+    """
+    if exc_or_str is None:
+        return "unknown"
+    text = str(exc_or_str).lower()
+    if "locked" in text or "busy" in text:
+        return "locked"
+    if (
+        "disk" in text
+        or "readonly" in text
+        or "read-only" in text
+        or "no space" in text
+        or "database or disk is full" in text
+    ):
+        return "disk"
+    return "unknown"
+
+
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per
 # process, not once per AIAgent instantiation.  Without this, long-running
 # gateway processes leak one OS thread per incoming message and eventually
@@ -2302,6 +2333,11 @@ class AIAgent:
             # Force a full re-scan on the next flush: an exception mid-loop
             # leaves messages with mixed dispositions.
             self._db_flush_scan_prefix = None
+            # This is the one place the underlying SQLite error is visible
+            # before it is swallowed into a bare ``False`` — classify it here
+            # so the turn-end explanation can distinguish lock contention
+            # ("storage was busy, send it again") from disk-full/read-only.
+            self._last_persistence_error_cause = classify_persistence_error(e)
             logger.warning("Session DB append_message failed: %s", e)
             return False
 
@@ -3579,7 +3615,9 @@ class AIAgent:
         return True  # safe default: explainer on
 
     @staticmethod
-    def _format_turn_completion_explanation(turn_exit_reason: str) -> str:
+    def _format_turn_completion_explanation(
+        turn_exit_reason: str, persistence_cause: Optional[str] = None
+    ) -> str:
         """Render a user-facing explanation for an abnormal turn ending.
 
         Maps the internal ``turn_exit_reason`` to a short, actionable
@@ -3587,6 +3625,13 @@ class AIAgent:
         content after retries, a partial/truncated stream, a still-pending
         tool result, or an iteration/budget limit) is never silent from
         the UI's perspective — the symptom users report in #34452.
+
+        ``persistence_cause`` refines the ``session_persistence_failed``
+        wording (see ``classify_persistence_error``): lock contention gets
+        "storage was busy, send it again" instead of the disk-space advice,
+        which was a misdiagnosis for that failure mode. It is optional and
+        ignored for every other reason, so one-argument callers keep the
+        exact behavior they had before.
 
         Returns an empty string for reasons that are NOT abnormal (e.g.
         a normal ``text_response(...)`` exit), so callers can concatenate
@@ -3668,12 +3713,30 @@ class AIAgent:
                 "let it summarize."
             )
         if reason == "session_persistence_failed":
+            cause = persistence_cause or "unknown"
+            if cause == "locked":
+                return (
+                    prefix
+                    + "the turn was stopped because session storage was busy "
+                    "(another Hermes process was writing to the state "
+                    "database). Your message was saved — please send it "
+                    "again in a moment."
+                )
+            if cause == "disk":
+                return (
+                    prefix
+                    + "the turn was stopped because session storage could not "
+                    "be written (the transcript would have been lost on "
+                    "restart). This is often a full disk — free some space "
+                    "(or fix state.db permissions), then send your message "
+                    "again."
+                )
             return (
                 prefix
                 + "the turn was stopped because session storage could not be "
                 "written (the transcript would have been lost on restart). "
-                "This is often a full disk — free some space (or fix state.db "
-                "permissions), then send your message again."
+                "Check the state database health (`hermes doctor`), then "
+                "send your message again."
             )
         # Unknown/diagnostic-only reasons (e.g. "unknown", guardrail_halt
         # which already surfaces its own message) — don't second-guess.

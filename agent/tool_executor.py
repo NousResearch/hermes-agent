@@ -192,9 +192,16 @@ def _flush_session_db_after_tool_progress(
         persisted = agent._flush_messages_to_session_db(messages) is not False
         if not persisted:
             agent._incremental_persistence_failed = True
+            # The flush caught its own exception and returned False; the
+            # classified cause (if any) was captured at the catch site. Only
+            # fall back to 'unknown' when nothing more specific is recorded.
+            if getattr(agent, "_last_persistence_error_cause", None) is None:
+                agent._last_persistence_error_cause = "unknown"
         return persisted
     except Exception as exc:
         agent._incremental_persistence_failed = True
+        from run_agent import classify_persistence_error
+        agent._last_persistence_error_cause = classify_persistence_error(exc)
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
         return False
 

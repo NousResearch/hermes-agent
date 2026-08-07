@@ -9,8 +9,11 @@ import {
   draftModelArgFromPickerValue,
   draftModelDisplayLabel,
   draftTitleFromPrompt,
+  filteredSessionsCountLabel,
   fixedSessionColumnStyle,
+  historySessionMatchesFilter,
   isNewSessionRow,
+  liveSessionMatchesFilter,
   newSessionMarkerColor,
   newSessionRowIndex,
   orchestratorContextHint,
@@ -23,6 +26,7 @@ import {
   relativeSessionAge,
   resumableHistory,
   selectedSessionRowStyle,
+  sessionFilterQuery,
   sessionRowKindAt,
   sessionsCountLabel
 } from '../components/activeSessionSwitcher.js'
@@ -42,8 +46,8 @@ describe('session orchestrator helpers', () => {
   it('keeps session orchestrator hotkey hints short and contextual', () => {
     expect(orchestratorContextHint(false)).toBe('Session row: Enter switch · Ctrl+D close')
     expect(orchestratorContextHint(true)).toBe('New row: type prompt · Enter start · Tab model')
-    expect(orchestratorGlobalHotkeyHint).toBe('↑↓ move · Ctrl+N new · Ctrl+R refresh · Esc close')
-    expect(orchestratorGlobalHotkeyHint.length).toBeLessThanOrEqual(56)
+    expect(orchestratorGlobalHotkeyHint).toBe('↑↓ move · / filter · Ctrl+N new · Ctrl+R refresh · Esc close')
+    expect(orchestratorGlobalHotkeyHint.length).toBeLessThanOrEqual(64)
   })
 
   it('assigns themed colors consistently to orchestrator labels and hotkeys', () => {
@@ -65,6 +69,7 @@ describe('session orchestrator helpers', () => {
     ])
     expect(orchestratorGlobalHotkeyHintSegments.filter(s => s.role === 'hotkey').map(s => s.text)).toEqual([
       '↑↓',
+      '/',
       'Ctrl+N',
       'Ctrl+R',
       'Esc'
@@ -213,5 +218,67 @@ describe('unified Sessions overlay helpers', () => {
     expect(relativeSessionAge(nowSec - 3 * 86400)).toBe('3d ago')
     expect(relativeSessionAge(undefined)).toBe('')
     expect(relativeSessionAge(0)).toBe('')
+  })
+})
+
+describe('sessions inline filter', () => {
+  const live = (over: Partial<SessionActiveItem> = {}): SessionActiveItem => ({
+    id: 'abc1234',
+    model: 'deepseek/deepseek-v4',
+    preview: 'debug the auth handler',
+    status: 'working',
+    title: 'Auth handler debugging',
+    ...over
+  })
+
+  const hist = (over: Partial<SessionListItem> = {}): SessionListItem => ({
+    id: 'def5678',
+    message_count: 3,
+    preview: 'prototype UI sketch',
+    started_at: Math.floor(Date.now() / 1000),
+    title: 'UI prototype',
+    ...over
+  })
+
+  it('normalizes the query (trim + lowercase, empty means no filter)', () => {
+    expect(sessionFilterQuery('  AUTH  ')).toBe('auth')
+    expect(sessionFilterQuery('   ')).toBe('')
+  })
+
+  it('matches live rows on title, preview, id, model, and status label', () => {
+    const s = live()
+
+    expect(liveSessionMatchesFilter(s, 'auth', null)).toBe(true) // title + preview
+    expect(liveSessionMatchesFilter(s, 'abc12', null)).toBe(true) // id
+    expect(liveSessionMatchesFilter(s, 'deepseek-v4', null)).toBe(true) // model (short form)
+    expect(liveSessionMatchesFilter(s, 'working', null)).toBe(true) // status label
+    expect(liveSessionMatchesFilter(s, 'telegram', null)).toBe(false)
+  })
+
+  it('matches the "current" label shown in place of the current session id', () => {
+    expect(liveSessionMatchesFilter(live(), 'current', 'abc1234')).toBe(true)
+    expect(liveSessionMatchesFilter(live({ current: true }), 'current', null)).toBe(true)
+    expect(liveSessionMatchesFilter(live(), 'current', 'other')).toBe(false)
+  })
+
+  it('matches history rows on title, preview, id, and age label', () => {
+    const h = hist()
+
+    expect(historySessionMatchesFilter(h, 'prototype')).toBe(true) // title + preview
+    expect(historySessionMatchesFilter(h, 'def56')).toBe(true) // id
+    expect(historySessionMatchesFilter(h, 'today')).toBe(true) // age label
+    expect(historySessionMatchesFilter(h, 'auth')).toBe(false)
+  })
+
+  it('is case-insensitive and tolerant of missing optional fields', () => {
+    expect(liveSessionMatchesFilter(live(), 'AUTH', null)).toBe(true)
+    expect(historySessionMatchesFilter(hist(), 'PROTOTYPE')).toBe(true)
+    expect(liveSessionMatchesFilter({ id: 'x1', status: 'idle' }, 'idle', null)).toBe(true)
+    expect(liveSessionMatchesFilter({ id: 'x1', status: 'idle' }, 'auth', null)).toBe(false)
+  })
+
+  it('labels the filtered row count as N of M', () => {
+    expect(filteredSessionsCountLabel(4, 16)).toBe('4 of 16 rows')
+    expect(filteredSessionsCountLabel(0, 3)).toBe('0 of 3 rows')
   })
 })

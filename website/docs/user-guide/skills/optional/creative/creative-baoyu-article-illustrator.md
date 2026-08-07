@@ -186,7 +186,7 @@ Note: the underlying image-generation backend is user-configured (default: FAL F
 
 ### Step 7: Finalize
 
-Insert `![description](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/baoyu-article-illustrator/{relative-path}/NN-{type}-{slug}.png)` after the corresponding paragraph. Alt text: concise description in the article's language.
+Insert `![description]({relative-path}/NN-{type}-{slug}.png)` after the corresponding paragraph. Alt text: concise description in the article's language.
 
 Report:
 

@@ -4395,3 +4395,254 @@ class TestPerformancePragmasEndToEnd:
             assert self._read(ro._conn) == defaults
         finally:
             ro.close()
+
+
+# =========================================================================
+# Cross-compaction undo — rewinding past an in-place compaction boundary
+# =========================================================================
+
+
+class TestRewindCompactionAware:
+    """``rewind_to_message`` must detect and correctly handle the case where
+    the target lies inside a compacted projection.
+
+    See issue-context-compaction-undo-github.md.
+    """
+
+    @staticmethod
+    def _seed(db, sid):
+        """6 Q&A turns → in-place compaction summarising q1..q4, retaining q5..a6."""
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        db.create_session(sid, source="cli")
+        for i in range(1, 7):
+            db.append_message(sid, "user", f"q{i}{': trigger' if i == 6 else ''}")
+            db.append_message(sid, "assistant", f"a{i}")
+
+        db.archive_and_compact(sid, [
+            {"role": "user", "content": SUMMARY_PREFIX + " q1..q4",
+             "display_kind": "compression_summary"},
+            {"role": "assistant", "content": "Continue from q5."},
+            {"role": "user", "content": "q5"},
+            {"role": "assistant", "content": "a5"},
+            {"role": "user", "content": "q6: trigger"},
+            {"role": "assistant", "content": "a6"},
+        ])
+
+    def test_undo_last_turn_restores_pre_compaction(self, db):
+        self._seed(db, "s1")
+        targets = db.list_recent_user_messages("s1", limit=5)
+        assert targets[0]["preview"] == "q6: trigger"
+
+        result = db.rewind_to_message("s1", targets[0]["id"])
+        assert result["crossed_compaction"] is True
+
+        active = [m["content"] for m in db.get_messages("s1")]
+        assert active == ["q1", "a1", "q2", "a2", "q3", "a3", "q4", "a4", "q5", "a5"]
+
+    def test_undo_two_turns_restores_earlier(self, db):
+        self._seed(db, "s2")
+        targets = db.list_recent_user_messages("s2", limit=5)
+        assert len(targets) == 2
+
+        result = db.rewind_to_message("s2", targets[1]["id"])
+        assert result["crossed_compaction"] is True
+
+        active = [m["content"] for m in db.get_messages("s2")]
+        assert active == ["q1", "a1", "q2", "a2", "q3", "a3", "q4", "a4"]
+
+    def test_summary_excluded_from_targets(self, db):
+        self._seed(db, "s3")
+        targets = db.list_recent_user_messages("s3", limit=10)
+        previews = [t["preview"] for t in targets]
+        assert all("[CONTEXT COMPACTION" not in p for p in previews)
+        assert len(targets) == 2
+
+    def test_no_compaction_preserves_original_behavior(self, db):
+        db.create_session("s4", source="cli")
+        for i in range(1, 4):
+            db.append_message("s4", "user", f"q{i}")
+            db.append_message("s4", "assistant", f"a{i}")
+
+        targets = db.list_recent_user_messages("s4", limit=3)
+        result = db.rewind_to_message("s4", targets[0]["id"])
+        assert result["crossed_compaction"] is False
+        assert result["rewound_count"] == 2
+        assert [m["content"] for m in db.get_messages("s4")] == [
+            "q1", "a1", "q2", "a2",
+        ]
+
+    def test_post_compaction_turn_uses_suffix_delete(self, db):
+        self._seed(db, "post")
+        db.append_message("post", "user", "q7")
+        db.append_message("post", "assistant", "a7")
+
+        target = db.list_recent_user_messages("post", limit=1)[0]
+        assert target["preview"] == "q7"
+        result = db.rewind_to_message("post", target["id"])
+
+        assert result["crossed_compaction"] is False
+        assert result["rewound_count"] == 2
+        active = [m["content"] for m in db.get_messages("post")]
+        assert "q7" not in active
+        assert "a6" in active
+
+    def test_counters_updated_on_cross_compaction(self, db):
+        self._seed(db, "s5")
+        targets = db.list_recent_user_messages("s5", limit=1)
+        db.rewind_to_message("s5", targets[0]["id"])
+
+        session = db.get_session("s5")
+        assert session["message_count"] == 10
+        assert session["rewind_count"] == 1
+
+    def test_archived_rows_cleared_compacted_flag(self, db):
+        self._seed(db, "s6")
+        targets = db.list_recent_user_messages("s6", limit=1)
+        db.rewind_to_message("s6", targets[0]["id"])
+
+        rows = db._conn.execute(
+            "SELECT compacted FROM messages WHERE session_id = ? AND active = 1",
+            ("s6",),
+        ).fetchall()
+        assert all(r[0] == 0 for r in rows)
+
+    def test_rewind_count_incremented(self, db):
+        self._seed(db, "s7")
+        targets = db.list_recent_user_messages("s7", limit=1)
+        db.rewind_to_message("s7", targets[0]["id"])
+        after = db._conn.execute(
+            "SELECT rewind_count FROM sessions WHERE id = ?", ("s7",),
+        ).fetchone()[0]
+        assert after == 1
+
+    def test_idempotent_second_call(self, db):
+        self._seed(db, "s8")
+        targets = db.list_recent_user_messages("s8", limit=1)
+        tid = targets[0]["id"]
+
+        r1 = db.rewind_to_message("s8", tid)
+        assert r1["crossed_compaction"] is True
+        first_active = [m["content"] for m in db.get_messages("s8")]
+
+        r2 = db.rewind_to_message("s8", tid)
+        assert r2["crossed_compaction"] is False
+        assert r2["rewound_count"] == 0
+        assert [m["content"] for m in db.get_messages("s8")] == first_active
+
+    def test_legacy_session_without_compaction_group(self, db):
+        """Pre-v26 sessions have NULL compaction_group — fail closed to
+        normal suffix delete."""
+        self._seed(db, "legacy")
+        db._conn.execute(
+            "UPDATE messages SET compaction_group = NULL, source_message_id = NULL "
+            "WHERE session_id = ?", ("legacy",)
+        )
+        db._conn.commit()
+
+        target = db.list_recent_user_messages("legacy", limit=1)[0]
+        result = db.rewind_to_message("legacy", target["id"])
+        assert result["crossed_compaction"] is False
+
+    def test_multiple_compactions_undo_second(self, db):
+        """Two sequential compactions. Undo into the second projection
+        restores that compaction's source, not the first's."""
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        db.create_session("multi", source="cli")
+        for i in range(1, 4):
+            db.append_message("multi", "user", f"q{i}")
+            db.append_message("multi", "assistant", f"a{i}")
+
+        first_proj = [
+            {"role": "user", "content": SUMMARY_PREFIX + " first",
+             "display_kind": "compression_summary"},
+            {"role": "assistant", "content": "continue first"},
+            {"role": "user", "content": "q3"},
+            {"role": "assistant", "content": "a3"},
+        ]
+        db.archive_and_compact("multi", first_proj)
+
+        db.append_message("multi", "user", "q4")
+        db.append_message("multi", "assistant", "a4")
+
+        second_proj = [
+            {"role": "user", "content": SUMMARY_PREFIX + " second",
+             "display_kind": "compression_summary"},
+            {"role": "assistant", "content": "continue second"},
+            {"role": "user", "content": "q4"},
+            {"role": "assistant", "content": "a4"},
+        ]
+        db.archive_and_compact("multi", second_proj)
+
+        q4 = db.list_recent_user_messages("multi", limit=1)[0]
+        r1 = db.rewind_to_message("multi", q4["id"])
+        assert r1["crossed_compaction"] is True
+        assert [m["content"] for m in db.get_messages("multi")] == [
+            m["content"] for m in first_proj
+        ]
+
+        q3 = db.list_recent_user_messages("multi", limit=1)[0]
+        r2 = db.rewind_to_message("multi", q3["id"])
+        assert r2["crossed_compaction"] is True
+        assert [m["content"] for m in db.get_messages("multi")] == [
+            "q1", "a1", "q2", "a2",
+        ]
+
+    def test_tool_call_count_recomputed(self, db):
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        db.create_session("tools", source="cli")
+        db.append_message("tools", "user", "q1")
+        db.append_message(
+            "tools", "assistant",
+            tool_calls=[{"id": "c1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}],
+        )
+        db.append_message("tools", "tool", "ok", tool_call_id="c1", tool_name="f")
+        db.append_message("tools", "assistant", "a1")
+        db.append_message("tools", "user", "q2")
+        db.append_message("tools", "assistant", "a2")
+
+        db.archive_and_compact("tools", [
+            {"role": "user", "content": SUMMARY_PREFIX + " tools",
+             "display_kind": "compression_summary"},
+            {"role": "assistant", "content": "continue"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2"},
+        ])
+
+        target = db.list_recent_user_messages("tools", limit=1)[0]
+        db.rewind_to_message("tools", target["id"])
+
+        session = db.get_session("tools")
+        assert session["message_count"] == 4
+        assert session["tool_call_count"] == 1
+
+    def test_duplicate_user_content(self, db):
+        """Two identical retained user turns must map by position, not
+        collapse to the same source row."""
+        from agent.context_compressor import SUMMARY_PREFIX
+
+        db.create_session("dup", source="cli")
+        for i in range(1, 7):
+            q = "same" if i in (5, 6) else f"q{i}"
+            db.append_message("dup", "user", q)
+            db.append_message("dup", "assistant", f"a{i}")
+
+        db.archive_and_compact("dup", [
+            {"role": "user", "content": SUMMARY_PREFIX + " q1..q4",
+             "display_kind": "compression_summary"},
+            {"role": "assistant", "content": "Continue."},
+            {"role": "user", "content": "same"},
+            {"role": "assistant", "content": "a5"},
+            {"role": "user", "content": "same"},
+            {"role": "assistant", "content": "a6"},
+        ])
+
+        targets = db.list_recent_user_messages("dup", limit=2)
+        result = db.rewind_to_message("dup", targets[1]["id"])
+        assert result["crossed_compaction"] is True
+        assert [m["content"] for m in db.get_messages("dup")] == [
+            "q1", "a1", "q2", "a2", "q3", "a3", "q4", "a4",
+        ]

@@ -209,6 +209,7 @@ class TestClassifyAgreesWithPredicatesOnLiveEmissions:
         assert len(flagged) == 1
         kind = self._assert_agreement(flagged[0])
         assert kind == "standalone"
+        assert flagged[0]["display_kind"] == "compression_summary"
 
     def test_non_summary_messages_agree_on_none(self):
         from agent.context_compressor import is_compaction_summary_message

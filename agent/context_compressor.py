@@ -6839,6 +6839,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: bool(
                     self._summary_has_user_turn
                 ),
+                "display_kind": "compression_summary",
             })
 
         # Default merge target: literal tail index 0. For an ordinary

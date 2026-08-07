@@ -73,3 +73,107 @@ def test_empty_tools_server_skipped(capsys):
     assert len(checklist_calls) == 0
     captured = capsys.readouterr()
     assert "no tools found" in captured.out
+
+
+def test_pre_selection_respects_glob_exclude():
+    """A glob exclude must start its matching tools unchecked.
+
+    Runtime registration matches include/exclude with fnmatch globs
+    (``tools/mcp_tool.py::matches_name_filter``). Matching only exact names
+    here shows every glob-excluded tool as enabled, so the checklist
+    disagrees with the tool surface the agent actually gets.
+    """
+    config = {
+        "mcp_servers": {
+            "cloudflare": {
+                "command": "npx",
+                "tools": {"exclude": ["*_radar_*"]},
+            },
+        }
+    }
+    tools = [
+        ("purge_cache", "Purge"),
+        ("cf_radar_http", "Radar HTTP"),
+        ("dns_records", "DNS"),
+        ("cf_radar_bgp", "Radar BGP"),
+    ]
+    captured_pre_selected = {}
+
+    def fake_checklist(title, labels, pre_selected, **kwargs):
+        captured_pre_selected["value"] = set(pre_selected)
+        return pre_selected  # No changes
+
+    with patch(_PROBE, return_value={"cloudflare": tools}), \
+         patch(_CHECKLIST, side_effect=fake_checklist), \
+         patch(_SAVE):
+        _configure_mcp_tools_interactive(config)
+
+    # Only the two non-radar tools may start checked.
+    assert captured_pre_selected["value"] == {0, 2}
+
+
+def test_pre_selection_respects_glob_include():
+    """A glob include must start only its matching tools checked."""
+    config = {
+        "mcp_servers": {
+            "cloudflare": {
+                "command": "npx",
+                "tools": {"include": ["dns_*"]},
+            },
+        }
+    }
+    tools = [
+        ("purge_cache", "Purge"),
+        ("dns_records", "DNS"),
+        ("dns_zones", "Zones"),
+    ]
+    captured_pre_selected = {}
+
+    def fake_checklist(title, labels, pre_selected, **kwargs):
+        captured_pre_selected["value"] = set(pre_selected)
+        return pre_selected  # No changes
+
+    with patch(_PROBE, return_value={"cloudflare": tools}), \
+         patch(_CHECKLIST, side_effect=fake_checklist), \
+         patch(_SAVE):
+        _configure_mcp_tools_interactive(config)
+
+    assert captured_pre_selected["value"] == {1, 2}
+
+
+def test_glob_exclude_survives_an_unrelated_edit():
+    """Editing one tool must not silently re-enable glob-excluded tools.
+
+    The checklist writes its selection back as ``tools.include`` and drops
+    ``exclude``. When glob-excluded tools start (wrongly) checked, the user's
+    next edit persists them as enabled — the filter is gone and every
+    excluded tool floods back into the agent's tool surface.
+    """
+    config = {
+        "mcp_servers": {
+            "cloudflare": {
+                "command": "npx",
+                "tools": {"exclude": ["*_radar_*"]},
+            },
+        }
+    }
+    tools = [
+        ("purge_cache", "Purge"),
+        ("cf_radar_http", "Radar HTTP"),
+        ("dns_records", "DNS"),
+    ]
+
+    def fake_checklist(title, labels, pre_selected, **kwargs):
+        # User unchecks one unrelated tool (dns_records) and confirms.
+        return set(pre_selected) - {2}
+
+    with patch(_PROBE, return_value={"cloudflare": tools}), \
+         patch(_CHECKLIST, side_effect=fake_checklist), \
+         patch(_SAVE):
+        _configure_mcp_tools_interactive(config)
+
+    written = config["mcp_servers"]["cloudflare"]["tools"].get("include", [])
+    assert "cf_radar_http" not in written, (
+        "an unrelated edit re-enabled a glob-excluded tool"
+    )
+    assert written == ["purge_cache"]

@@ -5243,17 +5243,31 @@ def _configure_mcp_tools_interactive(config: dict):
             else:
                 labels.append(tool_name)
 
-        # Determine which tools are currently enabled
+        # Determine which tools are currently enabled. Filter entries may be
+        # exact names or fnmatch globs, so match them the way runtime
+        # registration does (tools/mcp_tool.py::matches_name_filter) — the
+        # checklist writes its selection back as tools.include, so treating a
+        # glob as a literal here would show every glob-excluded tool as
+        # enabled and persist them on the user's next edit.
+        try:
+            from tools.mcp_tool import matches_name_filter
+        except ImportError:  # pragma: no cover — defensive fallback
+            def matches_name_filter(tool_name, patterns):
+                return tool_name in patterns
+
+        include_set = {str(p) for p in include_list}
+        exclude_set = {str(p) for p in exclude_list}
+
         pre_selected: Set[int] = set()
         tool_names = [t[0] for t in tools]
         for i, tool_name in enumerate(tool_names):
-            if include_list:
+            if include_set:
                 # Include mode: only included tools are selected
-                if tool_name in include_list:
+                if matches_name_filter(tool_name, include_set):
                     pre_selected.add(i)
-            elif exclude_list:
+            elif exclude_set:
                 # Exclude mode: everything except excluded
-                if tool_name not in exclude_list:
+                if not matches_name_filter(tool_name, exclude_set):
                     pre_selected.add(i)
             else:
                 # No filter: all enabled

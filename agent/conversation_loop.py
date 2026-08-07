@@ -2760,7 +2760,40 @@ def run_conversation(
                     # Invalid response — could be rate limiting, provider timeout,
                     # upstream server error, or malformed response.
                     retry_count += 1
-                    
+
+                    # --- Fix #74313: account for usage even on invalid responses ---
+                    # A response that fails output validation can still carry a
+                    # valid usage block for the API call that already happened
+                    # and was billed.  Without this, retry/fallback paths jump
+                    # past the accounting at the bottom of the loop, so the
+                    # billed attempt silently vanishes from token/cost tracking.
+                    if hasattr(response, 'usage') and response.usage:
+                        try:
+                            _invalid_usage = normalize_usage(
+                                response.usage,
+                                provider=agent.provider,
+                                api_mode=agent.api_mode,
+                            )
+                            agent.session_prompt_tokens += _invalid_usage.prompt_tokens
+                            agent.session_completion_tokens += _invalid_usage.output_tokens
+                            agent.session_total_tokens += _invalid_usage.total_tokens
+                            agent.session_api_calls += 1
+                            agent.session_input_tokens += _invalid_usage.input_tokens
+                            agent.session_output_tokens += _invalid_usage.output_tokens
+                            agent.session_cache_read_tokens += _invalid_usage.cache_read_tokens
+                            agent.session_cache_write_tokens += _invalid_usage.cache_write_tokens
+                            agent.session_reasoning_tokens += _invalid_usage.reasoning_tokens
+                            logger.debug(
+                                "Accounted usage from invalid response: "
+                                "input=%d output=%d total=%d",
+                                _invalid_usage.input_tokens,
+                                _invalid_usage.output_tokens,
+                                _invalid_usage.total_tokens,
+                            )
+                        except Exception:
+                            logger.debug("Failed to account usage from invalid response", exc_info=True)
+                    # --- end fix #74313 ---
+
                     # Eager fallback: empty/malformed responses are a common
                     # rate-limit symptom.  Switch to fallback immediately
                     # rather than retrying with extended backoff.

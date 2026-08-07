@@ -199,7 +199,7 @@ export const zh: Translations = {
     openStarmap: '打开记忆图谱',
     openKeybinds: '键盘快捷键',
     layoutEditor: '布局编辑器',
-    layoutEditorTitle: '布局编辑器 — ⌘ 点击重置布局'
+    layoutEditorTitle: mod => `布局编辑器 — ${mod} 点击重置布局`
   },
 
   keybinds: {
@@ -2348,7 +2348,7 @@ export const zh: Translations = {
       scopeLastTurn: '上一轮',
       commit: '提交',
       commitAndPush: '提交并推送',
-      commitPlaceholder: '信息（⌘↵ 提交）',
+      commitPlaceholder: shortcut => `信息（${shortcut} 提交）`,
       generateCommitMessage: '生成提交信息',
       stopGenerating: '停止生成',
       createPr: '创建 PR',

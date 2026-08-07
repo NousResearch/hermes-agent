@@ -246,7 +246,7 @@ export interface Translations {
     openStarmap: string
     openKeybinds: string
     layoutEditor: string
-    layoutEditorTitle: string
+    layoutEditorTitle: (modifier: string) => string
   }
 
   keybinds: {
@@ -1801,7 +1801,7 @@ export interface Translations {
       scopeLastTurn: string
       commit: string
       commitAndPush: string
-      commitPlaceholder: string
+      commitPlaceholder: (shortcut: string) => string
       generateCommitMessage: string
       stopGenerating: string
       createPr: string

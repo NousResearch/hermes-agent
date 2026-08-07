@@ -852,6 +852,25 @@ class ChatCompletionsTransport(ProviderTransport):
                 if finish_reason in (None, "stop"):
                     finish_reason = "content_filter"
 
+        # #76997: Vertex's OpenAI-compat layer for Gemini 3.x puts the model's
+        # pre-tool narration ("Locating Files", ...) in plain ``content`` on
+        # tool-call turns (native Gemini classifies it as reasoning). Relocate it
+        # to ``reasoning_content`` so it is neither delivered as normal assistant
+        # content nor persisted into session history.
+        if (
+            content
+            and tool_calls
+            and _model_consumes_thought_signature(
+                kwargs.get("model") or getattr(response, "model", None)
+            )
+        ):
+            if isinstance(reasoning_content, str) and reasoning_content:
+                reasoning_content = reasoning_content + str(content)
+            else:
+                reasoning_content = str(content)
+            provider_data["reasoning_content"] = reasoning_content
+            content = None
+
         return NormalizedResponse(
             content=content,
             tool_calls=tool_calls,

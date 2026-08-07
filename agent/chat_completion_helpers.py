@@ -3247,6 +3247,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         model_name = None
         role = "assistant"
         reasoning_parts: list = []
+        # #76997: Vertex's OpenAI-compat layer for Gemini 3.x emits the model's
+        # pre-tool narration ("Locating Files", ...) as ordinary delta.content
+        # (native Gemini classifies it as reasoning). Buffer pre-tool-call content
+        # for Gemini-family models on the OpenAI-compat path; when the turn turns
+        # out to carry tool calls the narration is routed to reasoning instead of
+        # streaming as normal assistant content / persisting into history.
+        _gemini_turn = (
+            "gemini" in str(agent.model or "").lower()
+            or "gemma" in str(agent.model or "").lower()
+        ) and not is_native_gemini_base_url(agent.base_url)
+        _gemini_pending: list = []
         usage_obj = None
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
@@ -3445,31 +3456,49 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
-                content_parts.append(delta.content)
-                if not tool_calls_acc:
-                    _fire_first_delta()
-                    agent._fire_stream_delta(delta.content)
-                    deltas_were_sent["yes"] = True
-                # Tool calls suppress regular content streaming (avoids
-                # displaying chatty "I'll use the tool..." text alongside
-                # tool calls).  But reasoning tags embedded in suppressed
-                # content should still reach the display — otherwise the
-                # reasoning box only appears as a post-response fallback,
-                # rendering it confusingly after the already-streamed
-                # response.  Route suppressed content through the stream
-                # delta callback so its tag extraction can fire the
-                # reasoning display.  Non-reasoning text is harmlessly
-                # suppressed by the CLI's _stream_delta when the stream
-                # box is already closed (tool boundary flush).
-                elif agent.stream_delta_callback:
-                    try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
-                    except Exception:
-                        pass
+                if _gemini_turn and not tool_calls_acc:
+                    # #76997: Gemini via Vertex OpenAI-compat narrates BEFORE the
+                    # first tool_call delta, so tool_calls_acc is still empty here
+                    # and the narration would stream as normal content. Buffer it;
+                    # the first tool-call delta routes it to reasoning instead.
+                    _gemini_pending.append(delta.content)
+                else:
+                    content_parts.append(delta.content)
+                    if not tool_calls_acc:
+                        _fire_first_delta()
+                        agent._fire_stream_delta(delta.content)
+                        deltas_were_sent["yes"] = True
+                    # Tool calls suppress regular content streaming (avoids
+                    # displaying chatty "I'll use the tool..." text alongside
+                    # tool calls).  But reasoning tags embedded in suppressed
+                    # content should still reach the display — otherwise the
+                    # reasoning box only appears as a post-response fallback,
+                    # rendering it confusingly after the already-streamed
+                    # response.  Route suppressed content through the stream
+                    # delta callback so its tag extraction can fire the
+                    # reasoning display.  Non-reasoning text is harmlessly
+                    # suppressed by the CLI's _stream_delta when the stream
+                    # box is already closed (tool boundary flush).
+                    elif agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(delta.content)
+                            agent._record_streamed_assistant_text(delta.content)
+                        except Exception:
+                            pass
 
             # Accumulate tool call deltas — notify display on first name
             if delta and delta.tool_calls:
+                # #76997: first tool-call delta of a Gemini OpenAI-compat turn —
+                # the buffered pre-tool narration is interim progress, not answer
+                # content. Route it to reasoning so it stays out of the visible
+                # response and out of persisted history.
+                if _gemini_pending:
+                    _pending_text = "".join(_gemini_pending)
+                    _gemini_pending.clear()
+                    if _pending_text:
+                        reasoning_parts.append(_pending_text)
+                        _fire_first_delta()
+                        agent._fire_reasoning_delta(_pending_text)
                 for tc_delta in delta.tool_calls:
                     raw_idx = tc_delta.index if tc_delta.index is not None else 0
                     delta_id = tc_delta.id or ""
@@ -3550,6 +3579,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 usage_obj = chunk.usage
 
         _close_managed_stream()
+
+        # #76997: Gemini OpenAI-compat turn ended with buffered narration but NO
+        # tool calls — the buffered text was the real answer; release it as
+        # content (and stream it) instead of dropping it.
+        if _gemini_pending:
+            _pending_text = "".join(_gemini_pending)
+            _gemini_pending.clear()
+            if _pending_text:
+                content_parts.append(_pending_text)
+                _fire_first_delta()
+                agent._fire_stream_delta(_pending_text)
+                deltas_were_sent["yes"] = True
 
         if _stream_attempt_was_cancelled(stream_attempt_id):
             raise _httpx.RemoteProtocolError(

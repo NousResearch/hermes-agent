@@ -1220,6 +1220,11 @@ def cronjob(
                 from cron.jobs import get_job as _get_job
                 refs = [context_from] if isinstance(context_from, str) else context_from
                 for ref_id in refs:
+                    # "self" is resolved to the job's own id at run time —
+                    # it can't be validated against the store (the job does
+                    # not exist yet at create time).
+                    if isinstance(ref_id, str) and ref_id.strip().lower() == "self":
+                        continue
                     if not _get_job(ref_id):
                         return tool_error(
                             f"context_from job '{ref_id}' not found. "
@@ -1500,6 +1505,9 @@ def cronjob(
                 if refs:
                     from cron.jobs import get_job as _get_job
                     for ref_id in refs:
+                        # "self" resolves to the job's own id at run time.
+                        if ref_id.lower() == "self":
+                            continue
                         if not _get_job(ref_id):
                             return tool_error(
                                 f"context_from job '{ref_id}' not found. "
@@ -1649,7 +1657,10 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
                     "Optional job ID or list of job IDs whose most recent completed output is "
                     "injected into the prompt as context before each run. "
                     "Use this to chain cron jobs: job A collects data, job B processes it. "
-                    "Each entry must be a valid job ID (from cronjob action='list'). "
+                    "The special value 'self' injects this job's OWN previous output, giving "
+                    "recurring jobs continuity across runs (dedupe against what was already "
+                    "reported, continue where the last run left off). "
+                    "Each other entry must be a valid job ID (from cronjob action='list'). "
                     "Note: injects the most recent completed output — does not wait for "
                     "upstream jobs running in the same tick. "
                     "On update, pass an empty array to clear."

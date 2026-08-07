@@ -629,14 +629,32 @@ cronjob(
 |--------|---------|
 | Single job ID (string) | `context_from="a1b2c3d4"` |
 | Multiple job IDs (list) | `context_from=["job_a", "job_b"]` |
+| The special value `self` | `context_from="self"` |
 
 Outputs are concatenated in the order listed.
+
+**Self-context: continuity across runs**
+
+`context_from="self"` injects the job's *own* most recent output into each run. Recurring jobs normally start every run with amnesia — a news scout re-reports the same stories, a monitor re-alerts on the same condition. With self-context, the job wakes up seeing what it reported last time and can dedupe and continue where it left off:
+
+```python
+cronjob(
+    action="create",
+    prompt="Scan HN and arXiv for new agent-tooling papers. Report only items NOT already covered in your previous run's output.",
+    schedule="every 6h",
+    context_from="self",
+    name="Agent Tooling Scout",
+)
+```
+
+The first run has no previous output, so the prompt runs as-is. On later runs the previous output is prepended with continuity framing ("avoid repeating what was already reported"). You can combine it with upstream jobs: `context_from=["self", "<other_job_id>"]`.
 
 **When to use it:**
 
 - Multi-stage pipelines (collect → filter → format → deliver)
 - Dependent tasks where step N's work depends on step N−1's output
 - Fan-out/fan-in patterns where one job aggregates results from several others
+- Recurring scouts/monitors that should dedupe against their own previous report (`context_from="self"`)
 
 ## Provider recovery
 

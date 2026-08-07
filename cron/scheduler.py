@@ -3550,6 +3550,16 @@ def _build_job_prompt(
         if isinstance(context_from, str):
             context_from = [context_from]
         for source_job_id in context_from:
+            # "self" resolves to the job's own id: the job wakes up with its
+            # most recent output injected, giving recurring jobs continuity
+            # across runs (dedupe against what was already reported, continue
+            # where the last run left off) without touching session history.
+            is_self = False
+            if isinstance(source_job_id, str) and source_job_id.strip().lower() == "self":
+                source_job_id = str(job.get("id") or "")
+                is_self = True
+            elif source_job_id == job.get("id"):
+                is_self = True
             # Guard against path traversal — valid job IDs are 12-char hex strings
             if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
                 logger.warning(
@@ -3577,13 +3587,24 @@ def _build_job_prompt(
                 if len(latest_output) > _MAX_CONTEXT_CHARS:
                     latest_output = latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]"
                 if latest_output:
-                    prompt = (
-                        f"## Output from job '{source_job_id}'\n"
-                        "The following is the most recent output from a preceding "
-                        "cron job. Use it as context for your analysis.\n\n"
-                        f"```\n{latest_output}\n```\n\n"
-                        f"{prompt}"
-                    )
+                    if is_self:
+                        prompt = (
+                            "## Your previous run's output\n"
+                            "The following is this job's most recent output from its "
+                            "previous run. Use it for continuity: avoid repeating what "
+                            "was already reported, and continue where the last run "
+                            "left off.\n\n"
+                            f"```\n{latest_output}\n```\n\n"
+                            f"{prompt}"
+                        )
+                    else:
+                        prompt = (
+                            f"## Output from job '{source_job_id}'\n"
+                            "The following is the most recent output from a preceding "
+                            "cron job. Use it as context for your analysis.\n\n"
+                            f"```\n{latest_output}\n```\n\n"
+                            f"{prompt}"
+                        )
                     has_injected_data = True
                 else:
                     continue  # silent skip — empty output

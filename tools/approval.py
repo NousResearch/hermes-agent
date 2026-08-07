@@ -950,6 +950,14 @@ DANGEROUS_PATTERNS = [
     # into a single -X token. Catches the same threat class.
     (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b',
      "sudo with combined-flag privilege escalation"),
+    # Filesystem mount manipulation — an agent running inside a container or
+    # sandbox can attempt to remount read-only protections as writable, or
+    # unmount them entirely, to escape filesystem-level containment. Same
+    # threat class as the sudo / self-termination guards above.
+    (r'\bumount\b', "unmount filesystem"),
+    (r'\bmount\b[^;|&\n]*?\s+-o\b[^;|&\n]*?\brw\b', "remount filesystem writable"),
+    (r'\bmount\b[^;|&\n]*?\bremount\b', "remount filesystem"),
+    (r'\bmount\b[^;|&\n]*?\s+--bind\b', "bind mount"),
 ]
 
 

@@ -163,6 +163,31 @@ def _(rid, params: dict) -> dict:
             except (TypeError, ValueError):
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
+            # An ordinal alone is not consent. A client that carries a leftover
+            # ordinal into an ORDINARY submit sends a request that is
+            # indistinguishable, field by field, from a real rewind — same
+            # method, same shape, an in-range target — and the cut it asks for
+            # is a destructive replace_messages() the user never requested
+            # (#80763: 296 -> 52 messages, 244 durable rows gone). Only the
+            # client knows whether this submit is a rewind/edit/regenerate, so
+            # it has to say so; refuse the cut when it doesn't.
+            if not is_truthy_value(params.get("confirm_truncate")):
+                logger.warning(
+                    "prompt.submit: REFUSED unconfirmed truncation of session %s "
+                    "(%d messages held; ordinal=%d). The client attached "
+                    "truncate_before_user_ordinal without confirm_truncate — "
+                    "likely a stale ordinal on an ordinary submit.",
+                    sid,
+                    len(history),
+                    ordinal,
+                )
+                return _err(
+                    rid,
+                    4029,
+                    "truncate_before_user_ordinal requires confirm_truncate=true; "
+                    "an ordinary prompt.submit must not drop session history "
+                    "(update your Hermes client if a rewind was intended)",
+                )
             user_indices = [
                 i for i, m in enumerate(history)
                 if m.get("role") == "user" and not m.get("display_kind")
@@ -175,12 +200,11 @@ def _(rid, params: dict) -> dict:
             if ordinal < 0 or ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
-            # Stale clients can attach truncate_before_user_ordinal=0 to an
-            # ordinary submit. That resolves to history[:0] == [] and
-            # replace_messages() DELETEs every durable row — silent total
-            # transcript loss. Refuse the empty-truncation edge unless the
-            # client explicitly opts in (legitimate restore/regenerate of the
-            # first user turn).
+            # Second gate, on top of confirm_truncate: ordinal 0 resolves to
+            # history[:0] == [] and replace_messages() DELETEs every durable
+            # row. A confirmed rewind that happens to erase the whole
+            # transcript still needs its own opt-in (legitimate restore/
+            # regenerate of the first user turn).
             if (
                 not truncated
                 and history

@@ -26,10 +26,12 @@ import {
 type RequestGateway = <T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
 /**
- * Build `prompt.submit` truncation params. Ordinal 0 truncates to an empty
- * transcript (restore/regenerate the first user turn) — the gateway refuses
- * that edge unless `confirm_empty_truncate` is set, so stale clients cannot
- * silently wipe a session via a leftover ordinal.
+ * Build `prompt.submit` truncation params. `confirm_truncate` states that this
+ * submit really is a rewind/edit/regenerate: the gateway drops history only for
+ * a submit that says so, so a leftover ordinal riding along on an ordinary send
+ * cannot delete the transcript. Ordinal 0 additionally truncates to an empty
+ * transcript (restore/regenerate the first user turn), which the gateway gates
+ * behind `confirm_empty_truncate` on top of that.
  */
 export function truncateSubmitParams(truncateOrdinal: number | undefined): Record<string, unknown> {
   if (truncateOrdinal === undefined) {
@@ -37,6 +39,7 @@ export function truncateSubmitParams(truncateOrdinal: number | undefined): Recor
   }
 
   return {
+    confirm_truncate: true,
     truncate_before_user_ordinal: truncateOrdinal,
     ...(truncateOrdinal === 0 ? { confirm_empty_truncate: true } : {})
   }

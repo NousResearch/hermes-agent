@@ -2248,6 +2248,7 @@ describe('usePromptActions restoreToMessage', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
+        confirm_truncate: true,
         truncate_before_user_ordinal: 0,
         confirm_empty_truncate: true
       },
@@ -2316,6 +2317,7 @@ describe('usePromptActions restoreToMessage', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
+        confirm_truncate: true,
         truncate_before_user_ordinal: 0,
         confirm_empty_truncate: true
       },
@@ -2362,6 +2364,7 @@ describe('usePromptActions restoreToMessage', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
+        confirm_truncate: true,
         truncate_before_user_ordinal: 0,
         confirm_empty_truncate: true
       },

@@ -1992,6 +1992,7 @@ def run_kanban_goal_loop(
     max_turns: int = DEFAULT_MAX_TURNS,
     first_response: str = "",
     log=None,
+    sleep_fn=time.sleep,
 ) -> Dict[str, Any]:
     """Drive a kanban worker through a Ralph-style goal loop.
 
@@ -2057,11 +2058,27 @@ def run_kanban_goal_loop(
             return {"outcome": "stopped", "turns_used": turns_used, "reason": f"status={status}"}
 
         # Still open — judge whether the latest response satisfies the card.
-        # The kanban worker loop has no wait-barrier concept (workers finish
-        # via kanban_complete / kanban_block, not by parking), so a WAIT
-        # verdict is treated as CONTINUE here.
         verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
         if verdict == "wait":
+            # A seconds-based WAIT commonly follows a provider rate limit or
+            # another time-bounded external dependency. Honour it before the
+            # next worker turn instead of immediately replaying the same API
+            # call and exhausting the card's turn budget.  The injected
+            # sleeper keeps this branch deterministic in tests. PID waits are
+            # left to the normal continuation path because kanban workers do
+            # not share the interactive goal loop's process wait barrier.
+            wait_seconds = _wait.get("seconds") if isinstance(_wait, dict) else None
+            if (
+                isinstance(wait_seconds, (int, float))
+                and wait_seconds > 0
+                and turns_used < max_turns
+            ):
+                wait_seconds = min(float(wait_seconds), 3600.0)
+                _log(
+                    f"kanban goal loop: task {task_id} waiting "
+                    f"{wait_seconds:g}s before retry"
+                )
+                sleep_fn(wait_seconds)
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
 

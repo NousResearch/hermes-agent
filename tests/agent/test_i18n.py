@@ -75,6 +75,19 @@ def test_catalog_placeholders_match_english(lang: str):
 # ---------------------------------------------------------------------------
 
 
+def test_normalize_lang_accepts_arabic_aliases():
+    """Pin Arabic aliases so a silent alias regression cannot pass.
+
+    Broader multi-locale alias coverage was pruned upstream; keep the Arabic
+    pins that this follow-up PR introduced for ar registration.
+    """
+    assert i18n._normalize_lang("arabic") == "ar"
+    assert i18n._normalize_lang("العربية") == "ar"
+    assert i18n._normalize_lang("ar-SA") == "ar"
+    assert i18n._normalize_lang("ar-EG") == "ar"
+
+
+
 
 
 
@@ -96,6 +109,12 @@ def test_default_when_nothing_set(monkeypatch):
 # ---------------------------------------------------------------------------
 # t() semantics
 # ---------------------------------------------------------------------------
+
+
+def test_t_arabic_catalog_lookup():
+    """Pin Arabic catalog lookup for a stable key used across surfaces."""
+    assert i18n.t("approval.denied", lang="ar").endswith("مرفوض")
+
 
 
 

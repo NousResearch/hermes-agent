@@ -890,7 +890,7 @@ export default function PluginsPage() {
                   {!m.tab?.hidden ? (
 
 
-                    <Link className="ml-3 inline-flex items-center gap-1 underline" to={m.tab.path}>
+                    <Link className="ms-3 inline-flex items-center gap-1 underline" to={m.tab.path}>
 
 
                       <ExternalLink className="h-3 w-3 opacity-65" />

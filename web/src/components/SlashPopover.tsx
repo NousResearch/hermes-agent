@@ -158,7 +158,7 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
               </span>
 
               {it.meta && (
-                <span className="text-xs text-text-tertiary truncate ml-auto">
+                <span className="text-xs text-text-tertiary truncate ms-auto">
                   {it.meta}
                 </span>
               )}

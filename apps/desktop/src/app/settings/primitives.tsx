@@ -46,7 +46,7 @@ export function SectionHeading({
       <Icon className="size-4 shrink-0 text-muted-foreground" />
       <span>{title}</span>
       {meta && <Pill>{meta}</Pill>}
-      {aside && <div className="ml-auto flex min-w-0 items-center">{aside}</div>}
+      {aside && <div className="ms-auto flex min-w-0 items-center">{aside}</div>}
     </div>
   )
 }
@@ -89,7 +89,7 @@ export function NavLink({
   return (
     <Button
       className={cn(
-        'flex min-h-7 w-full justify-start gap-2 rounded-md px-2 text-left text-[length:var(--conversation-text-font-size)] transition',
+        'flex min-h-7 w-full justify-start gap-2 rounded-md px-2 text-start text-[length:var(--conversation-text-font-size)] transition',
         active
           ? 'bg-(--ui-bg-tertiary) text-foreground'
           : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'

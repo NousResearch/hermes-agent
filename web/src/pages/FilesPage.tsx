@@ -332,7 +332,7 @@ export default function FilesPage() {
         onDrop={handleDrop}
         disabled={!canUpload}
         aria-label="Upload files"
-        className={`flex min-h-20 w-full min-w-0 items-center justify-between gap-4 border border-dashed px-4 py-3 text-left transition ${
+        className={`flex min-h-20 w-full min-w-0 items-center justify-between gap-4 border border-dashed px-4 py-3 text-start transition ${
           draggingFiles
             ? "border-primary bg-primary/10 text-foreground"
             : "border-border bg-background/20 text-text-secondary hover:border-text-tertiary hover:bg-background/35"
@@ -368,14 +368,14 @@ export default function FilesPage() {
             <span>Name</span>
             <span>Size</span>
             <span>Modified</span>
-            <span className="text-right">Actions</span>
+            <span className="text-end">Actions</span>
           </div>
 
           {listing?.parent && (
             <button
               type="button"
               onClick={() => setCurrentPath(listing.parent ?? undefined)}
-              className="grid w-full min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border/60 px-4 py-2 text-left text-sm transition hover:bg-background/40"
+              className="grid w-full min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border/60 px-4 py-2 text-start text-sm transition hover:bg-background/40"
             >
               <span className="flex min-w-0 items-center gap-2 font-mono text-text-secondary">
                 <ArrowUp className="h-4 w-4 shrink-0 text-text-tertiary" />
@@ -403,7 +403,7 @@ export default function FilesPage() {
                 <button
                   type="button"
                   onClick={() => (entry.is_directory ? openDirectory(entry) : void downloadFile(entry))}
-                  className="flex min-w-0 items-center gap-2 text-left font-mono text-foreground"
+                  className="flex min-w-0 items-center gap-2 text-start font-mono text-foreground"
                 >
                   {entry.is_directory ? (
                     <Folder className="h-4 w-4 shrink-0 text-warning" />

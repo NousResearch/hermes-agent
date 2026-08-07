@@ -64,7 +64,7 @@ gateway:
     session_only_hint:      "_(هذه الجلسة فقط — أضف `--global` للحفظ الدائم)_"
     current_label:          "الحالي: `{model}` على {provider}"
     current_tag:            " (الحالي)"
-    more_models_suffix:     " (+{count} آخر)"
+    more_models_suffix:     " (+{count} أخرى)"
     usage_switch_model:     "`/model <name>` — تبديل النموذج"
     usage_switch_provider:  "`/model <name> --provider <slug>` — تبديل المزوّد"
     usage_persist:          "`/model <name> --global` — حفظ دائم"
@@ -73,7 +73,7 @@ gateway:
     header:                "🤖 **الوكلاء والمهام النشطة**"
     active_agents:         "**الوكلاء النشطون:** {count}"
     this_chat:             " · هذه المحادثة"
-    more:                  "... و{count} آخر"
+    more:                  "... و{count} آخرون"
     running_processes:     "**العمليات الخلفية الجارية:** {count}"
     async_jobs:            "**مهام البوابة غير المتزامنة:** {count}"
     background_delegations: "**التفويضات في الخلفية:** {count}"
@@ -84,11 +84,11 @@ gateway:
   approve:
     no_pending:            "لا يوجد أمر معلّق للموافقة عليه."
     once_singular:         "✅ تمت الموافقة على الأمر. الوكيل يستأنف..."
-    once_plural:           "✅ تمت الموافقة على الأوامر ({count} أوامر). الوكيل يستأنف..."
+    once_plural:           "✅ تمت الموافقة على الأوامر ({count}). الوكيل يستأنف..."
     session_singular:      "✅ تمت الموافقة على الأمر (النمط مُوافق عليه لهذه الجلسة). الوكيل يستأنف..."
-    session_plural:        "✅ تمت الموافقة على الأوامر (النمط مُوافق عليه لهذه الجلسة) ({count} أوامر). الوكيل يستأنف..."
+    session_plural:        "✅ تمت الموافقة على الأوامر (النمط مُوافق عليه لهذه الجلسة) ({count}). الوكيل يستأنف..."
     always_singular:       "✅ تمت الموافقة على الأمر (النمط مُوافق عليه دائمًا). الوكيل يستأنف..."
-    always_plural:         "✅ تمت الموافقة على الأوامر (النمط مُوافق عليه دائمًا) ({count} أوامر). الوكيل يستأنف..."
+    always_plural:         "✅ تمت الموافقة على الأوامر (النمط مُوافق عليه دائمًا) ({count}). الوكيل يستأنف..."
 
   background:
     usage:                 "الاستخدام: /background <prompt>\nمثال: /background لخّص أهم قصص HN اليوم\n\nيشغّل الموجِّه في جلسة منفصلة. يمكنك متابعة المحادثة — ستظهر النتيجة هنا عند الانتهاء."
@@ -100,7 +100,7 @@ gateway:
     create_failed:         "فشل إنشاء الفرع: {error}"
     switch_failed:         "أُنشئ الفرع لكن تعذّر التبديل إليه."
     branched_one:          "⑂ تم التفريع إلى **{title}** (نُسخت {count} رسالة)\nالأصل: `{parent}`\nالفرع: `{new}`\nاستخدم `/resume` للعودة إلى الأصل."
-    branched_many:         "⑂ تم التفريع إلى **{title}** (نُسخت {count} رسالة)\nالأصل: `{parent}`\nالفرع: `{new}`\nاستخدم `/resume` للعودة إلى الأصل."
+    branched_many:         "⑂ تم التفريع إلى **{title}** (نُسخت {count} من الرسائل)\nالأصل: `{parent}`\nالفرع: `{new}`\nاستخدم `/resume` للعودة إلى الأصل."
 
   commands:
     usage:                 "الاستخدام: `/commands [page]`"
@@ -134,9 +134,9 @@ gateway:
     stale:                 "❌ رُفض الأمر (الموافقة كانت قديمة)."
     no_pending:            "لا يوجد أمر معلّق لرفضه."
     denied_singular:       "❌ رُفض الأمر."
-    denied_plural:         "❌ رُفضت الأوامر ({count} أوامر)."
+    denied_plural:         "❌ رُفضت الأوامر ({count})."
     denied_reason_singular: "❌ رُفض الأمر. السبب المُبلّغ للوكيل: \"{reason}\""
-    denied_reason_plural:  "❌ رُفضت الأوامر ({count} أوامر). السبب المُبلّغ للوكيل: \"{reason}\""
+    denied_reason_plural:  "❌ رُفضت الأوامر ({count}). السبب المُبلّغ للوكيل: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast متاح فقط لنماذج OpenAI التي تدعم المعالجة ذات الأولوية."
@@ -172,7 +172,7 @@ gateway:
   help:
     header:                "📖 **أوامر Hermes**\n"
     skill_header:          "\n⚡ **أوامر المهارات** ({count} نشطة):"
-    more_use_commands:     "\n... و{count} آخر. استخدم `/commands` للقائمة الكاملة المُقسّمة إلى صفحات."
+    more_use_commands:     "\n... و{count} أخرى. استخدم `/commands` للقائمة الكاملة المُقسّمة إلى صفحات."
 
   insights:
     invalid_days:          "قيمة --days غير صالحة: {value}"
@@ -185,8 +185,8 @@ gateway:
     no_output:             "(لا يوجد خرج)"
     wake:
       completed:           "اكتملت"
-      gave_up:             "استسلم (نفدت المحاولات)"
-      crashed:             "تعطّل (خرج العامل)؛ سيعيد المُوزّع المحاولة"
+      gave_up:             "استسلمت (نفدت المحاولات)"
+      crashed:             "تعطّلت (خرج العامل)؛ سيعيد المُوزّع المحاولة"
       timed_out:           "انتهت المهلة؛ سيعيد المُوزّع المحاولة"
       blocked:             "محجوبة؛ تحتاج إلى انتباه"
       status_default:      "تغيّرت الحالة"
@@ -236,8 +236,8 @@ gateway:
     confirm_prompt:        "⚠️ **تأكيد /reload-mcp**\n\nإعادة تحميل خوادم MCP تعيد بناء مجموعة الأدوات لهذه الجلسة و**تُبطل التخزين المؤقت لموجِّه المزوّد** — ستُعاد الرسالة التالية بكامل رموز الإدخال.  على النماذج ذات السياق الطويل أو التفكير العالي قد يكون ذلك مكلفًا.\n\nاختر:\n• **الموافقة مرة** — أعِد التحميل الآن\n• **الموافقة دائمًا** — أعِد التحميل الآن واكتم هذا التنبيه نهائيًا\n• **إلغاء** — اترك أدوات MCP دون تغيير\n\n_بديل نصي: رُدّ بـ `/approve` أو `/always` أو `/cancel`._"
     header:                "🔄 **أُعيد تحميل خوادم MCP**\n"
     reconnected:           "♻️ أُعيد الاتصال: {names}"
-    added:                 "➕ أُضيف: {names}"
-    removed:               "➖ أُزيل: {names}"
+    added:                 "➕ أُضيفت: {names}"
+    removed:               "➖ أُزيلت: {names}"
     none_connected:        "لا توجد خوادم MCP متصلة."
     tools_available:       "\n🔧 {tools} أداة متاحة من {servers} خادم"
     failed:                "❌ فشلت إعادة تحميل MCP: {error}"
@@ -286,7 +286,7 @@ gateway:
     already_on:            "📌 أنت بالفعل على الجلسة **{name}**."
     switch_failed:         "فشل تبديل الجلسة."
     resumed_one:           "↻ استُؤنفت الجلسة **{title}** ({count} رسالة). استُعيدت المحادثة."
-    resumed_many:          "↻ استُؤنفت الجلسة **{title}** ({count} رسالة). استُعيدت المحادثة."
+    resumed_many:          "↻ استُؤنفت الجلسة **{title}** ({count} من الرسائل). استُعيدت المحادثة."
     resumed_no_count:      "↻ استُؤنفت الجلسة **{title}**. استُعيدت المحادثة."
 
   retry:
@@ -359,7 +359,7 @@ gateway:
 
   undo:
     nothing:               "لا شيء للتراجع عنه."
-    removed:               "↩️ تم التراجع عن {turns} دور ({count} رسالة).\nنُسخ احتياطيًا إلى: \"{preview}\"\nانسخ/عدّل النص أعلاه وأرسله لإعادة التوجيه من هنا."
+    removed:               "↩️ تم التراجع عن {turns} دور ({count} رسالة).\nنُسخ احتياطيًا إلى: \"{preview}\"\nانسخ/عدّل النص أعلاه وأرسله لإعادة الطلب من هنا."
     invalid_count:         "عدد غير صالح \"{arg}\" — استخدم /undo أو /undo N."
 
   update:
@@ -402,7 +402,7 @@ gateway:
     reset_wrong_provider:     "إعادة تعيين الاستخدام المُدّخر متاحة فقط على مزوّد openai-codex. بدّل عبر `/model` أولًا."
 
   credits:
-    not_logged_in:            "لم تُسجّل الدخول إلى Nous Portal. سجّل الدخول لرؤية رصيد أرصدتك وإعادة الشحن."
+    not_logged_in:            "لم تُسجّل الدخول إلى Nous Portal. سجّل الدخول لرؤية رصيدك وإعادة الشحن."
 
   verbose:
     not_enabled:           "الأمر `/verbose` غير مُفعّل لمنصّات المراسلة.\n\nفعّله في `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"

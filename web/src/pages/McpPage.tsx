@@ -359,7 +359,7 @@ export default function McpPage() {
               ghost
               size="icon"
               onClick={closeCreateModal}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
               aria-label="Close"
             >
               <X />
@@ -525,7 +525,7 @@ export default function McpPage() {
               ghost
               size="icon"
               onClick={() => setInstallEntry(null)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
               aria-label="Close"
             >
               <X />
@@ -845,7 +845,7 @@ export default function McpPage() {
                       <summary className="cursor-pointer select-none">
                         Bootstrap commands ({entry.bootstrap.length})
                       </summary>
-                      <ul className="mt-1 ml-3 list-disc space-y-0.5">
+                      <ul className="mt-1 ms-3 list-disc space-y-0.5">
                         {entry.bootstrap.map((cmd, i) => (
                           <li
                             key={`${entry.name}-bs-${i}`}

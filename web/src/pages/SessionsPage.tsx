@@ -225,7 +225,7 @@ function ToolCallBlock({
         <span className="font-mono-ui font-medium">
           {toolCall.function.name}
         </span>
-        <span className="text-warning/50 ml-auto">{toolCall.id}</span>
+        <span className="text-warning/50 ms-auto">{toolCall.id}</span>
       </ListItem>
       {open && (
         <pre className="border-t border-warning/20 px-3 py-2 text-xs text-warning/80 overflow-x-auto whitespace-pre-wrap font-mono">
@@ -452,7 +452,7 @@ function MessageList({
   return (
     <div
       ref={containerRef}
-      className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2"
+      className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pe-2"
     >
       {messages.map((msg, i) => (
         <MessageBubble key={i} msg={msg} highlight={highlight} />
@@ -523,7 +523,7 @@ function SessionRow({
   const actionButtons = (
     <>
       <Badge tone="outline" className="text-xs">
-        <SourceIcon className={`mr-1 h-3 w-3 ${sourceInfo.color}`} />
+        <SourceIcon className={`me-1 h-3 w-3 ${sourceInfo.color}`} />
         {session.source ? sourceLabel(session.source) : "local"}
       </Badge>
 
@@ -693,7 +693,7 @@ function SessionRow({
                 )}
                 {session.is_active && (
                   <Badge tone="success" className="shrink-0 text-xs">
-                    <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                    <span className="me-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                     {t.common.live}
                   </Badge>
                 )}
@@ -1917,21 +1917,21 @@ export default function SessionsPage() {
             {showList && (
               <div className="relative min-w-0 w-full sm:w-auto sm:min-w-[12rem] sm:max-w-md sm:flex-1">
                 {searching ? (
-                  <Spinner className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[0.875rem] text-primary" />
+                  <Spinner className="absolute start-2.5 top-1/2 -translate-y-1/2 text-[0.875rem] text-primary" />
                 ) : (
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 )}
                 <Input
                   placeholder={t.sessions.searchPlaceholder}
                   value={search}
                   onChange={(e) => updateSearch(e.target.value)}
-                  className="h-8 py-0 pr-7 pl-8 text-xs leading-none"
+                  className="h-8 py-0 pe-7 ps-8 text-xs leading-none"
                 />
                 {search && (
                   <Button
                     ghost
                     size="xs"
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    className="absolute end-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                     onClick={() => updateSearch("")}
                     aria-label={t.common.clear}
                   >
@@ -1979,7 +1979,7 @@ export default function SessionsPage() {
           {showPagination && (
             <SessionsPagination
               compact
-              className="shrink-0 sm:ml-auto"
+              className="shrink-0 sm:ms-auto"
               page={page}
               total={total}
               onPageChange={goToPage}
@@ -2031,7 +2031,7 @@ export default function SessionsPage() {
             outlined
             destructive
             size="sm"
-            className="ml-auto"
+            className="ms-auto"
             onClick={() => setDeleteSelectedOpen(true)}
             aria-label={t.sessions.deleteSelected.replace(
               "{count}",
@@ -2161,7 +2161,7 @@ export default function SessionsPage() {
                       tone="outline"
                       className="shrink-0 self-start text-xs sm:self-center"
                     >
-                      <Database className="mr-1 h-3 w-3" />
+                      <Database className="me-1 h-3 w-3" />
                       {s.source ? sourceLabel(s.source) : "local"}
                     </Badge>
                   </div>

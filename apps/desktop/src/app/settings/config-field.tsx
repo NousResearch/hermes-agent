@@ -12,7 +12,7 @@ import type { ConfigFieldSchema } from '@/types/hermes'
 import { ComboboxInput } from './combobox-input'
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, FREE_INPUT_KEYS } from './constants'
 import { FallbackModelsField } from './fallback-models-field'
-import { fieldCopyForSchemaKey } from './field-copy'
+import { fieldCopyForSchemaKey, optionLabelsForSchemaKey } from './field-copy'
 import { ListRow } from './primitives'
 import { SearchableSelect } from './searchable-select'
 
@@ -131,6 +131,12 @@ export function ConfigField({
   }
 
   if (selectOptions) {
+    // Catalog-provided localized labels for this field's option values, keyed
+    // by schema key. Undefined for `en` (English keeps prettyName). Only
+    // stylistic/enum fields are populated per locale; brand/model/provider
+    // values are intentionally absent so they fall through to prettyName.
+    const catalogOptionLabels = optionLabelsForSchemaKey(t.settings.optionLabels, schemaKey)
+
     return row(
       <Select
         onValueChange={next => onChange(next === EMPTY_SELECT_VALUE ? '' : next)}
@@ -143,7 +149,7 @@ export function ConfigField({
           {selectOptions.map(option => (
             <SelectItem key={option || EMPTY_SELECT_VALUE} value={option || EMPTY_SELECT_VALUE}>
               {option
-                ? (optionLabels?.[option] ?? prettyName(option))
+                ? (optionLabels?.[option] ?? catalogOptionLabels?.[option] ?? prettyName(option))
                 : schemaKey === 'display.personality'
                   ? c.none
                   : schemaKey === 'memory.provider'

@@ -1434,8 +1434,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           role="complementary"
           aria-label={modelToolsLabel}
           className={cn(
-            "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
-            "border-l border-current/20 text-midground",
+            "font-mondwest fixed top-0 end-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
+            "border-s border-current/20 text-midground",
             "bg-background-base/95",
             "transition-transform duration-200 ease-out",
             "[background:var(--component-sidebar-background)]",
@@ -1443,7 +1443,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             "[border-image:var(--component-sidebar-border-image)]",
             mobilePanelOpen
               ? "translate-x-0"
-              : "pointer-events-none translate-x-full",
+              : "pointer-events-none translate-x-full rtl:-translate-x-full",
           )}
         >
           <div
@@ -1525,7 +1525,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           />
 
           {showReconnectOverlay && (
-            <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">
+            <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:end-3 sm:justify-end">
               <div className="flex max-w-[min(28rem,calc(100vw-3rem))] flex-col items-start gap-2 border border-warning/60 bg-black/80 px-3 py-2 text-xs text-warning shadow-lg">
                 <div className="tracking-wide">
                   {ptyState === "reconnecting"
@@ -1588,8 +1588,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "bg-black/20",
               "opacity-70 hover:opacity-100 hover:border-current/60",
               "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
+              "bottom-2 end-2 px-2 py-1 text-xs sm:bottom-3 sm:end-3 sm:px-2.5 sm:py-1.5",
+              "lg:bottom-4 lg:end-4",
             )}
             style={{ color: terminalFg }}
           >

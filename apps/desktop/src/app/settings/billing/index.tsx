@@ -7,6 +7,7 @@ import { Progress } from '@/components/ui/progress'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useI18n } from '@/i18n'
 import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -54,6 +55,15 @@ const BILLING_DEV_FIXTURE_NAMES = import.meta.env.DEV
   : []
 
 type BillingFixtureSelection = 'live' | BillingDevFixtureName
+
+// `summary[].label` is a closed union, so the card labels map onto catalog keys
+// without stringly-typed lookups; an absent catalog section falls through to the
+// English label the deriver already produced.
+const SUMMARY_LABEL_KEYS = {
+  'Auto-refill': 'summaryAutoRefill',
+  Balance: 'summaryBalance',
+  Plan: 'summaryPlan'
+} as const
 
 function SummaryCard({ label, value, tone }: { label: string; tone?: 'muted' | 'primary'; value: string }) {
   return (
@@ -155,6 +165,8 @@ function AccountRow({ billing, row }: { billing?: BillingStateResponse; row: Bil
 }
 
 function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: BillingAccountRowView }) {
+  const { t } = useI18n()
+
   const presets = useMemo(
     () =>
       billing.charge_presets.map((amount, index) => ({
@@ -192,7 +204,7 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
             value={amount}
           />
           <Input
-            aria-label="Custom credit amount"
+            aria-label={t.settings.billing?.customAmount ?? 'Custom credit amount'}
             containerClassName="w-16"
             disabled={controlsDisabled}
             inputMode="decimal"
@@ -211,7 +223,7 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
             value={amount}
           />
           <Button disabled={!canBuy} onClick={startBuy} size="xs" type="button" variant="secondary">
-            Buy
+            {t.settings.billing?.buy ?? 'Buy'}
           </Button>
         </div>
       }
@@ -251,11 +263,16 @@ function BuyCreditsOutcome({
   outcome: ReturnType<typeof useChargeFlow>['outcome']
 }) {
   const stepUp = useStepUpFlow()
+  const { t } = useI18n()
+  const copy = t.settings.billing
+  // Joining title + message inline: English keeps the literal ': ', RTL locales
+  // supply their own colon + spacing through the catalog.
+  const separator = copy?.labelSeparator ?? ': '
 
   if (busy) {
     return (
       <div className="mt-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        Processing… checking settlement
+        {copy?.processing ?? 'Processing… checking settlement'}
       </div>
     )
   }
@@ -265,9 +282,11 @@ function BuyCreditsOutcome({
   }
 
   if (outcome.kind === 'success') {
+    const added = formatMoney(outcome.amountUsd ?? amount)
+
     return (
       <div className="mt-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        {formatMoney(outcome.amountUsd ?? amount)} added. Balance is refreshing.
+        {copy?.creditsAdded(added) ?? `${added} added. Balance is refreshing.`}
       </div>
     )
   }
@@ -276,11 +295,13 @@ function BuyCreditsOutcome({
     return (
       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         <span>
-          {outcome.title}: {outcome.message}
+          {outcome.title}
+          {separator}
+          {outcome.message}
         </span>
         {outcome.portalUrl && (
           <Button onClick={() => onPortal(outcome.portalUrl)} size="sm" type="button" variant="outline">
-            Open portal
+            {copy?.openPortal ?? 'Open portal'}
             <ExternalLink className="size-3.5" />
           </Button>
         )}
@@ -293,17 +314,19 @@ function BuyCreditsOutcome({
   return (
     <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
       <span>
-        {outcome.title}: {outcome.message}
+        {outcome.title}
+        {separator}
+        {outcome.message}
       </span>
       {outcome.action?.type === 'retry' && (
         <Button onClick={onRetry} size="sm" type="button" variant="outline">
-          Retry
+          {copy?.retry ?? 'Retry'}
         </Button>
       )}
       {outcome.action?.type === 'step_up' && <StepUpInlineAction flow={stepUp} />}
       {portalUrl && (
         <Button onClick={() => onPortal(portalUrl)} size="sm" type="button" variant="outline">
-          Open portal
+          {copy?.openPortal ?? 'Open portal'}
           <ExternalLink className="size-3.5" />
         </Button>
       )}
@@ -312,8 +335,10 @@ function BuyCreditsOutcome({
 }
 
 function UsageBar({ bar, fallbackLabel }: { bar?: BillingUsageRowView['bar']; fallbackLabel: string }) {
+  const { t } = useI18n()
+
   const resolvedBar = bar ?? {
-    label: `${fallbackLabel} usage`,
+    label: t.settings.billing?.usageBarLabel(fallbackLabel) ?? `${fallbackLabel} usage`,
     state: 'neutral',
     tone: 'topup',
     value: 0
@@ -353,7 +378,7 @@ function UsageRow({ row }: { row: BillingUsageRowView }) {
         </div>
         <div
           className={cn(
-            'min-w-0 whitespace-nowrap text-[length:var(--conversation-text-font-size)] font-medium tabular-nums @2xl:w-[220px] @2xl:flex-none @2xl:text-right',
+            'min-w-0 whitespace-nowrap text-[length:var(--conversation-text-font-size)] font-medium tabular-nums @2xl:w-[220px] @2xl:flex-none @2xl:text-end',
             row.bar?.state === 'danger' ? 'text-destructive' : 'text-foreground'
           )}
         >
@@ -407,11 +432,13 @@ function BillingHeader({
   fixtureName?: BillingFixtureSelection
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
+  const { t } = useI18n()
+
   return (
     <div className="mb-2.5 flex items-center justify-between gap-3 pt-2 text-[length:var(--conversation-text-font-size)] font-medium">
       <div className="flex min-w-0 items-center gap-2">
         <BarChart3 className="size-4 shrink-0 text-muted-foreground" />
-        <span>Billing</span>
+        <span>{t.settings.billing?.title ?? 'Billing'}</span>
       </div>
       {import.meta.env.DEV && fixtureName && onFixtureChange ? (
         <BillingFixtureSelect onValueChange={onFixtureChange} value={fixtureName} />
@@ -456,6 +483,8 @@ function BillingSettingsContent({
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
   const [subView, setSubView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
+  const { t } = useI18n()
+  const copy = t.settings.billing
 
   // Fixture mode flows through the SAME query path — the simulated api (supplied by
   // BillingApiProvider in the DEV wrapper) backs these fetches — so there is no
@@ -481,6 +510,23 @@ function BillingSettingsContent({
 
   const { paymentRow, refillRow, topupRow } = view
 
+  // The logged-out banner is the only notice whose copy is fixed in the client —
+  // the refusal / no-card banners carry server- or error-derived text — so it is
+  // the one that rides the catalog. `status` names it without threading a flag
+  // back through `deriveBillingView`, which keeps producing the English source
+  // strings that stay the fallback here.
+  const notice =
+    view.notice && view.status === 'logged_out'
+      ? {
+          ...view.notice,
+          action: view.notice.action
+            ? { ...view.notice.action, label: copy?.connectAction ?? view.notice.action.label }
+            : undefined,
+          message: copy?.connectMessage ?? view.notice.message,
+          title: copy?.connectTitle ?? view.notice.title
+        }
+      : view.notice
+
   // The payment method rides in the section header (right-aligned) — the
   // "Payment & credits" title already names it, so a full labelled row would just
   // repeat "Payment method". The stacked rows are the remaining money controls.
@@ -504,18 +550,23 @@ function BillingSettingsContent({
     <SettingsContent>
       <BillingHeader fixtureName={fixtureName} onFixtureChange={onFixtureChange} />
 
-      {view.notice && <NoticeCard notice={view.notice} />}
+      {notice && <NoticeCard notice={notice} />}
 
       <div className="@container mb-6">
         <div className="grid gap-3 @2xl:grid-cols-3">
           {view.summary.map(item => (
-            <SummaryCard key={item.label} label={item.label} tone={item.tone} value={item.value} />
+            <SummaryCard
+              key={item.label}
+              label={copy?.[SUMMARY_LABEL_KEYS[item.label]] ?? item.label}
+              tone={item.tone}
+              value={item.value}
+            />
           ))}
         </div>
       </div>
 
       {view.plan && (
-        <SettingsSection icon={Package} title="Plan">
+        <SettingsSection icon={Package} title={copy?.planSection ?? 'Plan'}>
           <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
         </SettingsSection>
       )}
@@ -524,7 +575,7 @@ function BillingSettingsContent({
         <SettingsSection
           aside={paymentRow ? <PaymentMethodAside row={paymentRow} /> : undefined}
           icon={CreditCard}
-          title="Payment & credits"
+          title={copy?.paymentSection ?? 'Payment & credits'}
         >
           {accountRows.map(row => (
             <AccountRow billing={billing} key={row.id} row={row} />
@@ -533,7 +584,7 @@ function BillingSettingsContent({
       )}
 
       {view.usageRows.length > 0 && (
-        <SettingsSection icon={BarChart3} title="Usage">
+        <SettingsSection icon={BarChart3} title={copy?.usageSection ?? 'Usage'}>
           <div className="@container">
             {view.usageRows.map(row => (
               <UsageRow key={row.id} row={row} />

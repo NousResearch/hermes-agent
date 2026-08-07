@@ -105,7 +105,7 @@ export const OverlayNavItem = memo(function OverlayNavItem({
   return (
     <button
       className={cn(
-        'flex h-7 w-full items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
+        'flex h-7 w-full items-center justify-start gap-2 rounded-md border px-2 text-start text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
         nested
           ? active
             ? 'border-transparent bg-(--chrome-action-hover) font-medium text-foreground'
@@ -161,7 +161,7 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
             {group.gapBefore && <div aria-hidden className="h-2" />}
             <OverlayNavItem active={group.active} icon={group.icon} label={group.label} onClick={group.onSelect} />
             {group.children && group.active && (
-              <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
+              <div className="ms-3.5 flex flex-col gap-0.5 ps-1.5">
                 {group.children.map(child => (
                   <OverlayNavItem
                     active={child.active}
@@ -186,7 +186,7 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
           and the height matches the strip so the trigger lines up with the X. */}
       <div
         className={cn(
-          'pointer-events-none relative z-20 h-[calc(var(--titlebar-height)+0.1875rem)] items-center justify-between gap-2 pl-3 pr-12',
+          'pointer-events-none relative z-20 h-[calc(var(--titlebar-height)+0.1875rem)] items-center justify-between gap-2 ps-3 pe-12',
           BAR_HIDDEN
         )}
       >

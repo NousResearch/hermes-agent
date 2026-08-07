@@ -190,7 +190,7 @@ export function ChatSessionList({
                 "flex-col items-start gap-0.5 rounded px-2 py-1.5",
                 "normal-case tracking-normal",
                 isActive
-                  ? "bg-primary/10 text-foreground border-l-2 border-primary"
+                  ? "bg-primary/10 text-foreground border-s-2 border-primary"
                   : "text-text-secondary hover:bg-midground/5 hover:text-foreground",
               )}
             >

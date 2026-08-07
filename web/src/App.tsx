@@ -574,12 +574,12 @@ export default function App() {
             id="app-sidebar"
             aria-label={t.app.navigation}
             className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
-              "border-r border-current/20",
+              "fixed top-0 start-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
+              "border-e border-current/20",
               "bg-background-base",
               "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
-              mobileOpen ? "translate-x-0" : "-translate-x-full",
-              "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
+              mobileOpen ? "translate-x-0" : "-translate-x-full rtl:translate-x-full",
+              "lg:sticky lg:top-0 lg:translate-x-0 lg:rtl:translate-x-0 lg:shrink-0 lg:overflow-hidden",
               "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
               collapsed && "lg:w-14",
             )}
@@ -909,7 +909,7 @@ function SidebarNavLink({
             {isActive && (
               <span
                 aria-hidden
-                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
+                className="absolute start-0 top-0 bottom-0 w-px bg-midground"
               />
             )}
           </>
@@ -1173,7 +1173,7 @@ function SystemActionButton({
         {busy && (
           <span
             aria-hidden
-            className="absolute left-0 top-0 bottom-0 w-px bg-midground"
+            className="absolute start-0 top-0 bottom-0 w-px bg-midground"
           />
         )}
       </button>
@@ -1262,7 +1262,7 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
   return (
     <div
       className={cn(
-        "hidden lg:flex py-3 pl-[1.625rem] transition-opacity duration-300",
+        "hidden lg:flex py-3 ps-[1.625rem] transition-opacity duration-300",
         collapsed ? "lg:opacity-100" : "lg:opacity-0 lg:h-0 lg:py-0 lg:overflow-hidden",
       )}
       role="status"

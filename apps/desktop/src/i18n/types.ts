@@ -421,6 +421,53 @@ export interface Translations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
+    /**
+     * Localized labels for dynamic select *option values*, keyed by schema key
+     * (fieldCopy camelCase form, e.g. 'agent.imageInputMode') then by the raw
+     * runtime option value:
+     *   optionLabels['approvals.mode']['off'] -> 'معطل'
+     * Optional and locale-additive: `en` omits it entirely (English keeps
+     * rendering prettyName(option) verbatim). Only stylistic/enum fields are
+     * populated per locale; brand/model/provider values are intentionally
+     * absent so they fall through to prettyName and stay literal.
+     */
+    optionLabels?: Record<string, Record<string, string>>
+    /**
+     * Billing page copy (settings → Billing). Optional and locale-additive, the
+     * same contract as `optionLabels`: `en` (and `zh`) omit it entirely and the
+     * page keeps rendering its literal English copy via
+     * `t.settings.billing?.key ?? 'English literal'`, so adopting the page in a
+     * new locale never forces an edit to the full catalogs.
+     */
+    billing?: {
+      /** Page header. */
+      title: string
+      planSection: string
+      paymentSection: string
+      usageSection: string
+      /** Logged-out banner: no Nous account connected yet. */
+      connectTitle: string
+      connectMessage: string
+      connectAction: string
+      /** Summary cards above the sections. */
+      summaryBalance: string
+      summaryPlan: string
+      summaryAutoRefill: string
+      /** Buy-credits row and its outcome line. */
+      buy: string
+      customAmount: string
+      processing: string
+      creditsAdded: (amount: string) => string
+      openPortal: string
+      retry: string
+      /** aria-label for a usage bar the server sent no label for. */
+      usageBarLabel: (name: string) => string
+      /**
+       * Joins an inline title to its message (`title: message`). English keeps
+       * the literal `': '`; RTL locales pick their own colon + spacing.
+       */
+      labelSeparator: string
+    }
     about: {
       heading: string
       version: (value: string) => string

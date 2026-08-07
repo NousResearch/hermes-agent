@@ -721,6 +721,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
+        self._prefetch_join_timeout = 3.0
         # Single-writer model for retain. sync_turn() enqueues; the writer
         # thread drains sequentially. Avoids spawning ad-hoc threads that
         # can race the interpreter shutdown and emit "cannot schedule new
@@ -1075,6 +1076,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
+            {"key": "prefetch_join_timeout", "description": "Maximum seconds the reply path waits for a background prefetch to finish before continuing without injected recall context", "default": 3.0},
             {"key": "retain_tags", "description": "Default tags applied to retained memories (comma-separated)", "default": ""},
             {"key": "observation_scopes", "description": "How observations are scoped during consolidation: 'combined' (default — one pass over all tags), 'per_tag' (one isolated observation per tag), 'all_combinations' (every tag subset — expensive), or a JSON list of tag-lists for explicit custom scopes. Empty uses Hindsight's 'combined' default.", "default": ""},
             {"key": "retain_source", "description": "Metadata source value attached to retained memories", "default": ""},
@@ -1549,6 +1551,9 @@ class HindsightMemoryProvider(MemoryProvider):
 
         prefetch_method = self._config.get("recall_prefetch_method") or self._config.get("prefetch_method", "recall")
         self._prefetch_method = prefetch_method if prefetch_method in {"recall", "reflect"} else "recall"
+        self._prefetch_join_timeout = max(
+            0.0, float(self._config.get("prefetch_join_timeout", 3.0))
+        )
 
         # Bank options
         self._bank_mission = self._config.get("bank_mission", "")
@@ -1716,7 +1721,7 @@ class HindsightMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             logger.debug("Prefetch: waiting for background thread to complete")
-            self._prefetch_thread.join(timeout=3.0)
+            self._prefetch_thread.join(timeout=self._prefetch_join_timeout)
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""

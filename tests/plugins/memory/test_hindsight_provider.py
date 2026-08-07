@@ -495,6 +495,27 @@ class TestPrefetch:
     def test_prefetch_returns_empty_when_no_result(self, provider):
         assert provider.prefetch("test") == ""
 
+    def test_prefetch_join_timeout_is_configurable(self, provider_with_config):
+        import threading
+
+        p = provider_with_config(prefetch_join_timeout=0.05)
+
+        def _slow_prefetch():
+            time.sleep(0.2)
+            with p._prefetch_lock:
+                p._prefetch_result = "late result"
+
+        p._prefetch_thread = threading.Thread(target=_slow_prefetch, daemon=True)
+        p._prefetch_thread.start()
+
+        started = time.monotonic()
+        assert p.prefetch("test") == ""
+        elapsed = time.monotonic() - started
+
+        assert p._prefetch_join_timeout == 0.05
+        assert elapsed < 0.15
+        p._prefetch_thread.join(timeout=1.0)
+
 
     def test_queue_prefetch_skipped_in_tools_mode(self, provider_with_config):
         p = provider_with_config(memory_mode="tools")

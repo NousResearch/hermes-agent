@@ -26,20 +26,29 @@ explicit bounded joins.
 
 from __future__ import annotations
 
+import sys
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures.thread import _worker
 
 __all__ = ["DaemonThreadPoolExecutor"]
+
+# Python 3.14 refactored ThreadPoolExecutor internals:
+#   - Removed _initializer/_initargs instance attributes
+#   - Introduced _create_worker_context() callable (set via prepare_context)
+#   - Changed _worker signature from (ref, queue, initializer, initargs) to (ref, ctx, queue)
+# We detect the version at runtime and adapt accordingly.
+_WORKER_SIG_314 = sys.version_info >= (3, 14)
 
 
 class DaemonThreadPoolExecutor(ThreadPoolExecutor):
     """ThreadPoolExecutor variant whose workers do not block process exit."""
 
     def _adjust_thread_count(self) -> None:
-        # Mirrors CPython's implementation (3.8–3.13) with two changes:
+        # Mirrors CPython's implementation with two changes:
         # daemon=True and no _threads_queues registration.
+        # Supports both Python ≤3.13 (4-arg _worker + _initializer) and
+        # Python ≥3.14 (3-arg _worker + _create_worker_context).
         if self._idle_semaphore.acquire(timeout=0):
             return
 
@@ -49,16 +58,32 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
             thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
-            t = threading.Thread(
-                name=thread_name,
-                target=_worker,
-                args=(
-                    weakref.ref(self, weakref_cb),
-                    self._work_queue,
-                    self._initializer,
-                    self._initargs,
-                ),
-                daemon=True,
-            )
+            if _WORKER_SIG_314:
+                # Python 3.14+: _worker(ref, ctx, queue)
+                from concurrent.futures.thread import _worker
+                t = threading.Thread(
+                    name=thread_name,
+                    target=_worker,
+                    args=(
+                        weakref.ref(self, weakref_cb),
+                        self._create_worker_context(),
+                        self._work_queue,
+                    ),
+                    daemon=True,
+                )
+            else:
+                # Python ≤3.13: _worker(ref, queue, initializer, initargs)
+                from concurrent.futures.thread import _worker
+                t = threading.Thread(
+                    name=thread_name,
+                    target=_worker,
+                    args=(
+                        weakref.ref(self, weakref_cb),
+                        self._work_queue,
+                        self._initializer,
+                        self._initargs,
+                    ),
+                    daemon=True,
+                )
             t.start()
             self._threads.add(t)

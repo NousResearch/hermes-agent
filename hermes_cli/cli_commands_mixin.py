@@ -1109,6 +1109,20 @@ class CLICommandsMixin:
             except Exception:
                 pass
 
+            # Transition the context engine to the resumed session so
+            # external engines flush old-session state and bind to the new
+            # session_id instead of leaking DAG/summary state across /resume.
+            # See #77538.
+            try:
+                self.agent._transition_context_engine_session(
+                    old_session_id=old_session_id,
+                    new_session_id=target_id,
+                    previous_messages=self.conversation_history,
+                    carry_over_context=False,
+                )
+            except Exception:
+                pass
+
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
         from agent.context_compressor import is_user_originated_turn
 
@@ -1319,6 +1333,20 @@ class CLICommandsMixin:
                         reset=False,
                         reason="branch",
                     )
+            except Exception:
+                pass
+
+            # Transition the context engine to the new branch session so
+            # engines flush parent-session state and bind to the branched
+            # session_id. Without this, the new branch inherits stale parent
+            # context/DAG state from the shared compressor instance. See #77538.
+            try:
+                self.agent._transition_context_engine_session(
+                    old_session_id=parent_session_id,
+                    new_session_id=new_session_id,
+                    previous_messages=self.conversation_history,
+                    carry_over_context=False,
+                )
             except Exception:
                 pass
 

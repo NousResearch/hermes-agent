@@ -47,6 +47,7 @@ def test_display_toggles_quoted_false_disables():
         "inline_diffs": "false",
         "turn_summary": "false",
         "spinner_token_flow": "false",
+        "battery": "false",
     }
     cli = _make_cli(display)
     assert cli.compact is False
@@ -58,6 +59,7 @@ def test_display_toggles_quoted_false_disables():
     assert cli._inline_diffs_enabled is False
     assert cli._turn_summary_enabled is False
     assert cli._spinner_token_flow_enabled is False
+    assert cli._battery_visible is False
 
 
 def test_display_toggles_quoted_true_and_defaults():

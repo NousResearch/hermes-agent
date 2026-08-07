@@ -4749,7 +4749,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._status_bar_visible = True
         # Battery read-out in the status bar (toggled via /battery, off by
         # default). Persisted to display.battery so it survives restarts.
-        self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
+        self._battery_visible = is_truthy_value(
+            CLI_CONFIG["display"].get("battery"), default=False
+        )
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that

@@ -12,6 +12,14 @@ credentials, cached system prompt) so it hits the same prefix cache and
 uses the same auth.  It runs with a tool whitelist limited to memory and
 skill management tools; everything else is denied at runtime.
 
+After the review completes, an optional ``post_review_command`` can be
+configured via ``auxiliary.background_review.post_review_command`` in
+config.yaml.  When set, the command is spawned as a non-blocking
+subprocess that receives review results (session ID, actions taken)
+through environment variables.  This lets users extend the review loop
+with custom pipelines (wiki archiving, git-push, notifications)
+without widening the review fork's tool whitelist.
+
 See the ``hermes-agent-dev`` skill (``references/self-improvement-loop.md``)
 for invariants and PR review criteria.
 """
@@ -996,6 +1004,39 @@ def _run_review_in_thread(
                     )
                 except Exception:
                     pass
+
+        # ── Post-review hook ──
+        # If auxiliary.background_review.post_review_command is set, fire
+        # it as a non-blocking subprocess after a successful review so
+        # users can extend the self-improvement loop with custom actions
+        # (wiki archiving, git-push, notifications, etc.) without widening
+        # the review fork's tool whitelist.  The hook receives review
+        # results via environment variables.  Failures are logged but never
+        # crash the review.
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            _cfg = _load_cfg()
+            _aux = _cfg.get("auxiliary", {}) or {}
+            _br = _aux.get("background_review", {}) or {}
+            _hook = _br.get("post_review_command", "") or ""
+            if _hook:
+                _now = __import__("datetime").datetime.now
+                _env = os.environ.copy()
+                _env["HERMES_SESSION_ID"] = agent.session_id or ""
+                _summary_str = " · ".join(dict.fromkeys(actions)) if actions else ""
+                _env["HERMES_REVIEW_HAS_ACTIONS"] = "true" if actions else "false"
+                _env["HERMES_REVIEW_ACTIONS"] = _summary_str
+                _env["HERMES_REVIEW_TIMESTAMP"] = _now().isoformat()
+                import subprocess as _sp
+                _sp.Popen(
+                    _hook,
+                    shell=True,
+                    env=_env,
+                    stdout=_sp.DEVNULL,
+                    stderr=_sp.DEVNULL,
+                )
+        except Exception:
+            pass
 
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)

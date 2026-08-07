@@ -4378,13 +4378,15 @@ def _persist_model_switch(result) -> None:
 
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
+    from agent.agent_runtime_helpers import copy_primary_runtime
+
     return {
         "model": getattr(agent, "model", ""),
         "provider": getattr(agent, "provider", ""),
         "api_key": getattr(agent, "api_key", ""),
         "base_url": getattr(agent, "base_url", ""),
         "api_mode": getattr(agent, "api_mode", ""),
-        "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
+        "primary_runtime": copy_primary_runtime(getattr(agent, "_primary_runtime", None)),
     }
 
 
@@ -4394,8 +4396,10 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
         return
     primary = snapshot.get("primary_runtime")
     if primary and hasattr(agent, "_restore_primary_runtime"):
+        from agent.agent_runtime_helpers import copy_primary_runtime
+
         try:
-            agent._primary_runtime = copy.deepcopy(primary)
+            agent._primary_runtime = copy_primary_runtime(primary)
             agent._fallback_activated = True
             agent._rate_limited_until = 0
             if agent._restore_primary_runtime():

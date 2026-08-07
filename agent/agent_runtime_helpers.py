@@ -1336,9 +1336,22 @@ def try_recover_primary_transport(
             # via _create_openai_client would raise "api_key client option
             # must be set". Recreate the facade through the shared factory so
             # the reference_callback relay survives recovery (#53802).
-            from agent.moa_loop import build_moa_facade
+            # A cross-provider fallback replaces ``agent.client`` with the
+            # fallback's SDK client. The primary snapshot is then the only
+            # surviving reference to the original facade and its callback
+            # relay, so prefer reusing it. Older snapshots lack this key and
+            # remain compatible through the factory fallback.
+            moa_client = rt.get("moa_client")
+            if moa_client is None:
+                from agent.moa_loop import build_moa_facade
 
-            agent.client = build_moa_facade(agent, agent.model)
+                moa_client = build_moa_facade(agent, agent.model)
+            agent.client = moa_client
+            agent._client_kwargs = {}
+            # Keep the snapshot pointing at the live facade so a later
+            # recovery does not resurrect a superseded instance and lose the
+            # reference cache / pending usage accumulated on this one.
+            rt["moa_client"] = moa_client
         else:
             agent.client = agent._create_openai_client(
                 dict(rt["client_kwargs"]),
@@ -1454,6 +1467,27 @@ def drop_thinking_only_and_merge_users(
     )
     return merged
 
+
+
+def copy_primary_runtime(runtime: Any) -> Any:
+    """Copy a ``_primary_runtime`` snapshot without deep-copying live clients.
+
+    ``copy.deepcopy`` is used by the CLI/TUI one-turn model override to keep a
+    restorable snapshot. The MoA facade stored under ``moa_client`` owns a
+    ``threading.Lock``, which ``deepcopy`` cannot pickle, so a plain deepcopy of
+    the snapshot raises ``TypeError`` for MoA sessions. Live client objects must
+    be shared by reference anyway — a copied facade would lose the reference
+    relay and per-turn accounting that make it worth snapshotting.
+    """
+    if not isinstance(runtime, dict):
+        return copy.deepcopy(runtime)
+    live_client = runtime.get("moa_client")
+    if live_client is None:
+        return copy.deepcopy(runtime)
+    shallow = {k: v for k, v in runtime.items() if k != "moa_client"}
+    copied = copy.deepcopy(shallow)
+    copied["moa_client"] = live_client
+    return copied
 
 
 def restore_primary_runtime(agent) -> bool:
@@ -1573,9 +1607,20 @@ def restore_primary_runtime(agent) -> bool:
             # shared factory so the restored facade keeps the reference_callback
             # relay wired at init — a bare MoAClient() would silently stop
             # emitting moa.reference/moa.aggregating display events (#53802).
-            from agent.moa_loop import build_moa_facade
+            # A cross-provider fallback replaces ``agent.client`` with the
+            # fallback's SDK client, leaving the snapshot as the only surviving
+            # reference to the original facade (and its accumulated reference
+            # cache / pending usage / pending trace), so prefer reusing it.
+            # Snapshots taken before this key existed fall back to the factory.
+            moa_client = rt.get("moa_client")
+            if moa_client is None:
+                from agent.moa_loop import build_moa_facade
 
-            agent.client = build_moa_facade(agent, agent.model)
+                moa_client = build_moa_facade(agent, agent.model)
+            agent.client = moa_client
+            # Keep the snapshot pointing at the live facade so a later recovery
+            # cannot resurrect a superseded instance.
+            rt["moa_client"] = moa_client
             agent._anthropic_client = None
         elif agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -2742,6 +2787,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
+        "moa_client": agent.client if agent.provider == "moa" else None,
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
@@ -4056,6 +4102,7 @@ __all__ = [
     "try_recover_primary_transport",
     "drop_thinking_only_and_merge_users",
     "restore_primary_runtime",
+    "copy_primary_runtime",
     "extract_reasoning",
     "dump_api_request_debug",
     "prompt_caching_disabled_from_config",

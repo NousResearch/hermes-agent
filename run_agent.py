@@ -4904,6 +4904,14 @@ class AIAgent:
             )
 
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
+        # MoA uses a local facade rather than an OpenAI SDK client. Its
+        # ``_client_kwargs`` is intentionally empty, so trying to rebuild it via
+        # the SDK raises "api_key client option must be set" and wedges every
+        # subsequent turn. Stale-stream/dead-connection cleanup calls this
+        # method directly, so the guard belongs here at the lifecycle boundary.
+        if getattr(self, "provider", None) == "moa":
+            return True
+
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:
@@ -4927,6 +4935,18 @@ class AIAgent:
         return True
 
     def _ensure_primary_openai_client(self, *, reason: str) -> Any:
+        # Return the MoA facade as-is; it is not an OpenAI SDK client and cannot
+        # be reconstructed from ``_client_kwargs``. A missing facade is an
+        # internal lifecycle regression, not an API-key configuration error.
+        if getattr(self, "provider", None) == "moa":
+            client = getattr(self, "client", None)
+            if client is not None:
+                return client
+            raise RuntimeError(
+                "MoA primary client is None; cannot recreate a MoAClient via "
+                "the OpenAI SDK"
+            )
+
         with self._openai_client_lock():
             client = getattr(self, "client", None)
             if client is not None and not self._is_openai_client_closed(client):

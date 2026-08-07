@@ -347,6 +347,120 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5016, str(e))
 
 
+@method("usage.overview")
+def _(rid, params: dict) -> dict:
+    """Usage + cost overview for the desktop: wraps InsightsEngine output.
+
+    Reuses the engine's existing aggregation (sessions, model breakdown,
+    cost buckets, daily time-series) — the desktop reads the same data
+    `/insights` prints, as JSON. ``days`` defaults to 30, ``source``
+    optionally filters to one platform. Returns the full engine report.
+    """
+    try:
+        from agent.insights import InsightsEngine
+
+        days = int(params.get("days") or 30)
+        if days < 1 or days > 3650:
+            return _err(rid, 5071, "days must be between 1 and 3650")
+        source = params.get("source") or None
+
+        db = _get_db()
+        if db is None:
+            return _err(rid, 5072, "session store unavailable")
+        engine = InsightsEngine(db)
+        report = engine.generate(days=days, source=source)
+        return _ok(rid, report)
+    except Exception as e:
+        return _err(rid, 5070, str(e))
+
+
+@method("security.status")
+def _(rid, params: dict) -> dict:
+    """Live security posture for the desktop Safety & Security panel.
+
+    Reports what the panel needs to render real state instead of static
+    toggles: whether secret redaction is on, the approvals mode, whether
+    checkpoint rollback is enabled, tirith availability/enabled (resolving
+    the download-in-background path without blocking), and a redaction
+    self-test sample so the UI can prove the redactor is actually masking.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        sec = cfg.get("security") if isinstance(cfg.get("security"), dict) else {}
+        approvals = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
+        checkpoints = cfg.get("checkpoints") if isinstance(cfg.get("checkpoints"), dict) else {}
+
+        redact_on = bool(sec.get("redact_secrets", True))
+
+        # tirith availability: ensure_installed() returns the resolved path
+        # immediately if present, else None (background download may be in
+        # flight — report available=False, enabled=config).
+        tirith_available = False
+        tirith_enabled = bool(sec.get("tirith_enabled", True))
+        try:
+            from tools.tirith_security import ensure_installed
+
+            tirith_available = ensure_installed(log_failures=False) is not None
+        except Exception:
+            tirith_available = False
+
+        # Redaction self-test: run the real redactor over a sample string
+        # carrying a fake key; the panel shows input vs masked output.
+        sample_input = "token=sk-ant-test123456789 secret=ok"
+        try:
+            from agent.redact import redact_sensitive_text
+
+            sample_output = redact_sensitive_text(sample_input)
+        except Exception:
+            sample_output = sample_input
+
+        return _ok(rid, {
+            "redact_secrets": redact_on,
+            "approvals_mode": approvals.get("mode", "manual"),
+            "approvals_timeout": approvals.get("timeout"),
+            "mcp_reload_confirm": bool(approvals.get("mcp_reload_confirm", True)),
+            "checkpoints_enabled": bool(checkpoints.get("enabled", False)),
+            "tirith": {
+                "enabled": tirith_enabled,
+                "available": tirith_available,
+            },
+            "redaction_sample": {
+                "input": sample_input,
+                "output": sample_output,
+            },
+        })
+    except Exception as e:
+        return _err(rid, 5080, str(e))
+
+
+@method("security.scan")
+def _(rid, params: dict) -> dict:
+    """Run a tirith pre-exec scan on a command (the panel's interactive test).
+
+    Mirrors what the approval flow does before executing a risky command.
+    Returns the same shape check_command_security produces: action
+    (allow/warn/block), findings list, and a human summary. Empty or
+    whitespace commands are rejected rather than scanned.
+    """
+    try:
+        command = params.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return _err(rid, 5081, "command must be a non-empty string")
+
+        from tools.tirith_security import check_command_security
+
+        result = check_command_security(command)
+        return _ok(rid, {
+            "action": result.get("action", "allow"),
+            "findings": result.get("findings") or [],
+            "summary": result.get("summary") or "",
+        })
+    except Exception as e:
+        return _err(rid, 5082, str(e))
+
+
 @method("setup.runtime_check")
 def _(rid, params: dict) -> dict:
     """Strict provider check: does the configured/default model actually resolve to a usable runtime?

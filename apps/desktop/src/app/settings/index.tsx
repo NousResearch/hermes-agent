@@ -41,6 +41,7 @@ import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { NotificationsSettings } from './notifications-settings'
 import { PluginsSettings } from './plugins-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
+import { SafetySettings } from './safety-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
@@ -307,6 +308,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             <GatewaySettings />
           ) : activeView === 'keybinds' ? (
             <KeybindSettings />
+          ) : activeView === 'config:safety' ? (
+            <SafetySettings />
           ) : activeView.startsWith('config:') ? (
             <ConfigSettings
               activeSectionId={activeView.slice('config:'.length)}

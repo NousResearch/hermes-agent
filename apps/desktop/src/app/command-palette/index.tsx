@@ -96,7 +96,8 @@ import {
   PROFILES_ROUTE,
   SETTINGS_ROUTE,
   SKILLS_ROUTE,
-  STARMAP_ROUTE
+  STARMAP_ROUTE,
+  USAGE_ROUTE
 } from '../routes'
 import { FIELD_LABELS, SECTIONS } from '../settings/constants'
 import { fieldCopyForSchemaKey } from '../settings/field-copy'
@@ -797,6 +798,14 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             id: 'nav-artifacts',
             label: cc.nav.artifacts.title,
             run: go(ARTIFACTS_ROUTE)
+          },
+          {
+            action: 'nav.usage',
+            icon: BarChart3,
+            id: 'nav-usage',
+            keywords: ['usage', 'cost', 'spend', 'tokens', 'billing', 'insights', 'meter'],
+            label: 'Usage',
+            run: go(USAGE_ROUTE)
           },
           {
             action: 'nav.cron',

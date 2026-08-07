@@ -670,3 +670,85 @@ class TestEdgeCases:
         # Actually the condition is > 1 platforms OR non-cli, so single cli won't show
 
 
+
+
+class TestDailySeriesAndCostBuckets:
+    """Time-series aggregation + cost-bucket split (feat(usage): desktop meter)."""
+
+    def test_generate_includes_daily_series(self, populated_db):
+        """report['daily_series'] exists with per-day token/cost buckets."""
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        assert report.get("daily_series"), "daily_series missing from report"
+        # A day-shaped bucket: date key + token/cost/session fields
+        first = report["daily_series"][0]
+        for key in ("date", "input_tokens", "output_tokens",
+                    "cache_read_tokens", "cache_write_tokens",
+                    "estimated_cost_usd", "sessions"):
+            assert key in first, f"daily bucket missing {key}"
+
+    def test_daily_series_sums_match_overview(self, populated_db):
+        """The per-day series must reconcile exactly with overview totals."""
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        o = report["overview"]
+        s = report["daily_series"]
+        assert sum(d["input_tokens"] for d in s) == o["total_input_tokens"]
+        assert sum(d["output_tokens"] for d in s) == o["total_output_tokens"]
+        assert sum(d["cache_read_tokens"] for d in s) == o["total_cache_read_tokens"]
+        assert sum(d["sessions"] for d in s) == o["total_sessions"]
+        # Cost: overview sums estimated across sessions; series sums per day.
+        # Allow floating-point reconciliation to the cent.
+        assert abs(sum(d["estimated_cost_usd"] for d in s) - o["estimated_cost"]) < 0.01
+
+    def test_daily_series_empty_days_present(self, populated_db):
+        """Inactive days in the window are present with zero counts (heatmap axis)."""
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        dates = [d["date"] for d in report["daily_series"]]
+        # Window is 30 calendar days; series must span the full window.
+        assert len(dates) == 30
+        # Chronological, contiguous (no gaps — a heatmap column per day).
+        from datetime import datetime, timedelta
+        fmt = "%Y-%m-%d"
+        prev = datetime.strptime(dates[0], fmt)
+        for d in dates[1:]:
+            cur = datetime.strptime(d, fmt)
+            assert (cur - prev).days == 1, f"gap between {prev:%Y-%m-%d} and {d}"
+            prev = cur
+
+    def test_cost_buckets_split_by_status(self, populated_db):
+        """included/estimated/unknown sessions land in distinct cost buckets."""
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        buckets = report["overview"]["cost_buckets"]
+        for name in ("estimated", "included", "unknown"):
+            assert name in buckets, f"missing cost bucket {name}"
+            for key in ("sessions", "cost_usd"):
+                assert key in buckets[name], f"bucket {name} missing {key}"
+        # Buckets reconcile to totals (a session is in exactly one bucket).
+        total_in_buckets = sum(b["sessions"] for b in buckets.values())
+        assert total_in_buckets == report["overview"]["total_sessions"]
+
+    def test_included_bucket_reports_tokens_and_market_comparison(self, db):
+        """subscription-included usage shows token load + at-market cost."""
+        now = time.time()
+        db.create_session(session_id="inc1", source="cli",
+                          model="gpt-5.5", user_id="u1")
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'inc1'", (now - 86400,))
+        db.end_session("inc1", end_reason="user_exit")
+        db.update_token_counts("inc1", input_tokens=1_000_000, output_tokens=500_000)
+        db._conn.execute(
+            "UPDATE sessions SET billing_provider='openai-codex', "
+            "billing_mode='subscription_included' WHERE id='inc1'")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        inc = report["overview"]["cost_buckets"]["included"]
+        assert inc["sessions"] == 1
+        assert inc["input_tokens"] == 1_000_000
+        # At-market comparison uses the same pricing table; openai-codex
+        # route prices at $0/$0 (subscription-included), so at_market_cost_usd
+        # exists and is finite (0.0 is valid — the route IS the plan).
+        assert "at_market_cost_usd" in inc

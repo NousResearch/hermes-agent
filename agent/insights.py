@@ -21,12 +21,14 @@ import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
     format_duration_compact,
+    get_pricing_entry,
     has_known_pricing,
 )
 
@@ -70,6 +72,37 @@ def _estimate_cost(
         base_url=base_url,
     )
     return float(result.amount_usd or 0.0), result.status
+
+
+def _estimate_at_market_cost(session: Dict[str, Any]) -> float:
+    """List-price cost for a session's token load, ignoring route discounts.
+
+    Used for the ``included`` cost bucket: subscription-included routes
+    (Codex, Copilot, …) price at $0 through ``estimate_usage_cost``, which
+    is honest billing but hides what the same load would cost at published
+    list prices. This re-derives the cost from the raw pricing entry so the
+    comparison stays on the same pricing table the rest of the engine uses.
+    Returns 0.0 when the route has no list-price entry (pure plan pricing).
+    """
+    model = session.get("model") or ""
+    entry = get_pricing_entry(
+        model,
+        provider=session.get("billing_provider"),
+        base_url=session.get("billing_base_url"),
+    )
+    if entry is None:
+        return 0.0
+    one_m = Decimal(1_000_000)
+    amount = Decimal(0)
+    if entry.input_cost_per_million is not None:
+        amount += Decimal(session.get("input_tokens") or 0) * entry.input_cost_per_million / one_m
+    if entry.output_cost_per_million is not None:
+        amount += Decimal(session.get("output_tokens") or 0) * entry.output_cost_per_million / one_m
+    if entry.cache_read_cost_per_million is not None:
+        amount += Decimal(session.get("cache_read_tokens") or 0) * entry.cache_read_cost_per_million / one_m
+    if entry.cache_write_cost_per_million is not None:
+        amount += Decimal(session.get("cache_write_tokens") or 0) * entry.cache_write_cost_per_million / one_m
+    return float(amount)
 
 
 
@@ -171,6 +204,7 @@ class InsightsEngine:
                 },
                 "activity": {},
                 "top_sessions": [],
+                "daily_series": self._compute_daily_series(sessions, days),
             }
 
         # Compute insights
@@ -181,6 +215,7 @@ class InsightsEngine:
         skills = self._compute_skill_breakdown(skill_usage)
         activity = self._compute_activity_patterns(sessions)
         top_sessions = self._compute_top_sessions(sessions)
+        daily_series = self._compute_daily_series(sessions, days)
 
         return {
             "days": days,
@@ -194,6 +229,7 @@ class InsightsEngine:
             "skills": skills,
             "activity": activity,
             "top_sessions": top_sessions,
+            "daily_series": daily_series,
         }
 
     def get_usage_breakdown(self, days: int = 30, source: str = None) -> Dict[str, Any]:
@@ -492,11 +528,33 @@ class InsightsEngine:
         models_without_pricing = set()
         unknown_cost_sessions = 0
         included_cost_sessions = 0
+        cost_buckets = {
+            "estimated": {"sessions": 0, "cost_usd": 0.0,
+                          "input_tokens": 0, "output_tokens": 0},
+            "included": {"sessions": 0, "cost_usd": 0.0,
+                         "input_tokens": 0, "output_tokens": 0,
+                         "at_market_cost_usd": 0.0},
+            "unknown": {"sessions": 0, "cost_usd": 0.0,
+                        "input_tokens": 0, "output_tokens": 0},
+        }
         for s in sessions:
             model = s.get("model") or ""
             estimated, status = _estimate_cost(s)
             total_cost += estimated
             actual_cost += s.get("actual_cost_usd") or 0.0
+            bucket = cost_buckets.get(status)
+            if bucket is not None:
+                bucket["sessions"] += 1
+                bucket["cost_usd"] += estimated
+                bucket["input_tokens"] += s.get("input_tokens") or 0
+                bucket["output_tokens"] += s.get("output_tokens") or 0
+                if status == "included":
+                    # What the same token load would cost at list prices,
+                    # using the same pricing table as estimate_usage_cost.
+                    # estimate_usage_cost already returns 0 for
+                    # subscription_included routes; re-derive at market
+                    # rates from the raw pricing entry.
+                    bucket["at_market_cost_usd"] += _estimate_at_market_cost(s)
             display = model.split("/")[-1] if "/" in model else (model or "unknown")
             if status == "included":
                 included_cost_sessions += 1
@@ -562,6 +620,7 @@ class InsightsEngine:
             "models_without_pricing": sorted(models_without_pricing),
             "unknown_cost_sessions": unknown_cost_sessions,
             "included_cost_sessions": included_cost_sessions,
+            "cost_buckets": cost_buckets,
         }
 
     _GET_MODEL_USAGE_WITH_SOURCE = (
@@ -892,6 +951,53 @@ class InsightsEngine:
             "active_days": active_days,
             "max_streak": max_streak,
         }
+
+    def _compute_daily_series(self, sessions: List[Dict], days: int) -> List[Dict]:
+        """Aggregate sessions into per-calendar-day token/cost buckets.
+
+        Returns exactly ``days`` entries — one per calendar day ending today,
+        oldest first — with zero-filled inactive days so the series forms a
+        continuous axis for charting (heatmap columns, cumulative spend
+        lines) instead of a sparse point list. Token/cost fields reconcile
+        exactly with the overview totals: each session is bucketed into the
+        calendar day of its ``started_at``.
+        """
+        from datetime import datetime, timedelta
+
+        # Seed the full window with zero buckets (oldest → today).
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        series = []
+        for offset in range(days - 1, -1, -1):
+            day = today - timedelta(days=offset)
+            series.append({
+                "date": day.strftime("%Y-%m-%d"),
+                "sessions": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "estimated_cost_usd": 0.0,
+            })
+        by_date = {row["date"]: row for row in series}
+
+        for s in sessions:
+            ts = s.get("started_at")
+            if not ts:
+                continue
+            date_key = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+            row = by_date.get(date_key)
+            if row is None:
+                # Outside the window (clock skew / boundary); skip.
+                continue
+            row["sessions"] += 1
+            row["input_tokens"] += s.get("input_tokens") or 0
+            row["output_tokens"] += s.get("output_tokens") or 0
+            row["cache_read_tokens"] += s.get("cache_read_tokens") or 0
+            row["cache_write_tokens"] += s.get("cache_write_tokens") or 0
+            estimated, _status = _estimate_cost(s)
+            row["estimated_cost_usd"] += estimated
+
+        return series
 
     def _compute_top_sessions(self, sessions: List[Dict]) -> List[Dict]:
         """Find notable sessions (longest, most messages, most tokens)."""

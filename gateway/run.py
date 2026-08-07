@@ -786,6 +786,57 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
+def _resolve_approval_session_is_guest(status_adapter: Any, status_chat_id: Any) -> bool:
+    """Return whether *status_chat_id* is currently a guest-mode (non-member)
+    chat, per *status_adapter*'s own ``_is_guest_chat`` predicate.
+
+    A no-op (always False) until an adapter defines ``_is_guest_chat`` --
+    today none does; the Telegram Bot API 10.0 guest-mode work (see
+    plugins/platforms/telegram/adapter.py's ``_pending_guest_queries`` /
+    ``_guest_only_chats``) supplies the real predicate. Extracted to its own
+    function so this wiring is testable against that concrete adapter
+    contract independent of driving a full gateway turn.
+    """
+    is_guest_chat_fn = getattr(status_adapter, "_is_guest_chat", None)
+    return bool(callable(is_guest_chat_fn) and is_guest_chat_fn(status_chat_id))
+
+
+def _resolve_approval_session_is_non_admin(source: Any, base_config: Any) -> bool:
+    """Return whether *source*'s user is a non-admin (tier-restricted) caller
+    per the SAME ``slash_access.policy_for_source().is_admin()`` that gates
+    admin-only typed slash commands.
+
+    ``base_config`` is the caller's ``GatewayRunner.config`` (the PRIMARY
+    profile's config). For a non-multiplexed gateway that's already correct
+    -- there's only one profile, so it's used directly with zero extra cost
+    (no disk I/O on the turn-dispatch hot path, matching original behavior
+    and every test's existing mocking of ``self.config``).
+
+    Only when ``base_config.multiplex_profiles`` is set does this pay for a
+    fresh ``gateway.config.load_gateway_config()`` call: this function runs
+    from ``_run_agent_inner``, which for a multiplexed secondary-profile turn
+    already executes inside that profile's ``_profile_runtime_scope`` (set up
+    by the ``_run_agent`` wrapper) -- so ``HERMES_HOME`` is contextvar-
+    overridden to the secondary profile's home by the time this executes, and
+    ``base_config`` would still be the PRIMARY profile's parsed config
+    (loaded once at startup), silently applying the wrong profile's
+    ``allow_admin_from`` tier. This mirrors ``_connect_profile_platforms``'s
+    own ``with _profile_runtime_scope(profile_home): load_gateway_config()``
+    -- multiplex-only cost, same as that existing call site.
+    """
+    try:
+        from gateway.slash_access import policy_for_source
+
+        gateway_config = base_config
+        if getattr(base_config, "multiplex_profiles", False):
+            from gateway.config import load_gateway_config
+            gateway_config = load_gateway_config()
+        policy = policy_for_source(gateway_config, source)
+        return bool(policy.enabled and not policy.is_admin(getattr(source, "user_id", None)))
+    except Exception:
+        return False
+
+
 def _resolve_progress_thread_id(
     platform: Any,
     source_thread_id: Any,
@@ -5165,9 +5216,11 @@ class TurnRunner:
         # The callback bridges sync→async to send the approval request
         # to the user immediately.
         from tools.approval import (
+            mark_session_approval_blocked,
             register_gateway_notify,
             reset_current_session_key,
             set_current_session_key,
+            unmark_session_approval_blocked,
             unregister_gateway_notify,
         )
 
@@ -5408,6 +5461,36 @@ class TurnRunner:
         _approval_session_key = ctx.session_key or ""
         _approval_session_token = set_current_session_key(_approval_session_key)
         register_gateway_notify(_approval_session_key, _approval_notify_sync)
+        # Guest-mode Telegram chats (Bot API 10.0 @mention from a chat the
+        # bot isn't a member of) can never present or resolve an
+        # interactive approval prompt -- mark the session so a dangerous
+        # command denies immediately (tools/approval.py's
+        # _await_gateway_decision short-circuit) instead of blocking the
+        # agent thread for the full gateway_timeout on an approval that
+        # can structurally never arrive.
+        _approval_session_is_guest = _resolve_approval_session_is_guest(
+            ctx._status_adapter, ctx._status_chat_id
+        )
+        # Non-admin tier: an authorized-but-non-admin user (the
+        # allow_admin_from slash-access tier) approves nothing -- only the
+        # owner/admin can grant a dangerous-command approval, same trust
+        # level as a group/guest chat. Resolved via the SAME
+        # policy_for_source().is_admin() that gates admin-only slash
+        # commands, so "who is admin" has one definition enforced across
+        # both surfaces. Guest takes precedence (a guest is in a group and
+        # has its own carve-out); the policy is a no-op (is_admin -> True)
+        # until an operator actually sets allow_admin_from, so existing
+        # single-tier installs are unaffected.
+        _approval_session_is_non_admin = (
+            False if _approval_session_is_guest
+            else _resolve_approval_session_is_non_admin(
+                ctx.source, getattr(self._runner, "config", None)
+            )
+        )
+        if _approval_session_is_guest:
+            mark_session_approval_blocked(_approval_session_key, "guest")
+        elif _approval_session_is_non_admin:
+            mark_session_approval_blocked(_approval_session_key, "non_admin")
         try:
             # If _prepare_inbound_message_text buffered image paths for native
             # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -5459,6 +5542,8 @@ class TurnRunner:
             result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
             unregister_gateway_notify(_approval_session_key)
+            if _approval_session_is_guest or _approval_session_is_non_admin:
+                unmark_session_approval_blocked(_approval_session_key)
             # Cancel any pending clarify entries so blocked agent
             # threads don't hang past the end of the run (interrupt,
             # completion, gateway shutdown).  Idempotent.
@@ -11261,8 +11346,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _set_reaction(self._handle_reaction_event)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
+            adapter.set_admin_policy_check(self._make_adapter_admin_policy_check())
             adapter._busy_text_mode = self._busy_text_mode
-            
+
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
             self._update_platform_runtime_status(
@@ -12644,6 +12730,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _set_reaction(self._handle_reaction_event)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
+                    adapter.set_admin_policy_check(self._make_adapter_admin_policy_check())
                     adapter._busy_text_mode = self._busy_text_mode
 
                     # Reconnect after an outage: preserve the platform's
@@ -13572,7 +13659,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # and owns no resources that should be disconnected.
                     continue
 
-            self._configure_profile_adapter(adapter, profile_name, platform)
+            self._configure_profile_adapter(
+                adapter, profile_name, platform, profile_home=profile_home
+            )
 
             try:
                 with _profile_runtime_scope(profile_home):
@@ -13600,6 +13689,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter: BasePlatformAdapter,
         profile_name: str,
         platform: Platform,
+        *,
+        profile_home: Optional["Path"] = None,
     ) -> None:
         """Install the profile-scoped handlers shared by startup and reconnect."""
         adapter.set_message_handler(self._make_profile_message_handler(profile_name))
@@ -13614,6 +13705,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
         adapter.set_authorization_check(
             self._make_adapter_auth_check(platform, profile_name=profile_name)
+        )
+        adapter.set_admin_policy_check(
+            self._make_adapter_admin_policy_check(profile_home=profile_home)
         )
         adapter._busy_text_mode = self._busy_text_mode
 
@@ -13644,7 +13738,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             return
                         self._configure_profile_adapter(
-                            adapter, profile_name, platform
+                            adapter, profile_name, platform, profile_home=profile_home
                         )
                         success = await self._connect_adapter_with_timeout(
                             adapter, platform, is_reconnect=True
@@ -14076,6 +14170,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 profile=profile_name,
             )
             return self._is_user_authorized(source)
+        return check
+
+    def _make_adapter_admin_policy_check(
+        self,
+        profile_home: Optional["Path"] = None,
+    ) -> Callable[[SessionSource], bool]:
+        """Build a profile-bound admin-tier callback for adapter use.
+
+        Registered via :meth:`BasePlatformAdapter.set_admin_policy_check` so
+        gated inline-button actions (Telegram's exec-approval Allow button)
+        resolve ``allow_admin_from`` for the RIGHT profile -- not just the
+        primary one -- without the adapter needing to introspect its own
+        message-handler binding.
+
+        ``profile_home`` is ``None`` for the primary (non-multiplexed)
+        adapter: ``self.config`` is already that profile's config, no scoping
+        needed. For a secondary multiplexed adapter, ``profile_home`` is the
+        Path captured from the same per-profile connection loop that builds
+        the adapter's message handler (``_make_profile_message_handler``) --
+        each adapter instance gets its own closure bound to its own profile,
+        mirroring ``_connect_profile_platforms``'s
+        ``with _profile_runtime_scope(profile_home): load_gateway_config()``.
+        """
+        def check(source: SessionSource) -> bool:
+            from gateway.slash_access import policy_for_source
+            try:
+                if profile_home is None:
+                    gateway_config = self.config
+                else:
+                    from gateway.config import load_gateway_config
+                    with _profile_runtime_scope(profile_home):
+                        gateway_config = load_gateway_config()
+                policy = policy_for_source(gateway_config, source)
+                return bool(
+                    not policy.enabled or policy.is_admin(getattr(source, "user_id", None))
+                )
+            except Exception:
+                # Fail toward existing behavior: an unresolvable tier policy
+                # must not newly lock out an already-authorized approver.
+                # Never silently, though — an operator who configured
+                # allow_admin_from needs to know the tier wasn't applied.
+                logger.warning(
+                    "Admin-tier policy resolution failed for %s (profile_home=%s); "
+                    "treating caller as admin (pre-tier behavior)",
+                    source, profile_home, exc_info=True,
+                )
+                return True
         return check
 
 

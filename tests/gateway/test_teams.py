@@ -749,3 +749,238 @@ class TestTeamsMediaAttachments:
         adapter._app.send.assert_awaited_once()
 
 
+import asyncio
+import threading
+
+
+class TestTeamsApprovalCardSecurity:
+    """Card-action handler must resolve approvals by the queue entry's opaque
+    id — never by the client-supplied session_key — and validate conversation,
+    allowed choice, and target entry atomically under the approval queue lock
+    (cross-session IDOR, withheld-choice escalation, concurrent-invoke
+    cross-consumption; GHSA-class)."""
+
+    @staticmethod
+    def _ctx(data, conversation_id, aad="user-aad"):
+        activity = MagicMock()
+        activity.value = MagicMock()
+        activity.value.action = MagicMock()
+        activity.value.action.data = data
+        activity.conversation = MagicMock()
+        activity.conversation.id = conversation_id
+        activity.from_ = MagicMock()
+        activity.from_.aad_object_id = aad
+        activity.from_.id = aad
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    @staticmethod
+    def _seed(session_key, data, conversation_id=None):
+        """Enqueue a pending approval entry, optionally bound to a conversation
+        the way send_exec_approval does when it renders the card."""
+        from tools import approval as ap
+        entry = ap._ApprovalEntry(data)
+        with ap._lock:
+            ap._gateway_queues.setdefault(session_key, []).append(entry)
+        if conversation_id is not None:
+            assert ap.bind_gateway_approval_conversation(entry.id, conversation_id)
+        return entry
+
+    @staticmethod
+    def _queue(session_key):
+        from tools import approval as ap
+        with ap._lock:
+            return list(ap._gateway_queues.get(session_key, []))
+
+    def _adapter(self):
+        return object.__new__(TeamsAdapter)
+
+    def teardown_method(self):
+        from tools import approval as ap
+        with ap._lock:
+            ap._gateway_queues.clear()
+
+    def test_cross_session_approval_rejected(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "user-aad")
+        victim_key = "agent:main:teams:dm:19:victim-chat@thread.tacv2"
+        entry = self._seed(victim_key, {"command": "rm -rf /tmp/x",
+                                        "allow_permanent": True, "allow_session": True},
+                           conversation_id="19:victim-chat@thread.tacv2")
+        # Attacker in another conversation presents the victim's approval id.
+        ctx = self._ctx({"hermes_action": "approve_once", "approval_id": entry.id},
+                        conversation_id="19:attacker-chat@thread.tacv2")
+        asyncio.run(self._adapter()._on_card_action(ctx))
+        assert entry.result is None
+        assert entry in self._queue(victim_key)
+
+    def test_substring_conversation_mismatch_rejected(self, monkeypatch):
+        """Exact binding: a conversation id that merely CONTAINS the bound id
+        (and a payload session_key containing it too) must not match."""
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "user-aad")
+        bound = "19:owner-chat@thread.tacv2"
+        key = f"agent:main:teams:dm:{bound}"
+        entry = self._seed(key, {"command": "rm -rf /tmp/x2",
+                                 "allow_permanent": True, "allow_session": True},
+                           conversation_id=bound)
+        evil_conv = "19:owner-chat@thread.tacv2:attacker"
+        ctx = self._ctx(
+            {"hermes_action": "approve_once", "approval_id": entry.id,
+             # Red herring: the old substring check would accept this key.
+             "session_key": f"agent:main:teams:dm:{evil_conv}"},
+            conversation_id=evil_conv)
+        asyncio.run(self._adapter()._on_card_action(ctx))
+        assert entry.result is None
+        assert entry in self._queue(key)
+
+    def test_unknown_approval_id_rejected(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "user-aad")
+        key = "agent:main:teams:dm:19:forged-chat@thread.tacv2"
+        entry = self._seed(key, {"command": "ls",
+                                 "allow_permanent": True, "allow_session": True},
+                           conversation_id="19:forged-chat@thread.tacv2")
+        ctx = self._ctx({"hermes_action": "approve_once", "approval_id": "f" * 32},
+                        conversation_id="19:forged-chat@thread.tacv2")
+        asyncio.run(self._adapter()._on_card_action(ctx))
+        assert entry.result is None
+        assert entry in self._queue(key)
+
+    def test_session_key_only_payload_rejected(self, monkeypatch):
+        """Legacy payloads carrying only session_key no longer resolve anything."""
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "user-aad")
+        key = "agent:main:teams:dm:19:legacy-chat@thread.tacv2"
+        entry = self._seed(key, {"command": "ls",
+                                 "allow_permanent": True, "allow_session": True},
+                           conversation_id="19:legacy-chat@thread.tacv2")
+        ctx = self._ctx({"hermes_action": "approve_once", "session_key": key},
+                        conversation_id="19:legacy-chat@thread.tacv2")
+        asyncio.run(self._adapter()._on_card_action(ctx))
+        assert entry.result is None
+        assert entry in self._queue(key)
+
+    def test_withheld_approve_always_rejected(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "user-aad")
+        conv = "19:victim2-chat@thread.tacv2"
+        key = f"agent:main:teams:dm:{conv}"
+        entry = self._seed(key, {"command": "rm -rf /tmp/y",
+                                 "allow_permanent": False, "allow_session": False,
+                                 "smart_denied": True},
+                           conversation_id=conv)
+        ctx = self._ctx({"hermes_action": "approve_always", "approval_id": entry.id},
+                        conversation_id=conv)
+        asyncio.run(self._adapter()._on_card_action(ctx))
+        assert entry.result is None
+        assert entry in self._queue(key)
+
+    def test_smart_deny_session_choice_rejected(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "user-aad")
+        conv = "19:victim3-chat@thread.tacv2"
+        key = f"agent:main:teams:dm:{conv}"
+        entry = self._seed(key, {"command": "rm -rf /tmp/z",
+                                 "allow_permanent": True, "allow_session": True,
+                                 "smart_denied": True},
+                           conversation_id=conv)
+        ctx = self._ctx({"hermes_action": "approve_session", "approval_id": entry.id},
+                        conversation_id=conv)
+        asyncio.run(self._adapter()._on_card_action(ctx))
+        assert entry.result is None
+        assert entry in self._queue(key)
+
+    def test_owner_in_conversation_approve_once_works(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "user-aad")
+        conv = "19:owner-chat@thread.tacv2"
+        key = f"agent:main:teams:dm:{conv}"
+        entry = self._seed(key, {"command": "ls",
+                                 "allow_permanent": True, "allow_session": True},
+                           conversation_id=conv)
+        ctx = self._ctx({"hermes_action": "approve_once", "approval_id": entry.id},
+                        conversation_id=conv)
+        asyncio.run(self._adapter()._on_card_action(ctx))
+        assert entry.result == "once"
+        assert self._queue(key) == []
+
+    def test_two_entry_concurrent_invokes_resolve_their_own_entries(self, monkeypatch):
+        """Two pending entries in ONE session queue with differing permission
+        flags: concurrent invokes must each consume exactly their own entry —
+        never the queue head the other invoke validated against."""
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "user-aad")
+        conv = "19:multi-chat@thread.tacv2"
+        key = f"agent:main:teams:dm:{conv}"
+        # Head entry withholds permanent approval; second entry allows it.
+        entry_a = self._seed(key, {"command": "rm -rf /tmp/a",
+                                   "allow_permanent": False, "allow_session": True},
+                             conversation_id=conv)
+        entry_b = self._seed(key, {"command": "ls -la",
+                                   "allow_permanent": True, "allow_session": True},
+                             conversation_id=conv)
+        assert self._queue(key) == [entry_a, entry_b]
+
+        def invoke(entry, action):
+            ctx = self._ctx({"hermes_action": action, "approval_id": entry.id},
+                            conversation_id=conv)
+            asyncio.run(self._adapter()._on_card_action(ctx))
+
+        threads = [
+            threading.Thread(target=invoke, args=(entry_a, "approve_once")),
+            threading.Thread(target=invoke, args=(entry_b, "approve_always")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert entry_a.result == "once"
+        assert entry_b.result == "always"
+        assert self._queue(key) == []
+
+    def test_valid_approval_id_withheld_choice_rejected(self, monkeypatch):
+        """Even with a valid approval id and matching conversation, a choice
+        the card withheld (allow_permanent=False) is rejected server-side and
+        consumes nothing — including the OTHER pending entry."""
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "user-aad")
+        conv = "19:multi2-chat@thread.tacv2"
+        key = f"agent:main:teams:dm:{conv}"
+        entry_a = self._seed(key, {"command": "rm -rf /tmp/a2",
+                                   "allow_permanent": False, "allow_session": True},
+                             conversation_id=conv)
+        entry_b = self._seed(key, {"command": "ls -la",
+                                   "allow_permanent": True, "allow_session": True},
+                             conversation_id=conv)
+        ctx = self._ctx({"hermes_action": "approve_always", "approval_id": entry_a.id},
+                        conversation_id=conv)
+        asyncio.run(self._adapter()._on_card_action(ctx))
+        assert entry_a.result is None
+        assert entry_b.result is None
+        assert self._queue(key) == [entry_a, entry_b]
+
+    def test_card_payload_binds_approval_id_not_session_key(self, monkeypatch):
+        """The rendered card must carry only the opaque approval id in its
+        button payloads (no session_key leak) and bind the conversation
+        server-side at render time."""
+        conv = "19:render-chat@thread.tacv2"
+        key = f"agent:main:teams:dm:{conv}"
+        entry = self._seed(key, {"command": "ls",
+                                 "allow_permanent": True, "allow_session": True})
+
+        rendered_actions = []
+
+        class _RecordingAction:
+            def __init__(self, **kwargs):
+                rendered_actions.append(kwargs)
+
+        monkeypatch.setattr(_teams_mod, "ExecuteAction", _RecordingAction)
+
+        adapter = object.__new__(TeamsAdapter)
+        adapter._app = MagicMock()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="msg-1"))
+
+        result = asyncio.run(adapter.send_exec_approval(
+            chat_id=conv, command="ls", session_key=key, approval_id=entry.id))
+
+        assert result.success
+        assert rendered_actions, "no card actions rendered"
+        for action_kwargs in rendered_actions:
+            payload = action_kwargs["data"]
+            assert payload["approval_id"] == entry.id
+            assert "session_key" not in payload
+        assert entry.data["bound_conversation_id"] == conv

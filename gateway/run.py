@@ -5204,17 +5204,24 @@ class TurnRunner:
             # false positives from MagicMock auto-attribute creation in tests.
             if getattr(type(ctx._status_adapter), "send_exec_approval", None) is not None:
                 try:
+                    _send_approval_kwargs = dict(
+                        chat_id=ctx._status_chat_id,
+                        command=cmd,
+                        session_key=_approval_session_key,
+                        description=desc,
+                        metadata=ctx._status_thread_metadata,
+                        allow_permanent=approval_data.get("allow_permanent", True),
+                        allow_session=approval_data.get("allow_session", True),
+                        smart_denied=approval_data.get("smart_denied", False),
+                    )
+                    # Adapters that bind approval cards to the queue entry's
+                    # opaque id (e.g. Teams) opt in via an approval_id kwarg.
+                    if "approval_id" in inspect.signature(
+                        type(ctx._status_adapter).send_exec_approval
+                    ).parameters:
+                        _send_approval_kwargs["approval_id"] = approval_data.get("approval_id", "")
                     _approval_fut = safe_schedule_threadsafe(
-                        ctx._status_adapter.send_exec_approval(
-                            chat_id=ctx._status_chat_id,
-                            command=cmd,
-                            session_key=_approval_session_key,
-                            description=desc,
-                            metadata=ctx._status_thread_metadata,
-                            allow_permanent=approval_data.get("allow_permanent", True),
-                            allow_session=approval_data.get("allow_session", True),
-                            smart_denied=approval_data.get("smart_denied", False),
-                        ),
+                        ctx._status_adapter.send_exec_approval(**_send_approval_kwargs),
                         ctx._loop_for_step,
                         logger=logger,
                         log_message="send_exec_approval scheduling error",

@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -2446,9 +2447,13 @@ def _denial_breaker_addendum(session_key: str) -> str:
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+    __slots__ = ("id", "event", "data", "result", "reason")
 
     def __init__(self, data: dict):
+        # Opaque, unguessable identifier. Platform approval cards carry this
+        # (NOT the session key, which round-trips through the chat client and
+        # is untrusted) so an invoke can be resolved to exactly this entry.
+        self.id = uuid.uuid4().hex
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
@@ -2527,6 +2532,91 @@ def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:
         return bool(_gateway_queues.get(session_key))
+
+
+def _find_gateway_entry(approval_id: str):
+    """Return (session_key, queue, entry) for *approval_id*, or (None, None, None).
+
+    Caller MUST hold ``_lock``.  Queues are tiny (a handful of pending
+    approvals per session), so a linear scan beats maintaining a parallel
+    index at every queue mutation point.
+    """
+    for key, queue in _gateway_queues.items():
+        for entry in queue:
+            if entry.id == approval_id:
+                return key, queue, entry
+    return None, None, None
+
+
+def bind_gateway_approval_conversation(approval_id: str, conversation_id: str) -> bool:
+    """Record which conversation a rendered approval card was sent to.
+
+    Platform adapters call this when rendering an approval card so the
+    invoke handler can later verify — with an exact string comparison —
+    that the click came from the same conversation.  Returns False when no
+    pending entry carries *approval_id* (already resolved/expired).
+    """
+    if not approval_id or not conversation_id:
+        return False
+    with _lock:
+        _, _, entry = _find_gateway_entry(approval_id)
+        if entry is None:
+            return False
+        entry.data["bound_conversation_id"] = conversation_id
+        return True
+
+
+def resolve_gateway_approval_by_id(
+    approval_id: str,
+    choice: str,
+    *,
+    conversation_id: str = "",
+) -> "tuple[str, Optional[dict]]":
+    """Atomically validate and consume ONE pending approval by its opaque id.
+
+    Under a single ``_lock`` hold this checks that (a) the target entry
+    exists, (b) the invoking conversation exactly matches the conversation
+    the card was bound to at render time, and (c) *choice* was actually
+    offered by the render-time permissions (smart_denied / allow_session /
+    allow_permanent) — then removes exactly that entry from its session
+    queue.  Holding the lock across validate-and-consume means concurrent
+    invokes against a multi-entry queue cannot validate one entry and pop
+    another.
+
+    Returns ``(status, data)`` where *status* is one of ``"resolved"``,
+    ``"not_found"``, ``"conversation_mismatch"``, ``"choice_not_allowed"``;
+    *data* is the entry's data dict on success, else None.
+    """
+    with _lock:
+        key, queue, entry = _find_gateway_entry(approval_id)
+        if entry is None:
+            return "not_found", None
+        data = entry.data
+        bound = data.get("bound_conversation_id")
+        if not bound or not conversation_id or bound != conversation_id:
+            logger.warning(
+                "Gateway approval %s rejected: conversation %r does not match bound %r",
+                approval_id, conversation_id, bound,
+            )
+            return "conversation_mismatch", None
+        smart_denied = bool(data.get("smart_denied"))
+        allow_session = bool(data.get("allow_session", True))
+        allow_permanent = bool(data.get("allow_permanent", True))
+        if smart_denied and choice in {"session", "always"}:
+            return "choice_not_allowed", None
+        if choice == "session" and not allow_session:
+            return "choice_not_allowed", None
+        if choice == "always" and (not allow_session or not allow_permanent):
+            return "choice_not_allowed", None
+        queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(key, None)
+
+    # Signal the blocked agent thread outside the lock, mirroring
+    # resolve_gateway_approval().
+    entry.result = choice
+    entry.event.set()
+    return "resolved", data
 
 
 def submit_pending(session_key: str, approval: dict):
@@ -3626,6 +3716,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
     entry = _ApprovalEntry(approval_data)
+    # Expose the entry's opaque id to the notify callback (approval_data is
+    # entry.data, same dict) so platform cards can bind to this exact entry
+    # instead of round-tripping the session key through the chat client.
+    approval_data["approval_id"] = entry.id
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)
 

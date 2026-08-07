@@ -15,15 +15,17 @@ The routes:
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
 from collections import defaultdict, deque
-from typing import Any, Deque, Dict
+from typing import Any, Deque, Dict, Tuple
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from hermes_cli.dashboard_auth import (
     get_provider,
@@ -35,6 +37,8 @@ from hermes_cli.dashboard_auth.base import (
     InvalidCodeError,
     InvalidCredentialsError,
     ProviderError,
+    RefreshExpiredError,
+    Session,
 )
 from hermes_cli.dashboard_auth.cookies import (
     clear_pkce_cookie,
@@ -51,6 +55,196 @@ from hermes_cli.dashboard_auth.login_page import render_login_html
 _log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# A native desktop client may issue overlapping refresh requests while all
+# callers still hold the same old rotating refresh token. The first request
+# rotates it; stale siblings must reuse that same result instead of replaying
+# the consumed token at the identity provider.
+#
+# Keys contain only SHA-256(client IP + provider hint + old RT), never the
+# raw refresh token. The provider hint is included because two providers may
+# issue colliding opaque refresh-token values; without it, a cache or
+# in-flight hit for one provider hint/ordering could hand back a session
+# rotated under a different one. The short grace window covers in-flight/
+# retry bursts without becoming a long-lived alternate token store.
+_NATIVE_REFRESH_REPLAY_SUCCESS_TTL_SEC = 30.0
+_NATIVE_REFRESH_REPLAY_FAILURE_TTL_SEC = 5.0
+_NATIVE_REFRESH_REPLAY_MAX_ENTRIES = 256
+
+_native_refresh_replay_guard = threading.Lock()
+# ``Session`` means a successful rotation; ``None`` means every reachable
+# provider rejected this exact old RT. Negative results live only five seconds
+# to absorb retry storms without masking a later legitimate sign-in.
+_native_refresh_replay_cache: Dict[str, Tuple[float, Session | None]] = {}
+_native_refresh_token_locks: Dict[str, Tuple[threading.Lock, int]] = {}
+
+
+def _drop_idle_native_refresh_lock_locked(key: str) -> None:
+    """Remove a per-token lock only when no request still references it."""
+    entry = _native_refresh_token_locks.get(key)
+    if entry is None:
+        return
+
+    token_lock, users = entry
+    if users == 0 and not token_lock.locked():
+        _native_refresh_token_locks.pop(key, None)
+
+
+def _native_refresh_cache_key(
+    refresh_token: str, provider_hint: str, client_ip: str
+) -> str:
+    material = (
+        client_ip.encode("utf-8", "surrogatepass")
+        + b"\0"
+        + provider_hint.encode("utf-8", "surrogatepass")
+        + b"\0"
+        + refresh_token.encode("utf-8", "surrogatepass")
+    )
+    return hashlib.sha256(material).hexdigest()
+
+
+def _gc_native_refresh_replay_locked(now: float) -> None:
+    expired = [
+        key
+        for key, (expires_at, _session) in _native_refresh_replay_cache.items()
+        if expires_at <= now
+    ]
+    for key in expired:
+        _native_refresh_replay_cache.pop(key, None)
+        _drop_idle_native_refresh_lock_locked(key)
+
+    overflow = (
+        len(_native_refresh_replay_cache)
+        - _NATIVE_REFRESH_REPLAY_MAX_ENTRIES
+    )
+    if overflow > 0:
+        earliest_expiring_keys = sorted(
+            _native_refresh_replay_cache,
+            key=lambda key: _native_refresh_replay_cache[key][0],
+        )[:overflow]
+        for key in earliest_expiring_keys:
+            _native_refresh_replay_cache.pop(key, None)
+            _drop_idle_native_refresh_lock_locked(key)
+
+
+def _refresh_native_session_sync(
+    refresh_token: str,
+    provider_hint: str,
+    client_ip: str,
+) -> Tuple[Session | None, str | None]:
+    """Single-flight native refresh for one old rotating refresh token.
+
+    Returns ``(session, None)`` on success or a positive cache hit.
+    Returns ``(None, None)`` when every provider definitively rejects the
+    token, including a negative-cache hit. Returns ``(None,
+    unreachable_provider)`` when no provider succeeds and at least one
+    provider was unreachable.
+    """
+    providers = list_session_providers()
+    # An unrecognized hint can't affect provider ordering, so it must not be
+    # allowed to affect the cache/lock key either — otherwise a caller could
+    # bypass coalescing and negative-cache protection by varying an unknown
+    # hint while reusing the same old refresh token and client IP.
+    if provider_hint and not any(p.name == provider_hint for p in providers):
+        provider_hint = ""
+    cache_key = _native_refresh_cache_key(refresh_token, provider_hint, client_ip)
+
+    with _native_refresh_replay_guard:
+        now = time.monotonic()
+        _gc_native_refresh_replay_locked(now)
+        lock_entry = _native_refresh_token_locks.get(cache_key)
+        if lock_entry is None:
+            token_lock = threading.Lock()
+            users = 0
+        else:
+            token_lock, users = lock_entry
+
+        # Count both active callers and callers already waiting on this lock.
+        _native_refresh_token_locks[cache_key] = (
+            token_lock,
+            users + 1,
+        )
+
+    try:
+        # Only requests presenting this exact old RT wait for each other.
+        # Refreshes belonging to other users/tokens remain independent.
+        with token_lock:
+            with _native_refresh_replay_guard:
+                now = time.monotonic()
+                _gc_native_refresh_replay_locked(now)
+                cached = _native_refresh_replay_cache.get(cache_key)
+                if cached is not None and cached[0] > now:
+                    return cached[1], None
+
+            if provider_hint:
+                providers.sort(key=lambda p: p.name != provider_hint)
+
+            unreachable: str | None = None
+            for provider in providers:
+                try:
+                    session = provider.refresh_session(
+                        refresh_token=refresh_token
+                    )
+                except RefreshExpiredError:
+                    continue
+                except ProviderError as exc:
+                    if unreachable is None:
+                        unreachable = provider.name
+                    _log.warning(
+                        "dashboard-auth: provider %r unreachable during "
+                        "native refresh: %s",
+                        provider.name,
+                        exc,
+                    )
+                    continue
+
+                if session is None:
+                    continue
+
+                with _native_refresh_replay_guard:
+                    now = time.monotonic()
+                    _native_refresh_replay_cache[cache_key] = (
+                        now + _NATIVE_REFRESH_REPLAY_SUCCESS_TTL_SEC,
+                        session,
+                    )
+                    _gc_native_refresh_replay_locked(now)
+
+                return session, None
+
+            # Cache only a definitive rejection. A transient provider outage
+            # must remain immediately retryable and therefore is not cached.
+            if unreachable is None:
+                with _native_refresh_replay_guard:
+                    now = time.monotonic()
+                    _native_refresh_replay_cache[cache_key] = (
+                        now + _NATIVE_REFRESH_REPLAY_FAILURE_TTL_SEC,
+                        None,
+                    )
+                    _gc_native_refresh_replay_locked(now)
+
+            return None, unreachable
+    finally:
+        # Drop this caller's reference. A waiter that already holds the same
+        # lock reference keeps it registered, preventing a third caller from
+        # creating a second lock for the same old refresh token.
+        with _native_refresh_replay_guard:
+            lock_entry = _native_refresh_token_locks.get(cache_key)
+            if lock_entry is not None and lock_entry[0] is token_lock:
+                remaining_users = max(0, lock_entry[1] - 1)
+                _native_refresh_token_locks[cache_key] = (
+                    token_lock,
+                    remaining_users,
+                )
+
+                if cache_key not in _native_refresh_replay_cache:
+                    _drop_idle_native_refresh_lock_locked(cache_key)
+
+
+def _reset_native_refresh_replay_for_tests() -> None:
+    with _native_refresh_replay_guard:
+        _native_refresh_replay_cache.clear()
+        _native_refresh_token_locks.clear()
 
 
 def _redirect_uri(request: Request) -> str:
@@ -109,6 +303,16 @@ def _client_ip(request: Request) -> str:
     fwd = request.headers.get("x-forwarded-for", "")
     if fwd:
         return fwd.split(",")[0].strip()
+    return request.client.host if request.client else ""
+
+
+def _native_refresh_client_ip(request: Request) -> str:
+    """Return the proxy-validated client address from the ASGI scope.
+
+    Uvicorn's proxy-header middleware updates ``request.client`` only for
+    trusted proxy peers. Reading X-Forwarded-For directly here would trust
+    client-supplied leading hops and let callers partition replay-cache keys.
+    """
     return request.client.host if request.client else ""
 
 
@@ -895,46 +1099,35 @@ class _NativeRefreshBody(BaseModel):
 async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
     """Rotate a native-app session using the desktop-held refresh token.
 
-    The desktop owns its refresh token (OS keychain) rather than a cookie, so
-    it rotates here instead of relying on the gate's transparent cookie
-    rotation. Mirrors the middleware's ``_attempt_refresh`` provider stacking:
-    tries each session provider until one rotates the token, returning the new
-    access/refresh pair **in the JSON body**.
+    Requests carrying the same old rotating RT are coalesced. One worker
+    reaches the provider; overlapping or immediately retried requests reuse
+    its rotated Session from a short, bounded in-process cache.
 
     Failure modes:
       * every provider rejects the RT (dead/expired/reuse-detected) → 401
         ``session_expired`` so the desktop starts a fresh native login;
       * a provider's IDP is unreachable and none rotated → 503.
     """
-    from hermes_cli.dashboard_auth import list_session_providers
-    from hermes_cli.dashboard_auth.base import RefreshExpiredError
-
     if not body.refresh_token:
         raise HTTPException(status_code=400, detail="refresh_token required")
 
-    providers = list_session_providers()
-    if body.provider:
-        providers.sort(key=lambda p: p.name != body.provider)
+    client_ip = _native_refresh_client_ip(request)
 
-    unreachable: str | None = None
-    for provider in providers:
-        try:
-            session = provider.refresh_session(refresh_token=body.refresh_token)
-        except RefreshExpiredError:
-            continue
-        except ProviderError as e:
-            if unreachable is None:
-                unreachable = provider.name
-            _log.warning(
-                "dashboard-auth: provider %r unreachable during native refresh: %s",
-                provider.name, e,
-            )
-            continue
+    # Provider implementations are synchronous and may perform network I/O.
+    # Run the per-token single-flight outside the ASGI event loop.
+    session, unreachable = await run_in_threadpool(
+        _refresh_native_session_sync,
+        body.refresh_token,
+        body.provider,
+        client_ip,
+    )
+
+    if session is not None:
         audit_log(
             AuditEvent.REFRESH_SUCCESS,
             provider=session.provider,
             user_id=session.user_id,
-            ip=_client_ip(request),
+            ip=client_ip,
         )
         return {
             "access_token": session.access_token,
@@ -950,10 +1143,11 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
             status_code=503,
             detail=f"Auth provider {unreachable!r} unreachable",
         )
+
     audit_log(
         AuditEvent.REFRESH_FAILURE,
         reason="all_providers_rejected_rt",
-        ip=_client_ip(request),
+        ip=client_ip,
     )
     return JSONResponse(
         {

@@ -238,10 +238,15 @@ def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         bin_path = try_install("pyright", ctx.install_strategy)
         if bin_path is None:
             return None
-    # If we got the cli ``pyright``, the langserver is its sibling.
+    # If we got the cli ``pyright``, the langserver is its sibling — keeping
+    # whatever suffix the resolved binary had, since on Windows the bare
+    # sibling is an unrunnable POSIX shim.
     base = os.path.basename(bin_path)
-    if base in {"pyright", "pyright.exe"}:
-        sibling = os.path.join(os.path.dirname(bin_path), "pyright-langserver")
+    stem, suffix = os.path.splitext(base)
+    if stem == "pyright":
+        sibling = os.path.join(
+            os.path.dirname(bin_path), f"pyright-langserver{suffix}"
+        )
         if os.path.exists(sibling):
             bin_path = sibling
     init: Dict[str, Any] = {}

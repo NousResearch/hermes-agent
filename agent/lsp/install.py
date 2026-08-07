@@ -132,24 +132,38 @@ def hermes_lsp_bin_dir() -> Path:
 
 
 def _native_binary_candidates(base: Path) -> list[Path]:
-    """Return platform-native executable candidates for a staged binary."""
-    candidates = [base]
-    if _is_windows():
-        existing = {str(base).lower()}
-        for suffix in _WINDOWS_WRAPPER_SUFFIXES:
-            candidate = Path(str(base) + suffix)
-            key = str(candidate).lower()
-            if key not in existing:
-                candidates.append(candidate)
-                existing.add(key)
+    """Return platform-native executable candidates for a staged binary.
+
+    On Windows the extensionless file npm writes next to its wrappers is a
+    POSIX ``sh`` script; handing it to CreateProcess fails with
+    "WinError 193: not a valid Win32 application".  Only the
+    ``.cmd``/``.exe``/``.bat`` wrappers are actually runnable, so the bare
+    path is not a candidate there at all.
+    """
+    if not _is_windows():
+        return [base]
+    candidates: list[Path] = []
+    existing: set[str] = set()
+    for suffix in _WINDOWS_WRAPPER_SUFFIXES:
+        candidate = Path(str(base) + suffix)
+        key = str(candidate).lower()
+        if key not in existing:
+            candidates.append(candidate)
+            existing.add(key)
     return candidates
 
 
+def _npm_bin_dir() -> Path:
+    """npm's own wrapper dir — where relative-path wrappers actually work."""
+    return hermes_lsp_bin_dir().parent / "node_modules" / ".bin"
+
+
 def _existing_binary(name: str) -> Optional[str]:
-    """Probe the staging dir + PATH for a binary named ``name``."""
-    for staged in _native_binary_candidates(hermes_lsp_bin_dir() / name):
-        if staged.exists() and os.access(staged, os.X_OK):
-            return str(staged)
+    """Probe the staging dir, npm's bin dir, then PATH for ``name``."""
+    for base in (hermes_lsp_bin_dir() / name, _npm_bin_dir() / name):
+        for staged in _native_binary_candidates(base):
+            if staged.exists() and os.access(staged, os.X_OK):
+                return str(staged)
     on_path = shutil.which(name)
     if on_path:
         return on_path
@@ -287,6 +301,12 @@ def _install_npm(
     nm_bin = staging / "node_modules" / ".bin" / bin_name
     for c in _native_binary_candidates(nm_bin):
         if c.exists():
+            if _is_windows():
+                # npm's Windows wrappers resolve their payload relative to
+                # their own location (``%dp0%\..\<pkg>\...``), so copying or
+                # symlinking one into ``lsp/bin/`` makes it point at a
+                # directory that does not exist.  Use it where npm put it.
+                return str(c)
             # Symlink into our `lsp/bin/` for stable PATH access.
             link = hermes_lsp_bin_dir() / c.name
             if not link.exists():

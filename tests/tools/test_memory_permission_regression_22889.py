@@ -105,7 +105,9 @@ class TestMemoryPermissionPreservation:
             for i in range(3):
                 MemoryStore._write_file(p, [f"entry {i}"])
                 after = stat.S_IMODE(p.stat().st_mode)
-                assert after == 0o664, f"Write {i+1} changed permissions: {oct(after)}"
+                assert after == 0o664, (
+                    f"Write {i + 1} changed permissions: {oct(after)}"
+                )
 
     def test_write_file_restores_owner_on_real_symlink_target(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -132,24 +134,3 @@ class TestMemoryPermissionPreservation:
 
         assert link.is_symlink()
         assert chown_calls == [(real, 123, 456)]
-
-
-if __name__ == "__main__":
-    import sys
-
-    test_class = TestMemoryPermissionPreservation()
-    methods = [m for m in dir(test_class) if m.startswith("test_")]
-    passed = 0
-    failed = 0
-
-    for method_name in methods:
-        try:
-            getattr(test_class, method_name)()
-            print(f"✓ {method_name}")
-            passed += 1
-        except Exception as e:
-            print(f"✗ {method_name}: {e}")
-            failed += 1
-
-    print(f"\n{passed} passed, {failed} failed")
-    sys.exit(0 if failed == 0 else 1)

@@ -883,9 +883,7 @@ class MemoryStore:
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
-            atomic_write_text(
-                path, content, tmp_prefix=".mem_", preserve_mode=True
-            )
+            atomic_write_text(path, content, tmp_prefix=".mem_", preserve_mode=True)
         except (OSError, IOError) as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
@@ -1248,5 +1246,4 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 

@@ -107,7 +107,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
     def test_new_session_clears_session_reasoning_override(self):
         """/new and /clear must not carry a session-only effort override forward."""
-        from cli import CLI_CONFIG, HermesCLI
+        from cli import HermesCLI
 
         agent = SimpleNamespace(
             reasoning_config={"enabled": True, "effort": "high"},
@@ -124,7 +124,10 @@ class TestHandleReasoningCommand(unittest.TestCase):
             _notify_session_boundary=MagicMock(),
         )
 
-        with patch.dict(CLI_CONFIG.setdefault("agent", {}), {"reasoning_effort": "medium"}):
+        with patch(
+            "cli.load_cli_config",
+            return_value={"agent": {"reasoning_effort": "medium"}, "model": {}},
+        ):
             HermesCLI.new_session(stub, silent=True)
 
         self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "medium"})
@@ -169,16 +172,23 @@ class TestHandleReasoningCommand(unittest.TestCase):
             base_url="https://openrouter.ai/api/v1",
             api_mode="chat_completions",
         )
+        fresh_config = {
+            "agent": {"reasoning_effort": "medium", "service_tier": "normal"},
+            "model": {"default": "config-default-model", "provider": "openrouter"},
+        }
         with patch.dict(
-            CLI_CONFIG.setdefault("agent", {}),
-            {"reasoning_effort": "medium", "service_tier": "normal"},
-        ), patch.dict(
             CLI_CONFIG,
-            {"model": {"default": "config-default-model", "provider": "openrouter"}},
-        ), patch(
+            {
+                "agent": {"reasoning_effort": "high", "service_tier": "priority"},
+                "model": {"default": "stale-import-time-model", "provider": "openrouter"},
+            },
+        ), patch("cli.load_cli_config", return_value=fresh_config), patch(
             "hermes_cli.model_switch.switch_model", return_value=fake_result
-        ):
+        ) as switch_model:
             HermesCLI.new_session(stub, silent=True)
+
+        switch_model.assert_called_once()
+        self.assertEqual(switch_model.call_args.kwargs["raw_input"], "config-default-model")
 
         # Fast override cleared back to config default (normal → None).
         self.assertIsNone(stub.service_tier)

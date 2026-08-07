@@ -8165,8 +8165,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        # Config may change while the interactive process is running. Read one
+        # fresh snapshot for every setting that /new re-derives instead of using
+        # the import-time CLI_CONFIG value (#71188).
+        _fresh_cli_config = load_cli_config()
+        _fresh_agent_config = _fresh_cli_config.get("agent", {})
+        if not isinstance(_fresh_agent_config, dict):
+            _fresh_agent_config = {}
         self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
+            _fresh_agent_config.get("reasoning_effort", "")
         )
         # /new is a full conversation boundary: session-scoped runtime
         # overrides (/model --session, /fast, one-turn restores) do not carry
@@ -8175,9 +8182,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # #23131).
         self._pending_one_turn_model_restore = None
         self.service_tier = _parse_service_tier_config(
-            CLI_CONFIG["agent"].get("service_tier", "")
+            _fresh_agent_config.get("service_tier", "")
         )
-        _model_config = CLI_CONFIG.get("model", {})
+        _model_config = _fresh_cli_config.get("model", {})
         _config_model = (
             (_model_config.get("default") or _model_config.get("model") or "")
             if isinstance(_model_config, dict)

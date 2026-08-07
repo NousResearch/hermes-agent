@@ -308,6 +308,7 @@ function TileChat({
           onAttachDroppedItems={composer.attachDroppedItems}
           onAttachImageBlob={composer.attachImageBlob}
           onAttachPrCommentUrl={composer.attachPrCommentUrl}
+          onAttachPastedText={composer.attachPastedText}
           onCancel={actions.cancelRun}
           onDeleteSelectedSession={noop}
           onDismissError={actions.dismissError}

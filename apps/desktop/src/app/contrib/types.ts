@@ -32,6 +32,7 @@ export type ChatActions = Pick<
   | 'onAttachDroppedItems'
   | 'onAttachImageBlob'
   | 'onAttachPrCommentUrl'
+  | 'onAttachPastedText'
   | 'onBranchInNewChat'
   | 'onCancel'
   | 'onDeleteSelectedSession'

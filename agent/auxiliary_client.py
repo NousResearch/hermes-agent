@@ -640,19 +640,35 @@ def _is_codex_spark(model: Optional[str], provider: Optional[str] = None) -> boo
 def _fixed_temperature_for_model(
     model: Optional[str],
     base_url: Optional[str] = None,
+    api_mode: Optional[str] = None,
 ) -> "Optional[float] | object":
     """Return a temperature directive for models with strict contracts.
 
     Returns:
         ``OMIT_TEMPERATURE`` — caller must remove the ``temperature`` key so the
-            provider chooses its own default.  Used for all Kimi / Moonshot
-            models whose gateway selects temperature server-side.
+            provider chooses its own default.  Used for models whose gateway
+            selects temperature server-side, including Kimi / Moonshot and
+            OpenAI GPT-5 Responses routes.
         ``float`` — a specific value the caller must use (reserved for future
             models with fixed-temperature contracts).
         ``None`` — no override; caller should use its own default.
     """
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
+        return OMIT_TEMPERATURE
+    # GPT-5 only rejects this on the Responses route.  The same model can be
+    # deliberately kept on chat completions by Nous and custom providers, so
+    # a model-only check would silently change those requests.
+    bare_model = (model or "").strip().lower().rsplit("/", 1)[-1]
+    if (
+        api_mode == "codex_responses"
+        and (
+            bare_model == "gpt-5"
+            or bare_model.startswith("gpt-5-")
+            or bare_model.startswith("gpt-5.")
+        )
+    ):
+        logger.debug("Omitting temperature for GPT-5 Responses model %r", model)
         return OMIT_TEMPERATURE
     if _is_arcee_trinity_thinking(model):
         return 0.5
@@ -4318,6 +4334,7 @@ def _retry_same_provider_sync(
         reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url,
         task=task,
+        api_mode=resolved_api_mode,
     )
     # Preserve per-request attribution headers (e.g. Copilot's
     # ``x-initiator: user``) across the rebuilt-client retry — dropping them
@@ -4393,6 +4410,7 @@ async def _retry_same_provider_async(
         reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url,
         task=task,
+        api_mode=resolved_api_mode,
     )
     # Preserve per-request attribution headers across the rebuilt-client
     # retry — see the sync variant above (#60293).
@@ -7893,6 +7911,7 @@ def _build_call_kwargs(
     reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None,
     task: Optional[str] = None,
+    api_mode: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
@@ -7901,7 +7920,7 @@ def _build_call_kwargs(
         "timeout": timeout,
     }
 
-    fixed_temperature = _fixed_temperature_for_model(model, base_url)
+    fixed_temperature = _fixed_temperature_for_model(model, base_url, api_mode)
     if fixed_temperature is OMIT_TEMPERATURE:
         temperature = None  # strip — let server choose
     elif fixed_temperature is not None:
@@ -8843,7 +8862,10 @@ def _call_llm_impl(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
-        base_url=_base_info or resolved_base_url, task=task)
+        base_url=_base_info or resolved_base_url,
+        task=task,
+        api_mode=resolved_api_mode,
+    )
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
 
@@ -9610,7 +9632,10 @@ async def _async_call_llm_impl(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
-        base_url=_client_base or resolved_base_url, task=task)
+        base_url=_client_base or resolved_base_url,
+        task=task,
+        api_mode=resolved_api_mode,
+    )
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(request_provider, _client_base):

@@ -3927,9 +3927,40 @@ class MatrixAdapter(BasePlatformAdapter):
         self._reaction_redaction_tasks.add(task)
         task.add_done_callback(self._reaction_redaction_tasks.discard)
 
+    def _processing_reactions_allowed(self, event: MessageEvent) -> bool:
+        """Return whether lifecycle reactions may be emitted for ``event``.
+
+        The gateway registers this callback on connected adapters.  An
+        explicit ``False`` is the only denial signal; ``None`` preserves
+        standalone-adapter behavior when no gateway auth context exists.
+        """
+        source = event.source
+        sender_authorized = self._is_sender_authorized(
+            getattr(source, "user_id", None),
+            getattr(source, "chat_type", None),
+            getattr(source, "chat_id", None),
+        )
+        if sender_authorized is False:
+            logger.debug(
+                "Matrix: skipping processing reaction for unauthorized sender %s",
+                getattr(source, "user_id", None),
+            )
+            return False
+        return True
+
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add eyes reaction when the agent starts processing a message."""
+        """Add eyes reaction when the agent starts processing a message.
+
+        The base adapter invokes this hook before the gateway's normal auth
+        dispatch.  When the gateway has registered its authorization callback,
+        avoid emitting a processing marker for a sender it has already
+        classified as unauthorized.  ``None`` means that no callback is
+        configured (or the sender identity is unavailable), so standalone
+        adapters and legacy integrations retain their existing behavior.
+        """
         if not self._reactions_enabled:
+            return
+        if not self._processing_reactions_allowed(event):
             return
         msg_id = event.message_id
         room_id = event.source.chat_id
@@ -3945,6 +3976,8 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> None:
         """Replace eyes with checkmark (success) or cross (failure)."""
         if not self._reactions_enabled:
+            return
+        if not self._processing_reactions_allowed(event):
             return
         msg_id = event.message_id
         room_id = event.source.chat_id

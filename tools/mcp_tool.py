@@ -2877,6 +2877,21 @@ class MCPServerTask:
             except Exception as exc:
                 logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
                 raise
+        else:
+            # Clean up stale OAuth cache when the auth type is not "oauth"
+            # (e.g. user switched from auth: oauth to headers or no-auth).
+            # Orphaned mcp-tokens/<name>.client.json files confuse debugging
+            # because their presence suggests OAuth is still in use (#60313).
+            # Best-effort: failures here should never block server startup.
+            from tools.mcp_oauth import HermesTokenStorage
+            storage = HermesTokenStorage(self.name)
+            try:
+                storage.remove()
+            except OSError as exc:
+                logger.debug(
+                    "MCP '%s': could not clean stale OAuth cache: %s",
+                    self.name, exc,
+                )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
         if self._elicitation:

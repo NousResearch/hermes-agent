@@ -5,7 +5,7 @@ import os
 import stat
 import sys
 from io import BytesIO
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
@@ -123,6 +123,113 @@ class TestHermesTokenStorage:
 
         import asyncio
         assert asyncio.run(storage.get_tokens()) is None
+
+
+class TestNonOAuthStaleCacheCleanup:
+    """Regression coverage for #60313 — ``MCPServerTask._run_http()`` must
+    remove the orphaned OAuth cache files when the server's auth type is not
+    ``oauth`` (e.g. a user switched ``auth: oauth`` to headers or removed it).
+
+    These tests drive the real production branch (the ``else`` in
+    ``_run_http``) with the transport mocked, rather than calling
+    ``HermesTokenStorage.remove()`` directly, so they fail if the cleanup
+    branch is ever dropped.
+    """
+
+    @staticmethod
+    def _drive_non_oauth_run_http(tmp_path, monkeypatch, *, auth_type: str = "headers"):
+        """Run ``MCPServerTask._run_http`` with non-OAuth auth against a temp
+        HERMES_HOME, with the SSE transport and session lifecycle mocked."""
+        from tools.mcp_tool import MCPServerTask
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        server = MCPServerTask("cf-server")
+        server._auth_type = auth_type
+        server._sampling = None
+
+        class _FakeStream:
+            def __init__(self):
+                self._read = AsyncMock()
+                self._write = AsyncMock()
+
+            async def __aenter__(self):
+                return (self._read, self._write)
+
+            async def __aexit__(self, *a):
+                return False
+
+        def fake_sse_client(**kwargs):
+            return _FakeStream()
+
+        class _FakeSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                mock_session = MagicMock()
+                mock_session.initialize = AsyncMock()
+                return mock_session
+
+            async def __aexit__(self, *a):
+                return False
+
+        async def drive():
+            with patch("tools.mcp_tool.sse_client", new=fake_sse_client), \
+                 patch("tools.mcp_tool.ClientSession", new=_FakeSession), \
+                 patch.object(MCPServerTask, "_wait_for_lifecycle_event",
+                              new=AsyncMock(return_value="shutdown")), \
+                 patch.object(MCPServerTask, "_discover_tools", new=AsyncMock()):
+                await asyncio.wait_for(
+                    server._run_http({
+                        "url": "https://example.com/mcp/sse",
+                        "transport": "sse",
+                        "timeout": 60,
+                    }),
+                    timeout=2.0,
+                )
+
+        try:
+            asyncio.run(drive())
+        except Exception:
+            # The fakes only exist to get past transport setup; the cleanup
+            # under test has already run by the time transport starts, so
+            # transport teardown noise must not fail the assertions below.
+            pass
+        return server
+
+    def test_run_http_non_oauth_removes_stale_oauth_cache(self, tmp_path, monkeypatch):
+        """Switching from oauth to headers auth must delete token, client, and
+        metadata files through the real ``_run_http`` cleanup branch."""
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        (d / "cf-server.json").write_text('{"access_token": "old", "token_type": "Bearer"}')
+        (d / "cf-server.client.json").write_text('{"client_id": "some-id"}')
+        (d / "cf-server.meta.json").write_text('{"token_endpoint": "https://example.com/token"}')
+
+        server = self._drive_non_oauth_run_http(tmp_path, monkeypatch)
+
+        # The connect must have reached the ready state — proving the cleanup
+        # branch executed and the transport completed, not just that no files
+        # were created (a pre-cleanup _run_http failure must fail this test).
+        assert server._ready.is_set()
+
+        # All three OAuth cache files must be gone after the non-OAuth connect
+        assert not (d / "cf-server.json").exists()
+        assert not (d / "cf-server.client.json").exists()
+        assert not (d / "cf-server.meta.json").exists()
+
+    def test_run_http_non_oauth_cleanup_is_noop_without_cache(self, tmp_path, monkeypatch):
+        """Cleanup is a no-op when no stale cache exists — the connect must
+        succeed and leave nothing behind."""
+        server = self._drive_non_oauth_run_http(tmp_path, monkeypatch)
+
+        # Same ready-state proof as the stale-cache test: if _run_http failed
+        # before the transport, the test must fail rather than pass vacuously.
+        assert server._ready.is_set()
+
+        assert not (tmp_path / "mcp-tokens" / "cf-server.json").exists()
+        assert not (tmp_path / "mcp-tokens" / "cf-server.client.json").exists()
+        assert not (tmp_path / "mcp-tokens" / "cf-server.meta.json").exists()
 
 
 # ---------------------------------------------------------------------------

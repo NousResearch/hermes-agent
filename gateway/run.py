@@ -12950,6 +12950,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._update_runtime_status("draining")
                     await asyncio.sleep(0.1)
 
+                # The interrupt above fires exactly once, but work can
+                # materialize AFTER that one shot: a /v1/runs task admitted
+                # before the drain populates _active_run_agents only once
+                # _create_agent returns, and a _running_agents entry claimed
+                # as _AGENT_PENDING_SENTINEL is promoted to a real agent by
+                # track_agent() on its own schedule. Either way the settle
+                # loop waited on work nothing signaled. If any is still live
+                # at settle-loop exit, re-signal so a late-materializing
+                # agent gets a cooperative interrupt instead of going
+                # straight to the tool-subprocess kill.
+                if self._running_agents or self._active_api_run_count():
+                    self._interrupt_running_agents(
+                        _INTERRUPT_REASON_GATEWAY_RESTART
+                        if self._restart_requested
+                        else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+                    )
+                    logger.debug(
+                        "Re-signaled interrupt for work still live at settle-window exit"
+                    )
+
                 # Kill lingering tool subprocesses NOW, before we spend more
                 # budget on adapter disconnect / session DB close.  Under
                 # systemd (TimeoutStopSec bounded by drain_timeout+headroom),

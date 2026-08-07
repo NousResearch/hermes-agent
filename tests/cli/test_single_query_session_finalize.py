@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import cli
+from hermes_cli.runtime_outcomes import RuntimeOutcome
 
 
 @pytest.fixture(autouse=True)
@@ -201,3 +202,57 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
     assert ("claim", "cli", True) in calls
     assert ("run", "hello", []) in calls
     assert calls[-1] == ("finalize", "quiet-session")
+
+
+def test_quiet_kanban_goal_transient_outcome_exits_tempfail(monkeypatch):
+    calls = []
+
+    def run_conversation(*, user_message, conversation_history):
+        calls.append(("run", user_message))
+        return {"final_response": "partial", "failed": False}
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.provider = "test-provider"
+            self.model = "test-model"
+            self.session_id = "quiet-goal-session"
+            self.conversation_history = []
+            self._active_agent_route_signature = "same-route"
+            self.agent = SimpleNamespace(
+                session_id="quiet-goal-session",
+                platform="cli",
+                quiet_mode=False,
+                suppress_status_output=False,
+                stream_delta_callback=object(),
+                tool_gen_callback=object(),
+                run_conversation=run_conversation,
+            )
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            return True
+
+        def _ensure_runtime_credentials(self):
+            return True
+
+        def _resolve_turn_agent_config(self, effective_query):
+            return {"signature": "same-route", "model": None, "runtime": None, "request_overrides": None}
+
+        def _init_agent(self, **kwargs):
+            return True
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+    monkeypatch.setenv("HERMES_KANBAN_GOAL_MODE", "1")
+    monkeypatch.setattr(cli, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "_finalize_single_query", lambda _cli: calls.append("finalize"))
+    monkeypatch.setattr(
+        cli,
+        "_run_kanban_goal_loop_q",
+        lambda *_args: {"runtime_outcome": RuntimeOutcome.judge_transport_failure("timeout")},
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(query="hello", quiet=True, toolsets="terminal")
+
+    assert exc_info.value.code == 75
+    assert calls[-1] == "finalize"

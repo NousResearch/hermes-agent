@@ -19,6 +19,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import goals
+from hermes_cli.runtime_outcomes import RuntimeOutcome
 
 
 @pytest.fixture
@@ -29,6 +30,75 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
+
+
+# ---------------------------------------------------------------------------
+# Goal-loop runtime outcomes
+
+
+def _run_goal_loop(monkeypatch, *, judge_result, continuation_result=None, max_turns=1):
+    blocked = []
+    continuations = []
+    responses = iter([continuation_result] if continuation_result is not None else [])
+    monkeypatch.setattr(goals, "judge_goal", lambda *_args, **_kwargs: judge_result)
+
+    def run_turn(prompt):
+        continuations.append(prompt)
+        return next(responses)
+
+    result = goals.run_kanban_goal_loop(
+        task_id="t1",
+        goal_text="finish it",
+        run_turn=run_turn,
+        task_status_fn=lambda: "running",
+        block_fn=blocked.append,
+        max_turns=max_turns,
+        first_response="partial",
+    )
+    return result, blocked, continuations
+
+
+def test_goal_loop_judge_transport_is_typed_non_counting_and_does_not_block(monkeypatch):
+    result, blocked, continuations = _run_goal_loop(
+        monkeypatch,
+        judge_result=("continue", "judge unavailable", False, None, True),
+        max_turns=1,
+    )
+
+    assert result["turns_used"] == 1
+    assert result["runtime_outcome"].kind == "judge_transport_failure"
+    assert result["runtime_outcome"].is_transient
+    assert blocked == []
+    assert continuations == []
+
+
+def test_goal_loop_continuation_overload_is_typed_non_counting_and_does_not_block(monkeypatch):
+    result, blocked, continuations = _run_goal_loop(
+        monkeypatch,
+        judge_result=("continue", "keep working", False, None, False),
+        continuation_result=RuntimeOutcome.provider_overload(),
+        max_turns=2,
+    )
+
+    assert result["turns_used"] == 1
+    assert result["runtime_outcome"].kind == "provider_overload"
+    assert result["runtime_outcome"].is_transient
+    assert blocked == []
+    assert len(continuations) == 1
+
+
+def test_goal_loop_ordinary_continuation_failure_consumes_budget_and_blocks(monkeypatch):
+    result, blocked, continuations = _run_goal_loop(
+        monkeypatch,
+        judge_result=("continue", "keep working", False, None, False),
+        continuation_result={"final_response": "", "failed": True, "error": "boom"},
+        max_turns=2,
+    )
+
+    assert result["turns_used"] == 2
+    assert result["outcome"] == "blocked_budget"
+    assert len(blocked) == 1
+    assert len(continuations) == 1
 
 
 # ---------------------------------------------------------------------------

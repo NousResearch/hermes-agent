@@ -207,7 +207,7 @@ class TestResetCommandWithTitle:
         runner._agent_cache = {}
         runner._agent_cache_lock = None
         runner._is_user_authorized = lambda _source: True
-        runner._format_session_info = lambda: ""
+        runner._format_session_info = lambda *_args, **_kwargs: ""
 
         event = _make_event(text="/new Dup")
         result = await runner._handle_reset_command(event)

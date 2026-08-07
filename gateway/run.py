@@ -18475,15 +18475,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
+                return self._format_session_info(source)
+        return self._format_session_info(source)
 
-    def _format_session_info(self) -> str:
-        """Resolve current model config and return a formatted info block.
+    def _describe_model_route_source(self, source: SessionSource) -> Optional[str]:
+        """Return the user-facing source of a non-global model route."""
+        try:
+            session_key = self._session_key_for_source(source)
+            state = self._peek_session_state(session_key)
+            if state and state.conversation.model_override:
+                return "session override"
+        except Exception:
+            pass
 
-        Surfaces model, provider, context length, and endpoint so gateway
-        users can immediately see if context detection went wrong (e.g.
-        local models falling to the 128K default).
+        try:
+            config = getattr(self, "config", None)
+            if config is None:
+                return None
+            channel_override = _get_channel_override(
+                config,
+                source.platform,
+                str(source.chat_id) if source.chat_id else "",
+                thread_id=(
+                    str(source.thread_id)
+                    if getattr(source, "thread_id", None)
+                    else None
+                ),
+                parent_id=(
+                    str(source.parent_chat_id)
+                    if getattr(source, "parent_chat_id", None)
+                    else None
+                ),
+            )
+            if channel_override and (
+                channel_override.model or channel_override.provider
+            ):
+                return "channel override"
+        except Exception:
+            pass
+        return None
+
+    def _format_session_info(
+        self, source: Optional[SessionSource] = None
+    ) -> str:
+        """Resolve the effective model route and return a formatted info block.
+
+        When ``source`` is provided, use the same session → channel → global
+        precedence as a real turn. The resolved model/runtime tuple is consumed
+        as one atomic snapshot so empty route fields never inherit unrelated
+        global credentials or endpoints.
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
@@ -18497,6 +18537,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         configured_model = None
         configured_provider = None
         configured_base_url = None
+        route_source = None
 
         try:
             data = _load_gateway_config()
@@ -18522,14 +18563,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
-        # Resolve runtime credentials for probing
-        try:
-            runtime = _resolve_runtime_agent_kwargs()
-            provider = runtime.get("provider") or provider
-            base_url = runtime.get("base_url") or base_url
+        # Resolve the effective route once. A successful source-aware
+        # resolution is authoritative even when provider fields are empty;
+        # filling falsey values from a second global resolution can mix a
+        # routed model with unrelated credentials or an unrelated endpoint.
+        runtime = None
+        if source is not None:
+            try:
+                model, runtime = self._resolve_session_agent_runtime(source=source)
+                route_source = self._describe_model_route_source(source)
+            except Exception:
+                logger.debug(
+                    "Source-aware session-info route resolution failed; "
+                    "falling back to the global route",
+                    exc_info=True,
+                )
+
+        if runtime is None:
+            try:
+                runtime = _resolve_runtime_agent_kwargs()
+                runtime_model = runtime.get("model")
+                if runtime_model:
+                    model = runtime_model
+            except Exception:
+                runtime = None
+
+        if runtime is not None:
+            provider = runtime.get("provider")
+            base_url = runtime.get("base_url")
             api_key = runtime.get("api_key")
-        except Exception:
-            pass
 
         if config_context_length is not None:
             try:
@@ -18591,6 +18653,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             f"◆ Provider: {provider or 'openrouter'}",
             f"◆ Context: {ctx_display} tokens ({ctx_source})",
         ]
+
+        if route_source:
+            lines.append(f"◆ Route: {route_source}")
 
         # Show endpoint for local/custom setups
         if base_url and ("localhost" in base_url or "127.0.0.1" in base_url or "0.0.0.0" in base_url):
@@ -22874,7 +22939,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Failed to read persisted session model override", exc_info=True
             )
             return
-        if not persisted:
+        if not isinstance(persisted, dict) or not persisted:
             return
         override: Dict[str, Any] = {
             "model": persisted.get("model"),
@@ -22885,8 +22950,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if provider:
             # Re-resolve credentials for the persisted provider. On failure
             # (e.g. credentials were removed since the switch) keep the
-            # credential-less override — _resolve_session_agent_runtime falls
-            # back to env-based resolution and applies model/provider on top.
+            # credential-less override. Applying that route clears credentials
+            # inherited from another provider rather than mixing route state.
             try:
                 runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
                 override["api_key"] = runtime.get("api_key")
@@ -22914,17 +22979,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         The gateway /model command stores per-session overrides in
         ``_session_model_overrides``.  These must take precedence over
         config.yaml defaults so the switched model is actually used for
-        subsequent messages.  Fields with ``None`` values are skipped so
-        partial overrides don't clobber valid config defaults.
+        subsequent messages. Model-only overrides inherit the active route,
+        but once provider or endpoint identity changes its credential-bearing
+        fields are replaced as one unit. This prevents a credential-less
+        override from inheriting an unrelated global API key or pool.
         """
         _apply_state = self._peek_session_state(session_key)
         override = _apply_state.conversation.model_override if _apply_state else None
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
+
+        provider_changed = bool(override.get("provider"))
+        endpoint_changed = bool(override.get("base_url"))
+        route_identity_changed = provider_changed or endpoint_changed
+        if provider_changed:
+            runtime_kwargs["provider"] = override.get("provider")
+            # Provider endpoints are route-owned too. If credential
+            # re-resolution failed to supply one, fail closed rather than
+            # retaining another provider's global endpoint.
+            runtime_kwargs["base_url"] = override.get("base_url")
+        elif endpoint_changed:
+            runtime_kwargs["base_url"] = override.get("base_url")
+        for key in ("api_key", "api_mode", "credential_pool"):
             val = override.get(key)
-            if val is not None:
+            if route_identity_changed or val is not None:
                 runtime_kwargs[key] = val
         if (
             runtime_kwargs.get("api_key")

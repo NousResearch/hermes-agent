@@ -584,6 +584,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When a worker calls `kanban_create` from inside a session with a persistent delivery channel (messaging gateway or TUI), the originating session is auto-subscribed to the new task's completion/block events. The dispatcher still drives the delivery — this only changes whether the caller's chat/key shows up in the notify-sub table. Set to `false` to require explicit `kanban_notify-subscribe` calls per task. |
+| `notify_artifacts` | `true` | Upload completed-task artifacts as native attachments with the notification. Set to `false` to keep the text notification while suppressing uploads. |
 
 And the two auxiliary LLM slots:
 

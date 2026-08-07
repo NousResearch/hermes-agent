@@ -26,6 +26,13 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def test_notifier_artifact_delivery_defaults_to_enabled():
+    """Kanban completion notifications preserve historical uploads by default."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["kanban"]["notify_artifacts"] is True
+
+
 def _assert_inherited_notify_sub(subs: list[dict]) -> None:
     assert len(subs) == 1
     assert subs[0]["platform"] == "telegram"
@@ -195,3 +202,66 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     # Only the real file was uploaded.
     assert len(documents_uploaded) == 1
     assert "real.pdf" in documents_uploaded[0]
+
+
+@pytest.mark.asyncio
+async def test_notifier_skips_artifact_uploads_when_disabled(kanban_home, tmp_path, monkeypatch):
+    """Disabling artifact uploads preserves the completion notification."""
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True, "notify_artifacts": False}},
+    )
+
+    report_path = tmp_path / "report.pdf"
+    report_path.write_bytes(b"%PDF-fake")
+
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="render report", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=task_id, platform="telegram", chat_id="chat1")
+    finally:
+        conn.close()
+
+    import os
+
+    os.environ["HERMES_KANBAN_TASK"] = task_id
+    try:
+        kt._handle_complete({"summary": "rendered report", "artifacts": [str(report_path)]})
+    finally:
+        os.environ.pop("HERMES_KANBAN_TASK", None)
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+    fake_adapter.name = "telegram"
+
+    async def _send(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send)
+    fake_adapter.send_multiple_images = AsyncMock()
+    fake_adapter.send_document = AsyncMock()
+    fake_adapter.send_video = AsyncMock()
+    from gateway.platforms.base import BasePlatformAdapter
+
+    fake_adapter.extract_local_files = BasePlatformAdapter.extract_local_files
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    original_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await original_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(runner._kanban_notifier_watcher(interval=1), timeout=10.0)
+
+    fake_adapter.send.assert_awaited_once()
+    fake_adapter.send_multiple_images.assert_not_awaited()
+    fake_adapter.send_document.assert_not_awaited()
+    fake_adapter.send_video.assert_not_awaited()

@@ -218,9 +218,14 @@ class GatewayVoiceMixin:
         if not success:
             adapter._voice_input_callback = None
             return t("gateway.voice.channel_join_permissions")
-        self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
-                               event.source.chat_id, "all", in_call=True)
-        return t("gateway.voice.channel_joined", name=voice_channel.name)
+        voice_key = self._voice_key_for_source(event.source)
+        mode = self._voice_mode.get(voice_key, "all")
+        self._apply_voice_mode(adapter, voice_key, event.source.chat_id, mode, in_call=True)
+        reply_key = {
+            "voice_only": "gateway.voice.channel_joined_voice_only",
+            "off": "gateway.voice.channel_joined_off",
+        }.get(mode, "gateway.voice.channel_joined")
+        return t(reply_key, name=voice_channel.name)
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Hang up. A chat-scoped call is left whether or not we can still speak into it.

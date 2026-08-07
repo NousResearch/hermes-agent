@@ -86,6 +86,54 @@ def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
         assert cli_main._detect_venv_python_processes() == []
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_preserves_long_gateway_cmdline(_winp, tmp_path):
+    """Gateway classification must see argv beyond the diagnostic prefix."""
+    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
+    long_runtime = "C:\\Users\\u\\AppData\\Roaming\\uv\\python\\" + ("deep-" * 28)
+    cmdline = f'"{long_runtime}python.exe" -m hermes_cli.main gateway run --replace'
+    assert len(cmdline) > 120
+    me = MagicMock()
+    me.parents.return_value = []
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter([_proc(701, venv_py, "python.exe", cmdline.split())]),
+        Process=lambda *a, **k: me,
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        matches = cli_main._detect_venv_python_processes()
+
+    assert matches == [(701, "python.exe", cmdline)]
+
+
+def test_format_venv_python_holders_bounds_diagnostic_cmdline():
+    cmdline = "python.exe " + ("--arg value " * 40)
+    rendered = cli_main._format_venv_python_holders_message(
+        [(701, "python.exe", cmdline)]
+    )
+    detail = next(line for line in rendered.splitlines() if "PID 701" in line)
+    assert len(detail.split("  ", 3)[-1]) <= 123
+    assert detail.endswith("...")
+
+
+def test_format_venv_python_holders_fails_closed_on_redactor_error(monkeypatch):
+    import hermes_cli._scan_venv_blockers as scanner
+
+    def _fail_redaction(_cmdline):
+        raise RuntimeError("redactor unavailable")
+
+    monkeypatch.setattr(
+        scanner, "_redact_sensitive_cmdline", _fail_redaction
+    )
+    raw = "python.exe --token secret-value"
+    rendered = cli_main._format_venv_python_holders_message(
+        [(701, "python.exe", raw)]
+    )
+    assert "secret-value" not in rendered
+    assert "<redacted>" in rendered
+
+
 
 
 # ---------------------------------------------------------------------------

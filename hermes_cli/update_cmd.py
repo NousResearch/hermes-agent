@@ -2921,7 +2921,9 @@ def _detect_venv_python_processes(
         if not is_holder:
             continue
         name = info.get("name") or Path(exe).name
-        matches.append((int(pid), str(name), cmdline_raw[:120]))
+        # Preserve the live argv for gateway classification. Long install
+        # paths can place ``gateway run`` beyond a diagnostic prefix.
+        matches.append((int(pid), str(name), cmdline_raw))
     return matches
 
 def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:
@@ -2936,7 +2938,16 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
             hint = "  ← Hermes Desktop backend (close the desktop app)"
         elif "gateway" in low:
             hint = "  ← gateway"
-        lines.append(f"  PID {pid}  {name}  {cmdline}{hint}")
+        diagnostic = cmdline
+        try:
+            from hermes_cli._scan_venv_blockers import _format_diagnostic_cmdline
+
+            diagnostic = _format_diagnostic_cmdline(diagnostic)
+        except Exception:
+            # Never expose a raw process command line when the authoritative
+            # formatter is unavailable or fails closed.
+            diagnostic = "<redacted>"
+        lines.append(f"  PID {pid}  {name}  {diagnostic}{hint}")
     if len(matches) > 6:
         lines.append(f"  ... and {len(matches) - 6} more")
     lines.append("")
@@ -3036,9 +3047,8 @@ def _leftover_pausable_gateway_pids(
     to exempt them (``_is_pausable_gateway``), so the preflight's exemption
     and this guard's tolerance cannot drift apart — matcher drift between
     two views of the same process table is what produced the launcher/worker
-    dead-end fixed above. The scan captures only a 120-char cmdline prefix,
-    so the live argv is re-read where psutil allows; an unreadable argv
-    falls back to the captured prefix.
+    dead-end fixed above. The scan preserves the full cmdline for reliable
+    gateway classification; diagnostics are bounded separately when displayed.
 
     Returns ``None`` when any holder is not a pausable gateway — an operator
     REPL, a stray script, or the Desktop backend has no pause machinery

@@ -17,6 +17,7 @@ import pytest
 
 import agent.redact as redact_module
 from hermes_cli._scan_venv_blockers import (
+    _format_diagnostic_cmdline,
     _is_pausable_gateway,
     _redact_sensitive_cmdline,
     main,
@@ -96,6 +97,14 @@ def test_redact_short_flags_not_redacted() -> None:
     assert result == raw  # short flags pass through unchanged
 
 
+def test_diagnostic_cmdline_is_bounded_after_redaction() -> None:
+    raw = "python.exe " + ("--arg value " * 40) + "--token secret"
+    result = _format_diagnostic_cmdline(raw)
+    assert len(result) == 120
+    assert result.endswith("...")
+    assert "secret" not in result
+
+
 # ---------------------------------------------------------------------------
 # _is_pausable_gateway — the gateway exemption
 #
@@ -129,6 +138,13 @@ def test_redact_short_flags_not_redacted() -> None:
     ],
 )
 def test_is_pausable_gateway_accepts_gateway_run_chains(cmdline: str) -> None:
+    assert _is_pausable_gateway(cmdline) is True
+
+
+def test_is_pausable_gateway_accepts_long_runtime_path() -> None:
+    runtime = "C:\\Users\\u\\AppData\\Roaming\\uv\\python\\" + ("deep-" * 28)
+    cmdline = f'"{runtime}python.exe" -m hermes_cli.main gateway run --replace'
+    assert len(cmdline) > 120
     assert _is_pausable_gateway(cmdline) is True
 
 
@@ -212,3 +228,21 @@ def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
     assert data["blocked"] is True
     assert [p["pid"] for p in data["processes"]] == [78]
     assert data["pausable_gateways"] == 0
+
+
+def test_main_exempts_long_managed_runtime_gateway(monkeypatch, capsys):
+    """Classification uses the full argv, even when the runtime path is long."""
+    runtime = "C:\\Users\\u\\AppData\\Roaming\\uv\\python\\" + ("deep-" * 28)
+    gateway = (
+        90,
+        "python.exe",
+        f'"{runtime}python.exe" -m hermes_cli.main gateway run --replace',
+    )
+    assert len(gateway[2]) > 120
+
+    code, data = _run_main_with_detector(monkeypatch, capsys, [gateway])
+
+    assert code == 0
+    assert data["blocked"] is False
+    assert data["processes"] == []
+    assert data["pausable_gateways"] == 1

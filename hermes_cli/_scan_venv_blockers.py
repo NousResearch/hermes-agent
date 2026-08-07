@@ -26,6 +26,7 @@ _SENSITIVE_LONG_FLAGS: list[str] = [
     "--private-key",
     "--session-key",
 ]
+_DIAGNOSTIC_CMDLINE_LIMIT = 120
 
 
 def _probe_fail_json() -> str:
@@ -92,6 +93,14 @@ def _redact_sensitive_cmdline(cmdline: str) -> str:
     return cmdline
 
 
+def _format_diagnostic_cmdline(cmdline: str) -> str:
+    """Redact and bound a command line intended for diagnostic output."""
+    diagnostic = _redact_sensitive_cmdline(cmdline)
+    if len(diagnostic) > _DIAGNOSTIC_CMDLINE_LIMIT:
+        return diagnostic[: _DIAGNOSTIC_CMDLINE_LIMIT - 3] + "..."
+    return diagnostic
+
+
 def _is_pausable_gateway(cmdline: str) -> bool:
     """Return True when *cmdline* is a gateway process the updater can pause.
 
@@ -144,7 +153,7 @@ def main() -> None:
         {
             "pid": pid,
             "name": name,
-            "cmdline": _redact_sensitive_cmdline(cmdline),
+            "cmdline": _format_diagnostic_cmdline(cmdline),
         }
         for pid, name, cmdline in matches
         if not _is_pausable_gateway(cmdline)

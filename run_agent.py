@@ -1695,6 +1695,13 @@ class AIAgent:
         # Emoji ranges (Misc Symbols, Dingbats, Emoticons, Supplemental, etc.)
         if ord(last) >= 0x1F300:
             return True
+        # A URL at the end of a response is a complete response, not a
+        # truncation: the trailing path segment's last character (e.g. the
+        # "l" in "index.html") is not in the punctuation set above, so a
+        # bare-URL ending would otherwise be misreported as truncated.
+        last_token = stripped.split()[-1]
+        if last_token.startswith(("http://", "https://", "ftp://")):
+            return True
         return False
 
     def _is_ollama_glm_backend(self) -> bool:

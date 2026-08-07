@@ -644,10 +644,12 @@ Independent of the content scanner above, `skills.write_approval` gates **every*
 
 ```yaml
 skills:
-  write_approval: false   # false = write freely (default) | true = stage every write for review
+  write_approval: false         # false = write freely (default) | true = stage every write for review
+  write_approval_max_pending: 100
+  write_approval_ttl_days: 30
 ```
 
-When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
+When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Cleanup runs inside that pending-skill store whenever a skill write is staged or a pending skill record is listed, looked up, or counted. It uses each record's persisted `created_at` as the TTL authority, expires only records older than `30` days by default, keeps records exactly on the boundary, and keeps future timestamps. Readable legacy records with missing or invalid `created_at` are never TTL-deleted just for missing metadata. The queue also stays bounded to `100` readable pending skill records by default, evicting the oldest overflow records first, and `/skills pending` shows a cleanup notice when removals happened. Memory has the same approval gate (`memory.write_approval`, below) but does not use this bounded queue or expiry policy. Toggle at runtime with `/skills approval on|off`. Full walkthrough: [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
 
 ## Memory Configuration
 

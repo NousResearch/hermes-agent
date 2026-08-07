@@ -30,10 +30,16 @@ def _fmt_state(subsystem: str) -> str:
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
-def _fmt_pending_list(subsystem: str) -> str:
-    records = wa.list_pending(subsystem)
+def _fmt_pending_list(subsystem: str, snapshot=None) -> str:
+    if snapshot is None:
+        snapshot = wa.pending_review_snapshot(subsystem)
+    records = snapshot["records"]
+    cleanup = _fmt_cleanup_notice(subsystem, snapshot)
     if not records:
-        return f"No pending {subsystem} writes."
+        out = f"No pending {subsystem} writes."
+        if cleanup:
+            out += f"\n\n{cleanup}"
+        return out
     lines = [f"Pending {subsystem} writes ({len(records)}):"]
     for r in records:
         origin = r.get("origin", "foreground")
@@ -44,7 +50,23 @@ def _fmt_pending_list(subsystem: str) -> str:
     lines.append(f"Apply: {where}   Reject: /{subsystem} reject <id>")
     if subsystem == wa.SKILLS:
         lines.append("Review full diff: /skills diff <id>")
+    if cleanup:
+        lines.extend(["", cleanup])
     return "\n".join(lines)
+
+
+def _fmt_cleanup_notice(subsystem: str, snapshot) -> str:
+    expired = snapshot.get("expired_count", len(snapshot.get("expired_ids", [])))
+    overflow = snapshot.get("overflow_count", len(snapshot.get("overflow_ids", [])))
+    if not expired and not overflow:
+        return ""
+    subject = "skill" if subsystem == wa.SKILLS else subsystem
+    parts = []
+    if expired:
+        parts.append(f"{expired} expired")
+    if overflow:
+        parts.append(f"{overflow} overflow")
+    return f"Cleanup removed {' and '.join(parts)} pending {subject} write(s)."
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +79,7 @@ def handle_pending_subcommand(
     *,
     memory_store=None,
     set_mode_fn=None,
+    pending_snapshot=None,
 ) -> Optional[str]:
     """Dispatch a /memory or /skills subcommand.
 
@@ -76,13 +99,13 @@ def handle_pending_subcommand(
     """
     if not args:
         # Bare /memory or /skills with no sub → show pending + gate state.
-        return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem)
+        return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem, pending_snapshot)
 
     sub = args[0].lower()
     rest = args[1:]
 
     if sub == "pending":
-        return _fmt_pending_list(subsystem)
+        return _fmt_pending_list(subsystem, pending_snapshot)
 
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)
@@ -110,26 +133,31 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     if err or target is None:
         return err or f"Usage: /{subsystem} approve <id>"
 
-    records = wa.list_pending(subsystem)
-    if not records:
-        return f"No pending {subsystem} writes."
+    with wa.pending_operation_lock(subsystem):
+        records = wa.list_pending(subsystem)
+        if not records:
+            return f"No pending {subsystem} writes."
 
-    if target.lower() == "all":
-        targets = list(records)
-    else:
-        rec = wa.get_pending(subsystem, target)
-        if not rec:
-            return f"No pending {subsystem} write with id '{target}'."
-        targets = [rec]
-
-    applied, failed = 0, []
-    for rec in targets:
-        ok, msg = _apply_one(subsystem, rec, memory_store)
-        if ok:
-            wa.discard_pending(subsystem, rec["id"])
-            applied += 1
+        if target.lower() == "all":
+            targets = list(records)
         else:
-            failed.append(f"{rec['id']}: {msg}")
+            rec = wa.get_pending(subsystem, target)
+            if not rec:
+                return f"No pending {subsystem} write with id '{target}'."
+            targets = [rec]
+
+        applied, failed = 0, []
+        for rec in targets:
+            ok, msg = _apply_one(subsystem, rec, memory_store)
+            if ok:
+                if wa.discard_pending(subsystem, rec["id"]):
+                    applied += 1
+                elif subsystem != wa.SKILLS:
+                    applied += 1
+                else:
+                    failed.append(f"{rec['id']}: no longer pending")
+            else:
+                failed.append(f"{rec['id']}: {msg}")
 
     out = [f"Approved {applied} {subsystem} write(s)."]
     if failed:
@@ -160,10 +188,11 @@ def _reject(subsystem: str, rest: List[str]) -> str:
     if err or target is None:
         return err or f"Usage: /{subsystem} reject <id>"
     if target.lower() == "all":
-        n = 0
-        for rec in wa.list_pending(subsystem):
-            if wa.discard_pending(subsystem, rec["id"]):
-                n += 1
+        with wa.pending_operation_lock(subsystem):
+            n = 0
+            for rec in wa.list_pending(subsystem):
+                if wa.discard_pending(subsystem, rec["id"]):
+                    n += 1
         return f"Rejected {n} pending {subsystem} write(s)."
     if wa.discard_pending(subsystem, target):
         return f"Rejected pending {subsystem} write '{target}'."

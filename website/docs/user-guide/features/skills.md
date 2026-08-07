@@ -500,7 +500,9 @@ wanting eyes on the self-improvement loop), turn on the write-approval gate:
 
 ```yaml
 skills:
-  write_approval: false     # false = write freely (default) | true = require approval
+  write_approval: false         # false = write freely (default) | true = require approval
+  write_approval_max_pending: 100
+  write_approval_ttl_days: 30
 ```
 
 When `write_approval: true`, every `skill_manage` write (create / edit /
@@ -517,6 +519,8 @@ reviewed with the same familiar approve/deny flow as dangerous commands:
 /skills reject <id>         # drop it (or 'all')
 /skills approval on         # turn the gate on (or 'off') and persist it
 ```
+
+The pending-skill queue is store-owned and self-maintaining. Each skill stage, list, lookup, and count pass runs cleanup inside `~/.hermes/pending/skills/`, using the record's persisted `created_at` as the TTL authority. By default, records strictly older than `30` days expire; records exactly `30` days old stay pending, and future timestamps stay pending too. Readable legacy records with missing or invalid `created_at` stay pending unless the queue is over the count cap. The default cap is `100` readable pending skill records, and overflow eviction removes the oldest records first. When cleanup removes anything, `/skills pending` adds a short cleanup notice in the same running process; the existing cleanup log remains the audit path across restarts. Memory writes keep their separate approval flow and are not part of this bounded skill queue.
 
 The review surface works in the interactive CLI and on messaging platforms
 (diff output is truncated for chat bubbles — read the full diff on the CLI or

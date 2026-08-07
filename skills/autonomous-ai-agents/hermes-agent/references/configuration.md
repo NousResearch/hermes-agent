@@ -16,12 +16,15 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 | `stt` | `enabled`, `provider` (local/groq/openai/mistral/elevenlabs/deepinfra) |
 | `tts` | `provider` (edge/elevenlabs/openai/minimax/mistral/neutts/gemini/piper/kittentts/deepinfra/xai) |
 | `memory` | `memory_enabled`, `user_profile_enabled`, `provider`, `write_approval` |
+| `skills` | `external_dirs`, `guard_agent_created`, `write_approval`, `write_approval_max_pending`, `write_approval_ttl_days` |
 | `security` | `redact_secrets`, `tirith_enabled`, `website_blocklist` |
 | `delegation` | `model`, `provider`, `max_concurrent_children`, `max_iterations` (50), `max_spawn_depth` |
 | `checkpoints` | `enabled`, `max_snapshots` (50) |
 | `curator` | `enabled`, `consolidate` (false, opt-in aux-model consolidation), `interval_hours`, `stale_after_days` |
 
 `hermes config check` reports sections missing from an older config.
+
+When `skills.write_approval` is on, the staged-skill queue in `~/.hermes/pending/skills/` is cleaned up inside the store owner during stage/list/lookup/count. Cleanup uses each record's persisted `created_at`, expires only records strictly older than `write_approval_ttl_days` (`30` by default), keeps records exactly on the boundary, caps readable pending skill records at `write_approval_max_pending` (`100` by default), and shows a cleanup notice on `/skills pending` when removals happened. Memory pending records are excluded from this lifecycle.
 
 ### Toolsets
 

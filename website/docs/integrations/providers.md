@@ -308,6 +308,31 @@ Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_U
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
 :::
 
+### DeepSeek — model-aware Responses API
+
+Hermes keeps the canonical `deepseek` provider and selects the wire protocol by model:
+
+- `deepseek-v4-flash` uses DeepSeek's Responses API at `https://api.deepseek.com/responses`.
+- `deepseek-v4-pro`, dated variants, and unknown models remain on Chat Completions under `https://api.deepseek.com/v1`.
+- Custom `DEEPSEEK_BASE_URL` proxies are not rewritten; only the official DeepSeek endpoint is normalized.
+
+Set `DEEPSEEK_API_KEY` in `~/.hermes/.env`, then select Flash normally:
+
+```yaml
+model:
+  provider: deepseek
+  default: deepseek-v4-flash
+```
+
+DeepSeek V4 Flash also supports server-side native web search. It is deliberately opt-in because search turns can consume substantially more tokens than ordinary inference:
+
+```yaml
+web:
+  search_backend: deepseek
+```
+
+Hermes replaces the enabled client-side `web_search` function one-for-one with DeepSeek's native `{"type": "web_search"}` tool. It does not grant search when the Hermes web tool is disabled, and selecting Firecrawl, Tavily, or another backend keeps client-side dispatch unchanged. Native `web_search_call` items are retained across turns so follow-up questions can reuse the server-side search context. This backend is search-only; configure a separate `web.extract_backend` when you also need page extraction.
+
 ### xAI (Grok) — Responses API + Prompt Caching
 
 xAI is wired through the Responses API (`codex_responses` transport) for automatic reasoning support on Grok 4 models — no `reasoning_effort` parameter needed, the server reasons by default. Set `XAI_API_KEY` in `~/.hermes/.env` and pick xAI in `hermes model`, or drop `grok` as a shortcut into `/model grok-4-fast-reasoning`.

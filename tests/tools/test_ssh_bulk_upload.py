@@ -50,6 +50,33 @@ class TestSSHBulkUpload:
             mock_run.assert_not_called()
             mock_popen.assert_not_called()
 
+    def test_remote_path_escaping_base_is_rejected(self, mock_env, tmp_path, monkeypatch):
+        """A remote_path that escapes the sync base is rejected on every platform.
+
+        Regression: the guard used ``rel_remote.startswith("../")``, which only
+        catches POSIX separators. On Windows ``os.path.relpath`` returns
+        ``..\\..\\``, slipping past it, so the staged ``os.symlink``/copy below
+        wrote outside the staging dir. ``has_traversal_component`` is
+        separator-agnostic, so the escape is caught on Windows too.
+        """
+        host = tmp_path / "payload.txt"
+        host.write_text("x")
+
+        # base is "/home/testuser/.hermes"; this remote_path escapes it.
+        files = [(str(host), "/home/testuser/.hermes/../../../etc/evil.txt")]
+
+        # Belt-and-braces: if the guard were bypassed, the staging writes must
+        # not touch the real filesystem outside the temp staging dir.
+        monkeypatch.setattr(ssh_env.os, "symlink", lambda *a, **k: None)
+        monkeypatch.setattr(ssh_env.os, "makedirs", lambda *a, **k: None)
+        monkeypatch.setattr(ssh_env.shutil, "copy2", lambda *a, **k: None)
+
+        with patch.object(subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0)), \
+             patch.object(subprocess, "Popen", side_effect=lambda *a, **k: _mock_proc()):
+            with pytest.raises(RuntimeError, match="escapes sync base"):
+                mock_env._ssh_bulk_upload(files)
+
     def test_mkdir_batched_into_single_call(self, mock_env, tmp_path):
         """All parent directories should be created in one SSH call."""
         # Create test files

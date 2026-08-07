@@ -702,6 +702,83 @@ class BuzzAdapter(BasePlatformAdapter):
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
 
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a video: local files upload via --file, URLs go as a link."""
+        local = Path(video_path).expanduser() if not video_path.startswith(("http://", "https://")) else None
+        if local is not None and local.is_file():
+            args = [
+                "messages", "send",
+                "--channel", str(chat_id),
+                "--file", str(local),
+                "--content", "-",
+            ]
+            if reply_to:
+                args += ["--reply-to", str(reply_to)]
+            code, out, err = await self._run_cli(args, input_text=caption or "")
+            if code != 0:
+                return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
+            try:
+                data = json.loads(out or "{}")
+            except ValueError:
+                data = {}
+            event_id = data.get("event_id")
+            if event_id:
+                self._mark_seen(str(chat_id), str(event_id))
+            return SendResult(
+                success=bool(data.get("accepted", True)),
+                message_id=str(event_id) if event_id else None,
+                raw_response=data,
+            )
+        # For remote URLs, send as a text link.
+        text = f"{caption}\n{video_path}" if caption else video_path
+        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
+    async def send_audio(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send audio: local files upload via --file, URLs go as a link."""
+        local = Path(audio_path).expanduser() if not audio_path.startswith(("http://", "https://")) else None
+        if local is not None and local.is_file():
+            args = [
+                "messages", "send",
+                "--channel", str(chat_id),
+                "--file", str(local),
+                "--content", "-",
+            ]
+            if reply_to:
+                args += ["--reply-to", str(reply_to)]
+            code, out, err = await self._run_cli(args, input_text=caption or "")
+            if code != 0:
+                return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
+            try:
+                data = json.loads(out or "{}")
+            except ValueError:
+                data = {}
+            event_id = data.get("event_id")
+            if event_id:
+                self._mark_seen(str(chat_id), str(event_id))
+            return SendResult(
+                success=bool(data.get("accepted", True)),
+                message_id=str(event_id) if event_id else None,
+                raw_response=data,
+            )
+        text = f"{caption}\n{audio_path}" if caption else audio_path
+        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         chat_id = str(chat_id)
         state = self._channel_state.get(chat_id)

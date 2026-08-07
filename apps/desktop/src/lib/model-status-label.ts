@@ -54,19 +54,26 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
 function prettifyBase(base: string): string {
-  if (/^claude-/i.test(base)) {
-    return titleCase(base.replace(/^claude-/i, '').replace(/-/g, ' '))
+  // A dash between digits is a version separator, so restore the dot the id
+  // dropped (opus-4-8 → opus 4.8, gemini-3-6 → gemini 3.6, gpt-5-5 → gpt 5.5).
+  // The lookahead protects parameter-size suffixes, where the trailing number
+  // is a size and not a minor version: llama-3-70b stays "Llama 3 70b", not
+  // "Llama 3.70b".
+  const versioned = base.replace(/(\d)-(\d{1,2})(?!\d*[bkm])/gi, '$1.$2')
+
+  if (/^claude-/i.test(versioned)) {
+    return titleCase(versioned.replace(/^claude-/i, '').replace(/-/g, ' '))
   }
 
-  if (/^gpt-/i.test(base)) {
-    return base.replace(/^gpt-/i, 'GPT-')
+  if (/^gpt-/i.test(versioned)) {
+    return versioned.replace(/^gpt-/i, 'GPT-')
   }
 
-  if (/^gemini-/i.test(base)) {
-    return base.replace(/^gemini-/i, 'Gemini ').replace(/-/g, ' ')
+  if (/^gemini-/i.test(versioned)) {
+    return titleCase(versioned.replace(/^gemini-/i, 'Gemini ').replace(/-/g, ' '))
   }
 
-  return titleCase(base.replace(/-/g, ' '))
+  return titleCase(versioned.replace(/-/g, ' '))
 }
 
 /** Split a model id into a clean display name plus an optional grayed variant

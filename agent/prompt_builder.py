@@ -2274,18 +2274,21 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     """AGENTS.md — merged directory chain from git root down to cwd.
 
     Each directory on the chain (see ``_agents_md_directory_chain``)
-    contributes its ``AGENTS.md`` / ``agents.md`` (first name wins per
-    directory) as its own provenance-labelled section.  Identical content
-    encountered again further down the chain (copied or symlinked files) is
-    deduplicated.  With a single match — the common case, and always the
-    case outside a git repo — output is identical to the historical
-    single-file behavior.
+    contributes its ``AGENTS.override.md`` / ``AGENTS.md`` / ``agents.md``
+    (first name wins per directory) as its own provenance-labelled section.
+    ``AGENTS.override.md`` wins over ``AGENTS.md`` so a developer can keep a
+    personal, typically-gitignored override next to the committed project
+    instructions without editing the tracked file (same convention as
+    earendil-works/pi#7681).  Identical content encountered again further
+    down the chain (copied or symlinked files) is deduplicated.  With a
+    single match — the common case, and always the case outside a git repo —
+    output is identical to the historical single-file behavior.
     """
     cwd_resolved = cwd_path.resolve()
     sections: List[str] = []
     seen_content: set = set()
     for directory in _agents_md_directory_chain(cwd_resolved):
-        for name in ["AGENTS.md", "agents.md"]:
+        for name in ["AGENTS.override.md", "AGENTS.md", "agents.md"]:
             candidate = directory / name
             if not candidate.exists():
                 continue

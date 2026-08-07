@@ -364,6 +364,14 @@ class Mem0MemoryProvider(MemoryProvider):
             _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         )
         self._channel = kwargs.get("platform") or "cli"
+        # Release any prior backend before creating a new one. initialize()
+        # runs once per session in a long-lived gateway process; without this,
+        # the previous session's OSSBackend (and its QdrantLocal file lock on
+        # mem0_qdrant/.lock) is only released by GC, which is non-deterministic
+        # and intermittently fails the next init with "Storage folder ... already
+        # accessed by another instance of Qdrant client".
+        if self._backend is not None:
+            self._shutdown_backend()
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
             atexit.register(self._shutdown_backend)

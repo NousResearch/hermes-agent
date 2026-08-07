@@ -1317,6 +1317,14 @@ def try_recover_primary_transport(
         agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]
         agent.api_mode = rt["api_mode"]
+        agent.max_tokens = rt.get("max_tokens")
+        agent.tools = rt.get("tools", getattr(agent, "tools", []))
+        agent.valid_tool_names = set(
+            rt.get("valid_tool_names", getattr(agent, "valid_tool_names", set()))
+        )
+        agent.enabled_toolsets = rt.get(
+            "enabled_toolsets", getattr(agent, "enabled_toolsets", None)
+        )
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
@@ -1547,6 +1555,14 @@ def restore_primary_runtime(agent) -> bool:
         agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
         agent.api_mode = rt["api_mode"]
+        agent.max_tokens = rt.get("max_tokens")
+        agent.tools = rt.get("tools", getattr(agent, "tools", []))
+        agent.valid_tool_names = set(
+            rt.get("valid_tool_names", getattr(agent, "valid_tool_names", set()))
+        )
+        agent.enabled_toolsets = rt.get(
+            "enabled_toolsets", getattr(agent, "enabled_toolsets", None)
+        )
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
@@ -2741,6 +2757,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
+        "max_tokens": getattr(agent, "max_tokens", None),
+        "tools": getattr(agent, "tools", []),
+        "valid_tool_names": set(getattr(agent, "valid_tool_names", set())),
+        "enabled_toolsets": getattr(agent, "enabled_toolsets", None),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

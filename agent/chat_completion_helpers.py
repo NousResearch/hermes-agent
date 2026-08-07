@@ -2099,6 +2099,61 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.requested_provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
+        # A fallback endpoint can have a much smaller output/rate limit than
+        # the primary provider.  Without a per-entry cap the transport falls
+        # back to the provider profile default (custom providers default to
+        # 65,536), which can make the recovery request fail before generation
+        # begins.  Accept both names used elsewhere in config and keep invalid
+        # values non-fatal so one typo does not disable the entire chain.
+        _fb_max_tokens_raw = fb.get("max_output_tokens", fb.get("max_tokens"))
+        if _fb_max_tokens_raw is not None:
+            try:
+                if isinstance(_fb_max_tokens_raw, bool):
+                    raise ValueError("boolean is not a token limit")
+                _fb_max_tokens = int(_fb_max_tokens_raw)
+                if _fb_max_tokens <= 0:
+                    raise ValueError("token limit must be positive")
+                agent.max_tokens = _fb_max_tokens
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring invalid fallback max_output_tokens for %s/%s: %r",
+                    fb_provider,
+                    fb_model,
+                    _fb_max_tokens_raw,
+                )
+        # Allow a fallback with a tight tokens-per-minute allowance to expose
+        # a smaller tool schema than the primary model.  This changes only the
+        # active fallback request surface; restore_primary_runtime() puts the
+        # original tools back on the next turn.
+        _fb_enabled_toolsets = fb.get("enabled_toolsets")
+        if isinstance(_fb_enabled_toolsets, list):
+            from model_tools import get_tool_definitions
+
+            _fb_enabled_toolsets = [
+                str(name).strip()
+                for name in _fb_enabled_toolsets
+                if str(name).strip()
+            ]
+            agent.tools = get_tool_definitions(
+                enabled_toolsets=_fb_enabled_toolsets,
+                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                quiet_mode=True,
+            )
+            agent.valid_tool_names = {
+                tool["function"]["name"]
+                for tool in agent.tools
+                if isinstance(tool, dict)
+                and isinstance(tool.get("function"), dict)
+                and tool["function"].get("name")
+            }
+            agent.enabled_toolsets = _fb_enabled_toolsets
+            logger.info(
+                "Fallback %s/%s scoped to %d tools from toolsets: %s",
+                fb_provider,
+                fb_model,
+                len(agent.tools),
+                ", ".join(_fb_enabled_toolsets) or "(none)",
+            )
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True

@@ -433,8 +433,13 @@ describe('renderRpcResult', () => {
 
   describe('session.usage', () => {
     it('formats calls / input / output / total with thousands separators', () => {
+      // renderRpcResult formats via toLocaleString(), which follows the host
+      // locale ("1,234,567" on en-US, "1.234.567" on de_DE, ...). Build the
+      // expectation with the same call so the test passes on any locale while
+      // still covering the thousands-separator grouping behaviour.
+      const n = (v: number) => v.toLocaleString()
       expect(renderRpcResult({ calls: 12, input: 1_234_567, output: 89_012, total: 1_323_579 }, 'usage')).toBe(
-        'Usage: 12 calls · 1,234,567 in / 89,012 out · 1,323,579 total'
+        `Usage: 12 calls · ${n(1_234_567)} in / ${n(89_012)} out · ${n(1_323_579)} total`
       )
     })
 

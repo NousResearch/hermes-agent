@@ -1,0 +1,42 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: agentkey
+description: >-
+  Remote HTTP MCP — web search, social media, crypto & on-chain data
+  through a single API key. Powered by Chainbase Labs.
+source: https://github.com/chainbase-labs/agentkey
+
+# AgentKey is a hosted remote MCP endpoint. No local install needed.
+transport:
+  type: http
+  url: https://api.agentkey.app/v1/mcp
+
+# Users get their API key from https://console.agentkey.app.
+# The key is saved to .env at install time and referenced in the
+# Authorization header via ${AGENTKEY_API_KEY}.
+auth:
+  type: api_key
+  env:
+    - name: AGENTKEY_API_KEY
+      prompt: "Your AgentKey API key (get one at https://console.agentkey.app)"
+      required: true
+      secret: true
+
+# AgentKey exposes tools for web search, scraping, social media, and
+# crypto/on-chain queries. We leave default_enabled unset so the
+# install-time checklist starts with everything pre-checked — users
+# prune what they don't want.
+# (The tool surface may grow over time as AgentKey adds sources.)
+
+post_install: |
+  On first connection, Hermes will use the API key you provided to
+  authenticate with AgentKey. No further setup is needed.
+
+  Start a new Hermes session to load the AgentKey tools.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure agentkey
+
+  Pricing, subscription, and usage tracking: https://console.agentkey.app

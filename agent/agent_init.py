@@ -2067,6 +2067,7 @@ def init_agent(
             _compression_cfg.get("micro_compact_defrag_threshold_tokens", 2000),
             2000,
         ),
+    )
     # Configurable cap for the tail message floor (see
     # _find_tail_cut_by_tokens in context_compressor.py).  0 = use the
     # module-level default (8), preserving backward compatibility.

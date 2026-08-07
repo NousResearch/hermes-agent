@@ -45,6 +45,12 @@ import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
+import {
+  waitForActionCompletion,
+  waitForGatewayState,
+} from "@/lib/gateway-lifecycle";
+import { resolveProfileStatusLoad } from "@/lib/profile-load";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import type {
   StatusResponse,
   MemoryStatus,
@@ -191,6 +197,10 @@ const MEMORY_STATUS_TONE: Record<
 
 export default function SystemPage() {
   const { toast, showToast } = useToast();
+  const { profile, currentProfile } = useProfileScope();
+  const targetProfile = profile || currentProfile;
+  const selectedProfileRef = useRef(targetProfile);
+  const loadRequestRef = useRef(0);
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
@@ -203,6 +213,12 @@ export default function SystemPage() {
   const [curator, setCurator] = useState<CuratorStatus | null>(null);
   const [portal, setPortal] = useState<PortalStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadedProfile, setLoadedProfile] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+
+  useEffect(() => {
+    selectedProfileRef.current = targetProfile;
+  }, [targetProfile]);
 
   const [activeAction, setActiveAction] = useState<string | null>(null);
   const [consoleOpen, setConsoleOpen] = useState(false);
@@ -253,8 +269,9 @@ export default function SystemPage() {
   const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
 
   const loadAll = useCallback(() => {
-    Promise.allSettled([
-      api.getStatus(),
+    const requestId = ++loadRequestRef.current;
+    const requests = [
+      api.getStatus(targetProfile),
       api.getSystemStats(),
       api.getMemory(),
       api.getCredentialPool(),
@@ -265,9 +282,22 @@ export default function SystemPage() {
       // Cached (non-forced) check so the version row shows update status on
       // load without a separate effect / a forced network round-trip.
       api.checkHermesUpdate(false),
-    ])
+    ] as const;
+    return Promise.resolve()
+      .then(() => {
+        if (requestId !== loadRequestRef.current) return;
+        setLoading(true);
+        setStatus(null);
+        setLoadedProfile(null);
+        setStatusError(null);
+      })
+      .then(() => Promise.allSettled(requests))
       .then(([s, st, m, p, c, h, cur, prt, upd]) => {
-        if (s.status === "fulfilled") setStatus(s.value);
+        if (requestId !== loadRequestRef.current) return;
+        const profileLoad = resolveProfileStatusLoad(targetProfile, s);
+        setStatus(profileLoad.status);
+        setLoadedProfile(profileLoad.loadedProfile);
+        setStatusError(profileLoad.error);
         if (st.status === "fulfilled") setStats(st.value);
         if (m.status === "fulfilled") setMemory(m.value);
         if (p.status === "fulfilled") setPool(p.value.providers);
@@ -277,28 +307,52 @@ export default function SystemPage() {
         if (prt.status === "fulfilled") setPortal(prt.value);
         if (upd.status === "fulfilled") setUpdateInfo(upd.value);
       })
-      .finally(() => setLoading(false));
-  }, []);
+      .finally(() => {
+        if (requestId === loadRequestRef.current) setLoading(false);
+      });
+  }, [targetProfile]);
 
   useEffect(() => {
-    loadAll();
+    void loadAll();
   }, [loadAll]);
 
   // ── Gateway lifecycle ──────────────────────────────────────────────
   const runGateway = async (verb: "start" | "stop" | "restart") => {
+    const actionProfile = targetProfile;
     try {
+      let actionName: string;
+      let actionPid: number | null;
       if (verb === "start") {
-        await api.startGateway();
-        setActiveAction("gateway-start");
+        const action = await api.startGateway(actionProfile);
+        actionName = action.name;
+        actionPid = action.pid;
       } else if (verb === "stop") {
-        await api.stopGateway();
-        setActiveAction("gateway-stop");
+        const action = await api.stopGateway(actionProfile);
+        actionName = action.name;
+        actionPid = action.pid;
       } else {
-        await api.restartGateway();
-        setActiveAction("gateway-restart");
+        const action = await api.restartGateway(actionProfile);
+        actionName = action.name;
+        actionPid = action.pid;
       }
+      setActiveAction(actionName);
       showToast(`Gateway ${verb} started`, "success");
-      setTimeout(loadAll, 3000);
+      if (verb === "restart") {
+        if (actionPid === null) {
+          throw new Error("Gateway restart did not return a process ID");
+        }
+        await waitForActionCompletion(
+          () => api.getActionStatus(actionName, 200),
+          actionPid,
+        );
+      }
+      const refreshed = await waitForGatewayState(
+        () => api.getStatus(actionProfile),
+        verb !== "stop",
+      );
+      if (selectedProfileRef.current === actionProfile) {
+        setStatus(refreshed);
+      }
     } catch (e) {
       showToast(`Gateway ${verb} failed: ${e}`, "error");
     }
@@ -628,10 +682,22 @@ export default function SystemPage() {
     ),
   });
 
-  if (loading) {
+  if (loading || loadedProfile !== targetProfile) {
     return (
       <div className="flex items-center justify-center py-24">
         <Spinner className="text-2xl text-primary" />
+      </div>
+    );
+  }
+
+  if (statusError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-24">
+        <Toast toast={toast} />
+        <p className="text-sm text-destructive">
+          Failed to load status for profile {targetProfile}: {statusError}
+        </p>
+        <Button onClick={() => void loadAll()}>Retry</Button>
       </div>
     );
   }

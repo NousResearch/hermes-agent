@@ -323,6 +323,29 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
 
 
+def _resolve_dependency_wait_cooldown_seconds() -> int:
+    """Return the dependency-wait respawn cooldown in seconds.
+
+    Reads ``HERMES_KANBAN_DEPENDENCY_WAIT_COOLDOWN_SECONDS`` from the
+    environment; falls back to ``DEFAULT_DEPENDENCY_WAIT_COOLDOWN_SECONDS``
+    when absent, empty, non-integer, or negative. A value of 0 disables the
+    cooldown (re-spawn on the next tick) — useful for tests that want to
+    assert the task becomes spawnable again immediately. Mirrors
+    ``_resolve_rate_limit_cooldown_seconds()``.
+    """
+    raw = os.environ.get(
+        "HERMES_KANBAN_DEPENDENCY_WAIT_COOLDOWN_SECONDS", ""
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_DEPENDENCY_WAIT_COOLDOWN_SECONDS
+
+
 # Worker-context caps so build_worker_context() stays bounded on
 # pathological boards (retry-heavy tasks, comment storms, giant
 # summaries). Values chosen to fit a typical 100k-char LLM prompt with
@@ -5673,8 +5696,16 @@ def block_task(
         # Dependency blocks never enter the human ``blocked`` bucket — they
         # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
         # here (rather than ``blocked``) is what keeps a cron from ever seeing
-        # a dependency-wait as something to "unblock".
+        # a dependency-wait as something to "unblock". The unblock-loop
+        # counter (``block_recurrences``) is still tracked here — mirroring
+        # the truly-blocked path's ``same_cause`` logic below — so
+        # ``check_respawn_guard``'s dependency-wait escalation can hard-stop
+        # respawning once the SAME still-unsatisfied dependency has been
+        # reconfirmed ``BLOCK_RECURRENCE_LIMIT`` times in a row, instead of
+        # the dispatcher hammering a respawn every tick forever.
         if kind == "dependency":
+            same_cause = prev_kind == kind
+            dep_recurrences = prev_recurrences + 1 if same_cause else 1
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -5682,12 +5713,13 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
-                       block_kind    = ?
+                       block_kind    = ?,
+                       block_recurrences = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, task_id) if expected_run_id is None
-                else (kind, task_id, int(expected_run_id)),
+                (kind, dep_recurrences, task_id) if expected_run_id is None
+                else (kind, dep_recurrences, task_id, int(expected_run_id)),
             )
             if cur.rowcount != 1:
                 return False
@@ -5702,7 +5734,8 @@ def block_task(
                 )
             _append_event(
                 conn, task_id, "dependency_wait",
-                {"reason": reason, "kind": kind}, run_id=run_id,
+                {"reason": reason, "kind": kind, "recurrences": dep_recurrences},
+                run_id=run_id,
             )
             _blocked_task = get_task(conn, task_id)
             _fire_kanban_lifecycle_hook(
@@ -6777,6 +6810,17 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # without thrashing. Overridable via ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``
 # for operators who want a tighter/looser probe cadence.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
+
+# Cooldown after a ``dependency_wait`` block (a ``kind='dependency'`` block
+# via ``block_task``) before the dispatcher re-spawns the worker to
+# re-verify the same still-unsatisfied parent state. Without this, a `todo`
+# card whose parent is still blocked/running respawns EVERY dispatch tick
+# with zero backoff, burning a worker slot to re-confirm the exact same
+# "still waiting" fact over and over. Overridable via
+# ``HERMES_KANBAN_DEPENDENCY_WAIT_COOLDOWN_SECONDS`` for operators who want a
+# tighter/looser probe cadence. See ``check_respawn_guard``'s
+# ``"dependency_wait_cooldown"`` guard.
+DEFAULT_DEPENDENCY_WAIT_COOLDOWN_SECONDS = 900  # 15 minutes
 
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
@@ -8134,6 +8178,37 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         blocks via the normal path — but a transient 429 gets a few
         ticks of recovery first.
 
+    ``"dependency_wait_cooldown"``
+        The most recent ``dependency_wait`` event for this task (a
+        ``block_task(kind="dependency")`` call) has no genuine promotion
+        evidence after it, and we're still inside
+        ``_resolve_dependency_wait_cooldown_seconds()`` of that event.
+        A dependency-blocked task lands in ``todo``, not ``blocked``, so it
+        can be flipped back to ``ready`` by ``recompute_ready`` without any
+        real change in the underlying dependency (e.g. an empty parent set
+        vacuously satisfying ``all(...)``, tracked separately at
+        t_78db38db). Without this guard such a task respawns every single
+        dispatch tick to re-confirm the exact same still-unsatisfied
+        dependency, burning a worker slot with zero backoff.
+
+    ``"dependency_wait_escalated"``
+        Same trigger as above, but ``block_recurrences`` (incremented by
+        ``block_task``'s dependency branch on each same-cause re-block) has
+        reached :data:`BLOCK_RECURRENCE_LIMIT`. Past that point this guard
+        stops respawning entirely — not merely for the cooldown window —
+        until genuine promotion evidence arrives. This mirrors the
+        truly-blocked path's "loop detected -> triage" breaker, adapted for
+        dependency waits: a hard stop is the correct response to a
+        dependency that has been reconfirmed unsatisfied 3+ times in a row,
+        rather than a longer timed cooldown that would eventually respawn
+        anyway.
+
+        Bypass (both reasons above): a ``status`` / ``promoted`` /
+        ``unblocked`` / ``reclaimed`` event created AFTER the dependency_wait
+        event is treated as proof of a genuine state change — mirrors the
+        ``recent_success`` bypass below — and the respawn is honored
+        immediately rather than deferred or escalated.
+
     ``"recent_success"``
         A completed run exists within ``_RESPAWN_GUARD_SUCCESS_WINDOW``
         seconds.  Useful work already succeeded for this task; wait for
@@ -8200,6 +8275,54 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     err = row["last_failure_error"]
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
+
+    # 2.5. Dependency-wait cooldown. A ``dependency`` block routes to
+    #    ``todo`` (not ``blocked``) so ``recompute_ready`` can flip it back
+    #    to ``ready`` — but that promotion path can fire on a vacuous or
+    #    unchanged parent state, not just a genuine completion. Look at the
+    #    LATEST ``dependency_wait`` event only: if a newer status/promoted/
+    #    unblocked/reclaimed event supersedes it, treat that as real
+    #    promotion evidence and fall through immediately (mirrors the
+    #    recent_success bypass below). Otherwise defer for the cooldown
+    #    window, escalating to a hard stop past BLOCK_RECURRENCE_LIMIT.
+    latest_dep_wait = conn.execute(
+        "SELECT id, created_at, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'dependency_wait' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if latest_dep_wait is not None:
+        dep_wait_at = int(latest_dep_wait["created_at"] or 0)
+        dep_wait_id = latest_dep_wait["id"]
+        promoted_after = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? "
+            "AND (created_at > ? OR (created_at = ? AND id > ?)) "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "LIMIT 1",
+            (task_id, dep_wait_at, dep_wait_at, dep_wait_id),
+        ).fetchone()
+        if not promoted_after:
+            block_row = conn.execute(
+                "SELECT block_recurrences FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            dep_recurrences = (
+                int(block_row["block_recurrences"])
+                if block_row is not None and block_row["block_recurrences"] is not None
+                else 0
+            )
+            if dep_recurrences >= BLOCK_RECURRENCE_LIMIT:
+                # Loop detected: the same still-unsatisfied dependency has
+                # been reconfirmed BLOCK_RECURRENCE_LIMIT+ times in a row.
+                # Hard-stop respawning entirely until a genuine promotion
+                # event (parent completion, manual unblock/reclaim) arrives
+                # — no timed cooldown would be honest here since the
+                # dependency itself hasn't moved.
+                return "dependency_wait_escalated"
+            dep_cooldown = _resolve_dependency_wait_cooldown_seconds()
+            if dep_cooldown > 0 and (now - dep_wait_at) < dep_cooldown:
+                return "dependency_wait_cooldown"
 
     # 3. Completed run within guard window — proof of recent success.
     #    Exception: an explicit re-queue AFTER that success (an operator

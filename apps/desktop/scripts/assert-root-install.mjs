@@ -1,11 +1,11 @@
-import { accessSync } from "fs"
-import { resolve, join } from "path"
+import { resolve } from 'node:path'
 
-const root = resolve(import.meta.dirname, "..", "..", "..")
+import { electronMirror, formatProblems, inspectBuildEnvironment } from './build-environment.mjs'
 
-try {
-  accessSync(join(root, "node_modules", "vite", "package.json"))
-} catch {
-  console.error(`Run from repo root: cd ${root} && npm ci`)
+const root = resolve(import.meta.dirname, '..', '..', '..')
+const problems = inspectBuildEnvironment({ repoRoot: root })
+
+if (problems.length > 0) {
+  console.error(formatProblems(problems, electronMirror()))
   process.exit(1)
 }

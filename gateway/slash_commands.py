@@ -461,20 +461,46 @@ class GatewaySlashCommandsMixin:
         i = 0
         while i < len(tokens):
             tok = tokens[i]
-            if tok == "--board":
+            if tok == "--":
+                i += 1
+                action = tokens[i] if i < len(tokens) else None
+                break
+            option_name, has_equals, option_value = tok.partition("=")
+            is_board_option = option_name == "--board" or (
+                len(option_name) > 2 and "--board".startswith(option_name)
+            )
+            if is_board_option and not has_equals:
                 if i + 1 >= len(tokens):
                     break
                 requested_board = tokens[i + 1]
                 i += 2
                 continue
-            if tok.startswith("--board="):
-                requested_board = tok.split("=", 1)[1]
+            if is_board_option and has_equals:
+                requested_board = option_value
                 i += 1
                 continue
             action = tok
             break
 
         is_create = action == "create"
+
+        # Worker logs are raw subprocess output. Require a real, explicitly
+        # configured admin instead of inheriting the broad /kanban allowlist.
+        if action == "log" and not self._caller_is_explicit_admin(event.source):
+            source_platform = getattr(event.source, "platform", None)
+            logger.info(
+                "Gateway /kanban log denied for %s:%s (explicit admin required)",
+                (
+                    source_platform.value
+                    if hasattr(source_platform, "value")
+                    else str(source_platform or "?")
+                ),
+                event.source.user_id,
+            )
+            return (
+                "⛔ /kanban log is admin-only here. "
+                "Ask an admin to add your user ID to this chat scope's admin allowlist."
+            )
 
         try:
             output = await asyncio.to_thread(run_slash, text)
@@ -1008,24 +1034,41 @@ class GatewaySlashCommandsMixin:
         # the same owner — fail closed.
         return False
 
-    def _resume_caller_is_admin(self, source: SessionSource) -> bool:
-        """Whether *source* is an EXPLICITLY-configured admin allowed to make a
-        cross-origin /resume or /sessions listing.
+    def _caller_is_explicit_admin(self, source: SessionSource) -> bool:
+        """Whether *source* is an explicitly configured gateway admin.
 
         Deliberately stricter than ``SlashAccessPolicy.is_admin()``: that returns
-        True for every allowed caller when slash gating is DISABLED (so commands
-        stay runnable by default), but cross-ORIGIN DATA ACCESS must require a
-        real, configured admin. Otherwise the default (no admin list) config
-        would treat every gateway caller as cross-origin-capable and re-open the
-        enumeration IDOR.
+        True for every allowed caller when slash gating is disabled, but
+        privileged data access must require a real, configured admin.
         """
         try:
-            from gateway.slash_access import policy_for_source
+            from gateway.config import GatewayConfig, Platform, PlatformConfig
+            from gateway.slash_access import (
+                canonical_scope_for_chat_type,
+                policy_for_source,
+            )
+
+            platform = getattr(source, "platform", None)
+            if not isinstance(self.config, GatewayConfig) or not isinstance(
+                platform, Platform
+            ):
+                return False
+            platform_config = self.config.platforms.get(platform)
+            if not isinstance(platform_config, PlatformConfig):
+                return False
+            if canonical_scope_for_chat_type(
+                getattr(source, "chat_type", None)
+            ) is None:
+                return False
             policy = policy_for_source(self.config, source)
             uid = getattr(source, "user_id", None)
             return bool(policy.enabled and uid and policy.is_admin(uid))
         except Exception:
             return False
+
+    def _resume_caller_is_admin(self, source: SessionSource) -> bool:
+        """Whether *source* may make cross-origin session requests."""
+        return self._caller_is_explicit_admin(source)
 
     async def _resume_target_allowed(
         self, source: SessionSource, target_id: str, allow_override: bool = False

@@ -72,7 +72,11 @@ class SlashAccessPolicy:
             # downstream code can keep using ``is_admin`` / ``can_run``
             # uniformly.
             return True
-        if not user_id:
+        if (
+            isinstance(user_id, bool)
+            or not isinstance(user_id, (str, int))
+            or not str(user_id).strip()
+        ):
             return False
         return str(user_id) in self.admin_user_ids
 
@@ -88,14 +92,27 @@ class SlashAccessPolicy:
         return canonical_cmd in self.user_allowed_commands
 
 
-_DM_CHAT_TYPES = frozenset({"dm", "direct", "private", ""})
+_DM_CHAT_TYPES = frozenset({"dm", "direct", "private"})
+_GROUP_CHAT_TYPES = frozenset({"group", "channel", "thread", "supergroup", "forum"})
+
+
+def canonical_scope_for_chat_type(chat_type: Optional[str]) -> Optional[str]:
+    """Return the recognized DM/group scope for *chat_type*, else ``None``."""
+    if not isinstance(chat_type, str):
+        return None
+    normalized = chat_type.strip().lower()
+    if normalized in _DM_CHAT_TYPES:
+        return "dm"
+    if normalized in _GROUP_CHAT_TYPES:
+        return "group"
+    return None
 
 
 def _coerce_id_list(raw: Any) -> FrozenSet[str]:
     """Normalize a YAML-loaded admin/user list into a frozenset of strings.
 
-    Accepts ``None``, list, tuple, or comma-separated string. Stringifies
-    each entry and strips whitespace; empty entries are dropped.
+    Accepts string/integer identities, collections of those values, or a
+    comma-separated string. Booleans and structured values fail closed.
     """
     if raw is None:
         return frozenset()
@@ -108,10 +125,31 @@ def _coerce_id_list(raw: Any) -> FrozenSet[str]:
         items = (raw,)
     out: list[str] = []
     for it in items:
+        if isinstance(it, bool) or not isinstance(it, (str, int)):
+            return frozenset()
         s = str(it).strip()
-        if s:
-            out.append(s)
+        if not s:
+            return frozenset()
+        out.append(s)
     return frozenset(out)
+
+
+def _id_list_is_well_formed(raw: Any) -> bool:
+    """Whether an identity allowlist contains only supported scalar IDs."""
+    if raw is None:
+        return True
+    if isinstance(raw, (list, tuple, set, frozenset)):
+        items: Iterable[Any] = raw
+    elif isinstance(raw, str):
+        items = (s for s in raw.split(",") if s.strip())
+    else:
+        items = (raw,)
+    return all(
+        not isinstance(item, bool)
+        and isinstance(item, (str, int))
+        and bool(str(item).strip())
+        for item in items
+    )
 
 
 def _coerce_command_list(raw: Any) -> FrozenSet[str]:
@@ -138,9 +176,7 @@ def _coerce_command_list(raw: Any) -> FrozenSet[str]:
 
 
 def _scope_for_chat_type(chat_type: Optional[str]) -> str:
-    if chat_type and chat_type.lower() in _DM_CHAT_TYPES:
-        return "dm"
-    return "group"
+    return canonical_scope_for_chat_type(chat_type) or "group"
 
 
 def _platform_extra(platform_config: Any) -> dict:
@@ -177,7 +213,8 @@ def policy_from_extra(extra: dict, scope: str) -> SlashAccessPolicy:
     DMs is not implicitly an admin in a group.
     """
     admin_key, cmd_key = _keys_for_scope(scope)
-    admin_ids = _coerce_id_list(extra.get(admin_key))
+    raw_admin_ids = extra.get(admin_key)
+    admin_ids = _coerce_id_list(raw_admin_ids)
     cmds = _coerce_command_list(extra.get(cmd_key))
 
     if scope == "dm" and not cmds:
@@ -185,7 +222,10 @@ def policy_from_extra(extra: dict, scope: str) -> SlashAccessPolicy:
         # so operators only need to list it once if it's the same.
         cmds = _coerce_command_list(extra.get("group_user_allowed_commands"))
 
-    enabled = bool(admin_ids)
+    # A malformed configured policy must not collapse into the legacy
+    # unrestricted mode. Keep gating active with no admins so authorization
+    # fails closed; only an absent or valid-empty list disables gating.
+    enabled = bool(admin_ids) or not _id_list_is_well_formed(raw_admin_ids)
     return SlashAccessPolicy(
         enabled=enabled,
         admin_user_ids=admin_ids,
@@ -224,6 +264,7 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
 
 __all__ = [
     "SlashAccessPolicy",
+    "canonical_scope_for_chat_type",
     "policy_from_extra",
     "policy_for_source",
 ]

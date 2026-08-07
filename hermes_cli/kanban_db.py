@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -79,6 +80,7 @@ import random
 import secrets
 import shutil
 import sqlite3
+import stat as stat_module
 import subprocess
 import sys
 import threading
@@ -8716,6 +8718,8 @@ def _rotate_worker_log(
     log_path: Path,
     max_bytes: int,
     backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
+    *,
+    dir_fd: Optional[int] = None,
 ) -> None:
     """Rotate ``<log>`` when it exceeds ``max_bytes``.
 
@@ -8723,10 +8727,18 @@ def _rotate_worker_log(
     ``<log>`` moves to ``<log>.1`` and any previous ``.1`` is replaced.
     Higher values shift older generations up to ``backup_count``.
     """
-    try:
-        if not log_path.exists():
+    if os.name == "nt":
+        try:
+            current_stat = log_path.lstat()
+        except FileNotFoundError:
             return
-        if log_path.stat().st_size <= max_bytes:
+        if not _is_private_worker_log_stat(current_stat):
+            raise OSError(
+                errno.EINVAL,
+                "refusing non-regular retained Kanban worker log",
+                log_path,
+            )
+        if current_stat.st_size <= max_bytes:
             return
         backup_count = _positive_int(
             backup_count,
@@ -8737,22 +8749,383 @@ def _rotate_worker_log(
             log_path.unlink()
             return
         oldest = _rotated_log_path(log_path, backup_count)
-        try:
-            if oldest.exists():
-                oldest.unlink()
-        except OSError:
-            pass
+        if oldest.exists():
+            if not _is_private_worker_log_stat(oldest.lstat()):
+                raise OSError(
+                    errno.EINVAL,
+                    "refusing non-regular retained Kanban worker log",
+                    oldest,
+                )
+            oldest.unlink()
         for generation in range(backup_count - 1, 0, -1):
-            src = _rotated_log_path(log_path, generation)
-            if not src.exists():
+            source = _rotated_log_path(log_path, generation)
+            if not source.exists():
                 continue
+            if not _is_private_worker_log_stat(source.lstat()):
+                raise OSError(
+                    errno.EINVAL,
+                    "refusing non-regular retained Kanban worker log",
+                    source,
+                )
+            os.replace(source, _rotated_log_path(log_path, generation + 1))
+        os.replace(log_path, _rotated_log_path(log_path, 1))
+        return
+
+    log_ref: str | Path = log_path.name if dir_fd is not None else log_path
+    stat_kwargs = (
+        {"dir_fd": dir_fd, "follow_symlinks": False}
+        if dir_fd is not None
+        else {"follow_symlinks": False}
+    )
+    nofollow = getattr(os, "O_NOFOLLOW", 0) if os.name != "nt" else 0
+    nonblock = getattr(os, "O_NONBLOCK", 0) if os.name != "nt" else 0
+
+    def _open_verified_regular(
+        candidate: str | Path,
+    ) -> Optional[tuple[int, os.stat_result]]:
+        try:
+            fd = os.open(candidate, os.O_RDONLY | nofollow | nonblock, dir_fd=dir_fd)
+        except FileNotFoundError:
+            return None
+        try:
+            opened_stat = os.fstat(fd)
+            path_stat = os.stat(candidate, **stat_kwargs)
+            if (
+                not _is_private_worker_log_stat(opened_stat)
+                or opened_stat.st_dev != path_stat.st_dev
+                or opened_stat.st_ino != path_stat.st_ino
+            ):
+                raise OSError(
+                    errno.EAGAIN,
+                    "refusing changed or non-regular retained Kanban worker log",
+                    str(candidate),
+                )
+            return fd, opened_stat
+        except Exception:
+            os.close(fd)
+            raise
+
+    def _generation_ref(generation: int) -> str | Path:
+        if dir_fd is not None:
+            return f"{log_path.name}.{generation}"
+        return _rotated_log_path(log_path, generation)
+
+    def _verify_moved_file(
+        candidate: str | Path,
+        expected_stat: os.stat_result,
+    ) -> None:
+        moved_stat = os.stat(candidate, **stat_kwargs)
+        if (
+            not _is_private_worker_log_stat(moved_stat)
+            or moved_stat.st_dev != expected_stat.st_dev
+            or moved_stat.st_ino != expected_stat.st_ino
+        ):
+            raise OSError(
+                errno.EAGAIN,
+                "Kanban worker log changed during secure rotation",
+                str(candidate),
+            )
+
+    def _remove_verified_file(
+        candidate: str | Path,
+        expected_stat: os.stat_result,
+    ) -> None:
+        quarantine_name = f".{log_path.name}.rotate-delete-{secrets.token_hex(8)}"
+        quarantine: str | Path = (
+            quarantine_name
+            if dir_fd is not None
+            else log_path.with_name(quarantine_name)
+        )
+        os.replace(
+            candidate,
+            quarantine,
+            src_dir_fd=dir_fd,
+            dst_dir_fd=dir_fd,
+        )
+        _verify_moved_file(quarantine, expected_stat)
+        os.unlink(quarantine, dir_fd=dir_fd)
+
+    current = _open_verified_regular(log_ref)
+    if current is None:
+        return
+    current_fd, current_stat = current
+    try:
+        if current_stat.st_size <= max_bytes:
+            return
+        backup_count = _positive_int(
+            backup_count,
+            DEFAULT_LOG_BACKUP_COUNT,
+            minimum=0,
+        )
+        if backup_count == 0:
+            _remove_verified_file(log_ref, current_stat)
+            return
+
+        oldest = _generation_ref(backup_count)
+        oldest_open = _open_verified_regular(oldest)
+        if oldest_open is not None:
+            oldest_fd, oldest_stat = oldest_open
             try:
-                src.rename(_rotated_log_path(log_path, generation + 1))
-            except OSError:
-                pass
-        log_path.rename(_rotated_log_path(log_path, 1))
-    except OSError:
-        pass
+                _remove_verified_file(oldest, oldest_stat)
+            finally:
+                os.close(oldest_fd)
+
+        for generation in range(backup_count - 1, 0, -1):
+            src = _generation_ref(generation)
+            opened = _open_verified_regular(src)
+            if opened is None:
+                continue
+            src_fd, src_stat = opened
+            destination = _generation_ref(generation + 1)
+            try:
+                os.replace(
+                    src,
+                    destination,
+                    src_dir_fd=dir_fd,
+                    dst_dir_fd=dir_fd,
+                )
+                _verify_moved_file(destination, src_stat)
+            finally:
+                os.close(src_fd)
+
+        first_generation = _generation_ref(1)
+        os.replace(
+            log_ref,
+            first_generation,
+            src_dir_fd=dir_fd,
+            dst_dir_fd=dir_fd,
+        )
+        _verify_moved_file(first_generation, current_stat)
+    finally:
+        os.close(current_fd)
+
+
+def _assert_no_symlinked_path_components(path: Path) -> None:
+    """Reject symlinks anywhere in an existing worker-log path."""
+    absolute = path.absolute()
+    for candidate in reversed((absolute, *absolute.parents)):
+        try:
+            candidate_stat = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        if stat_module.S_ISLNK(candidate_stat.st_mode):
+            raise OSError(
+                errno.ELOOP,
+                "refusing symlinked ancestor in Kanban worker log path",
+                candidate,
+            )
+
+
+def _is_private_worker_log_stat(file_stat: os.stat_result) -> bool:
+    """Return whether a worker log is regular, singly linked, and process-owned."""
+    if not stat_module.S_ISREG(file_stat.st_mode):
+        return False
+    if os.name == "nt":
+        return True
+    return file_stat.st_uid == os.geteuid() and file_stat.st_nlink == 1
+
+
+def _prepare_private_worker_log_storage(
+    log_dir: Path, *, keep_open: bool = False
+) -> Optional[int]:
+    """Create and tighten the board's log directory and retained worker logs."""
+    if os.name == "nt":
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return None
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise RuntimeError("secure Kanban worker logs require O_NOFOLLOW support")
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow
+    absolute_log_dir = Path(os.path.abspath(log_dir))
+    dir_fd = os.open(absolute_log_dir.anchor, directory_flags)
+    try:
+        for component in absolute_log_dir.parts[1:]:
+            try:
+                try:
+                    child_fd = os.open(component, directory_flags, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    os.mkdir(component, mode=0o700, dir_fd=dir_fd)
+                    child_fd = os.open(component, directory_flags, dir_fd=dir_fd)
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise OSError(
+                        exc.errno,
+                        "refusing symlinked ancestor or non-directory component "
+                        "in Kanban worker log path",
+                        absolute_log_dir,
+                    ) from exc
+                raise
+            parent_fd = dir_fd
+            dir_fd = child_fd
+            os.close(parent_fd)
+        opened_dir_stat = os.fstat(dir_fd)
+        if (
+            not stat_module.S_ISDIR(opened_dir_stat.st_mode)
+            or opened_dir_stat.st_uid != os.geteuid()
+        ):
+            raise OSError(errno.ENOTDIR, "Kanban worker log path is not a directory")
+        os.fchmod(dir_fd, 0o700)
+        with os.scandir(dir_fd) as entries:
+            for candidate in entries:
+                if not Path(candidate.name).match("*.log*"):
+                    continue
+                candidate_stat = candidate.stat(follow_symlinks=False)
+                if not _is_private_worker_log_stat(candidate_stat):
+                    raise OSError(
+                        errno.EINVAL,
+                        "refusing non-regular retained Kanban worker log; expected regular file",
+                        candidate.name,
+                    )
+                flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | nofollow
+                fd = os.open(candidate.name, flags, dir_fd=dir_fd)
+                try:
+                    opened_stat = os.fstat(fd)
+                    if (
+                        not _is_private_worker_log_stat(opened_stat)
+                        or opened_stat.st_dev != candidate_stat.st_dev
+                        or opened_stat.st_ino != candidate_stat.st_ino
+                    ):
+                        raise OSError(
+                            errno.EAGAIN,
+                            "Kanban worker log changed during permission tightening",
+                            candidate.name,
+                        )
+                    os.fchmod(fd, 0o600)
+                finally:
+                    os.close(fd)
+        if keep_open:
+            return dir_fd
+    except Exception:
+        os.close(dir_fd)
+        raise
+    os.close(dir_fd)
+    return None
+
+
+def _open_private_worker_log(log_path: Path, *, dir_fd: Optional[int] = None):
+    """Open a worker log for append with mode 0600, including existing files."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    log_ref: str | Path = log_path.name if dir_fd is not None else log_path
+    if os.name != "nt":
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(log_ref, flags, 0o600, dir_fd=dir_fd)
+    try:
+        if not _is_private_worker_log_stat(os.fstat(fd)):
+            raise OSError(
+                errno.EINVAL,
+                "refusing non-regular Kanban worker log; expected regular file",
+                log_path,
+            )
+        if os.name != "nt":
+            os.fchmod(fd, 0o600)
+        return os.fdopen(fd, "ab")
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _open_private_worker_log_for_read(log_path: Path):
+    """Open an existing worker log without following aliases or path swaps."""
+    if os.name == "nt":
+        fd = os.open(log_path, os.O_RDONLY)
+        try:
+            if not stat_module.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(
+                    errno.EINVAL,
+                    "refusing non-regular Kanban worker log",
+                    log_path,
+                )
+            return os.fdopen(fd, "rb")
+        except Exception:
+            os.close(fd)
+            raise
+
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise RuntimeError("secure Kanban worker logs require O_NOFOLLOW support")
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow
+    absolute_log_dir = Path(os.path.abspath(log_path.parent))
+    dir_fd = os.open(absolute_log_dir.anchor, directory_flags)
+    try:
+        for component in absolute_log_dir.parts[1:]:
+            child_fd = os.open(component, directory_flags, dir_fd=dir_fd)
+            parent_fd = dir_fd
+            dir_fd = child_fd
+            os.close(parent_fd)
+
+        directory_stat = os.fstat(dir_fd)
+        if (
+            not stat_module.S_ISDIR(directory_stat.st_mode)
+            or directory_stat.st_uid != os.geteuid()
+            or stat_module.S_IMODE(directory_stat.st_mode) & 0o077
+        ):
+            raise OSError(
+                errno.EACCES,
+                "refusing non-private Kanban worker log directory",
+                absolute_log_dir,
+            )
+
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | nofollow
+        fd = os.open(log_path.name, flags, dir_fd=dir_fd)
+        try:
+            opened_stat = os.fstat(fd)
+            path_stat = os.stat(log_path.name, dir_fd=dir_fd, follow_symlinks=False)
+            if (
+                not _is_private_worker_log_stat(opened_stat)
+                or stat_module.S_IMODE(opened_stat.st_mode) & 0o077
+                or opened_stat.st_dev != path_stat.st_dev
+                or opened_stat.st_ino != path_stat.st_ino
+            ):
+                raise OSError(
+                    errno.EINVAL,
+                    "refusing aliased or non-private Kanban worker log",
+                    log_path,
+                )
+            return os.fdopen(fd, "rb")
+        except Exception:
+            os.close(fd)
+            raise
+    finally:
+        os.close(dir_fd)
+
+
+def _assert_open_worker_log_paths(
+    log_dir: Path,
+    log_path: Path,
+    dir_fd: int,
+    log_f,
+) -> None:
+    """Fail if directory or active-log names changed after secure opening."""
+    _assert_no_symlinked_path_components(log_dir)
+    dir_path_stat = os.stat(log_dir, follow_symlinks=False)
+    opened_dir_stat = os.fstat(dir_fd)
+    if (
+        not stat_module.S_ISDIR(dir_path_stat.st_mode)
+        or dir_path_stat.st_dev != opened_dir_stat.st_dev
+        or dir_path_stat.st_ino != opened_dir_stat.st_ino
+    ):
+        raise OSError(
+            errno.EAGAIN,
+            "Kanban worker log directory changed during secure open",
+            log_dir,
+        )
+    active_path_stat = os.stat(
+        log_path.name,
+        dir_fd=dir_fd,
+        follow_symlinks=False,
+    )
+    opened_log_stat = os.fstat(log_f.fileno())
+    if (
+        not _is_private_worker_log_stat(active_path_stat)
+        or not _is_private_worker_log_stat(opened_log_stat)
+        or active_path_stat.st_dev != opened_log_stat.st_dev
+        or active_path_stat.st_ino != opened_log_stat.st_ino
+    ):
+        raise OSError(
+            errno.EAGAIN,
+            "Kanban worker log changed during secure open",
+            log_path,
+        )
 
 
 def _module_hermes_argv() -> list[str]:
@@ -9144,30 +9517,52 @@ def _default_spawn(
     # `hermes kanban log` on a specific board reads its own file and
     # logs don't collide across boards that happen to share task ids.
     log_dir = worker_logs_dir(board=board)
-    log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
-    rotate_bytes, backup_count = worker_log_rotation_config()
-    _rotate_worker_log(log_path, rotate_bytes, backup_count)
-
-    # Use 'a' so a re-run on unblock appends rather than overwrites.
-    log_f = open(log_path, "ab")
+    log_dir_fd = _prepare_private_worker_log_storage(log_dir, keep_open=True)
+    log_f = None
     try:
-        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
-            stdin=subprocess.DEVNULL,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+        rotate_bytes, backup_count = worker_log_rotation_config()
+        _rotate_worker_log(
+            log_path,
+            rotate_bytes,
+            backup_count,
+            dir_fd=log_dir_fd,
         )
-    except FileNotFoundError:
-        log_f.close()
-        raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
-        )
+
+        # Use append mode so a re-run on unblock preserves prior output.
+        # The verified directory descriptor remains open through rotation and
+        # final open, preventing an ancestor path replacement from redirecting
+        # the worker's output outside the private log directory.
+        log_f = _open_private_worker_log(log_path, dir_fd=log_dir_fd)
+        if log_dir_fd is not None:
+            _assert_open_worker_log_paths(log_dir, log_path, log_dir_fd, log_f)
+        try:
+            proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
+                cmd,
+                cwd=workspace if os.path.isdir(workspace) else None,
+                stdin=subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=True,
+                creationflags=(
+                    getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    if _IS_WINDOWS
+                    else 0
+                ),
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "`hermes` executable not found on PATH. "
+                "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            ) from exc
+    except Exception:
+        if log_f is not None:
+            log_f.close()
+        raise
+    finally:
+        if log_dir_fd is not None:
+            os.close(log_dir_fd)
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
     # handle is kept alive by the child's inheritance.  The parent's
@@ -10053,6 +10448,14 @@ def worker_log_path(task_id: str, *, board: Optional[str] = None) -> Path:
     current-board file → default). The dispatcher always passes the
     board explicitly to avoid any resolution ambiguity when multiple
     boards exist."""
+    if (
+        not isinstance(task_id, str)
+        or not task_id
+        or task_id in {".", ".."}
+        or "/" in task_id
+        or "\\" in task_id
+    ):
+        raise ValueError("task_id must be a non-empty path component")
     return worker_logs_dir(board=board) / f"{task_id}.log"
 
 
@@ -10063,14 +10466,13 @@ def read_worker_log(
     """Read the worker log for ``task_id``. Returns None if the file
     doesn't exist. If ``tail_bytes`` is set, only the last N bytes are
     returned (useful for the dashboard drawer which shouldn't page megabytes)."""
-    path = worker_log_path(task_id, board=board)
-    if not path.exists():
-        return None
     try:
-        if tail_bytes is None:
-            return path.read_text(encoding="utf-8", errors="replace")
-        size = path.stat().st_size
-        with open(path, "rb") as f:
+        path = worker_log_path(task_id, board=board)
+        opened = _open_private_worker_log_for_read(path)
+        with opened as f:
+            size = os.fstat(f.fileno()).st_size
+            if tail_bytes is None:
+                return f.read().decode("utf-8", errors="replace")
             if size > tail_bytes:
                 f.seek(size - tail_bytes)
                 # Skip a partial line if we tailed mid-line. But if the
@@ -10081,9 +10483,8 @@ def read_worker_log(
                 partial = f.readline()
                 if not partial.endswith(b"\n") and f.tell() >= size:
                     f.seek(probe)
-            data = f.read()
-        return data.decode("utf-8", errors="replace")
-    except OSError:
+            return f.read().decode("utf-8", errors="replace")
+    except (OSError, ValueError):
         return None
 
 

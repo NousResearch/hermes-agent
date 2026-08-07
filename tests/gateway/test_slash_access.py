@@ -5,6 +5,8 @@ exercise the dispatch site live in test_slash_access_dispatch.py.
 """
 from __future__ import annotations
 
+import pytest
+
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionSource
 from gateway.slash_access import (
@@ -31,6 +33,21 @@ class TestPolicyFromExtra:
         p = policy_from_extra({}, "dm")
         assert p.is_admin("anyone") is True
         assert p.can_run("anyone", "stop") is True
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [["admin", True], ["admin", {"nested": True}], ["admin", ["nested"]]],
+    )
+    def test_mixed_malformed_admin_policy_stays_enabled_and_denies(
+        self, malformed
+    ):
+        policy = policy_from_extra(
+            {"group_allow_admin_from": malformed}, "group"
+        )
+        assert policy.enabled
+        assert policy.admin_user_ids == frozenset()
+        assert not policy.is_admin("admin")
+        assert not policy.can_run("member", "restart")
 
 
     def test_id_coercion_ints_become_strings(self):

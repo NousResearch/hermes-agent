@@ -172,7 +172,10 @@ def _get_mcp_stderr_log() -> Any:
             fh.fileno()
             _mcp_stderr_log_fh = fh
         except Exception as exc:  # pragma: no cover — best-effort fallback
-            logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
+            logger.debug(
+                "Failed to open MCP stderr log, using devnull: %s",
+                _safe_exc_str(exc),
+            )
             try:
                 _mcp_stderr_log_fh = open(os.devnull, "w", encoding="utf-8")
             except Exception:
@@ -419,6 +422,34 @@ _CREDENTIAL_PATTERN = re.compile(
     r")",
     re.IGNORECASE,
 )
+_CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
+    r"(?P<prefix>\b(?:api[-_. \t]?(?:key|token)|x[-_. \t]?api[-_. \t]?key|access[-_. \t]?token|"
+    r"auth[-_. \t]?token|(?:id|oauth|csrf|verification|bearer|bot|service|signing)[-_. \t]?token|"
+    r"personal[-_. \t]?access[-_. \t]?token|client[-_. \t]?secret|consumer[-_. \t]?(?:key|secret)|"
+    r"private[-_. \t]?key|secret[-_. \t]?key|password|passwd|token|secret|"
+    r"credential|authorization)\b\s*[:=]\s*)"
+    r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\r\n]+)",
+    re.IGNORECASE,
+)
+_MCP_TEXT_CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
+    r"(?P<prefix>(?:^[ \t]*(?:[-*][ \t]+)?|(?<=[;,])[ \t]*)(?:"
+    r"api[-_. \t]?(?:key|token)|x[-_. \t]?api[-_. \t]?key|"
+    r"access[-_. \t]?token|auth[-_. \t]?token|"
+    r"(?:id|oauth|csrf|verification|bearer|bot|service|signing)[-_. \t]?token|"
+    r"personal[-_. \t]?access[-_. \t]?token|client[-_. \t]?secret|"
+    r"consumer[-_. \t]?(?:key|secret)|private[-_. \t]?key|secret[-_. \t]?key|"
+    r"password|passwd|raw[-_. \t]?secret|refresh[-_. \t]?token|key[-_. \t]?material|"
+    r"license[-_. \t]?key|session[-_. \t]?token|signing[-_. \t]?secret|"
+    r"webhook[-_. \t]?(?:signing[-_. \t]?)?(?:secret|token)|"
+    r"proxy[-_. \t]?authorization)\b\s*[:=]\s*)"
+    r"(?P<value>\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\r\n]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_MCP_AMBIGUOUS_TEXT_ASSIGNMENT_PATTERN = re.compile(
+    r"(?P<prefix>^[ \t]*(?:[-*][ \t]+)?(?:token|secret|credential|authorization)"
+    r"\b\s*[:=]\s*)(?P<value>[^\r\n]+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 # Pre-compiled pattern for ${VAR_NAME} style env-var interpolation.
 # Supports any non-} characters in the variable name (hyphens, dots, etc.)
@@ -482,7 +513,213 @@ def _sanitize_error(text: str) -> str:
     Replaces tokens, keys, and other secrets with [REDACTED] to prevent
     accidental credential exposure in tool error responses.
     """
-    return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    try:
+        from agent.redact import redact_sensitive_text
+
+        legacy_redacted = _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+        assignment_redacted = _CREDENTIAL_ASSIGNMENT_PATTERN.sub(
+            lambda match: f"{match.group('prefix')}[REDACTED]",
+            legacy_redacted,
+        )
+        protected_parts: dict[str, str] = {}
+
+        def _protect_redacted_assignment(match: re.Match) -> str:
+            marker = f"MCPMASKEDBLOCK{len(protected_parts)}QZ"
+            protected_parts[marker] = match.group(0)
+            return marker
+
+        protected_text = _CREDENTIAL_ASSIGNMENT_PATTERN.sub(
+            _protect_redacted_assignment,
+            assignment_redacted,
+        )
+        while "[REDACTED]" in protected_text:
+            marker = f"MCPMASKEDBLOCK{len(protected_parts)}QZ"
+            protected_parts[marker] = "[REDACTED]"
+            protected_text = protected_text.replace("[REDACTED]", marker, 1)
+        robust_redacted = redact_sensitive_text(
+            protected_text,
+            force=True,
+            redact_url_credentials=True,
+        )
+        for marker, original in protected_parts.items():
+            robust_redacted = robust_redacted.replace(marker, original)
+    except Exception:
+        logger.warning("Failed to sanitize MCP error; diagnostic suppressed")
+        return "[REDACTED - MCP error sanitization failed]"
+    decoder = json.JSONDecoder()
+    scan_from = 0
+    while scan_from < len(robust_redacted):
+        starts = [
+            pos for pos in (
+                robust_redacted.find("{", scan_from),
+                robust_redacted.find("[", scan_from),
+            )
+            if pos >= 0
+        ]
+        if not starts:
+            break
+        start = min(starts)
+        try:
+            embedded, end = decoder.raw_decode(robust_redacted[start:])
+        except (TypeError, ValueError):
+            scan_from = start + 1
+            continue
+        if isinstance(embedded, (dict, list)):
+            return str(_redact_mcp_tool_payload(robust_redacted, force=True))
+        scan_from = start + max(end, 1)
+    return robust_redacted
+
+
+def _redact_mcp_tool_payload(payload: Any, *, force: bool = False) -> Any:
+    """Redact structured MCP output before it reaches context or worker logs."""
+    try:
+        from agent.redact import (
+            _ENV_LOOKUP_VALUE_RE,
+            _REDACT_ENABLED,
+            redact_sensitive_data,
+            redact_sensitive_text,
+        )
+
+        if not force and not _REDACT_ENABLED:
+            return payload
+
+        def _redact_text(text: str) -> str:
+            replacement = "[REDACTED]" if force else "***"
+
+            def _redact_high_signal_assignment(match: re.Match) -> str:
+                value = match.group("value").strip().strip("\"'")
+                if not force and _ENV_LOOKUP_VALUE_RE.match(value):
+                    return match.group(0)
+                return f"{match.group('prefix')}{replacement}"
+
+            redacted_text = text
+            if force or _REDACT_ENABLED:
+                redacted_text = _MCP_TEXT_CREDENTIAL_ASSIGNMENT_PATTERN.sub(
+                    _redact_high_signal_assignment,
+                    redacted_text,
+                )
+
+            def _ambiguous_value_looks_sensitive(match: re.Match) -> bool:
+                value = match.group("value").strip().strip("\"'")
+                first_word = value.split(None, 1)[0].casefold() if value else ""
+                return bool(
+                    _CREDENTIAL_PATTERN.search(value)
+                    or first_word in {"bearer", "basic", "digest", "token"}
+                    or (not any(char.isspace() for char in value) and len(value) >= 12)
+                )
+
+            protected_parts: dict[str, str] = {}
+
+            def _protect_benign_ambiguous_line(match: re.Match) -> str:
+                if _ambiguous_value_looks_sensitive(match):
+                    return match.group(0)
+                marker = f"MCPPUBLICBLOCK{len(protected_parts)}QZ"
+                protected_parts[marker] = match.group(0)
+                return marker
+
+            protected_text = redacted_text
+            if not force:
+                protected_text = _MCP_AMBIGUOUS_TEXT_ASSIGNMENT_PATTERN.sub(
+                    _protect_benign_ambiguous_line,
+                    protected_text,
+                )
+            redacted_text = redact_sensitive_text(
+                protected_text,
+                force=force,
+                code_file=not force,
+                redact_url_credentials=force,
+                redact_phone_numbers=force,
+            )
+            for marker, original in protected_parts.items():
+                redacted_text = redacted_text.replace(marker, original)
+            if force or _REDACT_ENABLED:
+                redacted_text = _MCP_AMBIGUOUS_TEXT_ASSIGNMENT_PATTERN.sub(
+                    lambda match: (
+                        f"{match.group('prefix')}{replacement}"
+                        if _ambiguous_value_looks_sensitive(match)
+                        else match.group(0)
+                    ),
+                    redacted_text,
+                )
+            return redacted_text
+
+        if isinstance(payload, str):
+            try:
+                parsed = json.loads(payload)
+            except (TypeError, ValueError):
+                redacted_text = _redact_text(payload)
+                decoder = json.JSONDecoder()
+                parts: List[str] = []
+                cursor = 0
+                scan_from = 0
+                while scan_from < len(redacted_text):
+                    starts = [
+                        pos for pos in (
+                            redacted_text.find("{", scan_from),
+                            redacted_text.find("[", scan_from),
+                        )
+                        if pos >= 0
+                    ]
+                    if not starts:
+                        break
+                    start = min(starts)
+                    try:
+                        embedded, end = decoder.raw_decode(redacted_text[start:])
+                    except (TypeError, ValueError):
+                        scan_from = start + 1
+                        continue
+                    if not isinstance(embedded, (dict, list)):
+                        scan_from = start + max(end, 1)
+                        continue
+                    parts.append(redacted_text[cursor:start])
+                    parts.append(json.dumps(
+                        _redact_mcp_tool_payload(embedded, force=force),
+                        ensure_ascii=False,
+                    ))
+                    cursor = start + end
+                    scan_from = cursor
+                if not parts:
+                    return redacted_text
+                parts.append(redacted_text[cursor:])
+                return "".join(parts)
+            if isinstance(parsed, (dict, list)):
+                return json.dumps(
+                    _redact_mcp_tool_payload(parsed, force=force),
+                    ensure_ascii=False,
+                )
+            return _redact_text(payload)
+        redacted = redact_sensitive_data(
+            payload,
+            force=force,
+            code_file=not force,
+            redact_url_credentials=force,
+            redact_phone_numbers=force,
+        )
+        if isinstance(redacted, dict):
+            return {
+                key: _redact_mcp_tool_payload(item, force=force)
+                if isinstance(item, (dict, list, tuple, str))
+                else item
+                for key, item in redacted.items()
+            }
+        if isinstance(redacted, list):
+            return [
+                _redact_mcp_tool_payload(item, force=force)
+                if isinstance(item, (dict, list, tuple, str))
+                else item
+                for item in redacted
+            ]
+        if isinstance(redacted, tuple):
+            return tuple(
+                _redact_mcp_tool_payload(item, force=force)
+                if isinstance(item, (dict, list, tuple, str))
+                else item
+                for item in redacted
+            )
+        return redacted
+    except Exception:
+        logger.warning("Failed to redact MCP tool payload; output suppressed")
+        return "[REDACTED - MCP tool output sanitization failed]"
 
 
 def _exc_str(exc: BaseException) -> str:
@@ -495,6 +732,11 @@ def _exc_str(exc: BaseException) -> str:
     """
     text = str(exc).strip()
     return text if text else repr(exc)
+
+
+def _safe_exc_str(exc: BaseException) -> str:
+    """Return a sanitized exception description safe for logs and responses."""
+    return _sanitize_error(f"{type(exc).__name__}: {_exc_str(exc)}")
 
 
 # JSON-RPC "method not found" — the error a server returns when it does not
@@ -585,8 +827,10 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
         logger.warning(
             "MCP server '%s' tool '%s': suspicious description content — %s. "
             "Description: %.200s",
-            server_name, tool_name, "; ".join(findings),
-            description,
+            _sanitize_error(server_name),
+            _sanitize_error(tool_name),
+            "; ".join(findings),
+            _sanitize_error(description),
         )
     return findings
 
@@ -762,7 +1006,11 @@ def _cache_mcp_image_block(block) -> str:
     try:
         raw_bytes = base64.b64decode(data)
     except (TypeError, ValueError) as exc:
-        logger.warning("MCP image block decode failed (%s): %s", normalized_mime, exc)
+        logger.warning(
+            "MCP image block decode failed (%s): %s",
+            _sanitize_error(normalized_mime),
+            _safe_exc_str(exc),
+        )
         return ""
 
     try:
@@ -779,7 +1027,7 @@ def _cache_mcp_image_block(block) -> str:
         logger.debug("MCP image caching skipped — gateway.platforms.base unavailable")
         return ""
     except Exception as exc:
-        logger.warning("MCP image block cache failed: %s", exc)
+        logger.warning("MCP image block cache failed: %s", _safe_exc_str(exc))
         return ""
 
     return f"MEDIA:{image_path}"
@@ -820,6 +1068,13 @@ def _mcp_resource_filename(uri: str, mime_type: str) -> str:
     # otherwise land in the filename and the transcript marker) and cap the
     # length, preserving the extension.
     name = _re.sub(r"[\x00-\x1f\x7f]", "", name).strip()
+    if name:
+        redacted_name = str(_redact_mcp_tool_payload(name, force=True))
+        if redacted_name != name:
+            extension = Path(name).suffix
+            if not (0 < len(extension) <= 13):
+                extension = ""
+            name = f"resource{extension}"
     if len(name) > 150:
         stem, dot, ext = name.rpartition(".")
         if dot and 0 < len(ext) <= 12:
@@ -850,7 +1105,11 @@ def _cache_mcp_audio_block(block) -> str:
     try:
         raw_bytes = base64.b64decode(data)
     except (TypeError, ValueError) as exc:
-        logger.warning("MCP audio block decode failed (%s): %s", mime_type, exc)
+        logger.warning(
+            "MCP audio block decode failed (%s): %s",
+            _sanitize_error(mime_type),
+            _safe_exc_str(exc),
+        )
         return ""
     if len(raw_bytes) > _MCP_RESOURCE_MAX_BYTES:
         return f"[MCP audio resource too large to cache: {len(raw_bytes)} bytes]"
@@ -868,7 +1127,7 @@ def _cache_mcp_audio_block(block) -> str:
         logger.debug("MCP audio caching skipped — gateway.platforms.base unavailable")
         return ""
     except Exception as exc:
-        logger.warning("MCP audio block cache failed: %s", exc)
+        logger.warning("MCP audio block cache failed: %s", _safe_exc_str(exc))
         return ""
     return f"MEDIA:{audio_path}"
 
@@ -897,11 +1156,14 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
             return ""
         name = getattr(block, "name", "") or ""
         mime = getattr(block, "mimeType", "") or ""
-        details = f"uri={uri}"
+        safe_uri = str(_redact_mcp_tool_payload(str(uri)))
+        safe_name = str(_redact_mcp_tool_payload(str(name)))
+        safe_mime = str(_redact_mcp_tool_payload(str(mime)))
+        details = f"uri={safe_uri}"
         if name:
-            details += f", name={name}"
+            details += f", name={safe_name}"
         if mime:
-            details += f", mimeType={mime}"
+            details += f", mimeType={safe_mime}"
         reader = (
             mcp_prefixed_tool_name(server_name, "read_resource")
             if server_name
@@ -915,7 +1177,7 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
 
     text = getattr(resource, "text", None)
     if text is not None:
-        return str(text)
+        return str(_redact_mcp_tool_payload(str(text)))
 
     blob = getattr(resource, "blob", None)
     if blob is None:
@@ -925,26 +1187,32 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
 
     uri = str(getattr(resource, "uri", "") or "")
     mime = str(getattr(resource, "mimeType", "") or "")
+    safe_uri = str(_redact_mcp_tool_payload(uri, force=True))
+    safe_mime = str(_redact_mcp_tool_payload(mime, force=True))
     if len(blob) > _MCP_RESOURCE_MAX_B64_CHARS:
-        return f"[MCP embedded resource too large to cache: ~{len(blob) * 3 // 4} bytes, uri={uri}]"
+        return f"[MCP embedded resource too large to cache: ~{len(blob) * 3 // 4} bytes, uri={safe_uri}]"
     try:
         raw_bytes = base64.b64decode(blob)
     except (TypeError, ValueError) as exc:
-        logger.warning("MCP embedded resource decode failed (%s): %s", mime or uri, exc)
-        return f"[MCP embedded resource could not be decoded: {mime or uri}]"
+        logger.warning(
+            "MCP embedded resource decode failed (%s): %s",
+            safe_mime or safe_uri,
+            _safe_exc_str(exc),
+        )
+        return f"[MCP embedded resource could not be decoded: {safe_mime or safe_uri}]"
     if len(raw_bytes) > _MCP_RESOURCE_MAX_BYTES:
-        return f"[MCP embedded resource too large to cache: {len(raw_bytes)} bytes, uri={uri}]"
+        return f"[MCP embedded resource too large to cache: {len(raw_bytes)} bytes, uri={safe_uri}]"
     try:
         from gateway.platforms.base import cache_document_from_bytes
 
         path = cache_document_from_bytes(raw_bytes, _mcp_resource_filename(uri, mime))
     except ImportError:
         logger.debug("MCP resource caching skipped — gateway.platforms.base unavailable")
-        return f"[MCP embedded resource received ({len(raw_bytes)} bytes, {mime or 'unknown type'}) but document cache unavailable in this process]"
+        return f"[MCP embedded resource received ({len(raw_bytes)} bytes, {safe_mime or 'unknown type'}) but document cache unavailable in this process]"
     except Exception as exc:
-        logger.warning("MCP embedded resource cache failed: %s", exc)
-        return f"[MCP embedded resource could not be cached: {mime or uri}]"
-    detail = mime or "unknown type"
+        logger.warning("MCP embedded resource cache failed: %s", _safe_exc_str(exc))
+        return f"[MCP embedded resource could not be cached: {safe_mime or safe_uri}]"
+    detail = safe_mime or "unknown type"
     return f"[MCP resource saved to {path} ({detail}, {len(raw_bytes)} bytes) — read it with read_file or terminal tools]"
 
 
@@ -1746,7 +2014,7 @@ class ElicitationHandler:
         except Exception as exc:  # pragma: no cover -- defensive
             logger.error(
                 "MCP server '%s' elicitation: approval system unavailable: %s",
-                self.server_name, exc,
+                self.server_name, _safe_exc_str(exc),
             )
             self.metrics["errors"] += 1
             return ElicitResult(action="decline")
@@ -1799,7 +2067,7 @@ class ElicitationHandler:
         except Exception as exc:
             logger.error(
                 "MCP server '%s' elicitation failed: %s",
-                self.server_name, exc, exc_info=True,
+                self.server_name, _safe_exc_str(exc),
             )
             self.metrics["errors"] += 1
             return ElicitResult(action="decline")
@@ -1992,8 +2260,12 @@ class MCPServerTask:
             await self._refresh_tools()
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.exception("MCP server '%s': dynamic tool refresh failed", self.name)
+        except Exception as exc:
+            logger.error(
+                "MCP server '%s': dynamic tool refresh failed: %s",
+                self.name,
+                _safe_exc_str(exc),
+            )
 
     def _schedule_tools_refresh(self) -> asyncio.Task:
         """Schedule a background tool refresh and keep it strongly referenced."""
@@ -2022,17 +2294,20 @@ class MCPServerTask:
                         data = json.dumps(data, ensure_ascii=False, default=str)
                     except (TypeError, ValueError):
                         data = str(data)
+                data = _sanitize_error(data)
                 # Cap pathological payloads so a chatty/broken server can't
                 # flood agent.log with megabyte lines.
                 if len(data) > 2000:
                     data = data[:2000] + "... [truncated]"
                 logger_name = getattr(params, "logger", None)
                 origin = f"{self.name}/{logger_name}" if logger_name else self.name
+                origin = _sanitize_error(origin)
                 logger.log(level, "MCP server log [%s]: %s", origin, data)
-            except Exception:
+            except Exception as exc:
                 logger.debug(
-                    "Failed to handle MCP log notification from '%s'",
-                    self.name, exc_info=True,
+                    "Failed to handle MCP log notification from '%s': %s",
+                    self.name,
+                    _safe_exc_str(exc),
                 )
         return _on_log
 
@@ -2046,7 +2321,11 @@ class MCPServerTask:
         async def _handler(message):
             try:
                 if isinstance(message, Exception):
-                    logger.debug("MCP message handler (%s): exception: %s", self.name, message)
+                    logger.debug(
+                        "MCP message handler (%s): exception: %s",
+                        self.name,
+                        _safe_exc_str(message),
+                    )
                     return
                 if _MCP_NOTIFICATION_TYPES and isinstance(message, ServerNotification):
                     match message.root:
@@ -2075,8 +2354,12 @@ class MCPServerTask:
                             logger.debug("MCP server '%s': resources/list_changed (ignored)", self.name)
                         case _:
                             pass
-            except Exception:
-                logger.exception("Error in MCP message handler for '%s'", self.name)
+            except Exception as exc:
+                logger.error(
+                    "Error in MCP message handler for '%s': %s",
+                    self.name,
+                    _safe_exc_str(exc),
+                )
         return _handler
 
     async def _refresh_tools(self):
@@ -2308,8 +2591,8 @@ class MCPServerTask:
                         root = _unwrap_exception_group(exc)
                         logger.warning(
                             "MCP server '%s' keepalive failed, triggering "
-                            "reconnect (state: connected → degraded): %s: %s",
-                            self.name, type(root).__name__, root,
+                            "reconnect (state: connected → degraded): %s",
+                            self.name, _safe_exc_str(root),
                         )
                         self._reconnect_event.set()
                         break
@@ -2744,8 +3027,8 @@ class MCPServerTask:
             raise eg
         logger.debug(
             "MCP server '%s': transport TaskGroup exited after a live session "
-            "(%r) — reconnecting immediately instead of backing off",
-            self.name, eg,
+            "(%s) — reconnecting immediately instead of backing off",
+            self.name, _safe_exc_str(eg),
         )
         return "reconnect"
 
@@ -2784,7 +3067,11 @@ class MCPServerTask:
                     self.name, url, config.get("oauth"),
                 )
             except Exception as exc:
-                logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
+                logger.warning(
+                    "MCP OAuth setup failed for '%s': %s",
+                    self.name,
+                    _safe_exc_str(exc),
+                )
                 raise
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
@@ -3096,7 +3383,7 @@ class MCPServerTask:
             try:
                 _validate_remote_mcp_url(self.name, config.get("url"))
             except InvalidMcpUrlError as exc:
-                logger.warning("%s", exc)
+                logger.warning("%s", _safe_exc_str(exc))
                 self._error = exc
                 self._ready.set()
                 return
@@ -3123,7 +3410,7 @@ class MCPServerTask:
                         client_cert=_resolve_client_cert(self.name, config),
                     )
                 except NonMcpEndpointError as exc:
-                    logger.warning("%s", exc)
+                    logger.warning("%s", _safe_exc_str(exc))
                     self._error = exc
                     self._ready.set()
                     return
@@ -3236,12 +3523,13 @@ class MCPServerTask:
                 # Empty dead-pipe errors still get a name this way
                 # (e.g. "BrokenPipeError: ").
                 root = _unwrap_exception_group(exc)
+                safe_root = _safe_exc_str(root)
                 failure_class = _classify_mcp_failure(root)
                 if self._is_recycled_stdio():
                     logger.warning(
                         "MCP server '%s': lazy reconnect after stdio recycle "
-                        "failed, marking unavailable while retrying: %s: %s",
-                        self.name, type(root).__name__, root,
+                        "failed, marking unavailable while retrying: %s",
+                        self.name, safe_root,
                     )
                     self._recycled_reason = None
 
@@ -3253,8 +3541,8 @@ class MCPServerTask:
                     if _is_auth_error(root):
                         logger.warning(
                             "MCP server '%s' failed initial OAuth authentication, "
-                            "not retrying automatically: %s: %s",
-                            self.name, type(root).__name__, root,
+                            "not retrying automatically: %s",
+                            self.name, safe_root,
                         )
                         self._error = exc
                         self._ready.set()
@@ -3268,8 +3556,8 @@ class MCPServerTask:
                         logger.warning(
                             "MCP server '%s' failed initial connection with a "
                             "permanent error, parking without retries "
-                            "(state: connecting → parked): %s: %s",
-                            self.name, type(root).__name__, root,
+                            "(state: connecting → parked): %s",
+                            self.name, safe_root,
                         )
                         self._error = exc
                         self._ready.set()
@@ -3299,9 +3587,9 @@ class MCPServerTask:
                         logger.warning(
                             "MCP server '%s' failed initial connection after "
                             "%d attempts, parking until a reconnect is "
-                            "requested (state: connecting → parked): %s: %s",
+                            "requested (state: connecting → parked): %s",
                             self.name, _MAX_INITIAL_CONNECT_RETRIES,
-                            type(root).__name__, root,
+                            safe_root,
                         )
                         self._error = exc
                         self._ready.set()
@@ -3328,10 +3616,10 @@ class MCPServerTask:
 
                     logger.debug(
                         "MCP server '%s' initial connection failed "
-                        "(attempt %d/%d), retrying in %.0fs: %s: %s",
+                        "(attempt %d/%d), retrying in %.0fs: %s",
                         self.name, initial_retries,
                         _MAX_INITIAL_CONNECT_RETRIES, backoff,
-                        type(root).__name__, root,
+                        safe_root,
                     )
                     await asyncio.sleep(_jittered(backoff))
                     backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
@@ -3346,8 +3634,8 @@ class MCPServerTask:
                 # If shutdown was requested, don't reconnect
                 if self._shutdown_event.is_set():
                     logger.debug(
-                        "MCP server '%s' disconnected during shutdown: %s: %s",
-                        self.name, type(root).__name__, root,
+                        "MCP server '%s' disconnected during shutdown: %s",
+                        self.name, safe_root,
                     )
                     return
 
@@ -3359,9 +3647,9 @@ class MCPServerTask:
                     logger.warning(
                         "MCP server '%s' hit a permanent error, parking "
                         "without retries; will self-probe every %ds "
-                        "(state: connected → parked): %s: %s",
+                        "(state: connected → parked): %s",
                         self.name, _PARKED_RETRY_INTERVAL,
-                        type(root).__name__, root,
+                        safe_root,
                     )
                     self._was_parked = True
                     self._deregister_tools()
@@ -3386,10 +3674,10 @@ class MCPServerTask:
                     logger.warning(
                         "MCP server '%s' failed after %d reconnection attempts, "
                         "parking; will self-probe every %ds until it recovers "
-                        "(state: degraded → parked): %s: %s",
+                        "(state: degraded → parked): %s",
                         self.name, _MAX_RECONNECT_RETRIES,
                         _PARKED_RETRY_INTERVAL,
-                        type(root).__name__, root,
+                        safe_root,
                     )
                     # Do NOT return — exiting the task orphans the server:
                     # nothing would ever listen for _reconnect_event again
@@ -3428,9 +3716,9 @@ class MCPServerTask:
                 # carry the WARNINGs — one line per transition, not per try.
                 logger.debug(
                     "MCP server '%s' connection lost (attempt %d/%d), "
-                    "reconnecting in %.0fs: %s: %s",
+                    "reconnecting in %.0fs: %s",
                     self.name, self._reconnect_retries, _MAX_RECONNECT_RETRIES,
-                    backoff, type(root).__name__, root,
+                    backoff, safe_root,
                 )
                 await asyncio.sleep(_jittered(backoff))
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
@@ -3755,9 +4043,11 @@ def _signal_reconnect_and_wait(
         if reconnect_event is not None and hasattr(reconnect_event, "set"):
             reconnect_event.set()
 
+    safe_server_name = _sanitize_error(server_name)
+    safe_op_description = _sanitize_error(op_description)
     logger.info(
         "MCP server '%s': %s requesting transport reconnect",
-        server_name, op_description,
+        safe_server_name, safe_op_description,
     )
     loop.call_soon_threadsafe(_request_reconnect)
     return _wait_for_server_session_ready(
@@ -3873,6 +4163,9 @@ def _handle_auth_error_and_retry(
     if not _is_auth_error(exc):
         return None
 
+    safe_server_name = _sanitize_error(server_name)
+    safe_op_description = _sanitize_error(op_description)
+
     from tools.mcp_oauth_manager import get_manager
     manager = get_manager()
 
@@ -3884,7 +4177,7 @@ def _handle_auth_error_and_retry(
     except Exception as rec_exc:
         logger.warning(
             "MCP OAuth '%s': recovery attempt failed: %s",
-            server_name, rec_exc,
+            safe_server_name, _safe_exc_str(rec_exc),
         )
         recovered = False
 
@@ -3923,7 +4216,7 @@ def _handle_auth_error_and_retry(
         except Exception as retry_exc:
             logger.warning(
                 "MCP %s/%s retry after auth recovery failed: %s",
-                server_name, op_description, retry_exc,
+                safe_server_name, safe_op_description, _safe_exc_str(retry_exc),
             )
 
     # No recovery available, or retry also failed: surface a structured
@@ -4074,6 +4367,9 @@ def _handle_session_expired_and_retry(
     if not _is_session_expired_error(exc):
         return None
 
+    safe_server_name = _sanitize_error(server_name)
+    safe_op_description = _sanitize_error(op_description)
+
     with _lock:
         srv = _servers.get(server_name)
     if srv is None or not hasattr(srv, "_reconnect_event"):
@@ -4086,7 +4382,7 @@ def _handle_session_expired_and_retry(
     logger.info(
         "MCP server '%s': %s failed with session-expired error (%s); "
         "signalling transport reconnect and retrying once.",
-        server_name, op_description, exc,
+        safe_server_name, safe_op_description, _safe_exc_str(exc),
     )
 
     # Trigger the same reconnect mechanism the OAuth recovery path
@@ -4100,7 +4396,7 @@ def _handle_session_expired_and_retry(
         logger.warning(
             "MCP server '%s': reconnect did not ready within 15s after "
             "session-expired error; falling through to error response.",
-            server_name,
+            safe_server_name,
         )
         return None
 
@@ -4117,7 +4413,7 @@ def _handle_session_expired_and_retry(
     except Exception as retry_exc:
         logger.warning(
             "MCP %s/%s retry after session reconnect failed: %s",
-            server_name, op_description, retry_exc,
+            safe_server_name, safe_op_description, _safe_exc_str(retry_exc),
         )
     return None
 
@@ -4672,7 +4968,7 @@ def _load_mcp_config() -> Dict[str, dict]:
                 safe_servers[name] = interpolated
         return safe_servers
     except Exception as exc:
-        logger.debug("Failed to load MCP config: %s", exc)
+        logger.debug("Failed to load MCP config: %s", _safe_exc_str(exc))
         return {}
 
 
@@ -4717,7 +5013,7 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
             except Exception as shutdown_exc:  # noqa: BLE001 -- best-effort reap, don't mask the real error
                 logger.debug(
                     "MCP server '%s' shutdown during orphan-reap failed: %s",
-                    name, shutdown_exc,
+                    name, _safe_exc_str(shutdown_exc),
                 )
         raise
     finally:
@@ -4759,7 +5055,7 @@ def _request_lazy_reconnect(server_name: str, server: MCPServerTask) -> bool:
     except Exception as exc:
         logger.warning(
             "MCP server '%s': lazy reconnect after stdio recycle failed: %s",
-            server_name, exc,
+            server_name, _safe_exc_str(exc),
         )
         return False
 
@@ -4962,17 +5258,22 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 _mark_proven()
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
-                error_text = ""
+                error_parts: List[str] = []
                 for block in (result.content or []):
                     if getattr(block, "text", None):
-                        error_text += block.text
+                        error_parts.append(str(
+                            _redact_mcp_tool_payload(str(block.text))
+                        ))
                         continue
                     # EmbeddedResource blocks inside error payloads carry
                     # their text under .resource.text — previously dropped,
                     # leaving a bare "MCP tool returned an error".
                     res_text = getattr(getattr(block, "resource", None), "text", None)
                     if res_text:
-                        error_text += str(res_text)
+                        error_parts.append(str(
+                            _redact_mcp_tool_payload(str(res_text))
+                        ))
+                error_text = "".join(error_parts)
                 return tool_error(_sanitize_error(
                     error_text or "MCP tool returned an error"
                 ))
@@ -4991,7 +5292,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             parts: List[str] = []
             for block in (result.content or []):
                 if hasattr(block, "text") and block.text:
-                    parts.append(block.text)
+                    parts.append(str(_redact_mcp_tool_payload(block.text)))
                     continue
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:
@@ -5017,12 +5318,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 if block_type in {"text", "resource", "audio", "image"}:
                     logger.debug(
                         "MCP %s: content block type %r rendered empty",
-                        server_name, block_type,
+                        _sanitize_error(server_name),
+                        _sanitize_error(str(block_type)),
                     )
                 else:
                     logger.warning(
                         "MCP %s: dropping unsupported content block type %r",
-                        server_name, block_type,
+                        _sanitize_error(server_name),
+                        _sanitize_error(str(block_type)),
                     )
             text_result = "\n".join(parts) if parts else ""
 
@@ -5032,6 +5335,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # is the primary payload; structuredContent supplements it.
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
+                structured = _redact_mcp_tool_payload(structured)
                 if text_result:
                     return json.dumps({
                         "result": text_result,
@@ -5079,13 +5383,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 return recovered
 
             _bump_server_error(server_name)
+            safe_error = _sanitize_error(
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+            )
             logger.error(
                 "MCP tool %s/%s call failed: %s",
-                server_name, tool_name, exc,
+                _sanitize_error(server_name),
+                _sanitize_error(tool_name),
+                safe_error,
             )
-            return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-            ))
+            return tool_error(safe_error)
 
     return _handler
 
@@ -5116,7 +5423,10 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
                 if hasattr(r, "mimeType") and r.mimeType:
                     entry["mimeType"] = r.mimeType
                 resources.append(entry)
-            return json.dumps({"resources": resources}, ensure_ascii=False)
+            return json.dumps(
+                _redact_mcp_tool_payload({"resources": resources}),
+                ensure_ascii=False,
+            )
 
         def _call_once():
             return _run_on_mcp_loop(_call, timeout=tool_timeout)
@@ -5136,12 +5446,13 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             )
             if recovered is not None:
                 return recovered
-            logger.error(
-                "MCP %s/list_resources failed: %s", server_name, exc,
-            )
-            return tool_error(_sanitize_error(
+            safe_error = _sanitize_error(
                 f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-            ))
+            )
+            logger.error(
+                "MCP %s/list_resources failed: %s", server_name, safe_error,
+            )
+            return tool_error(safe_error)
 
     return _handler
 
@@ -5167,7 +5478,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             contents = result.contents if hasattr(result, "contents") else []
             for block in contents:
                 if getattr(block, "text", None) is not None:
-                    parts.append(block.text)
+                    parts.append(str(_redact_mcp_tool_payload(str(block.text))))
                 elif getattr(block, "blob", None) is not None:
                     # Materialize binary resource contents into the document
                     # cache instead of discarding them (same contract as
@@ -5197,12 +5508,13 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             )
             if recovered is not None:
                 return recovered
-            logger.error(
-                "MCP %s/read_resource failed: %s", server_name, exc,
-            )
-            return tool_error(_sanitize_error(
+            safe_error = _sanitize_error(
                 f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-            ))
+            )
+            logger.error(
+                "MCP %s/read_resource failed: %s", server_name, safe_error,
+            )
+            return tool_error(safe_error)
 
     return _handler
 
@@ -5238,7 +5550,10 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
                         for a in p.arguments
                     ]
                 prompts.append(entry)
-            return json.dumps({"prompts": prompts}, ensure_ascii=False)
+            return json.dumps(
+                _redact_mcp_tool_payload({"prompts": prompts}),
+                ensure_ascii=False,
+            )
 
         def _call_once():
             return _run_on_mcp_loop(_call, timeout=tool_timeout)
@@ -5258,12 +5573,11 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             )
             if recovered is not None:
                 return recovered
+            safe_error = _safe_exc_str(exc)
             logger.error(
-                "MCP %s/list_prompts failed: %s", server_name, exc,
+                "MCP %s/list_prompts failed: %s", server_name, safe_error,
             )
-            return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-            ))
+            return tool_error(f"MCP call failed: {safe_error}")
 
     return _handler
 
@@ -5303,7 +5617,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             resp = {"messages": messages}
             if hasattr(result, "description") and result.description:
                 resp["description"] = result.description
-            return json.dumps(resp, ensure_ascii=False)
+            return json.dumps(_redact_mcp_tool_payload(resp), ensure_ascii=False)
 
         def _call_once():
             return _run_on_mcp_loop(_call, timeout=tool_timeout)
@@ -5323,12 +5637,11 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             )
             if recovered is not None:
                 return recovered
+            safe_error = _safe_exc_str(exc)
             logger.error(
-                "MCP %s/get_prompt failed: %s", server_name, exc,
+                "MCP %s/get_prompt failed: %s", server_name, safe_error,
             )
-            return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-            ))
+            return tool_error(f"MCP call failed: {safe_error}")
 
     return _handler
 
@@ -6018,7 +6331,11 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
                 utility_tools=utility_payload,
             )
         except Exception as exc:
-            logger.debug("MCP schema cache write failed for '%s': %s", name, exc)
+            logger.debug(
+                "MCP schema cache write failed for '%s': %s",
+                name,
+                _safe_exc_str(exc),
+            )
 
     return registered_names
 
@@ -6314,7 +6631,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                 names = _register_from_cache_sync(name, cfg, entry)
             except Exception as exc:
                 logger.warning(
-                    "Failed lazy MCP registration for '%s': %s", name, exc,
+                    "Failed lazy MCP registration for '%s': %s",
+                    name,
+                    _safe_exc_str(exc),
                 )
                 with _lock:
                     _server_connecting.add(name)
@@ -6655,7 +6974,11 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
 
         for name, outcome in zip(names, outcomes):
             if isinstance(outcome, Exception):
-                logger.debug("Probe: failed to connect to '%s': %s", name, outcome)
+                logger.debug(
+                    "Probe: failed to connect to '%s': %s",
+                    name,
+                    _safe_exc_str(outcome),
+                )
                 continue
             probed_servers.append(outcome)
             tools = []
@@ -6673,7 +6996,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     try:
         _run_on_mcp_loop(_probe_all, timeout=120)
     except Exception as exc:
-        logger.debug("MCP probe failed: %s", exc)
+        logger.debug("MCP probe failed: %s", _safe_exc_str(exc))
     finally:
         _stop_mcp_loop_if_idle()
 
@@ -6877,8 +7200,11 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
                 for schema in get_mem_schemas():
                     if isinstance(schema, dict):
                         _add(schema)
-    except Exception:
-        logger.debug("Memory-provider tool re-injection skipped", exc_info=True)
+    except Exception as exc:
+        logger.debug(
+            "Memory-provider tool re-injection skipped: %s",
+            _safe_exc_str(exc),
+        )
 
     # Context-engine tools (lcm_grep/lcm_describe/…) — the `context_engine`
     # toolset is intentionally empty, so these only exist via this append.
@@ -6902,8 +7228,11 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
                 # dispatch (matches agent_init.py's `continue`-before-claim).
                 if _add(schema) and name:
                     staged_engine_names.add(name)
-    except Exception:
-        logger.debug("Context-engine tool re-injection skipped", exc_info=True)
+    except Exception as exc:
+        logger.debug(
+            "Context-engine tool re-injection skipped: %s",
+            _safe_exc_str(exc),
+        )
 
     return staged_engine_names
 
@@ -6939,7 +7268,9 @@ def shutdown_mcp_servers():
         for server, result in zip(servers_snapshot, results):
             if isinstance(result, Exception):
                 logger.debug(
-                    "Error closing MCP server '%s': %s", server.name, result,
+                    "Error closing MCP server '%s': %s",
+                    server.name,
+                    _safe_exc_str(result),
                 )
         with _lock:
             _servers.clear()
@@ -6962,7 +7293,7 @@ def shutdown_mcp_servers():
             try:
                 future.result(timeout=15)
             except BaseException as exc:
-                logger.debug("Error during MCP shutdown: %s", exc)
+                logger.debug("Error during MCP shutdown: %s", _safe_exc_str(exc))
 
     # Unconditional final sweep: whether the async ``_shutdown`` ran,
     # timed out, or was never scheduled (loop already stopped), a full
@@ -7073,7 +7404,7 @@ def _kill_orphaned_mcp_children(
                     # the per-pid path so we still try the direct child if alive.
                     logger.debug(
                         "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
-                        pgid, sig, server_name, exc,
+                        pgid, sig, server_name, _safe_exc_str(exc),
                     )
         try:
             os.kill(pid, sig)
@@ -7143,7 +7474,10 @@ async def _drain_mcp_loop_tasks(
         except asyncio.CancelledError:
             pass
         except Exception as exc:
-            logger.debug("Pending MCP loop task ended during shutdown: %s", exc)
+            logger.debug(
+                "Pending MCP loop task ended during shutdown: %s",
+                _safe_exc_str(exc),
+            )
 
     if still_pending:
         logger.warning(
@@ -7204,14 +7538,17 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
                         _MCP_LOOP_DRAIN_TIMEOUT + 1,
                     )
                 except BaseException as exc:
-                    logger.warning("Error draining MCP loop tasks: %s", exc)
+                    logger.warning("Error draining MCP loop tasks: %s", _safe_exc_str(exc))
         elif not loop.is_closed():
             try:
                 loop.run_until_complete(
                     _drain_mcp_loop_tasks(timeout=_MCP_LOOP_DRAIN_TIMEOUT)
                 )
             except BaseException as exc:
-                logger.warning("Error draining stopped MCP loop tasks: %s", exc)
+                logger.warning(
+                    "Error draining stopped MCP loop tasks: %s",
+                    _safe_exc_str(exc),
+                )
 
         if not stop_owned_by_loop and loop.is_running():
             loop.call_soon_threadsafe(loop.stop)
@@ -7222,7 +7559,10 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
         try:
             loop.close()
         except Exception as exc:
-            logger.warning("Unable to close MCP event loop cleanly: %s", exc)
+            logger.warning(
+                "Unable to close MCP event loop cleanly: %s",
+                _safe_exc_str(exc),
+            )
         # After closing the loop, any stdio subprocesses that survived the
         # graceful shutdown are now orphaned — include active PIDs too
         # since the loop is gone and no session can still be in flight.

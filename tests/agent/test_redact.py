@@ -831,3 +831,153 @@ class TestKeywordWordBoundary:
         assert "hunter2hunter2hunter2hh" not in result
 
 
+class TestStructuredDataRedaction:
+    def test_wordpress_secret_option_value_is_masked_without_mutating_input(self):
+        from agent.redact import redact_sensitive_data
+
+        secret = "synthetic-opaque-value-for-tests-only"
+        payload = {
+            "rows": [{
+                "option_name": "demo_service_api_key",
+                "option_value": secret,
+            }]
+        }
+
+        redacted = redact_sensitive_data(payload)
+
+        assert redacted["rows"][0]["option_name"] == "demo_service_api_key"
+        assert redacted["rows"][0]["option_value"] == "***"
+        assert secret not in str(redacted)
+        assert payload["rows"][0]["option_value"] == secret
+
+    def test_non_secret_wordpress_option_value_passes_through(self):
+        from agent.redact import redact_sensitive_data
+
+        payload = {
+            "option_name": "demo_cache_token_count",
+            "option_value": "42",
+        }
+        assert redact_sensitive_data(payload) == payload
+
+    @pytest.mark.parametrize(
+        "option_name",
+        ["woocommerce_api_consumer_key", "woocommerce_api_consumer_secret"],
+    )
+    def test_wordpress_consumer_credential_option_value_is_masked(self, option_name):
+        from agent.redact import redact_sensitive_data
+
+        secret = "synthetic-consumer-credential-value"
+        result = redact_sensitive_data({
+            "option_name": option_name,
+            "option_value": secret,
+        })
+        assert result["option_value"] == "***"
+        assert secret not in str(result)
+
+    def test_namespaced_wordpress_option_columns_are_correlated(self):
+        from agent.redact import redact_sensitive_data
+
+        secret = "synthetic-namespaced-option-value"
+        result = redact_sensitive_data({
+            "wp.option_name": "demo_service_client_secret",
+            "wp.option_value": secret,
+        })
+        assert result["wp.option_value"] == "***"
+        assert secret not in str(result)
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {
+                "option_name": "demo_service_client_secret",
+                "option-name": "demo_public_setting",
+                "option_value": "synthetic-collision-value",
+            },
+            {
+                "option-name": "demo_public_setting",
+                "option_name": "demo_service_client_secret",
+                "option_value": "synthetic-collision-value",
+            },
+        ],
+    )
+    def test_colliding_option_name_alias_cannot_suppress_redaction(self, payload):
+        from agent.redact import redact_sensitive_data
+
+        assert redact_sensitive_data(payload)["option_value"] == "***"
+
+    def test_nested_secret_named_field_is_masked(self):
+        from agent.redact import redact_sensitive_data
+
+        payload = {"result": {"settings": {"password": "synthetic-value", "port": 443}}}
+        assert redact_sensitive_data(payload) == {
+            "result": {"settings": {"password": "***", "port": 443}}
+        }
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "secretKey", "SecretKey", "demoServiceSecretKey",
+            "privateKey", "PrivateKey", "demoServicePrivateKey",
+            "authKey", "AuthKey", "demoServiceAuthKey",
+            "accessKey", "AccessKey", "demoServiceAccessKey",
+            "licenseKey", "LicenseKey", "demoServiceLicenseKey",
+            "keyMaterial", "KeyMaterial", "demoServiceKeyMaterial",
+            "demo_service_api_token", "demoServiceApiToken",
+            "secret_key", "demo-secret-key", "demo.secret_key",
+            "private_key", "demo-private-key", "demo.private_key",
+            "auth_key", "demo-auth-key", "demo.auth_key",
+            "access_key", "demo-access-key", "demo.access_key",
+            "license_key", "demo-license-key", "demo.license_key",
+            "key_material", "demo-key-material", "demo.key_material",
+            "service_api_key", "db_password", "consumer_secret", "consumer_key",
+            "api_token", "apiToken", "x-api-key", "xApiKey",
+            "webhook_secret", "signingSecret", "session_token",
+            "proxyAuthorization", "service_webhook_token",
+            "id_token", "oauthToken", "OAuthToken", "demoOAuthToken",
+            "XAPIKey", "demoXAPIKey", "csrf_token", "verificationToken",
+            "personalAccessToken", "bot_token", "serviceToken",
+        ],
+    )
+    def test_credential_key_case_and_namespace_variants_are_masked(self, key):
+        from agent.redact import redact_sensitive_data
+
+        assert redact_sensitive_data({key: "synthetic-opaque-value"}) == {key: "***"}
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "publicKey", "tokenCount", "secretKeyCount", "licenseKeyId",
+            "keyMaterialCount", "OAuthTokenCount", "XAPIKeyId",
+            "hockeyMaterial", "monkeyMaterial",
+        ],
+    )
+    def test_non_credential_camel_case_suffixes_pass_through(self, key):
+        from agent.redact import redact_sensitive_data
+
+        payload = {key: "synthetic-public-value"}
+        assert redact_sensitive_data(payload) == payload
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "pagination_token", "nextToken", "requiresAuthorization",
+            "cookiePolicy", "requestNonce", "tokenStatus",
+        ],
+    )
+    def test_ambiguous_namespaced_metadata_fields_pass_through(self, key):
+        from agent.redact import redact_sensitive_data
+
+        payload = {key: "synthetic-public-metadata"}
+        assert redact_sensitive_data(payload) == payload
+
+    def test_global_redaction_opt_out_preserves_structured_payload(self, monkeypatch):
+        from agent.redact import redact_sensitive_data
+
+        payload = {
+            "option_name": "demo_service_api_key",
+            "option_value": "synthetic-opt-out-value-for-tests-only",
+        }
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        assert redact_sensitive_data(payload) is payload
+
+

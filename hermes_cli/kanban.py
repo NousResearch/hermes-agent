@@ -213,6 +213,20 @@ def _check_dispatcher_presence(
 # Argparse builder
 # ---------------------------------------------------------------------------
 
+def _disable_long_option_abbreviations(parser: argparse.ArgumentParser) -> None:
+    """Disable option-prefix matching across an already-built parser tree."""
+    parser.allow_abbrev = False
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        seen: set[int] = set()
+        for child in action.choices.values():
+            if id(child) in seen:
+                continue
+            seen.add(id(child))
+            _disable_long_option_abbreviations(child)
+
+
 def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Attach the ``kanban`` subcommand tree under an existing subparsers.
 
@@ -220,6 +234,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     """
     kanban_parser = parent_subparsers.add_parser(
         "kanban",
+        allow_abbrev=False,
         help="Multi-profile collaboration board (tasks, links, comments)",
         description=(
             "Durable SQLite-backed task board shared across Hermes profiles. "
@@ -950,6 +965,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_repair.add_argument("--json", action="store_true",
                           help="Emit the repair report as JSON")
 
+    _disable_long_option_abbreviations(kanban_parser)
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 

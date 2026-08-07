@@ -103,6 +103,48 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
     assert beta_titles == ["beta-task"]
 
 
+def test_run_slash_rejects_abbreviated_board_flag(kanban_home):
+    out = kc.run_slash("--bo default list")
+
+    assert out.startswith("⚠ /kanban usage error")
+    assert "--bo" in out
+
+
+@pytest.mark.parametrize(
+    ("command", "abbreviation"),
+    [
+        ("create synthetic-task --ass synthetic-user", "--ass"),
+        ("list --js", "--js"),
+        ("boards create synthetic-board --desc synthetic-description", "--desc"),
+    ],
+)
+def test_run_slash_rejects_subparser_option_abbreviations(
+    kanban_home, command, abbreviation
+):
+    out = kc.run_slash(command)
+
+    assert out.startswith("⚠ /kanban usage error")
+    assert abbreviation in out
+
+
+def test_every_kanban_parser_disables_long_option_abbreviations():
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    subparsers = parser.add_subparsers(dest="command")
+    kanban_parser = kc.build_parser(subparsers)
+
+    pending = [kanban_parser]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        assert current.allow_abbrev is False
+        for action in current._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                pending.extend(action.choices.values())
+
+
 # ---------------------------------------------------------------------------
 # Integration with the COMMAND_REGISTRY
 # ---------------------------------------------------------------------------

@@ -13,7 +13,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -223,10 +225,14 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
 
 def test_read_worker_log_tail(kanban_home):
     log_dir = kanban_home / "kanban" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if os.name != "nt":
+        log_dir.chmod(0o700)
     p = log_dir / "t_beef.log"
     # 10 lines
     p.write_text("\n".join(f"line {i}" for i in range(10)))
+    if os.name != "nt":
+        p.chmod(0o600)
     full = kb.read_worker_log("t_beef")
     assert full is not None and "line 0" in full
     tail = kb.read_worker_log("t_beef", tail_bytes=30)
@@ -235,6 +241,428 @@ def test_read_worker_log_tail(kanban_home):
     assert "line 0" not in tail
     # Missing log returns None.
     assert kb.read_worker_log("t_missing") is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX link semantics")
+def test_read_worker_log_rejects_path_escape_and_file_aliases(kanban_home, tmp_path):
+    log_dir = kanban_home / "kanban" / "logs"
+    log_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    log_dir.chmod(0o700)
+    outside = tmp_path / "outside.log"
+    outside.write_text("opaque synthetic outside content")
+    outside.chmod(0o600)
+
+    assert kb.read_worker_log(str(outside.with_suffix(""))) is None
+
+    symlink = log_dir / "t_symlink.log"
+    symlink.symlink_to(outside)
+    assert kb.read_worker_log("t_symlink") is None
+    symlink.unlink()
+
+    hardlink = log_dir / "t_hardlink.log"
+    os.link(outside, hardlink)
+    assert kb.read_worker_log("t_hardlink") is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not portable")
+def test_default_spawn_creates_private_worker_log_storage(kanban_home, monkeypatch):
+    monkeypatch.setattr(
+        "subprocess.Popen", lambda *_args, **_kwargs: SimpleNamespace(pid=123)
+    )
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="private log", assignee="ops")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        kb._default_spawn(task, str(kb.resolve_workspace(task)))
+    finally:
+        conn.close()
+
+    log_dir = kb.worker_logs_dir()
+    assert stat.S_IMODE(log_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE((log_dir / f"{tid}.log").stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not portable")
+def test_default_spawn_tightens_existing_worker_logs(kanban_home, monkeypatch):
+    monkeypatch.setattr(
+        "subprocess.Popen", lambda *_args, **_kwargs: SimpleNamespace(pid=124)
+    )
+    monkeypatch.setattr(kb, "worker_log_rotation_config", lambda: (1, 1))
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="legacy log", assignee="ops")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = kb.resolve_workspace(task)
+        log_dir = kb.worker_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{tid}.log"
+        rotated_path = log_dir / f"{tid}.log.1"
+        unrelated_path = log_dir / "t_unrelated.log"
+        unrelated_rotated_path = log_dir / "t_unrelated.log.1"
+        for path in (log_path, rotated_path, unrelated_path, unrelated_rotated_path):
+            path.write_text("synthetic legacy log\n", encoding="utf-8")
+            path.chmod(0o666)
+        log_dir.chmod(0o777)
+
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    assert stat.S_IMODE(log_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(rotated_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(unrelated_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(unrelated_rotated_path.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory descriptors only")
+def test_default_spawn_rotates_worker_log_within_verified_directory(
+    kanban_home, monkeypatch
+):
+    monkeypatch.setattr(
+        "subprocess.Popen", lambda *_args, **_kwargs: SimpleNamespace(pid=125)
+    )
+    monkeypatch.setattr(kb, "worker_log_rotation_config", lambda: (1, 1))
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="rotate log", assignee="ops")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        log_dir = kb.worker_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{tid}.log"
+        log_path.write_bytes(b"synthetic old worker output\n")
+
+        kb._default_spawn(task, str(kb.resolve_workspace(task)))
+    finally:
+        conn.close()
+
+    rotated_path = log_dir / f"{tid}.log.1"
+    assert log_path.is_file()
+    assert rotated_path.read_bytes() == b"synthetic old worker output\n"
+    assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(rotated_path.stat().st_mode) == 0o600
+
+
+def test_windows_rotation_does_not_keep_log_open(monkeypatch, tmp_path):
+    log_path = tmp_path / "worker.log"
+    log_path.write_bytes(b"synthetic old worker output\n")
+
+    monkeypatch.setattr(kb.os, "name", "nt")
+    monkeypatch.setattr(
+        kb.os,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Windows rotation must not hold an open descriptor across os.replace"
+        ),
+    )
+
+    kb._rotate_worker_log(log_path, max_bytes=1, backup_count=1)
+
+    assert not log_path.exists()
+    assert (tmp_path / "worker.log.1").read_bytes() == b"synthetic old worker output\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions only")
+def test_default_spawn_rejects_symlinked_worker_log(kanban_home, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "subprocess.Popen",
+        lambda *_args, **_kwargs: pytest.fail("worker must not spawn"),
+    )
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="symlinked log", assignee="dev")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        log_dir = kb.worker_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        outside = tmp_path / "outside.log"
+        outside.write_text("must remain untouched\n", encoding="utf-8")
+        outside.chmod(0o666)
+        (log_dir / f"{tid}.log").symlink_to(outside)
+
+        with pytest.raises(OSError):
+            kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    assert outside.read_text(encoding="utf-8") == "must remain untouched\n"
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o666
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions only")
+def test_private_worker_log_storage_rejects_symlinked_directory(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o777)
+    outside_mode = stat.S_IMODE(outside.stat().st_mode)
+    log_dir = tmp_path / "logs"
+    log_dir.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(OSError):
+        kb._prepare_private_worker_log_storage(log_dir)
+
+    assert stat.S_IMODE(outside.stat().st_mode) == outside_mode
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink behavior only")
+def test_private_worker_log_storage_rejects_symlinked_ancestor(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o777)
+    outside_mode = stat.S_IMODE(outside.stat().st_mode)
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(outside, target_is_directory=True)
+    log_dir = linked_root / "kanban" / "logs"
+
+    with pytest.raises(OSError, match="symlinked ancestor"):
+        kb._prepare_private_worker_log_storage(log_dir)
+
+    assert stat.S_IMODE(outside.stat().st_mode) == outside_mode
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory descriptors only")
+def test_private_worker_log_storage_resists_ancestor_swap_during_open(
+    tmp_path, monkeypatch
+):
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    moved_trusted = tmp_path / "trusted-original"
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o777)
+    outside_logs = outside / "logs"
+    outside_logs.mkdir(mode=0o777)
+    outside_log = outside_logs / "t_synthetic.log"
+    outside_log.write_text("outside\n", encoding="utf-8")
+    outside_log.chmod(0o666)
+    outside_dir_mode = stat.S_IMODE(outside_logs.stat().st_mode)
+    outside_log_mode = stat.S_IMODE(outside_log.stat().st_mode)
+
+    real_open = os.open
+    swapped = False
+
+    def swap_before_log_dir_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if path == "logs" and dir_fd is not None and not swapped:
+            trusted.rename(moved_trusted)
+            trusted.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(kb.os, "open", swap_before_log_dir_open)
+    dir_fd = kb._prepare_private_worker_log_storage(trusted / "logs", keep_open=True)
+    assert dir_fd is not None
+    try:
+        opened_stat = os.fstat(dir_fd)
+        expected_stat = os.stat(moved_trusted / "logs", follow_symlinks=False)
+        assert (opened_stat.st_dev, opened_stat.st_ino) == (
+            expected_stat.st_dev,
+            expected_stat.st_ino,
+        )
+    finally:
+        os.close(dir_fd)
+
+    assert swapped is True
+    assert stat.S_IMODE(outside_logs.stat().st_mode) == outside_dir_mode
+    assert stat.S_IMODE(outside_log.stat().st_mode) == outside_log_mode
+    assert outside_log.read_text(encoding="utf-8") == "outside\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX non-regular path behavior only")
+def test_private_worker_log_storage_rejects_non_regular_retained_log(tmp_path):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    outside = tmp_path / "outside.log"
+    outside.write_text("synthetic outside data\n", encoding="utf-8")
+    (log_dir / "t_synthetic.log.1").symlink_to(outside)
+
+    with pytest.raises(OSError, match="non-regular retained"):
+        kb._prepare_private_worker_log_storage(log_dir)
+
+    assert outside.read_text(encoding="utf-8") == "synthetic outside data\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX hard-link behavior only")
+def test_private_worker_log_storage_rejects_hard_linked_log(tmp_path):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    outside = tmp_path / "outside.log"
+    outside.write_text("synthetic outside data\n", encoding="utf-8")
+    outside.chmod(0o644)
+    os.link(outside, log_dir / "t_synthetic.log")
+
+    with pytest.raises(OSError, match="expected regular file"):
+        kb._prepare_private_worker_log_storage(log_dir)
+
+    assert outside.read_text(encoding="utf-8") == "synthetic outside data\n"
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o644
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory descriptors only")
+def test_default_spawn_fails_if_log_dir_changes_after_verification(
+    kanban_home, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "subprocess.Popen",
+        lambda *_args, **_kwargs: pytest.fail("worker must not spawn"),
+    )
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="replaced log dir", assignee="dev")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        log_dir = kb.worker_logs_dir()
+        moved_dir = log_dir.with_name("verified-log-dir")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        def replace_log_dir():
+            log_dir.rename(moved_dir)
+            log_dir.symlink_to(outside, target_is_directory=True)
+            return 1024, 1
+
+        monkeypatch.setattr(kb, "worker_log_rotation_config", replace_log_dir)
+        with pytest.raises(OSError, match="symlinked ancestor|directory changed"):
+            kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    assert not (outside / f"{tid}.log").exists()
+    assert (moved_dir / f"{tid}.log").is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ancestor identity behavior only")
+def test_default_spawn_fails_if_log_ancestor_becomes_symlink(
+    kanban_home, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "subprocess.Popen",
+        lambda *_args, **_kwargs: pytest.fail("worker must not spawn"),
+    )
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="raced log ancestor", assignee="dev")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        log_dir = kb.worker_logs_dir()
+        kanban_dir = log_dir.parent
+        moved_kanban_dir = kanban_dir.with_name("moved-kanban")
+
+        def swap_ancestor():
+            kanban_dir.rename(moved_kanban_dir)
+            kanban_dir.symlink_to(moved_kanban_dir, target_is_directory=True)
+            return kb.DEFAULT_LOG_ROTATE_BYTES, kb.DEFAULT_LOG_BACKUP_COUNT
+
+        monkeypatch.setattr(kb, "worker_log_rotation_config", swap_ancestor)
+        with pytest.raises(OSError, match="symlinked ancestor"):
+            kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    assert (moved_kanban_dir / "logs" / f"{tid}.log").read_bytes() == b""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX non-regular path behavior only")
+def test_default_spawn_rejects_non_regular_log_before_rotation(
+    kanban_home, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "subprocess.Popen",
+        lambda *_args, **_kwargs: pytest.fail("worker must not spawn"),
+    )
+    monkeypatch.setattr(kb, "worker_log_rotation_config", lambda: (1, 1))
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="directory log", assignee="dev")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        log_dir = kb.worker_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        active_path = log_dir / f"{tid}.log"
+        active_path.mkdir()
+
+        with pytest.raises(OSError, match="regular file"):
+            kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    assert active_path.is_dir()
+    assert not (log_dir / f"{tid}.log.1").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX dir_fd symlink behavior only")
+def test_default_spawn_fails_if_retained_log_changes_during_rotation(
+    kanban_home, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "subprocess.Popen",
+        lambda *_args, **_kwargs: pytest.fail("worker must not spawn"),
+    )
+    monkeypatch.setattr(kb, "worker_log_rotation_config", lambda: (1, 2))
+    real_replace = os.replace
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="raced retained log", assignee="dev")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        log_dir = kb.worker_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"{tid}.log").write_bytes(b"active output\n")
+        retained = log_dir / f"{tid}.log.1"
+        retained.write_bytes(b"retained output\n")
+        outside = tmp_path / "outside.log"
+        outside.write_text("must remain untouched\n", encoding="utf-8")
+
+        def replace_after_swap(src, dst, **kwargs):
+            if str(src).endswith(".log.1"):
+                os.unlink(src, dir_fd=kwargs.get("src_dir_fd"))
+                os.symlink(outside, src, dir_fd=kwargs.get("src_dir_fd"))
+            return real_replace(src, dst, **kwargs)
+
+        monkeypatch.setattr(os, "replace", replace_after_swap)
+        with pytest.raises(OSError, match="changed during secure rotation"):
+            kb._default_spawn(task, str(kb.resolve_workspace(task)))
+    finally:
+        conn.close()
+
+    assert outside.read_text(encoding="utf-8") == "must remain untouched\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX FIFO behavior only")
+def test_private_worker_log_rejects_fifo_without_blocking(tmp_path):
+    fifo_path = tmp_path / "worker.log"
+    os.mkfifo(fifo_path)
+    script = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from hermes_cli import kanban_db as kb\n"
+        "try:\n"
+        "    kb._open_private_worker_log(Path(sys.argv[1]))\n"
+        "except OSError:\n"
+        "    raise SystemExit(0)\n"
+        "raise SystemExit(1)\n"
+    )
+
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", script, str(fifo_path)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("opening an inert FIFO blocked instead of failing closed")
+
+    assert completed.returncode == 0, completed.stderr
 
 
 # ---------------------------------------------------------------------------

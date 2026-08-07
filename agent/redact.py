@@ -663,6 +663,7 @@ def redact_sensitive_text(
     code_file: bool = False,
     file_read: bool = False,
     redact_url_credentials: bool = False,
+    redact_phone_numbers: bool = True,
 ) -> str:
     """Apply all redaction patterns to a block of text.
 
@@ -868,7 +869,7 @@ def redact_sensitive_text(
         text = _redact_form_body(text)
 
     # E.164 phone numbers (Signal, WhatsApp)
-    if "+" in text:
+    if redact_phone_numbers and "+" in text:
         def _redact_phone(m):
             phone = m.group(1)
             if len(phone) <= 8:
@@ -877,6 +878,149 @@ def redact_sensitive_text(
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text
+
+
+_STRUCTURED_SECRET_KEYS = frozenset({
+    "access_key", "access_token", "api_key", "api_token", "apikey", "auth_key",
+    "auth_token", "authorization", "bearer", "bearer_token", "bot_token",
+    "client_secret", "consumer_key", "csrf_token",
+    "consumer_secret", "cookie",
+    "credential", "id_token", "key_material", "license_key", "nonce",
+    "oauth_token", "password", "personal_access_token",
+    "passwd", "private_key", "proxy_authorization", "raw_secret",
+    "refresh_token", "secret", "service_token", "session_token",
+    "signing_secret", "signing_token",
+    "secret_input", "secret_key", "secret_value", "session_cookie", "token",
+    "verification_token", "webhook_secret", "webhook_token", "x_api_key",
+})
+_STRUCTURED_SECRET_SUFFIXES = (
+    "access_key", "access_token", "api_key", "api_token", "apikey",
+    "auth_key", "auth_token", "bearer_token", "bot_token", "client_secret",
+    "consumer_key", "consumer_secret", "credential", "csrf_token", "id_token",
+    "key_material", "license_key", "oauth_token", "personal_access_token",
+    "password", "passwd", "private_key", "raw_secret", "refresh_token",
+    "proxy_authorization", "secret_input", "secret_key", "secret_value",
+    "service_token", "session_cookie", "session_token", "signing_secret",
+    "signing_token", "verification_token", "webhook_secret", "webhook_token",
+)
+
+_SECRET_OPTION_NAME_SUFFIXES = (
+    "access_token", "api_key", "apikey", "auth_key", "auth_salt",
+    "auth_token", "client_secret", "consumer_key", "consumer_secret",
+    "credential", "license_key",
+    "logged_in_key", "logged_in_salt", "nonce_key", "nonce_salt",
+    "password", "passwd", "private_key", "refresh_token", "secret",
+    "secret_key", "secure_auth_key", "secure_auth_salt", "token",
+)
+
+
+def _canonical_structured_key(value: object) -> str:
+    text = str(value)
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", text)
+    text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", text)
+    canonical = re.sub(r"[^a-z0-9]+", "_", text.casefold()).strip("_")
+    # The generic acronym splitter sees OAuthToken as O_Auth_Token and
+    # XAPIKey as XAPI_Key. Normalize these established credential acronyms
+    # without collapsing arbitrary lexical boundaries.
+    canonical = re.sub(r"(^|_)o_auth(?=_|$)", r"\1oauth", canonical)
+    return re.sub(r"(^|_)xapi(?=_|$)", r"\1x_api", canonical)
+
+
+def _is_structured_secret_key(value: object) -> bool:
+    """Recognize exact and conservatively suffixed credential field names."""
+    canonical = _canonical_structured_key(value)
+    return canonical in _STRUCTURED_SECRET_KEYS or any(
+        canonical.endswith(f"_{suffix}")
+        and len(canonical) - len(suffix) - 1 >= 2
+        for suffix in _STRUCTURED_SECRET_SUFFIXES
+    )
+
+
+def _is_secret_option_name(value: object) -> bool:
+    """Recognize credential-bearing WordPress option names conservatively."""
+    normalized = _canonical_structured_key(value)
+    return any(
+        normalized == suffix or normalized.endswith(f"_{suffix}")
+        for suffix in _SECRET_OPTION_NAME_SUFFIXES
+    )
+
+
+def redact_sensitive_data(
+    value: object,
+    *,
+    force: bool = False,
+    code_file: bool = False,
+    redact_url_credentials: bool = False,
+    redact_phone_numbers: bool = True,
+) -> object:
+    """Recursively redact structured secrets without mutating the input."""
+    if not (force or _REDACT_ENABLED):
+        return value
+    if isinstance(value, dict):
+        secret_option_prefixes: set[str] = set()
+        for key, item in value.items():
+            canonical_key = _canonical_structured_key(key)
+            if canonical_key == "option_name":
+                prefix = ""
+            elif canonical_key.endswith("_option_name"):
+                prefix = canonical_key[: -len("option_name")]
+            else:
+                continue
+            if _is_secret_option_name(item):
+                secret_option_prefixes.add(prefix)
+        redacted = {}
+        for key, item in value.items():
+            canonical_key = _canonical_structured_key(key)
+            if canonical_key == "option_value":
+                option_prefix = ""
+            elif canonical_key.endswith("_option_value"):
+                option_prefix = canonical_key[: -len("option_value")]
+            else:
+                option_prefix = None
+            if _is_structured_secret_key(key):
+                redacted[key] = "***"
+            elif option_prefix is not None and option_prefix in secret_option_prefixes:
+                redacted[key] = "***"
+            else:
+                redacted[key] = redact_sensitive_data(
+                    item,
+                    force=force,
+                    code_file=code_file,
+                    redact_url_credentials=redact_url_credentials,
+                    redact_phone_numbers=redact_phone_numbers,
+                )
+        return redacted
+    if isinstance(value, list):
+        return [
+            redact_sensitive_data(
+                item,
+                force=force,
+                code_file=code_file,
+                redact_url_credentials=redact_url_credentials,
+                redact_phone_numbers=redact_phone_numbers,
+            )
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            redact_sensitive_data(
+                item,
+                force=force,
+                code_file=code_file,
+                redact_url_credentials=redact_url_credentials,
+                redact_phone_numbers=redact_phone_numbers,
+            )
+            for item in value
+        )
+    if isinstance(value, str):
+        return redact_sensitive_text(
+            value,
+            force=force,
+            code_file=code_file,
+            redact_url_credentials=redact_url_credentials,
+            redact_phone_numbers=redact_phone_numbers,
+        )
+    return value
 
 
 # Commands whose stdout is an environment-variable dump (KEY=value lines),

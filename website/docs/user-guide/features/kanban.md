@@ -826,6 +826,38 @@ Every `hermes kanban <action>` verb is also reachable as `/kanban <action>` — 
 
 Quote multi-word arguments the same way you would on a shell — `run_slash` parses the rest of the line with `shlex.split`, so `"..."` and `'...'` both work.
 
+### Worker-log security and upgrade behavior
+
+Worker logs are raw subprocess output and may contain data that a pattern-based
+secret redactor does not recognize. Hermes therefore creates Kanban log
+directories with mode `0700` and log files with mode `0600` on POSIX systems.
+On the first worker spawn after an upgrade, the active board's existing worker
+log directory and retained regular `*.log*` files are tightened to those modes.
+Symlinks in the worker-log path, hard-linked log files, or any non-regular active
+or retained log path fail closed instead of redirecting output or permission
+changes outside the board log directory. This includes FIFOs, which are rejected
+without waiting for a reader. These no-follow, hard-link, and mode guarantees are
+POSIX-specific. On Windows, Python does not expose an equivalent no-follow open
+for reparse points, so the log tree must be protected by filesystem ACLs; Hermes
+uses those ACLs and avoids holding log handles open across rotation.
+
+MCP tool results are redacted before they enter agent context or worker output;
+this includes nested and JSON-encoded structured content, credential-named fields, WordPress
+`option_name` / `option_value` rows, and credential-like text in plain-text and
+embedded-resource blocks. This layer follows Hermes' global redaction setting,
+which is enabled by default; explicitly disabling redaction also disables the
+normal MCP result layer. MCP error diagnostics remain force-sanitized because
+they may be persisted to logs.
+
+The messaging-gateway form `/kanban log <id>` requires the caller to be listed
+as an explicit admin for the current DM or group scope. It fails closed when no
+admin list is configured, even though other slash commands remain unrestricted
+in that legacy configuration. Configure `allow_admin_from` for DMs or
+`group_allow_admin_from` for groups/channels. The local CLI command
+`hermes kanban log <id>` and authenticated dashboard access are unchanged.
+Kanban also disables argparse long-option abbreviations: use the complete
+`--board` flag rather than shortened forms such as `--bo`.
+
 ### Mid-run usage: `/kanban` bypasses the running-agent guard
 
 The gateway normally queues slash commands and user messages while an agent is still thinking — that's what stops you from accidentally starting a second turn while the first is in flight. **`/kanban` is explicitly exempted from this guard.** The board lives in `~/.hermes/kanban.db`, not in the running agent's state, so reads (`list`, `show`, `context`, `tail`, `watch`, `stats`, `runs`) and writes (`comment`, `unblock`, `block`, `assign`, `archive`, `create`, `link`, …) all go through immediately, even mid-turn.

@@ -7,6 +7,7 @@ existing connect path.
 """
 
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -103,6 +104,24 @@ class TestLazyMcpRegistration:
 
         mock_get.assert_not_called()
         mock_run.assert_called_once()
+
+    def test_lazy_registration_exception_log_is_sanitized(self, caplog):
+        secret = "opaque-synthetic-lazy-registration-credential"
+        config = _lazy_config()
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_schema_cache.config_fingerprint", return_value="abc"), \
+             patch("tools.mcp_schema_cache.get_cached_entry", return_value=_fake_cache_entry()), \
+             patch(
+                 "tools.mcp_tool._register_from_cache_sync",
+                 side_effect=RuntimeError(f"auth_token: {secret}"),
+             ), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop"), \
+             caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+            mcp.register_mcp_servers(config)
+
+        assert secret not in caplog.text
+        assert "[REDACTED]" in caplog.text
 
     def test_lazy_server_not_reregistered_on_second_pass(self):
         config = _lazy_config()

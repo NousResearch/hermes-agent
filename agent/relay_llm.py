@@ -121,7 +121,12 @@ async def execute_async(
 ) -> Any:
     """Run one asynchronous physical provider attempt through Relay."""
     runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
-    if runtime is None or session is None or not runtime.managed_execution_enabled():
+    if (
+        runtime is None
+        or session is None
+        or not runtime.managed_execution_enabled()
+        or not runtime.managed_execution_safe_on_thread()
+    ):
         return await callback(request)
     logical = _logical_parent(runtime, session, parent, metadata)
     parent = logical[1] if logical is not None else parent

@@ -64,6 +64,55 @@ def test_tool_adapter_bypasses_relay_without_an_active_consumer(
     assert final_args is args
 
 
+def test_worker_thread_bypasses_managed_execution_for_async_tools(
+    relay_turn, monkeypatch
+):
+    """Async tools running on worker threads must bypass the managed Relay
+    wrapping (#77244).
+
+    NeMo Relay's native ``tools.execute`` returns a Future bound to a loop
+    captured at scope-push time on the main thread. When an async tool bridges
+    sync->async via ``model_tools._run_async`` (per-thread persistent loop),
+    awaiting that foreign-loop Future raises
+    "attached to a different loop" — so managed execution must be skipped on
+    worker threads and the callback run directly.
+    """
+    relay = relay_turn
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    assert runtime.managed_execution_enabled()
+
+    # Simulate a worker-thread tool call: the Relay wrapper must NOT run.
+    def _worker_thread_call(_args):
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(_call_relay_tools_from_worker, relay, _args).result()
+
+    monkeypatch.setattr(
+        relay.tools,
+        "execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("worker-thread tool call must bypass managed Relay")
+        ),
+    )
+
+    args = {"image_url": "http://x/img.png", "user_prompt": "describe"}
+    result, final_args = _worker_thread_call(args)
+    assert result is args
+    assert final_args is args
+
+
+def _call_relay_tools_from_worker(relay, args):
+    return relay_tools.execute(
+        "vision_analyze",
+        args,
+        lambda value: value,
+        session_id="session-1",
+        metadata={"tool_call_id": "call-1"},
+    )
+
+
 
 
 def test_request_rewrite_reaches_authorized_callback_once(relay_turn):

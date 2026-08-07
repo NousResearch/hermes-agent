@@ -71,6 +71,20 @@ class RelayRuntime:
         with self._execution_consumers_lock:
             return bool(self._execution_consumers)
 
+    def managed_execution_safe_on_thread(self) -> bool:
+        """Return whether managed execution is safe on the current thread.
+
+        Async tools bridge sync->async via ``model_tools._run_async``, which
+        runs the coroutine on a per-thread persistent loop (worker threads).
+        NeMo Relay's native ``llm.execute`` / ``tools.execute`` return a
+        Future bound to a loop captured at scope-push time on the main thread
+        — that loop never runs on a worker thread, so awaiting the Future
+        there raises "attached to a different loop" (#77244). Managed
+        execution is therefore only safe on the main thread; worker-thread
+        tool calls bypass the Relay wrapping and run the callback directly.
+        """
+        return threading.current_thread() is threading.main_thread()
+
     def ensure_session(
         self,
         event: dict[str, Any],

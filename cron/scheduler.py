@@ -4075,6 +4075,12 @@ def run_job(
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
+            # User-owned, per-job opt-in. Missing values and truthy strings
+            # fail closed so other scheduled agents retain the default
+            # network-denied Codex workspace sandbox.
+            codex_app_server_network_access=(
+                job.get("codex_app_server_network_access") is True
+            ),
         )
         
         # Run the agent with an *inactivity*-based timeout: the job can run

@@ -530,6 +530,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    codex_app_server_network_access: bool = False,
     requested_provider: str = None,
 ):
     """
@@ -619,6 +620,9 @@ def init_agent(
     # flag is the explicit single-switch off for both review paths.
     agent.skip_background_review = bool(skip_background_review)
     agent.pass_session_id = pass_session_id
+    agent.codex_app_server_network_access = (
+        codex_app_server_network_access is True
+    )
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)

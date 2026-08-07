@@ -152,6 +152,39 @@ class TestTurnInputCoercion:
 # ---- lifecycle ----
 
 class TestLifecycle:
+    def test_network_access_default_does_not_add_codex_overrides(self):
+        captured = {}
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return FakeClient()
+
+        s = CodexAppServerSession(cwd="/tmp", client_factory=factory)
+        s.ensure_started()
+
+        assert "extra_args" not in captured
+
+    def test_network_access_literal_true_adds_narrow_workspace_override(self):
+        captured = {}
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return FakeClient()
+
+        s = CodexAppServerSession(
+            cwd="/tmp",
+            network_access=True,
+            client_factory=factory,
+        )
+        s.ensure_started()
+
+        assert captured["extra_args"] == [
+            "-c",
+            'sandbox_mode="workspace-write"',
+            "-c",
+            "sandbox_workspace_write.network_access=true",
+        ]
+
     def test_ensure_started_is_idempotent(self):
         client = FakeClient()
         s = make_session(client)
@@ -895,4 +928,3 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure() is None
         assert _classify_oauth_failure("") is None
         assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
-

@@ -121,6 +121,40 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
     assert _Codex401ThenSuccessAgent.refresh_attempts == 1
     assert _Codex401ThenSuccessAgent.last_init["provider"] == "openai-codex"
     assert _Codex401ThenSuccessAgent.last_init["api_mode"] == "codex_responses"
+    assert _Codex401ThenSuccessAgent.last_init["codex_app_server_network_access"] is False
+
+
+def test_cron_network_access_requires_literal_true(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(run_agent, "AIAgent", _Codex401ThenSuccessAgent)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, **kwargs: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    for configured, expected in ((True, True), (False, False), ("true", False), (1, False), (None, False)):
+        _Codex401ThenSuccessAgent.last_init = {}
+        job = {
+            "id": f"job-network-{configured!r}",
+            "name": "Codex Network Flag Test",
+            "prompt": "ping",
+            "model": "gpt-5.3-codex",
+        }
+        if configured is not None:
+            job["codex_app_server_network_access"] = configured
+        success, _, _, error = cron_scheduler.run_job(job)
+        assert success is True
+        assert error is None
+        assert _Codex401ThenSuccessAgent.last_init[
+            "codex_app_server_network_access"
+        ] is expected
 
 
 def test_gateway_run_agent_codex_path_handles_internal_401_refresh(monkeypatch):

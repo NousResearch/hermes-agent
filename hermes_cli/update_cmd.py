@@ -1520,6 +1520,61 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
     except Exception:
         return False
 
+
+def _merge_diverged_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
+    """Merge upstream/main into a customized fork and push without rewriting history.
+
+    A fork that carries a small local integration is expected to be ahead of
+    upstream.  The old updater treated that state as permanently unsyncable,
+    which silently froze the fork on its current upstream revision.  Keep the
+    customization while accepting ordinary upstream commits, but fail closed
+    on a dirty tree, a merge conflict, or a non-fast-forward push.
+    """
+    status = subprocess.run(
+        git_cmd + ["status", "--porcelain"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if status.returncode != 0 or status.stdout.strip():
+        print("  ✗ Customized fork sync requires a clean working tree.")
+        return False
+
+    merge = subprocess.run(
+        git_cmd + ["merge", "--no-edit", "upstream/main"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if merge.returncode != 0:
+        subprocess.run(
+            git_cmd + ["merge", "--abort"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        print("  ✗ Upstream conflicts with the customized fork; no update was installed.")
+        return False
+
+    push = subprocess.run(
+        git_cmd + ["push", "origin", "main"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if push.returncode != 0:
+        print("  ✗ Merged upstream locally but could not push the customized fork.")
+        return False
+    return True
+
 def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
     """Check if fork is behind upstream and sync if safe.
 
@@ -1592,13 +1647,25 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("  ✗ Could not compare branches. Skipping upstream sync.")
         return
 
-    # If origin/main has commits not on upstream, don't trample
+    # A customized fork may legitimately be ahead of upstream. If upstream is
+    # also ahead, merge it without rewriting either history. This keeps normal
+    # updates flowing while preserving the fork's bounded integration.
     if origin_ahead > 0:
+        if upstream_ahead > 0:
+            print()
+            print(
+                f"→ Customized fork and upstream diverged "
+                f"({origin_ahead} local, {upstream_ahead} upstream commit(s))"
+            )
+            print("→ Merging upstream into the customized fork...")
+            if _merge_diverged_fork_with_upstream(git_cmd, cwd):
+                print("  ✓ Customized fork merged and pushed without rewriting history")
+            else:
+                print("  ℹ Resolve the fork update separately; the current repair remains unchanged.")
+            return
         print()
         print(f"ℹ Your fork has {origin_ahead} commit(s) not on upstream.")
-        print("  Skipping upstream sync to preserve your changes.")
-        print("  If you want to merge upstream changes, run:")
-        print("    git pull upstream main")
+        print("  ✓ Customized fork already contains the current upstream revision.")
         return
 
     # If upstream is not ahead, fork is up to date

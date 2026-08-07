@@ -31,6 +31,7 @@ import os
 import re
 import difflib
 import hashlib
+import json
 import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -1350,6 +1351,112 @@ class ShellFileOperations(FileOperations):
             )
         )
 
+    # UTF-16 rescue constants (ported from MoonshotAI/kimi-code#2647,
+    # detection derived from VS Code's encoding sniffer): sample the leading
+    # bytes; trust a BOM first, then a zero-byte parity heuristic — zeros
+    # clustering at odd indices mean UTF-16 LE (`0xAA 0x00`), at even indices
+    # UTF-16 BE (`0x00 0xAA`). Only the *placement* of zeros is checked, not
+    # density, so mixed Latin/CJK content (whose CJK units carry no zero
+    # byte) still detects. Zeros at both parities, or a single isolated
+    # zero, mean real binary. Legacy 8-bit encodings (GBK, Big5, ...) are
+    # never guessed — a wrong silent guess is worse than a clear refusal.
+    _UTF16_MAX_BYTES = 10 * 1024 * 1024
+    _UTF16_SAMPLE_BYTES = 512
+
+    def _try_read_utf16(self, path: str, offset: int, limit: int,
+                        file_size: int) -> "Optional[ReadResult]":
+        """Attempt to read ``path`` as UTF-16 text, transcoded to UTF-8.
+
+        Returns a populated ``ReadResult`` when the file is UTF-16 (BOM or
+        zero-byte parity heuristic), else ``None`` so the caller falls back
+        to the binary-file error. Files over 10 MiB are not rescued.
+        ``path`` must already be expanded (caller ran ``_expand_path``).
+        """
+        # Extensions that are definitively binary (images, archives, ...)
+        # never contain UTF-16 text worth rescuing — skip the subprocess.
+        ext = os.path.splitext(path)[1].lower()
+        if ext in BINARY_EXTENSIONS:
+            return None
+        if file_size > self._UTF16_MAX_BYTES:
+            return None
+
+        snippet = (
+            "import sys, json, os\n"
+            f"p = {path!r}\n"
+            f"offset = {int(offset)}\n"
+            f"limit = {int(limit)}\n"
+            f"MAX = {self._UTF16_MAX_BYTES}\n"
+            f"SAMPLE = {self._UTF16_SAMPLE_BYTES}\n"
+            "try:\n"
+            "    size = os.path.getsize(p)\n"
+            "    if size > MAX:\n"
+            "        print('HERMES_UTF16:NO'); sys.exit(0)\n"
+            "    with open(p, 'rb') as f:\n"
+            "        data = f.read()\n"
+            "    sample = data[:SAMPLE]\n"
+            "    enc = None\n"
+            "    if sample[:2] == b'\\xfe\\xff':\n"
+            "        enc = 'utf-16-be'\n"
+            "    elif sample[:2] == b'\\xff\\xfe':\n"
+            "        enc = 'utf-16-le'\n"
+            "    else:\n"
+            "        odd = sum(1 for i in range(1, len(sample), 2) if sample[i] == 0)\n"
+            "        even = sum(1 for i in range(0, len(sample), 2) if sample[i] == 0)\n"
+            "        if even == 0 and odd >= 2:\n"
+            "            enc = 'utf-16-le'\n"
+            "        elif odd == 0 and even >= 2:\n"
+            "            enc = 'utf-16-be'\n"
+            "    if enc is None:\n"
+            "        print('HERMES_UTF16:NO'); sys.exit(0)\n"
+            "    text = data.decode(enc, 'replace')\n"
+            "    if text[:1] == '\\ufeff':\n"
+            "        text = text[1:]\n"
+            "    text = text.replace('\\r\\n', '\\n')\n"
+            "    lines = text.split('\\n')\n"
+            "    total = len(lines)\n"
+            "    sel = lines[offset - 1: offset - 1 + limit]\n"
+            "    out = {'total_lines': total, 'encoding': enc,\n"
+            "           'content': '\\n'.join(sel)}\n"
+            "    print('HERMES_UTF16:OK')\n"
+            "    print(json.dumps(out, ensure_ascii=True))\n"
+            "except Exception:\n"
+            "    print('HERMES_UTF16:NO'); sys.exit(0)\n"
+        )
+
+        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+        if result.exit_code != 0 and "python3" in (result.stdout or ""):
+            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+
+        stdout = _strip_terminal_fence_leaks(result.stdout or "")
+        marker = stdout.find("HERMES_UTF16:OK")
+        if result.exit_code != 0 or marker < 0:
+            return None
+        payload = stdout[marker + len("HERMES_UTF16:OK"):].strip()
+        try:
+            data = json.loads(payload.split("\n", 1)[0] if "\n" in payload else payload)
+            content = data["content"]
+            total_lines = int(data["total_lines"])
+            encoding = str(data.get("encoding", "utf-16"))
+        except (ValueError, KeyError, TypeError):
+            return None
+
+        end_line = offset + limit - 1
+        truncated = total_lines > end_line
+        hint_parts = [f"Transcoded from {encoding.upper()} to UTF-8 for display. "
+                      "Text edits via patch/write_file would re-encode as UTF-8."]
+        if truncated:
+            hint_parts.append(
+                f"Use offset={end_line + 1} to continue reading "
+                f"(showing {offset}-{end_line} of {total_lines} lines)"
+            )
+        return ReadResult(
+            content=self._add_line_numbers(content, offset),
+            total_lines=total_lines,
+            file_size=file_size,
+            truncated=truncated,
+            hint=" ".join(hint_parts),
+        )
+
     def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
@@ -1428,6 +1535,16 @@ class ShellFileOperations(FileOperations):
             is_binary = self._is_likely_binary(path, sample_output)
 
         if is_binary:
+            # UTF-16 rescue (ported from MoonshotAI/kimi-code#2647): the
+            # terminal env decodes stdout as UTF-8 with errors="replace", so
+            # a UTF-16 text file (Windows Notepad .txt, PowerShell `>`
+            # redirects) arrives mangled with U+FFFD and trips the binary
+            # guard. Probe the raw bytes via the backend's Python and
+            # transcode to UTF-8 when a BOM or the zero-byte parity
+            # heuristic identifies UTF-16.
+            utf16_result = self._try_read_utf16(path, offset, limit, file_size)
+            if utf16_result is not None:
+                return utf16_result
             return ReadResult(
                 is_binary=True,
                 file_size=file_size,

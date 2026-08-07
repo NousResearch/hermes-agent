@@ -397,6 +397,10 @@ def test_doctor_warns_without_adding_issues(monkeypatch, tmp_path, capsys):
     )
     monkeypatch.setattr(hermes_state, "sqlite_source_id", lambda: "testid-abc")
     monkeypatch.setattr(sqlite3, "sqlite_version", "3.50.4", raising=False)
+    # A managed install (venv-owned runtime) keeps the `hermes update` path.
+    import hermes_cli.doctor as doctor
+
+    monkeypatch.setattr(doctor, "runtime_repair_capability", lambda _root: "managed")
 
     args = SimpleNamespace(fix=False, ack=None)
     try:
@@ -411,3 +415,49 @@ def test_doctor_warns_without_adding_issues(monkeypatch, tmp_path, capsys):
     assert "hermes update" in out
     # No longer appended to the blocking issues summary.
     assert "Linked SQLite is vulnerable" not in out
+
+
+class TestWalResetRepairHint:
+    """The WAL-reset repair hint must match what ``hermes update`` can
+    actually repair, resolved by runtime ownership — not the install-method
+    label alone (#79179)."""
+
+    def _call_hint(self, capability, cmd, monkeypatch):
+        import hermes_cli.config as config
+
+        monkeypatch.setattr(
+            config, "runtime_repair_capability", lambda _root=None: capability
+        )
+        monkeypatch.setattr(
+            config, "recommended_update_command_for_method", lambda m: cmd
+        )
+        monkeypatch.setattr(config, "get_project_root", lambda: __import__("pathlib").Path("."))
+        return hermes_state._wal_reset_repair_hint()
+
+    def test_managed_git_install_promises_managed_repair(self, monkeypatch):
+        """The official git clone carries a uv-managed venv — repairable."""
+        hint = self._call_hint("managed", "hermes update", monkeypatch)
+        assert "Hermes-managed" in hint
+        assert "hermes update" in hint
+
+    def test_environment_owned_interpreter_never_promises_managed_update(self, monkeypatch):
+        """System Python / pip --user / unknown: the owner must upgrade."""
+        hint = self._call_hint("environment", "hermes update", monkeypatch)
+        assert "Hermes-managed" not in hint
+        assert "hermes update" not in hint
+        assert "SQLite" in hint
+
+    def test_docker_still_recommends_image_update(self, monkeypatch):
+        hint = self._call_hint("docker", "docker pull nousresearch/hermes-agent:latest", monkeypatch)
+        assert "container image" in hint
+        assert "docker pull" in hint
+
+    def test_managed_nix_still_returns_update_guidance(self, monkeypatch):
+        hint = self._call_hint("nix", "nix run nousresearch/hermes-agent -- update", monkeypatch)
+        assert "nix run" in hint
+        assert "Hermes-managed" not in hint
+
+    def test_nixos_still_returns_update_guidance(self, monkeypatch):
+        hint = self._call_hint("nixos", "nix profile upgrade", monkeypatch)
+        assert "nix profile upgrade" in hint
+        assert "Hermes-managed" not in hint

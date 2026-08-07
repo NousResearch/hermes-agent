@@ -17,6 +17,7 @@ from hermes_cli.config import (
     get_hermes_home,
     get_project_root,
     recommended_update_command_for_method,
+    runtime_repair_capability,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
@@ -85,18 +86,43 @@ def _system_package_install_cmd(pkg: str) -> str:
 
 def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
     """Return an actionable SQLite upgrade hint for this install layout."""
-    method = install_method or detect_install_method(PROJECT_ROOT)
-    if method == "docker":
-        command = recommended_update_command_for_method(method)
-        action = f"run `{command}`, then recreate all Hermes containers"
-    elif method in {"nix", "nixos"}:
-        action = recommended_update_command_for_method(method)
+    if install_method is None:
+        capability = runtime_repair_capability(PROJECT_ROOT)
     else:
+        # Explicit override (tests, callers that already resolved the method):
+        # a bare git/unknown label maps to environment ownership unless the
+        # checkout carries a managed venv — mirror runtime_repair_capability.
+        capability = _capability_from_method(install_method, PROJECT_ROOT)
+    if capability == "docker":
+        command = recommended_update_command_for_method(capability)
+        action = f"run `{command}`, then recreate all Hermes containers"
+    elif capability in {"nix", "nixos"}:
+        action = recommended_update_command_for_method(capability)
+    elif capability == "managed":
         action = "run `hermes update`"
+    else:
+        action = (
+            "install a Python build bundled with SQLite 3.51.3+ "
+            "(or backports 3.50.7 / 3.44.6) and restart Hermes"
+        )
     return (
         f"({action}; fixed versions: 3.51.3+ / 3.50.7 / 3.44.6 — "
         "see https://sqlite.org/wal.html#walresetbug)"
     )
+
+
+def _capability_from_method(method: str, project_root: Path) -> str:
+    """Map an install-method label to a repair capability for *project_root*.
+
+    Keeps the single source of truth in ``runtime_repair_capability``: a
+    ``git``/``unknown`` label is only ``managed`` when the checkout owns a
+    venv — otherwise the interpreter belongs to the environment (#79179).
+    """
+    if method in {"docker", "nix", "nixos"}:
+        return method
+    from hermes_cli.config import runtime_repair_capability
+
+    return runtime_repair_capability(project_root)
 
 
 def _safe_which(cmd: str) -> str | None:

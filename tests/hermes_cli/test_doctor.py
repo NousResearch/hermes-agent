@@ -26,7 +26,7 @@ class TestDoctorPlatformHints:
 
 
     def test_sqlite_upgrade_hint_recreates_docker_containers(self, monkeypatch):
-        monkeypatch.setattr(doctor, "detect_install_method", lambda _root: "docker")
+        monkeypatch.setattr(doctor, "runtime_repair_capability", lambda _root: "docker")
 
         hint = doctor._sqlite_upgrade_hint()
 
@@ -34,10 +34,30 @@ class TestDoctorPlatformHints:
         assert "recreate all Hermes containers" in hint
         assert "hermes update" not in hint
 
-    def test_sqlite_upgrade_hint_keeps_git_runtime_repair(self):
-        hint = doctor._sqlite_upgrade_hint("git")
+    def test_sqlite_upgrade_hint_managed_keeps_runtime_repair(self, monkeypatch):
+        monkeypatch.setattr(doctor, "runtime_repair_capability", lambda _root: "managed")
+
+        hint = doctor._sqlite_upgrade_hint()
 
         assert "run `hermes update`" in hint
+
+    def test_sqlite_upgrade_hint_environment_never_promises_update(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor, "runtime_repair_capability", lambda _root: "environment"
+        )
+
+        hint = doctor._sqlite_upgrade_hint()
+
+        assert "hermes update" not in hint
+        assert "install a Python build bundled with SQLite" in hint
+
+    def test_sqlite_upgrade_hint_nix_keeps_update_guidance(self, monkeypatch):
+        monkeypatch.setattr(doctor, "runtime_repair_capability", lambda _root: "nix")
+
+        hint = doctor._sqlite_upgrade_hint()
+
+        assert "hermes update" not in hint
+        assert "Nix" in hint
 
 
 class TestProviderEnvDetection:

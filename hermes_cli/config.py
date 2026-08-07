@@ -549,6 +549,46 @@ def recommended_update_command_for_method(method: str) -> str:
     return "hermes update"
 
 
+def runtime_repair_capability(project_root: Optional[Path] = None) -> str:
+    """Classify what ``hermes update`` can repair for this install's SQLite runtime.
+
+    Returns one of:
+
+    - ``"docker"`` — the runtime lives in the container image; repair means
+      pulling a new image and recreating containers.
+    - ``"nix"`` / ``"nixos"`` — the runtime follows the Nix derivation; repair
+      means updating the flake/profile that installed Hermes.
+    - ``"managed"`` — the checkout carries a Hermes-owned venv
+      (``<checkout>/venv`` or ``<checkout>/.venv`` with an interpreter), so
+      ``hermes update`` can rebuild the interpreter and its linked SQLite.
+    - ``"environment"`` — the interpreter is owned by the user (system Python,
+      pip ``--user``, a venv outside the checkout, or an unknown layout);
+      ``hermes update`` only replaces Hermes code, never the linked SQLite, so
+      the environment owner must upgrade the interpreter.
+
+    This is the single runtime-ownership resolver shared by the WAL-reset
+    repair hint and ``hermes doctor`` (#79179): repairability is a property of
+    who owns the interpreter, NOT of the install-method label. The official
+    curl installer git-clones the repo *and* creates a uv-managed ``venv``, so
+    a ``"git"`` stamp can still be a managed, repairable install — while a bare
+    checkout running system Python cannot be repaired by ``hermes update``.
+
+    Side-effect-free: only filesystem probes, no writes, no subprocesses.
+    """
+    root = _install_method_project_root(project_root)
+    method = detect_install_method(root)
+    if method in {"docker", "nix", "nixos"}:
+        return method
+    # git / unknown: managed iff the checkout owns its interpreter.
+    for venv_name in ("venv", ".venv"):
+        venv_dir = root / venv_name
+        if (venv_dir / "bin" / "python").is_file() or (
+            venv_dir / "Scripts" / "python.exe"
+        ).is_file():
+            return "managed"
+    return "environment"
+
+
 def recommended_update_command() -> str:
     """Return the best update command for the current installation."""
     managed_cmd = get_managed_update_command()

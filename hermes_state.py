@@ -1060,29 +1060,38 @@ def _apply_delete_for_wal_reset_bug(
 def _wal_reset_repair_hint() -> str:
     """Return a context-appropriate hint for repairing the SQLite runtime.
 
-    Uses the codebase's install-type detection so the hint matches what
-    ``hermes update`` can actually do for this install (#75153).
+    Delegates to the shared ``runtime_repair_capability`` resolver so the
+    hint matches what ``hermes update`` can actually do for this install
+    (#75153, #79179): managed installs (including the official git clone,
+    which carries a uv-managed venv) get the managed-repair wording, while
+    environment-owned interpreters (system Python, pip --user, unknown) get
+    pointed at their owner instead of promised a managed repair.
     """
-    try:
-        from hermes_cli.config import (
-            detect_install_method,
-            recommended_update_command_for_method,
-            get_project_root,
-        )
-        method = detect_install_method(get_project_root())
-        cmd = recommended_update_command_for_method(method)
-        if method in {"git", "unknown"}:
-            return f"Hermes-managed installs can repair the embedded runtime with `{cmd}`"
-        if method == "docker":
-            return f"update the container image with `{cmd}`"
-        # nix/nixos
-        return cmd
-    except Exception:
-        pass
-    return (
+    # Shared wording for environment-owned installs: the interpreter (and the
+    # SQLite library linked into it) must be upgraded by its owner.
+    environment_upgrade = (
         "install a Python build bundled with SQLite 3.51.3+ "
         "(or backports 3.50.7 / 3.44.6) and restart Hermes"
     )
+    try:
+        from hermes_cli.config import (
+            get_project_root,
+            recommended_update_command_for_method,
+            runtime_repair_capability,
+        )
+        capability = runtime_repair_capability(get_project_root())
+        if capability == "environment":
+            return environment_upgrade
+        cmd = recommended_update_command_for_method(capability)
+        if capability == "docker":
+            return f"update the container image with `{cmd}`"
+        if capability in {"nix", "nixos"}:
+            return cmd
+        # managed
+        return f"Hermes-managed installs can repair the embedded runtime with `{cmd}`"
+    except Exception:
+        pass
+    return environment_upgrade
 
 
 def _log_wal_reset_bug_once(

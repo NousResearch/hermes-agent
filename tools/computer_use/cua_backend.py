@@ -150,6 +150,12 @@ _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
                             # driver doesn't expose `manifest` — see
                             # `_resolve_mcp_invocation` below)
 
+# cua-driver daemon socket path. The daemon (cua-driver serve) listens here;
+# the MCP stdio proxy (cua-driver mcp) connects to it. cua-driver autostart
+# is Windows-only, so on Linux the daemon must be started manually — or by
+# the auto-start logic in _ensure_cua_daemon_linux().
+_CUA_DAEMON_SOCKET = os.path.expanduser("~/.cache/cua-driver/cua-driver.sock")
+
 # Whole-screen / desktop capture. cua-driver is a window-oriented driver —
 # its `get_window_state` / `screenshot` tools capture a single window (by
 # pid + window_id), and there is no MCP tool that captures the entire virtual
@@ -1065,6 +1071,66 @@ class _AsyncBridge:
 
 
 # ---------------------------------------------------------------------------
+# Daemon auto-start (Linux)
+# ---------------------------------------------------------------------------
+
+def _is_cua_daemon_running() -> bool:
+    """Check if the cua-driver daemon socket exists and accepts connections."""
+    import socket
+    if not os.path.exists(_CUA_DAEMON_SOCKET):
+        return False
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(2.0)
+        s.connect(_CUA_DAEMON_SOCKET)
+        s.close()
+        return True
+    except (OSError, ConnectionRefusedError):
+        return False
+
+
+async def _ensure_cua_daemon_linux() -> None:
+    """On Linux, ensure the cua-driver daemon is running before we attempt
+    the MCP stdio connection.
+
+    cua-driver's autostart is Windows-only. On Linux, the daemon
+    (``cua-driver serve``) must be started manually after every reboot,
+    otherwise the MCP proxy exits immediately with "no Cua Driver daemon
+    listening".  This function detects that state and auto-starts the
+    daemon so ``computer_use`` "just works" without manual intervention.
+    """
+    if _is_cua_daemon_running():
+        return
+
+    logger.info(
+        "cua-driver daemon not running (%s); auto-starting...",
+        _CUA_DAEMON_SOCKET,
+    )
+    try:
+        subprocess.Popen(
+            [_CUA_DRIVER_CMD, "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            env=cua_driver_child_env(),
+        )
+    except Exception as exc:
+        logger.warning("cua-driver daemon auto-start failed: %s", exc)
+        return
+
+    # Poll the socket for up to 10 seconds.  cua-driver serve takes
+    # ~1-2s on a warm Linux box; 10s is generous but not indefinite.
+    for _ in range(20):
+        await asyncio.sleep(0.5)
+        if _is_cua_daemon_running():
+            logger.info("cua-driver daemon started successfully (auto)")
+            return
+
+    logger.warning("cua-driver daemon did not start within 10s")
+
+
+# ---------------------------------------------------------------------------
 # MCP session (lazy, shared across tool calls)
 # ---------------------------------------------------------------------------
 
@@ -1147,6 +1213,14 @@ class _CuaDriverSession:
             driver_cmd = resolve_cua_driver_cmd()
             if not driver_cmd:
                 raise RuntimeError(cua_driver_install_hint())
+
+            # On Linux, ensure the cua-driver daemon is running before
+            # we spawn the MCP stdio proxy.  cua-driver autostart is
+            # Windows-only, so without this the daemon is dead after
+            # every reboot and the proxy exits immediately with
+            # "no Cua Driver daemon listening".
+            if sys.platform == "linux":
+                await _ensure_cua_daemon_linux()
 
             # Surface 8: ask cua-driver itself which subcommand spawns
             # the MCP server, instead of hardcoding ["mcp"]. Falls back

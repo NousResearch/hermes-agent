@@ -69,6 +69,18 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+def _scrubbed_media_env() -> dict:
+    """Environment for the ImageMagick thumbnailer — never Hermes credentials.
+
+    ``convert`` is an OS media helper on the attachment path; it has no
+    business seeing provider API keys, bot tokens or ``SUDO_PASSWORD`` (same
+    rule as the voice TTS/STT, playback and ffmpeg/ffprobe helpers).
+    """
+    from tools.environments.local import hermes_subprocess_env
+
+    return hermes_subprocess_env(inherit_credentials=False)
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -969,6 +981,7 @@ class SimplexAdapter(BasePlatformAdapter):
                         check=True,
                         capture_output=True,
                         timeout=30,
+                        env=_scrubbed_media_env(),
                     )
                 with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                     tmp_path = tmp.name
@@ -985,6 +998,7 @@ class SimplexAdapter(BasePlatformAdapter):
                     check=True,
                     capture_output=True,
                     timeout=30,
+                    env=_scrubbed_media_env(),
                 )
                 with open(tmp_path, "rb") as f:
                     thumb_uri = (

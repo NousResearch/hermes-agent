@@ -43,6 +43,16 @@ from utils import atomic_replace
 logger = logging.getLogger(__name__)
 
 
+class PairingStoreUnreadableError(RuntimeError):
+    """A pairing file exists but could not be read, so it must not be rewritten.
+
+    Raised only on read-modify-write paths (see
+    ``PairingStore._load_json_for_update``). Read-only lookups keep failing
+    closed with an empty result — an unreadable whitelist denies access, it
+    does not grant it.
+    """
+
+
 # Unambiguous alphabet -- excludes 0/O, 1/I to prevent confusion
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 CODE_LENGTH = 8
@@ -496,6 +506,39 @@ class PairingStore:
                 return {}
         return {}
 
+    def _load_json_for_update(self, path: Path) -> dict:
+        """``_load_json`` for read-modify-write callers — never degrades.
+
+        ``_load_json`` collapses "file does not exist yet" and "file exists but
+        I could not read or parse it" into the same empty dict. That is the
+        right fail-closed answer for a *read* (an unreadable whitelist must
+        deny, not grant), but it is destructive for a *write*: the caller adds
+        its one entry to that empty dict and ``_save_json`` atomically replaces
+        the file, so every previously approved user is gone from disk for good.
+
+        The read failure on its own is recoverable — repair the file and the
+        whitelist is back. The write is what makes it permanent. Both real
+        triggers land in the same branch: a root-owned 0600 file under a
+        hermes-owned directory (issue #10270, the ``docker exec`` symptom) is
+        unreadable yet still atomically replaceable, and a truncated restore or
+        stray editor write leaves readable bytes that are invalid JSON.
+
+        Refuse instead — the same stance ``cron.jobs.load_jobs`` already takes
+        when the job database will not parse.
+        """
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise PairingStoreUnreadableError(
+                f"Refusing to rewrite {path}: the existing pairing file could not be "
+                f"read ({exc}). Writing now would replace it with only the new entry "
+                f"and permanently drop every user already approved. Repair the file "
+                f"(or fix its ownership/permissions) and retry."
+            ) from exc
+        return data if isinstance(data, dict) else {}
+
     def _save_json(self, path: Path, data: dict) -> None:
         _secure_write(path, json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -533,7 +576,7 @@ class PairingStore:
 
     def _approve_user(self, platform: str, user_id: str, user_name: str = "") -> None:
         """Add a user to the approved list. Must be called under self._lock."""
-        approved = self._load_json(self._approved_path(platform))
+        approved = self._load_json_for_update(self._approved_path(platform))
         normalized_user_id = self._normalize_user_id(platform, user_id)
         duplicate_ids = [
             approved_user_id
@@ -586,6 +629,10 @@ class PairingStore:
         self, platform: str, pending: dict, matched_key: str, matched_entry: dict
     ) -> dict:
         """Remove a pending request and approve its user. Must hold self._lock."""
+        # Prove the approved store is rewritable BEFORE consuming the pending
+        # entry. _approve_user runs last, so a refusal raised there would
+        # otherwise burn the requester's one-time code without approving them.
+        self._load_json_for_update(self._approved_path(platform))
         del pending[matched_key]
         self._save_json(self._pending_path(platform), pending)
 

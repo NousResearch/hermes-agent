@@ -334,7 +334,14 @@ def _snapshot_and_inspect(
         if before != after:
             raise SessionRecoverySafetyError(
                 "The source database bundle changed while it was being copied. "
-                "Stop every Hermes process using this profile and retry."
+                "Stop every Hermes process using this profile and retry. "
+                "That includes the interactive `hermes` CLI session this "
+                "command may have been launched from: it writes session "
+                "bookkeeping to the database in the background, so stopping "
+                "the gateway alone is not enough. Run `hermes sessions "
+                "recover` from a fresh shell with no Hermes CLI running, or "
+                "point --source at a stable snapshot taken with SQLite's "
+                "backup API (sqlite3.Connection.backup())."
             )
 
         conn = sqlite3.connect(

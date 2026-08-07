@@ -35,6 +35,16 @@ _NON_CODE_VERIFY_EXTENSIONS = frozenset(
         ".log",
         ".csv",
         ".tsv",
+        # Rendered/prose output artifacts: HTML email bodies and message drafts
+        # (support-agent replies, notification templates written to disk before
+        # an API send). No test/build exercises them; the correct verification
+        # is delivery-side (e.g. re-fetching the sent message), which the nudge
+        # cannot know about. Without this, writing a throwaway reply .html in
+        # /tmp demanded the nearest package.json's `npm run test` (false
+        # positive observed on a Helper support webhook session, 2026-07-03).
+        ".html",
+        ".htm",
+        ".eml",
     }
 )
 
@@ -64,7 +74,74 @@ def _is_non_code_path(raw: str) -> bool:
         return True
     if not suffix and p.name.lower() in _NON_CODE_VERIFY_FILENAMES:
         return True
-    return False
+    return _is_tempdir_path(p)
+
+
+def _is_tempdir_path(p: Path) -> bool:
+    """Return True for *loose* files under the OS temp directory.
+
+    Temp-dir scratch artifacts — staged email bodies, ad-hoc payloads, the
+    guard's own suggested ``hermes-verify-*`` scripts — are throwaway by
+    construction. They belong to no project, so no project test/lint/build
+    command can exercise them; nudging "run ``npm run test``" (resolved from
+    whatever repo the session's cwd happens to fall in) for a ``/tmp`` file is
+    always a false positive.
+
+    A file is exempt only when NO project marker (manifest or ``.git``) exists
+    between it and the temp root: a real project checked out under the temp
+    dir (including pytest ``tmp_path`` fixtures) keeps full verification
+    semantics.
+    """
+    try:
+        candidate = p if p.is_absolute() else Path.cwd() / p
+        resolved = candidate.resolve()
+    except Exception:
+        return False
+    roots = []
+    try:
+        roots.append(Path(tempfile.gettempdir()).resolve())
+    except Exception:
+        pass
+    # Literal /tmp prefix too: on macOS /tmp symlinks to /private/tmp and
+    # TMPDIR points elsewhere entirely, so cover both spellings.
+    for extra in (Path("/tmp"), Path("/private/tmp")):
+        if extra not in roots:
+            roots.append(extra)
+    temp_root = None
+    for root in roots:
+        try:
+            if resolved.is_relative_to(root):
+                temp_root = root
+                break
+        except (ValueError, OSError):
+            continue
+    if temp_root is None:
+        return False
+    # Walk ancestors from the file's directory up to (but excluding) the temp
+    # root; any project marker means this is a real workspace, not scratch.
+    # The temp root itself is deliberately NOT checked: it's a shared dumping
+    # ground, and a stray /tmp/package.json must not turn every loose /tmp
+    # file into "project code".
+    markers = (
+        ".git",
+        "package.json",
+        "pyproject.toml",
+        "setup.py",
+        "Cargo.toml",
+        "go.mod",
+        "Gemfile",
+        "Makefile",
+    )
+    current = resolved.parent
+    try:
+        while current != temp_root and current.is_relative_to(temp_root):
+            for marker in markers:
+                if (current / marker).exists():
+                    return False
+            current = current.parent
+    except (ValueError, OSError):
+        return False
+    return True
 
 
 def _filter_verifiable_paths(paths: Iterable[str]) -> list[str]:

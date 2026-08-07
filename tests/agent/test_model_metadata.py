@@ -370,6 +370,68 @@ class TestCodexOAuthContextLength:
         mm._codex_oauth_context_cache = {}
 
 
+        expected = {
+            "gpt-5.6-sol": 372_000,
+            "gpt-5.6-sol-pro": 372_000,
+            "gpt-5.6-terra": 372_000,
+            "gpt-5.6-terra-pro": 372_000,
+            "gpt-5.6-luna": 372_000,
+            "gpt-5.6-luna-pro": 372_000,
+            "gpt-5.5": 272_000,
+            "gpt-5.4": 272_000,
+            "gpt-5.4-mini": 272_000,
+            "gpt-5.3-codex": 272_000,
+            "gpt-5.3-codex-spark": 128_000,
+            "gpt-5.2-codex": 272_000,
+            "gpt-5.1-codex-max": 272_000,
+            "gpt-5.1-codex-mini": 272_000,
+        }
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            for model, expected_ctx in expected.items():
+                ctx = get_model_context_length(
+                    model=model,
+                    base_url="https://chatgpt.com/backend-api/codex",
+                    api_key="",
+                    provider="openai-codex",
+                )
+                assert ctx == expected_ctx, (
+                    f"Codex {model}: expected {expected_ctx} fallback, got {ctx} "
+                    "(models.dev leakage?)"
+                )
+
+    def test_live_probe_overrides_fallback(self):
+        """When a token is provided, the live /models probe is preferred
+        and its context_window drives the result."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [
+                {"slug": "gpt-5.5", "context_window": 300_000},
+                {"slug": "gpt-5.4", "context_window": 400_000},
+            ]
+        }
+
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx_55 = get_model_context_length(
+                model="gpt-5.5",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+            ctx_54 = get_model_context_length(
+                model="gpt-5.4",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx_55 == 300_000
+        assert ctx_54 == 400_000
 
     def test_live_catalogue_cache_is_scoped_to_access_token(self):
         """Different OAuth tokens must not share entitlement-specific metadata."""
@@ -487,6 +549,7 @@ class TestCodexOAuthContextLength:
         assert remaining.get(other_key) == 128_000
 
 
+        assert remaining.get(f"gpt-5.6-terra@{base_url}") == 372_000
 
 
 # =========================================================================

@@ -18,6 +18,7 @@ import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session-states'
+import { $sidebarSessionsOpenInNewTab } from '@/store/sidebar-open-preference'
 
 import { SessionStatusDot } from '../session-status-dot'
 
@@ -89,6 +90,7 @@ function SidebarSessionRowImpl({
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
   // True when a clarify prompt in this session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+  const sidebarSessionsOpenInNewTab = useStore($sidebarSessionsOpenInNewTab)
 
   return (
     <SessionContextMenu
@@ -203,6 +205,12 @@ function SidebarSessionRowImpl({
               event.stopPropagation()
               triggerHaptic('selection')
               onPin()
+
+              return
+            }
+
+            if (sidebarSessionsOpenInNewTab) {
+              openSession(session.id, () => undefined, 'tab')
 
               return
             }

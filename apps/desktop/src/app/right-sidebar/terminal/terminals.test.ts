@@ -188,3 +188,120 @@ describe('session cwd → terminal tab linking', () => {
     expect($activeTerminalId.get()).toBe(first)
   })
 })
+
+describe('shared WebGL atlas refresh fan-out', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  it('coalesces multiple requests into one frame and drops unregistered terminals', async () => {
+    const { redrawAllTerminals, registerWebglRefresh } = await loadTerminalStore()
+
+    const termA = { refresh: vi.fn(), rows: 24 }
+    const termB = { refresh: vi.fn(), rows: 24 }
+    const getWebgl = () => ({ clearTextureAtlas: vi.fn() }) as never
+    const unregister = registerWebglRefresh(termA as never, getWebgl)
+    registerWebglRefresh(termB as never, getWebgl)
+
+    // A theme switch fires one redraw request per mounted terminal; they must
+    // coalesce into a single atlas clear/refresh pass.
+    redrawAllTerminals()
+    redrawAllTerminals()
+    expect(termA.refresh).not.toHaveBeenCalled()
+    expect(termB.refresh).not.toHaveBeenCalled()
+
+    await new Promise<void>(resolve => {
+      requestAnimationFrame(() => resolve())
+    })
+
+    expect(termA.refresh).toHaveBeenCalledTimes(1)
+    expect(termB.refresh).toHaveBeenCalledTimes(1)
+
+    // A terminal that disposes (tab close) must stop being refreshed.
+    unregister()
+    redrawAllTerminals()
+    await new Promise<void>(resolve => {
+      requestAnimationFrame(() => resolve())
+    })
+
+    expect(termA.refresh).toHaveBeenCalledTimes(1)
+    expect(termB.refresh).toHaveBeenCalledTimes(2)
+  })
+
+  it('drops a terminal unregistered while a refresh frame is pending', async () => {
+    const { redrawAllTerminals, registerWebglRefresh } = await loadTerminalStore()
+
+    const termA = { refresh: vi.fn(), rows: 24 }
+    const termB = { refresh: vi.fn(), rows: 24 }
+    const getWebgl = () => ({ clearTextureAtlas: vi.fn() }) as never
+    registerWebglRefresh(termA as never, getWebgl)
+    const unregister = registerWebglRefresh(termB as never, getWebgl)
+
+    // Both are pending in the same frame; second disposes before it flushes.
+    redrawAllTerminals()
+    unregister()
+    await new Promise<void>(resolve => {
+      requestAnimationFrame(() => resolve())
+    })
+
+    expect(termA.refresh).toHaveBeenCalledTimes(1)
+    expect(termB.refresh).not.toHaveBeenCalled()
+  })
+
+  it('skips the caller terminal so it is not force-cleared through the fan-out', async () => {
+    const { redrawAllTerminals, registerWebglRefresh } = await loadTerminalStore()
+
+    const caller = { refresh: vi.fn(), rows: 24 }
+    const sibling = { refresh: vi.fn(), rows: 24 }
+    const getWebgl = () => ({ clearTextureAtlas: vi.fn() }) as never
+    registerWebglRefresh(caller as never, getWebgl)
+    registerWebglRefresh(sibling as never, getWebgl)
+
+    // A font change clears the caller inline (applyTerminalFontFamily), so the
+    // fan-out must not re-clear it — only the siblings sharing the atlas.
+    redrawAllTerminals(caller as never)
+    await new Promise<void>(resolve => {
+      requestAnimationFrame(() => resolve())
+    })
+
+    expect(caller.refresh).not.toHaveBeenCalled()
+    expect(sibling.refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears all atlases before refreshing any terminal (two-phase ordering)', async () => {
+    const { redrawAllTerminals, registerWebglRefresh } = await loadTerminalStore()
+
+    // Track operation order across terminals sharing one atlas.
+    const ops: string[] = []
+    const sharedAtlas = { clearTextureAtlas: () => ops.push('clear') }
+    const getWebgl = () => sharedAtlas as never
+
+    const termA = {
+      refresh: () => ops.push('refresh-A'),
+      rows: 24
+    }
+    const termB = {
+      refresh: () => ops.push('refresh-B'),
+      rows: 24
+    }
+
+    registerWebglRefresh(termA as never, getWebgl)
+    registerWebglRefresh(termB as never, getWebgl)
+
+    redrawAllTerminals()
+    await new Promise<void>(resolve => {
+      requestAnimationFrame(() => resolve())
+    })
+
+    // Both clears must precede both refreshes. If a clear ran after a refresh,
+    // that terminal's rebuilt model would reference freed atlas rows.
+    const clearIndices = ops.map((op, i) => op === 'clear' ? i : -1).filter(i => i >= 0)
+    const refreshIndices = ops.map((op, i) => op.startsWith('refresh-') ? i : -1).filter(i => i >= 0)
+
+    expect(clearIndices).toHaveLength(2)
+    expect(refreshIndices).toHaveLength(2)
+    expect(Math.max(...clearIndices)).toBeLessThan(Math.min(...refreshIndices))
+  })
+})
+

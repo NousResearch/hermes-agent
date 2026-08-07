@@ -1,3 +1,5 @@
+import type { WebglAddon } from '@xterm/addon-webgl'
+import type { Terminal } from '@xterm/xterm'
 import { atom, computed } from 'nanostores'
 
 import { readKey, writeKey } from '@/lib/storage'
@@ -6,6 +8,88 @@ import { $currentCwd } from '@/store/session'
 import { setTerminalTakeover } from '../store'
 
 import { seedAgentTerminalCommand } from './agent-terminal-stream'
+
+// xterm WebGL terminals that share one glyph atlas (same font/theme/DPR) keep
+// per-terminal render models over a SHARED texture. Clearing one terminal's
+// atlas (theme switch, tab activation) wipes the shared texture pages, and
+// xterm 0.19 never tells the sibling renderers to rebuild their models — so
+// their stale cells draw whatever glyphs land in the freed atlas rows: garbled
+// text until a resize forces a full refresh. Upstream fixed this in
+// xtermjs/xterm.js#6055 (atlas clear bumps the shared page-layout version);
+// we stay pinned on 0.19.0, so every terminal that mutates the shared atlas
+// must refresh its siblings itself. Registration is the inverse: each xterm
+// registers its own redraw+atlas-rebuild and unregisters on dispose.
+// Two-phase fan-out: all clears FIRST, then all refreshes. A sequential
+// clear+refresh per terminal would let a later clear wipe the atlas that an
+// earlier terminal just rebuilt, leaving it with dangling glyph references.
+// Splitting the phases guarantees every terminal rebuilds against a clean atlas.
+const webglClearFns = new Map<Terminal, () => void>()
+const webglRefreshFns = new Map<Terminal, () => void>()
+
+/** Register a terminal's atlas-rebuild+redraw so sibling refreshes reach it.
+ *  Returns an unregister function (call on dispose). */
+export function registerWebglRefresh(
+  term: Terminal,
+  getWebgl: () => WebglAddon | null
+): () => void {
+  webglClearFns.set(term, () => {
+    getWebgl()?.clearTextureAtlas()
+  })
+  webglRefreshFns.set(term, () => {
+    term.refresh(0, term.rows - 1)
+  })
+
+  return () => {
+    webglClearFns.delete(term)
+    webglRefreshFns.delete(term)
+  }
+}
+
+let refreshFrame = 0
+
+/** Rebuild the glyph atlas + redraw every live xterm EXCEPT *skipTerm* (when
+ *  given). Callers that are about to mutate the shared atlas (clearTextureAtlas)
+ *  must fan out so the OTHER terminals sharing it don't keep drawing stale
+ *  cells. Coalesced into one frame per tick: a theme switch fires N
+ *  per-terminal effects, and fanning out on each would clear+rebuild the atlas
+ *  N times over.
+ *
+ *  Two-phase execution: all atlas clears run first, then all terminal refreshes.
+ *  This prevents a later clear from invalidating an earlier terminal's rebuilt
+ *  glyph model (GottZ triage, PR #76463).
+ *
+ *  Skip the caller only when it already clears+redraws itself inline (font
+ *  change); theme/activation callers must NOT skip — they need their own atlas
+ *  rebuilt too (the theme colors changed / the frame was stale while hidden).
+ *  Terminals on a different atlas (different font/theme/DPR) are force-cleared
+ *  harmlessly; DOM-fallback terminals aren't registered at all. */
+export function redrawAllTerminals(skipTerm?: Terminal): void {
+  if (refreshFrame) {
+    return
+  }
+
+  refreshFrame = requestAnimationFrame(() => {
+    refreshFrame = 0
+
+    // Phase 1: clear all atlases first.
+    for (const [term, clear] of webglClearFns) {
+      if (skipTerm && term === skipTerm) {
+        continue
+      }
+
+      clear()
+    }
+
+    // Phase 2: rebuild render models against the now-clean atlas.
+    for (const [term, refresh] of webglRefreshFns) {
+      if (skipTerm && term === skipTerm) {
+        continue
+      }
+
+      refresh()
+    }
+  })
+}
 
 /** One in-app terminal tab. `id` is the renderer-side handle (distinct from the
  *  PTY session id the main process mints); each instance owns its own shell. */

@@ -345,6 +345,49 @@ def _normalize_matrix_bang_command(text: str) -> str:
     return f"/{resolved}{match.group(2) or ''}"
 
 
+# Matrix reply fallback prefix looks like:
+#   > <@alice:example.org> quoted text
+#   > continuation of quoted text
+#   <empty line>
+#   actual reply text
+# Capture the original quoted text and the quoted author's MXID so the
+# gateway prompt layer can render "[Replying to: \"...\"]" with the author
+# attached. Returns (text, author_id) — text is the joined quoted body,
+# author_id is the MXID parsed from the leading "<@user:server>" pill or
+# ``None`` if the fallback uses an unsupported shape.
+_MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^>\s*<(@[^>]+)>\s*(.*)$")
+
+
+def _extract_reply_fallback(body: str) -> tuple[Optional[str], Optional[str]]:
+    """Return (reply_to_text, reply_to_author_id) parsed from a Matrix reply body.
+
+    Matrix stores reply text inline as ``> <@user:server> <line>\\n> <line>...``
+    followed by a blank line and the actual reply. The first line carries an
+    optional ``<@user:server>`` mention pill naming the original author.
+    """
+    if not body or not body.startswith("> "):
+        return None, None
+
+    quoted_lines: list[str] = []
+    author_id: Optional[str] = None
+    for line in body.split("\n"):
+        if not line.startswith("> "):
+            # Blank line or the start of the actual reply — stop accumulating.
+            break
+        content = line[2:]
+        if author_id is None:
+            pill_match = _MATRIX_REPLY_FALLBACK_PILL_RE.match(line)
+            if pill_match:
+                author_id = pill_match.group(1)
+                # Drop the pill from the visible quoted text so "[Replying
+                # to: ...]" in the LLM prompt reads naturally.
+                content = pill_match.group(2)
+        quoted_lines.append(content)
+
+    quoted_text = "\n".join(quoted_lines).strip() or None
+    return quoted_text, author_id
+
+
 class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
@@ -3394,8 +3437,17 @@ class MatrixAdapter(BasePlatformAdapter):
         if in_reply_to:
             reply_to = in_reply_to.get("event_id")
 
-        # Strip reply fallback from body.
+        # Capture the reply fallback BEFORE stripping it from body, so the
+        # gateway prompt layer can render "[Replying to: \"<original>\"]".
+        # Other adapters (Signal, Slack, Telegram) populate reply_to_text
+        # from their quote payload; Matrix stores it inline as `> <@user:srv>
+        # <text>\n\n<actual reply>` and discards it after stripping.
+        reply_to_text: Optional[str] = None
+        reply_to_author_id: Optional[str] = None
+        reply_to_author_name: Optional[str] = None
         if reply_to and body.startswith("> "):
+            reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
+
             lines = body.split("\n")
             stripped = []
             past_fallback = False
@@ -3409,6 +3461,13 @@ class MatrixAdapter(BasePlatformAdapter):
                     past_fallback = True
                 stripped.append(line)
             body = "\n".join(stripped) if stripped else body
+
+            # Resolve the replied-to author's display name when we have the
+            # state_store available — falls back to the localpart otherwise.
+            if reply_to_author_id:
+                reply_to_author_name = await self._get_display_name(
+                    room_id, reply_to_author_id
+                )
 
         # Re-run bang normalization after reply-fallback stripping so a quoted
         # reply whose actual content is a bang command (e.g. ``> quoted\n\n!model``)
@@ -3426,6 +3485,15 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_message=source_content,
             message_id=event_id,
             reply_to_message_id=reply_to,
+            reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_author_name=reply_to_author_name,
+            # Sender metadata at MessageEvent level — `source.user_name`
+            # already carries this, but downstream code (e.g. the prompt
+            # layer, ghost-context rendering) historically reads the
+            # top-level fields. Mirror them so matrix matches signal/slack.
+            user_id=sender,
+            user_name=display_name,
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:

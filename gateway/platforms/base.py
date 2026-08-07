@@ -2060,7 +2060,16 @@ class MessageEvent:
     # Message content
     text: str
     message_type: MessageType = MessageType.TEXT
-    
+
+    # Author of this inbound message.  Carried on the event itself (not
+    # only on ``source``) so prompt builders that build per-message text
+    # can resolve "who said this" without having to dig into ``source``.
+    # ``source`` still carries the same values for callers that already
+    # read from there.  Adapters that produce events from non-IM sources
+    # (cron, webhook, autonomous) may leave these as ``None``.
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+
     # Source information
     source: SessionSource = None
     

@@ -329,6 +329,57 @@ class TestToolSelection:
         """Return a list of (tool_name, description) tuples for mocking."""
         return [(n, f"description of {n}") for n in names]
 
+    def test_successful_probe_pins_explicit_defaults_when_all_selected(
+        self, catalog_dir, monkeypatch
+    ):
+        body = _basic_manifest(
+            tools={"default_enabled": ["alpha", "beta"]},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        import hermes_cli.mcp_catalog as mc
+        import sys as _sys
+
+        monkeypatch.setattr(
+            mc, "_probe_tools", lambda name: self._make_probed("alpha", "beta")
+        )
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(
+            "hermes_cli.curses_ui.curses_checklist",
+            lambda title, labels, pre_selected: {0, 1},
+        )
+
+        from hermes_cli.config import load_config
+
+        mc.install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["tools"]["include"] == ["alpha", "beta"]
+
+    def test_successful_probe_all_selected_without_defaults_keeps_no_filter(
+        self, catalog_dir, monkeypatch
+    ):
+        _write_manifest(catalog_dir, "demo", _basic_manifest())
+
+        import hermes_cli.mcp_catalog as mc
+        import sys as _sys
+
+        monkeypatch.setattr(
+            mc, "_probe_tools", lambda name: self._make_probed("alpha", "beta")
+        )
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(
+            "hermes_cli.curses_ui.curses_checklist",
+            lambda title, labels, pre_selected: {0, 1},
+        )
+
+        from hermes_cli.config import load_config
+
+        mc.install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert "tools" not in server
+
 
     def test_probe_fail_with_default_applies_directly(self, catalog_dir):
         body = _basic_manifest(

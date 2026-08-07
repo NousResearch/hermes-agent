@@ -109,8 +109,11 @@ The pre-checked rows come from:
 3. **Everything** if neither applies
 
 Submit the checklist with ENTER. Only the checked tools end up in
-`mcp_servers.<name>.tools.include`. If you select everything, no filter is
-written (cleanest config shape, identical behavior).
+`mcp_servers.<name>.tools.include`. When a catalog manifest declares
+`tools.default_enabled`, Hermes retains that explicit include list even if it
+contains every tool currently reported by the server, so newly added server
+tools remain opt-in. For entries without manifest defaults, selecting everything
+still writes no filter.
 
 **If the probe fails** (server unreachable, OAuth not yet completed,
 backing service not running), the install still succeeds: the manifest's

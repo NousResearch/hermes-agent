@@ -105,12 +105,15 @@ class ToolsSpec:
     """Manifest-side tool-selection hints.
 
     Drives the pre-checked state of the install-time tool checklist, and acts
-    as the fallback selection when probe fails. See install_entry() flow.
+    as the fallback selection when probe fails. An explicitly declared list
+    also keeps the confirmed selection pinned in ``tools.include`` so tools
+    added by the server later remain opt-in. See install_entry() flow.
     """
 
     # If declared, these tool names are pre-checked in the checklist (or
-    # applied directly when probe fails). If None, all probed tools are
-    # pre-checked (or no filter is written when probe fails).
+    # applied directly when probe fails), and the confirmed selection remains
+    # an explicit include list. If None, all probed tools are pre-checked (or
+    # no filter is written when probe fails).
     default_enabled: Optional[List[str]] = None
 
 
@@ -601,7 +604,10 @@ def _apply_tool_selection(
           1. *prior_selection* (reinstall: preserve what the user had)
           2. manifest's ``tools.default_enabled``
           3. all tools (default)
-      - All-on selection clears any filter (no ``tools.include`` written).
+      - When the manifest declares ``tools.default_enabled``, the confirmed
+        selection remains an explicit ``tools.include`` list, even if all
+        currently probed tools are selected. New server tools stay opt-in.
+      - Otherwise, an all-on selection clears any filter.
       - Sub-selection writes ``tools.include``.
 
     Probe-fail path:
@@ -616,7 +622,7 @@ def _apply_tool_selection(
     # Probe failure path
     if probed is None:
         manifest_default = entry.tools.default_enabled
-        if manifest_default:
+        if manifest_default is not None:
             _write_tools_include(entry.name, manifest_default)
             print(color(
                 f"  Couldn\'t probe server. Applied manifest default "
@@ -645,9 +651,9 @@ def _apply_tool_selection(
     tool_names = [t[0] for t in probed]
 
     # Build the pre-checked set in priority order
-    if prior_selection:
+    if prior_selection is not None:
         pre_set = {n for n in prior_selection if n in tool_names}
-    elif entry.tools.default_enabled:
+    elif entry.tools.default_enabled is not None:
         pre_set = {n for n in entry.tools.default_enabled if n in tool_names}
     else:
         pre_set = set(tool_names)
@@ -661,7 +667,7 @@ def _apply_tool_selection(
         if prior_selection is not None:
             include = [n for n in prior_selection if n in tool_names]
             _write_tools_include(entry.name, include)
-        elif entry.tools.default_enabled:
+        elif entry.tools.default_enabled is not None:
             include = [n for n in entry.tools.default_enabled if n in tool_names]
             _write_tools_include(entry.name, include)
         else:
@@ -697,7 +703,12 @@ def _apply_tool_selection(
         ))
         return
 
-    if len(chosen_indices) == len(probed):
+    chosen_names = [tool_names[i] for i in sorted(chosen_indices)]
+
+    if (
+        len(chosen_indices) == len(probed)
+        and entry.tools.default_enabled is None
+    ):
         # Everything selected — clear filter for the cleanest config shape.
         # NOTE: this means any tools the server adds later (e.g. a future MCP
         # version) will also be auto-enabled. To pin to the current set,
@@ -711,12 +722,18 @@ def _apply_tool_selection(
         ))
         return
 
-    chosen_names = [tool_names[i] for i in sorted(chosen_indices)]
     _write_tools_include(entry.name, chosen_names)
-    print(color(
-        f"  ✓ {len(chosen_names)}/{len(probed)} tools enabled.",
-        Colors.GREEN,
-    ))
+    if len(chosen_indices) == len(probed):
+        print(color(
+            f"  ✓ All {len(probed)} tools enabled and pinned to the current "
+            "set (new server tools remain opt-in).",
+            Colors.GREEN,
+        ))
+    else:
+        print(color(
+            f"  ✓ {len(chosen_names)}/{len(probed)} tools enabled.",
+            Colors.GREEN,
+        ))
 
 
 def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:

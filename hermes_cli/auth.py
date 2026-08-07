@@ -7495,6 +7495,43 @@ def _confirm_expensive_model_selection(
     return response in {"y", "yes"}
 
 
+def _confirm_data_policy_selection(
+    model_id: str,
+    *,
+    provider: str = "",
+    base_url: str = "",
+) -> bool:
+    """Prompt before saving a model whose tier trains on your prompts/completions.
+
+    Mirrors :func:`_confirm_expensive_model_selection`. Keyed on the model id
+    (e.g. Meta's ``-contributor`` tier), so it is not gated on a known provider.
+    Returns True to proceed, False to cancel.
+    """
+    try:
+        from hermes_cli.model_data_policy_guard import data_training_warning
+
+        warning = data_training_warning(
+            model_id,
+            provider=provider,
+            base_url=base_url,
+        )
+    except Exception:
+        warning = None
+    if warning is None:
+        return True
+
+    print()
+    print("=" * 72)
+    print(warning.message)
+    print("=" * 72)
+    try:
+        response = input("Use this data-training tier anyway? [y/N]: ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return False
+    return response in {"y", "yes"}
+
+
 def _prompt_model_selection(
     model_ids: List[str],
     current_model: str = "",
@@ -7532,6 +7569,15 @@ def _prompt_model_selection(
             provider=confirm_provider,
             base_url=confirm_base_url,
             api_key=confirm_api_key,
+        ):
+            return None
+        # Data-policy guard runs regardless of provider (it keys on the model
+        # id, e.g. a "-contributor" training tier), so it is NOT gated on
+        # confirm_provider like the cost guard above.
+        if not _confirm_data_policy_selection(
+            mid,
+            provider=confirm_provider,
+            base_url=confirm_base_url,
         ):
             return None
         return mid

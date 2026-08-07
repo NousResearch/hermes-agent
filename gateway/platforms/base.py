@@ -16,6 +16,7 @@ import socket as _socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import weakref
@@ -49,6 +50,13 @@ _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 # Keep this comfortably below the Discord heartbeat watchdog window and fail
 # open rather than withholding a legitimate attachment.
 _HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS = 5.0
+# Timed-out reads cannot be cancelled while SQLite/Python code is already
+# running. Isolate and cap them so wedged best-effort dedup work cannot consume
+# the shared asyncio executor or create an unbounded number of worker threads.
+_HISTORY_MEDIA_LOOKUP_MAX_WORKERS = 2
+_HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(
+    _HISTORY_MEDIA_LOOKUP_MAX_WORKERS
+)
 
 
 def _platform_name(platform) -> str:
@@ -3480,6 +3488,66 @@ class BasePlatformAdapter(ABC):
         from gateway.run import _collect_history_media_paths
         return _collect_history_media_paths(history)
 
+    async def _bounded_history_media_paths_for_session(
+        self, session_key: str
+    ) -> Optional[set]:
+        """Run best-effort history lookup in a bounded isolated daemon thread."""
+        admission = _HISTORY_MEDIA_LOOKUP_ADMISSION
+        if not admission.acquire(blocking=False):
+            logger.warning(
+                "[%s] Media-delivery history lookup capacity exhausted for %s; "
+                "delivering bare local file path(s) without history dedup",
+                self.name,
+                session_key,
+            )
+            return None
+
+        loop = asyncio.get_running_loop()
+        result_future = loop.create_future()
+
+        def _publish_result(result=None, error=None):
+            if result_future.done():
+                return
+            if error is not None:
+                result_future.set_exception(error)
+            else:
+                result_future.set_result(result)
+
+        def _worker():
+            try:
+                result = self._history_media_paths_for_session(session_key)
+            except BaseException as exc:
+                try:
+                    loop.call_soon_threadsafe(_publish_result, None, exc)
+                except RuntimeError:
+                    pass  # Event loop already closed during gateway shutdown.
+            else:
+                try:
+                    loop.call_soon_threadsafe(_publish_result, result, None)
+                except RuntimeError:
+                    pass  # Event loop already closed during gateway shutdown.
+            finally:
+                admission.release()
+
+        threading.Thread(
+            target=_worker,
+            name="media-history-lookup",
+            daemon=True,
+        ).start()
+        try:
+            return await asyncio.wait_for(
+                result_future,
+                timeout=_HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] Timed out loading media-delivery history for %s; "
+                "delivering bare local file path(s) without history dedup",
+                self.name,
+                session_key,
+            )
+            return None
+
     @abstractmethod
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
@@ -5923,21 +5991,11 @@ class BasePlatformAdapter(ABC):
                     # fail open by delivering the candidate file.
                     _history_media_paths = None
                     if local_files:
-                        try:
-                            _history_media_paths = await asyncio.wait_for(
-                                asyncio.to_thread(
-                                    self._history_media_paths_for_session,
-                                    session_key,
-                                ),
-                                timeout=_HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS,
+                        _history_media_paths = (
+                            await self._bounded_history_media_paths_for_session(
+                                session_key
                             )
-                        except asyncio.TimeoutError:
-                            logger.warning(
-                                "[%s] Timed out loading media-delivery history for %s; "
-                                "delivering bare local file path(s) without history dedup",
-                                self.name,
-                                session_key,
-                            )
+                        )
                     if _history_media_paths:
                         _suppressed = [p for p in local_files if p in _history_media_paths]
                         if _suppressed:

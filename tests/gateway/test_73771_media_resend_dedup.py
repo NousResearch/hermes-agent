@@ -23,6 +23,7 @@ sibling):
 
 import asyncio
 import logging
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -247,6 +248,34 @@ async def test_plain_text_response_does_not_load_transcript():
 
 
 @pytest.mark.asyncio
+async def test_explicit_media_response_does_not_load_transcript(tmp_path, monkeypatch):
+    """Explicit MEDIA delivery must not touch SQLite-backed history."""
+    pdf = _allowed_file(tmp_path, monkeypatch, "explicit-no-history.pdf")
+    adapter = _DummyAdapter()
+    adapter._keep_typing = _hold_typing
+
+    class _ExplodingStore:
+        calls = 0
+
+        def peek_session_id(self, _session_key):
+            self.calls += 1
+            raise AssertionError("explicit MEDIA delivery loaded session history")
+
+    store = _ExplodingStore()
+    adapter.set_session_store(store)
+
+    async def handler(_event):
+        return f"Here is the file.\nMEDIA:{pdf}"
+
+    adapter.set_message_handler(handler)
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert store.calls == 0
+    assert adapter.documents == [str(pdf)]
+
+
+@pytest.mark.asyncio
 async def test_bare_path_history_lookup_does_not_block_event_loop(tmp_path, monkeypatch):
     """A slow transcript read must run outside the platform event loop."""
     pdf = _allowed_file(tmp_path, monkeypatch, "slow-history.pdf")
@@ -316,6 +345,48 @@ async def test_bare_path_history_lookup_timeout_fails_open(tmp_path, monkeypatch
 
     assert time.monotonic() - started < 0.15
     assert adapter.documents == [str(pdf)]
+
+
+@pytest.mark.asyncio
+async def test_history_lookup_saturation_fails_open_without_new_worker(monkeypatch):
+    """Wedged lookups are bounded and cannot consume unbounded worker threads."""
+    monkeypatch.setattr("gateway.platforms.base._HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(
+        "gateway.platforms.base._HISTORY_MEDIA_LOOKUP_ADMISSION",
+        threading.BoundedSemaphore(2),
+    )
+    adapter = _DummyAdapter()
+    release = threading.Event()
+    two_started = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def blocked_lookup(_session_key):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            if calls == 2:
+                two_started.set()
+        release.wait(timeout=1)
+        return None
+
+    monkeypatch.setattr(adapter, "_history_media_paths_for_session", blocked_lookup)
+    first = asyncio.create_task(adapter._bounded_history_media_paths_for_session("one"))
+    second = asyncio.create_task(adapter._bounded_history_media_paths_for_session("two"))
+    deadline = time.monotonic() + 1
+    while not two_started.is_set() and time.monotonic() < deadline:
+        await asyncio.sleep(0.005)
+    assert two_started.is_set()
+
+    began = time.monotonic()
+    third = await adapter._bounded_history_media_paths_for_session("three")
+    elapsed = time.monotonic() - began
+
+    assert third is None
+    assert elapsed < 0.1
+    assert calls == 2
+    release.set()
+    await asyncio.gather(first, second)
 
 
 # ---------------------------------------------------------------------------

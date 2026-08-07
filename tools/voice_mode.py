@@ -27,6 +27,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+_CONTINUOUS_FALLBACK_BUFFER_SECONDS = 2.0
+
 # ---------------------------------------------------------------------------
 # Lazy audio imports -- never imported at module level to avoid crashing
 # in headless environments (SSH, Docker, WSL, no PortAudio).
@@ -825,8 +827,11 @@ class AudioRecorder:
     """
 
     supports_silence_autostop = True
+    supports_streaming_frames = True
 
     def __init__(self) -> None:
+        from collections import deque
+
         self._lock = threading.Lock()
         self._stream: Any = None
         self._frames: List[Any] = []
@@ -843,6 +848,15 @@ class AudioRecorder:
         self._resume_start: float = 0.0  # Tracks sustained speech after silence starts
         self._resume_dip_start: float = 0.0  # Dip tolerance tracker for resume detection
         self._on_silence_stop = None
+        self._on_no_speech = None
+        self._on_max_duration = None
+        self._frame_sink = None
+        self._frame_sink_failed = False
+        self._frame_sink_error_event = None
+        self._frame_sink_error_holder = None
+        self._continuous_frame_sinks: tuple[Callable[[Any, int], Any], ...] = ()
+        self._continuous_frames = deque()
+        self._continuous_frame_seconds = 0.0
         self._silence_threshold: int = SILENCE_RMS_THRESHOLD
         self._silence_duration: float = SILENCE_DURATION_SECONDS
         self._max_wait: float = 15.0  # Max seconds to wait for speech before auto-stop
@@ -879,11 +893,42 @@ class AudioRecorder:
         return self._current_rms
 
     @property
+    def has_spoken(self) -> bool:
+        """Whether the current capture has confirmed microphone speech."""
+        return self._has_spoken
+
+    @property
     def is_recording(self) -> bool:
         """Whether audio recording is currently active."""
         return self._recording
 
     # -- public methods ------------------------------------------------------
+
+    def prepare(self) -> None:
+        """Open the persistent input stream without arming frame capture."""
+        try:
+            sd, _ = _import_audio()
+        except OSError as e:
+            if _is_termux_environment():
+                portaudio_hint = "  Termux: pkg install portaudio"
+            else:
+                portaudio_hint = (
+                    "  Linux:  sudo apt-get install libportaudio2\n"
+                    "  macOS:  brew install portaudio"
+                )
+            raise RuntimeError(
+                "PortAudio system library not found -- install it first:\n"
+                f"{portaudio_hint}\n"
+                "Then retry /voice on."
+            ) from e
+        except ImportError as e:
+            raise RuntimeError(
+                "Voice mode requires sounddevice and numpy.\n"
+                f"Install with: {sys.executable} -m pip install sounddevice numpy"
+            ) from e
+
+        self._sample_rate = _default_input_samplerate(sd)
+        self._ensure_stream()
 
     def _ensure_stream(self) -> None:
         """Create the audio InputStream once and keep it alive.
@@ -901,18 +946,85 @@ class AudioRecorder:
         def _callback(indata, frames, time_info, status):  # noqa: ARG001
             if status:
                 logger.debug("sounddevice status: %s", status)
-            # When not recording the stream is idle — discard audio.
-            if not self._recording:
+            recording = self._recording
+            continuous_sinks = self._continuous_frame_sinks
+            if not recording and not continuous_sinks:
                 return
-            self._frames.append(indata.copy())
+            frame = indata.copy()
+
+            if continuous_sinks:
+                # The callback must never wait for control-path operations.
+                # Missing one ring-buffer frame is preferable to blocking
+                # PortAudio; the provider sinks still receive every frame.
+                if self._lock.acquire(blocking=False):
+                    try:
+                        frame_seconds = len(frame) / self._sample_rate
+                        self._continuous_frames.append((frame, frame_seconds))
+                        self._continuous_frame_seconds += frame_seconds
+                        while (
+                            self._continuous_frames
+                            and self._continuous_frame_seconds
+                            > _CONTINUOUS_FALLBACK_BUFFER_SECONDS
+                        ):
+                            _, dropped_seconds = self._continuous_frames.popleft()
+                            self._continuous_frame_seconds = max(
+                                0.0,
+                                self._continuous_frame_seconds - dropped_seconds,
+                            )
+                    finally:
+                        self._lock.release()
+
+            for sink in continuous_sinks:
+                try:
+                    sink(frame, self._sample_rate)
+                except Exception as e:
+                    logger.error(
+                        "Continuous audio frame sink failed: %s",
+                        e,
+                        exc_info=True,
+                    )
+                    self._continuous_frame_sinks = tuple(
+                        current
+                        for current in self._continuous_frame_sinks
+                        if current is not sink
+                    )
+
+            if not recording:
+                return
+            self._frames.append(frame)
+
+            # Streaming STT receives the same copied frame retained for batch
+            # fallback.  The sink contract is intentionally synchronous and
+            # non-blocking: it may enqueue only; network I/O and resampling
+            # belong to the streaming coordinator's worker thread.
+            frame_sink = self._frame_sink
+            if frame_sink is not None:
+                try:
+                    frame_sink(frame, self._sample_rate)
+                except Exception as e:
+                    if not self._frame_sink_failed:
+                        self._frame_sink_failed = True
+                        logger.error("Audio frame sink failed: %s", e, exc_info=True)
+                    self._frame_sink = None
+                    error_holder = self._frame_sink_error_holder
+                    error_event = self._frame_sink_error_event
+                    if error_holder is not None and error_event is not None:
+                        error_holder.append(e)
+                        error_event.set()
 
             # Compute RMS for level display and silence detection
             rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
             self._current_rms = rms
             self._peak_rms = max(self._peak_rms, rms)
 
-            # Silence detection
-            if self._on_silence_stop is not None:
+            # Speech-state tracking supports three independent outcomes. A
+            # streaming consumer can disable only local end-of-turn detection
+            # while retaining the recorder's no-speech and hard-cap guards.
+            if any((
+                self._on_silence_stop,
+                self._on_no_speech,
+                self._on_max_duration,
+            )):
                 now = time.monotonic()
                 elapsed = now - self._start_time
 
@@ -967,32 +1079,57 @@ class AudioRecorder:
                 # Fire silence callback when:
                 # 1. User spoke then went silent for silence_duration, OR
                 # 2. No speech detected at all for max_wait seconds
-                should_fire = False
-                if self._has_spoken and rms <= self._silence_threshold:
+                callback_kind = None
+                if (
+                    self._on_silence_stop is not None
+                    and self._has_spoken
+                    and rms <= self._silence_threshold
+                ):
                     # User was speaking and now is silent
                     if self._silence_start == 0.0:
                         self._silence_start = now
                     elif now - self._silence_start >= self._silence_duration:
                         logger.info("Silence detected (%.1fs), auto-stopping",
                                     self._silence_duration)
-                        should_fire = True
-                elif not self._has_spoken and elapsed >= self._max_wait:
+                        callback_kind = "silence"
+                elif (
+                    self._on_no_speech is not None
+                    and not self._has_spoken
+                    and elapsed >= self._max_wait
+                ):
                     logger.info("No speech within %.0fs, auto-stopping",
                                 self._max_wait)
-                    should_fire = True
+                    callback_kind = "no_speech"
 
                 # 3. Hard cap on total recording length (voice.max_recording_seconds).
                 #    Independent of speech/silence so a continuous speaker past the
                 #    configured limit still auto-stops instead of recording forever.
-                if not should_fire and self._max_duration_reached(elapsed):
+                if (
+                    callback_kind is None
+                    and self._on_max_duration is not None
+                    and self._max_duration_reached(elapsed)
+                ):
                     logger.info("Max recording length reached (%.0fs), auto-stopping",
                                 self._max_recording_seconds)
-                    should_fire = True
+                    callback_kind = "max_duration"
 
-                if should_fire:
+                if callback_kind is not None:
                     with self._lock:
-                        cb = self._on_silence_stop
-                        self._on_silence_stop = None  # fire only once
+                        if callback_kind == "silence":
+                            cb = self._on_silence_stop
+                        elif callback_kind == "no_speech":
+                            cb = self._on_no_speech
+                        else:
+                            cb = self._on_max_duration
+                        if (
+                            callback_kind == "max_duration"
+                            and cb is not self._on_silence_stop
+                        ):
+                            self._on_max_duration = None
+                        else:
+                            self._on_silence_stop = None
+                            self._on_no_speech = None
+                            self._on_max_duration = None
                     if cb:
                         def _safe_cb():
                             try:
@@ -1023,7 +1160,15 @@ class AudioRecorder:
             ) from e
         self._stream = stream
 
-    def start(self, on_silence_stop=None) -> None:
+    def start(
+        self,
+        on_silence_stop=None,
+        frame_sink=None,
+        on_no_speech=None,
+        on_max_duration=None,
+        start_guard=None,
+        on_frame_sink_error=None,
+    ) -> bool:
         """Start capturing audio from the default input device.
 
         The underlying InputStream is created once and kept alive across
@@ -1034,37 +1179,30 @@ class AudioRecorder:
             on_silence_stop: Optional callback invoked (in a daemon thread) when
                 silence is detected after speech. The callback receives no arguments.
                 Use this to auto-stop recording and trigger transcription.
+            frame_sink: Optional non-blocking callback receiving ``(frame,
+                sample_rate)`` for streaming consumers. The copied frame remains
+                buffered locally until ``stop()`` or ``cancel()``.
+            on_no_speech: Optional callback for the initial no-speech timeout.
+                Defaults to ``on_silence_stop`` for backward compatibility.
+            on_max_duration: Optional callback for the recording hard cap.
+                Defaults to ``on_silence_stop`` for backward compatibility.
+            start_guard: Optional callback checked before capture is armed.
+                Returning false revokes a start that blocked while its input
+                stream or streaming STT session was being prepared.
+            on_frame_sink_error: Optional callback receiving an exception if
+                the sink fails. Delivery occurs away from the audio callback.
 
         Raises ``RuntimeError`` if sounddevice/numpy are not installed
         or if a recording is already in progress.
         """
-        try:
-            sd, _ = _import_audio()
-        except OSError as e:
-            # sounddevice imports but PortAudio's shared library is missing —
-            # a pip install can't fix that; point at the system package
-            # instead of misreporting missing Python packages (#18432).
-            if _is_termux_environment():
-                portaudio_hint = "  Termux: pkg install portaudio"
-            else:
-                portaudio_hint = (
-                    "  Linux:  sudo apt-get install libportaudio2\n"
-                    "  macOS:  brew install portaudio"
-                )
-            raise RuntimeError(
-                "PortAudio system library not found -- install it first:\n"
-                f"{portaudio_hint}\n"
-                "Then retry /voice on."
-            ) from e
-        except ImportError as e:
-            raise RuntimeError(
-                "Voice mode requires sounddevice and numpy.\n"
-                f"Install with: {sys.executable} -m pip install sounddevice numpy"
-            ) from e
+        self.prepare()
 
         with self._lock:
             if self._recording:
-                return  # already recording
+                return True  # already recording
+
+            if start_guard is not None and not start_guard():
+                return False
 
             self._frames = []
             self._start_time = time.monotonic()
@@ -1077,13 +1215,49 @@ class AudioRecorder:
             self._peak_rms = 0
             self._current_rms = 0
             self._on_silence_stop = on_silence_stop
-        # Ensure the persistent stream is alive (no-op after first call).
-        self._sample_rate = _default_input_samplerate(sd)
-        self._ensure_stream()
+            self._on_no_speech = (
+                on_no_speech if on_no_speech is not None else on_silence_stop
+            )
+            self._on_max_duration = (
+                on_max_duration
+                if on_max_duration is not None
+                else on_silence_stop
+            )
+            self._frame_sink = frame_sink
+            self._frame_sink_failed = False
+            error_event = threading.Event()
+            error_holder: List[Exception] = []
+            self._frame_sink_error_event = error_event
+            self._frame_sink_error_holder = error_holder
 
+        if on_frame_sink_error is not None:
+            def _report_frame_sink_error() -> None:
+                error_event.wait()
+                if error_holder:
+                    try:
+                        on_frame_sink_error(error_holder[0])
+                    except Exception:
+                        logger.error(
+                            "Audio frame sink error callback failed",
+                            exc_info=True,
+                        )
+
+            threading.Thread(
+                target=_report_frame_sink_error,
+                name="audio-frame-sink-error",
+                daemon=True,
+            ).start()
         with self._lock:
+            if start_guard is not None and not start_guard():
+                self._on_silence_stop = None
+                self._on_no_speech = None
+                self._on_max_duration = None
+                self._frame_sink = None
+                error_event.set()
+                return False
             self._recording = True
         logger.info("Voice recording started (rate=%d, channels=%d)", self._sample_rate, CHANNELS)
+        return True
 
     def _close_stream_with_timeout(self, timeout: float = 3.0) -> None:
         """Close the audio stream with a timeout to prevent CoreAudio hangs."""
@@ -1119,10 +1293,16 @@ class AudioRecorder:
             Path to the WAV file, or ``None`` if no audio was captured.
         """
         with self._lock:
-            if not self._recording:
+            if not self._recording and not self._frames:
                 return None
 
             self._recording = False
+            self._on_silence_stop = None
+            self._on_no_speech = None
+            self._on_max_duration = None
+            self._frame_sink = None
+            if self._frame_sink_error_event is not None:
+                self._frame_sink_error_event.set()
             self._current_rms = 0
             # Stream stays alive — no close needed.
 
@@ -1134,8 +1314,12 @@ class AudioRecorder:
             audio_data = np.concatenate(self._frames, axis=0)
             self._frames = []
 
-            elapsed = time.monotonic() - self._start_time
-            logger.info("Voice recording stopped (%.1fs, %d samples)", elapsed, len(audio_data))
+            captured_seconds = len(audio_data) / self._sample_rate
+            logger.info(
+                "Voice recording stopped (%.1fs, %d samples)",
+                captured_seconds,
+                len(audio_data),
+            )
 
             # Skip very short recordings (< 0.3s of audio)
             min_samples = int(self._sample_rate * 0.3)
@@ -1152,6 +1336,27 @@ class AudioRecorder:
 
             return self._write_wav(audio_data, sample_rate=self._sample_rate)
 
+    def finish_capture(self) -> bool:
+        """Stop accepting frames while retaining audio for fallback.
+
+        Streaming callers use this at a manual commit boundary. A later final
+        can discard the retained frames with ``cancel()``, while a provider
+        failure can still write exactly the pre-commit audio with ``stop()``.
+        """
+        with self._lock:
+            if not self._recording:
+                return False
+            self._recording = False
+            self._on_silence_stop = None
+            self._on_no_speech = None
+            self._on_max_duration = None
+            self._frame_sink = None
+            if self._frame_sink_error_event is not None:
+                self._frame_sink_error_event.set()
+            self._current_rms = 0
+        logger.info("Voice capture finished; retaining frames for STT fallback")
+        return True
+
     def cancel(self) -> None:
         """Stop recording and discard all captured audio.
 
@@ -1161,8 +1366,71 @@ class AudioRecorder:
             self._recording = False
             self._frames = []
             self._on_silence_stop = None
+            self._on_no_speech = None
+            self._on_max_duration = None
+            self._frame_sink = None
+            if self._frame_sink_error_event is not None:
+                self._frame_sink_error_event.set()
             self._current_rms = 0
         logger.info("Voice recording cancelled")
+
+    def clear_frame_sink(self) -> None:
+        """Stop forwarding frames while retaining buffered fallback audio."""
+        with self._lock:
+            self._frame_sink = None
+            if self._frame_sink_error_event is not None:
+                self._frame_sink_error_event.set()
+
+    def add_continuous_frame_sink(
+        self,
+        sink: Callable[[Any, int], Any],
+    ) -> None:
+        """Forward every input frame until the sink is explicitly removed."""
+        with self._lock:
+            if not any(current is sink for current in self._continuous_frame_sinks):
+                self._continuous_frame_sinks = (*self._continuous_frame_sinks, sink)
+
+    def remove_continuous_frame_sink(
+        self,
+        sink: Callable[[Any, int], Any],
+    ) -> None:
+        with self._lock:
+            self._continuous_frame_sinks = tuple(
+                current
+                for current in self._continuous_frame_sinks
+                if current is not sink
+            )
+
+    def begin_continuous_fallback_capture(self) -> bool:
+        """Retain recent continuous audio if the provider fails mid-barge."""
+        np = _import_numpy()
+        with self._lock:
+            if self._recording:
+                return True
+            buffered = [frame for frame, _ in self._continuous_frames]
+            self._frames = buffered
+            self._start_time = time.monotonic()
+            self._has_spoken = bool(buffered)
+            self._speech_start = 0.0
+            self._silence_start = 0.0
+            self._on_silence_stop = None
+            self._on_no_speech = None
+            self._on_max_duration = None
+            self._frame_sink = None
+            self._peak_rms = max(
+                (
+                    int(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
+                    for frame in buffered
+                ),
+                default=0,
+            )
+            self._recording = True
+        return True
+
+    def clear_continuous_fallback_buffer(self) -> None:
+        with self._lock:
+            self._continuous_frames.clear()
+            self._continuous_frame_seconds = 0.0
 
     def shutdown(self) -> None:
         """Release the audio stream.  Call when voice mode is disabled."""
@@ -1170,6 +1438,13 @@ class AudioRecorder:
             self._recording = False
             self._frames = []
             self._on_silence_stop = None
+            self._on_no_speech = None
+            self._on_max_duration = None
+            self._continuous_frame_sinks = ()
+            self._continuous_frames.clear()
+            self._continuous_frame_seconds = 0.0
+            if self._frame_sink_error_event is not None:
+                self._frame_sink_error_event.set()
         # Close stream OUTSIDE the lock to avoid deadlock with audio callback
         self._close_stream_with_timeout()
         logger.info("AudioRecorder shut down")
@@ -1495,6 +1770,8 @@ def stop_playback() -> None:
     global _active_playback
     with _playback_lock:
         proc = _active_playback
+        if proc is not None and proc.poll() is None:
+            proc._hermes_interrupted = True
         _active_playback = None
     if proc and proc.poll() is None:
         try:
@@ -1708,7 +1985,17 @@ def _play_audio_file_impl(file_path: str) -> bool:
                 proc.wait(timeout=300)
                 rc = proc.returncode
                 with _playback_lock:
-                    _active_playback = None
+                    interrupted = (
+                        getattr(proc, "_hermes_interrupted", False) is True
+                    )
+                    if _active_playback is proc:
+                        _active_playback = None
+                if interrupted:
+                    logger.debug(
+                        "System player %s was intentionally interrupted",
+                        cmd[0],
+                    )
+                    return True
                 if rc == 0:
                     return True
                 # Non-zero exit: player failed (e.g. WSL ffplay/aplay with no
@@ -1720,11 +2007,13 @@ def _play_audio_file_impl(file_path: str) -> bool:
                 proc.kill()
                 proc.wait()
                 with _playback_lock:
-                    _active_playback = None
+                    if _active_playback is proc:
+                        _active_playback = None
             except Exception as e:
                 logger.debug("System player %s failed: %s", cmd[0], e)
                 with _playback_lock:
-                    _active_playback = None
+                    if _active_playback is proc:
+                        _active_playback = None
 
     logger.warning("No audio player available for %s", file_path)
     return False
@@ -1931,6 +2220,102 @@ TRIGGER_CEILING = 4000.0
 # staying reachable (300 RMS floor * 3 = 900 trigger vs 3000+ RMS speech).
 DEFAULT_BARGE_MULTIPLIER = 3.0
 
+# Barge monitoring may briefly fall behind the PortAudio callback while the
+# agent interrupt is dispatched. Retain only a short duration and drop oldest
+# frames instead of ever blocking microphone capture.
+_BARGE_MONITOR_BUFFER_SECONDS = 2.0
+
+
+class ContinuousAudioFrameQueue:
+    """Duration-bounded frame handoff that never blocks the audio callback."""
+
+    def __init__(self, max_seconds: float = _BARGE_MONITOR_BUFFER_SECONDS):
+        from collections import deque
+
+        self._max_seconds = max_seconds
+        self._frames = deque()
+        self._queued_seconds = 0.0
+        self._lock = threading.Lock()
+        self._ready = threading.Event()
+        self._closed = False
+
+    def enqueue(self, frame: Any, sample_rate: int) -> bool:
+        try:
+            duration = len(frame) / int(sample_rate)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return False
+        if duration <= 0 or not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if self._closed:
+                return False
+            self._frames.append((frame, int(sample_rate), duration))
+            self._queued_seconds += duration
+            while self._frames and self._queued_seconds > self._max_seconds:
+                _, _, dropped = self._frames.popleft()
+                self._queued_seconds = max(0.0, self._queued_seconds - dropped)
+            self._ready.set()
+            return True
+        finally:
+            self._lock.release()
+
+    def get(self, timeout: float = 0.1) -> Optional[tuple[Any, int]]:
+        if not self._ready.wait(timeout):
+            return None
+        with self._lock:
+            if not self._frames:
+                self._ready.clear()
+                return None
+            frame, sample_rate, duration = self._frames.popleft()
+            self._queued_seconds = max(0.0, self._queued_seconds - duration)
+            if not self._frames:
+                self._ready.clear()
+            return frame, sample_rate
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._frames.clear()
+            self._queued_seconds = 0.0
+            self._ready.set()
+
+
+class _QueuedAudioBlockStream:
+    """Present native-rate callback frames as approximately 30 ms blocks."""
+
+    def __init__(self, source: ContinuousAudioFrameQueue, np: Any):
+        self._source = source
+        self._np = np
+        self._pending = None
+        self._sample_rate = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self, _block: int):
+        while True:
+            if self._pending is not None and self._sample_rate > 0:
+                block_size = max(1, int(self._sample_rate * 0.03))
+                if len(self._pending) >= block_size:
+                    data = self._pending[:block_size]
+                    self._pending = self._pending[block_size:]
+                    return data, False
+            item = self._source.get()
+            if item is None:
+                return None, False
+            frame, sample_rate = item
+            samples = self._np.asarray(frame, dtype=self._np.int16).reshape(-1, 1)
+            if sample_rate != self._sample_rate:
+                self._sample_rate = sample_rate
+                self._pending = None
+            if self._pending is None:
+                self._pending = samples
+            else:
+                self._pending = self._np.concatenate((self._pending, samples))
+
 
 def _voice_debug_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_DEBUG", "").strip() == "1"
@@ -1958,6 +2343,9 @@ def full_duplex_listen(
     pre_roll_ms: int = 1200,
     endpoint_silence_ms: int = 1250,
     max_utterance_ms: int = 30_000,
+    frame_queue: Optional[ContinuousAudioFrameQueue] = None,
+    capture: bool | Callable[[], bool] = True,
+    on_candidate: Optional[Callable[[], None]] = None,
 ) -> Optional[str]:
     """Listen across an ENTIRE agent turn; return the captured interruption.
 
@@ -1981,8 +2369,11 @@ def full_duplex_listen(
 
     On detection ``on_trigger(phase)`` fires (cut TTS / interrupt the turn),
     then capture continues from the rolling *pre_roll_ms* buffer until
-    *endpoint_silence_ms* of quiet, and the WAV path is returned. Returns
-    ``None`` when *should_stop* ends the turn without speech.
+    *endpoint_silence_ms* of quiet, and the WAV path is returned. A callable
+    *capture* chooses at trigger time, allowing provider failure to fall back
+    without opening another input stream. ``on_candidate`` fires once on the
+    first above-threshold block; it does not alter the detector decision.
+    Returns ``None`` when *should_stop* ends the turn without speech.
     """
     try:
         sd, np = _import_audio()
@@ -2010,15 +2401,27 @@ def full_duplex_listen(
     grace_remaining = 0
     blocks_since_playback = 10_000
     block_idx = 0
+    candidate_active = False
 
     try:
-        with sd.InputStream(
-            samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block
-        ) as stream:
+        stream_context = (
+            _QueuedAudioBlockStream(frame_queue, np)
+            if frame_queue is not None
+            else sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype="int16",
+                blocksize=block,
+            )
+        )
+        with stream_context as stream:
             while not should_stop():
                 data, _ = stream.read(block)
+                if data is None:
+                    continue
                 rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
-                pre_roll.append(data.copy())
+                if capture:
+                    pre_roll.append(data.copy())
                 block_idx += 1
 
                 playing = bool(is_playing()) if is_playing is not None else False
@@ -2090,6 +2493,18 @@ def full_duplex_listen(
                     grace_remaining -= 1
 
                 recent_above.append(above)
+                if above and not candidate_active:
+                    candidate_active = True
+                    if on_candidate:
+                        try:
+                            on_candidate()
+                        except Exception as e:
+                            logger.debug(
+                                "full-duplex candidate callback failed: %s",
+                                e,
+                            )
+                elif not any(recent_above):
+                    candidate_active = False
                 if rms >= trigger * 0.5:
                     _vad_log(
                         f"block={block_idx} rms={rms:.0f} floor={quiet_floor:.0f} "
@@ -2112,6 +2527,10 @@ def full_duplex_listen(
                         on_trigger(phase)
                     except Exception as e:
                         logger.debug("full-duplex trigger callback failed: %s", e)
+
+                should_capture = capture() if callable(capture) else capture
+                if not should_capture:
+                    return None
 
                 # Capture until the user goes quiet. Playback was cut by
                 # on_trigger, so plain silence endpointing works.

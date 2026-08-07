@@ -229,6 +229,52 @@ def test_stream_cap_truncates_runaway_upstream(monkeypatch):
 # ── Dispatch: chunked streamer path (regression tests) ───────────────────
 
 
+def test_streamer_waiting_for_first_chunk_is_not_reported_as_playback(monkeypatch):
+    """A ready output worker is not playback until PCM actually arrives."""
+    from tools import tts_tool
+    from tools import voice_mode
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _BlockingProvider(ts.StreamingTTSProvider):
+        sample_rate = 24000
+
+        @staticmethod
+        def available():
+            return True
+
+        def stream(self, text):
+            entered.set()
+            assert release.wait(2.0)
+            yield b"\x01\x00" * 50
+
+    sd, _out = _sd_mock()
+    stop, done = threading.Event(), threading.Event()
+    worker = threading.Thread(
+        target=tts_tool.stream_tts_to_speaker,
+        args=(_drain_queue(["A delayed sentence for testing."]), stop, done),
+    )
+
+    with (
+        patch(
+            "tools.tts_streaming.resolve_streaming_provider",
+            return_value=_BlockingProvider({}, {}),
+        ),
+        patch.object(tts_tool, "_import_sounddevice", return_value=sd),
+        patch("platform.system", return_value="Linux"),
+    ):
+        worker.start()
+        assert entered.wait(2.0)
+        assert voice_mode.is_audio_output_active() is False
+        release.set()
+        worker.join(3.0)
+
+    assert not worker.is_alive()
+    assert done.is_set()
+    assert voice_mode.is_audio_output_active() is False
+
+
 def test_streamer_path_handles_misaligned_pcm_chunks(monkeypatch):
     """Regression: PCM chunks with odd byte counts must not be dropped.
 

@@ -3604,35 +3604,38 @@ def stream_tts_to_speaker(
                     def mark_audio_output_active(_active):
                         return None
 
-                mark_audio_output_active(True)
-                try:
-                    _max_reinit = 3
-                    _reinit_count = 0
-                    _current_stream = output_stream
-                    while True:
-                        chunk_queue = _audio_queue.get()
-                        if chunk_queue is None:
-                            break
-                        if stop_event.is_set():
-                            continue
-                        if _current_stream is None:
-                            _chunks = []
-                            while True:
-                                chunk = chunk_queue.get()
-                                if chunk is None:
-                                    break
-                                _chunks.append(chunk)
-                            _play_via_tempfile(
-                                iter(_chunks), stop_event, streamer.sample_rate
-                            )
-                            continue
-                        _pcm_leftover = b""
+                _max_reinit = 3
+                _reinit_count = 0
+                _current_stream = output_stream
+                while True:
+                    chunk_queue = _audio_queue.get()
+                    if chunk_queue is None:
+                        break
+                    if stop_event.is_set():
+                        continue
+                    if _current_stream is None:
+                        _chunks = []
+                        while True:
+                            chunk = chunk_queue.get()
+                            if chunk is None:
+                                break
+                            _chunks.append(chunk)
+                        _play_via_tempfile(
+                            iter(_chunks), stop_event, streamer.sample_rate
+                        )
+                        continue
+                    _pcm_leftover = b""
+                    output_active = False
+                    try:
                         while True:
                             chunk = chunk_queue.get()
                             if chunk is None:
                                 break
                             if stop_event.is_set():
                                 break
+                            if not output_active:
+                                mark_audio_output_active(True)
+                                output_active = True
                             _buf = _pcm_leftover + chunk
                             _aligned_len = len(_buf) - (len(_buf) % 2)
                             if _aligned_len >= 2:
@@ -3680,8 +3683,9 @@ def stream_tts_to_speaker(
                             _pcm_leftover = (
                                 _buf[_aligned_len:] if _aligned_len < len(_buf) else b""
                             )
-                finally:
-                    mark_audio_output_active(False)
+                    finally:
+                        if output_active:
+                            mark_audio_output_active(False)
             else:
                 while True:
                     chunk_queue = _audio_queue.get()

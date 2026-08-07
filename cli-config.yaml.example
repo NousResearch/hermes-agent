@@ -1202,8 +1202,26 @@ stt:
   #   model: "whisper-large-v3-turbo"
   #   language: ""             # blank = stt.language > HERMES_LOCAL_STT_LANGUAGE > auto-detect
   openai:
+    base_url: ""               # optional OpenAI-compatible API base; Realtime support is required for streaming
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
+    streaming: true             # automatic when this is the selected provider; set false to force batch
+    streaming_model_id: "gpt-4o-mini-transcribe"  # Realtime transcription with semantic VAD
     language: ""               # auto-detect; set to "en", "es", "fr", etc. to force
+  # elevenlabs:
+  #   base_url: ""             # optional HTTP API base
+  #   wss_url: ""              # optional WebSocket API base; defaults to base_url with ws(s) scheme
+  #   model_id: "scribe_v2"
+  #   streaming: true           # automatic when this is the selected provider; set false to force batch
+  #   streaming_model_id: "scribe_v2_realtime"
+  #   # Optional Realtime VAD tuning; omitted values use ElevenLabs defaults:
+  #   # vad_threshold: 0.4
+  #   # vad_silence_threshold_secs: 1.5
+  #   # min_speech_duration_ms: 100
+  #   # min_silence_duration_ms: 100
+  # xai:
+  #   base_url: ""             # optional API base for API-key auth; OAuth stays on its validated origin
+  #   language: ""
+  #   diarize: false
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
   # deepinfra:

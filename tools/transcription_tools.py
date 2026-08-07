@@ -38,6 +38,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
@@ -68,7 +69,11 @@ def get_env_value(name, default=None):
     return default if value is None else value
 
 
-def _resolve_provider_key(env_var: str, provider_id: str) -> str:
+def _resolve_provider_key(
+    env_var: str,
+    provider_id: str,
+    config_value: str = "",
+) -> str:
     """Resolve an STT provider API key via the shared voice-key resolver.
 
     Delegates to ``tools.tool_backend_helpers.resolve_provider_secret`` —
@@ -81,7 +86,12 @@ def _resolve_provider_key(env_var: str, provider_id: str) -> str:
         from tools.tool_backend_helpers import resolve_provider_secret
     except ImportError:  # pragma: no cover — helpers are in-repo
         return str(get_env_value(env_var) or "").strip()
-    return resolve_provider_secret(env_var, provider_id, env_getter=get_env_value)
+    return resolve_provider_secret(
+        env_var,
+        provider_id,
+        config_value=config_value,
+        env_getter=get_env_value,
+    )
 
 # ---------------------------------------------------------------------------
 # Optional imports — graceful degradation
@@ -382,6 +392,160 @@ def _get_stt_section(stt_config: Dict[str, Any], name: str) -> Dict[str, Any]:
         return {}
     section = stt_config.get(name)
     return section if isinstance(section, dict) else {}
+
+
+@dataclass(frozen=True)
+class ResolvedSTTProviderConfig:
+    """Connection and model settings shared by one STT provider's transports."""
+
+    name: str
+    section: Dict[str, Any]
+    api_key: str = ""
+    base_url: str = ""
+    language: str = ""
+    model: str = ""
+    streaming_model_id: str = ""
+    supports_streaming: bool = False
+    direct_access: bool = True
+    credential_source: str = "direct"
+
+    @property
+    def streaming_enabled(self) -> bool:
+        """Whether the selected provider should use its streaming transport."""
+        return (
+            self.supports_streaming
+            and self.direct_access
+            and is_truthy_value(self.section.get("streaming", True), default=True)
+            and bool(self.streaming_model_id)
+        )
+
+
+def resolve_stt_provider_config(
+    provider_name: Optional[str] = None,
+    stt_config: Optional[Dict[str, Any]] = None,
+) -> Optional[ResolvedSTTProviderConfig]:
+    """Resolve one selected provider for both batch and streaming STT.
+
+    Provider credentials, base URL, language, and model settings are resolved
+    once here. Transports may differ, but they must not choose a different
+    account or endpoint for the same provider.
+    """
+    if stt_config is None:
+        stt_config = _load_stt_config()
+    if not isinstance(stt_config, dict) or not is_stt_enabled(stt_config):
+        return None
+
+    name = str(provider_name or stt_config.get("provider") or "").strip().lower()
+    if not name:
+        return None
+    section = _get_stt_section(stt_config, name)
+    language = _resolve_stt_language(
+        name,
+        stt_config,
+        extra_keys=("language_code",) if name == "elevenlabs" else (),
+    ) or ""
+
+    if name == "openai":
+        configured_base_url = str(
+            section.get("base_url")
+            or get_env_value("STT_OPENAI_BASE_URL")
+            or OPENAI_BASE_URL
+        ).strip().rstrip("/")
+        configured_key = str(section.get("api_key") or "").strip()
+        api_key = configured_key or resolve_openai_audio_api_key()
+        direct_access = True
+        if not api_key and configured_base_url and _is_local_or_private_url(configured_base_url):
+            api_key = "not-needed"
+        if not api_key:
+            managed_gateway = resolve_managed_tool_gateway("openai-audio")
+            if managed_gateway is not None:
+                api_key = managed_gateway.nous_user_token
+                configured_base_url = urljoin(
+                    f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
+                )
+                direct_access = False
+        return ResolvedSTTProviderConfig(
+            name=name,
+            section=section,
+            api_key=api_key,
+            base_url=configured_base_url,
+            language=language,
+            model=str(section.get("model") or DEFAULT_STT_MODEL).strip(),
+            streaming_model_id=str(section.get("streaming_model_id") or "").strip(),
+            supports_streaming=True,
+            direct_access=direct_access,
+        )
+
+    if name == "elevenlabs":
+        return ResolvedSTTProviderConfig(
+            name=name,
+            section=section,
+            api_key=_resolve_provider_key(
+                "ELEVENLABS_API_KEY",
+                "elevenlabs",
+                config_value=section.get("api_key") or "",
+            ),
+            base_url=str(
+                section.get("base_url")
+                or get_env_value("ELEVENLABS_STT_BASE_URL")
+                or ELEVENLABS_STT_BASE_URL
+            ).strip().rstrip("/"),
+            language=language,
+            model=str(section.get("model_id") or DEFAULT_ELEVENLABS_STT_MODEL).strip(),
+            streaming_model_id=str(section.get("streaming_model_id") or "").strip(),
+            supports_streaming=True,
+        )
+
+    if name == "xai":
+        from tools.tool_backend_helpers import resolve_provider_secret
+        from tools.xai_http import resolve_xai_http_credentials
+
+        direct_api_key = resolve_provider_secret(
+            "XAI_API_KEY",
+            "",
+            config_value=section.get("api_key") or "",
+            env_getter=get_env_value,
+        )
+        if direct_api_key:
+            api_key = direct_api_key
+            base_url = str(
+                section.get("base_url")
+                or get_env_value("XAI_STT_BASE_URL")
+                or get_env_value("XAI_BASE_URL")
+                or XAI_STT_BASE_URL
+            ).strip().rstrip("/")
+        else:
+            credentials = resolve_xai_http_credentials()
+            api_key = str(credentials.get("api_key") or "").strip()
+            credential_source = str(credentials.get("provider") or "xai")
+            if credentials.get("provider") == "xai-oauth":
+                base_url = str(
+                    credentials.get("base_url") or XAI_STT_BASE_URL
+                ).strip().rstrip("/")
+            else:
+                base_url = str(
+                    section.get("base_url")
+                    or get_env_value("XAI_STT_BASE_URL")
+                    or credentials.get("base_url")
+                    or XAI_STT_BASE_URL
+                ).strip().rstrip("/")
+        if direct_api_key:
+            credential_source = "xai"
+        return ResolvedSTTProviderConfig(
+            name=name,
+            section=section,
+            api_key=api_key,
+            base_url=base_url,
+            language=language,
+            model="grok-stt",
+            credential_source=credential_source,
+        )
+
+    return ResolvedSTTProviderConfig(
+        name=name,
+        section=section,
+        language=language,
+    )
 
 
 def _get_named_stt_provider_config(
@@ -1032,9 +1196,8 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "xai":
-            from tools.xai_http import resolve_xai_http_credentials
-
-            if resolve_xai_http_credentials().get("api_key"):
+            resolved = resolve_stt_provider_config("xai", stt_config)
+            if resolved is not None and resolved.api_key:
                 return "xai"
             logger.warning(
                 "STT provider 'xai' configured but no xAI credentials are available"
@@ -1042,7 +1205,8 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "elevenlabs":
-            if _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"):
+            resolved = resolve_stt_provider_config("elevenlabs", stt_config)
+            if resolved is not None and resolved.api_key:
                 return "elevenlabs"
             logger.warning(
                 "STT provider 'elevenlabs' configured but ELEVENLABS_API_KEY not set"
@@ -1088,14 +1252,14 @@ def _get_provider(stt_config: dict) -> str:
         logger.info("No local STT available, using Mistral Voxtral Transcribe API")
         return "mistral"
     try:
-        from tools.xai_http import resolve_xai_http_credentials
-
-        if resolve_xai_http_credentials().get("api_key"):
+        resolved_xai = resolve_stt_provider_config("xai", stt_config)
+        if resolved_xai is not None and resolved_xai.api_key:
             logger.info("No local STT available, using xAI Grok STT API")
             return "xai"
     except Exception:
         pass
-    if _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"):
+    resolved_elevenlabs = resolve_stt_provider_config("elevenlabs", stt_config)
+    if resolved_elevenlabs is not None and resolved_elevenlabs.api_key:
         logger.info("No local STT available, using ElevenLabs Scribe STT API")
         return "elevenlabs"
     if _HAS_OPENAI and _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
@@ -2052,30 +2216,29 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_xai_stt_credentials(
+    stt_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Return the shared xAI provider configuration in the legacy dict shape."""
+    resolved = resolve_stt_provider_config("xai", stt_config)
+    if resolved is None:
+        return {}
+    return {
+        "provider": resolved.credential_source,
+        "api_key": resolved.api_key,
+        "base_url": resolved.base_url,
+    }
+
+
 def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using xAI Grok STT API.
 
     Uses the ``POST /v1/stt`` REST endpoint with multipart/form-data.
     Supports Inverse Text Normalization, diarization, and word-level timestamps.
-    Requires ``XAI_API_KEY`` environment variable.
+    Supports a configured/direct API key or Hermes-managed xAI OAuth.
     """
-    from tools.xai_http import resolve_xai_http_credentials
-
-    # STT is an API-billed endpoint. Prefer the explicit XAI_API_KEY over the
-    # general xAI OAuth/Grok-subscription credential; subscription OAuth may be
-    # valid for Grok while returning personal-team spending-limit errors for
-    # /v1/stt. Other xAI integrations keep their existing resolver precedence.
-    direct_api_key = str(get_env_value("XAI_API_KEY") or "").strip()
-    if direct_api_key:
-        creds = {
-            "provider": "xai",
-            "api_key": direct_api_key,
-            "base_url": str(
-                get_env_value("XAI_BASE_URL") or "https://api.x.ai/v1"
-            ).strip().rstrip("/"),
-        }
-    else:
-        creds = resolve_xai_http_credentials()
+    stt_config = _load_stt_config()
+    creds = _resolve_xai_stt_credentials(stt_config)
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         return {
@@ -2084,21 +2247,11 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
             "error": "No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY",
         }
 
-    stt_config = _load_stt_config()
     xai_config = stt_config.get("xai") or {}
 
     def _resolve_base_url(resolved_creds: Dict[str, str]) -> str:
-        # OAuth bearers are pinned to the resolver-validated xAI origin;
-        # config/env base URL overrides only apply to API-key credentials.
-        if resolved_creds.get("provider") == "xai-oauth":
-            return str(
-                resolved_creds.get("base_url") or XAI_STT_BASE_URL
-            ).strip().rstrip("/")
         return str(
-            xai_config.get("base_url")
-            or get_env_value("XAI_STT_BASE_URL")
-            or resolved_creds.get("base_url")
-            or XAI_STT_BASE_URL
+            resolved_creds.get("base_url") or XAI_STT_BASE_URL
         ).strip().rstrip("/")
 
     base_url = _resolve_base_url(creds)
@@ -2146,6 +2299,8 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
                 response.status_code,
             )
             try:
+                from tools.xai_http import resolve_xai_http_credentials
+
                 refreshed_creds = resolve_xai_http_credentials(
                     force_refresh=True,
                     api_key_hint=api_key,
@@ -2211,20 +2366,15 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
 def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using ElevenLabs Scribe STT API."""
-    api_key = _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
-    if not api_key:
+    stt_config = _load_stt_config()
+    resolved = resolve_stt_provider_config("elevenlabs", stt_config)
+    if resolved is None or not resolved.api_key:
         return {"success": False, "transcript": "", "error": "ELEVENLABS_API_KEY not set"}
 
-    stt_config = _load_stt_config()
-    elevenlabs_config = stt_config.get("elevenlabs") or {}
-    base_url = str(
-        elevenlabs_config.get("base_url")
-        or get_env_value("ELEVENLABS_STT_BASE_URL")
-        or ELEVENLABS_STT_BASE_URL
-    ).strip().rstrip("/")
-    language_code = _resolve_stt_language(
-        "elevenlabs", stt_config, extra_keys=("language_code",)
-    ) or ""
+    elevenlabs_config = resolved.section
+    api_key = resolved.api_key
+    base_url = resolved.base_url
+    language_code = resolved.language
     tag_audio_events = is_truthy_value(elevenlabs_config.get("tag_audio_events", False))
     diarize = is_truthy_value(elevenlabs_config.get("diarize", False))
 
@@ -2623,24 +2773,8 @@ def transcribe_audio_local_fallback(
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
     """Return direct OpenAI audio config or a managed gateway fallback."""
-    stt_config = _load_stt_config()
-    openai_cfg = stt_config.get("openai") or {}
-    cfg_api_key = openai_cfg.get("api_key", "")
-    cfg_base_url = openai_cfg.get("base_url", "")
-    if cfg_api_key:
-        return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
-
-    # A local OpenAI-compatible server needs no key — send a placeholder so
-    # the SDK doesn't refuse to construct a client (#25193, credit @nnnet).
-    if cfg_base_url and _is_local_or_private_url(cfg_base_url):
-        return "not-needed", cfg_base_url
-
-    direct_api_key = resolve_openai_audio_api_key()
-    if direct_api_key:
-        return direct_api_key, OPENAI_BASE_URL
-
-    managed_gateway = resolve_managed_tool_gateway("openai-audio")
-    if managed_gateway is None:
+    resolved = resolve_stt_provider_config("openai")
+    if resolved is None or not resolved.api_key:
         message = "Neither stt.openai.api_key in config nor VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"
         if managed_nous_tools_enabled():
             message += (
@@ -2650,10 +2784,7 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
                 )
             )
         raise ValueError(message)
-
-    return managed_gateway.nous_user_token, urljoin(
-        f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
-    )
+    return resolved.api_key, resolved.base_url
 
 
 def _extract_transcript_text(transcription: Any) -> str:

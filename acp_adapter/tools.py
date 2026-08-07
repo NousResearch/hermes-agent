@@ -95,8 +95,6 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     """Build a human-readable title for a tool call."""
     if tool_name == "terminal":
         cmd = args.get("command", "")
-        if len(cmd) > 80:
-            cmd = cmd[:77] + "..."
         return f"terminal: {cmd}"
     if tool_name == "read_file":
         return f"read: {args.get('path', '?')}"

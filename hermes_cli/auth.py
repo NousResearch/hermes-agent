@@ -939,7 +939,7 @@ def format_auth_error(error: Exception) -> str:
             return _format_nous_entitlement_auth_error(error)
         return "Subscription credits are exhausted. Top up/renew credits, then retry."
 
-    if error.code in {"subscription_expired", "no_usable_credits", "account_missing"}:
+    if error.code in {"subscription_expired", "no_usable_credits", "account_missing", "member_spend_cap_exceeded"}:
         if error.provider == "nous":
             return _format_nous_entitlement_auth_error(error)
 

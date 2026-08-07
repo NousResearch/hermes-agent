@@ -249,7 +249,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             }
             # Do not leak profile/tenant topology on remote unauthenticated GETs.
             # Agent Cards are intentionally public; health topology is not.
-            if security.localhost_only() or security.authenticate(
+            if self.adapter._security_context.localhost_only() or self.adapter._security_context.authenticate(
                 self.headers.get("Authorization"),
                 self.client_address[0] if self.client_address else "",
             ) is not None:
@@ -268,7 +268,9 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 
         # Identity comes from the presented credential (or the socket in
         # localhost-only mode) — never from the request body.
-        identity = security.authenticate(self.headers.get("Authorization"), client_ip)
+        identity = adapter._security_context.authenticate(
+            self.headers.get("Authorization"), client_ip
+        )
         if identity is None:
             self._json(401, protocol.jsonrpc_error(None, protocol.ERR_UNAUTHORIZED, "unauthorized"))
             return
@@ -314,7 +316,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             self._json(429, protocol.jsonrpc_error(req_id, protocol.ERR_RATE_LIMITED, "rate limit exceeded"))
             return
 
-        if not security.is_trusted_peer(identity):
+        if not adapter._security_context.is_trusted_peer(identity):
             self._json(403, protocol.jsonrpc_error(
                 req_id, protocol.ERR_UNTRUSTED_PEER, f"peer '{identity}' not trusted"))
             return
@@ -372,9 +374,10 @@ class A2AAdapter(BasePlatformAdapter):
         # shape but is left unscoped here — see the "Scope note" in this
         # fix's PR description: open PR #98937 is actively rewriting this
         # field's None-vs-empty-list semantics.)
+        self._security_context = security.A2ASecurityContext.capture()
         _port_env = None if _profile_scoped() else os.getenv("A2A_PORT")
         self.port = int(_port_env or extra.get("port", _DEFAULT_PORT))
-        self.host = security.resolve_bind_host()
+        self.host = self._security_context.resolve_bind_host()
         self.agent_name = _default_agent_name()
         self._advertised_toolsets = [
             t.strip() for t in (
@@ -470,7 +473,11 @@ class A2AAdapter(BasePlatformAdapter):
 
         self._mark_connected()
 
-        exposure = "localhost-only" if security.localhost_only() else "REMOTE (bearer auth)"
+        exposure = (
+            "localhost-only"
+            if self._security_context.localhost_only()
+            else "REMOTE (bearer auth)"
+        )
         logger.info(
             "A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)",
             self.host, self.port, exposure, self.agent_name, len(self._agents),
@@ -649,7 +656,7 @@ class A2AAdapter(BasePlatformAdapter):
             skills=self._advertised_skills(agent),
             streaming=bool(agent.get("local", True)),
             push_notifications=True,
-            auth_required=not security.localhost_only(),
+            auth_required=not self._security_context.localhost_only(),
             tenant=str(agent.get("tenant") or ""),
         )
 
@@ -1228,7 +1235,10 @@ class A2AAdapter(BasePlatformAdapter):
         if not callback_url:
             return
 
-        if not security.is_safe_callback_url(callback_url):
+        if not security.is_safe_callback_url(
+            callback_url,
+            localhost_mode=self._security_context.localhost_only(),
+        ):
             logger.warning("A2A: push notification for task %s blocked — unsafe callback URL: %s",
                            task_id, callback_url)
             protocol.metrics.push_failed += 1
@@ -1237,7 +1247,7 @@ class A2AAdapter(BasePlatformAdapter):
         # Push payload uses the StreamResponse format (same as streaming).
         payload = protocol.status_update(task_id, context_id, state, (reply or "")[:2000])
 
-        signature = security.sign_push_payload(payload)
+        signature = self._security_context.sign_push_payload(payload)
         headers = {"Content-Type": "application/json"}
         if signature:
             headers["X-A2A-Signature"] = signature

@@ -910,7 +910,9 @@ def _make_live_adapter(monkeypatch, reply_fn=None):
     port = _free_port()
     monkeypatch.setenv("A2A_PORT", str(port))
 
-    adapter = A2AAdapter(PlatformConfig(enabled=True))
+    # A scoped secondary profile ignores the process env (#100382); pass the
+    # port through config.extra so both construction paths bind the same port.
+    adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"port": port}))
 
     async def fake_handle_message(event):
         if reply_fn is None:
@@ -1222,6 +1224,54 @@ class TestInboundRoundTrip:
             await adapter.disconnect()
 
         asyncio.run(run())
+
+    def test_multiplex_adapter_keeps_profile_scoped_peer_tokens(self, monkeypatch):
+        """A secondary listener must not authenticate with the default profile's tokens."""
+        from agent.secret_scope import (
+            reset_secret_scope,
+            set_multiplex_active,
+            set_secret_scope,
+        )
+
+        monkeypatch.setenv("A2A_PEER_TOKENS", "default:default-token")
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+
+        set_multiplex_active(True)
+        scope_token = set_secret_scope(
+            {"A2A_PEER_TOKENS": "secondary:secondary-token"}
+        )
+        try:
+            adapter, base = _make_live_adapter(monkeypatch)
+        finally:
+            reset_secret_scope(scope_token)
+
+        async def run():
+            try:
+                assert await adapter.connect() is True
+                response = await asyncio.to_thread(
+                    _post_json,
+                    base + "/",
+                    _send_body("profile-scoped auth"),
+                    {"Authorization": "Bearer secondary-token"},
+                )
+                assert response["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
+
+                with pytest.raises(urllib.error.HTTPError) as exc_info:
+                    await asyncio.to_thread(
+                        _post_json,
+                        base + "/",
+                        _send_body("wrong profile"),
+                        {"Authorization": "Bearer default-token"},
+                    )
+                assert exc_info.value.code == 401
+            finally:
+                await adapter.disconnect()
+
+        try:
+            asyncio.run(run())
+        finally:
+            set_multiplex_active(False)
 
 
 # --------------------------------------------------------------------------

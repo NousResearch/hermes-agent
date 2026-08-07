@@ -581,11 +581,14 @@ def _apply_managed_env() -> None:
         return
     if managed_dir is None:
         return
-    managed_env = managed_dir / ".env"
-    if not managed_env.exists():
+    try:
+        managed_env = managed_dir / ".env"
+        if not managed_env.exists():
+            return
+        _sanitize_env_file_if_needed(managed_env)
+        _load_dotenv_with_fallback(managed_env, override=True)
+    except Exception:  # noqa: BLE001 — managed scope must never block startup
         return
-    _sanitize_env_file_if_needed(managed_env)
-    _load_dotenv_with_fallback(managed_env, override=True)
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:

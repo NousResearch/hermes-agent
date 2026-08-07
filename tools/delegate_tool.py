@@ -2590,6 +2590,17 @@ def _run_single_child(
                 else 0.0
             ),
         }
+        # Per-delegation spend, serialized back to the model alongside
+        # tokens/api_calls so the parent can see what each delegation cost.
+        # Mirrors _child_cost_usd (which is stripped pre-serialization and
+        # only feeds the parent session rollup).
+        # Inspired by: Perplexity Agent API result shape (idea-level).
+        entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
+        _cost_status = getattr(child, "session_cost_status", None)
+        entry["cost_status"] = (
+            _cost_status if isinstance(_cost_status, str) and _cost_status
+            else "unknown"
+        )
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 

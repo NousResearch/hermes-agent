@@ -10,12 +10,14 @@ on what reaches ``handle_message``.
 """
 from __future__ import annotations
 
+import base64
+from pathlib import Path
 from typing import List
 
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, MessageType
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
@@ -45,6 +47,30 @@ def _dm_payload(text: str) -> dict:
         "sender": {"id": "+15551234567"},
         "content": {"type": "text", "text": text},
         "timestamp": "2026-05-14T19:06:32.000Z",
+    }
+
+
+_PNG_1X1_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhf"
+    "DwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
+
+
+def _group_attachment_payload() -> dict:
+    raw = base64.b64decode(_PNG_1X1_B64)
+    return {
+        "messageId": "grp-media",
+        "space": {"id": "group-guid-xyz", "type": "group", "phone": None},
+        "sender": {"id": "+15551234567"},
+        "content": {
+            "type": "attachment",
+            "name": "label.png",
+            "mimeType": "image/png",
+            "size": len(raw),
+            "data": _PNG_1X1_B64,
+            "encoding": "base64",
+        },
+        "timestamp": "2026-05-14T19:06:33.000Z",
     }
 
 
@@ -82,6 +108,33 @@ async def test_dm_never_gated(monkeypatch: pytest.MonkeyPatch) -> None:
     await adapter._dispatch_inbound(_dm_payload("no wake word here"))
     assert len(captured) == 1
     assert captured[0].text == "no wake word here"
+
+
+@pytest.mark.asyncio
+async def test_group_split_caption_authorizes_later_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(
+        monkeypatch,
+        extra={"require_mention": True, "mixed_event_coalesce_seconds": 0.05},
+    )
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_group_payload("\ufffcHermes read this label"))
+    assert captured == []
+
+    await adapter._dispatch_inbound(_group_attachment_payload())
+
+    assert len(captured) == 1
+    event = captured[0]
+    assert event.text == "read this label"
+    assert event.message_type == MessageType.PHOTO
+    assert event.raw_message["coalescedPhotonEvents"] is True
+    cached = Path(event.media_urls[0])
+    try:
+        assert cached.read_bytes() == base64.b64decode(_PNG_1X1_B64)
+    finally:
+        cached.unlink(missing_ok=True)
 
 
 def test_custom_mention_patterns_from_config(monkeypatch: pytest.MonkeyPatch) -> None:

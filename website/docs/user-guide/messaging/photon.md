@@ -146,6 +146,12 @@ Both keys also accept env vars (`PHOTON_REQUIRE_MENTION`,
 `PHOTON_MENTION_PATTERNS`). This is the same mention-gating model the
 BlueBubbles iMessage channel uses.
 
+Photon may deliver a mixed text-and-attachment bubble as two events. Hermes
+briefly holds a marker-bearing caption so it can combine the caption and media
+into one turn. The default four-second window can be adjusted with
+`mixed_event_coalesce_seconds` under `gateway.platforms.photon` or with
+`PHOTON_MIXED_EVENT_COALESCE_SECONDS`.
+
 ## Start the gateway
 
 ```bash
@@ -243,6 +249,7 @@ Common issues:
 | `PHOTON_ALLOW_ALL_USERS`  | `false`            | Dev only — accept any sender               |
 | `PHOTON_REQUIRE_MENTION`  | `false`            | Require a wake word before responding in groups |
 | `PHOTON_MENTION_PATTERNS` | Hermes wake words  | JSON list / comma / newline regex patterns for group mentions |
+| `PHOTON_MIXED_EVENT_COALESCE_SECONDS` | `4` | Seconds to wait for media after a split attachment caption |
 | `PHOTON_DASHBOARD_HOST`   | `app.photon.codes` | Override the dashboard / device-login host |
 | `PHOTON_SPECTRUM_HOST`    | `spectrum.photon.codes` | Override the Spectrum API host |
 

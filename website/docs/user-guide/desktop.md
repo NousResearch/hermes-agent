@@ -168,7 +168,7 @@ The app also surfaces the broader Hermes management surface so you don't have to
 
 ## Updating
 
-The app checks for updates in the background and offers a one-click update when one is ready.
+The packaged Windows app checks for updates in the background, downloads the signed update, and shows download progress beside the lower-left profile controls. It does not interrupt active work with a restart prompt: a verified update installs silently on the next normal quit. If the new version cannot complete startup health, Desktop automatically restores the hash-verified previous installer and rejects that exact failed version to prevent an update loop. Hermes profiles, sessions, configuration, and other user data remain in place throughout.
 
 The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
 
@@ -366,7 +366,11 @@ npm run dist:linux   # AppImage + deb + rpm
 npm run pack         # unpacked app under release/ (no installer)
 ```
 
-macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+Packaged Windows builds update through GitHub Releases. Desktop checks in the background, downloads and verifies the update, displays progress beside the lower-left profile controls, and installs it silently when you close the app normally. The previous installer remains available until the new renderer passes startup health; failed candidates automatically roll back and the rejected version is not downloaded again.
+
+Maintainers publish Windows updater assets through the manual **Desktop Windows release** GitHub Actions workflow. The package version and release tag must match, Windows signing secrets must be present, and the workflow verifies Authenticode on both executables, requires a certificate-derived runtime publisher identity in packaged `app-update.yml`, and validates the installer, blockmap, and `latest.yml` as one synchronized set before creating provenance. Setting `publish=true` is the explicit public-release approval: it uploads those verified assets to an already-existing draft release, re-verifies the remote asset set, then promotes that draft. It never creates a tag or silently replaces an asset.
+
+macOS signing and notarization use `CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*`; Windows uses `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`.
 
 ### macOS permissions and local rebuilds (TCC)
 

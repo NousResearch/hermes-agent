@@ -279,13 +279,17 @@ declare global {
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
+      signalStartupHealthy: () => Promise<{ error?: string; ok: boolean; promoted?: boolean }>
       getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
         check: () => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
+        getManagedState: () => Promise<DesktopManagedUpdateSnapshot>
+        checkManaged: () => Promise<DesktopManagedUpdateSnapshot>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
+        onManagedState: (callback: (payload: DesktopManagedUpdateSnapshot) => void) => () => void
       }
       uninstall: {
         summary: () => Promise<DesktopUninstallSummary>
@@ -374,6 +378,17 @@ export interface DesktopUninstallResult {
   scriptPath?: string
   error?: string
   message?: string
+}
+
+export type DesktopManagedUpdateStage =
+  'available' | 'checking' | 'disabled' | 'downloaded' | 'downloading' | 'error' | 'idle'
+
+export interface DesktopManagedUpdateSnapshot {
+  checkedAt?: number
+  error?: string
+  percent: number | null
+  stage: DesktopManagedUpdateStage
+  version?: string
 }
 
 export interface DesktopUpdateCommit {

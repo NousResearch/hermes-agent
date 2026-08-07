@@ -25,6 +25,7 @@ import { RootTooltipProvider } from './components/ui/tooltip'
 import { I18nProvider } from './i18n'
 import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
+import { StartupHealthReporter } from './startup-health-reporter'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
@@ -69,7 +70,9 @@ if (winParam === 'overlay') {
                     both freeze for seconds despite the main thread being free.
                     Disabling transitions makes navigate() commit at default priority. */}
                   <HashRouter useTransitions={false}>
-                    <App />
+                    <StartupHealthReporter>
+                      <App />
+                    </StartupHealthReporter>
                   </HashRouter>
                 </RootTooltipProvider>
               </HapticsProvider>

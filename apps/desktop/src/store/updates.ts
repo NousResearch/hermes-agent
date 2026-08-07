@@ -6,6 +6,7 @@
 import { atom } from 'nanostores'
 
 import type {
+  DesktopManagedUpdateSnapshot,
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
   DesktopUpdateProgress,
@@ -47,6 +48,7 @@ export const $updateApply = atom<UpdateApplyState>(IDLE)
 export const $updateChecking = atom<boolean>(false)
 export const $updateOverlayOpen = atom<boolean>(false)
 export const $updateStatus = atom<DesktopUpdateStatus | null>(null)
+export const $managedUpdate = atom<DesktopManagedUpdateSnapshot | null>(null)
 
 // Client and backend are independently updatable; each keeps its own state.
 export const $backendUpdateStatus = atom<DesktopUpdateStatus | null>(null)
@@ -718,7 +720,43 @@ let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let lastFocusAt = 0
 let connectionUnsub: (() => void) | null = null
+let managedStateUnsub: (() => void) | null = null
 let lastConnectionMode: string | undefined
+
+function ingestManagedUpdate(snapshot: DesktopManagedUpdateSnapshot): void {
+  $managedUpdate.set(snapshot)
+}
+
+function managedUpdatesEnabled(): boolean {
+  const snapshot = $managedUpdate.get()
+
+  return snapshot !== null && snapshot.stage !== 'disabled'
+}
+
+async function initializeManagedUpdates(bridge: NonNullable<typeof window.hermesDesktop>['updates']): Promise<void> {
+  try {
+    managedStateUnsub = bridge.onManagedState(ingestManagedUpdate)
+    const snapshot = await bridge.getManagedState()
+    ingestManagedUpdate(snapshot)
+
+    if (snapshot.stage === 'disabled') {
+      void checkUpdates()
+    }
+  } catch {
+    managedStateUnsub?.()
+    managedStateUnsub = null
+    // Older/source-only shells have no packaged feed. Keep the established
+    // source updater as the migration fallback rather than disabling updates.
+    ingestManagedUpdate({ percent: null, stage: 'disabled' })
+    void checkUpdates()
+  }
+}
+
+function checkSourceUpdatesWhenNeeded(): void {
+  if (!managedUpdatesEnabled()) {
+    void checkUpdates()
+  }
+}
 
 /** Wire up background polling + progress streaming. Idempotent. */
 export function startUpdatePoller(): void {
@@ -733,7 +771,7 @@ export function startUpdatePoller(): void {
   }
 
   pollerStarted = true
-  void checkUpdates()
+  void initializeManagedUpdates(bridge)
   void checkBackendUpdates()
   void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
@@ -756,7 +794,7 @@ export function startUpdatePoller(): void {
   window.addEventListener('focus', onFocus)
   backgroundTimer = setInterval(
     () => {
-      void checkUpdates()
+      checkSourceUpdatesWhenNeeded()
       void checkBackendUpdates()
     },
     30 * 60 * 1000
@@ -771,6 +809,8 @@ export function stopUpdatePoller(): void {
 
   connectionUnsub?.()
   connectionUnsub = null
+  managedStateUnsub?.()
+  managedStateUnsub = null
   lastConnectionMode = undefined
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
@@ -784,7 +824,7 @@ function onFocus() {
   }
 
   lastFocusAt = now
-  void checkUpdates()
+  checkSourceUpdatesWhenNeeded()
   void checkBackendUpdates()
   void refreshDesktopVersion()
 }

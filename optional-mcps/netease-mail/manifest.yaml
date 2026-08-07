@@ -1,0 +1,48 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: netease-mail
+category: email
+description: Read, search, send 网易邮箱 (@163.com / @126.com / @yeah.net) via IMAP+SMTP MCP server.
+source: https://github.com/hermes-agent/mcp-imap
+
+# 网易邮箱 (163/126/yeah.net) 同样要用「客户端授权密码」，不能用登录密码。
+# 需在网页版邮箱 → 设置 → POP3/SMTP/IMAP → 开启后获取授权码。
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - "mcp-server-imap==0.2.1"
+  env:
+    IMAP_HOST: imap.163.com
+    IMAP_PORT: "993"
+    SMTP_HOST: smtp.163.com
+    SMTP_PORT: "465"
+
+auth:
+  type: api_key
+  env:
+    - name: NETEASE_MAIL_ADDRESS
+      prompt: "网易邮箱地址（如 xxx@163.com / xxx@126.com / xxx@yeah.net）"
+      required: true
+      secret: false
+    - name: NETEASE_MAIL_AUTHCODE
+      prompt: "网易邮箱客户端授权密码"
+      required: true
+      secret: true
+    - name: NETEASE_MAIL_DOMAIN
+      prompt: "邮箱域名（163 / 126 / yeah）"
+      required: false
+      secret: false
+      default: "163"
+
+post_install: |
+  获取网易邮箱客户端授权密码：
+    1. 登录 https://mail.163.com（或 mail.126.com / mail.yeah.net）
+    2. 顶部菜单 → 设置 → POP3/SMTP/IMAP
+    3. 开启「IMAP/SMTP 服务」→ 手机短信验证 → 得到「客户端授权密码」
+    4. 授权密码填入 NETEASE_MAIL_AUTHCODE
+    5. 若使用 126 或 yeah 域名，NETEASE_MAIL_DOMAIN 填 "126" 或 "yeah"
+       （安装脚本会自动调整 imap./smtp. 主机名）
+    6. 重启 Hermes 会话

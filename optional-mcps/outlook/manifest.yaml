@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: outlook
+category: email
+description: Read, search, send, and manage Microsoft Outlook / Office 365 email via Microsoft Graph MCP.
+source: https://github.com/adamsmaka/mcp-outlook
+
+# Outlook (Microsoft 365 / Hotmail / Live) via community Python MCP server
+# using Microsoft Graph API. OAuth token cached under ~/.mcp-outlook/token.json.
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - "mcp-outlook==0.3.0"
+
+auth:
+  type: oauth
+  provider: microsoft
+  scopes:
+    - Mail.ReadWrite
+    - Mail.Send
+
+post_install: |
+  You need an Azure app registration (free) with delegated permissions
+  Mail.ReadWrite and Mail.Send. Set MCP_OUTLOOK_CLIENT_ID and
+  MCP_OUTLOOK_TENANT_ID (default "common" for consumer Hotmail/Live) in
+  ~/.hermes/.env.
+
+  Full setup:
+    1. https://portal.azure.com → App registrations → New registration
+    2. Redirect URI: http://localhost:8000 (Public client)
+    3. API permissions → Microsoft Graph → Delegated →
+       Mail.ReadWrite, Mail.Send, offline_access
+    4. Grant admin consent (or use Hotmail personal account)
+    5. Copy Application (client) ID → set MCP_OUTLOOK_CLIENT_ID
+    6. Restart Hermes; first run opens browser to sign in

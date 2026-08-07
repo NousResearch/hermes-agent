@@ -144,4 +144,4 @@ Available in `hybrid` and `tools` memory modes:
 
 ## Client Version
 
-Requires `hindsight-client >= 0.6.1`. The plugin auto-upgrades on session start if an older version is detected.
+Requires `hindsight-client == 0.6.1`. The plugin installs the pinned client on session start when an older version is detected and reports a precise conflict when a newer user-site package shadows it.

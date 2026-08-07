@@ -276,9 +276,10 @@ class TestConfig:
         assert provider._recall_types == ["observation"]
 
 
-    def test_observation_scopes_keyword_config(self, provider_with_config):
-        p = provider_with_config(observation_scopes="per_tag")
-        assert p._observation_scopes == "per_tag"
+    @pytest.mark.parametrize("scope", ["per_tag", "shared"])
+    def test_observation_scopes_keyword_config(self, provider_with_config, scope):
+        p = provider_with_config(observation_scopes=scope)
+        assert p._observation_scopes == scope
 
 
     def test_custom_config_values(self, provider_with_config):

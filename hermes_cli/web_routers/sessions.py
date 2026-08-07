@@ -549,6 +549,26 @@ async def get_session_stats(profile: Optional[str] = None):
         db.close()
 
 
+@manage_router.get("/api/sessions/{session_id}/children")
+async def get_session_children_endpoint(
+    session_id: str,
+    include_stale: bool = False,
+    profile: Optional[str] = None,
+):
+    """Grouped child sessions for the WebUI parent/child drawer."""
+    db = _open_session_db_for_profile(profile)
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        grouped = db.get_session_children(sid, include_stale=include_stale)
+        if grouped is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return grouped
+    finally:
+        db.close()
+
+
 @manage_router.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile, read_only=True)

@@ -98,14 +98,89 @@ class TestUpdateFromResponse:
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
+    def test_pairs_noted_rough_estimate_with_fitting_real_usage(self, compressor):
+        """note_request_rough_estimate() + a fitting response must anchor the
+        defer baseline even when no compression ever ran — this is what gives
+        fresh sessions a (rough, real) pair before their first compaction."""
+        compressor.note_request_rough_estimate(120_000)
+        compressor.update_from_response({"prompt_tokens": 60_000})
+
+        assert compressor.last_real_prompt_tokens == 60_000
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 120_000
+        # Consumed: a later usage-bearing response without a fresh note keeps
+        # the previous pair instead of re-pairing against a stale estimate.
+        assert compressor._pending_request_rough_tokens == 0
+
+    def test_post_compression_pairing_wins_over_noted_estimate(self, compressor):
+        """Right after a compaction the post-compression rough count is the
+        authoritative baseline (#36718); a stale pre-compression note must not
+        displace it."""
+        compressor.note_request_rough_estimate(120_000)
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_compression_rough_tokens = 40_000
+        compressor.update_from_response({"prompt_tokens": 30_000})
+
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 40_000
+
+    def test_usage_less_response_preserves_pending_note(self, compressor):
+        """Transports that report usage separately send usage-less responses
+        first; the pending pair must survive until real usage arrives."""
+        compressor.note_request_rough_estimate(120_000)
+        compressor.update_from_response({})
+
+        assert compressor._pending_request_rough_tokens == 120_000
+
+    def test_over_threshold_real_usage_clears_pending_note(self, compressor):
+        compressor.note_request_rough_estimate(120_000)
+        compressor.update_from_response({"prompt_tokens": 90_000})
+
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 0
+        assert compressor._pending_request_rough_tokens == 0
+
 class TestPreflightDeferral:
 
-    def test_does_not_defer_when_rough_growth_is_large(self, compressor):
+    def test_defers_while_projected_real_usage_fits(self, compressor):
+        """Large rough growth alone must not trigger compaction: with real
+        usage at 50K and 10K of rough growth since that reading, projected
+        real usage is 60K — far under the 85K threshold. The old fixed 5%
+        growth tolerance compacted here at ~59% of the real window (CJK /
+        replay-blob overcount churn)."""
         compressor.threshold_tokens = 85_000
         compressor.last_real_prompt_tokens = 50_000
         compressor.last_rough_tokens_when_real_prompt_fit = 90_000
 
+        assert compressor.should_defer_preflight_to_real_usage(100_000) is True
+
+    def test_does_not_defer_when_projected_real_usage_crosses_threshold(self, compressor):
+        """Projection = last real + rough growth. 80K real + 6K growth = 86K
+        >= 85K threshold: compression must run."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 80_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(96_000) is False
+
+    def test_does_not_defer_without_a_baseline(self, compressor):
+        """No synchronized (rough, real) pair yet — fall back to trusting the
+        rough estimate (conservative: compress)."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 50_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 0
+        compressor.last_compression_rough_tokens = 0
+
         assert compressor.should_defer_preflight_to_real_usage(100_000) is False
+
+    def test_defer_does_not_ratchet_baseline(self, compressor):
+        """The baseline is refreshed only by update_from_response() pairing.
+        Deferring must not advance it: without a fresh real reading, a
+        ratcheted baseline would shrink apparent growth and defer on stale
+        data."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 50_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(100_000) is True
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
 
 
     def test_defers_immediately_after_compaction_with_stale_real_prompt(self, compressor):

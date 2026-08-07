@@ -1358,6 +1358,7 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._last_compression_telemetry = None
         self._active_compression_telemetry = None
@@ -1629,6 +1630,7 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._last_compression_telemetry = None
         self._active_compression_telemetry = None
@@ -2106,6 +2108,7 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.last_compression_rough_tokens = 0
+        self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         # Strikes were judged against the PREVIOUS threshold; a recomputed
         # trigger invalidates them. Keep the durable copy in sync so a
@@ -2397,6 +2400,7 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
 
         self.summary_model = summary_model_override or ""
@@ -2485,6 +2489,17 @@ class ContextCompressor(ContextEngine):
             if self.last_prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
+                elif self._pending_request_rough_tokens > 0:
+                    # Pair the provider's real prompt count with the rough
+                    # estimate of the request that produced it (recorded via
+                    # note_request_rough_estimate just before the call). This
+                    # keeps the defer baseline synchronized with real usage on
+                    # EVERY fitting response, not only right after a
+                    # compaction — without it, sessions that never compressed
+                    # have no baseline and preflight fires on the raw rough
+                    # estimate alone, which overcounts CJK text and provider
+                    # replay blobs severalfold.
+                    self.last_rough_tokens_when_real_prompt_fit = self._pending_request_rough_tokens
                 # Any real provider reading below the trigger proves the prompt
                 # fits again. Clear the real-usage effectiveness latch even
                 # when this response was not immediately after compaction. The
@@ -2493,6 +2508,7 @@ class ContextCompressor(ContextEngine):
                 self._record_ineffective_compression_verdict(0)
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
+            self._pending_request_rough_tokens = 0
 
             # Anti-thrashing verdict, judged HERE because this is the only place
             # that sees the provider's real prompt count for the just-compacted
@@ -2543,16 +2559,45 @@ class ContextCompressor(ContextEngine):
             return
         self.last_prompt_tokens = snapshot
 
+    def note_request_rough_estimate(self, rough_tokens: int) -> None:
+        """Record the rough estimate of the request about to be sent.
+
+        ``update_from_response()`` pairs this with the provider's real
+        ``prompt_tokens`` for the same request, giving
+        ``should_defer_preflight_to_real_usage()`` a synchronized
+        (rough, real) anchor to project real usage from rough growth.
+        Usage-less responses do not consume the pending value, so a
+        transport that reports usage separately still pairs correctly.
+        """
+        try:
+            self._pending_request_rough_tokens = max(0, int(rough_tokens))
+        except (TypeError, ValueError):
+            self._pending_request_rough_tokens = 0
+
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """Return True when a high rough preflight estimate is known-noisy.
 
         ``estimate_request_tokens_rough(..., tools=...)`` intentionally
-        overestimates schema-heavy requests so Hermes compresses before a
-        provider rejects the payload. After a successful compressed API call,
-        though, provider ``prompt_tokens`` are a better signal than repeating
-        compaction from the same rough schema overhead. Defer only while the
-        rough estimate has grown modestly since a request the provider proved
-        fit under the threshold.
+        overestimates so Hermes compresses before a provider rejects the
+        payload — but the margin is not a fixed percentage: CJK text is
+        counted at ~1.7x its o200k cost and Responses-mode reasoning replay
+        blobs at several times their billed cost, so heavy sessions can show
+        a rough estimate 2-3x real usage and compact at 35-55% of the real
+        window (churn: each pass stalls the turn for minutes and discards
+        detail).
+
+        Instead of tolerating a fixed rough-growth allowance, project real
+        usage from the last synchronized (rough, real) pair::
+
+            projected_real = last_real + (rough_now - rough_at_last_real)
+
+        Rough growth is itself an overestimate of real growth (every content
+        class is counted at >= its tokenizer cost), so the projection is an
+        upper bound on real usage and deferring below the threshold is safe.
+        Compression fires when the projection — not the raw estimate —
+        crosses the threshold. Should a pathological delta still slip past
+        the threshold, the provider's context-overflow error handler
+        compacts with the authoritative signal, as before.
         """
         if rough_tokens < self.threshold_tokens:
             return False
@@ -2577,13 +2622,13 @@ class ContextCompressor(ContextEngine):
         if baseline <= 0:
             return False
 
+        # No baseline ratchet here: the (rough, real) pair is refreshed by
+        # update_from_response() on every fitting response. Advancing the
+        # rough baseline without a matching real reading would shrink
+        # apparent growth and defer on stale data — the unsafe direction.
         growth = max(0, rough_tokens - baseline)
-        tolerated_growth = max(4096, int(self.threshold_tokens * 0.05))
-        if growth > tolerated_growth:
-            return False
-
-        self.last_rough_tokens_when_real_prompt_fit = max(baseline, rough_tokens)
-        return True
+        projected_real = self.last_real_prompt_tokens + growth
+        return projected_real < self.threshold_tokens
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.

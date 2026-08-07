@@ -76,7 +76,10 @@ def test_board_empty(client):
         assert expected in names, f"missing column {expected}: {names}"
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
-    assert data["assignees"] == []
+    # Assignee lanes union task-holders with profiles on disk, so the
+    # implicit `default` profile that the fixture's HERMES_HOME creates is
+    # present even on an empty board (no task-holders yet).
+    assert data["assignees"] == ["default"]
     assert data["latest_event_id"] == 0
 
 

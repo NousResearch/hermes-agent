@@ -568,6 +568,49 @@ class TestTerminalToolGatewayLifecycleGuard:
 class TestLifecycleGuardModule:
     """Direct tests for cron.lifecycle_guard.check_gateway_lifecycle."""
 
+    def test_dot_operator_sourced_script_is_scanned(self, tmp_path):
+        """`. ./script.sh` must reach the referenced-script scan.
+
+        The dot operator and `source` are the same POSIX builtin, but the
+        executable test compared only `Path(executable).name` — and
+        `Path(".").name` is the empty string, so `source` was caught while a
+        bare `.` slipped through and the sourced script was never scanned.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(f". {script}")
+            is True
+        )
+
+    def test_source_builtin_sourced_script_is_scanned(self, tmp_path):
+        """The `source` spelling must stay blocked (it already was)."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(f"source {script}")
+            is True
+        )
+
+    def test_dot_operator_clean_script_not_blocked(self, tmp_path):
+        """Widening the dot check must not false-block an innocent sourced
+        script — e.g. sourcing a venv activate or an env file."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        script = tmp_path / "activate.sh"
+        script.write_text("#!/bin/bash\nexport PATH=/usr/bin:$PATH\n")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(f". {script}")
+            is False
+        )
+
     def test_prompt_with_command_raises(self):
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         with pytest.raises(GatewayLifecycleBlocked) as exc:

@@ -172,6 +172,13 @@ def build_top_level_parser():
         default=None,
         help="Resume a previous session by ID or title",
     )
+    _inherited_flag(
+        parser,
+        "--no-streaming",
+        action="store_true",
+        default=False,
+        help="Disable streaming output; wait for the full response before displaying (CLI only)",
+    )
     parser.add_argument(
         "--no-restore-cwd",
         action="store_true",
@@ -406,6 +413,13 @@ def build_top_level_parser():
         default=None,
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--no-streaming",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Disable streaming output; wait for the full response before displaying (CLI only)",
     )
     _inherited_flag(
         chat_parser,

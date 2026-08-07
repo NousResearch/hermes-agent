@@ -164,6 +164,41 @@ class TestBuildApiKwargsOpenRouter:
         assert "codex_reasoning_items" in messages[1]
         assert messages[1]["tool_calls"][0]["extra_content"] == {"thought_signature": "opaque"}
 
+    def test_replay_preserves_reasoning_details_end_to_end(self, monkeypatch):
+        """OpenRouter continuation state survives replay and transport cleanup."""
+        agent = _make_agent(monkeypatch, "openrouter")
+        reasoning_details = [
+            {
+                "type": "reasoning.encrypted",
+                "signature": "opaque-signature",
+                "encrypted_content": "opaque-provider-state",
+            }
+        ]
+        stored = {
+            "role": "assistant",
+            "content": "visible answer",
+            "reasoning": "local scratchpad",
+            "reasoning_content": "provider scratchpad",
+            "reasoning_details": reasoning_details,
+            "codex_reasoning_items": [
+                {"type": "reasoning", "encrypted_content": "codex-only"}
+            ],
+        }
+        replay = dict(stored)
+
+        agent._copy_reasoning_content_for_api(stored, replay)
+        kwargs = agent._build_api_kwargs(
+            [replay, {"role": "user", "content": "continue"}]
+        )
+
+        outgoing = kwargs["messages"][0]
+        assert outgoing["reasoning_details"] == reasoning_details
+        assert "reasoning" not in outgoing
+        assert "reasoning_content" not in outgoing
+        assert "codex_reasoning_items" not in outgoing
+        assert stored["reasoning"] == "local scratchpad"
+        assert stored["codex_reasoning_items"][0]["encrypted_content"] == "codex-only"
+
     def test_keeps_extra_content_for_gemini_target(self, monkeypatch):
         """Gemini-family targets must keep extra_content (thought_signature) —
         Gemini 3 thinking models 400 without it replayed on the next turn.
@@ -470,6 +505,59 @@ class TestBuildApiKwargsCodex:
         # Responses format has "name" at top level, not nested under "function"
         assert "name" in tools[0]
         assert "function" not in tools[0]
+
+    def test_native_replay_items_survive_policy_and_transport(self, monkeypatch):
+        """Codex Responses keeps its encrypted reasoning and message items."""
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        stored = {
+            "role": "assistant",
+            "content": "visible answer",
+            "reasoning": "local scratchpad",
+            "reasoning_content": "chat-completions scratchpad",
+            "codex_reasoning_items": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "encrypted_content": "encrypted-codex-state",
+                }
+            ],
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "id": "msg_1",
+                    "phase": "final_answer",
+                    "content": [
+                        {"type": "output_text", "text": "visible answer"}
+                    ],
+                }
+            ],
+        }
+        replay = dict(stored)
+
+        agent._copy_reasoning_content_for_api(stored, replay)
+        kwargs = agent._build_api_kwargs(
+            [replay, {"role": "user", "content": "continue"}]
+        )
+
+        reasoning_item = next(
+            item for item in kwargs["input"] if item.get("type") == "reasoning"
+        )
+        message_item = next(
+            item
+            for item in kwargs["input"]
+            if item.get("type") == "message" and item.get("role") == "assistant"
+        )
+        assert reasoning_item["encrypted_content"] == "encrypted-codex-state"
+        assert message_item["id"] == "msg_1"
+        assert stored["codex_reasoning_items"][0]["id"] == "rs_1"
+        assert stored["codex_message_items"][0]["id"] == "msg_1"
 
 
 # ── Message conversion tests ────────────────────────────────────────────────
@@ -919,6 +1007,5 @@ class TestReasoningEffortDefaults:
                             base_url="https://chatgpt.com/backend-api/codex")
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["reasoning"]["effort"] == "medium"
-
 
 

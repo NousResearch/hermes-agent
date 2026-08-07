@@ -721,6 +721,11 @@ def apply_reasoning_content_policy(
     if source_msg.get("role") != "assistant":
         return
 
+    def strip_generic_replay() -> None:
+        """Remove generic scratchpad fields, not provider continuation state."""
+        api_msg.pop("reasoning", None)
+        api_msg.pop("reasoning_content", None)
+
     # 1. Explicit reasoning_content already set.
     #
     # When the active provider enforces the thinking-mode echo-back
@@ -742,7 +747,7 @@ def apply_reasoning_content_policy(
     existing = source_msg.get("reasoning_content")
     if isinstance(existing, str):
         if not needs_thinking_pad:
-            api_msg.pop("reasoning_content", None)
+            strip_generic_replay()
         elif existing == "":
             api_msg["reasoning_content"] = " "
         else:
@@ -780,7 +785,7 @@ def apply_reasoning_content_policy(
         if needs_thinking_pad:
             api_msg["reasoning_content"] = normalized_reasoning
         else:
-            api_msg.pop("reasoning_content", None)
+            strip_generic_replay()
         return
 
     # 4. DeepSeek / Kimi thinking mode: all assistant messages need
@@ -797,7 +802,7 @@ def apply_reasoning_content_policy(
 
     # 5. reasoning_content was present but not a string (e.g. None after
     # context compaction).  Don't pass null to the API.
-    api_msg.pop("reasoning_content", None)
+    strip_generic_replay()
 
 
 def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:

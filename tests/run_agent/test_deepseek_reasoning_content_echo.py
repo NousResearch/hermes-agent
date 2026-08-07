@@ -122,6 +122,37 @@ class TestCopyReasoningContentForApi:
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert "reasoning_content" not in api_msg
 
+    def test_local_qwen_strips_historical_reasoning_replay(self) -> None:
+        """Local Qwen thinking may store reasoning for audit/UI, but must not
+        replay historical scratchpad fields into every next request.
+
+        Provider-native continuation envelopes are separate contracts and
+        must remain untouched by this generic policy.
+        """
+        agent = _make_agent(
+            provider="custom",
+            model="mlx-community/Qwen3.6-35B-A3B-4bit-DWQ",
+            base_url="http://127.0.0.1:10240/v1",
+        )
+        source = {
+            "role": "assistant",
+            "content": "visible answer",
+            "reasoning": "long prior scratchpad",
+            "reasoning_content": "long provider scratchpad",
+            "reasoning_details": [{"type": "reasoning.summary", "summary": "hidden"}],
+            "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "blob"}],
+            "codex_message_items": [{"type": "message", "id": "msg_1"}],
+        }
+        api_msg = dict(source)
+
+        agent._copy_reasoning_content_for_api(source, api_msg)
+
+        assert api_msg["content"] == "visible answer"
+        for key in ("reasoning", "reasoning_content"):
+            assert key not in api_msg
+        assert api_msg["reasoning_details"] == source["reasoning_details"]
+        assert api_msg["codex_reasoning_items"] == source["codex_reasoning_items"]
+        assert api_msg["codex_message_items"] == source["codex_message_items"]
 
 
 

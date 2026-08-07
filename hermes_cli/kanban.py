@@ -1829,13 +1829,23 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
             conn, args.task_id,
             reason=getattr(args, "reason", None),
         )
+        task = kb.get_task(conn, args.task_id) if ok else None
     if not ok:
         print(
             f"cannot reclaim {args.task_id} (not running or unknown id)",
             file=sys.stderr,
         )
         return 1
-    print(f"Reclaimed {args.task_id}")
+    status = task.status if task else None
+    if status in ("blocked", "triage", "scheduled"):
+        # A reclaim releases the claim; it does not promote. Say so, or the
+        # operator assumes the card is queued and waits for a worker forever.
+        print(
+            f"Reclaimed {args.task_id} (status held at {status!r} — "
+            f"run 'hermes kanban unblock {args.task_id}' to re-queue it)"
+        )
+    else:
+        print(f"Reclaimed {args.task_id}" + (f" ({status})" if status else ""))
     return 0
 
 

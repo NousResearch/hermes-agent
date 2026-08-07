@@ -3271,6 +3271,22 @@ def create_task(
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
+                if task_status == "blocked":
+                    # Parking a card in blocked at creation time is an explicit
+                    # operator decision (the documented purpose of
+                    # ``--initial-status blocked`` is the human-ops gate). Emit
+                    # the same "blocked" event ``block_task`` emits so
+                    # ``_has_sticky_block`` treats it as sticky — otherwise
+                    # ``recompute_ready`` auto-promotes a parentless blocked
+                    # card to ready on the next dispatcher tick and a worker
+                    # gets spawned, defeating the flag entirely.
+                    # ``unblock_task`` remains the legitimate exit.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "created with initial_status=blocked"},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -4612,6 +4628,12 @@ def reclaim_task(
     when an operator wants to abort a running worker without waiting
     for the TTL to expire (e.g. after seeing a hallucination warning).
 
+    A reclaim releases a *claim*; it never promotes. Rows parked in
+    ``blocked`` / ``triage`` / ``scheduled`` keep that status and only shed
+    their stale claim residue — promoting them here would feed them straight
+    back to the dispatcher and defeat the block. Use :func:`unblock_task` or
+    :func:`promote_task` to actually re-queue one.
+
     Returns True if a reclaim happened, False if the task isn't in a
     reclaimable state (not running, or doesn't exist).
     """
@@ -4628,13 +4650,27 @@ def reclaim_task(
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
+    # A reclaim RELEASES A CLAIM; it is not a promotion. Laundering a
+    # ``blocked`` / ``triage`` / ``scheduled`` row into ``ready`` here hands it
+    # straight to the dispatcher, which claims and spawns a worker on the next
+    # tick — silently defeating ``--initial-status blocked``, a worker's
+    # ``review-required`` handoff, and the spawn-failure circuit breaker alike.
+    # Those rows keep their status and only lose the stale claim residue.
+    # Reclaiming a blocked card is also invisible to ``_has_sticky_block`` (it
+    # emits ``reclaimed``, never ``unblocked``), so the pre-fix path produced a
+    # genuinely incoherent row: ``status='ready'`` while still sticky-blocked,
+    # which ``recompute_ready`` and the dispatcher then disagree about.
+    # ``unblock_task`` / ``promote_task`` remain the only ways out of blocked.
+    held_status = row["status"]
+    preserve_status = held_status in ("blocked", "triage", "scheduled")
     with write_txn(conn):
         cur = conn.execute(
-            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "UPDATE tasks SET status = ?, claim_lock = NULL, "
             "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
+            "WHERE id = ? AND status IN ('running', 'ready', 'blocked', "
+            "'triage', 'scheduled') "
             "AND claim_lock IS ?",
-            (task_id, prev_lock),
+            (held_status if preserve_status else "ready", task_id, prev_lock),
         )
         if cur.rowcount != 1:
             return False
@@ -4652,6 +4688,10 @@ def reclaim_task(
             "reason": reason,
             "prev_lock": prev_lock,
         }
+        if preserve_status:
+            # Make the non-promotion explicit in board history so an operator
+            # who reclaims a blocked card can see why it did NOT go ready.
+            payload["status_preserved"] = held_status
         payload.update(termination)
         _append_event(
             conn, task_id, "reclaimed",

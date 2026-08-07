@@ -2010,7 +2010,7 @@ function Invoke-ProcessWithWallClockTimeout {
     # $null (PowerShell issues #20400 / #5421). Touching .Handle forces the
     # underlying handle open, which is what WaitForExit() and .ExitCode
     # need to work. Harmless no-op on hosts without the bug.
-    $null = $proc.Handle
+    try { $null = $proc.Handle } catch { }
     $exited = $proc.WaitForExit($TimeoutSec * 1000)
     if (-not $exited) {
         # Kill the whole tree rooted at $proc, not just $proc itself.

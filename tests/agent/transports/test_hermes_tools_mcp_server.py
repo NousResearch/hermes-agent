@@ -9,6 +9,8 @@ build helper assembles a server when the SDK is present.
 from __future__ import annotations
 
 import inspect
+import sys
+from types import ModuleType
 from typing import get_args
 
 from agent.transports.hermes_tools_mcp_server import (
@@ -107,6 +109,114 @@ class TestModuleSurface:
             f"because codex has built-in equivalents: {leaked}"
         )
 
+    def test_expected_hermes_specific_tools_listed(self):
+        """The Hermes-specific tools should be present so users on the
+        codex runtime keep access to them."""
+        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+        for required in (
+            "web_search",
+            "web_extract",
+            "browser_navigate",
+            "vision_analyze",
+            "image_generate",
+            "skill_view",
+        ):
+            assert required in EXPOSED_TOOLS, f"missing {required!r}"
+
+    def test_agent_loop_tools_not_exposed(self):
+        """delegate_task / memory / session_search / todo require the
+        running AIAgent context to dispatch, so a stateless MCP callback
+        can't drive them. They must NOT be in EXPOSED_TOOLS."""
+        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+        for agent_loop_tool in ("delegate_task", "memory", "session_search", "todo"):
+            assert agent_loop_tool not in EXPOSED_TOOLS, (
+                f"{agent_loop_tool!r} requires the agent loop context "
+                "and can't be reached through a stateless MCP callback"
+            )
+
+    def test_server_instructions_match_exposed_tool_surface(self, monkeypatch):
+        """MCP instructions must not advertise intentionally excluded tools."""
+        from agent.transports import hermes_tools_mcp_server as m
+
+        captured = {}
+
+        class FakeFastMCP:
+            def __init__(self, name, instructions):
+                captured["name"] = name
+                captured["instructions"] = instructions
+
+            def add_tool(self, *args, **kwargs):
+                return None
+
+        mcp_module = ModuleType("mcp")
+        server_module = ModuleType("mcp.server")
+        fastmcp_module = ModuleType("mcp.server.fastmcp")
+        fastmcp_module.FastMCP = FakeFastMCP
+
+        model_tools_module = ModuleType("model_tools")
+        model_tools_module.get_tool_definitions = lambda quiet_mode=True: []
+        model_tools_module.handle_function_call = lambda *args, **kwargs: ""
+
+        monkeypatch.setitem(sys.modules, "mcp", mcp_module)
+        monkeypatch.setitem(sys.modules, "mcp.server", server_module)
+        monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_module)
+        monkeypatch.setitem(sys.modules, "model_tools", model_tools_module)
+
+        m._build_server()
+
+        instructions = captured["instructions"].lower()
+        for unavailable in (
+            "subagent delegation",
+            "persistent memory",
+            "cross-session search",
+            "delegate_task",
+            "session_search",
+        ):
+            assert unavailable not in instructions
+        for available in (
+            "web search",
+            "browser automation",
+            "vision",
+            "image generation",
+            "skills",
+        ):
+            assert available in instructions
+
+    def test_kanban_worker_tools_exposed(self):
+        """Kanban workers run as `hermes chat -q` subprocesses; if they
+        come up on the codex_app_server runtime, the worker can do the
+        actual work via codex's shell but needs the kanban tools through
+        the MCP callback to report back to the kernel. Without these
+        tools available, the worker would hang at completion time."""
+        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+        # Worker handoff tools — every dispatched worker uses at least
+        # one of {complete, block, comment} to close out its task.
+        for worker_tool in (
+            "kanban_complete",
+            "kanban_block",
+            "kanban_comment",
+            "kanban_heartbeat",
+        ):
+            assert worker_tool in EXPOSED_TOOLS, (
+                f"{worker_tool!r} missing from codex callback — kanban "
+                "workers on codex_app_server runtime would hang"
+            )
+
+    def test_kanban_orchestrator_tools_exposed(self):
+        """Orchestrator agents need to dispatch new tasks, query the
+        board, and unblock/link tasks. Exposed so an orchestrator on
+        codex_app_server can do its job."""
+        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+        for orch_tool in (
+            "kanban_create",
+            "kanban_show",
+            "kanban_list",
+            "kanban_unblock",
+            "kanban_link",
+        ):
+            assert orch_tool in EXPOSED_TOOLS, (
+                f"{orch_tool!r} missing from codex callback"
+            )
 
 
 

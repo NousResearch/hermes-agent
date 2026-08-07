@@ -2612,9 +2612,21 @@ def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
         return []
 
     candidates: list[str] = []
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if entry.startswith("/mnt/"):
-            candidates.append(entry)
+    # NOTE: this function intentionally does NOT scrape every /mnt/ entry
+    # from the current shell's PATH. A prior version did, which persisted
+    # whatever happened to be on PATH at `hermes gateway install` time --
+    # not just Windows system tool directories, but any /mnt/ path the
+    # user's shell had (Desktop app install dirs, git, node, a venv, etc.).
+    # Those extra entries are exercised on every PATH resolution the
+    # (long-running, systemd-managed) gateway process does, and each one
+    # is a Plan 9 filesystem round-trip into the Windows side of WSL.
+    # Accumulated over weeks, that traffic can exceed WSL's Plan 9 service
+    # tolerance and trigger a `p9io AcceptAsync` disconnect that crashes
+    # the whole WSL VM -- taking the gateway down with it in a restart
+    # loop (issue #73163). The hardcoded system paths below, together
+    # with which() resolution (which searches the real PATH itself and
+    # needs no scraping here), already cover every path the gateway
+    # actually needs to invoke powershell.exe/cmd.exe/etc.
 
     for executable in ("powershell.exe", "cmd.exe", "explorer.exe", "wsl.exe"):
         resolved = shutil.which(executable)

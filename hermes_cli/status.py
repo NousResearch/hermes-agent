@@ -17,6 +17,7 @@ from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
+from utils import is_truthy_value
 from hermes_cli.nous_account import (
     format_nous_portal_entitlement_message,
     get_nous_portal_account_info,
@@ -504,11 +505,31 @@ def show_status(args):
         "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
         "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
         "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
+        # Env var names mirror gateway/config.py's ingestion, not a guess:
+        # Matrix and Mattermost come from PLATFORM_TOKEN_ENV_NAMES, and Matrix
+        # additionally accepts MATRIX_PASSWORD in place of the access token.
+        "Matrix": ("MATRIX_ACCESS_TOKEN", "MATRIX_HOME_CHANNEL"),
+        "Mattermost": ("MATTERMOST_TOKEN", "MATTERMOST_HOME_CHANNEL"),
+        "Home Assistant": ("HASS_TOKEN", None),
     }
+
+    # Flag-style vars are parsed, not merely tested for presence: the gateway
+    # reads them through is_truthy_value(), so ``WHATSAPP_ENABLED=false`` is
+    # disabled even though the string is non-empty. Treating them as present
+    # reported the opposite of the truth.
+    truthy_flag_vars = {"WHATSAPP_ENABLED"}
+    # Platforms whose credential has an accepted alternative.
+    alt_credential_vars = {"MATRIX_ACCESS_TOKEN": "MATRIX_PASSWORD"}
 
     for name, (token_var, home_var) in platforms.items():
         token = os.getenv(token_var, "")
-        has_token = bool(token)
+        if token_var in truthy_flag_vars:
+            has_token = is_truthy_value(token)
+        else:
+            has_token = bool(token)
+            alt_var = alt_credential_vars.get(token_var)
+            if not has_token and alt_var:
+                has_token = bool(os.getenv(alt_var, ""))
         
         home_channel = ""
         if home_var:
@@ -521,7 +542,7 @@ def show_status(args):
         if home_channel:
             status += f" (home: {home_channel})"
         
-        print(f"  {name:<12}  {check_mark(has_token)} {status}")
+        print(f"  {name:<15}  {check_mark(has_token)} {status}")
 
     # Plugin-registered platforms
     try:

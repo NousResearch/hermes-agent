@@ -8180,14 +8180,22 @@ def run_conversation(
                     messages.append({
                         "role": "user",
                         "content": (
-                            "A previous assistant message in this same turn was generated while "
-                            "tool calls were running, but it was not shown to the user. Review the "
-                            "hidden text and draft final response below. If the hidden text contains "
-                            "user-facing facts, numbers, instructions, or decisions that the user "
-                            "still needs, include them in your next response. If it was only progress "
-                            "narration or is already fully covered, do not repeat it.\n\n"
-                            f"Hidden assistant text:\n{undelivered_interim}\n\n"
-                            f"Draft final response:\n{final_response}"
+                            "[System: internal reconciliation — the user sees none of this. "
+                            "An assistant message generated while tool calls were running was "
+                            "never delivered to the user, and the draft final response below "
+                            "has not been sent either. Your next message replaces the draft "
+                            "and is delivered to the user verbatim as the actual reply.\n\n"
+                            "Write the complete, final user-facing reply now: start from the "
+                            "draft and merge in any user-facing facts, numbers, instructions, "
+                            "or decisions from the undelivered text that the user still "
+                            "needs; skip anything that was only progress narration. If the "
+                            "draft already covers everything, repeat the draft verbatim.\n\n"
+                            "Never respond ABOUT the draft or this check — no verdicts like "
+                            "'the draft is accurate', 'already shown to the user', or 'no "
+                            "changes needed', and no mention of drafts, reviews, or hidden "
+                            "messages. Output only the reply itself.\n\n"
+                            f"Undelivered assistant text:\n{undelivered_interim}\n\n"
+                            f"Draft final response:\n{final_response}]"
                         ),
                         "_undelivered_interim_synthetic": True,
                     })

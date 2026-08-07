@@ -845,6 +845,10 @@ def _mandatory_aslr_enabled() -> "bool | None":
                 "(Get-ProcessMitigation -System).Aslr.ForceRelocateImages.ToString()",
             ],
             capture_output=True,
+            # Detach from the TUI gateway's stdio pipe. On Windows an inherited
+            # stdin handle can corrupt the parent's pipe state and surface as
+            # OSError(EINVAL) on the next gateway readline (#78820).
+            stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace",
             timeout=10,
             creationflags=windows_hide_flags(),
@@ -911,6 +915,9 @@ def _bash_starts(bash: str) -> bool:
         result = subprocess.run(
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
             capture_output=True,
+            # Same stdin detach as _mandatory_aslr_enabled — Git Bash/MSYS
+            # probes must not inherit the TUI gateway command pipe (#78820).
+            stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace",
             timeout=15,
             creationflags=windows_hide_flags() if _IS_WINDOWS else 0,

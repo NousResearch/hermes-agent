@@ -590,6 +590,12 @@ DEFAULT_CONFIG = {
             "max_web_searches": 50,   # max web_search calls per turn (0 = unlimited)
             "max_subagents": 50,      # max subagents spawned per turn (0 = unlimited)
         },
+        # Extend the built-in idempotent/mutating tool classifications (#71585).
+        # Entries here are UNIONed with the hard-coded sets in
+        # agent/tool_guardrails.py; they never replace built-in classifications.
+        # Useful for MCP tools whose semantics the user wants to declare.
+        "idempotent_tools": [],   # e.g. ["mcp__myserver__search"]
+        "mutating_tools": [],     # e.g. ["mcp__myserver__delete"]
     },
 
     "compression": {

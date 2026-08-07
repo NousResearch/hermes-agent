@@ -403,6 +403,15 @@ tool_loop_guardrails:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+  # Optional: declare extra tool names that the loop guardrail should treat as
+  # idempotent (safe to repeat, e.g. read-only MCP tools) or mutating. These
+  # EXTEND the built-in sets — they do not replace them — so built-in tools
+  # keep their default classification. Useful for custom/plugin tools such as
+  # `mcp__myserver__search` that the built-in list does not know about (#71585).
+  # idempotent_tools:
+  #   - mcp__myserver__search
+  # mutating_tools:
+  #   - mcp__myserver__delete
 
 # =============================================================================
 # Context Compression (Auto-shrinks long conversations)

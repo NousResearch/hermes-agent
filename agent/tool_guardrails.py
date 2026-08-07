@@ -122,6 +122,12 @@ class ToolCallGuardrailConfig:
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
             ),
+            idempotent_tools=_tool_name_set(
+                data.get("idempotent_tools"), defaults.idempotent_tools
+            ),
+            mutating_tools=_tool_name_set(
+                data.get("mutating_tools"), defaults.mutating_tools
+            ),
             loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")),
         )
 
@@ -622,6 +628,23 @@ def _subagent_spawn_count(args: Mapping[str, Any]) -> int:
     if isinstance(tasks, list) and tasks:
         return len(tasks)
     return 1
+
+
+def _tool_name_set(value: Any, default: frozenset[str]) -> frozenset[str]:
+    """Merge user-declared tool names with the built-in default set.
+
+    config.yaml entries EXTEND the curated defaults rather than replacing
+    them, so declaring one custom read-only tool keeps every built-in
+    idempotent/mutating tool intact (#71585). Missing or malformed values
+    (anything that is not a list/tuple/set of names, e.g. a bare string)
+    fall back to the default unchanged.
+    """
+    if value is None or isinstance(value, str):
+        return default
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return default
+    extra = frozenset(str(name).strip() for name in value if str(name).strip())
+    return default | extra
 
 
 def _sha256(value: str) -> str:

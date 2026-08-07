@@ -1630,6 +1630,22 @@ A single `delegate_task` batch counts each task toward `max_subagents` (a batch 
 
 This mirrors Claude Code's per-session WebSearch and subagent caps (v2.1.212), which also default to 200 and reset on `/clear`.
 
+### Custom tool classifications
+
+The guardrail engine ships with built-in lists of idempotent (read-only) and mutating tools. For MCP or custom tools whose semantics you want to declare explicitly, extend those lists in your config:
+
+```yaml
+tool_loop_guardrails:
+  idempotent_tools:
+    - mcp__myserver__search
+    - mcp__myserver__lookup
+  mutating_tools:
+    - mcp__myserver__delete
+    - mcp__myserver__write
+```
+
+Entries are **unioned** with the built-in sets — they never replace the defaults. Declaring a tool as idempotent means repeated identical successful results will trigger the no-progress guardrail; declaring it as mutating exempts it from that check. Bare strings and non-list values are silently ignored (the built-in defaults remain).
+
 ## TTS Configuration
 
 ```yaml

@@ -142,20 +142,18 @@ def _should_skip_model_call_for_reference_handoff(
 
 
 def _final_response_from_messages(messages: List[Dict[str, Any]]) -> str:
-    """Best-effort recovery of the last real assistant text after a skipped call."""
-    from agent.context_compressor import is_compaction_summary_message
+    """Fallback text for a turn ended by the sole-handoff skip (#80622).
 
-    for message in reversed(messages or []):
-        if not isinstance(message, dict) or message.get("role") != "assistant":
-            continue
-        if message.get("tool_calls"):
-            continue
-        if is_compaction_summary_message(message):
-            continue
-        content = message.get("content")
-        if isinstance(content, str) and content.strip():
-            return content
-    return ""
+    Deliberately NOT a replay of the last assistant text: finalize_turn's
+    non-assistant-tail chokepoint (#43849) appends ``final_response`` as a
+    fresh assistant row, so recovering the previous turn's prose here would
+    duplicate it in the durable transcript AND re-deliver it to the user as
+    if it were this turn's answer. A short status is honest and idempotent.
+    """
+    return (
+        "Context was compacted. The previous response is complete — "
+        "awaiting your next message."
+    )
 
 
 # Stable prefix of the local interrupt status string emitted when a turn is
@@ -2215,6 +2213,17 @@ def run_conversation(
                 conversation_history = conversation_history_after_compression(
                     agent, messages, conversation_history
                 )
+                # This preflight iteration never reaches the provider whether
+                # we skip the turn (handoff guard below) or re-run the loop —
+                # refund the consumed call/budget in BOTH cases, mirroring the
+                # ollama_runtime_context_too_small early-exit above. Without
+                # the refund on the break path, every skipped turn leaked one
+                # iteration-budget unit for the agent's lifetime and
+                # finalize_turn logged an api_call_count including a call that
+                # was never made.
+                api_call_count -= 1
+                agent._api_call_count = api_call_count
+                agent.iteration_budget.refund()
                 if _should_skip_model_call_for_reference_handoff(
                     messages, user_message
                 ):
@@ -2228,9 +2237,6 @@ def run_conversation(
                         final_response = _final_response_from_messages(messages)
                     _turn_exit_reason = "compaction_handoff_not_actionable"
                     break
-                api_call_count -= 1
-                agent._api_call_count = api_call_count
-                agent.iteration_budget.refund()
                 continue
         elif (
             agent.compression_enabled
@@ -5801,16 +5807,6 @@ def run_conversation(
             # to fit the context window.
             retry_count += 1
             _retry.restart_with_compressed_messages = False
-            # In-loop compression rebuilt `messages` with fresh compaction
-            # copies, so the pre-compression current-turn index is stale.
-            # Re-anchor exactly like the prologue does: a stale index that
-            # lands on a historical user message would make the live-compose
-            # fallback inject this turn's prefetch into that message on the
-            # wire only, diverging the next turn's replayed prefix there.
-            current_turn_user_idx = reanchor_current_turn_user_idx(
-                messages, user_message
-            )
-            agent._persist_user_message_idx = current_turn_user_idx
             if _should_skip_model_call_for_reference_handoff(
                 messages, user_message
             ):
@@ -5822,6 +5818,19 @@ def run_conversation(
                     final_response = _final_response_from_messages(messages)
                 _turn_exit_reason = "compaction_handoff_not_actionable"
                 break
+            # In-loop compression rebuilt `messages` with fresh compaction
+            # copies, so the pre-compression current-turn index is stale.
+            # Re-anchor exactly like the prologue does: a stale index that
+            # lands on a historical user message would make the live-compose
+            # fallback inject this turn's prefetch into that message on the
+            # wire only, diverging the next turn's replayed prefix there.
+            # Ordered AFTER the handoff guard: the guard may have re-appended
+            # this turn's real user ask (restore path), and the anchor must
+            # land on that restored row, not on -1 / a pre-restore index.
+            current_turn_user_idx = reanchor_current_turn_user_idx(
+                messages, user_message
+            )
+            agent._persist_user_message_idx = current_turn_user_idx
             continue
 
         if _retry.restart_with_rebuilt_messages:

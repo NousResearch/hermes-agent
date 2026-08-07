@@ -623,11 +623,15 @@ class CLIAgentSetupMixin:
             self._resume_display_history = [
                 m for m in display_history if m.get("role") != "session_meta"
             ]
+            from agent.context_compressor import is_user_originated_turn
+
+            # Count only user-originated turns (#80622): legacy compaction
+            # handoffs are durable role=user rows without display_kind.
             msg_count = len(
                 [
                     m
                     for m in self._resume_display_history
-                    if m.get("role") == "user" and not m.get("display_kind")
+                    if is_user_originated_turn(m)
                 ]
             )
             title_part = ""

@@ -2572,9 +2572,15 @@ class GatewaySlashCommandsMixin:
         # and re-sent opaque bookkeeping text (same class as the TUI ordinal).
         last_user_msg = None
         last_user_idx = None
+        # is_user_originated_turn: excludes display_kind bookkeeping AND
+        # compaction handoffs (durable role=user, sometimes without
+        # display_kind on legacy sessions; #80622) — /retry must never
+        # re-send a reference-only summary as if the user asked it.
+        from agent.context_compressor import is_user_originated_turn
+
         for i in range(len(history) - 1, -1, -1):
             msg = history[i]
-            if msg.get("role") == "user" and not msg.get("display_kind"):
+            if is_user_originated_turn(msg):
                 last_user_msg = msg.get("content", "")
                 last_user_idx = i
                 break

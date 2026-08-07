@@ -1298,12 +1298,17 @@ def _(rid, params: dict) -> dict:
                 removed = 0
                 with session["history_lock"]:
                     history = session.get("history", [])
-                    # Truncate from the last *real* user turn (no display_kind).
-                    # Same predicate as list_recent_user_messages / /undo / /retry.
+                    # Truncate from the last *real* user turn. Same predicate
+                    # as list_recent_user_messages / /undo / /retry —
+                    # is_user_originated_turn also excludes compaction
+                    # handoffs (durable role=user, sometimes without
+                    # display_kind on legacy sessions; #80622).
+                    from agent.context_compressor import is_user_originated_turn
+
                     last_user_idx = None
                     for i in range(len(history) - 1, -1, -1):
                         msg = history[i]
-                        if msg.get("role") == "user" and not msg.get("display_kind"):
+                        if is_user_originated_turn(msg):
                             last_user_idx = i
                             break
                     if last_user_idx is not None:

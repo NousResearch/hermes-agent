@@ -8410,11 +8410,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         
         # Walk backwards to the last *real* user message. Timeline bookkeeping
         # rows (display_kind set) are role=user but are not user turns — match
-        # CLI resume counting and list_recent_user_messages.
+        # CLI resume counting and list_recent_user_messages. Compaction
+        # handoffs are excluded too (durable role=user, sometimes without
+        # display_kind on legacy sessions; #80622).
+        from agent.context_compressor import is_user_originated_turn
+
         last_user_idx = None
         for i in range(len(self.conversation_history) - 1, -1, -1):
             msg = self.conversation_history[i]
-            if msg.get("role") == "user" and not msg.get("display_kind"):
+            if is_user_originated_turn(msg):
                 last_user_idx = i
                 break
         
@@ -8460,12 +8464,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             n = 1
 
         # Walk backwards collecting the indices of the last N *real* user
-        # messages (exclude display_kind timeline rows — same predicate as
-        # list_recent_user_messages and resume turn counting).
+        # messages (exclude display_kind timeline rows and compaction
+        # handoffs — same predicate as list_recent_user_messages, resume
+        # turn counting, and /retry; #80622).
+        from agent.context_compressor import is_user_originated_turn
+
         user_indices = []
         for i in range(len(self.conversation_history) - 1, -1, -1):
             msg = self.conversation_history[i]
-            if msg.get("role") == "user" and not msg.get("display_kind"):
+            if is_user_originated_turn(msg):
                 user_indices.append(i)
                 if len(user_indices) >= n:
                     break

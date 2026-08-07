@@ -634,7 +634,14 @@ def _apply_profile_override() -> None:
     hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env:
         if Path(hermes_home_env).parent.name == "profiles":
-            return
+            # The existing HERMES_HOME points to a specific profile directory,
+            # but no explicit --profile flag was given. Previously this returned
+            # early, trusting the pre-set HERMES_HOME — but if it was set for a
+            # different profile (e.g. by a previous gateway invocation), the
+            # default-profile gateway would incorrectly assume that identity.
+            # Clear HERMES_HOME and fall through to the active_profile sticky
+            # logic below so the correct profile is resolved. See issue #74872.
+            del os.environ["HERMES_HOME"]
 
     # 2. If no flag, check active_profile in the hermes root.
     #

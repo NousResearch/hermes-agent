@@ -4782,6 +4782,107 @@ def test_notification_poller_delivers_owned_events(
             process_registry.completion_queue.get_nowait()
 
 
+def test_notification_poller_thread_acks_routed_profile_db(monkeypatch, tmp_path):
+    """The real poller must claim and acknowledge in the session's profile store."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    launch_home = tmp_path / "launch"
+    profile_home = tmp_path / "profiles" / "routed"
+    launch_home.mkdir()
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_profile_ack",
+        "session_key": "session-a",
+        "origin_ui_session_id": "sid-profile",
+        "origin_session_id": "",
+        "status": "success",
+        "summary": "done",
+    }
+    now = time.time()
+    token = set_hermes_home_override(profile_home)
+    try:
+        with ad._DB_LOCK, ad._transaction() as conn:
+            conn.execute(
+                """INSERT INTO async_delegations
+                   (delegation_id, origin_session, origin_ui_session_id, state,
+                    dispatched_at, completed_at, updated_at, event_json,
+                    delivery_state, delivery_attempts)
+                   VALUES (?, ?, ?, 'success', ?, ?, ?, ?, 'pending', 0)""",
+                (
+                    event["delegation_id"],
+                    event["session_key"],
+                    event["origin_ui_session_id"],
+                    now,
+                    now,
+                    now,
+                    json.dumps(event),
+                ),
+            )
+    finally:
+        reset_hermes_home_override(token)
+
+    def _profile_row():
+        token = set_hermes_home_override(profile_home)
+        try:
+            with ad._DB_LOCK, ad._transaction() as conn:
+                return conn.execute(
+                    """SELECT delivery_state, delivery_attempts, delivered_at
+                       FROM async_delegations WHERE delegation_id=?""",
+                    (event["delegation_id"],),
+                ).fetchone()
+        finally:
+            reset_hermes_home_override(token)
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    turns = []
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text, **kwargs: turns.append((text, kwargs)),
+    )
+    session = _session(
+        session_key="session-a",
+        profile_home=str(profile_home),
+    )
+    server._sessions["sid-profile"] = session
+
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=server._run_notification_poller_in_session_home,
+        args=(stop, "sid-profile", session),
+        daemon=True,
+    )
+    worker.start()
+    try:
+        deadline = time.time() + 5
+        row = _profile_row()
+        while row[0] != "delivered" and time.time() < deadline:
+            time.sleep(0.01)
+            row = _profile_row()
+
+        assert row[0] == "delivered"
+        assert row[1] == 1
+        assert row[2] is not None
+        assert len(turns) == 1
+        assert turns[0][1]["display_kind"] == "async_delegation_complete"
+        assert isolated_queue.empty()
+    finally:
+        stop.set()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        server._sessions.pop("sid-profile", None)
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
 def _configure_immediate_prompt_run(
     monkeypatch, tmp_path, *, immediate_threads=True
 ):

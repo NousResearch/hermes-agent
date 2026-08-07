@@ -16613,6 +16613,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        # Re-apply a persisted /yolo bypass (if any) after a gateway restart —
+        # without this the in-memory approval set starts empty and the session
+        # reverts to approvals.mode's default ("smart"). Idempotent no-op for
+        # sessions that never toggled yolo.
+        await self._hydrate_yolo_flag(session_entry, session_key)
         pinned_session_id = str(
             (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
         ).strip()

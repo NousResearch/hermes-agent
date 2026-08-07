@@ -4914,6 +4914,17 @@ def _sync_session_key_after_compress(
                 disable_session_yolo(old_key)
             except Exception:
                 pass
+            # Keep the persisted flag in step with the in-memory transfer:
+            # the continuation row inherits the bypass, the ended parent row
+            # drops it, so a later resume in a fresh process restores the
+            # same state (see _init_session re-hydration).
+            try:
+                db = _get_db()
+                if db is not None and hasattr(db, "set_session_yolo"):
+                    db.set_session_yolo(new_session_id, True)
+                    db.set_session_yolo(old_key, False)
+            except Exception:
+                pass
         try:
             register_gateway_notify(
                 new_session_id,
@@ -6639,6 +6650,7 @@ def _init_session(
             db = _get_db()
     else:
         db = _get_db()
+    row = None
     try:
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
@@ -6663,6 +6675,21 @@ def _init_session(
                 db.close()
             except Exception:
                 pass
+    # Re-hydrate a persisted per-session YOLO bypass into the in-memory
+    # approval state. The desktop's status-bar zap (config.set yolo, session
+    # scope) persists the flag via SessionDB.set_session_yolo; without this,
+    # closing and reopening the app — which restarts the gateway process —
+    # silently reverted the bypass to approvals.mode's default ("smart"),
+    # making dangerous commands prompt again. Mirrors the CLI's
+    # _restore_session_yolo on --resume.
+    try:
+        from hermes_state import SessionDB
+        from tools.approval import enable_session_yolo
+
+        if row and SessionDB.session_yolo_enabled(row):
+            enable_session_yolo(key)
+    except Exception:
+        pass
     _register_session_cwd(_sessions[sid])
     # No eager slash-worker pre-warm — the session dict already carries
     # slash_worker=None and slash.exec builds one on demand. See the
@@ -10976,6 +11003,18 @@ def _(rid, params: dict) -> dict:
                 else:
                     disable_session_yolo(session["session_key"])
                     nv = "0"
+                # Persist to the session row so the bypass survives a gateway
+                # restart (_init_session re-hydrates it on resume). The
+                # in-memory flag stays authoritative for the live process; the
+                # row only affects a future process, exactly like the CLI's
+                # _persist_session_yolo. Best-effort: a missing row (lazy
+                # creation) or an unavailable store must not fail the toggle.
+                try:
+                    db = _get_db()
+                    if db is not None and hasattr(db, "set_session_yolo"):
+                        db.set_session_yolo(session["session_key"], enable)
+                except Exception:
+                    pass
                 agent = session.get("agent")
                 if agent is not None:
                     _emit(

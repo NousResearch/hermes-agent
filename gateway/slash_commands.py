@@ -3803,10 +3803,60 @@ class GatewaySlashCommandsMixin:
         current = is_session_yolo_enabled(session_key)
         if current:
             disable_session_yolo(session_key)
+            await self._persist_yolo_flag(session_key, False)
             return EphemeralReply(t("gateway.yolo.disabled"))
         else:
             enable_session_yolo(session_key)
+            await self._persist_yolo_flag(session_key, True)
             return EphemeralReply(t("gateway.yolo.enabled"))
+
+    async def _persist_yolo_flag(self, session_key: str, enabled: bool) -> None:
+        """Persist a session-scoped /yolo toggle to the session row (best-effort).
+
+        The in-memory ``_session_yolo`` set is authoritative for the live
+        process; without the row flag, a gateway restart reverts the session
+        to ``approvals.mode``'s default (``smart``) and dangerous commands
+        start prompting again. Mirrors the CLI's ``_persist_session_yolo``.
+        No-op when the routing entry has no row yet (brand-new chat) or the
+        store/DB are unavailable.
+        """
+        try:
+            store = getattr(self, "session_store", None)
+            db = getattr(self, "_session_db", None)
+            if store is None or db is None:
+                return
+            session_id = store.peek_session_id(session_key)
+            if not session_id:
+                return
+            await db.set_session_yolo(session_id, enabled)
+        except Exception:
+            pass
+
+    async def _hydrate_yolo_flag(self, session_entry, session_key: str) -> None:
+        """Re-apply a persisted session /yolo bypass after a gateway restart.
+
+        ``_persist_yolo_flag`` writes the toggle to the session row; this
+        restores it into the in-memory approval set on the first message of a
+        fresh gateway process, so dangerous commands keep auto-approving
+        instead of reverting to ``approvals.mode``'s default (``smart``).
+        Idempotent and best-effort.
+        """
+        try:
+            db = getattr(self, "_session_db", None)
+            if db is None:
+                return
+            from hermes_state import SessionDB
+
+            sid = getattr(session_entry, "session_id", None) or ""
+            if not sid:
+                return
+            row = await db.get_session(sid)
+            if row and SessionDB.session_yolo_enabled(row):
+                from tools.approval import enable_session_yolo
+
+                enable_session_yolo(session_key)
+        except Exception:
+            pass
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.

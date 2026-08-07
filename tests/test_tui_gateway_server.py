@@ -5683,6 +5683,121 @@ def test_config_set_yolo_toggles_session_scope():
         server._sessions.clear()
 
 
+def test_config_set_yolo_session_scope_persists_flag_to_row(tmp_path, monkeypatch):
+    """The desktop zap (session scope) must persist yolo_mode to the session
+    row so a gateway restart can re-hydrate it — otherwise closing/reopening
+    the app reverts the session to approvals.mode's default (\"smart\")."""
+    from hermes_state import SessionDB
+    from tools.approval import clear_session, is_session_yolo_enabled
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        db.create_session(
+            session_id="session-key", source="tui", model="m", cwd=str(tmp_path)
+        )
+        server._sessions["sid"] = _session()
+        try:
+            resp_on = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "config.set",
+                    "params": {"session_id": "sid", "key": "yolo"},
+                }
+            )
+            assert resp_on["result"]["value"] == "1"
+            assert is_session_yolo_enabled("session-key") is True
+            assert (
+                SessionDB.session_yolo_enabled(db.get_session("session-key"))
+                is True
+            )
+
+            resp_off = server.handle_request(
+                {
+                    "id": "2",
+                    "method": "config.set",
+                    "params": {"session_id": "sid", "key": "yolo"},
+                }
+            )
+            assert resp_off["result"]["value"] == "0"
+            assert is_session_yolo_enabled("session-key") is False
+            assert (
+                SessionDB.session_yolo_enabled(db.get_session("session-key"))
+                is False
+            )
+        finally:
+            clear_session("session-key")
+            server._sessions.clear()
+    finally:
+        db.close()
+
+
+def test_init_session_rehydrates_persisted_yolo_flag(tmp_path, monkeypatch):
+    """A resumed session whose row carries yolo_mode must re-arm the
+    in-memory bypass — this is what keeps the desktop zap lit across app
+    restarts (the gateway process starts fresh each time)."""
+    from hermes_state import SessionDB
+    from tools.approval import clear_session, is_session_yolo_enabled
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        db.create_session(
+            session_id="session-key",
+            source="tui",
+            model="m",
+            cwd=str(tmp_path),
+            model_config={"yolo_mode": True},
+        )
+        agent = types.SimpleNamespace(
+            session_id="session-key",
+            _persist_disabled=True,
+            _session_db_created=True,
+        )
+        sid = "sid"
+        try:
+            server._init_session(
+                sid, "session-key", agent, [], cwd=str(tmp_path), session_db=db
+            )
+            assert is_session_yolo_enabled("session-key") is True
+        finally:
+            clear_session("session-key")
+            if sid in server._sessions:
+                server._teardown_session(server._sessions[sid])
+    finally:
+        db.close()
+
+
+def test_init_session_does_not_arm_yolo_without_flag(tmp_path, monkeypatch):
+    """Sessions that never toggled yolo must stay disarmed after resume."""
+    from hermes_state import SessionDB
+    from tools.approval import clear_session, is_session_yolo_enabled
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        db.create_session(
+            session_id="session-key", source="tui", model="m", cwd=str(tmp_path)
+        )
+        agent = types.SimpleNamespace(
+            session_id="session-key",
+            _persist_disabled=True,
+            _session_db_created=True,
+        )
+        sid = "sid"
+        try:
+            server._init_session(
+                sid, "session-key", agent, [], cwd=str(tmp_path), session_db=db
+            )
+            assert is_session_yolo_enabled("session-key") is False
+        finally:
+            clear_session("session-key")
+            if sid in server._sessions:
+                server._teardown_session(server._sessions[sid])
+    finally:
+        db.close()
+
+
 def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
     """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
     import yaml

@@ -574,7 +574,7 @@ def _handle_list(args: dict, **kw) -> str:
     guard = _require_orchestrator_tool("kanban_list")
     if guard:
         return guard
-    assignee = args.get("assignee")
+    assignee = _normalize_profile(args.get("assignee"))
     status = args.get("status")
     tenant = args.get("tenant")
     include_archived, bool_error = _parse_bool_arg(args, "include_archived")

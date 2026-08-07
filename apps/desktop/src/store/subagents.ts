@@ -55,8 +55,12 @@ const str = (v: unknown) => (isStr(v) ? v : '')
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
 const strList = (v: unknown) => (Array.isArray(v) ? v.filter(isStr) : [])
 
-const asStatus = (v: unknown): SubagentStatus =>
-  v === 'completed' || v === 'failed' || v === 'interrupted' || v === 'queued' ? v : 'running'
+const asStatus = (v: unknown): SubagentStatus => {
+  if (v === 'completed' || v === 'failed' || v === 'interrupted' || v === 'queued') return v
+  if (v === 'timeout' || v === 'error') return 'failed'
+  if (v === 'cancelled' || v === 'canceled') return 'interrupted'
+  return 'running'
+}
 
 const compact = (text: string, max = PREVIEW_MAX) => {
   const line = text.replace(/\s+/g, ' ').trim()

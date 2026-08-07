@@ -403,8 +403,15 @@ _JWT_RE = re.compile(
 )
 
 # E.164 phone numbers: +<country><number>, 7-15 digits
-# Negative lookahead prevents matching hex strings or identifiers
-_SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
+# Negative lookahead prevents matching hex strings or identifiers.
+# Also matches bare digit-only E.164-like sequences (10-15 digits) so
+# WhatsApp Cloud wa_id values without a leading '+' are redacted.
+_SIGNAL_PHONE_RE = re.compile(
+    r"(?<![A-Za-z0-9])"              # don't clip a longer numeric run
+    r"(\+[1-9]\d{6,14}"             # explicit +E.164 form, 7-15 digits
+    r"|[1-9]\d{9,14})"               # bare wa_id / E.164-like, 10-15 digits
+    r"(?![A-Za-z0-9])"
+)
 
 # URLs containing query strings — matches `scheme://...?...[# or end]`.
 # Used to scan text for URLs whose query params may contain secrets.
@@ -995,14 +1002,13 @@ def redact_sensitive_text(
     if "&" in text and "=" in text:
         text = _redact_form_body(text)
 
-    # E.164 phone numbers (Signal, WhatsApp)
-    if "+" in text:
-        def _redact_phone(m):
-            phone = m.group(1)
-            if len(phone) <= 8:
-                return phone[:2] + "****" + phone[-2:]
-            return phone[:4] + "****" + phone[-4:]
-        text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+    # E.164 and bare phone-like numbers (Signal, WhatsApp, WhatsApp Cloud wa_id).
+    def _redact_phone(m):
+        phone = m.group(1)
+        if len(phone) <= 8:
+            return phone[:2] + "****" + phone[-2:]
+        return phone[:4] + "****" + phone[-4:]
+    text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text
 

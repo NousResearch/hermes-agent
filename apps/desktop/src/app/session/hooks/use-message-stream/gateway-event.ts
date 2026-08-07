@@ -1149,6 +1149,31 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           void refreshBackgroundProcesses(sessionId)
         } else if (sessionId && payload?.kind === 'goal') {
           applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
+        } else if (sessionId && payload?.kind === 'image_routing') {
+          // The turn's image was downgraded to a text description (model lacks
+          // vision, a provider override forced text, or native attachment
+          // failed). The Ink TUI surfaces this on its status line; the desktop
+          // has no such line, so without this handler the user sees the model
+          // answer as if it had looked at the image — the #66829 report.
+          // Persistent system message, not a toast: it explains that turn's
+          // answer, so it has to stay next to it in the transcript.
+          const routingText = coerceGatewayText(payload?.text).trim()
+
+          if (routingText) {
+            flushQueuedDeltas(sessionId)
+            updateSessionState(sessionId, state => ({
+              ...state,
+              messages: [
+                ...state.messages,
+                {
+                  id: `image-routing-${Date.now()}`,
+                  role: 'system',
+                  parts: [textPart(routingText)],
+                  timestamp: Math.floor(Date.now() / 1000)
+                }
+              ]
+            }))
+          }
         }
       } else if (event.type === 'review.summary') {
         // Self-improvement background review saved something to memory/skills

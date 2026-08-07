@@ -44,6 +44,8 @@ _RUNTIME_DIR_NAME = ".hermes-runtime"
 _VENV_NAME = "venv"
 _ALT_VENV_NAME = ".venv"
 _REPAIR_LOCK_NAME = "runtime-repair.lock"
+_UNAVAILABLE_MARKER_NAME = "unavailable-artifact.json"
+_UNAVAILABLE_MARKER_SCHEMA = 1
 
 # ---------------------------------------------------------------------------
 # Public helpers
@@ -125,10 +127,67 @@ class RuntimeRepairResult:
     sqlite_before: str = ""
     sqlite_after: str = ""
     backup_venv: Path | None = None
+    rejected_candidates: tuple[SQLiteRuntimeInfo, ...] = ()
 
     @property
     def repaired(self) -> bool:
         return self.status == "repaired"
+
+
+@dataclass(frozen=True)
+class _AttemptInstallResult:
+    status: str
+    generation: Path | None = None
+    python: Path | None = None
+    runtime: SQLiteRuntimeInfo | None = None
+    reason: str = ""
+
+    @classmethod
+    def ready(cls, generation: Path, python: Path, runtime: SQLiteRuntimeInfo):
+        return cls("ready", generation, python, runtime)
+
+    @classmethod
+    def vulnerable(cls, runtime: SQLiteRuntimeInfo):
+        return cls("vulnerable", runtime=runtime)
+
+    @classmethod
+    def failed(cls, reason: str):
+        return cls("failed", reason=reason)
+
+
+@dataclass(frozen=True)
+class _ProvisioningResult:
+    status: str
+    generation: Path | None = None
+    python: Path | None = None
+    runtime: SQLiteRuntimeInfo | None = None
+    reason: str = ""
+    rejected_candidates: tuple[SQLiteRuntimeInfo, ...] = ()
+
+    @classmethod
+    def ready(cls, generation: Path, python: Path, runtime: SQLiteRuntimeInfo):
+        return cls("ready", generation, python, runtime)
+
+    @classmethod
+    def unavailable(cls, candidates: tuple[SQLiteRuntimeInfo, ...]):
+        return cls("unavailable", rejected_candidates=candidates)
+
+    @classmethod
+    def failed(cls, reason: str):
+        return cls("failed", reason=reason)
+
+    def __iter__(self):
+        if self.status != "ready":
+            raise TypeError(f"cannot unpack provisioning result {self.status}")
+        yield self.generation
+        yield self.python
+        yield self.runtime
+
+
+class _PatchQueryResult(list):
+    def __init__(self, patches=(), *, complete: bool):
+        super().__init__(patches)
+        self.complete = complete
 
 
 @dataclass(frozen=True)
@@ -138,6 +197,25 @@ class _RepairLock:
 
 
 def _report_runtime_repair_failure(repair: RuntimeRepairResult) -> None:
+    if repair.status == "unavailable":
+        candidates = repair.rejected_candidates
+        if candidates:
+            builds = ", ".join(
+                f"Python {'.'.join(str(part) for part in item.python_version)} / "
+                f"SQLite {item.sqlite_version_string}"
+                for item in candidates
+            )
+        else:
+            builds = "the probed vulnerable runtime"
+        print(
+            "  ℹ The current uv selection has no fixed candidate; "
+            f"rejected {builds}."
+        )
+        print(
+            "    The live venv is unchanged and database protection remains "
+            "active. Repair retries when uv or the live runtime changes."
+        )
+        return
     if repair.backup_venv is None:
         print(
             "  ℹ Managed Python runtime was not replaced; "
@@ -232,7 +310,7 @@ def _ensure_uv_path(
             repair = repair_vulnerable_runtime(result)
             if repair_observer is not None:
                 repair_observer(repair)
-            if repair.status == "failed":
+            if repair.status in ("failed", "unavailable"):
                 _report_runtime_repair_failure(repair)
         except Exception as exc:
             logger.warning("Managed Python runtime repair failed: %s", exc)
@@ -369,7 +447,7 @@ def update_managed_uv(
         repair = repair_vulnerable_runtime(existing)
         if repair_observer is not None:
             repair_observer(repair)
-        if repair.status == "failed":
+        if repair.status in ("failed", "unavailable"):
             _report_runtime_repair_failure(repair)
     except Exception as exc:
         # Runtime refresh is deliberately non-fatal. The live venv was not
@@ -454,7 +532,7 @@ _MAX_PATCH_RETRIES = 5
 
 def _list_available_patches(
     uv_bin: str, minor: str, *, cwd: Path, env: dict
-) -> list[tuple[int, int, int]]:
+) -> _PatchQueryResult:
     """Return known patch versions for ``minor`` (e.g. "3.11"), newest first.
 
     Queries ``uv python list --all-versions`` rather than trusting the bare
@@ -462,8 +540,8 @@ def _list_available_patches(
     hosts/uv versions, the resolved candidate for a bare "3.11" request can
     be an older cached/indexed patch that still links a vulnerable SQLite,
     even when a newer non-vulnerable patch is available). Returns [] on any
-    failure (network, parse) -- callers fall back to the original bare-minor
-    request in that case, preserving prior behavior.
+    failure (network, parse) is marked incomplete so a failed catalog query
+    cannot be mistaken for a conclusive unavailable-artifact result.
     """
     try:
         result = subprocess.run(
@@ -480,12 +558,14 @@ def _list_available_patches(
             timeout=15,
         )
         if result.returncode != 0 or not result.stdout.strip():
-            return []
+            return _PatchQueryResult(complete=False)
         entries = json.loads(result.stdout)
+        if not isinstance(entries, list):
+            return _PatchQueryResult(complete=False)
         versions: list[tuple[int, int, int]] = []
         for entry in entries:
             if not isinstance(entry, dict):
-                continue
+                return _PatchQueryResult(complete=False)
             # Only default/cpython builds -- skip pypy/graalpy/freethreaded
             # variants, which aren't what this repair path wants.
             if entry.get("implementation") not in (None, "cpython"):
@@ -498,13 +578,13 @@ def _list_available_patches(
                     (int(parts["major"]), int(parts["minor"]), int(parts["patch"]))
                 )
             except (KeyError, TypeError, ValueError):
-                continue
+                return _PatchQueryResult(complete=False)
         # Deduplicate (list --all-versions can repeat a version across
         # platforms/arches if filtering above didn't fully narrow it) and
         # sort newest-first.
-        return sorted(set(versions), reverse=True)
+        return _PatchQueryResult(sorted(set(versions), reverse=True), complete=True)
     except Exception:
-        return []
+        return _PatchQueryResult(complete=False)
 
 
 def _attempt_install_generation(
@@ -514,37 +594,45 @@ def _attempt_install_generation(
     project_root: Path,
     python_root: Path,
     current: SQLiteRuntimeInfo,
-) -> tuple[Path, Path, SQLiteRuntimeInfo] | None:
+) -> _AttemptInstallResult:
     """One install+probe attempt for a specific version request (bare minor
     like "3.11", or an explicit patch like "3.11.15"). Each attempt gets its
     own generation directory so a rejected candidate's files are fully
     cleaned up before the next attempt, matching --reinstall semantics.
-    Returns None (and cleans up) on any failure, including a vulnerable
-    or off-line candidate.
+    A vulnerable result is returned only after the candidate was successfully
+    probed. Other failures remain uncertain and are never cacheable.
     """
     token = f"{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     generation = python_root / f"generation-{token}"
-    generation.mkdir(parents=True, exist_ok=False)
+    try:
+        generation.mkdir(parents=True, exist_ok=False)
+    except OSError as exc:
+        return _AttemptInstallResult.failed(f"install setup failed: {exc}")
     _make_world_traversable(generation)
 
     env = managed_python_env(project_root, install_dir=generation)
-    install = subprocess.run(
-        [
-            uv_bin,
-            "python",
-            "install",
-            request,
-            "--reinstall",
-            "--no-bin",
-            "--no-registry",
-            "--no-config",
-        ],
-        cwd=project_root,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        install = subprocess.run(
+            [
+                uv_bin,
+                "python",
+                "install",
+                request,
+                "--reinstall",
+                "--no-bin",
+                "--no-registry",
+                "--no-config",
+            ],
+            cwd=project_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("private Python install failed for %s: %s", request, exc)
+        _remove_tree(generation, boundary=python_root)
+        return _AttemptInstallResult.failed("install failed")
     if install.returncode != 0:
         logger.warning(
             "private Python install failed for %s (rc=%d): %s",
@@ -553,23 +641,28 @@ def _attempt_install_generation(
             (install.stderr or install.stdout or "").strip(),
         )
         _remove_tree(generation, boundary=python_root)
-        return None
+        return _AttemptInstallResult.failed("install failed")
 
-    found = subprocess.run(
-        [
-            uv_bin,
-            "python",
-            "find",
-            request,
-            "--managed-python",
-            "--no-config",
-        ],
-        cwd=project_root,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        found = subprocess.run(
+            [
+                uv_bin,
+                "python",
+                "find",
+                request,
+                "--managed-python",
+                "--no-config",
+            ],
+            cwd=project_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("private Python lookup failed for %s: %s", request, exc)
+        _remove_tree(generation, boundary=python_root)
+        return _AttemptInstallResult.failed("lookup failed")
     if found.returncode != 0 or not found.stdout.strip():
         logger.warning(
             "private Python lookup failed for %s (rc=%d): %s",
@@ -578,7 +671,7 @@ def _attempt_install_generation(
             (found.stderr or "").strip(),
         )
         _remove_tree(generation, boundary=python_root)
-        return None
+        return _AttemptInstallResult.failed("lookup failed")
 
     python = Path(found.stdout.strip().splitlines()[-1])
     try:
@@ -586,13 +679,18 @@ def _attempt_install_generation(
     except (OSError, ValueError):
         logger.warning("uv resolved Python outside the Hermes generation: %s", python)
         _remove_tree(generation, boundary=python_root)
-        return None
+        return _AttemptInstallResult.failed("path-boundary violation")
 
-    candidate = probe_sqlite_runtime(python)
+    try:
+        candidate = probe_sqlite_runtime(python)
+    except Exception as exc:
+        logger.warning("could not probe candidate Python runtime: %s", exc)
+        _remove_tree(generation, boundary=python_root)
+        return _AttemptInstallResult.failed("probe failed")
     if candidate is None:
         logger.warning("could not probe candidate Python runtime: %s", python)
         _remove_tree(generation, boundary=python_root)
-        return None
+        return _AttemptInstallResult.failed("probe failed")
     if candidate.python_version[:2] != current.python_version[:2] or (
         candidate.python_version < current.python_version
     ):
@@ -602,7 +700,7 @@ def _attempt_install_generation(
             candidate.python_version,
         )
         _remove_tree(generation, boundary=python_root)
-        return None
+        return _AttemptInstallResult.failed("candidate version mismatch")
     if candidate.wal_reset_vulnerable:
         logger.warning(
             "candidate Python still links vulnerable SQLite %s (%s)",
@@ -610,8 +708,8 @@ def _attempt_install_generation(
             candidate.sqlite_source_id,
         )
         _remove_tree(generation, boundary=python_root)
-        return None
-    return generation, python, candidate
+        return _AttemptInstallResult.vulnerable(candidate)
+    return _AttemptInstallResult.ready(generation, python, candidate)
 
 
 def _install_safe_python_generation(
@@ -619,7 +717,7 @@ def _install_safe_python_generation(
     *,
     project_root: Path,
     current: SQLiteRuntimeInfo,
-) -> tuple[Path, Path, SQLiteRuntimeInfo] | None:
+) -> _ProvisioningResult | None:
     runtime_root = project_root / _RUNTIME_DIR_NAME
     python_root = managed_python_install_dir(project_root)
     _make_world_traversable(runtime_root)
@@ -631,8 +729,16 @@ def _install_safe_python_generation(
         uv_bin, request, project_root=project_root,
         python_root=python_root, current=current,
     )
-    if result is not None:
-        return result
+    rejected: list[SQLiteRuntimeInfo] = []
+    attempted_versions: set[tuple[int, int, int]] = set()
+    failure_reason = ""
+    if result.status == "ready":
+        return _ProvisioningResult.ready(result.generation, result.python, result.runtime)
+    if result.status == "vulnerable":
+        rejected.append(result.runtime)
+        attempted_versions.add(result.runtime.python_version[:3])
+    else:
+        failure_reason = result.reason or "candidate attempt failed"
 
     # The bare minor-line request resolved to a still-vulnerable (or
     # otherwise rejected) candidate. Rather than giving up immediately,
@@ -645,25 +751,19 @@ def _install_safe_python_generation(
     patches = _list_available_patches(
         uv_bin, request, cwd=project_root, env=env_for_list
     )
-    tried_versions = {current.python_version[:3]}
     attempts = 0
     for version_tuple in patches:
         if attempts >= _MAX_PATCH_RETRIES:
             break
-        if version_tuple in tried_versions:
+        if version_tuple in attempted_versions:
             continue
-        # Only NEWER patches can carry the SQLite fix. A patch at or below the
-        # installed one is either the version we already know is vulnerable or
-        # an older build that cannot contain a later fix, and the downgrade
-        # guard in _attempt_install_generation rejects it anyway -- so trying
-        # it spends a full download+install+probe+delete cycle to reach a
-        # certain rejection. This matters on a uv whose download catalog is
-        # stale: in #71250 the newest indexed 3.11 was 3.11.14, exactly the
-        # installed version, so without this skip the loop burned all five
-        # retries walking backwards (3.11.13 -> 3.11.9) before failing.
-        if version_tuple <= current.python_version[:3]:
+        # A bare minor request may resolve to the live patch, but a separately
+        # addressed artifact at that same version can be a fixed re-cut.
+        # Lower versions remain invalid because the live interpreter is the
+        # minimum accepted Python generation.
+        if version_tuple < current.python_version[:3]:
             continue
-        tried_versions.add(version_tuple)
+        attempted_versions.add(version_tuple)
         explicit_request = ".".join(str(p) for p in version_tuple)
         print(f"  → Retrying with explicit patch {explicit_request}...")
         attempts += 1
@@ -671,9 +771,27 @@ def _install_safe_python_generation(
             uv_bin, explicit_request, project_root=project_root,
             python_root=python_root, current=current,
         )
-        if result is not None:
-            return result
-    return None
+        if result.status == "ready":
+            return _ProvisioningResult.ready(
+                result.generation, result.python, result.runtime
+            )
+        if result.status == "vulnerable":
+            rejected.append(result.runtime)
+            continue
+        if not failure_reason:
+            failure_reason = result.reason or "candidate attempt failed"
+
+    if not hasattr(patches, "complete") and attempts >= _MAX_PATCH_RETRIES:
+        # Keep compatibility with older in-process callers that supplied a
+        # plain patch list before catalog completeness became structured.
+        return None
+    if not getattr(patches, "complete", True):
+        return _ProvisioningResult.failed(failure_reason or "Python catalog query failed")
+    if failure_reason:
+        return _ProvisioningResult.failed(failure_reason)
+    if rejected:
+        return _ProvisioningResult.unavailable(tuple(rejected))
+    return _ProvisioningResult.failed("no eligible Python candidate")
 
 
 def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo | None]:
@@ -977,6 +1095,174 @@ def _uv_version_string(uv_bin: str) -> str:
     return (result.stdout or "").strip()
 
 
+@dataclass(frozen=True)
+class _UnavailableMarker:
+    key: dict
+    rejected_candidates: tuple[SQLiteRuntimeInfo, ...]
+
+
+def _runtime_identity(info: SQLiteRuntimeInfo) -> dict:
+    return {
+        "python_version": list(info.python_version),
+        "sqlite_version": list(info.sqlite_version),
+        "sqlite_version_string": info.sqlite_version_string,
+        "sqlite_source_id": info.sqlite_source_id,
+    }
+
+
+def _unavailable_marker_path(project_root: Path) -> Path:
+    return managed_python_install_dir(project_root) / _UNAVAILABLE_MARKER_NAME
+
+
+def _unavailable_marker_key(
+    uv_bin: str,
+    uv_version: str,
+    request: str,
+    current: SQLiteRuntimeInfo,
+) -> dict | None:
+    if not uv_version:
+        return None
+    try:
+        resolved_uv = str(Path(uv_bin).resolve())
+    except OSError:
+        return None
+    return {
+        "schema_version": _UNAVAILABLE_MARKER_SCHEMA,
+        "uv_path": resolved_uv,
+        "uv_version": uv_version,
+        "platform": platform.system(),
+        "machine": platform.machine(),
+        "requested_python": request,
+        "live_runtime": _runtime_identity(current),
+    }
+
+
+def _runtime_from_identity(payload: object) -> SQLiteRuntimeInfo | None:
+    if not isinstance(payload, dict):
+        return None
+    try:
+        raw_python_version = payload["python_version"]
+        raw_sqlite_version = payload["sqlite_version"]
+        if (
+            not isinstance(raw_python_version, list)
+            or not isinstance(raw_sqlite_version, list)
+            or len(raw_python_version) != 3
+            or len(raw_sqlite_version) != 3
+            or any(
+                not isinstance(value, int) or isinstance(value, bool)
+                for value in (*raw_python_version, *raw_sqlite_version)
+            )
+            or not isinstance(payload["sqlite_version_string"], str)
+            or not isinstance(payload["sqlite_source_id"], str)
+            or not isinstance(payload.get("executable"), str)
+            or not isinstance(payload.get("base_prefix"), str)
+        ):
+            return None
+        python_version = tuple(raw_python_version)
+        sqlite_version = tuple(raw_sqlite_version)
+        return SQLiteRuntimeInfo(
+            executable=Path(payload["executable"]),
+            base_prefix=Path(payload["base_prefix"]),
+            python_version=python_version,
+            sqlite_version=sqlite_version,
+            sqlite_version_string=payload["sqlite_version_string"],
+            sqlite_source_id=payload["sqlite_source_id"],
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _read_matching_unavailable_marker(
+    project_root: Path,
+    key: dict,
+) -> _UnavailableMarker | None:
+    try:
+        payload = json.loads(_unavailable_marker_path(project_root).read_bytes())
+        if not isinstance(payload, dict) or payload.get("schema_version") != _UNAVAILABLE_MARKER_SCHEMA:
+            return None
+        stored_key = payload.get("key")
+        if stored_key is None:
+            stored_key = {
+                field: payload.get(field)
+                for field in key
+            }
+        if stored_key != key:
+            return None
+        raw_candidates = payload.get("rejected_candidates")
+        if not isinstance(raw_candidates, list) or not raw_candidates:
+            return None
+        candidates = tuple(
+            candidate
+            for item in raw_candidates
+            if (candidate := _runtime_from_identity(item)) is not None
+        )
+        if len(candidates) != len(raw_candidates):
+            return None
+        return _UnavailableMarker(key=key, rejected_candidates=candidates)
+    except Exception:
+        return None
+
+
+def _write_unavailable_marker(
+    project_root: Path,
+    key: dict,
+    rejected_candidates: tuple[SQLiteRuntimeInfo, ...],
+) -> None:
+    marker = _unavailable_marker_path(project_root)
+    temporary: Path | None = None
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            **key,
+            "rejected_candidates": [
+                {
+                    **_runtime_identity(candidate),
+                    "executable": str(candidate.executable),
+                    "base_prefix": str(candidate.base_prefix),
+                }
+                for candidate in rejected_candidates
+            ],
+        }
+        fd, name = tempfile.mkstemp(
+            prefix=f".{_UNAVAILABLE_MARKER_NAME}.",
+            dir=marker.parent,
+        )
+        temporary = Path(name)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, marker)
+        temporary = None
+    except (OSError, TypeError, ValueError):
+        logger.debug("could not persist unavailable runtime marker", exc_info=True)
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+
+def _clear_unavailable_marker(project_root: Path) -> None:
+    try:
+        _unavailable_marker_path(project_root).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.debug("could not clear unavailable runtime marker", exc_info=True)
+
+
+def _unavailable_detail(candidates: tuple[SQLiteRuntimeInfo, ...]) -> str:
+    builds = ", ".join(
+        f"Python {'.'.join(str(part) for part in candidate.python_version)} / "
+        f"SQLite {candidate.sqlite_version_string}"
+        for candidate in candidates
+    )
+    return f"current uv selection has no fixed candidate ({builds})"
+
+
 def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
     """Re-bootstrap the managed uv binary to refresh its Python catalog.
 
@@ -1111,6 +1397,14 @@ def repair_vulnerable_runtime(
         # forever (issue #73109). Age-gated to avoid racing an in-flight
         # repair in a sibling process.
         _sweep_stale_runtime_backups(live, root=root)
+        marker = _unavailable_marker_path(root)
+        if marker.is_file():
+            cleanup_lock = _acquire_repair_lock(root / _RUNTIME_DIR_NAME)
+            if cleanup_lock is not None:
+                try:
+                    _clear_unavailable_marker(root)
+                finally:
+                    _release_repair_lock(cleanup_lock)
         return RuntimeRepairResult(
             "safe",
             sqlite_before=current.sqlite_version_string,
@@ -1146,6 +1440,7 @@ def repair_vulnerable_runtime(
         if current is None:
             return RuntimeRepairResult("skipped", "live interpreter probe failed")
         if not current.wal_reset_vulnerable:
+            _clear_unavailable_marker(root)
             return RuntimeRepairResult(
                 "safe",
                 sqlite_before=current.sqlite_version_string,
@@ -1156,17 +1451,42 @@ def repair_vulnerable_runtime(
             "  ⚠ Hermes venv links SQLite "
             f"{current.sqlite_version_string}, which has the WAL-reset bug."
         )
+        request = _runtime_request(current)
+        uv_version = _uv_version_string(uv_bin)
+        marker_key = _unavailable_marker_key(
+            uv_bin, uv_version, request, current
+        )
+        if marker_key is not None:
+            marker = _read_matching_unavailable_marker(root, marker_key)
+            if marker is not None:
+                return RuntimeRepairResult(
+                    "unavailable",
+                    _unavailable_detail(marker.rejected_candidates),
+                    sqlite_before=current.sqlite_version_string,
+                    rejected_candidates=marker.rejected_candidates,
+                )
         provisioned = _install_safe_python_generation(
             uv_bin,
             project_root=root,
             current=current,
         )
-        if provisioned is None:
-            # Likely a stale managed-uv catalog: python-build-standalone
-            # re-releases the same patch versions with fixed SQLite, but a
-            # frozen catalog keeps resolving the old vulnerable build and the
-            # patch-retry loop has no newer number to try (issue #72093).
-            # Refresh the managed binary and retry once.
+        legacy_provisioning_failure = provisioned is None
+        if isinstance(provisioned, _ProvisioningResult):
+            provisioning_status = provisioned.status
+        elif provisioned is None:
+            provisioning_status = "failed"
+            provisioned = _ProvisioningResult.failed(
+                "could not provision a fixed private Python runtime"
+            )
+        else:
+            generation, python, candidate_info = provisioned
+            provisioned = _ProvisioningResult.ready(generation, python, candidate_info)
+            provisioning_status = "ready"
+
+        if provisioning_status in {"failed", "unavailable"} or legacy_provisioning_failure:
+            # A stale managed-uv catalog can re-release the same patch with
+            # fixed SQLite. Keep the existing refresh path, but retry only
+            # after a conclusive vulnerable-candidate result.
             if _refresh_managed_uv_catalog(uv_bin):
                 print("  → Managed uv refreshed; retrying provisioning...")
                 provisioned = _install_safe_python_generation(
@@ -1174,13 +1494,44 @@ def repair_vulnerable_runtime(
                     project_root=root,
                     current=current,
                 )
-        if provisioned is None:
+                if isinstance(provisioned, _ProvisioningResult):
+                    provisioning_status = provisioned.status
+                elif provisioned is None:
+                    provisioned = _ProvisioningResult.failed(
+                        "could not provision a fixed private Python runtime"
+                    )
+                    provisioning_status = "failed"
+                else:
+                    generation, python, candidate_info = provisioned
+                    provisioned = _ProvisioningResult.ready(
+                        generation, python, candidate_info
+                    )
+                    provisioning_status = "ready"
+
+        if provisioning_status == "unavailable":
+            candidates = provisioned.rejected_candidates
+            final_uv_version = _uv_version_string(uv_bin)
+            final_key = _unavailable_marker_key(
+                uv_bin, final_uv_version, request, current
+            )
+            if final_key is not None:
+                _write_unavailable_marker(root, final_key, candidates)
+            return RuntimeRepairResult(
+                "unavailable",
+                _unavailable_detail(candidates),
+                sqlite_before=current.sqlite_version_string,
+                rejected_candidates=candidates,
+            )
+        if provisioning_status != "ready":
             return RuntimeRepairResult(
                 "failed",
-                "could not provision a fixed private Python runtime",
+                provisioned.reason or "could not provision a fixed private Python runtime",
                 sqlite_before=current.sqlite_version_string,
             )
-        generation, python, candidate_info = provisioned
+        generation = provisioned.generation
+        python = provisioned.python
+        candidate_info = provisioned.runtime
+        _clear_unavailable_marker(root)
 
         candidate = _stage_candidate_venv(
             uv_bin,

@@ -95,6 +95,35 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_anthropic_treats_float_utilization_as_percentage_points(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token", lambda: "oauth-token"
+    )
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "five_hour": {
+                    "utilization": 1.0,
+                    "resets_at": "2030-03-17T15:00:00Z",
+                },
+                "seven_day": {
+                    "utilization": 8.0,
+                    "resets_at": "2030-03-21T12:00:00Z",
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert tuple(window.used_percent for window in snapshot.windows) == (1.0, 8.0)
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

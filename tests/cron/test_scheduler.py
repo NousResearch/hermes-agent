@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets, _target_matches_origin
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -104,6 +104,68 @@ class TestResolveOrigin:
         """
         job = {"origin": non_dict_origin}
         assert _resolve_origin(job) is None
+
+
+class TestTargetMatchesOrigin:
+    def test_teams_composite_origin_matches_split_delivery_target(self):
+        origin = {
+            "platform": "teams",
+            "chat_id": (
+                "19:channel@thread.tacv2;messageid=1780267076971"
+            ),
+            "thread_id": None,
+        }
+
+        assert _target_matches_origin(
+            origin,
+            "teams",
+            "19:channel@thread.tacv2",
+            "1780267076971",
+        )
+
+    def test_teams_split_origin_matches_composite_delivery_target(self):
+        origin = {
+            "platform": "teams",
+            "chat_id": "19:channel@thread.tacv2",
+            "thread_id": "1780267076971",
+        }
+
+        assert _target_matches_origin(
+            origin,
+            "teams",
+            "19:channel@thread.tacv2;messageid=1780267076971",
+            None,
+        )
+
+    def test_teams_different_thread_is_not_the_origin(self):
+        origin = {
+            "platform": "teams",
+            "chat_id": (
+                "19:channel@thread.tacv2;messageid=1780267076971"
+            ),
+            "thread_id": None,
+        }
+
+        assert not _target_matches_origin(
+            origin,
+            "teams",
+            "19:channel@thread.tacv2",
+            "different-root",
+        )
+
+    def test_unpinned_origin_preserves_root_match_semantics(self):
+        origin = {
+            "platform": "telegram",
+            "chat_id": "-1001",
+            "thread_id": None,
+        }
+
+        assert _target_matches_origin(
+            origin,
+            "telegram",
+            "-1001",
+            "42",
+        )
 
 
 class TestResolveDeliveryTarget:
@@ -242,6 +304,29 @@ class TestRoutingIntents:
         assert "slack" in platforms
         assert "signal" not in platforms
         assert "matrix" not in platforms
+
+    def test_teams_origin_and_split_target_are_deduplicated(self):
+        from cron.scheduler import _resolve_delivery_targets
+
+        composite = "19:channel@thread.tacv2;messageid=1780267076971"
+        targets = _resolve_delivery_targets(
+            {
+                "deliver": f"origin,teams:{composite}",
+                "origin": {
+                    "platform": "teams",
+                    "chat_id": composite,
+                    "thread_id": None,
+                },
+            }
+        )
+
+        assert targets == [
+            {
+                "platform": "teams",
+                "chat_id": composite,
+                "thread_id": None,
+            }
+        ]
 
 
 class TestDeliverResultWrapping:
@@ -1643,6 +1728,31 @@ class TestCronDeliveryMirror:
         assert args[2].startswith("[Cron delivery: Morning Brief]")
         assert "Market movers today" in args[2]
 
+    def test_teams_mirror_uses_persisted_composite_origin(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        composite = "19:channel@thread.tacv2;messageid=1780267076971"
+        job = {
+            "id": "j1",
+            "origin": {
+                "platform": "teams",
+                "chat_id": composite,
+                "thread_id": None,
+            },
+        }
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror:
+            _maybe_mirror_cron_delivery(
+                job,
+                "teams",
+                "19:channel@thread.tacv2",
+                "Daily brief",
+                thread_id="1780267076971",
+                enabled=True,
+            )
+
+        assert mirror.call_args.args[:2] == ("teams", composite)
+        assert mirror.call_args.kwargs["thread_id"] is None
+
 
     def test_delivery_mirrors_clean_content_not_wrapped(self):
         """When enabled, the mirror receives the CLEAN agent output, not the
@@ -1974,5 +2084,3 @@ class TestSetCronSessionTitle:
         out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
-

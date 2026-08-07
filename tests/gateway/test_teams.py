@@ -385,6 +385,73 @@ class TestTeamsSend:
         assert result.message_id == "msg-123"
         mock_app.send.assert_awaited_once_with("conv-id", "Hello")
 
+    @pytest.mark.anyio
+    async def test_send_uses_metadata_thread_id(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        mock_result = MagicMock()
+        mock_result.id = "msg-123"
+        mock_app = MagicMock()
+        mock_app.reply = AsyncMock(return_value=mock_result)
+        mock_app.send = AsyncMock()
+        adapter._app = mock_app
+
+        result = await adapter.send(
+            "19:channel@thread.tacv2",
+            "Hello thread",
+            metadata={"thread_id": "1780267076971"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "msg-123"
+        mock_app.reply.assert_awaited_once_with(
+            "19:channel@thread.tacv2",
+            "1780267076971",
+            "Hello thread",
+        )
+        mock_app.send.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_send_rejects_invalid_metadata_thread_id(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        mock_app = MagicMock()
+        mock_app.reply = AsyncMock()
+        mock_app.send = AsyncMock()
+        adapter._app = mock_app
+
+        result = await adapter.send(
+            "19:channel@thread.tacv2",
+            "Hello thread",
+            metadata={"thread_id": "../activities"},
+        )
+
+        assert result.success is False
+        assert "thread activity ID" in result.error
+        mock_app.reply.assert_not_awaited()
+        mock_app.send.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_send_metadata_thread_failure_does_not_fall_back_to_top_level(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        mock_app = MagicMock()
+        mock_app.reply = AsyncMock(side_effect=Exception("thread unavailable"))
+        mock_app.send = AsyncMock()
+        adapter._app = mock_app
+
+        result = await adapter.send(
+            "19:channel@thread.tacv2",
+            "Hello thread",
+            metadata={"thread_id": "1780267076971"},
+        )
+
+        assert result.success is False
+        assert "thread unavailable" in result.error
+        mock_app.send.assert_not_awaited()
 
 def _make_summary_payload():
     return TeamsMeetingSummaryPayload(
@@ -688,6 +755,109 @@ class TestTeamsStandaloneSend:
         assert activity_kwargs["json"]["text"] == "hello cron"
         assert activity_kwargs["json"]["type"] == "message"
 
+    @pytest.mark.asyncio
+    async def test_standalone_send_preserves_discovered_thread_target(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+        monkeypatch.delenv("TEAMS_SERVICE_URL", raising=False)
+
+        token_resp = _FakeAiohttpResponse(200, {"access_token": "the-token"})
+        activity_resp = _FakeAiohttpResponse(200, {"id": "msg-99"})
+        session = _FakeAiohttpSession([token_resp, activity_resp])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:channel@thread.tacv2;messageid=1780267076971",
+            "hello channel",
+        )
+
+        assert result == {"success": True, "message_id": "msg-99"}
+        activity_url, _activity_kwargs = session.calls[1]
+        assert (
+            "/v3/conversations/19:channel@thread.tacv2;messageid=1780267076971/activities"
+            in activity_url
+        )
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_uses_explicit_thread_id(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+        monkeypatch.delenv("TEAMS_SERVICE_URL", raising=False)
+
+        token_resp = _FakeAiohttpResponse(200, {"access_token": "the-token"})
+        activity_resp = _FakeAiohttpResponse(200, {"id": "msg-99"})
+        session = _FakeAiohttpSession([token_resp, activity_resp])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:channel@thread.tacv2",
+            "hello thread",
+            thread_id="1780267076971",
+        )
+
+        assert result == {"success": True, "message_id": "msg-99"}
+        activity_url, _activity_kwargs = session.calls[1]
+        assert activity_url.endswith(
+            "/v3/conversations/19:channel@thread.tacv2;messageid=1780267076971/activities"
+        )
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_explicit_thread_overrides_discovered_thread(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+        monkeypatch.delenv("TEAMS_SERVICE_URL", raising=False)
+
+        token_resp = _FakeAiohttpResponse(200, {"access_token": "the-token"})
+        activity_resp = _FakeAiohttpResponse(200, {"id": "msg-99"})
+        session = _FakeAiohttpSession([token_resp, activity_resp])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:channel@thread.tacv2;messageid=discovered-root",
+            "hello thread",
+            thread_id="explicit-root",
+        )
+
+        assert result == {"success": True, "message_id": "msg-99"}
+        activity_url, _activity_kwargs = session.calls[1]
+        assert activity_url.endswith(
+            "/v3/conversations/19:channel@thread.tacv2;messageid=explicit-root/activities"
+        )
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_empty_thread_uses_discovered_thread(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+        monkeypatch.delenv("TEAMS_SERVICE_URL", raising=False)
+
+        token_resp = _FakeAiohttpResponse(200, {"access_token": "the-token"})
+        activity_resp = _FakeAiohttpResponse(200, {"id": "msg-99"})
+        session = _FakeAiohttpSession([token_resp, activity_resp])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:channel@thread.tacv2;messageid=discovered-root",
+            "hello thread",
+            thread_id="",
+        )
+
+        assert result == {"success": True, "message_id": "msg-99"}
+        activity_url, _activity_kwargs = session.calls[1]
+        assert activity_url.endswith(
+            "/v3/conversations/19:channel@thread.tacv2;messageid=discovered-root/activities"
+        )
 
     @pytest.mark.asyncio
     async def test_standalone_send_propagates_token_failure(self, monkeypatch):
@@ -713,6 +883,95 @@ class TestTeamsStandaloneSend:
         assert "401" in result["error"]
         assert "token" in result["error"].lower()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "chat_id",
+        [
+            "19:channel@thread.tacv2;messageid=",
+            "19:channel@thread.tacv2;messageid=../activities",
+            "19:channel@thread.tacv2;messageid=123;messageid=456",
+        ],
+    )
+    async def test_standalone_send_rejects_malformed_discovery_suffix(self, monkeypatch, chat_id):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+        monkeypatch.delenv("TEAMS_SERVICE_URL", raising=False)
+
+        session = _FakeAiohttpSession([])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            chat_id,
+            "hi",
+        )
+
+        assert "error" in result
+        assert "Bot Framework conversation ID" in result["error"]
+        assert len(session.calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_rejects_invalid_explicit_thread_id(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+        monkeypatch.delenv("TEAMS_SERVICE_URL", raising=False)
+
+        session = _FakeAiohttpSession([])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:channel@thread.tacv2",
+            "hi",
+            thread_id="../activities",
+        )
+
+        assert "error" in result
+        assert "thread_id" in result["error"]
+        assert len(session.calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_rejects_chat_id_with_trailing_newline(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant")
+        monkeypatch.delenv("TEAMS_SERVICE_URL", raising=False)
+
+        session = _FakeAiohttpSession([])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:channel@thread.tacv2\n",
+            "hi",
+        )
+
+        assert "error" in result
+        assert "conversation ID" in result["error"]
+        assert len(session.calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_rejects_tenant_id_with_trailing_newline(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_CLIENT_ID", "client-id")
+        monkeypatch.setenv("TEAMS_CLIENT_SECRET", "secret")
+        monkeypatch.setenv("TEAMS_TENANT_ID", "tenant\n")
+        monkeypatch.delenv("TEAMS_SERVICE_URL", raising=False)
+
+        session = _FakeAiohttpSession([])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _teams_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "19:channel@thread.tacv2",
+            "hi",
+        )
+
+        assert "error" in result
+        assert "TEAMS_TENANT_ID" in result["error"]
+        assert len(session.calls) == 0
+
 
 class TestTeamsMediaAttachments:
     """send_video / send_voice / send_document route through the same
@@ -727,7 +986,60 @@ class TestTeamsMediaAttachments:
         adapter._app = MagicMock()
         adapter._app.id = "bot-id"
         adapter._app.send = AsyncMock(return_value=MagicMock(id="msg-001"))
+        adapter._app.reply = AsyncMock(return_value=MagicMock(id="reply-001"))
         return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_image_uses_cron_thread_metadata(self):
+        adapter = self._make_adapter()
+
+        result = await adapter.send_image(
+            "19:abc@thread.v2",
+            "https://example.invalid/image.png",
+            metadata={"thread_id": "1780267076971"},
+        )
+
+        assert result.success
+        adapter._app.reply.assert_awaited_once()
+        assert adapter._app.reply.await_args.args[:2] == (
+            "19:abc@thread.v2",
+            "1780267076971",
+        )
+        adapter._app.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_all_media_methods_forward_thread_metadata(self, tmp_path):
+        adapter = self._make_adapter()
+        metadata = {"thread_id": "1780267076971"}
+        media = tmp_path / "media.bin"
+        media.write_bytes(b"media")
+
+        await adapter.send_image_file(
+            "19:abc@thread.v2",
+            str(media),
+            metadata=metadata,
+        )
+        await adapter.send_video(
+            "19:abc@thread.v2",
+            str(media),
+            metadata=metadata,
+        )
+        await adapter.send_voice(
+            "19:abc@thread.v2",
+            str(media),
+            metadata=metadata,
+        )
+        await adapter.send_document(
+            "19:abc@thread.v2",
+            str(media),
+            metadata=metadata,
+        )
+
+        assert adapter._app.reply.await_count == 4
+        assert {
+            call.args[1] for call in adapter._app.reply.await_args_list
+        } == {"1780267076971"}
+        adapter._app.send.assert_not_awaited()
 
 
     @pytest.mark.asyncio
@@ -747,5 +1059,3 @@ class TestTeamsMediaAttachments:
         result = await adapter.send_document("19:abc@thread.v2", str(doc))
         assert result.success
         adapter._app.send.assert_awaited_once()
-
-

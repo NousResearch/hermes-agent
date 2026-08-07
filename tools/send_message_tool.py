@@ -52,6 +52,13 @@ _WHATSAPP_JID_RE = re.compile(
     r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$",
     re.IGNORECASE,
 )
+# Teams-native conversation IDs use an ``a:`` or ``19:`` prefix. Channel
+# discovery appends the root activity as ``;messageid=<id>``; parse that
+# suffix here so copied/directory-resolved targets reach the adapter instead
+# of being mistaken for human-friendly channel names.
+_TEAMS_TARGET_RE = re.compile(
+    r"^\s*((?:a|19):[A-Za-z0-9:@\-_.]+)(?:;messageid=([A-Za-z0-9:@\-_.]+))?\s*$"
+)
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
 # resolution which has no way to resolve a raw address.
@@ -391,6 +398,16 @@ def _handle_send(args):
                 f"Try using a numeric channel ID instead."
             )
 
+    # Teams persists inbound channel-thread origins using Bot Framework's
+    # composite ``<conversation>;messageid=<activity>`` value.  Sending needs
+    # the split conversation/thread pair, but mirroring must use the persisted
+    # composite origin or it cannot find the receiving gateway session.
+    mirror_chat_id = None
+    mirror_thread_id = thread_id
+    if platform_name == "teams" and chat_id and thread_id:
+        mirror_chat_id = f"{chat_id};messageid={thread_id}"
+        mirror_thread_id = None
+
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
@@ -506,14 +523,16 @@ def _handle_send(args):
             try:
                 from gateway.mirror import mirror_to_session
                 from gateway.session_context import get_session_env
-                source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
+                source_label = (
+                    get_session_env("HERMES_SESSION_PLATFORM", "") or "cli"
+                )
                 user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
                 if mirror_to_session(
                     platform_name,
-                    chat_id,
+                    mirror_chat_id or chat_id,
                     mirror_text,
                     source_label=source_label,
-                    thread_id=thread_id,
+                    thread_id=mirror_thread_id,
                     user_id=user_id,
                 ):
                     result["mirrored"] = True
@@ -591,6 +610,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         # through to the _PHONE_PLATFORMS handler below.
         if _WHATSAPP_JID_RE.fullmatch(target_ref):
             return target_ref.strip(), None, True
+    if platform_name == "teams":
+        match = _TEAMS_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
     stripped_target = target_ref.strip()
     if platform_name == "signal" and stripped_target.startswith("group:"):
         group_id = stripped_target[len("group:"):].strip()
@@ -618,6 +641,30 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
     return None, None, False
+
+
+def _target_identity(
+    platform_name: str,
+    chat_id: str,
+    thread_id: str | None,
+) -> tuple[str, str, str | None]:
+    """Return a canonical identity for routing-equivalence comparisons.
+
+    Teams persists an inbound channel-thread origin as one composite
+    ``chat_id`` while outbound parsing uses a split chat/thread pair.  Treat
+    those two representations as the same lane without changing the values
+    passed to the adapter or the session-mirroring lookup.
+    """
+    platform = str(platform_name).lower()
+    chat = str(chat_id)
+    thread = None if thread_id is None else str(thread_id)
+    if platform == "teams":
+        match = _TEAMS_TARGET_RE.fullmatch(chat)
+        if match and match.group(2):
+            composite_thread = match.group(2)
+            if thread is None or thread == composite_thread:
+                return platform, match.group(1), composite_thread
+    return platform, chat, thread
 
 
 def _describe_media_for_mirror(media_files):
@@ -660,10 +707,14 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     if not auto_target:
         return None
 
-    same_target = (
-        auto_target["platform"] == platform_name
-        and str(auto_target["chat_id"]) == str(chat_id)
-        and auto_target.get("thread_id") == thread_id
+    same_target = _target_identity(
+        auto_target["platform"],
+        auto_target["chat_id"],
+        auto_target.get("thread_id"),
+    ) == _target_identity(
+        platform_name,
+        chat_id,
+        thread_id,
     )
     if not same_target:
         return None

@@ -5,6 +5,14 @@
 #
 # These pins keep the tested Android install path stable when upstream packages
 # move faster than Termux-compatible wheels / sdists.
+#
+# NOTE on psutil: the direct dependency in pyproject.toml is pinned exactly
+# (`psutil==7.2.2; sys_platform != 'android'`), so this file intentionally
+# does NOT re-pin psutil. Constraints files can only restrict versions a
+# direct dependency already permits — they cannot relax an exact `==` pin,
+# and psutil's own build backend refuses `platform android`. The Termux
+# install path sidesteps this by skipping psutil entirely (see
+# `pyproject.toml`).
 
 ipython<10
 jedi>=0.18.1,<0.20

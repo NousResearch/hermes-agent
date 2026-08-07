@@ -68,6 +68,17 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
     assert features["realtime_voice"] is False
+    assert features["run_approval_identity_binding"] is True
+    assert data["protocols"]["run_approval_identity_binding"] == {
+        "version": 1,
+        "method": "POST",
+        "path": "/v1/runs/{run_id}/approvals/{approval_id}",
+        "choices": ["once", "deny"],
+    }
+    assert data["endpoints"]["run_approval_identity"] == {
+        "method": "POST",
+        "path": "/v1/runs/{run_id}/approvals/{approval_id}",
+    }
     assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",

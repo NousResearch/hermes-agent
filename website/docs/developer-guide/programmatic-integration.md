@@ -103,6 +103,41 @@ GET  /health, /health/detailed
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
 
+### Identity-bound run approvals
+
+Clients that present an affirmative approval action must fetch authenticated
+`GET /v1/capabilities` and require all of the following:
+
+- `features.run_approval_identity_binding == true`;
+- `protocols.run_approval_identity_binding.version == 1`;
+- method `POST` and path `/v1/runs/{run_id}/approvals/{approval_id}`;
+- exact choices `["once", "deny"]`.
+
+Each `approval.request` SSE event carries a random 32-character lowercase
+hexadecimal `approval_id`. Resolve only the request the user reviewed through
+the versioned, legacy-incompatible route:
+
+```http
+POST /v1/runs/{run_id}/approvals/0123456789abcdef0123456789abcdef
+Content-Type: application/json
+
+{"choice":"once"}
+```
+
+The identity route resolves exactly one matching pending queue entry and echoes
+`approval_id` in both the HTTP response and the `approval.responded` event.
+Unknown or replayed identities return `409` without changing the queue. Malformed
+identities return `400`. The body must contain only `choice`, whose value must
+be exactly `once` or `deny`; aliases, `session`, `always`, `all`, `resolve_all`,
+and body-supplied identities are rejected before mutation. The returned
+`resolved` count and `pending` state are captured atomically with queue removal.
+
+The legacy `POST /v1/runs/{run_id}/approval` endpoint retains FIFO/resolve-all
+behavior for backward compatibility. New external UIs must never use that route
+for affirmative approval because older servers can ignore unknown fields and
+resolve a different FIFO entry. A versioned response with `pending: true` leaves
+the run in `waiting_for_approval` when another entry remains queued.
+
 ### Model catalog surfaces
 
 The OpenAI-compatible API intentionally keeps `GET /v1/models` minimal: it is

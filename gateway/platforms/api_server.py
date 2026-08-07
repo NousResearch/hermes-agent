@@ -2083,6 +2083,11 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/runs/{run_id}", self._handle_get_run),
             ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
             ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
+            (
+                "POST",
+                "/v1/runs/{run_id}/approvals/{approval_id}",
+                self._handle_identity_bound_run_approval,
+            ),
             ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run),
         ]
         if _CRON_AVAILABLE:
@@ -3099,6 +3104,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     "explicit split-runtime mode is enabled."
                 ),
             },
+            "protocols": {
+                "run_approval_identity_binding": {
+                    "version": 1,
+                    "method": "POST",
+                    "path": "/v1/runs/{run_id}/approvals/{approval_id}",
+                    "choices": ["once", "deny"],
+                },
+            },
             "features": {
                 "chat_completions": True,
                 "chat_completions_streaming": True,
@@ -3109,6 +3122,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
+                "run_approval_identity_binding": True,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_resources": True,
@@ -3138,6 +3152,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+                "run_approval_identity": {
+                    "method": "POST",
+                    "path": "/v1/runs/{run_id}/approvals/{approval_id}",
+                },
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
@@ -6390,6 +6408,41 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return _callback
 
+    def _schedule_run_approval_request(
+        self,
+        run_id: str,
+        loop: "asyncio.AbstractEventLoop",
+        queue: "asyncio.Queue[Optional[Dict]]",
+        approval_data: Dict[str, Any],
+    ) -> None:
+        """Serialize approval request status and SSE publication on the run loop."""
+        event = dict(approval_data or {})
+        if "command" in event:
+            from gateway.run import _redact_approval_command
+
+            event["command"] = _redact_approval_command(event.get("command"))
+        event.update({
+            "event": "approval.request",
+            "run_id": run_id,
+            "timestamp": time.time(),
+            "choices": _approval_event_choices(
+                smart_denied=bool(event.get("smart_denied")),
+                allow_permanent=event.get("allow_permanent") is not False,
+            ),
+        })
+
+        def _publish() -> None:
+            if self._run_streams.get(run_id) is not queue:
+                return
+            self._set_run_status(
+                run_id,
+                "waiting_for_approval",
+                last_event="approval.request",
+            )
+            queue.put_nowait(event)
+
+        loop.call_soon_threadsafe(_publish)
+
     @_admit_api_agent_request
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
@@ -6558,31 +6611,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents[run_id] = agent
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
-                    event = dict(approval_data or {})
-                    # Redact credentials from the command before it enters the
-                    # SSE/API event stream — same egress bug as #48456, second
-                    # transport: API/desktop clients would otherwise receive the
-                    # raw command Tirith flagged. Reuse the gateway seam.
-                    if "command" in event:
-                        from gateway.run import _redact_approval_command
-
-                        event["command"] = _redact_approval_command(event.get("command"))
-                    event.update({
-                        "event": "approval.request",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                        "choices": _approval_event_choices(
-                            smart_denied=bool(event.get("smart_denied")),
-                            allow_permanent=event.get("allow_permanent") is not False,
-                        ),
-                    })
-                    self._set_run_status(
-                        run_id,
-                        "waiting_for_approval",
-                        last_event="approval.request",
-                    )
                     try:
-                        loop.call_soon_threadsafe(q.put_nowait, event)
+                        self._schedule_run_approval_request(
+                            run_id,
+                            loop,
+                            q,
+                            approval_data,
+                        )
                     except Exception:
                         pass
 
@@ -6865,6 +6900,118 @@ class APIServerAdapter(BasePlatformAdapter):
         return response
 
 
+    async def _handle_identity_bound_run_approval(
+        self,
+        request: "web.Request",
+    ) -> "web.Response":
+        """Resolve one exact approval through a legacy-incompatible route."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+        if self._run_statuses.get(run_id) is None:
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+
+        approval_id = request.match_info.get("approval_id", "")
+        if re.fullmatch(r"[0-9a-f]{32}", approval_id) is None:
+            return web.json_response(
+                _openai_error(
+                    "Invalid approval_id; expected 32 lowercase hexadecimal characters",
+                    code="invalid_approval_id",
+                ),
+                status=400,
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+        if not isinstance(body, dict) or set(body) != {"choice"}:
+            return web.json_response(
+                _openai_error(
+                    "Identity-bound approval accepts only a choice field",
+                    code="invalid_identity_approval_request",
+                ),
+                status=400,
+            )
+        choice = body.get("choice")
+        if choice not in {"once", "deny"}:
+            return web.json_response(
+                _openai_error(
+                    "Identity-bound approval choice must be once or deny",
+                    code="invalid_identity_approval_choice",
+                ),
+                status=400,
+            )
+
+        approval_session_key = self._run_approval_sessions.get(run_id)
+        if not approval_session_key:
+            return web.json_response(
+                _openai_error(
+                    f"Run has no active approval session: {run_id}",
+                    code="approval_not_active",
+                ),
+                status=409,
+            )
+
+        try:
+            from tools.approval import resolve_gateway_approval_identity
+
+            result = resolve_gateway_approval_identity(
+                approval_session_key,
+                choice,
+                approval_id,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[api_server] identity approval resolution failed for run %s",
+                run_id,
+            )
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+        if result.resolved != 1:
+            return web.json_response(
+                _openai_error(
+                    f"Run has no matching pending approval: {run_id}",
+                    code="approval_not_pending",
+                ),
+                status=409,
+            )
+
+        self._set_run_status(
+            run_id,
+            "waiting_for_approval" if result.pending else "running",
+            last_event="approval.responded",
+        )
+        response_event = {
+            "event": "approval.responded",
+            "run_id": run_id,
+            "timestamp": time.time(),
+            "choice": choice,
+            "approval_id": approval_id,
+            "resolved": result.resolved,
+            "pending": result.pending,
+        }
+        q = self._run_streams.get(run_id)
+        if q is not None:
+            try:
+                q.put_nowait(response_event)
+            except Exception:
+                pass
+
+        return web.json_response({
+            "object": "hermes.run.approval_response",
+            "run_id": run_id,
+            "choice": choice,
+            "approval_id": approval_id,
+            "resolved": result.resolved,
+            "pending": result.pending,
+        })
+
     async def _handle_run_approval(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/approval — resolve a pending run approval."""
         auth_err = self._check_auth(request)
@@ -6897,6 +7044,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        if "approval_id" in body:
+            return web.json_response(
+                _openai_error(
+                    "approval_id requires the versioned identity-bound route",
+                    code="identity_requires_versioned_route",
+                ),
+                status=400,
+            )
+
         approval_session_key = self._run_approval_sessions.get(run_id)
         if not approval_session_key:
             return web.json_response(
@@ -6912,13 +7068,14 @@ class APIServerAdapter(BasePlatformAdapter):
             or _coerce_request_bool(body.get("resolve_all"), default=False)
         )
         try:
-            from tools.approval import resolve_gateway_approval
+            from tools.approval import has_blocking_approval, resolve_gateway_approval
 
             resolved = resolve_gateway_approval(
                 approval_session_key,
                 choice,
                 resolve_all=resolve_all,
             )
+            pending = has_blocking_approval(approval_session_key)
         except Exception as exc:
             logger.exception("[api_server] approval resolution failed for run %s", run_id)
             return web.json_response(_openai_error(str(exc)), status=500)
@@ -6932,7 +7089,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=409,
             )
 
-        self._set_run_status(run_id, "running", last_event="approval.responded")
+        self._set_run_status(
+            run_id,
+            "waiting_for_approval" if pending else "running",
+            last_event="approval.responded",
+        )
         q = self._run_streams.get(run_id)
         if q is not None:
             try:
@@ -6942,6 +7103,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": time.time(),
                     "choice": choice,
                     "resolved": resolved,
+                    "pending": pending,
                 })
             except Exception:
                 pass
@@ -6951,6 +7113,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "run_id": run_id,
             "choice": choice,
             "resolved": resolved,
+            "pending": pending,
         })
 
     async def _handle_stop_run(self, request: "web.Request") -> "web.Response":

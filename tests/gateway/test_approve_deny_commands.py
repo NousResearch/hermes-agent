@@ -156,6 +156,173 @@ class TestBlockingGatewayApproval:
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
 
+    def test_entries_receive_unique_identity_exposed_to_notification(self):
+        """Every queued request exposes a stable identity before notification."""
+        from tools.approval import (
+            _await_gateway_decision,
+            _gateway_queues,
+            _lock,
+            resolve_gateway_approval,
+        )
+
+        session_key = "test-identity-notify"
+        notified = []
+        result = {}
+
+        def wait_for_decision():
+            result.update(_await_gateway_decision(
+                session_key,
+                notified.append,
+                {"command": "rm -rf /identity", "description": "identity"},
+            ))
+
+        thread = threading.Thread(target=wait_for_decision, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not notified:
+            time.sleep(0.01)
+
+        assert len(notified) == 1
+        approval_id = notified[0]["approval_id"]
+        assert isinstance(approval_id, str)
+        assert len(approval_id) == 32
+        with _lock:
+            entry = _gateway_queues[session_key][0]
+            assert entry.approval_id == approval_id
+            assert entry.data["approval_id"] == approval_id
+
+        assert resolve_gateway_approval(
+            session_key,
+            "deny",
+            approval_id=approval_id,
+        ) == 1
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert result["choice"] == "deny"
+
+    def test_identity_resolution_selects_exact_non_fifo_entry(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues, resolve_gateway_approval
+
+        session_key = "test-exact-non-fifo"
+        first = _ApprovalEntry({"command": "first", "approval_id": "0" * 32})
+        second = _ApprovalEntry({"command": "second"})
+        assert first.approval_id != "0" * 32
+        assert first.approval_id != second.approval_id
+        _gateway_queues[session_key] = [first, second]
+
+        assert resolve_gateway_approval(
+            session_key,
+            "once",
+            approval_id=second.approval_id,
+        ) == 1
+        assert second.event.is_set()
+        assert second.result == "once"
+        assert not first.event.is_set()
+        assert _gateway_queues[session_key] == [first]
+
+    def test_identity_resolution_returns_atomic_pending_snapshot(self):
+        from tools.approval import (
+            _ApprovalEntry,
+            _gateway_queues,
+            resolve_gateway_approval_identity,
+        )
+
+        session_key = "test-identity-atomic-result"
+        first = _ApprovalEntry({"command": "first"})
+        second = _ApprovalEntry({"command": "second"})
+        _gateway_queues[session_key] = [first, second]
+
+        result = resolve_gateway_approval_identity(
+            session_key,
+            "once",
+            second.approval_id,
+        )
+
+        assert result.resolved == 1
+        assert result.pending is True
+        assert _gateway_queues[session_key] == [first]
+        assert second.result == "once"
+        assert second.event.is_set()
+
+    def test_wrong_identity_and_replay_do_not_mutate_queue(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues, resolve_gateway_approval
+
+        session_key = "test-identity-replay"
+        entry = _ApprovalEntry({"command": "only"})
+        _gateway_queues[session_key] = [entry]
+
+        assert resolve_gateway_approval(
+            session_key,
+            "once",
+            approval_id="0" * 32,
+        ) == 0
+        assert _gateway_queues[session_key] == [entry]
+        assert not entry.event.is_set()
+
+        assert resolve_gateway_approval(
+            session_key,
+            "deny",
+            approval_id=entry.approval_id,
+        ) == 1
+        assert resolve_gateway_approval(
+            session_key,
+            "once",
+            approval_id=entry.approval_id,
+        ) == 0
+        assert session_key not in _gateway_queues
+
+    def test_duplicate_identity_fails_closed_without_mutating_queue(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues, resolve_gateway_approval
+
+        session_key = "test-identity-collision"
+        first = _ApprovalEntry({"command": "first"})
+        second = _ApprovalEntry({"command": "second"})
+        second.approval_id = first.approval_id
+        second.data["approval_id"] = first.approval_id
+        _gateway_queues[session_key] = [first, second]
+
+        assert resolve_gateway_approval(
+            session_key,
+            "once",
+            approval_id=first.approval_id,
+        ) == 0
+        assert _gateway_queues[session_key] == [first, second]
+        assert not first.event.is_set()
+        assert not second.event.is_set()
+
+    def test_unregister_signals_all_entries(self):
+        """unregister_gateway_notify signals all waiting entries to prevent hangs."""
+        from tools.approval import (
+            register_gateway_notify, unregister_gateway_notify,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-cleanup"
+        register_gateway_notify(session_key, lambda d: None)
+
+        e1 = _ApprovalEntry({"command": "cmd1"})
+        e2 = _ApprovalEntry({"command": "cmd2"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        unregister_gateway_notify(session_key)
+        assert e1.event.is_set()
+        assert e2.event.is_set()
+
+    def test_clear_session_denies_and_signals_all_entries(self):
+        """clear_session must wake blocked entries during boundary cleanup."""
+        from tools.approval import clear_session, _ApprovalEntry, _gateway_queues
+
+        session_key = "test-boundary-cleanup"
+        e1 = _ApprovalEntry({"command": "cmd1"})
+        e2 = _ApprovalEntry({"command": "cmd2"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        clear_session(session_key)
+
+        assert e1.event.is_set()
+        assert e2.event.is_set()
+        assert e1.result == "deny"
+        assert e2.result == "deny"
+        assert session_key not in _gateway_queues
 
 # ------------------------------------------------------------------
 # /approve command

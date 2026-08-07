@@ -16,12 +16,14 @@ import hashlib
 import logging
 import os
 import re
+import secrets
 import shlex
 import sys
 import tempfile
 import threading
 import time
 import unicodedata
+from dataclasses import dataclass
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -2446,11 +2448,13 @@ def _denial_breaker_addendum(session_key: str) -> str:
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+    __slots__ = ("approval_id", "event", "data", "result", "reason")
 
     def __init__(self, data: dict):
+        self.approval_id = secrets.token_hex(16)
         self.event = threading.Event()
-        self.data = data          # command, description, pattern_keys, …
+        self.data = dict(data)    # command, description, pattern_keys, …
+        self.data["approval_id"] = self.approval_id
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
         # Optional free-text reason supplied with an explicit deny
         # (``/deny <reason>``) so the agent can adapt instead of only
@@ -2487,15 +2491,53 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
+@dataclass(frozen=True)
+class ApprovalResolutionResult:
+    """Atomic result of resolving one exact gateway approval identity."""
+
+    resolved: int
+    pending: bool
+
+
+def resolve_gateway_approval_identity(
+    session_key: str,
+    choice: str,
+    approval_id: str,
+    reason: Optional[str] = None,
+) -> ApprovalResolutionResult:
+    """Resolve exactly one identity and snapshot remaining work under one lock."""
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if not queue:
+            return ApprovalResolutionResult(resolved=0, pending=False)
+        matching_indexes = [
+            index
+            for index, entry in enumerate(queue)
+            if entry.approval_id == approval_id
+        ]
+        if len(matching_indexes) != 1:
+            return ApprovalResolutionResult(resolved=0, pending=bool(queue))
+        entry = queue.pop(matching_indexes[0])
+        pending = bool(queue)
+        if not pending:
+            _gateway_queues.pop(session_key, None)
+        entry.result = choice
+        if reason:
+            entry.reason = reason
+        entry.event.set()
+        return ApprovalResolutionResult(resolved=1, pending=pending)
+
+
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
+                             reason: Optional[str] = None,
+                             approval_id: Optional[str] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
-    When *resolve_all* is True every pending approval in the session is
-    resolved at once (``/approve all``).  Otherwise only the oldest one
-    is resolved (FIFO).
+    When *approval_id* is provided, only that exact pending entry is resolved.
+    Otherwise, *resolve_all* resolves every pending approval in the session and
+    the default behavior resolves only the oldest entry (FIFO).
 
     *reason* is an optional free-text explanation attached to an explicit
     deny (``/deny <reason>``).  It is relayed back to the agent in the
@@ -2507,7 +2549,16 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
-        if resolve_all:
+        if approval_id is not None:
+            matching_indexes = [
+                index
+                for index, entry in enumerate(queue)
+                if entry.approval_id == approval_id
+            ]
+            if len(matching_indexes) != 1:
+                return 0
+            targets = [queue.pop(matching_indexes[0])]
+        elif resolve_all:
             targets = list(queue)
             queue.clear()
         else:
@@ -3626,6 +3677,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
     entry = _ApprovalEntry(approval_data)
+    approval_data = entry.data
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)
 

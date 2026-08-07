@@ -69,6 +69,10 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
+    app.router.add_post(
+        "/v1/runs/{run_id}/approvals/{approval_id}",
+        adapter._handle_identity_bound_run_approval,
+    )
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
 
@@ -303,6 +307,16 @@ class TestRunStatus:
 
 
 class TestRunEvents:
+    def test_route_table_advertises_legacy_incompatible_identity_endpoint(self, adapter):
+        routes = {
+            (method, path)
+            for method, path, _handler in adapter._http_route_table()
+        }
+        assert (
+            "POST",
+            "/v1/runs/{run_id}/approvals/{approval_id}",
+        ) in routes
+
     @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
         """Events stream should receive run.completed when agent finishes."""
@@ -331,6 +345,209 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+
+    @pytest.mark.asyncio
+    async def test_identity_bound_approval_resolves_exact_entry_and_echoes_id(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_identity_exact"
+        session_key = "run_identity_exact"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_approval"}
+        adapter._run_approval_sessions[run_id] = session_key
+        adapter._run_streams[run_id] = asyncio.Queue()
+        first = approval_mod._ApprovalEntry({"command": "first"})
+        second = approval_mod._ApprovalEntry({"command": "second"})
+        with approval_mod._lock:
+            approval_mod._gateway_queues[session_key] = [first, second]
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/v1/runs/{run_id}/approvals/{second.approval_id}",
+                json={"choice": "once"},
+            )
+            body = await response.json()
+
+        assert response.status == 200
+        assert body["approval_id"] == second.approval_id
+        assert body["resolved"] == 1
+        assert body["pending"] is True
+        assert adapter._run_statuses[run_id]["status"] == "waiting_for_approval"
+        responded_event = adapter._run_streams[run_id].get_nowait()
+        assert responded_event["event"] == "approval.responded"
+        assert responded_event["approval_id"] == second.approval_id
+        assert responded_event["pending"] is True
+        assert second.result == "once"
+        assert second.event.is_set()
+        assert not first.event.is_set()
+        with approval_mod._lock:
+            assert approval_mod._gateway_queues[session_key] == [first]
+
+    @pytest.mark.asyncio
+    async def test_wrong_identity_returns_conflict_without_resolving(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_identity_wrong"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_approval"}
+        adapter._run_approval_sessions[run_id] = run_id
+        entry = approval_mod._ApprovalEntry({"command": "only"})
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [entry]
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/v1/runs/{run_id}/approvals/{'0' * 32}",
+                json={"choice": "once"},
+            )
+            body = await response.json()
+
+        assert response.status == 409
+        assert body["error"]["code"] == "approval_not_pending"
+        assert not entry.event.is_set()
+        with approval_mod._lock:
+            assert approval_mod._gateway_queues[run_id] == [entry]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("approval_id", ["short", "A" * 32, "g" * 32, "0" * 33])
+    async def test_malformed_approval_identity_is_rejected(self, adapter, approval_id):
+        app = _create_runs_app(adapter)
+        run_id = "run_identity_malformed"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_approval"}
+        adapter._run_approval_sessions[run_id] = run_id
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/v1/runs/{run_id}/approvals/{approval_id}",
+                json={"choice": "once"},
+            )
+            body = await response.json()
+
+        assert response.status == 400
+        assert body["error"]["code"] == "invalid_approval_id"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("choice", ["approve", "session", "always"])
+    async def test_identity_route_rejects_aliases_and_persistent_scope(self, adapter, choice):
+        app = _create_runs_app(adapter)
+        run_id = "run_identity_all"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_approval"}
+        adapter._run_approval_sessions[run_id] = run_id
+        entry = approval_mod._ApprovalEntry({"command": "only"})
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [entry]
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/v1/runs/{run_id}/approvals/{entry.approval_id}",
+                json={"choice": choice},
+            )
+            body = await response.json()
+
+        assert response.status == 400
+        assert body["error"]["code"] == "invalid_identity_approval_choice"
+        assert not entry.event.is_set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("extra", [{"all": True}, {"resolve_all": True}, {"approval_id": "0" * 32}])
+    async def test_identity_route_rejects_bulk_and_ambiguous_fields(self, adapter, extra):
+        app = _create_runs_app(adapter)
+        run_id = "run_identity_scope"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "waiting_for_approval"}
+        adapter._run_approval_sessions[run_id] = run_id
+        entry = approval_mod._ApprovalEntry({"command": "only"})
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [entry]
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/v1/runs/{run_id}/approvals/{entry.approval_id}",
+                json={"choice": "once", **extra},
+            )
+            body = await response.json()
+
+        assert response.status == 400
+        assert body["error"]["code"] == "invalid_identity_approval_request"
+        assert not entry.event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_legacy_route_rejects_body_identity_without_mutation(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_legacy_body_identity"
+        adapter._run_statuses[run_id] = {
+            "run_id": run_id,
+            "status": "waiting_for_approval",
+        }
+        adapter._run_approval_sessions[run_id] = run_id
+        entry = approval_mod._ApprovalEntry({"command": "only"})
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [entry]
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/v1/runs/{run_id}/approval",
+                json={"choice": "once", "approval_id": entry.approval_id},
+            )
+            body = await response.json()
+
+        assert response.status == 400
+        assert body["error"]["code"] == "identity_requires_versioned_route"
+        assert not entry.event.is_set()
+        with approval_mod._lock:
+            assert approval_mod._gateway_queues[run_id] == [entry]
+
+    @pytest.mark.asyncio
+    async def test_new_approval_publication_after_resolution_wins_status_race(
+        self,
+        adapter,
+        monkeypatch,
+    ):
+        app = _create_runs_app(adapter)
+        run_id = "run_identity_status_race"
+        adapter._run_statuses[run_id] = {
+            "run_id": run_id,
+            "status": "waiting_for_approval",
+        }
+        adapter._run_approval_sessions[run_id] = run_id
+        adapter._run_streams[run_id] = asyncio.Queue()
+        resolved_entry = approval_mod._ApprovalEntry({"command": "first"})
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [resolved_entry]
+
+        loop = asyncio.get_running_loop()
+        original_resolve = approval_mod.resolve_gateway_approval_identity
+
+        def resolve_then_enqueue(session_key, choice, approval_id):
+            result = original_resolve(session_key, choice, approval_id)
+            successor = approval_mod._ApprovalEntry({"command": "second"})
+            with approval_mod._lock:
+                approval_mod._gateway_queues[session_key] = [successor]
+            adapter._schedule_run_approval_request(
+                run_id,
+                loop,
+                adapter._run_streams[run_id],
+                successor.data,
+            )
+            return result
+
+        monkeypatch.setattr(
+            approval_mod,
+            "resolve_gateway_approval_identity",
+            resolve_then_enqueue,
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/v1/runs/{run_id}/approvals/{resolved_entry.approval_id}",
+                json={"choice": "once"},
+            )
+            body = await response.json()
+            await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert body["pending"] is False
+        assert adapter._run_statuses[run_id]["status"] == "waiting_for_approval"
+        events = [adapter._run_streams[run_id].get_nowait() for _ in range(2)]
+        assert [event["event"] for event in events] == [
+            "approval.responded",
+            "approval.request",
+        ]
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):

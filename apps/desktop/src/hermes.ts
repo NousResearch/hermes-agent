@@ -662,10 +662,19 @@ export function getSessionMessages(
   page: { limit?: number; offset?: number; order?: 'latest' | 'oldest' } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
-  if (profile) query.set('profile', profile)
-  if (page.limit !== undefined) query.set('limit', String(page.limit))
-  if (page.offset !== undefined) query.set('offset', String(page.offset))
-  if (page.order) query.set('order', page.order)
+
+  if (profile) {
+    query.set('profile', profile)
+  }
+  if (page.limit !== undefined) {
+    query.set('limit', String(page.limit))
+  }
+  if (page.offset !== undefined) {
+    query.set('offset', String(page.offset))
+  }
+  if (page.order) {
+    query.set('order', page.order)
+  }
   const suffix = query.size ? `?${query.toString()}` : ''
 
   return window.hermesDesktop.api<SessionMessagesResponse>({

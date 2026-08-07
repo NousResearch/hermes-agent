@@ -9222,6 +9222,116 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
             server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_merges_on_personality_marker(monkeypatch):
+    """Personality changes share the exact race #76870 fixed for model switches:
+    config.set's "personality" key (unlike "model") has no session["running"]
+    guard, so a client can call it while a turn is in flight. That appends a
+    marker to history and bumps history_version mid-turn — without this fix,
+    the version mismatch falls into the "genuine desync" branch and the
+    agent's response for that turn is silently dropped from persisted history.
+
+    Covers both cases: no prior personality marker (first switch), and a
+    prior marker already in the turn-start history (every switch after the
+    first — _apply_personality_to_session does not strip prior markers the
+    way _append_model_switch_marker does, so the prior marker survives into
+    both snapshots and the content-diff must still match).
+    """
+    session_ref = {"s": None}
+
+    def _make_marker(prompt_text: str) -> dict:
+        return {
+            "role": "user",
+            "content": (
+                "[System: The user has changed the assistant's personality. "
+                "From this point forward, adopt the following persona and "
+                f"respond accordingly: {prompt_text}]"
+            ),
+        }
+
+    class _MarkerAgent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            # Simulate a concurrent config.set{key:"personality"} RPC landing
+            # mid-turn via _apply_personality_to_session: append a marker,
+            # bump history_version, with no running-state guard in its way.
+            with session_ref["s"]["history_lock"]:
+                hist = session_ref["s"]["history"]
+                hist.append(_make_marker("new-persona"))
+                session_ref["s"]["history_version"] += 1
+            return {
+                "final_response": "agent reply",
+                "messages": list(conversation_history) + [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "agent reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    for label, prior_history in [
+        ("no prior marker", [{"role": "user", "content": "hello"}]),
+        ("with prior marker", [
+            {"role": "user", "content": "hello"},
+            _make_marker("old-persona"),
+            {"role": "assistant", "content": "hi there"},
+        ]),
+    ]:
+        server._sessions["sid"] = _session(
+            agent=_MarkerAgent(),
+            history=list(prior_history),
+        )
+        session_ref["s"] = server._sessions["sid"]
+        emits: list[tuple] = []
+        try:
+            monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+            monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+            monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+            monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "prompt.submit",
+                    "params": {"session_id": "sid", "text": "hi"},
+                }
+            )
+            assert resp.get("result"), f"[{label}] got error: {resp.get('error')}"
+
+            final_history = server._sessions["sid"]["history"]
+
+            assistant_msgs = [
+                e for e in final_history
+                if isinstance(e, dict) and e.get("role") == "assistant"
+                and e.get("content") == "agent reply"
+            ]
+            assert len(assistant_msgs) == 1, (
+                f"[{label}] agent output was not merged into history "
+                f"(got {len(assistant_msgs)} assistant 'agent reply' messages) "
+                f"-- a mid-turn personality change must not silently drop the "
+                f"turn's response"
+            )
+
+            markers = [
+                e for e in final_history
+                if server._is_personality_marker(e)
+            ]
+            assert len(markers) >= 1, f"[{label}] personality marker missing from merged history"
+            assert any("new-persona" in m["content"] for m in markers)
+
+            complete_calls = [a for a in emits if a[0] == "message.complete"]
+            assert len(complete_calls) == 1
+            _, _, payload = complete_calls[0]
+            assert "warning" not in payload, (
+                f"[{label}] merge path should not surface a warning"
+            )
+        finally:
+            server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_sanitizes_bracketed_paste_before_agent(monkeypatch):
     """prompt.submit must sanitize corrupted user text before run_conversation."""
     captured: dict[str, str] = {}

@@ -3898,6 +3898,36 @@ def _is_model_switch_marker(entry: Any) -> bool:
     return isinstance(content, str) and content.startswith(_MODEL_SWITCH_MARKER_PREFIX)
 
 
+# Stable leading text of the two personality-pivot markers _apply_personality_to_session
+# appends (set vs. cleared). Used the same way as _MODEL_SWITCH_MARKER_PREFIX above: to
+# recognize a mid-turn personality change as a safe, mergeable history mutation rather
+# than a genuine desync (#76870's model-switch fix, applied to personality's identical
+# race — config.set's "personality" key has no session.get("running") guard, unlike
+# "model", so this marker can land while a turn is in flight).
+_PERSONALITY_MARKER_PREFIXES = (
+    "[System: The user has changed the assistant's personality.",
+    "[System: The user has cleared the personality overlay.",
+)
+
+
+def _is_personality_marker(entry: Any) -> bool:
+    """Whether a history entry is a personality-pivot marker.
+
+    Checks both the ``"[System: ..."`` content-prefix (today's shape, and
+    what any already-persisted marker in an existing session has) and
+    ``display_kind == "personality_switch"`` (the structured shape a
+    separate, unrelated fix — #74315/#74350 — may give newly-appended
+    markers), so this stays correct regardless of merge order between the
+    two fixes.
+    """
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("display_kind") == "personality_switch":
+        return True
+    content = entry.get("content")
+    return isinstance(content, str) and content.startswith(_PERSONALITY_MARKER_PREFIXES)
+
+
 def _append_model_switch_marker(session: dict | None, *, model: str, provider: str) -> None:
     """Record a real system-history pivot after a live model switch.
 
@@ -9869,29 +9899,38 @@ def _run_prompt_submit(
                         else:
                             # History mutated externally during the turn.
                             # Check if the only mutation was a model-switch
-                            # marker inserted mid-turn (#76870).  If so the
-                            # agent output is still valid — merge it into the
+                            # and/or personality-pivot marker inserted mid-turn
+                            # (#76870, extended to personality — config.set's
+                            # "personality" key applies immediately even while
+                            # session["running"] is true, so this race is not
+                            # hypothetical for it either).  If so the agent
+                            # output is still valid — merge it into the
                             # current history that now contains the marker.
                             #
                             # _append_model_switch_marker strips prior markers
                             # in-place then appends a new one, so the delta
                             # is NOT a simple tail-slice — we must compare
                             # content, not indices.
+                            def _is_safe_mergeable_marker(e: Any) -> bool:
+                                return _is_model_switch_marker(e) or _is_personality_marker(e)
+
                             current_history = list(session["history"])
                             history_no_markers = [
-                                e for e in history if not _is_model_switch_marker(e)
+                                e for e in history if not _is_safe_mergeable_marker(e)
                             ]
                             current_no_markers = [
-                                e for e in current_history if not _is_model_switch_marker(e)
+                                e
+                                for e in current_history
+                                if not _is_safe_mergeable_marker(e)
                             ]
-                            model_switch_only = (
+                            safe_marker_only = (
                                 current_no_markers == history_no_markers
                                 and any(
-                                    _is_model_switch_marker(e)
+                                    _is_safe_mergeable_marker(e)
                                     for e in current_history
                                 )
                             )
-                            if model_switch_only:
+                            if safe_marker_only:
                                 # The agent's new messages start after the
                                 # turn-start history.  Guard against
                                 # auto-compression making result["messages"]

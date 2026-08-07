@@ -159,3 +159,98 @@ class TestTextBatching:
         assert adapter._media_group_events == {}
         assert adapter._media_group_tasks == {}
         assert adapter._polling_error_task is None
+
+
+class TestBatchFlushNotCancelledByFollowUp:
+    """A follow-up chunk must never cancel a dispatch that is already running.
+
+    ``_enqueue_*`` unconditionally cancels the prior flush task, and the flush
+    pops the event out of its pending buffer *before* awaiting
+    ``handle_message``.  Without a shield the popped event is in no buffer, was
+    never dispatched, and asyncio does not report cancelled tasks — so the
+    user's message is lost silently.  The Discord adapter already shields this
+    exact path (#12444); these cover the Telegram equivalents.
+
+    ``handle_message`` must really suspend here: the production path awaits
+    ``asyncio.to_thread(self._apply_topic_recovery, event)`` before it durably
+    queues anything, so the cancellation window is always open.  An
+    ``AsyncMock`` never suspends, which is why the existing tests miss this.
+    """
+
+    @staticmethod
+    def _tracking_handler(entered, completed):
+        async def _handle(event):
+            label = event.text or f"<{len(event.media_urls)} media>"
+            entered.append(label)
+            await asyncio.sleep(0.3)
+            completed.append(label)
+        return _handle
+
+    @pytest.mark.asyncio
+    async def test_text_follow_up_does_not_drop_in_flight_message(self):
+        adapter = _make_adapter()
+        entered, completed = [], []
+        adapter.handle_message = self._tracking_handler(entered, completed)
+
+        adapter._enqueue_text_event(_make_event("first message"))
+        await asyncio.sleep(0.15)  # flush fired at ~0.1s; dispatch is in flight
+        adapter._enqueue_text_event(_make_event("second message"))
+        await asyncio.sleep(0.8)
+
+        assert entered == ["first message", "second message"]
+        assert completed == ["first message", "second message"], (
+            "the in-flight first message was cancelled and silently lost"
+        )
+
+    @pytest.mark.asyncio
+    async def test_photo_follow_up_does_not_drop_in_flight_batch(self):
+        adapter = _make_adapter()
+        adapter._media_batch_delay_seconds = 0.1
+        entered, completed = [], []
+        adapter.handle_message = self._tracking_handler(entered, completed)
+
+        first = _make_event("photo one")
+        first.media_urls = ["u1"]
+        first.media_types = ["image"]
+        adapter._enqueue_photo_event("k", first)
+        await asyncio.sleep(0.15)
+        second = _make_event("photo two")
+        second.media_urls = ["u2"]
+        second.media_types = ["image"]
+        adapter._enqueue_photo_event("k", second)
+        await asyncio.sleep(0.8)
+
+        assert completed == ["photo one", "photo two"], (
+            "the in-flight photo batch was cancelled and silently lost"
+        )
+
+    @pytest.mark.asyncio
+    async def test_media_group_follow_up_does_not_drop_in_flight_album(self):
+        adapter = _make_adapter()
+        adapter.MEDIA_GROUP_WAIT_SECONDS = 0.1
+        entered, completed = [], []
+        adapter.handle_message = self._tracking_handler(entered, completed)
+
+        first = _make_event("album caption")
+        first.media_urls = ["u1"]
+        first.media_types = ["image"]
+        adapter._media_group_events["mg1"] = first
+        adapter._media_group_tasks["mg1"] = asyncio.create_task(
+            adapter._flush_media_group_event("mg1")
+        )
+        await asyncio.sleep(0.15)
+        second = _make_event("")
+        second.media_urls = ["u2"]
+        second.media_types = ["image"]
+        adapter._media_group_events["mg1"] = second
+        prior = adapter._media_group_tasks.get("mg1")
+        if prior:
+            prior.cancel()
+        adapter._media_group_tasks["mg1"] = asyncio.create_task(
+            adapter._flush_media_group_event("mg1")
+        )
+        await asyncio.sleep(0.8)
+
+        assert "album caption" in completed, (
+            "the in-flight album (carrying the caption) was cancelled and lost"
+        )

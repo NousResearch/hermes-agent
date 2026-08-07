@@ -9085,7 +9085,20 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[Telegram] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
-            await self.handle_message(event)
+            # Shield the downstream dispatch so that a subsequent chunk
+            # arriving while handle_message is mid-flight cannot cancel it.
+            # _enqueue_* always cancels the prior flush task when a new chunk
+            # lands, and the event has already been popped out of the pending
+            # buffer above — so without this shield the popped message is in no
+            # buffer, was never dispatched, and asyncio never reports the
+            # cancelled task: the user's message is silently lost.  The new
+            # chunk is handled by the fresh flush task regardless.
+            await asyncio.shield(self.handle_message(event))
+        except asyncio.CancelledError:
+            # Only reached if the cancel landed before the pop — the shielded
+            # handle_message is unaffected either way.  Let the task exit
+            # cleanly so the finally block cleans up.
+            pass
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
@@ -9119,7 +9132,20 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.debug("[Telegram] Dropping photo batch flush after disconnect started")
                 return
             logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(event.media_urls))
-            await self.handle_message(event)
+            # Shield the downstream dispatch so that a subsequent chunk
+            # arriving while handle_message is mid-flight cannot cancel it.
+            # _enqueue_* always cancels the prior flush task when a new chunk
+            # lands, and the event has already been popped out of the pending
+            # buffer above — so without this shield the popped message is in no
+            # buffer, was never dispatched, and asyncio never reports the
+            # cancelled task: the user's message is silently lost.  The new
+            # chunk is handled by the fresh flush task regardless.
+            await asyncio.shield(self.handle_message(event))
+        except asyncio.CancelledError:
+            # Only reached if the cancel landed before the pop — the shielded
+            # handle_message is unaffected either way.  Let the task exit
+            # cleanly so the finally block cleans up.
+            pass
         finally:
             if self._pending_photo_batch_tasks.get(batch_key) is current_task:
                 self._pending_photo_batch_tasks.pop(batch_key, None)
@@ -9483,7 +9509,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 if self._should_drop_delayed_delivery():
                     logger.debug("[Telegram] Dropping media group flush after disconnect started")
                     return
-                await self.handle_message(event)
+                # Shield the dispatch: _enqueue_media_group_event cancels the
+                # prior flush task on every album item, and the event has
+                # already been popped — an unshielded cancel would silently
+                # drop the album (its caption rides on the first item).
+                await asyncio.shield(self.handle_message(event))
         except asyncio.CancelledError:
             return
         finally:

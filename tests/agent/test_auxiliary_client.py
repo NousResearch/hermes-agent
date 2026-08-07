@@ -1383,6 +1383,15 @@ class TestIsModelNotFoundError:
         # billing keyword wins — payment owns it
         assert _is_model_not_found_error(exc) is False
 
+    def test_nous_generic_404_body(self):
+        """Nous inference proxy 404s with a generic body when a model has no
+        vision/chat route — must still trigger the stale-model self-heal."""
+        exc = Exception(
+            "Error code: 404 - {'status': 404, 'message': "
+            "\"Couldn't find that, sorry.\"}"
+        )
+        exc.status_code = 404
+        assert _is_model_not_found_error(exc) is True
 
 
 

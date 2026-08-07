@@ -4014,6 +4014,9 @@ def _is_model_not_found_error(exc: Exception) -> bool:
         "the model `",            # OpenAI-style: "The model `X` does not exist"
         "model_not_found",
         "unknown model",
+        # Nous inference proxy generic 404 body — returned when the requested
+        # model has no vision/chat route, with no model-specific phrasing.
+        "couldn't find that",
     ))
 
 

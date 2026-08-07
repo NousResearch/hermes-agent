@@ -63,6 +63,18 @@ def execute(
             and relay_runtime._is_relay_wrapped_callback_error(exc, callback_error)
         ):
             raise callback_error
+        # Tools with persistent internal event loops (e.g. vision_analyze)
+        # can trigger "Future attached to a different loop" when Relay's
+        # asyncio.run() creates a second loop.  Fall back to direct
+        # execution so the tool still works.  (#77244)
+        if isinstance(exc, RuntimeError) and "attached to a different loop" in str(exc):
+            logger.warning(
+                "NeMo Relay event-loop conflict for tool %s; "
+                "falling back to direct execution",
+                tool_name,
+                exc_info=True,
+            )
+            return callback(args), args
         if (
             isinstance(exc, Exception)
             and callback_error is None

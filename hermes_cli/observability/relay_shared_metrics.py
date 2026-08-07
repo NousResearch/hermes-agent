@@ -141,7 +141,10 @@ class _Runtime:
             runtime_id=self.host.runtime_id,
         )
         self.relay.subscribers.register(self._subscriber_name, self.subscriber)
-        self.host.retain_managed_execution(self._subscriber_name)
+        # Do NOT retain managed execution unconditionally — tools with
+        # persistent internal event loops (e.g. vision_analyze) conflict
+        # with Relay's asyncio.run().  The subscriber receives events
+        # through relay.subscribers independently.  (#77244)
         self._registered = True
         atexit.register(self.shutdown)
 

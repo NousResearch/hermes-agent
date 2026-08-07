@@ -1329,6 +1329,23 @@ CREATE TABLE IF NOT EXISTS task_runs (
     error               TEXT
 );
 
+-- Normalized exact usage projection for worker runs. The profile-local ledger
+-- remains primary; this table is a durable join keyed by authoritative
+-- task_runs.id, not by task id (which can have many retry runs).
+CREATE TABLE IF NOT EXISTS task_run_usage (
+    task_run_id     INTEGER PRIMARY KEY REFERENCES task_runs(id) ON DELETE CASCADE,
+    usage_run_id    TEXT NOT NULL,
+    source_profile  TEXT NOT NULL,
+    input_tokens    INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+    output_tokens   INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+    cost_usd        REAL NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
+    model           TEXT,
+    provider        TEXT,
+    outcome         TEXT,
+    retry_count     INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    updated_at      REAL NOT NULL
+);
+
 -- Files attached to a task (PDFs, images, source documents). The blob
 -- lives on disk under ``attachments_root(board)/<task_id>/<stored_name>``;
 -- this row carries metadata + the absolute ``stored_path`` so the
@@ -1372,6 +1389,7 @@ CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, c
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
+CREATE INDEX IF NOT EXISTS idx_task_run_usage_usage ON task_run_usage(usage_run_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
 """

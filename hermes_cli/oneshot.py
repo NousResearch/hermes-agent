@@ -415,6 +415,7 @@ def _run_agent(
     # raises on a provider/config error. The one-shot exit path hard-exits via
     # os._exit and skips finalizers, so an un-closed connection here would leak.
     agent = None
+    run_result: dict = {}
     try:
         # Read the effective fallback chain from profile config so oneshot
         # workers honour the same merge semantics as interactive CLI and
@@ -454,9 +455,57 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
-        result = agent.run_conversation(prompt)
-        return (result.get("final_response") or "", result)
+        # Establish the durable crash-survival marker before the provider
+        # request.  The conversation loop also emits this lifecycle hook for
+        # interactive sessions; the ledger's run-start write is idempotent.
+        from hermes_cli.lifecycle import invoke_hook
+
+        from agent.run_usage_ledger import process_invocation_id, process_ledger, run_id_for_session
+
+        process_ledger().start_run(
+            run_id=run_id_for_session(getattr(agent, "session_id", None)),
+            process_id=process_invocation_id(),
+            session_id=getattr(agent, "session_id", None),
+            model=effective_model,
+            provider=runtime.get("provider"),
+        )
+        invoke_hook(
+            "on_session_start",
+            session_id=getattr(agent, "session_id", None),
+            model=effective_model,
+            provider=runtime.get("provider"),
+            platform="cli",
+        )
+        run_result = agent.run_conversation(prompt)
+        return (run_result.get("final_response") or "", run_result)
     finally:
+        if agent is not None:
+            try:
+                from hermes_cli.lifecycle import finalize_session
+
+                exc_type = sys.exc_info()[0]
+                was_interrupted = run_result.get("interrupted") is True or exc_type is KeyboardInterrupt
+                was_failed = run_result.get("failed") is True or (exc_type is not None and not was_interrupted)
+                finalize_session(
+                    session_id=getattr(agent, "session_id", None),
+                    platform="cli",
+                    completed=run_result.get("completed") is True and not was_interrupted,
+                    failed=was_failed,
+                    interrupted=was_interrupted,
+                    reason=(
+                        "interrupted" if was_interrupted
+                        else "completed" if run_result.get("completed") is True
+                        else "failed"
+                    ),
+                )
+                from agent.run_usage_ledger import process_ledger, run_id_for_session
+
+                receipt = process_ledger().get_run(run_id_for_session(getattr(agent, "session_id", None)))
+                if receipt["ended_at"] is None:
+                    raise RuntimeError("usage accounting finalization did not close the run")
+            except Exception:
+                logging.error("oneshot usage finalization failed; leaving run incomplete", exc_info=True)
+                raise
         # Ordering deliberately mirrors gateway/run.py:_cleanup_agent_resources,
         # NOT cli.py:_run_cleanup — oneshot has no _active_agent_ref and must
         # close the agent explicitly because the hard-exit path skips finalizers.

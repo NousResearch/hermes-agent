@@ -310,6 +310,72 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
+-- Additive run/process usage receipts.  Immutable usage_events are the
+-- idempotency boundary; usage_runs is the queryable aggregate.
+CREATE TABLE IF NOT EXISTS usage_runs (
+    run_id TEXT PRIMARY KEY,
+    process_id TEXT NOT NULL,
+    task_run_id INTEGER,
+    session_id TEXT,
+    task_id TEXT,
+    board TEXT,
+    model TEXT,
+    provider TEXT,
+    input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+    output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+    cost_usd REAL NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
+    turn_count INTEGER NOT NULL DEFAULT 0 CHECK (turn_count >= 0),
+    tool_call_count INTEGER NOT NULL DEFAULT 0 CHECK (tool_call_count >= 0),
+    elapsed REAL CHECK (elapsed IS NULL OR elapsed >= 0),
+    outcome TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    failure_reason TEXT,
+    started_at REAL NOT NULL,
+    ended_at REAL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS usage_events (
+    event_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES usage_runs(run_id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    session_id TEXT,
+    turn_id TEXT,
+    input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+    output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+    cost_usd REAL NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
+    retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    model TEXT,
+    provider TEXT,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS usage_turns (
+    run_id TEXT NOT NULL REFERENCES usage_runs(run_id) ON DELETE CASCADE,
+    turn_id TEXT NOT NULL,
+    PRIMARY KEY (run_id, turn_id)
+);
+
+CREATE TABLE IF NOT EXISTS usage_run_models (
+    run_id TEXT NOT NULL REFERENCES usage_runs(run_id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'unknown',
+    input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+    output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+    cost_usd REAL NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
+    event_count INTEGER NOT NULL DEFAULT 0 CHECK (event_count >= 0),
+    PRIMARY KEY (run_id, model, provider)
+);
+
+CREATE TABLE IF NOT EXISTS usage_diagnostics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT,
+    diagnostic_type TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 1 CHECK (count > 0),
+    detail TEXT,
+    created_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -368,6 +434,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
+CREATE INDEX IF NOT EXISTS idx_usage_runs_board ON usage_runs(board, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_runs_task ON usage_runs(task_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_runs_task_run ON usage_runs(task_run_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_runs_session ON usage_runs(session_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_events_run ON usage_events(run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_run_models_run ON usage_run_models(run_id, model, provider);
+CREATE INDEX IF NOT EXISTS idx_usage_diagnostics_run ON usage_diagnostics(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
 """

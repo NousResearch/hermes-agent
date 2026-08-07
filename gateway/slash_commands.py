@@ -1753,6 +1753,22 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
+        # Check channel_overrides: when a per-channel override model exists and no
+        # session override is active, show the channel-specific model instead of
+        # the global default (#72838).
+        if cfg and not self._session_model_overrides.get(self._session_key_for_source(event.source)):
+            try:
+                from gateway.run import _get_channel_override
+                ch = _get_channel_override(
+                    cfg,
+                    source.platform,
+                    str(source.chat_id) if source.chat_id else "",
+                )
+                if ch and ch.model:
+                    current_model = ch.model
+            except Exception:
+                pass
+
         # Check for session override. Normalize the source the same way a normal
         # message turn does
         # (Telegram DM topic recovery) before deriving the override key, so

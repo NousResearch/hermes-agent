@@ -18634,19 +18634,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
+                return self._format_session_info(source=source)
+        return self._format_session_info(source=source)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(
+        self,
+        source: Optional[SessionSource] = None,
+    ) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
+
+        When ``source`` is provided, checks ``channel_overrides`` for a
+        per-channel model and shows that instead of the global default
+        (#72838).
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
         model = _resolve_gateway_model()
+        # Respect channel_overrides when rendering info for a specific source
+        if source is not None:
+            config = getattr(self, "config", None)
+            if config:
+                chat_id = str(source.chat_id) if source.chat_id else ""
+                ch = _get_channel_override(
+                    config,
+                    source.platform,
+                    chat_id,
+                )
+                if ch and ch.model:
+                    model = ch.model
         config_context_length = None
         provider = None
         base_url = None

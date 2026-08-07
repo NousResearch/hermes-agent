@@ -23,9 +23,15 @@ fireworks = ProviderProfile(
     env_vars=("FIREWORKS_API_KEY",),
     base_url="https://api.fireworks.ai/inference/v1",
     auth_type="api_key",
-    # Identifies the client, replacing the OpenAI SDK's own User-Agent. This is
-    # not partner attribution — HTTP-Referer/X-Title stay off (#61182).
-    default_headers={"User-Agent": f"HermesAgent/{_HERMES_VERSION}"},
+    # Attribution headers sent on every Fireworks request. Values match the
+    # canonical Hermes set in agent/auxiliary_client.py. Applied through the
+    # generic profile.default_headers path, so they survive switch_model and
+    # credential rotation.
+    default_headers={
+        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+        "X-Title": "Hermes Agent",
+        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    },
     # Auxiliary model for cheap tasks (compaction, title generation, vision).
     # A standard pay-as-you-go catalog ``/models/`` ID.
     default_aux_model="accounts/fireworks/models/glm-5p2",

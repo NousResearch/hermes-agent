@@ -210,6 +210,13 @@ mgr.on_session_end([])
 mgr.shutdown_all()
 ```
 
+If `initialize()` raises, Hermes logs the failure, calls `shutdown()` for
+best-effort cleanup, and unregisters the provider and its tool routes. A
+partially initialized provider is never advertised as active and receives no
+later lifecycle calls. Providers should therefore raise a specific exception
+when required credentials, scope, or backend state make safe operation
+impossible.
+
 ## Adding CLI Commands
 
 Memory provider plugins can register their own CLI subcommand tree (e.g. `hermes my-provider status`, `hermes my-provider config`). This uses a convention-based discovery system — no changes to core files needed.

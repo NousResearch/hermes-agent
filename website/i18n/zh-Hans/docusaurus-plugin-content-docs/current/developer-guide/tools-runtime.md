@@ -13,6 +13,8 @@ Hermes 工具是自注册函数，按 toolset（工具集）分组，并通过�
 - `tools/registry.py`
 - `model_tools.py`
 - `toolsets.py`
+- `agent/tool_executor.py`
+- `tools/approval.py`
 - `tools/terminal_tool.py`
 - `tools/environments/*`
 
@@ -24,7 +26,7 @@ Hermes 工具是自注册函数，按 toolset（工具集）分组，并通过�
 
 ### `registry.register()` 的工作原理
 
-`tools/` 中的每个工具文件在模块级别调用 `registry.register()` 来声明自身。函数签名如下：
+`tools/` 中每个自注册工具模块都会在模块级别调用 `registry.register()` 来声明自身。注册形式如下：
 
 ```python
 registry.register(
@@ -37,10 +39,17 @@ registry.register(
     is_async=False,                # handler 是否为异步协程
     description="Run commands",    # 人类可读的描述
     emoji="💻",                    # 用于 spinner/进度显示的 emoji
+    max_result_size_chars=None,    # 可选的单工具输出预算
+    dynamic_schema_overrides=None, # 可选的运行时 schema 字段回调
+    override=False,                # 显式替换其他 toolset 中的工具
 )
 ```
 
-每次调用都会创建一个 `ToolEntry`，以工具名称为键存储在单例 `ToolRegistry._tools` 字典中。若不同 toolset 之间出现名称冲突，会记录警告，后注册的条目覆盖前者。
+每次调用都会创建一个 `ToolEntry`，以工具名称为键存储在单例 `ToolRegistry._tools` 字典中。如果该名称已被注册：
+
+- 在同一 toolset 中重新注册会静默替换已有条目，用于重连和刷新流程。
+- 来自**不同** toolset 的注册会被拒绝并记录错误，除非调用方传入 `override=True`。这也包括 MCP-to-MCP 冲突；MCP 重连和刷新流程会在同一个规范 toolset 内重新注册。
+- 显式的跨 toolset 覆盖会替换已有条目，并以 `INFO` 级别记录。插件覆盖还要求操作者在 `config.yaml` 中启用 `plugins.entries.<plugin_id>.allow_tool_override: true`。
 
 ### 发现机制：`discover_builtin_tools()`
 
@@ -59,7 +68,7 @@ def discover_builtin_tools(tools_dir=None):
 
 这种自动发现机制意味着新工具文件会被自动识别——无需手动维护列表。AST 检查只匹配顶层的 `registry.register()` 调用（不匹配函数内部的调用），因此 `tools/` 中的辅助模块不会被导入。
 
-每次导入都会触发模块的 `registry.register()` 调用。可选工具中的错误（例如图像生成工具缺少 `fal_client`）会被捕获并记录——不会阻止其他工具加载。
+每次导入都会触发模块的 `registry.register()` 调用。可选工具模块的导入错误会被捕获并记录，不会阻止其他工具加载。
 
 核心工具发现完成后，还会发现 MCP 工具和插件工具：
 
@@ -74,23 +83,20 @@ def discover_builtin_tools(tools_dir=None):
 - **服务是否运行** — 例如，检查 Honcho 服务器是否已配置
 - **二进制文件是否已安装** — 例如，验证浏览器工具的 `playwright` 是否可用
 
-当 `registry.get_definitions()` 为模型构建 schema 列表时，会运行每个工具的 `check_fn()`：
+当 `registry.get_definitions()` 为模型构建 schema 列表时，会通过 `_check_fn_cached()` 判断可用性：
 
 ```python
 # 简化自 registry.py
-if entry.check_fn:
-    try:
-        available = bool(entry.check_fn())
-    except Exception:
-        available = False   # 异常 = 不可用
-    if not available:
-        continue            # 完全跳过该工具
+if entry.check_fn and not _check_fn_cached(entry.check_fn):
+    continue  # 本次 schema 构建跳过该工具
 ```
 
 关键行为：
-- 检查结果**按调用缓存**——若多个工具共享同一个 `check_fn`，只运行一次。
-- `check_fn()` 中的异常被视为"不可用"（故障安全）。
-- `is_toolset_available()` 方法检查某个 toolset 的 `check_fn` 是否通过，用于 UI 显示和 toolset 解析。
+
+- 单次调用缓存确保多个工具共享同一个 `check_fn` 时，在一次 `get_definitions()` 处理中只执行一次。
+- 结果还会跨调用缓存约 30 秒。相关配置变更后，可调用 `invalidate_check_fn_cache()` 立即清空该缓存。
+- 如果某个函数最近一次成功检查发生在约 60 秒内，则其 `False` 结果或异常会被视为瞬时故障：工具继续保持可用，本次失败不写入缓存，下次调用会重新探测。如果近期没有成功记录，则缓存失败结果并隐藏该工具。
+- `is_toolset_available()` 会逐一判断已注册工具；只要 toolset 中至少有一个工具可暴露，就返回 `True`。混合 toolset 不会因为其中一个工具不可用而整体隐藏。
 
 ## Toolset 解析
 
@@ -107,13 +113,13 @@ Toolset 是工具的命名集合。Hermes 通过以下方式解析它们：
 
 1. **若提供了 `enabled_toolsets`** — 仅包含这些 toolset 中的工具。每个 toolset 名称通过 `resolve_toolset()` 解析，将复合 toolset 展开为单个工具名称。
 
-2. **若提供了 `disabled_toolsets`** — 从所有 toolset 开始，减去已禁用的。
+2. **若提供了 `disabled_toolsets`** — 无论初始集合来自 `enabled_toolsets` 还是默认集合，最后都会减去这些 toolset。对于平台 bundle 和 posture toolset，Hermes 会保留共享核心工具，只减去该 bundle 的非核心增量。
 
-3. **若两者均未提供** — 包含所有已知 toolset。
+3. **若省略 `enabled_toolsets`** — 先从所有已知 toolset 开始，再应用禁用项减法。
 
 4. **注册表过滤** — 解析后的工具名称集合传递给 `registry.get_definitions()`，后者应用 `check_fn` 过滤并返回 OpenAI 格式的 schema。
 
-5. **动态 schema 修补** — 过滤后，`execute_code` 和 `browser_navigate` 的 schema 会被动态调整，仅引用实际通过过滤的工具（防止模型幻觉出不可用的工具）。
+5. **动态 schema 修补** — `registry.get_definitions()` 首先应用各条目可选的 `dynamic_schema_overrides`。随后，`model_tools` 会根据可用沙箱工具重建 `execute_code`，根据检测到的能力和配置重建 `discord` / `discord_admin`，并从 `browser_navigate` 中移除对不可用 Web 工具的引用。
 
 ### 旧版 toolset 名称
 
@@ -121,7 +127,7 @@ Toolset 是工具的命名集合。Hermes 通过以下方式解析它们：
 
 ## 调度
 
-运行时，工具通过中央注册表调度，但部分 agent 级别的工具（如 memory/todo/session-search 处理）由 agent 循环直接处理。
+运行时，注册表工具通过中央注册表调度。需要实时 agent 状态、回调或 provider 自有状态的工具则由 agent 运行时路由。
 
 ### 调度流程：模型 tool_call → handler 执行
 
@@ -130,46 +136,52 @@ Toolset 是工具的命名集合。Hermes 通过以下方式解析它们：
 ```
 模型响应包含 tool_call
     ↓
-run_agent.py agent 循环
+agent/tool_executor.py
     ↓
-model_tools.handle_function_call(name, args, task_id, user_task)
+[工具请求中间件]
     ↓
-[Agent 循环工具？] → 由 agent 循环直接处理（todo、memory、session_search、delegate_task）
+[插件 pre-hook + 工具循环 guardrail]
     ↓
-[插件 pre-hook] → invoke_hook("pre_tool_call", ...)
+[Agent 自有工具？] → 使用 agent/context/provider 状态执行
+[注册表工具？] → model_tools.handle_function_call(...)
+    ↓
+[工具执行中间件]
     ↓
 registry.dispatch(name, args, **kwargs)
     ↓
 按名称查找 ToolEntry
-    ↓
 [异步 handler？] → 通过 _run_async() 桥接
 [同步 handler？]  → 直接调用
     ↓
-返回结果字符串（或 JSON 错误）
+规范化为字符串或受支持的多模态 envelope
     ↓
-[插件 post-hook] → invoke_hook("post_tool_call", ...)
+[插件 post-hook]
+    ↓
+[仅注册表工具：可选的 transform_tool_result hook]
 ```
 
 ### 错误包装
 
-所有工具执行在两个层级进行错误处理：
+注册表工具执行会在两层进行错误处理：
 
-1. **`registry.dispatch()`** — 捕获 handler 抛出的任何异常，并以 JSON 形式返回 `{"error": "Tool execution failed: ExceptionType: message"}`。
+1. **`registry.dispatch()`** — 捕获 handler 异常、清理错误文本，并返回 JSON 错误字符串。它接受普通字符串结果和受支持的多模态 envelope；不支持的结果类型会转换为 `tool_result_contract` JSON 错误。
 
-2. **`handle_function_call()`** — 将整个调度包裹在次级 try/except 中，返回 `{"error": "Error executing tool_name: message"}`。
+2. **`handle_function_call()`** — 用第二层 try/except 包装注册表调度周边的编排，并在失败时返回清理后的 JSON 错误字符串。
 
-这确保模型始终收到格式正确的 JSON 字符串，而不会遇到未处理的异常。
+Agent 自有路径会在工具执行器中自行处理异常。成功的工具结果不要求是 JSON；普通 handler 返回字符串，上述注册表和编排错误包装器才使用 JSON 错误结构。
 
-### Agent 循环工具
+### Agent 自有工具
 
-以下四个工具在注册表调度之前被拦截，因为它们需要 agent 级别的状态（TodoStore、MemoryStore 等）：
+部分内置工具会在注册表调度前被拦截，因为它们需要 agent 级状态或运行时回调：
 
 - `todo` — 规划/任务跟踪
 - `memory` — 持久化 memory 写入
 - `session_search` — 跨会话召回
 - `delegate_task` — 生成子 agent 会话
+- `clarify` — 使用当前澄清回调
+- `read_terminal` — 通过当前终端 UI 回调读取内容
 
-这些工具的 schema 仍在注册表中注册（供 `get_tool_definitions` 使用），但若调度以某种方式直接到达它们，其 handler 会返回一个存根错误。
+Context engine 工具和 memory provider 工具也由各自的运行时组件路由，而不经过中央注册表。上述内置 Agent 自有工具仍会注册 schema 供 `get_tool_definitions` 使用；正常执行时所需的状态和回调由 agent 运行时提供。
 
 ### 异步桥接
 
@@ -192,14 +204,14 @@ registry.dispatch(name, args, **kwargs)
    - 远程代码执行（`curl | sh`）
    - Fork bomb、进程终止等
 
-2. **检测** — 在执行任何终端命令之前，`detect_dangerous_command(command)` 会对所有模式进行检查。
+2. **检测** — 在受 guard 保护的终端环境中执行命令前，`check_all_command_guards()` 会综合 hardline 阻断、用户 deny 规则、Tirith 发现和 `detect_dangerous_command(command)`。隔离容器后端会跳过这些 guard；Docker 挂载宿主机路径后则不再跳过。
 
 3. **审批提示** — 若发现匹配：
    - **CLI 模式** — 交互式提示要求用户批准、拒绝或永久允许
    - **Gateway 模式** — 异步审批回调将请求发送至消息平台
    - **智能审批** — 可选地，辅助 LLM 可自动批准匹配模式但风险较低的命令（例如，`rm -rf node_modules/` 是安全的，但匹配"递归删除"模式）
 
-4. **会话状态** — 审批按会话跟踪。一旦在某个会话中批准了"递归删除"，后续的 `rm -rf` 命令不会再次提示。
+4. **会话状态** — 审批按会话跟踪。在当前会话中批准“递归删除”后，后续匹配该模式的命令不会再次提示。灾难性 hardline 命令和用户 deny 规则仍会在审批绕过前被阻断。
 
 5. **永久允许列表** — "永久允许"选项会将该模式写入 `config.yaml` 的 `command_allowlist`，跨会话持久化。
 

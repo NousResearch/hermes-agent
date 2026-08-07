@@ -4357,8 +4357,11 @@ def probe_api_models(
         try:
             with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
+                # Together AI and some other providers return a bare JSON array
+                # ([{"id": ...}, ...]) instead of the OpenAI envelope
+                # ({"data": [{"id": ...}, ...]}). _payload_items handles both.
                 return {
-                    "models": [m.get("id", "") for m in data.get("data", [])],
+                    "models": [m.get("id", "") for m in _payload_items(data)],
                     "probed_url": url,
                     "resolved_base_url": candidate_base.rstrip("/"),
                     "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,

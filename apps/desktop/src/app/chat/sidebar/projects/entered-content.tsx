@@ -18,20 +18,115 @@ import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { $dismissedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { removeWorktreePath } from '@/store/projects'
+import { removeWorktreePath, switchBranchInRepo } from '@/store/projects'
 
 import { SidebarRowStack } from '../chrome'
 
-import { useWorkspaceNodeOpen } from './model'
+import { SIDEBAR_GROUP_PAGE, useWorkspaceNodeOpen } from './model'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
   mergeRepoWorktreeGroups,
   overlayRepoLanes,
+  sessionRecency,
   type SidebarProjectTree,
   type SidebarSessionGroup,
   type SidebarWorkspaceTree
 } from './workspace-groups'
-import { WorkspaceAddButton, WorkspaceHeader } from './workspace-header'
+import { WorkspaceAddButton, WorkspaceHeader, WorkspaceShowMoreButton } from './workspace-header'
+
+const mainCheckoutSessions = (groups: SidebarSessionGroup[]): SessionInfo[] => {
+  const byId = new Map<string, SessionInfo>()
+
+  for (const group of groups) {
+    if (!group.isMain) {
+      continue
+    }
+
+    for (const session of group.sessions) {
+      const existing = byId.get(session.id)
+
+      if (!existing || sessionRecency(session) > sessionRecency(existing)) {
+        byId.set(session.id, session)
+      }
+    }
+  }
+
+  return [...byId.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a) || a.id.localeCompare(b.id))
+}
+
+function EnteredMainSessionRows({
+  groups,
+  renderRows
+}: {
+  groups: SidebarSessionGroup[]
+  renderRows: (sessions: SessionInfo[]) => React.ReactNode
+}) {
+  const [visibleCount, setVisibleCount] = useState(SIDEBAR_GROUP_PAGE)
+  const sessions = mainCheckoutSessions(groups)
+  const mainGroup = groups.find(group => group.isMain && group.isHome) ?? groups.find(group => group.isMain)
+
+  if (!sessions.length || !mainGroup) {
+    return null
+  }
+
+  const visibleSessions = sessions.slice(0, visibleCount)
+  const hiddenCount = sessions.length - visibleSessions.length
+  const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
+
+  return (
+    <>
+      {renderRows(visibleSessions)}
+      {hiddenCount > 0 && (
+        <WorkspaceShowMoreButton
+          count={nextCount}
+          label={mainGroup.label}
+          onClick={() => setVisibleCount(count => count + SIDEBAR_GROUP_PAGE)}
+        />
+      )}
+    </>
+  )
+}
+
+interface EnteredMainSessionButtonProps {
+  project: SidebarProjectTree
+  onNewSession: (path: null | string) => void
+  repoWorktrees?: Record<string, HermesGitWorktree[]>
+}
+
+export function EnteredMainSessionButton({ project, onNewSession, repoWorktrees }: EnteredMainSessionButtonProps) {
+  const { t } = useI18n()
+  const repo = project.path ? project.repos.find(candidate => candidate.path === project.path) : undefined
+
+  const mainGroup = useMemo(() => {
+    if (!repo) {
+      return undefined
+    }
+
+    const groups = mergeRepoWorktreeGroups(repo, repo.path ? repoWorktrees?.[repo.path] : undefined)
+
+    return groups.find(group => group.isMain && group.isHome) ?? groups.find(group => group.isMain)
+  }, [repo, repoWorktrees])
+
+  if (!mainGroup?.path) {
+    return null
+  }
+
+  const path = mainGroup.path
+
+  const handleNewSession = async () => {
+    try {
+      await switchBranchInRepo(path, mainGroup.label)
+    } catch (err) {
+      notifyError(err, t.statusStack.coding.switchFailed(mainGroup.label))
+
+      return
+    }
+
+    onNewSession(path)
+  }
+
+  return <WorkspaceAddButton label={t.sidebar.newSessionIn(mainGroup.label)} onClick={() => void handleNewSession()} />
+}
 
 // The entered project's body. Main-checkout sessions render directly — no
 // redundant repo/branch header (the breadcrumb already names the project). Only
@@ -140,6 +235,8 @@ function RepoFlatSection({
       group.isMain || !dismissedWorktrees.includes(group.id) || (group.path && discoveredWorktreePaths.has(group.path))
   )
 
+  const nestedGroups = ordered.filter(group => !group.isMain)
+
   // Removal asks how: actually `git worktree remove` it, or just hide the lane
   // and leave the worktree on disk. A dirty worktree escalates to a force prompt
   // instead of erroring (those changes are usually throwaway).
@@ -167,14 +264,15 @@ function RepoFlatSection({
 
   const body = (
     <>
-      {ordered.map(group => (
+      <EnteredMainSessionRows groups={ordered} renderRows={renderRows} />
+      {nestedGroups.map(group => (
         <SidebarWorkspaceGroup
           group={group}
           key={group.id}
           // The kanban bucket is read-only: it aggregates many task worktrees, so
           // "new session here" and "remove worktree" have no single target.
           onNewSession={group.isKanban ? undefined : onNewSession}
-          onRemove={group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group)}
+          onRemove={group.isKanban ? undefined : () => setRemoveTarget(group)}
           renderRows={renderRows}
         />
       ))}

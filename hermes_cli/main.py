@@ -80,6 +80,90 @@ import sys
 _bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
+
+_RELEASE_MANIFEST_FILENAME = ".hermes-release-manifest.json"
+
+
+_UPDATE_PREFIX_VALUE_OPTIONS = frozenset(
+    {
+        "-z",
+        "--oneshot",
+        "--usage-file",
+        "-m",
+        "--model",
+        "--provider",
+        "--reasoning",
+        "-t",
+        "--toolsets",
+        "--resume",
+        "-r",
+        "--continue",
+        "-c",
+        "--skills",
+        "-s",
+        "-p",
+        "--profile",
+    }
+)
+_UPDATE_PREFIX_BOOLEAN_OPTIONS = frozenset(
+    {
+        "--no-restore-cwd",
+        "--worktree",
+        "-w",
+        "--accept-hooks",
+        "--yolo",
+        "--pass-session-id",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--safe-mode",
+        "--tui",
+        "--cli",
+        "--dev",
+    }
+)
+
+
+def _top_level_update_requested(argv: list[str]) -> bool:
+    """Recognize the update subcommand after supported global options."""
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "update":
+            return True
+        if token in _UPDATE_PREFIX_BOOLEAN_OPTIONS:
+            index += 1
+            continue
+        if token in _UPDATE_PREFIX_VALUE_OPTIONS:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in _UPDATE_PREFIX_VALUE_OPTIONS):
+            index += 1
+            continue
+        return False
+    return False
+
+
+def _early_release_managed_update_requested() -> bool:
+    """Refuse top-level release-managed updates before recovery/config imports."""
+    argv = sys.argv[1:]
+    if not _top_level_update_requested(argv):
+        return False
+    marker = os.path.join(_bootstrap_root, _RELEASE_MANIFEST_FILENAME)
+    try:
+        os.lstat(marker)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+if _early_release_managed_update_requested():
+    print("✗ This checkout is managed as an immutable Hermes release.")
+    print("  Use the external release manager to promote or roll back a slot.")
+    raise SystemExit(1)
+
+
 from hermes_cli import _startup_fast  # noqa: E402
 
 # Early venv self-heal — MUST run before any third-party import below.  When
@@ -9102,6 +9186,20 @@ def _size_delta_label(saved_mb: float) -> str:
     return f"grew by {-saved_mb:.1f} MB"
 
 
+def _release_managed_checkout(root: Path) -> bool:
+    """Detect the reserved immutable-release marker without following links."""
+    marker = root / _RELEASE_MANIFEST_FILENAME
+    try:
+        marker.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # An updater must not proceed when it cannot safely classify the
+        # reserved policy path.
+        return True
+    return True
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -9109,6 +9207,11 @@ def cmd_update(args):
     runs the update, then restores stdio on the way out (even on
     ``sys.exit`` or unhandled exceptions).
     """
+    if _release_managed_checkout(PROJECT_ROOT):
+        print("✗ This checkout is managed as an immutable Hermes release.")
+        print("  Use the external release manager to promote or roll back a slot.")
+        sys.exit(1)
+
     from hermes_cli.config import (
         detect_install_method,
         format_docker_update_message,

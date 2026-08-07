@@ -49,7 +49,6 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
     [
         "delegate_task",  # no recursive delegation
         "clarify",  # no user interaction
-        "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
         "cronjob",  # no scheduling more work in the parent's name
     ]
@@ -1324,6 +1323,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    memory_mode: str = "on_demand",
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1424,6 +1424,11 @@ def _build_child_agent(
     # test_intersection_preserves_delegation_bound test for the design rationale.
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
+
+    # If memory_mode is on_demand or full, ensure memory tools are available
+    # so sub-agents can use memory and hermes_mem_search tools.
+    if memory_mode != "off" and "memory" not in child_toolsets:
+        child_toolsets.append("memory")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
@@ -1633,7 +1638,7 @@ def _build_child_agent(
             log_prefix=f"[subagent-{task_index}]",
             platform="subagent",
             skip_context_files=True,
-            skip_memory=True,
+            memory_mode=memory_mode,
             clarify_callback=None,
             thinking_callback=child_thinking_cb,
             session_db=getattr(parent_agent, "_session_db", None),
@@ -1783,7 +1788,7 @@ def _dump_subagent_timeout_diagnostic(
         _w("## Child config")
         for attr in (
             "model", "provider", "api_mode", "base_url", "max_iterations",
-            "quiet_mode", "skip_memory", "skip_context_files", "platform",
+            "quiet_mode", "memory_mode", "skip_context_files", "platform",
             "_delegate_role", "_delegate_depth",
         ):
             try:
@@ -2981,6 +2986,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    memory_mode: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -3049,6 +3055,11 @@ def delegate_task(
             max_iterations, default_max_iter,
         )
     effective_max_iter = default_max_iter
+
+    # Resolve memory_mode — default to on_demand for sub-agents so they can
+    # read parent memories, but allow callers (including the model) to set
+    # "off" or "full" explicitly.
+    effective_memory_mode = memory_mode if memory_mode else "on_demand"
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
@@ -3148,7 +3159,7 @@ def delegate_task(
         # Per-task role beats top-level; normalise again so unknown
         # per-task values warn and degrade to leaf uniformly.
         effective_role = _normalize_role(t.get("role") or top_role)
-        child = _build_child_preserving_parent_tools(
+        child = _build_child_agent(
             task_index=i,
             goal=t["goal"],
             context=t.get("context"),
@@ -3168,6 +3179,7 @@ def delegate_task(
             override_acp_command=creds.get("command"),
             override_acp_args=creds.get("args"),
             role=effective_role,
+            memory_mode=effective_memory_mode,
         )
         # Tee the child's progress events into its live transcript log.
         # wrap_progress_callback preserves the inner callback contract
@@ -3179,7 +3191,7 @@ def delegate_task(
             child.tool_progress_callback = wrap_progress_callback(
                 getattr(child, "tool_progress_callback", None), _writer
             )
-            child._live_transcript_path = str(_writer.path)
+        child._live_transcript_path = str(_writer.path)
         children.append((i, t, child))
 
     def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
@@ -4063,6 +4075,17 @@ DELEGATE_TASK_SCHEMA = {
                     "the work finishes; just continue working in the meantime. "
                     "Setting this has no effect; the parameter remains only for "
                     "backward compatibility."
+                ),
+            },
+            "memory_mode": {
+                "type": "string",
+                "enum": ["full", "on_demand", "off"],
+                "description": (
+                    "Memory access mode for sub-agents. 'full': memory is "
+                    "injected into the system prompt. 'on_demand': memory "
+                    "tools are available but not injected into the prompt. "
+                    "'off': no memory access at all. Default for sub-agents "
+                    "is 'on_demand'."
                 ),
             },
         },

@@ -86,6 +86,7 @@ from agent.retry_utils import (
     zai_coding_overload_retry_ceiling,
 )
 from agent.trajectory import has_incomplete_scratchpad
+from agent._truncation_boost_cap import resolve_truncation_boost_cap
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
@@ -3316,7 +3317,11 @@ def run_conversation(
                                 _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
                                 if _tc_requested_cap is not None:
                                     _tc_boost = max(_tc_boost, _tc_requested_cap)
-                                _tc_boost_cap = max(32768, _tc_requested_cap or 0)
+                                _tc_boost_cap = resolve_truncation_boost_cap(
+                                    requested_cap=_tc_requested_cap,
+                                    provider=agent.provider,
+                                    model=agent.model,
+                                )
                                 agent._ephemeral_max_output_tokens = min(_tc_boost, _tc_boost_cap)
                                 # Don't append the broken response to messages;
                                 # just re-run the same API call from the current
@@ -5855,7 +5860,11 @@ def run_conversation(
             _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
             if _requested_cap is not None:
                 _boost = max(_boost, _requested_cap)
-            _boost_cap = max(32768, _requested_cap or 0)
+            _boost_cap = resolve_truncation_boost_cap(
+                requested_cap=_requested_cap,
+                provider=agent.provider,
+                model=agent.model,
+            )
             agent._ephemeral_max_output_tokens = min(_boost, _boost_cap)
             continue
 

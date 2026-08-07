@@ -9064,6 +9064,592 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
+# ---------------------------------------------------------------------------
+# Worker executor selection (native Hermes vs. direct Claude Code CLI)
+# ---------------------------------------------------------------------------
+
+#: Default lane. ``hermes -p <profile> chat -q`` — the native provider stack.
+WORKER_EXECUTOR_HERMES = "hermes"
+#: Opt-in lane. Runs the Claude Code CLI (``claude -p``) directly so the worker
+#: uses the operator's own interactive Claude subscription instead of the
+#: native ``provider=anthropic`` adapter's third-party/extra-usage credits.
+WORKER_EXECUTOR_CLAUDE_CLI = "claude_cli"
+
+_WORKER_EXECUTOR_ALIASES = {
+    "": WORKER_EXECUTOR_HERMES,
+    "hermes": WORKER_EXECUTOR_HERMES,
+    "native": WORKER_EXECUTOR_HERMES,
+    "claude": WORKER_EXECUTOR_CLAUDE_CLI,
+    "claude_cli": WORKER_EXECUTOR_CLAUDE_CLI,
+    "claude-cli": WORKER_EXECUTOR_CLAUDE_CLI,
+    "claude_code": WORKER_EXECUTOR_CLAUDE_CLI,
+    "claude-code": WORKER_EXECUTOR_CLAUDE_CLI,
+}
+
+#: Credential-routing env vars dropped from a ``claude_cli`` worker's env.
+#:
+#: ``CLAUDE_CONFIG_DIR`` is the important one: the dispatcher (or the desktop
+#: app that launched it) may point it at a Hermes-managed config directory,
+#: which is exactly the lane that reports extra-usage exhaustion. Dropping it
+#: is the ``env -u CLAUDE_CONFIG_DIR claude -p`` behavior that works today —
+#: the child then reads the operator's normal ``~/.claude`` store itself. We
+#: never read, copy, decrypt, or re-write that store here, so no token ever
+#: transits the dispatcher, the board DB, argv, or a log file.
+#:
+#: The ``ANTHROPIC_*`` entries keep an inherited API key / gateway override
+#: from silently redirecting the run onto metered API billing (or a proxy)
+#: when the whole point of this lane is the subscription. The
+#: ``CLAUDE_CODE_USE_*`` entries are the same class: they move the run onto a
+#: Bedrock / Vertex account's billing instead.
+CLAUDE_CLI_STRIPPED_ENV_VARS = (
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+)
+
+#: Argv flags that grant a ``claude -p`` worker the ability to act. Without one
+#: of these the CLI runs in its default (ask-a-human) permission mode, and a
+#: worker with no TTY can only read and talk — it will never edit a file or run
+#: a command. We do NOT add one implicitly (silently escalating a worker's
+#: privileges is not ours to do); we warn so the operator sees why the lane
+#: appears to no-op.
+_CLAUDE_CLI_PERMISSION_FLAGS = (
+    "--permission-mode",
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions",
+    "--allowedTools",
+    "--allowed-tools",
+    "--settings",
+)
+
+#: Minimum seconds between two direct-lane ``claude`` process *startups* on
+#: this Hermes root. See :func:`_claude_cli_spawn_gate`.
+CLAUDE_CLI_DEFAULT_SPAWN_STAGGER_SECONDS = 2.0
+
+#: How long a spawn waits for the stagger lock before proceeding without it.
+#: Bounded on purpose: a stuck holder must never stall the whole board.
+_CLAUDE_CLI_SPAWN_LOCK_TIMEOUT_SECONDS = 30.0
+_CLAUDE_CLI_SPAWN_LOCK_POLL_SECONDS = 0.05
+
+
+def _load_kanban_config() -> dict:
+    """Return a private copy of the ``kanban:`` block of ``config.yaml``.
+
+    Uses the read-only loader and copies the result: this runs on the
+    dispatcher's spawn path, so it must neither pay for a deepcopy of the
+    whole config nor hand a caller a handle on the shared cache. Never
+    raises — an unreadable config falls back to the native defaults.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        block = load_config_readonly().get("kanban")
+        return dict(block) if isinstance(block, dict) else {}
+    except Exception as exc:  # pragma: no cover - config read is best-effort
+        _log.debug("kanban worker: config.yaml unreadable (%s)", exc)
+        return {}
+
+
+def resolve_worker_executor(kanban_cfg: Optional[dict] = None) -> str:
+    """Return the configured worker executor lane.
+
+    Reads ``kanban.worker_executor`` from ``config.yaml``. Anything other
+    than an explicit claude-cli spelling resolves to the native Hermes lane,
+    so the direct-CLI path is strictly opt-in. An unrecognized value is a
+    config typo, not an instruction: it is logged loudly and the native
+    default is used (a typo must never silently change how workers bill).
+    """
+    if kanban_cfg is None:
+        kanban_cfg = _load_kanban_config()
+    raw = (kanban_cfg or {}).get("worker_executor")
+    if raw is None:
+        return WORKER_EXECUTOR_HERMES
+    key = str(raw).strip().lower()
+    resolved = _WORKER_EXECUTOR_ALIASES.get(key)
+    if resolved is None:
+        _log.warning(
+            "kanban worker: unknown kanban.worker_executor=%r — using %r. "
+            "Valid values: %r, %r.",
+            raw, WORKER_EXECUTOR_HERMES,
+            WORKER_EXECUTOR_HERMES, WORKER_EXECUTOR_CLAUDE_CLI,
+        )
+        return WORKER_EXECUTOR_HERMES
+    return resolved
+
+
+def _resolve_claude_cli_argv(kanban_cfg: Optional[dict] = None) -> list[str]:
+    """Resolve the Claude Code CLI invocation as argv parts for ``Popen``.
+
+    ``kanban.claude_cli_bin`` overrides the executable; path-like values are
+    used as-is (absolutized), bare names go through ``PATH`` with the same
+    no-cwd lookup ``_resolve_hermes_argv`` uses. Raises ``RuntimeError`` with
+    an actionable message when the CLI is not installed — the operator asked
+    for this lane explicitly, so a missing binary is a hard error and never a
+    silent downgrade to the native provider.
+    """
+    import shutil
+
+    configured = str((kanban_cfg or {}).get("claude_cli_bin") or "").strip()
+    candidate = configured or "claude"
+    if _looks_like_path(candidate):
+        resolved = os.path.abspath(os.path.expanduser(candidate))
+        if not os.path.isfile(resolved):
+            raise RuntimeError(
+                f"kanban.worker_executor={WORKER_EXECUTOR_CLAUDE_CLI!r} but the "
+                f"configured kanban.claude_cli_bin={candidate!r} does not exist. "
+                "Fix the path or switch kanban.worker_executor back to "
+                f"{WORKER_EXECUTOR_HERMES!r}."
+            )
+        return [resolved]
+    found = _safe_which_no_cwd(candidate) if _IS_WINDOWS else shutil.which(candidate)
+    if not found:
+        raise RuntimeError(
+            f"kanban.worker_executor={WORKER_EXECUTOR_CLAUDE_CLI!r} but "
+            f"{candidate!r} was not found on the dispatcher's PATH. Install the "
+            "Claude Code CLI, set kanban.claude_cli_bin to its absolute path, or "
+            f"switch kanban.worker_executor back to {WORKER_EXECUTOR_HERMES!r}."
+        )
+    return [os.path.abspath(found)]
+
+
+def _apply_claude_cli_env(env: dict) -> list[str]:
+    """Strip credential-routing vars from a direct-CLI worker's env.
+
+    Mutates ``env`` in place (it is already a private copy owned by the
+    caller) and returns the names actually removed, for the diagnostics
+    header. Everything else — board / profile / tenant / task / workspace
+    pins, TUI suppression, terminal timeouts — is left exactly as the native
+    lane built it, so board isolation is identical across executors.
+    """
+    stripped = []
+    for name in CLAUDE_CLI_STRIPPED_ENV_VARS:
+        if env.pop(name, None) is not None:
+            stripped.append(name)
+    return stripped
+
+
+def _claude_cli_model_arg(task: Task, kanban_cfg: Optional[dict] = None) -> Optional[str]:
+    """Return the ``--model`` value for a direct-CLI worker, if any.
+
+    A task-level override only applies when it actually names a Claude model
+    on the Anthropic lane; Hermes model ids for other providers are
+    meaningless to the Claude CLI, so they are dropped with an explicit
+    warning rather than passed through to fail at startup.
+    """
+    override = (task.model_override or "").strip()
+    provider = (task.provider_override or "").strip().lower()
+    if override:
+        if provider in ("", "anthropic", "claude") and override.lower().startswith("claude"):
+            return override
+        _log.warning(
+            "kanban worker %s: model_override=%r (provider=%r) is not a Claude "
+            "model — ignoring it on the %s executor.",
+            task.id, override, task.provider_override, WORKER_EXECUTOR_CLAUDE_CLI,
+        )
+    configured = str((kanban_cfg or {}).get("claude_cli_model") or "").strip()
+    return configured or None
+
+
+def _claude_cli_extra_args(kanban_cfg: Optional[dict] = None) -> list[str]:
+    """Return operator-supplied extra argv for ``claude`` (e.g. permission mode).
+
+    Accepts a YAML list; a bare string is split with ``shlex`` so a
+    hand-written single-line value still works. Non-string entries are
+    dropped with a warning rather than crashing the dispatcher tick.
+    """
+    raw = (kanban_cfg or {}).get("claude_cli_extra_args")
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        import shlex
+
+        try:
+            return shlex.split(raw)
+        except ValueError as exc:
+            _log.warning(
+                "kanban worker: kanban.claude_cli_extra_args=%r is not parseable "
+                "(%s) — ignoring it.", raw, exc,
+            )
+            return []
+    if not isinstance(raw, (list, tuple)):
+        _log.warning(
+            "kanban worker: kanban.claude_cli_extra_args must be a list or "
+            "string, got %s — ignoring it.", type(raw).__name__,
+        )
+        return []
+    args = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            args.append(item)
+        elif item is not None:
+            _log.warning(
+                "kanban worker: dropping non-string kanban.claude_cli_extra_args "
+                "entry %r.", item,
+            )
+    return args
+
+
+def _claude_cli_worker_prompt(task: Task, workspace: str) -> str:
+    """Build the self-contained worker prompt for the direct-CLI lane.
+
+    The native lane sends ``work kanban task <id>`` and relies on the
+    ``kanban_*`` model tools plus ``KANBAN_GUIDANCE`` in the system prompt.
+    The Claude CLI has neither, so the protocol is stated inline and the
+    lifecycle transitions go through the ``hermes kanban`` subcommands, which
+    read the same board pins already present in the worker's env.
+
+    The ``hermes`` invocation is resolved here rather than written literally:
+    the dispatcher may be running from a venv whose console-script shim is not
+    on the child's ``PATH``, in which case a bare ``hermes kanban complete``
+    would fail and the worker would exit without ever closing its task. The
+    same ``_resolve_hermes_argv`` the native lane launches with is embedded, so
+    the two lanes agree on which Hermes the worker reports to.
+
+    Every flag below is real (see ``hermes_cli.kanban``'s parsers): ``block``
+    takes its reason as a *positional* with an optional ``--kind``, and
+    ``complete`` takes ``--result``. Inventing a flag here would strand the
+    worker at the end of a successful run.
+
+    Argument *order* matters as much as the flag names. ``block``'s reason is
+    ``nargs="*"``, and on Python 3.11 (the pinned runtime) a nested subparser
+    will not accept a trailing positional that follows an optional: ``block
+    <id> --kind needs_input "why"`` exits 2 with "unrecognized arguments",
+    while ``block <id> "why" --kind needs_input`` parses. Newer CPythons
+    accept both, which is exactly how this hides in local testing —
+    ``test_every_prompted_command_parses`` runs these through the real parser.
+    """
+    import shlex
+
+    hermes = shlex.join(_resolve_hermes_argv())
+    return (
+        "You are a Hermes kanban worker running as a direct Claude Code CLI "
+        "process (not a native Hermes agent), so you have no kanban_* tools — "
+        "you drive the board with the shell commands below.\n"
+        f"\nTask id: {task.id}\nWorkspace: {workspace}\n"
+        f"\nProtocol — run these exact commands (`{hermes}` is already "
+        "resolved for this machine; use it verbatim):\n"
+        f"1. `{hermes} kanban show {task.id}` first, and treat it as ground "
+        "truth: it has the title, body, parent handoffs, and comment thread.\n"
+        f"2. Do the work inside {workspace}. Do not modify files outside it "
+        "unless the task explicitly says to.\n"
+        f"3. Run `{hermes} kanban heartbeat {task.id}` every few minutes of "
+        "work. It is how the dispatcher tells a working worker apart from a "
+        "wedged one. Record anything worth keeping with "
+        f"`{hermes} kanban comment {task.id} \"<note>\"`.\n"
+        "4. If you need a human decision you cannot infer, stop and block — "
+        "do not guess:\n"
+        f"   `{hermes} kanban block {task.id} \"<why>\" --kind needs_input`\n"
+        "   (`--kind capability` for a missing tool/permission, "
+        "`--kind dependency` when waiting on another task.) The reason is a "
+        "positional argument — there is no --reason flag — and it must come "
+        "before --kind, or argparse will reject the command.\n"
+        "5. When done, post the structured result as a comment, then:\n"
+        f"   `{hermes} kanban complete {task.id} --result \"<1-3 sentences "
+        "naming concrete artifacts>\"`\n"
+        "   For a code change that still needs human review, comment the "
+        f"details and run `{hermes} kanban block {task.id} "
+        "\"review-required: <one-line summary>\" --kind needs_input` "
+        "instead of completing.\n"
+        "6. Exactly one of `complete` or `block` must run before you exit. "
+        "Exiting without either is a protocol violation and the dispatcher "
+        "will record the attempt as a crash.\n"
+        "\nNever put secrets, tokens, or raw PII in a comment or result — "
+        "board rows are durable. The board, profile, and workspace are already "
+        "pinned in your environment; do not pass --board and do not edit the "
+        "board database directly."
+    )
+
+
+def _build_claude_cli_worker_command(
+    task: Task,
+    workspace: str,
+    kanban_cfg: Optional[dict] = None,
+) -> list[str]:
+    """Build the full ``claude -p ...`` argv for a direct-CLI worker."""
+    if task.goal_mode:
+        # The Ralph-style goal loop lives in cli.py's quiet branch, so it has
+        # no equivalent here. Running a single pass instead would look like a
+        # success to the CLI and like an unjudged, silently-downgraded run to
+        # whoever asked for goal mode. Refuse: the spawn failure is recorded
+        # against the task and surfaces to a human after `failure_limit`.
+        raise RuntimeError(
+            f"kanban task {task.id} has goal_mode enabled, which the "
+            f"{WORKER_EXECUTOR_CLAUDE_CLI!r} executor does not implement (the "
+            "goal judge loop is a Hermes CLI feature). Clear goal_mode on the "
+            f"task or run it on the {WORKER_EXECUTOR_HERMES!r} executor."
+        )
+    cmd = _resolve_claude_cli_argv(kanban_cfg)
+    model = _claude_cli_model_arg(task, kanban_cfg)
+    if model:
+        cmd.extend(["--model", model])
+    extra = _claude_cli_extra_args(kanban_cfg)
+    if not any(
+        arg.split("=", 1)[0] in _CLAUDE_CLI_PERMISSION_FLAGS for arg in extra
+    ):
+        # Not fatal — a read-only investigation task is a legitimate use — but
+        # it is the single most common reason this lane "does nothing".
+        _log.warning(
+            "kanban worker %s: no permission flag in kanban.claude_cli_extra_args, "
+            "so `claude -p` runs in its default ask-a-human permission mode. The "
+            "worker can still report on the board (those commands are granted "
+            "explicitly) but cannot edit files or run any other command. Note that "
+            "`--permission-mode acceptEdits` covers file edits only, NOT Bash — a "
+            "task whose work needs to run commands needs a broader mode.",
+            task.id,
+        )
+    # Always last, and always merged rather than appended as a second flag:
+    # without these the worker cannot run its own lifecycle commands.
+    cmd.extend(_merge_allowed_tools(
+        extra, _claude_cli_board_tool_grants(_resolve_hermes_argv())
+    ))
+    # `-p` (print / non-interactive) is a boolean flag; the prompt is the
+    # CLI's positional argument. Keeping the pair last is load-bearing:
+    # `--allowedTools` and several other CLI flags are variadic, and a
+    # variadic run only stops at the next option-looking token. Verified: with
+    # the prompt trailing `--allowedTools <rule>`, the CLI consumes the prompt
+    # as another rule and exits "Input must be provided...".
+    cmd.extend(["-p", _claude_cli_worker_prompt(task, workspace)])
+    return cmd
+
+
+#: The `hermes kanban` subcommands the worker protocol prompt tells a
+#: direct-lane worker to run. Nothing else is granted.
+_CLAUDE_CLI_PROTOCOL_SUBCOMMANDS = (
+    "show", "heartbeat", "comment", "block", "complete",
+)
+
+
+def _claude_cli_board_tool_grants(hermes_argv: list[str]) -> list[str]:
+    """Return least-privilege ``--allowedTools`` rules for the board protocol.
+
+    A direct-lane worker drives its whole lifecycle through ``hermes kanban``
+    shell commands, and ``claude -p`` denies Bash by default — including under
+    ``--permission-mode acceptEdits``, which covers file edits only. Without a
+    grant the worker cannot run ``show`` (so it never learns its task) and
+    cannot run ``complete``/``block`` (so it strands the task and the
+    dispatcher records a protocol violation). Verified end-to-end: an
+    ``acceptEdits`` worker reported every ``hermes`` call auto-denied.
+
+    So the grant is not a convenience — it is the minimum required for the
+    contract the prompt asks the worker to fulfill, and it is scoped to
+    exactly the five subcommands that contract names. Whatever permissions the
+    task's actual *work* needs remain the operator's explicit choice via
+    ``kanban.claude_cli_extra_args``; this grants no general Bash, no Edit, and
+    no Write.
+    """
+    import shlex
+
+    hermes = shlex.join(hermes_argv)
+    return [
+        f"Bash({hermes} kanban {sub}:*)"
+        for sub in _CLAUDE_CLI_PROTOCOL_SUBCOMMANDS
+    ]
+
+
+def _merge_allowed_tools(extra: list[str], grants: list[str]) -> list[str]:
+    """Append ``grants`` to ``extra``'s ``--allowedTools`` run, or add one.
+
+    ``--allowedTools`` is variadic, and passing the flag twice makes the
+    second occurrence win — silently dropping the operator's list. So when
+    they already supplied one, the grants are appended to that same run
+    instead of being added as a second flag.
+    """
+    aliases = ("--allowedTools", "--allowed-tools")
+    out = list(extra)
+    for idx, arg in enumerate(out):
+        name = arg.split("=", 1)[0]
+        if name not in aliases:
+            continue
+        if "=" in arg:
+            # Normalize `--allowedTools=A` into flag + value so the grants can
+            # follow as further values of the same variadic flag.
+            out[idx : idx + 1] = [name, arg.split("=", 1)[1]]
+        # The variadic run ends at the next option-looking token.
+        end = idx + 1
+        while end < len(out) and not out[end].startswith("-"):
+            end += 1
+        return out[:end] + grants + out[end:]
+    return out + ["--allowedTools", *grants]
+
+
+def _claude_cli_spawn_stagger_seconds(kanban_cfg: Optional[dict] = None) -> float:
+    """Resolve ``kanban.claude_cli_spawn_stagger_seconds`` (never raises)."""
+    raw = (kanban_cfg or {}).get("claude_cli_spawn_stagger_seconds")
+    if raw is None:
+        return CLAUDE_CLI_DEFAULT_SPAWN_STAGGER_SECONDS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        _log.warning(
+            "kanban worker: kanban.claude_cli_spawn_stagger_seconds=%r is not a "
+            "number — using %.1fs.", raw, CLAUDE_CLI_DEFAULT_SPAWN_STAGGER_SECONDS,
+        )
+        return CLAUDE_CLI_DEFAULT_SPAWN_STAGGER_SECONDS
+    # Clamp: a negative value is a typo, and an unbounded one would let a
+    # single config line stall every dispatcher tick.
+    return max(0.0, min(value, 60.0))
+
+
+@contextlib.contextmanager
+def _claude_cli_spawn_gate(kanban_cfg: Optional[dict] = None):
+    """Serialize direct-lane ``claude`` process *startups* on this Hermes root.
+
+    What this fixes, precisely: several ``claude`` processes booting at the
+    same instant race on the shared, per-user ``~/.claude`` state they each
+    read and rewrite at startup (config file, session index, cache). That
+    startup window is the one that produces a truncated config and an
+    interactive session that suddenly asks the operator to log in again. This
+    gate holds a cross-process lock and enforces a minimum interval between
+    startups, so at most one direct-lane worker is in that window at a time.
+
+    What this does NOT do, and cannot: it does not serialize anything *inside*
+    Anthropic's CLI after startup — an OAuth refresh performed mid-run by two
+    long-lived workers is the CLI's own concurrency to manage, not Hermes'.
+    Hermes never reads or writes that store, so it has nothing to lock. Bound
+    real concurrency with ``kanban.max_in_progress_per_profile`` if that
+    matters for your setup.
+
+    A lock that cannot be acquired within
+    ``_CLAUDE_CLI_SPAWN_LOCK_TIMEOUT_SECONDS`` is abandoned and the spawn
+    proceeds: a stuck holder must degrade this to "unstaggered", never to
+    "the board stops dispatching".
+    """
+    stagger = _claude_cli_spawn_stagger_seconds(kanban_cfg)
+    # Per-Hermes-root, not per-board: the contended resource is the operator's
+    # single ``~/.claude`` store, which every board under this root shares.
+    lock_path = kanban_home() / "kanban" / "claude-cli-spawn.lock"
+    handle = None
+    acquired = False
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+", encoding="utf-8")
+    except OSError as exc:  # pragma: no cover - unwritable kanban root
+        _log.debug("kanban worker: spawn gate unavailable (%s)", exc)
+        yield
+        return
+    try:
+        deadline = time.monotonic() + _CLAUDE_CLI_SPAWN_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                if _IS_WINDOWS:
+                    import msvcrt
+
+                    handle.seek(0)
+                    getattr(msvcrt, "locking")(
+                        handle.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
+                    )
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_CLAUDE_CLI_SPAWN_LOCK_POLL_SECONDS)
+        if not acquired:
+            _log.warning(
+                "kanban worker: claude spawn gate %s not acquired within %.0fs — "
+                "spawning without the startup stagger.",
+                lock_path, _CLAUDE_CLI_SPAWN_LOCK_TIMEOUT_SECONDS,
+            )
+            yield
+            return
+        if stagger > 0:
+            # Wall clock, not monotonic: the previous startup was another
+            # process. A clock jump can only make this wait shorter or clamp
+            # it to `stagger` — it can never wait longer than one interval.
+            try:
+                handle.seek(0)
+                last = float((handle.read() or "0").strip() or 0.0)
+            except (OSError, ValueError):
+                last = 0.0
+            wait = min(stagger, stagger - (time.time() - last))
+            if wait > 0:
+                time.sleep(wait)
+        try:
+            handle.seek(0)
+            handle.truncate()
+            handle.write(f"{time.time():.3f}")
+            handle.flush()
+        except OSError as exc:  # pragma: no cover - best-effort bookkeeping
+            _log.debug("kanban worker: spawn gate stamp failed (%s)", exc)
+        yield
+    finally:
+        try:
+            if acquired:
+                if _IS_WINDOWS:
+                    import msvcrt
+
+                    handle.seek(0)
+                    getattr(msvcrt, "locking")(
+                        handle.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+                    )
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:  # pragma: no cover - unlock is best-effort
+            pass
+        finally:
+            handle.close()
+
+
+def _build_hermes_worker_command(task: Task, env: dict, prompt: str) -> list[str]:
+    """Build the native ``hermes -p <profile> chat -q ...`` worker argv."""
+    cmd = [
+        *_resolve_hermes_argv(),
+        "-p", env["HERMES_PROFILE"],
+        "--cli",
+        # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
+        # so they see that profile's shell-hook allowlist instead of the
+        # dispatcher's root allowlist. Pass --accept-hooks explicitly so
+        # profile-local worker sessions still register configured hooks.
+        "--accept-hooks",
+    ]
+    # Per-task force-loaded skills. Each name goes in its own
+    # `--skills X` pair rather than a single comma-joined arg: the CLI
+    # accepts both forms (action='append' + comma-split), but
+    # per-name pairs are easier to read in `ps` output and avoid any
+    # quoting ambiguity if a skill name ever contains unusual chars.
+    if task.skills:
+        for sk in task.skills:
+            if sk:
+                cmd.extend(["--skills", sk])
+    if task.model_override:
+        cmd.extend(["-m", task.model_override])
+        # Pin the provider too when the override names one, so the worker
+        # resolves the model against the intended backend instead of the
+        # profile's configured provider (mixing model X with provider Y is
+        # the classic mis-set that stalls a board).
+        if task.provider_override:
+            cmd.extend(["--provider", task.provider_override])
+    # Per-task thinking depth. Independent of the model override — a task can
+    # run the profile's own model at a different depth — so this is its own
+    # branch, not a nested one.
+    if task.reasoning_effort:
+        cmd.extend(["--reasoning", task.reasoning_effort])
+    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
+    if worker_toolsets:
+        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+    cmd.extend([
+        "chat",
+        "-q", prompt,
+    ])
+    if task.goal_mode:
+        # Goal-mode workers must take the fully-quiet single-query path:
+        # the kanban goal-loop hook (_run_kanban_goal_loop_q) only runs in
+        # cli.py's quiet branch. Without -Q the worker gets exactly one
+        # turn, prints text, exits rc=0, and the dispatcher records a
+        # protocol violation (incident 2026-06-09 t_d9cbe312).
+        cmd.append("-Q")
+    return cmd
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -9081,6 +9667,14 @@ def _default_spawn(
     ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / workspaces_root env
     vars all resolve to the same board the dispatcher claimed the task
     from. Workers cannot accidentally see other boards.
+
+    The command the child runs depends on ``kanban.worker_executor``
+    (see :func:`resolve_worker_executor`). The default is the native
+    ``hermes`` lane; ``claude_cli`` runs the Claude Code CLI directly. Both
+    lanes get the identical environment — same board / profile / tenant /
+    task / workspace pins, same TUI suppression, same log file, same PID
+    return for crash detection — so only the argv and the credential
+    routing differ.
     """
     import subprocess
     if not task.assignee:
@@ -9196,52 +9790,21 @@ def _default_spawn(
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
-    cmd = [
-        *_resolve_hermes_argv(),
-        "-p", profile_arg,
-        "--cli",
-        # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
-        # so they see that profile's shell-hook allowlist instead of the
-        # dispatcher's root allowlist. Pass --accept-hooks explicitly so
-        # profile-local worker sessions still register configured hooks.
-        "--accept-hooks",
-    ]
-    # Per-task force-loaded skills. Each name goes in its own
-    # `--skills X` pair rather than a single comma-joined arg: the CLI
-    # accepts both forms (action='append' + comma-split), but
-    # per-name pairs are easier to read in `ps` output and avoid any
-    # quoting ambiguity if a skill name ever contains unusual chars.
-    if task.skills:
-        for sk in task.skills:
-            if sk:
-                cmd.extend(["--skills", sk])
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
-        # Pin the provider too when the override names one, so the worker
-        # resolves the model against the intended backend instead of the
-        # profile's configured provider (mixing model X with provider Y is
-        # the classic mis-set that stalls a board).
-        if task.provider_override:
-            cmd.extend(["--provider", task.provider_override])
-    # Per-task thinking depth. Independent of the model override — a task can
-    # run the profile's own model at a different depth — so this is its own
-    # branch, not a nested one.
-    if task.reasoning_effort:
-        cmd.extend(["--reasoning", task.reasoning_effort])
-    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
-    if worker_toolsets:
-        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend([
-        "chat",
-        "-q", prompt,
-    ])
-    if task.goal_mode:
-        # Goal-mode workers must take the fully-quiet single-query path:
-        # the kanban goal-loop hook (_run_kanban_goal_loop_q) only runs in
-        # cli.py's quiet branch. Without -Q the worker gets exactly one
-        # turn, prints text, exits rc=0, and the dispatcher records a
-        # protocol violation (incident 2026-06-09 t_d9cbe312).
-        cmd.append("-Q")
+    # Executor selection. The native lane is the default and the only one a
+    # board gets without an explicit `kanban.worker_executor` opt-in; when the
+    # operator does select the direct Claude Code CLI, a missing binary is a
+    # hard error rather than a quiet downgrade back onto the native provider.
+    kanban_cfg = _load_kanban_config()
+    executor = resolve_worker_executor(kanban_cfg)
+    stripped_env_vars: list[str] = []
+    if executor == WORKER_EXECUTOR_CLAUDE_CLI:
+        # Build first: every unsupported-configuration error raises out of
+        # here, and it must do so before `env` is mutated or a log file is
+        # opened, so a rejected spawn leaves nothing half-applied behind.
+        cmd = _build_claude_cli_worker_command(task, workspace, kanban_cfg)
+        stripped_env_vars = _apply_claude_cli_env(env)
+    else:
+        cmd = _build_hermes_worker_command(task, env, prompt)
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and
@@ -9254,23 +9817,66 @@ def _default_spawn(
 
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
-    try:
-        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
-            stdin=subprocess.DEVNULL,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+    if executor == WORKER_EXECUTOR_CLAUDE_CLI:
+        # Explicit diagnostics: which lane ran, which binary, which flags, and
+        # which credential vars were dropped. Only flag *names* are recorded —
+        # never a flag's value (an operator could put a secret in `--settings`)
+        # and never the prompt or an env value, so nothing sensitive can reach
+        # this durable log.
+        flag_names = ",".join(
+            arg.split("=", 1)[0] for arg in cmd[1:] if arg.startswith("-")
+        ) or "-"
+        stripped_names = ",".join(stripped_env_vars) or "-"
+        _log.info(
+            "kanban worker %s: executor=%s bin=%s flags=%s stripped_env=%s",
+            task.id, executor, cmd[0], flag_names, stripped_names,
         )
-    except FileNotFoundError:
+        try:
+            log_f.write(
+                f"[kanban] executor={executor} bin={cmd[0]} "
+                f"board={resolved_board} profile={profile_arg} "
+                f"flags={flag_names} stripped_env={stripped_names}\n".encode()
+            )
+            log_f.flush()
+        except OSError as exc:  # pragma: no cover - log write is best-effort
+            _log.debug("kanban worker %s: log header write failed (%s)", task.id, exc)
+    try:
+        with (
+            _claude_cli_spawn_gate(kanban_cfg)
+            if executor == WORKER_EXECUTOR_CLAUDE_CLI
+            else contextlib.nullcontext()
+        ):
+            proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
+                cmd,
+                cwd=workspace if os.path.isdir(workspace) else None,
+                stdin=subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            )
+    except OSError as exc:
+        # FileNotFoundError (missing binary) and PermissionError (present but
+        # not executable — the usual npm-install-owned-by-root case) both land
+        # here. Naming the selected lane and the exact path is the difference
+        # between a one-line fix and an afternoon: the message a `hermes` user
+        # expects is useless when they opted into the Claude CLI.
         log_f.close()
+        if executor == WORKER_EXECUTOR_CLAUDE_CLI:
+            raise RuntimeError(
+                f"Claude Code CLI ({cmd[0]!r}) could not be executed for kanban "
+                f"task {task.id}: {exc}. kanban.worker_executor is set to "
+                f"{WORKER_EXECUTOR_CLAUDE_CLI!r}; install the CLI, fix "
+                "kanban.claude_cli_bin, or switch back to "
+                f"{WORKER_EXECUTOR_HERMES!r}."
+            ) from exc
+        if not isinstance(exc, FileNotFoundError):
+            raise
         raise RuntimeError(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
-        )
+        ) from exc
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
     # handle is kept alive by the child's inheritance.  The parent's

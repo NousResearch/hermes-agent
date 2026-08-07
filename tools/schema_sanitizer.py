@@ -419,6 +419,8 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 "with {'type': %r}",
                 path, node, node,
             )
+            if node == "array":
+                return {"type": "array", "items": {}}
             return {"type": node} if node != "object" else {
                 "type": "object",
                 "properties": {},
@@ -520,6 +522,12 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
         else:
             out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
+
+    # Array nodes without items: inject permissive items schema.
+    # Gemini strictly validates function declarations and rejects array
+    # schemas that omit the ``items`` keyword (HTTP 400).
+    if out.get("type") == "array" and "items" not in out:
+        out["items"] = {}
 
     # Object nodes without properties: inject empty properties dict.
     # llama.cpp's grammar generator can't constrain a free-form object.

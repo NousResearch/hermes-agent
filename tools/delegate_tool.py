@@ -1567,11 +1567,24 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    # Inherit the parent's fallback provider chain by default so subagents can
+    # recover from transient primary failures. Operators that require delegated
+    # work to stay pinned to the inherited provider/endpoint can disable this
+    # explicitly. This is separate from credential-pool endpoint coherence: a
+    # coherent primary may still fail legitimately and activate an inherited
+    # cross-provider fallback unless this policy gate is off.
+    raw_inherit_fallback = delegation_cfg.get("inherit_fallback_providers", True)
+    if isinstance(raw_inherit_fallback, str):
+        inherit_fallback = raw_inherit_fallback.strip().lower() not in {
+            "false", "0", "no", "off",
+        }
+    else:
+        inherit_fallback = bool(raw_inherit_fallback)
+    parent_fallback = (
+        getattr(parent_agent, "_fallback_chain", None) or None
+        if inherit_fallback
+        else None
+    )
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -2102,9 +2115,39 @@ def _run_single_child(
     )
 
     child_pool = getattr(child, "_credential_pool", None)
+    if child_pool is not None and not _credential_pool_matches_runtime(
+        child_pool,
+        getattr(child, "provider", None),
+        getattr(child, "base_url", None),
+    ):
+        logger.warning(
+            "Skipping delegated credential pool lease: pool does not match "
+            "child runtime %s at %s",
+            getattr(child, "provider", None),
+            getattr(child, "base_url", None),
+        )
+        child_pool = None
+        if child is not None:
+            child._credential_pool = None
     leased_cred_id = None
     if child_pool is not None:
-        leased_cred_id = child_pool.acquire_lease()
+        # A real CredentialPool may contain credentials for several OpenAI-
+        # compatible endpoints.  Filter the selection itself, not just the
+        # pool-level eligibility check above: an unfiltered least-leased choice
+        # could otherwise bind a wrong-endpoint credential.
+        try:
+            from agent.credential_pool import CredentialPool
+            if isinstance(child_pool, CredentialPool):
+                leased_cred_id = child_pool.acquire_lease(
+                    entry_filter=lambda entry: _credential_pool_entry_matches_runtime(
+                        entry, getattr(child, "base_url", None)
+                    )
+                )
+            else:
+                # Preserve compatibility with plugin/test pool adapters.
+                leased_cred_id = child_pool.acquire_lease()
+        except Exception as exc:
+            logger.debug("Failed to acquire child credential lease: %s", exc)
         if leased_cred_id is not None:
             try:
                 leased_entry = child_pool.current()
@@ -3867,13 +3910,28 @@ def _resolve_child_credential_pool(
         return None
 
     if parent_pool is not None and effective_provider == parent_provider:
-        return parent_pool
+        if _credential_pool_matches_runtime(
+            parent_pool, effective_provider, effective_base_url
+        ):
+            return parent_pool
+        logger.debug(
+            "Parent credential pool does not match child runtime %s at %s; "
+            "resolving independently",
+            effective_provider,
+            effective_base_url,
+        )
 
     try:
         from agent.credential_pool import load_pool
 
         pool = load_pool(effective_provider)
-        if pool is not None and pool.has_credentials():
+        if (
+            pool is not None
+            and pool.has_credentials()
+            and _credential_pool_matches_runtime(
+                pool, effective_provider, effective_base_url
+            )
+        ):
             return pool
     except Exception as exc:
         logger.debug(
@@ -3882,6 +3940,67 @@ def _resolve_child_credential_pool(
             exc,
         )
     return None
+
+
+def _credential_pool_matches_runtime(
+    pool,
+    provider: Optional[str],
+    base_url: Optional[str],
+) -> bool:
+    """Return whether *pool* can safely rebind this exact child runtime.
+
+    Provider identity alone is insufficient for OpenAI-compatible endpoints:
+    an ``openai-api`` pool seeded from ``OPENAI_API_KEY`` may point at public
+    OpenAI while the live child uses an explicit Azure endpoint. Leasing that
+    pool would send the Azure credential to ``api.openai.com``. Keep legacy
+    unscoped pool adapters compatible, but when endpoint metadata exists require
+    at least one pool entry to match the child's active endpoint exactly.
+    """
+    from agent.credential_pool import credential_pool_matches_provider
+
+    raw_pool_provider = getattr(pool, "provider", None)
+    if not isinstance(raw_pool_provider, str):
+        # Backward compatibility for lightweight/plugin/test pool adapters that
+        # predate provider and endpoint metadata.
+        return True
+    if not credential_pool_matches_provider(pool, provider, base_url=base_url):
+        return False
+    expected = str(base_url or "").strip().rstrip("/").lower()
+    if not expected:
+        return True
+
+    entries_attr = getattr(pool, "entries", None)
+    if not callable(entries_attr):
+        # Backward compatibility for lightweight/plugin pool adapters that do
+        # not expose endpoint metadata.
+        return True
+    try:
+        raw_entries = entries_attr()
+        if not isinstance(raw_entries, (list, tuple)):
+            return False
+        entries = list(raw_entries)
+    except Exception:
+        return False
+    endpoints = []
+    for entry in entries:
+        value = (
+            getattr(entry, "runtime_base_url", None)
+            or getattr(entry, "base_url", None)
+        )
+        if isinstance(value, str) and value.strip():
+            endpoints.append(value.strip().rstrip("/").lower())
+    # A production CredentialPool always carries endpoint metadata. Empty
+    # metadata therefore fails closed; old adapters returned above.
+    return bool(endpoints) and expected in endpoints
+
+
+def _credential_pool_entry_matches_runtime(entry, base_url: Optional[str]) -> bool:
+    """Return whether one pooled credential targets the child's endpoint."""
+    expected = str(base_url or "").strip().rstrip("/").lower()
+    if not expected:
+        return True
+    value = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None)
+    return isinstance(value, str) and value.strip().rstrip("/").lower() == expected
 
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:

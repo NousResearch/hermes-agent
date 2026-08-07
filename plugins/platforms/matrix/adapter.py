@@ -388,6 +388,29 @@ def _extract_reply_fallback(body: str) -> tuple[Optional[str], Optional[str]]:
     return quoted_text, author_id
 
 
+def _strip_reply_fallback(body: str) -> str:
+    """Strip Matrix's inline ``> <text>\\n\\n<actual reply>`` fallback prefix.
+
+    Returns the body without the quoted lines. If the body doesn't start
+    with a reply fallback, returns it unchanged.
+    """
+    if not body or not body.startswith("> "):
+        return body
+    lines = body.split("\n")
+    stripped = []
+    past_fallback = False
+    for line in lines:
+        if not past_fallback:
+            if line.startswith("> ") or line == ">":
+                continue
+            if line == "":
+                past_fallback = True
+                continue
+            past_fallback = True
+        stripped.append(line)
+    return "\n".join(stripped) if stripped else body
+
+
 class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
@@ -3447,20 +3470,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to_author_name: Optional[str] = None
         if reply_to and body.startswith("> "):
             reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
-
-            lines = body.split("\n")
-            stripped = []
-            past_fallback = False
-            for line in lines:
-                if not past_fallback:
-                    if line.startswith("> ") or line == ">":
-                        continue
-                    if line == "":
-                        past_fallback = True
-                        continue
-                    past_fallback = True
-                stripped.append(line)
-            body = "\n".join(stripped) if stripped else body
+            body = _strip_reply_fallback(body)
 
             # Resolve the replied-to author's display name when we have the
             # state_store available — falls back to the localpart otherwise.
@@ -3693,19 +3703,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to_author_name: Optional[str] = None
         if reply_to and body.startswith("> "):
             reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
-            lines = body.split("\n")
-            stripped = []
-            past_fallback = False
-            for line in lines:
-                if not past_fallback:
-                    if line.startswith("> ") or line == ">":
-                        continue
-                    if line == "":
-                        past_fallback = True
-                        continue
-                    past_fallback = True
-                stripped.append(line)
-            body = "\n".join(stripped) if stripped else body
+            body = _strip_reply_fallback(body)
 
             if reply_to_author_id:
                 reply_to_author_name = await self._get_display_name(

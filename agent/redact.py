@@ -507,6 +507,15 @@ def _mask_control_split_tokens(text: str, mask_fn) -> str:
         body = m.group(1)
         start_orig = orig_idx[m.start(1)]
         end_orig = orig_idx[m.end(1) - 1] + 1
+        # If any fragment inside the original span already matches _PREFIX_RE
+        # on its own, the ordinary prefix pass will mask it — do NOT join.
+        # Joining here would swallow adjacent legitimate text: a complete
+        # token at end-of-line followed by a word line (``ghp_<token>\n
+        # button [ref=e3]``) joins into one stripped-copy match and the
+        # mask eats ``button``. Join only when fragments alone are too
+        # short/broken to match (the actual smuggling shape).
+        if _PREFIX_RE.search(text[start_orig:end_orig]):
+            continue
         # Reject matches whose original span crosses a non-token char
         # (e.g. ``sk_abc…\nTAVILY_API_KEY=…`` — the ``=`` is not part of a
         # token body, so the regex matched across unrelated lines). Also

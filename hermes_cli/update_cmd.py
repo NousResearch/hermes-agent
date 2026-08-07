@@ -3859,7 +3859,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in {branch, "HEAD"}:
+            # Only restore the original branch when the user did NOT
+            # explicitly request a branch via --branch.  An explicit
+            # --branch B should leave the checkout on B even when B is
+            # already up-to-date.  See issues #80412 and #80397.
+            if (
+                getattr(args, "branch", None) is None
+                and current_branch not in {branch, "HEAD"}
+            ):
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=_m().PROJECT_ROOT,

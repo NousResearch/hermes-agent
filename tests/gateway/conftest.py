@@ -113,13 +113,46 @@ def _fake_str_enum(enum_name: str, **members: str):
 def _ensure_telegram_mock() -> None:
     """Install a comprehensive telegram mock in sys.modules.
 
-    Idempotent — skips when the real library is already imported.
-    Uses ``sys.modules[name] = mod`` (overwrite) instead of
-    ``setdefault`` so it wins even if a partial/broken import
-    already cached a module with ``ChatType = None``.
+    Prefers the real ``python-telegram-bot`` package whenever it is
+    importable, and falls back to the mock only in environments where
+    PTB is genuinely absent. PTB is part of the dev/test dependency
+    set, so in CI this makes the mock a no-op and test outcomes no
+    longer depend on collection order relative to files that exercise
+    the real PTB runtime (see #76495).
+
+    Idempotent — skips when the mock is already present or the real
+    library is already imported. Uses ``sys.modules[name] = mod``
+    (overwrite) instead of ``setdefault`` so it wins even if a
+    partial/broken import already cached a module with
+    ``ChatType = None``.
     """
+    # A conftest collected earlier (e.g. tests/e2e/conftest.py) may have
+    # already injected a mock into sys.modules. Drop those entries so the
+    # import below resolves the real package whenever it is installed;
+    # otherwise ``import telegram`` would just hand back the stale mock.
+    for _name in (
+        "telegram",
+        "telegram.ext",
+        "telegram.ext.filters",
+        "telegram.constants",
+        "telegram.request",
+        "telegram.error",
+    ):
+        sys.modules.pop(_name, None)
+
+    try:
+        # Real library is installed — nothing to mock. Importing eagerly
+        # here (instead of only checking sys.modules) makes the mock a
+        # no-op whenever PTB is importable, regardless of which test file
+        # pytest happens to collect first.
+        import telegram, telegram.constants, telegram.error, telegram.ext  # noqa: F401
+        if hasattr(telegram, "__file__"):
+            return  # Real library is installed — nothing to mock
+    except Exception:
+        pass
+
     if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return  # Real library is installed — nothing to mock
+        return  # Real library is already imported — nothing to mock
 
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)

@@ -99,6 +99,33 @@ class TestInitialize:
         assert resp.protocol_version == acp.PROTOCOL_VERSION
 
 
+    @pytest.mark.asyncio
+    async def test_initialize_returns_capabilities(self, agent):
+        resp = await agent.initialize(protocol_version=1)
+        caps = resp.agent_capabilities
+        assert isinstance(caps, AgentCapabilities)
+        assert caps.load_session is True
+        assert caps.mcp_capabilities is not None
+        assert caps.mcp_capabilities.http is True
+        assert caps.mcp_capabilities.sse is True
+        assert caps.session_capabilities is not None
+        assert caps.session_capabilities.fork is not None
+        assert caps.session_capabilities.list is not None
+        assert caps.session_capabilities.resume is not None
+
+    @pytest.mark.asyncio
+    async def test_initialize_capabilities_wire_format(self, agent):
+        """Verify the JSON wire format uses correct aliases so ACP clients see the right keys."""
+        resp = await agent.initialize(protocol_version=1)
+        payload = resp.agent_capabilities.model_dump(by_alias=True, exclude_none=True)
+        assert payload["loadSession"] is True
+        mcp_caps = payload["mcpCapabilities"]
+        assert mcp_caps["http"] is True
+        assert mcp_caps["sse"] is True
+        session_caps = payload["sessionCapabilities"]
+        assert "fork" in session_caps
+        assert "list" in session_caps
+        assert "resume" in session_caps
 
 
     @pytest.mark.asyncio

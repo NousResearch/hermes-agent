@@ -7,8 +7,10 @@ import { Progress } from '@/components/ui/progress'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
+import { pollOAuthSession, startOAuthLogin } from '@/hermes'
+import { BarChart3, CreditCard, ExternalLink, Package, Users, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { notify, notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../../hooks/use-route-enum-param'
 import {
@@ -48,6 +50,9 @@ const BILLING_VIEWS = ['overview', 'plans'] as const
 type BillingSubView = (typeof BILLING_VIEWS)[number]
 
 const FEATURE_BILLING_INVOICES = false
+const NOUS_OAUTH_PROVIDER_ID = 'nous'
+const NOUS_OAUTH_POLL_INTERVAL_MS = 5000
+const NOUS_OAUTH_MAX_POLLS = 120
 
 const BILLING_DEV_FIXTURE_NAMES = import.meta.env.DEV
   ? (Object.keys(billingDevFixtures) as BillingDevFixtureName[])
@@ -100,6 +105,54 @@ function NoticeCard({ notice }: { notice: BillingNoticeView }) {
         </Button>
       )}
     </div>
+  )
+}
+
+function BillingIdentityCard({
+  billing,
+  onReconnect,
+  reconnecting
+}: {
+  billing?: BillingStateResponse
+  onReconnect: () => void
+  reconnecting: boolean
+}) {
+  if (!billing?.logged_in) {
+    return null
+  }
+
+  const email = billing.account_email?.trim()
+  const org = billing.org_name?.trim()
+
+  const orgLabel = org || 'Personal workspace'
+  const identityLabel = email || 'Account identity unavailable'
+
+  const caption = email
+    ? `${orgLabel}${billing.role ? ` · ${billing.role}` : ''}`
+    : org
+      ? `${orgLabel} · email unavailable`
+      : 'Email and workspace unavailable — reconnect to refresh the account context.'
+
+  return (
+    <SettingsSection icon={Users} title="Billing account">
+      <ListRow
+        action={
+          <Button
+            disabled={reconnecting}
+            onClick={onReconnect}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {reconnecting ? 'Waiting for approval…' : 'Reconnect / switch account'}
+            <ExternalLink className="size-3.5" />
+          </Button>
+        }
+        below={<div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{caption}</div>}
+        description="The account and workspace used for the balance shown below."
+        title={identityLabel}
+      />
+    </SettingsSection>
   )
 }
 
@@ -456,6 +509,64 @@ function BillingSettingsContent({
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
   const [subView, setSubView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
+  const queryClient = useQueryClient()
+  const [reconnectingAccount, setReconnectingAccount] = useState(false)
+
+  const refreshBillingQueries = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['billing', 'state'] }),
+      queryClient.invalidateQueries({ queryKey: ['billing', 'subscription'] })
+    ])
+  }
+
+  const reconnectBillingAccount = async () => {
+    if (reconnectingAccount) {
+      return
+    }
+
+    setReconnectingAccount(true)
+
+    try {
+      const start = await startOAuthLogin(NOUS_OAUTH_PROVIDER_ID)
+
+      if (start.flow !== 'device_code') {
+        notifyError(new Error(`unexpected flow: ${start.flow}`), 'Could not start Nous sign-in')
+
+        return
+      }
+
+      await openExternal(start.verification_url)
+
+      for (let attempt = 0; attempt < NOUS_OAUTH_MAX_POLLS; attempt += 1) {
+        await new Promise(resolve => window.setTimeout(resolve, NOUS_OAUTH_POLL_INTERVAL_MS))
+
+        const polled = await pollOAuthSession(NOUS_OAUTH_PROVIDER_ID, start.session_id)
+
+        if (polled.status === 'approved') {
+          notify({
+            kind: 'success',
+            title: 'Nous account connected',
+            message: 'Billing account details are refreshing.'
+          })
+          await refreshBillingQueries()
+
+          return
+        }
+
+        if (polled.status !== 'pending') {
+          notifyError(new Error(polled.error_message || `Sign-in ${polled.status}`), 'Nous sign-in failed')
+
+          return
+        }
+      }
+
+      notifyError(new Error('Timed out waiting for OAuth approval'), 'Nous sign-in timed out')
+    } catch (err) {
+      notifyError(err, 'Nous sign-in failed')
+    } finally {
+      setReconnectingAccount(false)
+    }
+  }
 
   // Fixture mode flows through the SAME query path — the simulated api (supplied by
   // BillingApiProvider in the DEV wrapper) backs these fetches — so there is no
@@ -513,6 +624,12 @@ function BillingSettingsContent({
           ))}
         </div>
       </div>
+
+      <BillingIdentityCard
+        billing={billing}
+        onReconnect={() => void reconnectBillingAccount()}
+        reconnecting={reconnectingAccount}
+      />
 
       {view.plan && (
         <SettingsSection icon={Package} title="Plan">

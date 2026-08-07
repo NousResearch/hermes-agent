@@ -193,6 +193,8 @@ export interface BillingAutoReload {
 }
 
 export interface BillingStateResponse {
+  /** Authenticated Nous user email for the SAME OAuth context used by billing.state. */
+  account_email?: string | null
   auto_reload: BillingAutoReload | null
   balance_display: string
   balance_usd: string | null
@@ -213,7 +215,9 @@ export interface BillingStateResponse {
   min_usd: string | null
   monthly_cap: BillingMonthlyCap | null
   ok: boolean
+  org_id?: string | null
   org_name: string | null
+  org_slug?: string | null
   portal_url: string | null
   role: string | null
   // Shared dollar usage model (two-bar view), embedded by the gateway so /topup

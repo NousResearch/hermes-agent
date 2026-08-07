@@ -19,6 +19,7 @@ const current = (
 })
 
 export const todayBillingState = {
+  account_email: 'owner@sid5.example',
   auto_reload: {
     card: { kind: 'canonical' },
     enabled: true,

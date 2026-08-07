@@ -137,6 +137,16 @@ ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 scripts/run_tests.sh
 ```
 
+If the wrapper is unavailable in a local dev shell or IDE, run pytest through
+uv with the dev extra so a fresh checkout has the test dependencies installed:
+
+```bash
+uv run --extra dev python -m pytest tests/ -q
+```
+
+The wrapper remains the preferred final check before opening a PR because it
+matches CI's hermetic environment.
+
 ## Code Style
 
 - **PEP 8** with practical exceptions (no strict line length enforcement)

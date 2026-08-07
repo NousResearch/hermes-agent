@@ -1333,6 +1333,12 @@ scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
 scripts/run_tests.sh tests/agent/test_foo.py -k test_x  # one test (file + -k; the runner is file-granular)
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+
+For a fresh uv-managed checkout where dev dependencies are not yet installed,
+you can also run pytest directly through uv:
+
+```bash
+uv run --extra dev python -m pytest tests/ -q
 ```
 
 **Flake policy:** the runner auto-retries a failing test FILE once in a fresh

@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
 
+from hermes_cli.dotted_path import split_dotted_key
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -989,6 +990,14 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     return missing
 
 
+# The canonical dotted-path representation lives in ``hermes_cli.dotted_path``
+# so ``managed_scope`` can share it: ``config`` imports ``managed_scope``, never
+# the reverse, so the helper cannot live here without inverting that dependency.
+# ``_split_dotted_key`` stays as the in-module name — every call site below, and
+# the CLI's malformed-key guards, already use it.
+_split_dotted_key = split_dotted_key
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at an arbitrarily nested dotted key path.
 
@@ -1011,7 +1020,7 @@ def _set_nested(config, dotted_key: str, value):
     destroying list-typed config like ``custom_providers`` whenever a
     caller used an indexed path.
     """
-    parts = dotted_key.split(".")
+    parts = _split_dotted_key(dotted_key)
     current = config
     for part in parts[:-1]:
         if isinstance(current, list):
@@ -1073,7 +1082,7 @@ _MISSING = object()
 def _get_nested(config, dotted_key: str):
     """Return a dotted-path value from nested dict/list config data."""
     current = config
-    for part in dotted_key.split("."):
+    for part in _split_dotted_key(dotted_key):
         if isinstance(current, list):
             try:
                 current = current[int(part)]
@@ -1090,7 +1099,7 @@ def _get_nested(config, dotted_key: str):
 
 def _unset_nested(config, dotted_key: str) -> bool:
     """Remove a dotted-path value from nested dict/list config data."""
-    parts = dotted_key.split(".")
+    parts = _split_dotted_key(dotted_key)
     if not parts:
         return False
 
@@ -2467,10 +2476,20 @@ def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     ``save_config`` to drop managed-scope leaves before persisting, so a bulk
     write never writes a user value that would lose to the managed layer on the
     next load. Only keys actually present in ``cfg`` are reported as stripped.
+
+    Keys arrive in the canonical representation (``managed_config_keys()``), so
+    they are tokenized with ``split_dotted_key`` — a raw ``.split(".")`` here
+    would walk into ``model_routes`` → ``gpt-5`` → ``6-sol"`` and silently strip
+    nothing, letting a user bulk-write persist a value the managed overlay then
+    overrides. A malformed key can only come from a caller that built it by
+    hand; skip it rather than aborting the whole save.
     """
     stripped: set = set()
     for dotted in dotted_keys:
-        parts = dotted.split(".")
+        try:
+            parts = split_dotted_key(dotted)
+        except ValueError:
+            continue
         node = cfg
         for p in parts[:-1]:
             if not isinstance(node, dict) or p not in node:
@@ -4640,7 +4659,7 @@ def _default_value_for_key(dotted_key: str):
     best-effort coercion used by ``config set``.
     """
     node = DEFAULT_CONFIG
-    for part in dotted_key.split("."):
+    for part in _split_dotted_key(dotted_key):
         if not isinstance(node, dict) or part not in node:
             return None
         node = node[part]
@@ -4746,7 +4765,7 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     if not key:
         return False, None
 
-    segments = key.split(".")
+    segments = _split_dotted_key(key)
     top = segments[0]
 
     # ── Underscore-prefixed keys are internal/test markers ───────────
@@ -4835,6 +4854,14 @@ def set_config_value(key: str, value: str, force: bool = False):
             refused (bare ``model`` is redirected to ``model.default``). The
             CLI exposes this via ``hermes config set --force``.
     """
+    # Reject a malformed key (e.g. an unterminated quote) cleanly, before any
+    # validation or I/O runs — every dotted-key consumer below tokenizes too, so
+    # a late guard would only turn the same error into a traceback.
+    try:
+        _split_dotted_key(key)
+    except ValueError as e:
+        print(f"Invalid config key: {e}", file=sys.stderr)
+        sys.exit(1)
     if is_managed():
         managed_error("set configuration values")
         return
@@ -5047,6 +5074,11 @@ def set_config_value(key: str, value: str, force: bool = False):
 
 def get_config_value(key: str, *, as_json: bool = False):
     """Print a resolved configuration value."""
+    try:
+        _split_dotted_key(key)
+    except ValueError as e:
+        print(f"Invalid config key: {e}", file=sys.stderr)
+        sys.exit(1)
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value
@@ -5062,6 +5094,11 @@ def get_config_value(key: str, *, as_json: bool = False):
 
 def unset_config_value(key: str):
     """Remove a user-set configuration or .env value."""
+    try:
+        _split_dotted_key(key)
+    except ValueError as e:
+        print(f"Invalid config key: {e}", file=sys.stderr)
+        sys.exit(1)
     if is_managed():
         managed_error("unset configuration values")
         return

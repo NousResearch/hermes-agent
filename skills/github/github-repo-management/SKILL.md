@@ -22,34 +22,22 @@ Create, clone, fork, configure, and manage GitHub repositories. Each section sho
 ### Setup
 
 ```bash
-if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-  AUTH="gh"
-else
-  AUTH="git"
-  if [ -z "$GITHUB_TOKEN" ]; then
-    if _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
-    elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-      GITHUB_TOKEN=$(uv run python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
-    fi
-  fi
-fi
-
-# Get your GitHub username (needed for several operations)
-if [ "$AUTH" = "gh" ]; then
-  GH_USER=$(gh api user --jq '.login')
-else
-  GH_USER=$(curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user | python3 -c "import sys,json; print(json.load(sys.stdin)['login'])")
-fi
+# Source the shared auth/repo detection helper (sets GH_AUTH_METHOD, GITHUB_TOKEN,
+# GH_USER, GH_OWNER, GH_REPO, GH_OWNER_REPO). See github-auth skill for details.
+source "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
+# Legacy alias used elsewhere in this skill: gh-env.sh uses "curl" where older
+# skills used "git" for the non-gh fallback path.
+AUTH="$GH_AUTH_METHOD"
+[ "$AUTH" = "curl" ] && AUTH="git"
 ```
 
-If you're inside a repo already:
+`GH_USER` is already resolved by `gh-env.sh` (via `gh api user` or the `/user` endpoint), so the separate username lookup that used to live here is no longer needed.
+
+If you're inside a repo already, `GH_OWNER` and `GH_REPO` are also set by `gh-env.sh`:
 
 ```bash
-REMOTE_URL=$(git remote get-url origin)
-OWNER_REPO=$(echo "$REMOTE_URL" | sed -E 's|.*github\.com[:/]||; s|\.git$||')
-OWNER=$(echo "$OWNER_REPO" | cut -d/ -f1)
-REPO=$(echo "$OWNER_REPO" | cut -d/ -f2)
+OWNER="$GH_OWNER"
+REPO="$GH_REPO"
 ```
 
 ---

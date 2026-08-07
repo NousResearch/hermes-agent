@@ -23,23 +23,16 @@ Perform code reviews on local changes before pushing, or review open PRs on GitH
 ### Setup (for PR interactions)
 
 ```bash
-if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-  AUTH="gh"
-else
-  AUTH="git"
-  if [ -z "$GITHUB_TOKEN" ]; then
-    if _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
-    elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-      GITHUB_TOKEN=$(uv run python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
-    fi
-  fi
-fi
+# Source the shared auth/repo detection helper (sets GH_AUTH_METHOD, GITHUB_TOKEN,
+# GH_USER, GH_OWNER, GH_REPO, GH_OWNER_REPO). See github-auth skill for details.
+source "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
+# Legacy alias used elsewhere in this skill: gh-env.sh uses "curl" where older
+# skills used "git" for the non-gh fallback path.
+AUTH="$GH_AUTH_METHOD"
+[ "$AUTH" = "curl" ] && AUTH="git"
 
-REMOTE_URL=$(git remote get-url origin)
-OWNER_REPO=$(echo "$REMOTE_URL" | sed -E 's|.*github\.com[:/]||; s|\.git$||')
-OWNER=$(echo "$OWNER_REPO" | cut -d/ -f1)
-REPO=$(echo "$OWNER_REPO" | cut -d/ -f2)
+OWNER="$GH_OWNER"
+REPO="$GH_REPO"
 ```
 
 ---
@@ -336,8 +329,9 @@ When the user asks you to "review PR #N", "look at this PR", or gives you a PR U
 
 ```bash
 source "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.sh"
-# Or run the inline setup block from the top of this skill
 ```
+
+This is the same setup shown in the `### Setup` block at the top of this skill — sourced once at the start of the review.
 
 ### Step 2: Gather PR context
 

@@ -6,7 +6,8 @@ import { getStatus } from '@/hermes'
 import { useStatusSnapshot } from './use-status-snapshot'
 
 vi.mock('@/hermes', () => ({
-  getStatus: vi.fn()
+  getStatus: vi.fn(),
+  setApiRequestProfile: vi.fn()
 }))
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -166,5 +167,26 @@ describe('useStatusSnapshot', () => {
       await vi.advanceTimersByTimeAsync(1)
     })
     expect(requestGatewayMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('forwards active profile to evaluateRuntimeReadiness RPCs', async () => {
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+
+    const requestGatewayMock = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return (method === 'setup.runtime_check' ? { ok: true } : { provider_configured: true }) as never
+    })
+
+    const requestGateway = requestGatewayMock as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('open', requestGateway, 'work'))
+
+    await flushAsync()
+
+    expect(calls).toEqual([
+      { method: 'setup.status', params: { profile: 'work' } },
+      { method: 'setup.runtime_check', params: { profile: 'work' } }
+    ])
   })
 })

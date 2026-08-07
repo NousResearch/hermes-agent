@@ -1438,13 +1438,13 @@ def _profile_home(profile: str | None) -> Path | None:
 
 
 def _profile_scoped(handler):
-    """Bind ``params['profile']``'s HERMES_HOME around a pet RPC handler.
+    """Bind ``params['profile']``'s HERMES_HOME and secret scope around an RPC handler.
 
-    Pets are per-profile: ``display.pet.*`` lives in the profile's config.yaml and
-    sprites install under its ``pets/`` dir (both resolve via ``get_hermes_home``).
-    The desktop sends ``profile`` on pet calls so config + pets dir resolve to the
-    focused profile even in app-global remote mode, where one backend serves every
-    profile. No-op for the launch profile (own-profile backends already resolve it).
+    Pets and setup readiness RPCs are per-profile: config.yaml, .env, and assets
+    resolve under the profile's home directory. The desktop sends ``profile`` on
+    these calls so config + secrets resolve to the focused profile even in
+    app-global remote mode, where one backend serves every profile. No-op for the
+    launch profile (own-profile backends already resolve it).
     """
 
     def wrapper(rid, params):
@@ -1452,9 +1452,11 @@ def _profile_scoped(handler):
         if home is None:
             return handler(rid, params)
         token = set_hermes_home_override(home)
+        secret_token = set_secret_scope(build_profile_secret_scope(Path(home)))
         try:
             return handler(rid, params)
         finally:
+            reset_secret_scope(secret_token)
             reset_hermes_home_override(token)
 
     return wrapper

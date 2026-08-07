@@ -86,6 +86,31 @@ describe('fetchRuntimeReadinessSignals', () => {
 
     expect(calls).toEqual([{ method: 'setup.status' }, { method: 'setup.runtime_check', params: { provider: 'nous' } }])
   })
+
+  it('forwards profile parameter to both setup.status and setup.runtime_check', async () => {
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+
+    const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'setup.status') {
+        return { provider_configured: true } as T
+      }
+
+      if (method === 'setup.runtime_check') {
+        return { ok: true } as T
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    }
+
+    await fetchRuntimeReadinessSignals(requestGateway, 'nous', 'work')
+
+    expect(calls).toEqual([
+      { method: 'setup.status', params: { profile: 'work' } },
+      { method: 'setup.runtime_check', params: { provider: 'nous', profile: 'work' } }
+    ])
+  })
 })
 
 describe('evaluateRuntimeReadiness', () => {
@@ -107,5 +132,31 @@ describe('evaluateRuntimeReadiness', () => {
     const result = await evaluateRuntimeReadiness(requestGateway, { requestedProvider: 'nous' })
 
     expect(result.ready).toBe(true)
+  })
+
+  it('forwards profile to setup.status and setup.runtime_check via options', async () => {
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+
+    const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'setup.status') {
+        return { provider_configured: true } as T
+      }
+
+      if (method === 'setup.runtime_check') {
+        return { ok: true } as T
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    }
+
+    const result = await evaluateRuntimeReadiness(requestGateway, { requestedProvider: 'openai', profile: 'dev' })
+
+    expect(result.ready).toBe(true)
+    expect(calls).toEqual([
+      { method: 'setup.status', params: { profile: 'dev' } },
+      { method: 'setup.runtime_check', params: { provider: 'openai', profile: 'dev' } }
+    ])
   })
 })

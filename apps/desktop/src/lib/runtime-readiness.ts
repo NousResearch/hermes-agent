@@ -16,6 +16,7 @@ export interface RuntimeReadinessSignals {
 
 export interface RuntimeReadinessOptions {
   defaultReason?: string
+  profile?: string
   requestedProvider?: string
   unknownReady?: boolean
 }
@@ -67,12 +68,24 @@ async function requestWithFallback<T>(
 
 export async function fetchRuntimeReadinessSignals(
   requestGateway: RuntimeReadinessRequester,
-  requestedProvider?: string
+  requestedProvider?: string,
+  profile?: string
 ): Promise<RuntimeReadinessSignals> {
-  const runtimeParams = requestedProvider?.trim() ? { provider: requestedProvider.trim() } : undefined
+  const normProfile = profile?.trim() ? profile.trim() : undefined
+  const normProvider = requestedProvider?.trim() ? requestedProvider.trim() : undefined
+
+  const setupParams = normProfile ? { profile: normProfile } : undefined
+
+  const runtimeParams =
+    normProvider || normProfile
+      ? {
+          ...(normProvider ? { provider: normProvider } : {}),
+          ...(normProfile ? { profile: normProfile } : {})
+        }
+      : undefined
 
   const [setup, runtime] = await Promise.all([
-    requestWithFallback<SetupStatusSnapshot>(requestGateway, 'setup.status'),
+    requestWithFallback<SetupStatusSnapshot>(requestGateway, 'setup.status', setupParams),
     requestWithFallback<RuntimeCheckSnapshot>(requestGateway, 'setup.runtime_check', runtimeParams)
   ])
 
@@ -146,7 +159,7 @@ export async function evaluateRuntimeReadiness(
   requestGateway: RuntimeReadinessRequester,
   options: RuntimeReadinessOptions = {}
 ): Promise<RuntimeReadinessResult> {
-  const signals = await fetchRuntimeReadinessSignals(requestGateway, options.requestedProvider)
+  const signals = await fetchRuntimeReadinessSignals(requestGateway, options.requestedProvider, options.profile)
 
   return interpretRuntimeReadiness(signals, options)
 }

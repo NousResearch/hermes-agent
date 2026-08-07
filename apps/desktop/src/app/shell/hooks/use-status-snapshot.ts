@@ -1,7 +1,9 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { getStatus } from '@/hermes'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { $activeGatewayProfile } from '@/store/profile'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -12,7 +14,13 @@ const REFRESH_MS = 60_000
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
-export function useStatusSnapshot(gatewayState: string | undefined, requestGateway: GatewayRequester) {
+export function useStatusSnapshot(
+  gatewayState: string | undefined,
+  requestGateway: GatewayRequester,
+  profile?: string
+) {
+  const activeProfile = useStore($activeGatewayProfile)
+  const targetProfile = profile ?? activeProfile
   const [statusSnapshot, setStatusSnapshot] = useState<StatusResponse | null>(null)
   const [inferenceStatus, setInferenceStatus] = useState<RuntimeReadinessResult | null>(null)
 
@@ -49,7 +57,9 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
         // race newer healthy results.
         const [statusResult, inferenceResult] = await Promise.allSettled([
           getStatus(),
-          gatewayState === 'open' ? evaluateRuntimeReadiness(requestGateway) : Promise.resolve(null)
+          gatewayState === 'open'
+            ? evaluateRuntimeReadiness(requestGateway, { profile: targetProfile })
+            : Promise.resolve(null)
         ])
 
         if (cancelled) {
@@ -100,7 +110,7 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
         window.clearTimeout(timer)
       }
     }
-  }, [gatewayState, requestGateway])
+  }, [gatewayState, requestGateway, targetProfile])
 
   return { inferenceStatus, statusSnapshot }
 }

@@ -338,6 +338,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("setup.status")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.main import _has_any_provider_configured
@@ -348,6 +349,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("setup.runtime_check")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Strict provider check: does the configured/default model actually resolve to a usable runtime?
 

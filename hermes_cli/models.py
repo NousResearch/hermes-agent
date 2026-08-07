@@ -4643,6 +4643,101 @@ def fetch_api_models(
     ).get("models")
 
 
+def _custom_endpoint_fingerprint(
+    api_key: Optional[str],
+    api_mode: Optional[str],
+    headers: Optional[dict[str, str]],
+) -> str:
+    """Fingerprint the credentials/wire-shape used to probe a custom endpoint.
+
+    Custom OpenAI-compatible endpoints have no ``PROVIDER_REGISTRY`` slug to
+    key off (unlike ``_credential_fingerprint``), so this hashes exactly the
+    values callers pass to :func:`fetch_api_models`: a rotated ``api_key``, a
+    changed ``api_mode``, or an edited ``extra_headers`` block each bust the
+    cache entry on their own.
+    """
+    import hashlib
+
+    blob = "|".join((
+        api_key or "",
+        api_mode or "",
+        json.dumps(headers or {}, sort_keys=True),
+    )).encode("utf-8", errors="replace")
+    # blake2b for cache-key fingerprinting only, same rationale as
+    # _credential_fingerprint (avoids CodeQL's sha256-over-secrets rule).
+    return hashlib.blake2b(blob, digest_size=8).hexdigest()
+
+
+def cached_fetch_api_models(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    *,
+    timeout: float = 5.0,
+    api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
+    force_refresh: bool = False,
+    ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL,
+) -> Optional[list[str]]:
+    """Disk-cached wrapper around :func:`fetch_api_models` for custom endpoints.
+
+    Mirrors :func:`cached_provider_model_ids` but keys
+    ``provider_models_cache.json`` off ``custom:<base_url>`` instead of a
+    ``PROVIDER_REGISTRY`` slug, since custom endpoints (named
+    ``custom_providers`` rows, bare ``provider: custom``, and per-endpoint-map
+    entries) have none. Same stale-beats-nothing fallback policy as
+    ``cached_provider_model_ids``: a live-fetch failure serves the last
+    same-fingerprint result rather than an empty list. Always returns
+    whatever :func:`fetch_api_models` would (a list or ``None``), never
+    raises.
+    """
+    # Only forward api_mode when the caller actually set it — none of the
+    # current probe call sites do, and omitting it (rather than passing
+    # api_mode=None) keeps the live-call signature identical to a direct
+    # fetch_api_models() call.
+    live_kwargs: dict[str, Any] = {"timeout": timeout, "headers": headers}
+    if api_mode is not None:
+        live_kwargs["api_mode"] = api_mode
+
+    normalized_url = str(base_url or "").strip().rstrip("/").lower()
+    if not normalized_url:
+        # No base_url means nothing to key the cache on — fall through to a
+        # live call so callers keep getting fetch_api_models' own behavior.
+        return fetch_api_models(api_key, base_url, **live_kwargs)
+
+    cache_key = f"custom:{normalized_url}"
+    fp = _custom_endpoint_fingerprint(api_key, api_mode, headers)
+    cache = _load_provider_models_cache()
+    entry = cache.get(cache_key)
+    now = time.time()
+
+    if (
+        not force_refresh
+        and isinstance(entry, dict)
+        and entry.get("fp") == fp
+        and isinstance(entry.get("models"), list)
+        and entry["models"]
+        and (now - float(entry.get("at", 0))) < ttl_seconds
+    ):
+        return list(entry["models"])
+
+    live = fetch_api_models(api_key, base_url, **live_kwargs)
+    if live:
+        cache[cache_key] = {"fp": fp, "at": now, "models": list(live)}
+        _save_provider_models_cache(cache)
+        return list(live)
+
+    # Live fetch returned nothing (offline endpoint, timeout, auth hiccup).
+    # A stale same-fingerprint entry beats an empty result.
+    if (
+        isinstance(entry, dict)
+        and entry.get("fp") == fp
+        and isinstance(entry.get("models"), list)
+        and entry["models"]
+    ):
+        return list(entry["models"])
+    return live
+
+
 # ---------------------------------------------------------------------------
 # Ollama Cloud — merged model discovery with disk cache
 # ---------------------------------------------------------------------------

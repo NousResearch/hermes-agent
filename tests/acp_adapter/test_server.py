@@ -14,9 +14,11 @@ from acp.schema import (
     InitializeResponse,
     PromptResponse,
     ResumeSessionResponse,
-    SessionModelState,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
     SessionModeState,
     SetSessionConfigOptionResponse,
+    SetSessionModeResponse,
     SessionInfo,
     TextContentBlock,
     ToolCallProgress,
@@ -44,10 +46,31 @@ def agent(mock_manager):
 
 
 @pytest.mark.asyncio
-async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
-    resp = await agent.new_session(cwd="/tmp")
+async def test_new_session_advertises_modes_and_model_config_option(monkeypatch):
+    """A new session exposes edit-approval policy as modes and the active model as a config option."""
+    manager = SessionManager(
+        agent_factory=lambda: SimpleNamespace(
+            model="gpt-5.4", provider="openrouter"
+        )
+    )
+    acp_agent = HermesACPAgent(session_manager=manager)
+    picker_context = MagicMock()
+    picker_context.with_overrides.return_value = picker_context
+    payload = {
+        "providers": [
+            {
+                "slug": "openrouter",
+                "name": "OpenRouter",
+                "models": ["gpt-5.4"],
+            },
+        ],
+    }
+    monkeypatch.setattr("hermes_cli.inventory.load_picker_context", lambda: picker_context)
+    monkeypatch.setattr("hermes_cli.inventory.build_models_payload", lambda *a, **k: payload)
 
-    assert resp.config_options is None
+    resp = await acp_agent.new_session(cwd="/tmp")
+
+    assert resp.modes is not None
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [mode.id for mode in resp.modes.available_modes] == [
@@ -55,6 +78,14 @@ async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(ag
         "accept_edits",
         "dont_ask",
     ]
+
+    assert resp.config_options is not None
+    assert len(resp.config_options) == 1
+    model_option = resp.config_options[0]
+    assert isinstance(model_option, SessionConfigOptionSelect)
+    assert model_option.id == "model"
+    assert model_option.current_value == "openrouter:gpt-5.4"
+    assert any(opt.value == "openrouter:gpt-5.4" for opt in model_option.options)
 
 
 @pytest.mark.asyncio
@@ -163,7 +194,7 @@ class TestAuthenticate:
 class TestSessionOps:
 
     @pytest.mark.asyncio
-    async def test_new_session_returns_authenticated_cross_provider_model_state(self):
+    async def test_new_session_returns_authenticated_cross_provider_model_config(self):
         manager = SessionManager(
             agent_factory=lambda: SimpleNamespace(
                 model="gpt-5.4",
@@ -198,13 +229,24 @@ class TestSessionOps:
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 
-        assert isinstance(resp.models, SessionModelState)
-        assert resp.models.current_model_id == "openai-codex:gpt-5.4"
-        assert [model.model_id for model in resp.models.available_models] == [
+        assert resp.config_options is not None
+        assert len(resp.config_options) == 1
+        model_option = resp.config_options[0]
+        assert isinstance(model_option, SessionConfigOptionSelect)
+        assert model_option.id == "model"
+        assert model_option.current_value == "openai-codex:gpt-5.4"
+        assert [opt.value for opt in model_option.options] == [
             "anthropic:claude-sonnet-4-6",
             "openai-codex:gpt-5.4",
             "openai-codex:gpt-5.4-mini",
         ]
+        assert [opt.name for opt in model_option.options] == [
+            "Anthropic · claude-sonnet-4-6",
+            "OpenAI Codex · gpt-5.4",
+            "OpenAI Codex · gpt-5.4-mini",
+        ]
+        assert model_option.options[1].description is not None
+        assert "current" in model_option.options[1].description
         picker_context.with_overrides.assert_called_once_with(
             current_provider="openai-codex",
             current_model="gpt-5.4",

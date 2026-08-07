@@ -7,13 +7,16 @@ import os
 from dataclasses import dataclass, field
 from typing import Callable
 
-from acp.schema import ModelInfo, SessionModelState
+from acp.schema import SessionConfigOptionSelect, SessionConfigSelectOption
 
 logger = logging.getLogger("acp_adapter.server")
 
 # Per-provider row cap (clients render all `availableModels` in one dropdown; mirrors the
 # MoA picker cap). Not a total cap; the current model is always kept via the fallback insert.
 ACP_MAX_MODELS_PER_PROVIDER = 200
+
+# Config-option id under which the model picker is advertised on ACP 0.11+.
+MODEL_CONFIG_ID = "model"
 
 
 def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, str]]]]:
@@ -152,7 +155,7 @@ def encode_model_choice(provider: str | None, model: str | None) -> str:
     return f"{raw_provider}:{raw_model}" if raw_provider else raw_model
 
 
-def fallback_model_state(model: str, provider: str) -> SessionModelState | None:
+def fallback_model_state(model: str, provider: str) -> SessionConfigOptionSelect | None:
     """Keep the current identity when inventory is unavailable, without offering gated models."""
     from hermes_cli.codex_models import codex_model_requires_account_discovery
     from hermes_cli.models import normalize_provider
@@ -161,8 +164,14 @@ def fallback_model_state(model: str, provider: str) -> SessionModelState | None:
         return None
     codex = _semantic_provider(provider, normalize_provider) == "openai-codex"
     choice = encode_model_choice("openai-codex" if codex else provider, model)
-    available = [] if codex and codex_model_requires_account_discovery(model) else [ModelInfo(model_id=choice, name=model)]
-    return SessionModelState(available_models=available, current_model_id=choice)
+    options = (
+        [] if codex and codex_model_requires_account_discovery(model)
+        else [SessionConfigSelectOption(value=choice, name=model)]
+    )
+    return SessionConfigOptionSelect(
+        id=MODEL_CONFIG_ID, name="Model", description="Active provider and model for the session.",
+        category="model_config", type="select", current_value=choice, options=options,
+    )
 
 
 @dataclass
@@ -177,7 +186,7 @@ class _ModelCatalog:
     current_model: str
     current_choice_provider: str
     current_base_url: str
-    models: list[ModelInfo] = field(default_factory=list)
+    models: list[SessionConfigSelectOption] = field(default_factory=list)
     seen_ids: set[str] = field(default_factory=set)
     seen_semantic_ids: set[str] = field(default_factory=set)
     empty_authoritative: set[str] = field(default_factory=set)
@@ -195,7 +204,7 @@ class _ModelCatalog:
         semantic_id = f"{self.semantic(provider_id)}:{model_id}"
         if not choice_id or choice_id in self.seen_ids or semantic_id in self.seen_semantic_ids:
             return
-        self.models.append(ModelInfo(model_id=choice_id, name=name, description=description))
+        self.models.append(SessionConfigSelectOption(value=choice_id, name=name, description=description))
         self.seen_ids.add(choice_id)
         self.seen_semantic_ids.add(semantic_id)
 
@@ -248,7 +257,7 @@ class _ModelCatalog:
                 self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part))
 
 
-def build_model_state(model: str, provider: str, base_url: str) -> SessionModelState | None:
+def build_model_state(model: str, provider: str, base_url: str) -> SessionConfigOptionSelect | None:
     """Picker state from the shared inventory + named endpoints; ``None`` when nothing is listable
     (caller falls back to a single current-model row). Raises on inventory failure."""
     from hermes_cli.codex_models import codex_model_requires_account_discovery
@@ -298,7 +307,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     )
     cat.add_inventory_rows(inventory_rows, provider_label)
     cat.add_named_catalogs(named_catalogs, current_choice_provider)
-    available_models = cat.models
+    select_options = cat.models
     if cat.semantic(cat.current_choice_provider) == "openai-codex":
         cat.current_choice_provider = "openai-codex"
 
@@ -306,25 +315,38 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
         return _empty_catalog_applies(provider_id, cat.empty_authoritative, normalize_provider)
 
     if cat.empty_authoritative:
-        available_models = [m for m in available_models if not empty_applies(_choice_provider(m.model_id))]
+        select_options = [m for m in select_options if not empty_applies(_choice_provider(m.value))]
 
     current_is_empty = empty_applies(cat.current_choice_provider)
     if current_is_empty:
-        available_models = [m for m in available_models if " • current" not in str(m.description or "")]
+        select_options = [m for m in select_options if " • current" not in str(m.description or "")]
     current_model_id = "" if current_is_empty else encode_model_choice(cat.current_choice_provider, model)
     requires_discovery = cat.current_choice_provider == "openai-codex" and codex_model_requires_account_discovery(model)
-    if current_model_id and not requires_discovery and current_model_id not in {item.model_id for item in available_models}:
+    if current_model_id and not requires_discovery and current_model_id not in {item.value for item in select_options}:
         provider_name = provider_label(normalized_provider)
-        available_models.insert(0, ModelInfo(
-            model_id=current_model_id, name=f"{provider_name} · {model}",
+        select_options.insert(0, SessionConfigSelectOption(
+            value=current_model_id, name=f"{provider_name} · {model}",
             description=f"Provider: {provider_name} • current",
         ))
 
-    if not available_models and current_is_empty:
-        return SessionModelState(available_models=[], current_model_id="")
-    if available_models or (current_model_id and requires_discovery):
-        return SessionModelState(
-            available_models=available_models,
-            current_model_id=current_model_id if current_model_id or current_is_empty else available_models[0].model_id,
+    if not select_options and current_is_empty:
+        return SessionConfigOptionSelect(
+            id=MODEL_CONFIG_ID,
+            name="Model",
+            description="Active provider and model for the session.",
+            category="model_config",
+            type="select",
+            current_value="",
+            options=[],
+        )
+    if select_options or (current_model_id and requires_discovery):
+        return SessionConfigOptionSelect(
+            id=MODEL_CONFIG_ID,
+            name="Model",
+            description="Active provider and model for the session.",
+            category="model_config",
+            type="select",
+            current_value=current_model_id if current_model_id or current_is_empty else select_options[0].value,
+            options=select_options,
         )
     return None

@@ -1011,6 +1011,29 @@ class TestSecondaryProfileConfigHandling:
         assert second == 1
         assert runner._profile_adapters["later"][photon] is later
 
+    @pytest.mark.asyncio
+    async def test_secondary_teams_uses_degradable_error(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.run import SecondaryPortBindingConfigError
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {
+            Platform("teams"): PlatformConfig(enabled=True, extra={"port": 3978}),
+        }
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: reviewer_cfg
+        )
+
+        with pytest.raises(SecondaryPortBindingConfigError) as exc_info:
+            await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
+        assert "teams" in str(exc_info.value)
+        assert "reviewer" in str(exc_info.value)
+        assert "reviewer" not in runner._profile_adapters
+
 
 class TestSecondaryProfileHookRegistration:
     """A secondary profile's own `hooks:` block must register on ITS

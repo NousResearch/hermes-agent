@@ -884,6 +884,39 @@ def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
 # ---------------------------------------------------------------------------
 
 
+def _is_reserved_mcp_meta_key(key: str) -> bool:
+    """Return True if an MCP ``_meta`` key uses a protocol-reserved prefix.
+
+    Per the MCP spec's key-name rules, a prefix is reserved when a
+    ``modelcontextprotocol`` or ``mcp`` label is followed by at least one
+    more label (``modelcontextprotocol.io/...``, ``tools.mcp.com/...``).
+    A trailing reserved word (``com.example.mcp/...``) is a legitimate
+    vendor namespace and passes through. Ported from
+    MoonshotAI/kimi-code#2600.
+    """
+    slash = key.find("/")
+    if slash <= 0:
+        return False
+    labels = key[:slash].split(".")
+    return any(
+        label in ("modelcontextprotocol", "mcp") and i < len(labels) - 1
+        for i, label in enumerate(labels)
+    )
+
+
+def _strip_reserved_meta_keys(meta) -> "Optional[Dict[str, Any]]":
+    """Drop protocol-reserved keys from a tool result's ``_meta`` mapping.
+
+    Returns the filtered dict, or ``None`` when there is nothing
+    model-facing left (or the input wasn't a mapping).
+    """
+    if not isinstance(meta, dict):
+        return None
+    out = {k: v for k, v in meta.items()
+           if isinstance(k, str) and not _is_reserved_mcp_meta_key(k)}
+    return out or None
+
+
 def _mcp_image_extension_for_mime_type(mime_type: str) -> str:
     """Return a reasonable file extension for an MCP image MIME type."""
     import mimetypes
@@ -5509,14 +5542,39 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # MCP spec: content is model-oriented (text), structuredContent
             # is machine-oriented (JSON metadata).  For an AI agent, content
             # is the primary payload; structuredContent supplements it.
+            #
+            # Server-level `_meta` is also surfaced (ported from
+            # MoonshotAI/kimi-code#2596): servers return namespaced metadata
+            # there (validated contracts, browser-handoff payloads, ...) that
+            # was previously invisible to the agent. Protocol-reserved keys
+            # are dropped first (kimi-code#2600) — per the MCP spec's key-name
+            # rules a prefix is reserved when a `modelcontextprotocol` or
+            # `mcp` label is followed by at least one more label (e.g.
+            # `modelcontextprotocol.io/...`, `tools.mcp.com/...`); those carry
+            # host/protocol plumbing, not model-facing data. Unprefixed and
+            # vendor-namespaced keys (`com.example.mcp/...`) pass through —
+            # their semantics belong to the server.
             structured = getattr(result, "structuredContent", None)
-            if structured is not None:
+            meta = _strip_reserved_meta_keys(getattr(result, "meta", None))
+            if structured is not None or meta is not None:
+                payload: Dict[str, Any] = {}
                 if text_result:
-                    return json.dumps({
-                        "result": text_result,
-                        "structuredContent": structured,
-                    }, ensure_ascii=False)
-                return json.dumps({"result": structured}, ensure_ascii=False)
+                    payload["result"] = text_result
+                if structured is not None:
+                    if text_result:
+                        payload["structuredContent"] = structured
+                    else:
+                        payload["result"] = structured
+                if meta is not None:
+                    payload["_meta"] = meta
+                if "result" not in payload:
+                    payload["result"] = text_result
+                try:
+                    return json.dumps(payload, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    # Non-serializable metadata: drop the extras rather than
+                    # failing the whole tool call.
+                    return json.dumps({"result": text_result}, ensure_ascii=False)
             return json.dumps({"result": text_result}, ensure_ascii=False)
 
         def _call_once():

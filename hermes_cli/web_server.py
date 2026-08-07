@@ -800,6 +800,40 @@ async def _dashboard_selftest_once() -> None:
         DASHBOARD_HEALTH.record_selftest(False, None)
 
 
+async def _dashboard_selftest_gated_once() -> None:
+    """Self-test variant for auth-gated binds: probe components directly.
+
+    Under the gate the in-process HTTP probe above cannot authenticate —
+    ``_require_token`` ignores ``_SESSION_TOKEN`` and requires
+    ``request.state.session``, which only ``gated_auth_middleware`` sets — and
+    minting an internal session to satisfy it would punch a hole straight
+    through the gate. So skip HTTP entirely and call the same sync helper
+    ``/api/status`` builds its ``components`` rollup from.
+
+    This exists because the gated branch used to be a bare ``continue``,
+    which left ``selftest`` pinned at ``"unknown"`` forever on exactly the
+    deployments that are remotely reachable: the health canary was dead on
+    the only binds that needed one. The verdict deliberately keys off
+    ``recent_unhandled_errors`` rather than the dashboard component's own
+    ``status``, which already folds in ``selftest_status`` and would make the
+    result self-reinforcing.
+    """
+    try:
+        from gateway.readiness import _probe_state_db
+
+        storage = await asyncio.get_running_loop().run_in_executor(
+            None, functools.partial(_probe_state_db, get_hermes_home())
+        )
+        dashboard = DASHBOARD_HEALTH.snapshot()
+        ok = (
+            storage.get("status") == "ok"
+            and dashboard.get("recent_unhandled_errors") == 0
+        )
+        DASHBOARD_HEALTH.record_selftest(ok, None)
+    except Exception:
+        DASHBOARD_HEALTH.record_selftest(False, None)
+
+
 async def _dashboard_selftest_loop() -> None:
     """Periodic self-test driver started from the lifespan."""
     try:
@@ -810,8 +844,10 @@ async def _dashboard_selftest_loop() -> None:
     while True:
         await asyncio.sleep(_DASHBOARD_SELFTEST_INTERVAL_SECONDS)
         # On OAuth-gated binds the legacy session token is not honoured, so
-        # the probe would false-alarm 401 — skip until the gate is off.
+        # the HTTP probe would false-alarm 401 — run the component-level
+        # probe instead of skipping the canary entirely.
         if getattr(app.state, "auth_required", False):
+            await _dashboard_selftest_gated_once()
             continue
         await _dashboard_selftest_once()
 

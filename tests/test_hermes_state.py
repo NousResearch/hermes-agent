@@ -309,6 +309,120 @@ class TestSessionLifecycle:
 
 
 
+    def test_update_token_counts_preserves_null_cost_for_unpriced_model(self, db):
+        """An unpriced turn (estimated_cost_usd=None) must leave the column
+        NULL, not coerce it to 0.0.
+
+        The pricing layer returns amount_usd=None ("unknown") for a model it
+        has no rate for; the persisted row must stay NULL so a client can tell
+        "cost unknown" from a genuine measured zero. Regression guard for the
+        COALESCE(?, 0) coercion on the incremental branch.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts(
+            "s1", input_tokens=1000, output_tokens=200,
+            estimated_cost_usd=None, cost_status="unknown", cost_source="none",
+            api_call_count=1,
+        )
+
+        session = db.get_session("s1")
+        assert session["estimated_cost_usd"] is None
+        assert session["cost_status"] == "unknown"
+        assert session["cost_source"] == "none"
+
+    def test_update_token_counts_records_explicit_zero_for_included_route(self, db):
+        """A genuine zero (subscription-included) must persist as 0.0, not NULL.
+
+        Guards against "fixing" the unpriced case by treating a falsy cost as
+        unknown, which would erase the distinction between "included" and
+        "no price available".
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts(
+            "s1", input_tokens=1000, output_tokens=200,
+            estimated_cost_usd=0.0, cost_status="included",
+            cost_source="subscription", api_call_count=1,
+        )
+
+        session = db.get_session("s1")
+        assert session["estimated_cost_usd"] == 0.0
+        assert session["cost_status"] == "included"
+
+    def test_update_token_counts_null_delta_does_not_reset_accumulated_cost(self, db):
+        """A later unpriced turn must not zero out an already-accumulated cost.
+
+        A priced call establishes a positive total; a subsequent unpriced call
+        (None delta) must leave that total intact rather than resetting it.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts(
+            "s1", input_tokens=1000, output_tokens=200,
+            estimated_cost_usd=0.25, cost_status="metered", api_call_count=1,
+        )
+        db.update_token_counts(
+            "s1", input_tokens=500, output_tokens=100,
+            estimated_cost_usd=None, cost_status="unknown", api_call_count=1,
+        )
+
+        session = db.get_session("s1")
+        assert session["estimated_cost_usd"] == 0.25
+
+    def test_update_token_counts_absolute_preserves_null_cost_for_unpriced_model(self, db):
+        """absolute=True: None means "no price information", never zero.
+
+        The gateway path writes cumulative totals with absolute=True, which is
+        a separate SQL branch from the CLI's incremental one. An unpriced
+        cumulative write must leave the column NULL on a fresh session, and
+        must not overwrite an already-priced total on a later one -- while the
+        token counters it carries are still set absolutely.
+        """
+        db.create_session(session_id="s1", source="gateway")
+        db.update_token_counts(
+            "s1", input_tokens=1000, output_tokens=200,
+            estimated_cost_usd=None, cost_status="unknown", cost_source="none",
+            api_call_count=1, absolute=True,
+        )
+        assert db.get_session("s1")["estimated_cost_usd"] is None
+
+        db.update_token_counts(
+            "s1", input_tokens=1500, output_tokens=300,
+            estimated_cost_usd=0.25, cost_status="metered",
+            api_call_count=2, absolute=True,
+        )
+        assert db.get_session("s1")["estimated_cost_usd"] == 0.25
+
+        db.update_token_counts(
+            "s1", input_tokens=2000, output_tokens=400,
+            estimated_cost_usd=None, cost_status="unknown",
+            api_call_count=3, absolute=True,
+        )
+        session = db.get_session("s1")
+        assert session["estimated_cost_usd"] == 0.25
+        # The overwrite semantics of the absolute branch are untouched.
+        assert session["input_tokens"] == 2000
+        assert session["api_call_count"] == 3
+
+    def test_update_token_counts_absolute_records_explicit_zero_for_included_route(self, db):
+        """absolute=True: an explicit 0.0 still overwrites a priced total.
+
+        The absolute branch must keep *setting* the column, so a session that
+        turns out to be subscription-included lands on 0.0 rather than keeping
+        an earlier estimate. Pins the zero/None split on this branch too.
+        """
+        db.create_session(session_id="s1", source="gateway")
+        db.update_token_counts(
+            "s1", input_tokens=1000, estimated_cost_usd=0.25,
+            cost_status="metered", api_call_count=1, absolute=True,
+        )
+        db.update_token_counts(
+            "s1", input_tokens=1500, estimated_cost_usd=0.0,
+            cost_status="included", cost_source="subscription",
+            api_call_count=2, absolute=True,
+        )
+
+        session = db.get_session("s1")
+        assert session["estimated_cost_usd"] == 0.0
+        assert session["cost_status"] == "included"
 
     def test_update_session_model_clears_browser_lock_and_preserves_lineage(self, db):
         """A later /model switch must replace, not compete with, a Browser lock."""

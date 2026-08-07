@@ -706,6 +706,60 @@ class TestBedrockContextLength:
             assert get_bedrock_context_length("anthropic.claude-opus-4-6") == 1_000_000
             mock_probe.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "model_id",
+        (
+            "anthropic.claude-opus-5",
+            "us.anthropic.claude-opus-5",
+            "eu.anthropic.claude-opus-5",
+            "au.anthropic.claude-opus-5",
+            "global.anthropic.claude-opus-5",
+            # Version-suffixed forms: the lookup is a longest-substring match,
+            # so the bare key has to keep winning once a dated revision ships.
+            "anthropic.claude-opus-5-v1:0",
+            "eu.anthropic.claude-opus-5-20260724-v1:0",
+        ),
+    )
+    def test_claude_opus_5_uses_offline_context_table(self, model_id):
+        """Claude Opus 5 keeps its documented 1M window without a probe."""
+        from agent.bedrock_adapter import get_bedrock_context_length
+
+        with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
+            assert get_bedrock_context_length(model_id) == 1_000_000
+            mock_probe.assert_not_called()
+
+    def test_million_token_claude_entries_match_model_metadata(self):
+        """BEDROCK_CONTEXT_LENGTHS must not drift from DEFAULT_CONTEXT_LENGTHS.
+
+        The Bedrock table's comment already requires its 1M Claude entries to
+        match ``agent.model_metadata.DEFAULT_CONTEXT_LENGTHS``, but nothing
+        enforced it, so ``claude-opus-5`` reached one table and not the other
+        and silently fell through to BEDROCK_DEFAULT_CONTEXT_LENGTH (#74263).
+        Assert the pairing itself rather than a snapshot of today's catalog, so
+        the next 1M Claude generation fails here instead of under-reporting its
+        window by ~8x.
+
+        Dotted aliases (``claude-opus-4.8``) are skipped: Bedrock model IDs use
+        hyphens, so they have no Bedrock counterpart.
+        """
+        from agent.bedrock_adapter import get_bedrock_context_length
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+        mismatched = []
+        with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
+            for name, expected in DEFAULT_CONTEXT_LENGTHS.items():
+                if not name.startswith("claude-") or expected < 1_000_000 or "." in name:
+                    continue
+                actual = get_bedrock_context_length(f"anthropic.{name}")
+                if actual != expected:
+                    mismatched.append((name, expected, actual))
+            mock_probe.assert_not_called()
+
+        assert not mismatched, (
+            "1M Claude entries missing from BEDROCK_CONTEXT_LENGTHS "
+            f"(model, expected, resolved): {mismatched}"
+        )
+
 
 class TestBedrockContextProbe:
     """Test the live context-window probe that reads the real window from

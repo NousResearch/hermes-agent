@@ -289,9 +289,9 @@ What helps:
 
 ### Model doesn't follow tool calls
 
-Smaller models (3B, 7B) sometimes ignore tool-call instructions and produce plain text instead of structured function calls. Solutions:
+Models without tool-call support produce plain text instead of structured function calls. Solutions:
 
-- **Use a bigger model** — `gemma4:31b` or `gemma2:27b` handle tool calls much better than 3B/7B models.
+- **Use a model with tool-call support** — of the models listed above, only `gemma4:31b` has reliable tool calling.
 - **Hermes has auto-repair** — it detects malformed tool calls and attempts to fix them automatically.
 - **Set up a fallback** — if the local model fails 3 times, Hermes falls back to a cloud provider.
 

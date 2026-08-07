@@ -8,6 +8,13 @@ name: Lint (ruff + ty)
 #      Separate job so the advisory diff still runs even when enforcement
 #      fails.
 #
+# Both jobs install ruff/ty at the versions pinned in pyproject.toml's
+# ``dev`` extra, resolved by ``.github/actions/linter-versions`` — same
+# reasoning as the setup-uv pin below, applied to what uv installs. One
+# pin, one source of truth: a blocking gate must not change its verdict on
+# untouched code because a linter released, and a contributor's
+# ``uv sync --extra dev`` ruff has to agree with CI's.
+#
 # CI-sensitive file review was previously here as a ``ci-review`` job but
 # has moved to ``review-labels.yml`` so it can be rerun independently.
 
@@ -46,10 +53,22 @@ jobs:
           # fail the job (2026-07-28 incident). Keep in sync with tests.yml.
           version: "0.9.28"
 
+      - name: Resolve pinned linter versions
+        id: pins
+        uses: ./.github/actions/linter-versions
+
       - name: Install ruff + ty
         uses: ./.github/actions/retry
         with:
-          command: uv tool install ruff && uv tool install ty
+          # Pinned so this job is reproducible over time: rerunning an old
+          # PR shouldn't produce a different advisory diff just because ruff
+          # released. It also keeps lint_diff.py's parser off ruff's release
+          # schedule — it reads ``code``/``filename``/``location.row`` from
+          # the JSON and falls back to "unknown" if a key moves, which would
+          # go wrong quietly rather than loudly.
+          command: >-
+            uv tool install ruff==${{ steps.pins.outputs.ruff }} &&
+            uv tool install ty==${{ steps.pins.outputs.ty }}
 
       - name: Determine base ref
         id: base
@@ -140,10 +159,18 @@ jobs:
           # fail the job (2026-07-28 incident). Keep in sync with tests.yml.
           version: "0.9.28"
 
+      - name: Resolve pinned ruff version
+        id: pins
+        uses: ./.github/actions/linter-versions
+
       - name: Install ruff
         uses: ./.github/actions/retry
         with:
-          command: uv tool install ruff
+          # Pinned to pyproject.toml's dev extra. A bare ``uv tool install
+          # ruff`` here means the next ruff release can fail this blocking
+          # gate on code nobody touched — and ``preview = true`` in
+          # [tool.ruff] opts us into rules that change between releases.
+          command: uv tool install ruff==${{ steps.pins.outputs.ruff }}
 
       - name: ruff check .
         # No --exit-zero, no || true. Exit code propagates to the job,

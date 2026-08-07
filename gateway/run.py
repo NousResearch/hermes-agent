@@ -7853,6 +7853,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return depth
 
     @staticmethod
+    def _queue_notice(depth: int) -> str:
+        """User-facing queue notice for an interrupted turn with pending follow-ups."""
+        return (
+            "Queued for the next turn."
+            if depth <= 1
+            else f"Queued for the next turn. ({depth} queued)"
+        )
+
+    @staticmethod
+    def _apply_queue_notice_if_followup_pending(
+        fallback_result: dict | None,
+        *,
+        response: Any,
+        history: list[dict],
+        queued_depth: int,
+    ) -> dict:
+        """Attach a queue notice only when a follow-up really survived.
+
+        The interrupt-depth cap can receive a pending string from an adapter that
+        has no durable pending slot and no ``queue_message`` implementation. In
+        that case ``queued_depth`` stays zero, so claiming "Queued for the next
+        turn" would be false; return the fallback result silently instead.
+        """
+        result = fallback_result or {"final_response": response, "messages": history}
+        if result.get("final_response") or queued_depth <= 0:
+            return result
+        result["final_response"] = GatewayRunner._queue_notice(queued_depth)
+        return result
+
+    @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.
 
@@ -7861,7 +7891,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         suppressing them.
         """
         text = getattr(event_or_text, "text", event_or_text) or ""
-        return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
+        try:
+            from hermes_cli.goals import CONTINUATION_MARKER
+            return str(text).startswith(f"{CONTINUATION_MARKER}\nGoal:")
+        except Exception:
+            return False
 
     def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
         """Remove queued synthetic /goal continuations for one session.
@@ -17933,6 +17967,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # empty-response handling (and the suppression below) applies.
             if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
                 response = ""
+            if not response and agent_result.get("interrupted"):
+                _queue_adapter = self.adapters.get(source.platform)
+                _queued_depth = self._queue_depth(_quick_key, adapter=_queue_adapter)
+                if _queued_depth > 0:
+                    response = self._queue_notice(_queued_depth)
+                    logger.info(
+                        "Session %s interrupted with queued follow-up(s) pending (chat=%s depth=%d); "
+                        "returning queue notice instead of silence.",
+                        _quick_key or "?",
+                        getattr(source, "chat_id", "?"),
+                        _queued_depth,
+                    )
             try:
                 from gateway.response_filters import is_intentional_silence_agent_result
                 _intentional_silence = is_intentional_silence_agent_result(
@@ -26097,7 +26143,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
-                    return result_holder[0] or {"final_response": response, "messages": history}
+
+                    queued_depth = self._queue_depth(session_key, adapter=adapter)
+                    fallback_result = self._apply_queue_notice_if_followup_pending(
+                        result_holder[0],
+                        response=response,
+                        history=history,
+                        queued_depth=queued_depth,
+                    )
+                    if fallback_result.get("final_response"):
+                        return fallback_result
+                    logger.info(
+                        "Interrupt depth cap had no durable queue slot for session %s "
+                        "(chat=%s depth=%d); returning fallback result without a queue notice.",
+                        session_key or "?",
+                        getattr(source, "chat_id", "?"),
+                        queued_depth,
+                    )
+                    return fallback_result
 
                 was_interrupted = result.get("interrupted")
                 if not was_interrupted:

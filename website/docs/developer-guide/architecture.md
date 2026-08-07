@@ -106,7 +106,7 @@ hermes-agent/
 │   ├── credential_files.py   # File-based credential passthrough
 │   ├── env_passthrough.py    # Env var passthrough for sandboxes
 │   ├── ansi_strip.py         # ANSI escape stripping
-│   └── environments/         # Terminal backends (local, docker, ssh, modal, daytona, singularity)
+│   └── environments/         # Terminal backends (local, docker, ssh, modal, daytona, agent-sandbox, singularity)
 │
 ├── gateway/                  # Messaging platform gateway
 │   ├── run.py                # GatewayRunner — message dispatch (large file)

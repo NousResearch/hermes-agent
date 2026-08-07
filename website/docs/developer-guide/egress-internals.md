@@ -287,7 +287,7 @@ _NON_BEARER_PROVIDERS: Tuple[str, ...] = (
 5. Distributes the CA cert into the sandbox at a path the runtime will trust (typically `/etc/ssl/certs/hermes-egress-ca.crt`).
 6. Implements collision detection against the user's backend-specific env config.
 
-The Docker implementation is ~150 lines; expect similar volume for Modal / Daytona / SSH.
+The Docker implementation is ~150 lines; expect similar volume for Modal / Daytona / AgentSandbox / SSH.
 
 ### Subscribing to per-request audit events
 

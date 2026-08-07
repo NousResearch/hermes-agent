@@ -972,20 +972,21 @@ def _install_neutts_deps() -> bool:
 
     # Route through the canonical uv → pip → ensurepip ladder so pip-less
     # venvs (Ubuntu 25.10 `python -m venv`, `uv venv`) work out of the box.
-    from hermes_cli.tools_config import _pip_install
+    from hermes_cli.tools_config import _bounded_spec, _pip_install
 
+    spec = _bounded_spec("neutts")
     try:
-        result = _pip_install(["-U", "neutts[all]", "--quiet"], timeout=300)
+        result = _pip_install(["-U", spec, "--quiet"], timeout=300)
     except Exception as e:
         print_error(f"Failed to install neutts: {e}")
-        print_info("Try manually: uv pip install -U 'neutts[all]'")
+        print_info(f"Try manually: uv pip install -U '{spec}'")
         return False
     if result.returncode == 0:
         print_success("neutts installed successfully")
         return True
     err = (result.stderr or "").strip()
     print_error(f"Failed to install neutts: {err[:300] if err else 'install failed'}")
-    print_info("Try manually: uv pip install -U 'neutts[all]'")
+    print_info(f"Try manually: uv pip install -U '{spec}'")
     return False
 
 
@@ -1000,20 +1001,22 @@ def _install_kittentts_deps() -> bool:
     print_info("Installing kittentts Python package (~25-80MB model downloaded on first use)...")
     print()
 
-    from hermes_cli.tools_config import _pip_install
+    from hermes_cli.tools_config import _bounded_spec, _pip_install
 
+    # The wheel URL is itself version-locked (0.8.1); soundfile was not.
+    audio = _bounded_spec("soundfile")
     try:
-        result = _pip_install(["-U", wheel_url, "soundfile", "--quiet"], timeout=300)
+        result = _pip_install(["-U", wheel_url, audio, "--quiet"], timeout=300)
     except Exception as e:
         print_error(f"Failed to install kittentts: {e}")
-        print_info(f"Try manually: uv pip install -U '{wheel_url}' soundfile")
+        print_info(f"Try manually: uv pip install -U '{wheel_url}' '{audio}'")
         return False
     if result.returncode == 0:
         print_success("kittentts installed successfully")
         return True
     err = (result.stderr or "").strip()
     print_error(f"Failed to install kittentts: {err[:300] if err else 'install failed'}")
-    print_info(f"Try manually: uv pip install -U '{wheel_url}' soundfile")
+    print_info(f"Try manually: uv pip install -U '{wheel_url}' '{audio}'")
     return False
 
 
@@ -1479,14 +1482,21 @@ def setup_terminal_backend(config: dict):
             try:
                 __import__("modal")
             except ImportError:
-                print_info("Installing modal SDK...")
-                from hermes_cli.tools_config import _pip_install
+                from hermes_cli.tools_config import _pinned_specs, _pip_install
 
-                result = _pip_install(["modal"])
+                # Same pin the lazy runtime path uses (LAZY_DEPS
+                # "terminal.modal" / pyproject [modal]) — setup must not
+                # resolve a floating version the rest of the app never sees.
+                specs = _pinned_specs("terminal.modal")
+                print_info(f"Installing modal SDK ({', '.join(specs)})...")
+                result = _pip_install(specs)
                 if result.returncode == 0:
                     print_success("modal SDK installed")
                 else:
-                    print_warning("Install failed — run manually: uv pip install modal")
+                    print_warning(
+                        "Install failed — run manually: uv pip install "
+                        + " ".join(f"'{s}'" for s in specs)
+                    )
 
             # Modal token
             print()
@@ -1520,14 +1530,20 @@ def setup_terminal_backend(config: dict):
         try:
             __import__("daytona")
         except ImportError:
-            print_info("Installing daytona SDK...")
-            from hermes_cli.tools_config import _pip_install
+            from hermes_cli.tools_config import _pinned_specs, _pip_install
 
-            result = _pip_install(["daytona"])
+            # Same pin the lazy runtime path uses (LAZY_DEPS
+            # "terminal.daytona" / pyproject [daytona]).
+            specs = _pinned_specs("terminal.daytona")
+            print_info(f"Installing daytona SDK ({', '.join(specs)})...")
+            result = _pip_install(specs)
             if result.returncode == 0:
                 print_success("daytona SDK installed")
             else:
-                print_warning("Install failed — run manually: uv pip install daytona")
+                print_warning(
+                    "Install failed — run manually: uv pip install "
+                    + " ".join(f"'{s}'" for s in specs)
+                )
                 if result.stderr:
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 

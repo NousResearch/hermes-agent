@@ -47,7 +47,7 @@ import atexit
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Set, Tuple
 
 from utils import env_var_enabled
 
@@ -1222,6 +1222,127 @@ def clear_session_cwd(session_key: str) -> None:
         _session_cwd.pop(session_key, None)
 
 
+# ── Sandbox image provenance ───────────────────────────────────────────────
+#
+# Every container backend pulls and executes whatever image it is pointed at,
+# so the image reference is a code-execution input. It reaches us from three
+# places, none of which is an interactive prompt any more: the TERMINAL_*_IMAGE
+# env vars, the config file, and `register_task_env_overrides()` (infra
+# callers). Validating at the setup wizard would therefore cover none of the
+# live paths — so the check lives here, on the two chokepoints all three
+# converge on.
+#
+# Warn-only, never blocking: private and air-gapped registries are legitimate
+# and a hard failure would break existing deployments. Operators extend the
+# trusted set in config.yaml:
+#
+#   terminal:
+#     trusted_image_registries: ["registry.corp.internal"]
+#
+# which the startup bridges export as TERMINAL_TRUSTED_IMAGE_REGISTRIES —
+# every terminal setting reaches this module as a TERMINAL_* env var (see
+# TERMINAL_CONFIG_ENV_MAP); the env var is the internal transport, not the
+# user-facing knob.
+_DEFAULT_TRUSTED_IMAGE_REGISTRIES = (
+    "docker.io",
+    "ghcr.io",
+    "gcr.io",
+    "quay.io",
+    "registry.k8s.io",
+    "public.ecr.aws",
+    "mcr.microsoft.com",
+)
+
+_IMAGE_SCHEMES = ("docker://", "oci://", "docker-archive://", "docker-daemon://")
+
+# Warn once per (field, image) so a per-task registration loop can't spam logs.
+_warned_images: Set[Tuple[str, str]] = set()
+
+
+def _trusted_image_registries() -> Tuple[str, ...]:
+    """Trusted registry hosts: the defaults plus any operator additions.
+
+    Additions come from ``terminal.trusted_image_registries`` in config.yaml,
+    bridged to ``TERMINAL_TRUSTED_IMAGE_REGISTRIES``. The bridges JSON-encode
+    list values (as they do for docker_volumes / docker_env); a plain
+    comma-separated string is also accepted for hand-exported env.
+    """
+    raw = os.getenv("TERMINAL_TRUSTED_IMAGE_REGISTRIES", "").strip()
+    if not raw:
+        return _DEFAULT_TRUSTED_IMAGE_REGISTRIES
+    hosts: List[str] = []
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, list):
+            hosts = [str(h) for h in parsed]
+    if not hosts:
+        hosts = raw.split(",")
+    added = tuple(h.strip().lower() for h in hosts if h and h.strip())
+    return _DEFAULT_TRUSTED_IMAGE_REGISTRIES + added
+
+
+def _image_registry_host(image: str) -> Optional[str]:
+    """Return the registry host an image reference resolves to.
+
+    Applies Docker's own rule: the first path segment is a registry host only
+    if it contains a ``.`` or ``:`` or is exactly ``localhost``; otherwise the
+    reference is an implicit Docker Hub name (``nikolaik/python-nodejs:...``,
+    ``python:3.11``). Returns ``None`` for references we deliberately don't
+    classify — local Dockerfile paths, which Modal accepts in place of an
+    image name.
+    """
+    ref = (image or "").strip()
+    for scheme in _IMAGE_SCHEMES:
+        if ref.startswith(scheme):
+            ref = ref[len(scheme):]
+            break
+    if not ref:
+        return None
+    # Local build context / Dockerfile path — not a registry reference.
+    if ref.startswith(("/", "./", "../", "~")) or os.path.basename(ref) == "Dockerfile":
+        return None
+    head = ref.split("/", 1)[0]
+    if "/" in ref and ("." in head or ":" in head or head == "localhost"):
+        return head.lower()
+    return "docker.io"
+
+
+def image_is_trusted(image: str) -> bool:
+    """Is *image* served by a recognized registry? Unclassifiable refs pass."""
+    host = _image_registry_host(image)
+    if host is None:
+        return True
+    return host in _trusted_image_registries()
+
+
+def _check_image_provenance(field: str, image: Any) -> None:
+    """Log a warning when *image* comes from an unrecognized registry."""
+    if not isinstance(image, str) or not image.strip():
+        return
+    if image_is_trusted(image):
+        return
+    key = (field, image)
+    if key in _warned_images:
+        return
+    _warned_images.add(key)
+    logger.warning(
+        "Sandbox %s=%r resolves to registry %r, which is not in the trusted "
+        "set (%s). The sandbox will pull and execute this image. Add the host "
+        "to terminal.trusted_image_registries in config.yaml to silence this "
+        "warning.",
+        field, image, _image_registry_host(image),
+        ", ".join(_trusted_image_registries()),
+    )
+
+
+_IMAGE_OVERRIDE_KEYS = (
+    "docker_image", "modal_image", "singularity_image", "daytona_image",
+)
+
+
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     """
     Register environment overrides for a specific task/rollout.
@@ -1238,6 +1359,10 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         task_id: The rollout's unique task identifier
         overrides: Dict of config keys to override
     """
+    for _key in _IMAGE_OVERRIDE_KEYS:
+        if _key in overrides:
+            _check_image_provenance(_key, overrides[_key])
+
     _task_env_overrides[task_id] = overrides
 
     # If a live environment already exists for this task, a freshly registered
@@ -1532,6 +1657,17 @@ def _get_env_config() -> Dict[str, Any]:
                         "(host/relative path won't work in sandbox). Using %r instead.",
                         cwd, env_type, default_cwd)
             cwd = default_cwd
+
+    # Image references arrive here from the env vars / config file — the paths
+    # that replaced the old setup prompts. Check provenance where they are
+    # actually read (warn-only; see _check_image_provenance).
+    for _env_var, _field in (
+        ("TERMINAL_DOCKER_IMAGE", "docker_image"),
+        ("TERMINAL_SINGULARITY_IMAGE", "singularity_image"),
+        ("TERMINAL_MODAL_IMAGE", "modal_image"),
+        ("TERMINAL_DAYTONA_IMAGE", "daytona_image"),
+    ):
+        _check_image_provenance(_field, os.getenv(_env_var, ""))
 
     return {
         "env_type": env_type,

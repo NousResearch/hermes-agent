@@ -339,6 +339,15 @@ DEFAULT_CONFIG = {
         # non-interactively (e.g. one that hard-exits on TTY checks).
         "auto_source_bashrc": True,
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        # Extra container registries considered trusted for sandbox images.
+        # The sandbox pulls and executes whatever image it is pointed at, so
+        # an image from an unrecognized registry logs a warning naming the
+        # host. Docker Hub, ghcr.io, gcr.io, quay.io, registry.k8s.io,
+        # public.ecr.aws and mcr.microsoft.com are trusted out of the box;
+        # list private/air-gapped registries here to silence the warning.
+        # Warn-only — an unlisted registry is never blocked.
+        # Example: ["registry.corp.internal", "harbor.example.com"]
+        "trusted_image_registries": [],
         "docker_forward_env": [],
         # Explicit environment variables to set inside Docker containers.
         # Unlike docker_forward_env (which reads values from the host process),

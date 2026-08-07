@@ -5299,10 +5299,15 @@ def interactive_setup() -> None:
             try:
                 __import__("mautrix")
             except ImportError:
-                print_info(f"Installing {matrix_pkg}...")
-                from hermes_cli.tools_config import _pip_install
+                from hermes_cli.tools_config import _pinned_specs, _pip_install
 
-                result = _pip_install([matrix_pkg])
+                # lazy_deps is unimportable here (stripped install), so mirror
+                # its LAZY_DEPS["platform.matrix"] pins rather than resolving
+                # `mautrix` unpinned — this is the one Matrix install path that
+                # can't read the table itself.
+                specs = _pinned_specs("platform.matrix")
+                print_info(f"Installing {matrix_pkg} ({len(specs)} pinned deps)...")
+                result = _pip_install(list(specs))
                 if result.returncode == 0:
                     print_success(f"{matrix_pkg} installed")
                 else:

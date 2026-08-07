@@ -780,6 +780,79 @@ def _cua_driver_env() -> dict:
         return dict(os.environ)
 
 
+# ── Setup-time install pins ───────────────────────────────────────────────────
+#
+# Everything `hermes setup` can install runs on a user's machine at setup
+# time, so an unpinned spec lets whatever the index serves at that moment
+# become executing code. Two tiers, in order of preference:
+#
+#   1. Packages that already have a `tools/lazy_deps.LAZY_DEPS` group — the
+#      single source of truth for optional-package versions, mirroring the
+#      pyproject extras. Setup reads that same table, so it can never resolve
+#      a different version than the lazy runtime path installs.
+#   2. Setup-only packages with no LAZY_DEPS group and no pyproject extra.
+#      These are installed with `-U` by design (they track upstream model /
+#      backend code), so they get an explicit major bound instead: that closes
+#      the "unreviewed new major installs itself on every user's machine"
+#      vector without freezing the current line. An exact pin for these is a
+#      maintainer decision — moving one into LAZY_DEPS is the upgrade path.
+
+# Mirrors of the LAZY_DEPS groups setup installs from. Used ONLY when
+# ``tools.lazy_deps`` is unimportable (stripped / partial installs).
+# Drift-guarded against LAZY_DEPS by test.
+_SETUP_INSTALL_FALLBACKS = {
+    "terminal.modal": ("modal==1.3.4",),
+    "terminal.daytona": ("daytona==0.155.0",),
+    "stt.faster_whisper": (
+        "faster-whisper==1.2.1",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
+    "platform.matrix": (
+        "mautrix[encryption]==0.21.0",
+        "aiosqlite==0.22.1",
+        "asyncpg==0.31.0",
+        "aiohttp-socks==0.11.0",
+        "aiohttp==3.14.1",
+    ),
+}
+
+# Tier 2: setup-only packages, bounded rather than pinned. Keys are internal
+# labels; values are the pip spec that gets installed.
+_SETUP_INSTALL_BOUNDS = {
+    # NeuTTS / KittenTTS / Piper track upstream model code; the wheel URL for
+    # kittentts is itself version-locked, so only its audio dep needs a bound.
+    "neutts": "neutts[all]<2.0",
+    "soundfile": "soundfile<1.0",
+    "piper": "piper-tts<2.0",
+    # ddgs is a search backend with a fast-moving major line.
+    "ddgs": "ddgs<10.0",
+    # langfuse's SDK majors carry breaking API changes.
+    "langfuse": "langfuse<5.0",
+}
+
+
+def _pinned_specs(feature: str) -> List[str]:
+    """Return the pinned pip specs for a ``tools.lazy_deps`` feature.
+
+    Reads ``LAZY_DEPS`` when importable, else the mirrored entry in
+    ``_SETUP_INSTALL_FALLBACKS``. Raises ``KeyError`` for a feature in
+    neither, so a typo fails loudly instead of silently installing nothing.
+    """
+    try:
+        from tools.lazy_deps import feature_specs
+
+        return list(feature_specs(feature))
+    except Exception:
+        pass
+    return list(_SETUP_INSTALL_FALLBACKS[feature])
+
+
+def _bounded_spec(label: str) -> str:
+    """Return the bounded pip spec for a setup-only package."""
+    return _SETUP_INSTALL_BOUNDS[label]
+
+
 def _pip_install(
     args: List[str],
     *,
@@ -1796,7 +1869,12 @@ def _run_post_setup(post_setup_key: str):
             pass
         _print_info("    Installing faster-whisper (model ~150MB downloads on first use)...")
         try:
-            result = _pip_install(["-U", "faster-whisper", "--quiet"], timeout=300)
+            # Exact pins from LAZY_DEPS["stt.faster_whisper"] — the same
+            # group the lazy runtime path installs (faster-whisper +
+            # sounddevice + numpy), so setup and runtime can't diverge.
+            result = _pip_install(
+                [*_pinned_specs("stt.faster_whisper"), "--quiet"], timeout=300
+            )
             if result.returncode == 0:
                 _print_success("    faster-whisper installed")
                 _print_info("    Model sizes: tiny, base (default), small, medium, large-v3")
@@ -1804,7 +1882,10 @@ def _run_post_setup(post_setup_key: str):
             else:
                 _print_warning("    faster-whisper install failed:")
                 _print_info(f"      {(result.stderr or '').strip()[:300]}")
-                _print_info("    Run manually: uv pip install -U faster-whisper")
+                _print_info(
+                    "    Run manually: uv pip install "
+                    + " ".join(f"'{spec}'" for spec in _pinned_specs("stt.faster_whisper"))
+                )
         except subprocess.TimeoutExpired:
             _print_warning("    faster-whisper install timed out (>5min)")
             _print_info("    Run manually: uv pip install -U faster-whisper")
@@ -1822,7 +1903,9 @@ def _run_post_setup(post_setup_key: str):
             "0.8.1/kittentts-0.8.1-py3-none-any.whl"
         )
         try:
-            result = _pip_install(["-U", wheel_url, "soundfile", "--quiet"], timeout=300)
+            result = _pip_install(
+                ["-U", wheel_url, _bounded_spec("soundfile"), "--quiet"], timeout=300
+            )
             if result.returncode == 0:
                 _print_success("    kittentts installed")
                 _print_info("    Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo")
@@ -1830,10 +1913,16 @@ def _run_post_setup(post_setup_key: str):
             else:
                 _print_warning("    kittentts install failed:")
                 _print_info(f"      {(result.stderr or '').strip()[:300]}")
-                _print_info(f"    Run manually: uv pip install -U '{wheel_url}' soundfile")
+                _print_info(
+                f"    Run manually: uv pip install -U '{wheel_url}' "
+                f"'{_bounded_spec('soundfile')}'"
+            )
         except subprocess.TimeoutExpired:
             _print_warning("    kittentts install timed out (>5min)")
-            _print_info(f"    Run manually: uv pip install -U '{wheel_url}' soundfile")
+            _print_info(
+                f"    Run manually: uv pip install -U '{wheel_url}' "
+                f"'{_bounded_spec('soundfile')}'"
+            )
 
     elif post_setup_key == "piper":
         try:
@@ -1842,17 +1931,23 @@ def _run_post_setup(post_setup_key: str):
         except ImportError:
             _print_info("    Installing piper-tts (~14MB wheel, voices downloaded on first use)...")
             try:
-                result = _pip_install(["-U", "piper-tts", "--quiet"], timeout=300)
+                result = _pip_install(
+                    ["-U", _bounded_spec("piper"), "--quiet"], timeout=300
+                )
                 if result.returncode == 0:
                     _print_success("    piper-tts installed")
                 else:
                     _print_warning("    piper-tts install failed:")
                     _print_info(f"      {(result.stderr or '').strip()[:300]}")
-                    _print_info("    Run manually: uv pip install -U piper-tts")
+                    _print_info(
+                        f"    Run manually: uv pip install -U '{_bounded_spec('piper')}'"
+                    )
                     return
             except subprocess.TimeoutExpired:
                 _print_warning("    piper-tts install timed out (>5min)")
-                _print_info("    Run manually: uv pip install -U piper-tts")
+                _print_info(
+                    f"    Run manually: uv pip install -U '{_bounded_spec('piper')}'"
+                )
                 return
         _print_info("    Default voice: en_US-lessac-medium (downloaded on first TTS call)")
         _print_info("    Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md")
@@ -1865,13 +1960,17 @@ def _run_post_setup(post_setup_key: str):
         except ImportError:
             _print_info("    Installing ddgs (DuckDuckGo search package)...")
             try:
-                result = _pip_install(["-U", "ddgs", "--quiet"], timeout=300)
+                result = _pip_install(
+                    ["-U", _bounded_spec("ddgs"), "--quiet"], timeout=300
+                )
                 if result.returncode == 0:
                     _print_success("    ddgs installed")
                 else:
                     _print_warning("    ddgs install failed:")
                     _print_info(f"      {(result.stderr or '').strip()[:300]}")
-                    _print_info("    Run manually: uv pip install -U ddgs")
+                    _print_info(
+                        f"    Run manually: uv pip install -U '{_bounded_spec('ddgs')}'"
+                    )
                     return
             except subprocess.TimeoutExpired:
                 _print_warning("    ddgs install timed out (>5min)")
@@ -1916,11 +2015,16 @@ def _run_post_setup(post_setup_key: str):
             _print_success("    langfuse SDK already installed")
         except ImportError:
             _print_info("    Installing langfuse SDK...")
-            result = _pip_install(["langfuse", "--quiet"], timeout=120)
+            result = _pip_install(
+                [_bounded_spec("langfuse"), "--quiet"], timeout=120
+            )
             if result.returncode == 0:
                 _print_success("    langfuse SDK installed")
             else:
-                _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
+                _print_warning(
+                    "    langfuse SDK install failed — run manually: "
+                    f"uv pip install '{_bounded_spec('langfuse')}'"
+                )
         # Opt the bundled observability/langfuse plugin into plugins.enabled.
         # The plugin ships in the repo but doesn't load until the user enables
         # it (standalone plugins are opt-in).

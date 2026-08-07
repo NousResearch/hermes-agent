@@ -1692,6 +1692,48 @@ describe('createBackendSessionForSend workspace target', () => {
   })
 })
 describe('selectSidebarItem', () => {
+  afterEach(() => {
+    cleanup()
+    $currentCwd.set('')
+    setNewChatWorkspaceTarget(undefined)
+    $projectScope.set(ALL_PROJECTS)
+  })
+
+  it('starts the global New session entry detached from the focused workspace', async () => {
+    const navigate = vi.fn()
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return { session_id: RUNTIME_SESSION_ID, stored_session_id: null } as never
+      }
+
+      return {} as never
+    })
+    let handle: HarnessHandle | null = null
+
+    $projectScope.set(ALL_PROJECTS)
+    $currentCwd.set('/work/adaptit-ai-first-assessment')
+    $newChatWorkspaceTarget.set(undefined)
+
+    render(<Harness navigate={navigate} onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    act(() => {
+      handle!.selectSidebarItem({ action: 'new-session', icon: (() => null) as never, id: 'new', label: 'New session' })
+    })
+
+    expect($currentCwd.get()).toBe('')
+    expect($newChatWorkspaceTarget.get()).toBeNull()
+
+    await act(async () => {
+      await handle!.createBackendSessionForSend()
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.create',
+      expect.not.objectContaining({ cwd: expect.anything() })
+    )
+  })
+
   it('fronts the workspace pane when navigating to a sidebar route (issue #72602)', async () => {
     const navigate = vi.fn()
     const requestGateway = vi.fn(async () => ({}) as never)

@@ -469,7 +469,11 @@ export function useSessionActions({
   const selectSidebarItem = useCallback(
     (item: SidebarNavItem) => {
       if (item.action === 'new-session') {
-        startFreshSessionDraft()
+        // The global New session entry is the escape hatch from the current
+        // workspace. Project/worktree add buttons pass an explicit path through
+        // startSessionInWorkspace; this route must be explicitly detached so an
+        // unrelated chat cannot inherit the focused session's repository.
+        startFreshSessionDraft({ workspaceTarget: null })
 
         return
       }

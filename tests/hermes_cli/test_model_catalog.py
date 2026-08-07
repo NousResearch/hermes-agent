@@ -307,6 +307,52 @@ class TestProviderOverride:
         assert result == [("override/model", "custom")]
 
 
+class TestProviderSupplement:
+    def test_supplement_is_appended_to_regular_catalog_without_duplicates(
+        self, isolated_home
+    ):
+        from hermes_cli import model_catalog
+
+        supplemental_payload = {
+            "version": 1,
+            "providers": {
+                "openrouter": {
+                    "models": [
+                        {"id": "openai/gpt-5.4", "description": "duplicate"},
+                        {"id": "xiaomi/mimo-v2.5", "description": "Roy custom"},
+                    ]
+                }
+            },
+        }
+
+        def fake_fetch(url, timeout):
+            if "supplemental" in url:
+                return supplemental_payload
+            return _valid_manifest()
+
+        with patch.object(
+            model_catalog,
+            "_load_catalog_config",
+            return_value={
+                "enabled": True,
+                "url": "http://master",
+                "ttl_hours": 24.0,
+                "providers": {
+                    "openrouter": {"supplemental_url": "http://supplemental"}
+                },
+            },
+        ):
+            with patch.object(model_catalog, "_fetch_manifest", side_effect=fake_fetch):
+                result = model_catalog.get_curated_openrouter_models()
+
+        assert result == [
+            ("anthropic/claude-opus-4.7", "recommended"),
+            ("openai/gpt-5.4", ""),
+            ("openrouter/elephant-alpha", "free"),
+            ("xiaomi/mimo-v2.5", "Roy custom"),
+        ]
+
+
 class TestIntegrationWithModelsModule:
     """Exercise the fallback paths via the real callers in hermes_cli.models."""
 

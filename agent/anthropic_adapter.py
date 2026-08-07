@@ -2009,8 +2009,17 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return out
     if btype == "thinking":
         out = {"type": "thinking", "thinking": b.get("thinking", "")}
-        if b.get("signature"):
-            out["signature"] = b["signature"]
+        # Preserve the signature whenever the upstream sent one AS A STRING —
+        # including the empty string. A truthiness check here silently drops
+        # ``signature: ""``, which is what OpenRouter returns for Kimi/Moonshot
+        # reasoning on its Anthropic-Messages route. Its validator accepts the
+        # empty value but requires the KEY, so the de-signed block replays as
+        # invalid input (HTTP 400 invalid_union at ``messages[N].content``) and
+        # wedges every turn after the first. Anthropic itself never emits "",
+        # so widening the check is inert on the native path.
+        sig = b.get("signature")
+        if isinstance(sig, str):
+            out["signature"] = sig
         return out
     if btype == "redacted_thinking":
         # Only valid with its data payload; drop if missing.

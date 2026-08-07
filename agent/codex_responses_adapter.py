@@ -266,6 +266,50 @@ def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     return deterministic_call_id(fn_name, arguments, index)
 
 
+# Mantle (Amazon Bedrock's Responses surface) mints response-local indexed
+# tool pairing IDs of the shape ``call_0`` / ``fc_1`` and reuses the same
+# index on every response in a conversation. Hermes stores the value as the
+# canonical pairing key, so a second turn reusing ``call_0`` collides with
+# the first and the pre-call duplicate sanitizer drops the later
+# call/result pair (Issue #75471). The grammar is deliberately narrow —
+# provider-issued global IDs (``call_<uuid>``, composite ``fc_`` ids, etc.)
+# are response-unique and must pass through untouched.
+_MANTLE_INDEXED_CALL_ID_RE = re.compile(r"^(?:call|fc)_\d{1,6}$")
+
+
+def _remint_mantle_indexed_call_id(
+    raw_call_id: str,
+    *,
+    request_scope: str,
+    provider_response_id: str,
+    output_ordinal: int,
+) -> str:
+    """Map a Mantle response-local indexed pairing ID to a session-safe one.
+
+    Returns ``call_mtl_<40 hex>`` (49 chars, inside the Responses 64-char
+    cap) that is byte-identical for the same
+    (request_scope, provider_response_id, raw_call_id, output_ordinal) tuple
+    and distinct across Hermes Request Scopes even when Mantle repeats,
+    omits, or malforms ``response.id``. The caller's Hermes-generated
+    ``request_scope`` is the primary identity input; a non-empty provider
+    ``response.id`` contributes additional separation. Values outside the
+    indexed grammar are returned unchanged so non-Mantle and global IDs keep
+    their existing identity contract.
+    """
+    if not isinstance(raw_call_id, str) or not raw_call_id.strip():
+        return raw_call_id
+    value = raw_call_id.strip()
+    if not _MANTLE_INDEXED_CALL_ID_RE.fullmatch(value):
+        return raw_call_id
+
+    seed = (
+        f"mantle-call-v1\x00{request_scope}\x00{provider_response_id}\x00"
+        f"{value}\x00{output_ordinal}"
+    )
+    digest = hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:40]
+    return f"call_mtl_{digest}"
+
+
 def _clamp_responses_call_id(call_id: str) -> str:
     """Keep a ``call_id`` within the Responses API's 64-char limit (#73492).
 
@@ -701,6 +745,7 @@ def _preflight_codex_input_items(
     raw_items: Any,
     *,
     is_github_responses: bool = False,
+    allow_encrypted_reasoning_replay: bool = True,
     sanitize_harmony_tokens: bool = False,
 ) -> List[Dict[str, Any]]:
     if not isinstance(raw_items, list):
@@ -795,6 +840,12 @@ def _preflight_codex_input_items(
             continue
 
         if item_type == "reasoning":
+            if not allow_encrypted_reasoning_replay:
+                # Bedrock Mantle accepts replayed encrypted reasoning but
+                # degrades the model (Issue #75471). This final-preflight
+                # boundary runs after request_overrides merge, closing the
+                # override bypass that history conversion alone cannot.
+                continue
             encrypted = item.get("encrypted_content")
             if isinstance(encrypted, str) and encrypted:
                 item_id = item.get("id")
@@ -935,6 +986,7 @@ def _preflight_codex_api_kwargs(
     *,
     allow_stream: bool = False,
     is_github_responses: bool = False,
+    allow_encrypted_reasoning_replay: bool = True,
     sanitize_harmony_tokens: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(api_kwargs, dict):
@@ -962,6 +1014,7 @@ def _preflight_codex_api_kwargs(
     normalized_input = _preflight_codex_input_items(
         api_kwargs.get("input"),
         is_github_responses=is_github_responses,
+        allow_encrypted_reasoning_replay=allow_encrypted_reasoning_replay,
         sanitize_harmony_tokens=sanitize_harmony_tokens,
     )
 
@@ -1048,7 +1101,18 @@ def _preflight_codex_api_kwargs(
         normalized["reasoning"] = reasoning
     include = api_kwargs.get("include")
     if isinstance(include, list):
-        normalized["include"] = include
+        if allow_encrypted_reasoning_replay:
+            normalized["include"] = include
+        else:
+            # Mantle final-preflight gate (Issue #75471): remove the exact
+            # ``reasoning.encrypted_content`` include value while preserving
+            # other supported include values in their original order. Omit
+            # ``include`` entirely when filtering leaves an empty list.
+            filtered_include = [
+                value for value in include if value != "reasoning.encrypted_content"
+            ]
+            if filtered_include:
+                normalized["include"] = filtered_include
     service_tier = api_kwargs.get("service_tier")
     if isinstance(service_tier, str) and service_tier.strip():
         normalized["service_tier"] = service_tier.strip()
@@ -1229,10 +1293,59 @@ def _format_responses_error(error_obj: Any, response_status: str) -> str:
 # Full response normalization
 # ---------------------------------------------------------------------------
 
+_MANTLE_SCOPE_WARN_EMITTED = False
+
+
+def _resolve_mantle_pairing_call_id(
+    call_id: str,
+    *,
+    is_bedrock_mantle: bool,
+    request_scope: Optional[str],
+    provider_response_id: str,
+    output_ordinal: int,
+) -> str:
+    """Resolve the canonical pairing ID for one normalized tool call.
+
+    For Mantle responses, an indexed pairing ID (``call_0`` / ``fc_1``) is
+    reminted into a session-safe surrogate. The primary identity input is
+    the caller Request Scope; when absent, one ingestion scope is generated
+    and a single diagnostic warning is emitted. Non-Mantle endpoints and IDs
+    outside the indexed grammar pass through unchanged.
+    """
+    value = call_id.strip() if isinstance(call_id, str) else ""
+    if not is_bedrock_mantle:
+        return call_id
+    if not _MANTLE_INDEXED_CALL_ID_RE.fullmatch(value):
+        return call_id
+
+    resolved_scope = request_scope
+    if not isinstance(resolved_scope, str) or not resolved_scope.strip():
+        global _MANTLE_SCOPE_WARN_EMITTED
+        if not _MANTLE_SCOPE_WARN_EMITTED:
+            logger.warning(
+                "Mantle response normalization received no Request Scope; "
+                "generating an ingestion scope so reminted pairing IDs remain "
+                "distinct across responses. Callers should pass the current "
+                "api_request_id to keep scope derivation explicit.",
+            )
+            _MANTLE_SCOPE_WARN_EMITTED = True
+        resolved_scope = f"ingest-{uuid.uuid4().hex}"
+    if isinstance(provider_response_id, str):
+        provider_response_id = provider_response_id.strip()
+    return _remint_mantle_indexed_call_id(
+        value,
+        request_scope=resolved_scope,
+        provider_response_id=provider_response_id if provider_response_id else "",
+        output_ordinal=output_ordinal,
+    )
+
+
 def _normalize_codex_response(
     response: Any,
     *,
     issuer_kind: Optional[str] = None,
+    is_bedrock_mantle: bool = False,
+    request_scope: Optional[str] = None,
 ) -> tuple[Any, str]:
     """Normalize a Responses API object to an assistant_message-like object.
 
@@ -1240,6 +1353,14 @@ def _normalize_codex_response(
     response yields, so future replays can detect when the active endpoint
     differs from the one that minted the encrypted_content blob and drop
     the item instead of triggering HTTP 400 invalid_encrypted_content.
+
+    ``is_bedrock_mantle`` enables Issue #75471 reminting: Mantle-issued
+    response-local indexed pairing IDs (``call_0`` / ``fc_1``) are replaced
+    with a session-safe surrogate before the value enters canonical history.
+    ``request_scope`` is the caller's per-request identity used as the
+    primary remint seed; when omitted, one ingestion scope is generated and
+    a diagnostic warning is emitted (the generated pairing ID then persists
+    in Durable History and stays stable on replay).
     """
     response_status = getattr(response, "status", None)
     if isinstance(response_status, str):
@@ -1429,7 +1550,13 @@ def _normalize_codex_response(
             call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
             if not isinstance(call_id, str) or not call_id.strip():
                 call_id = _deterministic_call_id(fn_name, arguments, len(tool_calls))
-            call_id = call_id.strip()
+            call_id = _resolve_mantle_pairing_call_id(
+                call_id.strip(),
+                is_bedrock_mantle=is_bedrock_mantle,
+                request_scope=request_scope,
+                provider_response_id=getattr(response, "id", ""),
+                output_ordinal=len(tool_calls),
+            )
             response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
             response_item_id = _derive_responses_function_call_id(call_id, response_item_id)
             tool_calls.append(SimpleNamespace(
@@ -1450,7 +1577,13 @@ def _normalize_codex_response(
             call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
             if not isinstance(call_id, str) or not call_id.strip():
                 call_id = _deterministic_call_id(fn_name, arguments, len(tool_calls))
-            call_id = call_id.strip()
+            call_id = _resolve_mantle_pairing_call_id(
+                call_id.strip(),
+                is_bedrock_mantle=is_bedrock_mantle,
+                request_scope=request_scope,
+                provider_response_id=getattr(response, "id", ""),
+                output_ordinal=len(tool_calls),
+            )
             response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
             response_item_id = _derive_responses_function_call_id(call_id, response_item_id)
             tool_calls.append(SimpleNamespace(

@@ -1212,8 +1212,17 @@ class _CodexCompletionsAdapter:
         # build_kwargs, so they need the same guard applied independently.
         _host_for_input = str(getattr(self._client, "base_url", "") or "")
         _is_github_for_input = base_url_host_matches(_host_for_input, "githubcopilot.com")
+        # Bedrock Mantle accepts replayed encrypted reasoning but degrades
+        # the model (hidden-reasoning-only turns, repeated tool calls —
+        # Issue #75471). Suppress historical encrypted reasoning replay for
+        # Mantle the same way the main transport does, so auxiliary context
+        # compression / memory consumers follow one Mantle contract.
+        from agent.transports.codex import _is_bedrock_mantle_base_url
+        _is_mantle_for_input = _is_bedrock_mantle_base_url(_host_for_input)
         input_items = _chat_messages_to_responses_input(
-            replay_messages, is_github_responses=_is_github_for_input,
+            replay_messages,
+            is_github_responses=_is_github_for_input,
+            replay_encrypted_reasoning=not _is_mantle_for_input,
         )
 
         resp_kwargs: Dict[str, Any] = {
@@ -1264,7 +1273,8 @@ class _CodexCompletionsAdapter:
                         "effort": effort,
                         "summary": "auto",
                     }
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+                    if not _is_mantle_for_input:
+                        resp_kwargs["include"] = ["reasoning.encrypted_content"]
 
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")

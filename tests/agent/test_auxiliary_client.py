@@ -3067,6 +3067,99 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
         assert message_item["id"] == "msg_short_but_connection_scoped"
 
 
+class TestCodexAdapterMantleReasoningGate:
+    """_CodexCompletionsAdapter must suppress historical encrypted reasoning
+    replay and the ``reasoning.encrypted_content`` include value when
+    targeting Bedrock Mantle (Issue #75471). Auxiliary calls (context
+    compression, flush_memories, MoA aggregation) route through this adapter
+    instead of agent/transports/codex.py, so they need the same gate applied
+    independently — Mantle accepts replayed encrypted reasoning but degrades
+    the model (hidden-reasoning-only turns, repeated tool calls).
+    """
+
+    @staticmethod
+    def _build_adapter(base_url):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+        from types import SimpleNamespace
+
+        message_item = SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(type="output_text", text="hi")],
+        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed", id="resp_test",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                ),
+            ),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
+
+        captured_kwargs = {}
+
+        def _create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeCreateStream()
+
+        real_client = MagicMock()
+        real_client.base_url = base_url
+        real_client.responses.create = _create
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.6")
+        return adapter, captured_kwargs
+
+    @staticmethod
+    def _reasoning_messages():
+        return [
+            {"role": "system", "content": "You are helpful."},
+            {
+                "role": "assistant",
+                "content": "thinking",
+                "codex_reasoning_items": [
+                    {"type": "reasoning", "encrypted_content": "opaque-blob", "summary": []},
+                ],
+            },
+            {"role": "user", "content": "continue"},
+        ]
+
+    def test_mantle_suppresses_historical_reasoning_and_include(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://bedrock-mantle.us-west-2.api.aws/v1"
+        )
+        adapter.create(
+            messages=self._reasoning_messages(),
+            extra_body={"reasoning": {"effort": "high", "enabled": True}},
+        )
+        reasoning_input = [
+            item for item in captured["input"] if item.get("type") == "reasoning"
+        ]
+        assert reasoning_input == []
+        assert "reasoning.encrypted_content" not in (captured.get("include") or [])
+        # Visible messages remain and reasoning effort is preserved.
+        assert captured["reasoning"] == {"effort": "high", "summary": "auto"}
+        assert any("continue" in str(item) for item in captured["input"])
+
+    def test_non_mantle_replays_reasoning_and_requests_encrypted_content(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://chatgpt.com/backend-api/codex"
+        )
+        adapter.create(
+            messages=self._reasoning_messages(),
+            extra_body={"reasoning": {"effort": "high", "enabled": True}},
+        )
+        reasoning_input = [
+            item for item in captured["input"] if item.get("type") == "reasoning"
+        ]
+        assert len(reasoning_input) == 1
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto vision branch skips providers that have no vision on
     their main endpoint (e.g. Kimi Coding Plan /coding) and falls through

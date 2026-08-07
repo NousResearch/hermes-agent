@@ -111,21 +111,34 @@ _EXTENDED_PROMPT_CACHE_MODEL_RE = re.compile(
 )
 
 
-def _default_prompt_cache_retention_for_request(
-    model: str,
-    base_url: Any,
-) -> Optional[str]:
-    """Return ``24h`` for supported models on Amazon Bedrock Mantle."""
+def _is_bedrock_mantle_base_url(base_url: Any) -> bool:
+    """Return True when ``base_url`` targets an Amazon Bedrock Mantle endpoint.
+
+    Matches the exact hostname family ``bedrock-mantle.<region>.api.aws`` with
+    exactly four labels, a non-empty region label, and the ``api.aws`` suffix.
+    ``base_url_hostname`` already lowercases and strips a trailing DNS dot, so
+    uppercase hostnames and trailing dots normalize correctly; ports, paths,
+    queries, and fragments never reach the hostname. Look-alike hosts such as
+    ``bedrock-mantle.us-west-2.api.aws.example`` or a Mantle string buried in
+    a path stay classified as general Responses endpoints.
+    """
     from utils import base_url_hostname
 
     hostname_parts = base_url_hostname(str(base_url or "")).split(".")
-    is_bedrock_mantle = (
+    return (
         len(hostname_parts) == 4
         and hostname_parts[0] == "bedrock-mantle"
         and bool(hostname_parts[1])
         and hostname_parts[2:] == ["api", "aws"]
     )
-    if not is_bedrock_mantle:
+
+
+def _default_prompt_cache_retention_for_request(
+    model: str,
+    base_url: Any,
+) -> Optional[str]:
+    """Return ``24h`` for supported models on Amazon Bedrock Mantle."""
+    if not _is_bedrock_mantle_base_url(base_url):
         return None
 
     normalized = str(model or "").strip().lower().replace("_", "-")
@@ -268,9 +281,18 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
+        # Bedrock Mantle accepts replayed encrypted reasoning but degrades
+        # the model (hidden-reasoning-only turns, repeated tool calls, leaked
+        # tool-call scaffolding — Issue #75471). The HTTP 400
+        # ``invalid_encrypted_content`` recovery switch cannot catch
+        # accepted-but-degraded responses, so decide the capability here.
+        # The effective switch controls both history conversion and the
+        # encrypted-content include value; the reasoning effort object stays
+        # when reasoning is enabled.
+        is_bedrock_mantle = _is_bedrock_mantle_base_url(params.get("base_url"))
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
-        )
+        ) and not is_bedrock_mantle
 
         # Resolve the issuing endpoint for this call. Stashed on the
         # transport so normalize_response can stamp it onto reasoning
@@ -534,7 +556,16 @@ class ResponsesApiTransport(ProviderTransport):
         return kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
-        """Normalize Codex Responses API response to NormalizedResponse."""
+        """Normalize Codex Responses API response to NormalizedResponse.
+
+        kwargs:
+            issuer_kind: str | None — explicit endpoint issuer (falls back to
+                the stash from the matching build_kwargs/convert_messages call)
+            base_url: str | None — endpoint URL used for Mantle capability
+                detection (Issue #75471 reminting)
+            request_scope: str | None — caller per-request identity used as
+                the primary remint seed for Mantle indexed pairing IDs
+        """
         from agent.codex_responses_adapter import (
             _normalize_codex_response,
         )
@@ -544,8 +575,15 @@ class ResponsesApiTransport(ProviderTransport):
         # call. Either way it gets stamped onto reasoning items so future
         # turns can detect a model swap and drop foreign-issuer blobs.
         issuer_kind = kwargs.get("issuer_kind") or self._last_issuer_kind
+        base_url = kwargs.get("base_url")
+        request_scope = kwargs.get("request_scope")
         # _normalize_codex_response returns (SimpleNamespace, finish_reason_str)
-        msg, finish_reason = _normalize_codex_response(response, issuer_kind=issuer_kind)
+        msg, finish_reason = _normalize_codex_response(
+            response,
+            issuer_kind=issuer_kind,
+            is_bedrock_mantle=_is_bedrock_mantle_base_url(base_url),
+            request_scope=request_scope,
+        )
 
         tool_calls = None
         if msg and msg.tool_calls:
@@ -618,11 +656,15 @@ class ResponsesApiTransport(ProviderTransport):
         *,
         allow_stream: bool = False,
         is_github_responses: bool = False,
+        base_url: Any = None,
         sanitize_harmony_tokens: bool = False,
     ) -> dict:
         """Validate and sanitize Codex API kwargs before the call.
 
         Normalizes input items, strips unsupported fields, validates structure.
+        ``base_url`` enables the Mantle reasoning gate (Issue #75471): the
+        final preflight removes override-injected encrypted reasoning items
+        and the ``reasoning.encrypted_content`` include value for Mantle.
         ``sanitize_harmony_tokens`` is enabled only for the ChatGPT Codex
         backend, which rejects literal reserved Harmony wire tokens in text.
         """
@@ -632,6 +674,7 @@ class ResponsesApiTransport(ProviderTransport):
             api_kwargs,
             allow_stream=allow_stream,
             is_github_responses=is_github_responses,
+            allow_encrypted_reasoning_replay=not _is_bedrock_mantle_base_url(base_url),
             sanitize_harmony_tokens=sanitize_harmony_tokens,
         )
         if "prompt_cache_key" in normalized:

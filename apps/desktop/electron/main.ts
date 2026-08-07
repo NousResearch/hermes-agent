@@ -272,6 +272,10 @@ const APP_ROOT = app.getAppPath()
 // Dev (`npm run dev`) and prod both load the esbuild output from dist/.
 const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
 
+if (IS_PACKAGED && IS_MAC && !process.argv.some(arg => arg.startsWith('--log-level'))) {
+  app.commandLine.appendSwitch('log-level', '3')
+}
+
 // Remote displays (SSH X11 forwarding, VNC, RDP) make Chromium's GPU
 // compositor flicker — accelerated layers can't be presented cleanly over the
 // wire, so the window flashes during scroll/streaming/animation. Local
@@ -686,9 +690,9 @@ const APP_ICON_PATHS = [
   ...(IS_WINDOWS
     ? [path.join(process.resourcesPath ?? '', 'icon.ico'), path.join(APP_ROOT, 'assets', 'icon.ico')]
     : []),
+  path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
-  path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
-  path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
+  path.join(APP_ROOT, 'dist', 'apple-touch-icon.png')
 ]
 
 let rendererTitleBarTheme = null
@@ -3690,7 +3694,7 @@ function resolveWebDist() {
 }
 
 function resolveRendererIndex() {
-  const candidates = [path.join(APP_ROOT, 'dist', 'index.html'), path.join(resolveWebDist(), 'index.html')]
+  const candidates = [path.join(resolveWebDist(), 'index.html'), path.join(APP_ROOT, 'dist', 'index.html')]
   const found = candidates.find(fileExists)
 
   if (found) {
@@ -9431,22 +9435,12 @@ function createWindow() {
 
   mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
 
-  // Electron always passes the event first. The canonical (Electron 36+) shape
-  // is (event, messageDetails); the deprecated positional shape is
-  // (event, level, message, line, sourceId). Handle both. `level` is numeric
-  // (0..3), where 3 === error.
-  mainWindow.webContents.on('console-message', (_event, detailsOrLevel, message, line, sourceId) => {
-    const details = detailsOrLevel && typeof detailsOrLevel === 'object' ? detailsOrLevel : null
-    const level = details ? details.level : detailsOrLevel
-
-    if (level !== 3) {
+  mainWindow.webContents.on('console-message', details => {
+    if (details.level !== 'error') {
       return
     }
 
-    const text = details ? details.message : message
-    const src = details ? details.sourceUrl : sourceId
-    const lineNo = details ? details.lineNumber : line
-    rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
+    rememberLog(`[renderer console] ${details.message} (${details.sourceId}:${details.lineNumber})`)
   })
 
   loadWindowUrl(mainWindow, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Renderer')

@@ -20,7 +20,8 @@ import {
   isSessionBusyError,
   visibleUserIndexAtOrdinal,
   visibleUserOrdinal,
-  withSessionBusyRetry
+  withSessionBusyRetry,
+  withSessionNotFoundResume
 } from './utils'
 
 type RequestGateway = <T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
@@ -51,32 +52,60 @@ export function truncateSubmitParams(truncateOrdinal: number | undefined): Recor
  * (interrupting an idle agent can leave a stale interrupt flag that cancels the
  * fresh turn); live/stuck turns interrupt first, and a raced "session busy"
  * response interrupts + retries through the shared busy gate.
+ *
+ * A rewind runs right after `cancelRun`, and interrupting can drop the
+ * gateway's in-memory session — so the follow-up submit hits a dead runtime id
+ * and used to surface a bare "session not found" ("Restore checkpoint" failing
+ * after a stop). Pass `recovery` so a stale id re-registers and retries like
+ * every other session-scoped RPC.
  */
 export async function runRewindSubmit(
   requestGateway: RequestGateway,
   sessionId: string,
   text: string,
   truncateOrdinal: number | undefined,
-  interruptFirst: boolean
+  interruptFirst: boolean,
+  recovery?: { storedSessionId?: null | string; onSessionRecovered?: (sessionId: string) => void }
 ): Promise<void> {
+  // Recovery may rebind the live id mid-flight; interrupt/submit must both
+  // follow it rather than pinning the dead one.
+  let liveSessionId = sessionId
+
   const interrupt = async () => {
     try {
-      await requestGateway('session.interrupt', { session_id: sessionId })
+      await requestGateway('session.interrupt', { session_id: liveSessionId })
     } catch {
       // Best-effort. The submit path still gates on the gateway state.
     }
   }
 
-  const submit = () =>
+  const submitFor = (targetId: string) =>
     requestGateway(
       'prompt.submit',
       {
-        session_id: sessionId,
+        session_id: targetId,
         text,
         ...truncateSubmitParams(truncateOrdinal)
       },
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
     )
+
+  const submit = async () => {
+    const { sessionId: usedId } = await withSessionNotFoundResume(
+      liveSessionId,
+      recovery?.storedSessionId,
+      submitFor,
+      {
+        requestGateway,
+        onRecovered: recoveredId => {
+          liveSessionId = recoveredId
+          recovery?.onSessionRecovered?.(recoveredId)
+        }
+      }
+    )
+
+    liveSessionId = usedId
+  }
 
   if (interruptFirst) {
     await interrupt()

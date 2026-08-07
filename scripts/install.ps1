@@ -1437,6 +1437,22 @@ function Test-NodeVersionOk {
     return ($v.Major -gt 22)
 }
 
+function Test-NpmAvailable {
+    # Prefer the cmd shim so PowerShell execution policy cannot reject npm.ps1.
+    $npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $npmCmd) {
+        $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    }
+    if (-not $npmCmd) { return $false }
+
+    try {
+        & $npmCmd.Source --version *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
 function Test-Node {
     Write-Info "Checking Node.js (for browser tools)..."
 
@@ -1444,11 +1460,15 @@ function Test-Node {
         $version = node --version
         if (Test-NodeVersionOk $version) {
             Ensure-NodeExeOnPath | Out-Null
-            Write-Success "Node.js $version found"
-            $script:HasNode = $true
-            return $true
+            if (Test-NpmAvailable) {
+                Write-Success "Node.js $version found"
+                $script:HasNode = $true
+                return $true
+            }
+            Write-Warn "Node.js $version has no usable npm on PATH -- installing Hermes-managed Node $NodeVersion instead..."
+        } else {
+            Write-Warn "Node.js $version is too old (Hermes requires Node >=26)"
         }
-        Write-Warn "Node.js $version is too old (Hermes requires Node >=26)"
     }
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
@@ -1457,13 +1477,16 @@ function Test-Node {
         $version = & $managedNode --version
         $env:Path = "$HermesHome\node;$env:Path"
         Set-ManagedNodeFirstOnUserPath "$HermesHome\node"
-        Write-Success "Node.js $version found (Hermes-managed)"
-        # A tree from an older install still has that Node major's bundled
-        # npm, which is below the current engines.npm floor. No-ops when the
-        # npm is already in range, so reruns cost one --version probe.
-        Update-ManagedNpm "$HermesHome\node" | Out-Null
-        $script:HasNode = $true
-        return $true
+        if (Test-NpmAvailable) {
+            Write-Success "Node.js $version found (Hermes-managed)"
+            # A tree from an older install still has that Node major's bundled
+            # npm, which is below the current engines.npm floor. No-ops when the
+            # npm is already in range, so reruns cost one --version probe.
+            Update-ManagedNpm "$HermesHome\node" | Out-Null
+            $script:HasNode = $true
+            return $true
+        }
+        Write-Warn "Hermes-managed Node.js $version has no usable npm -- reinstalling it..."
     }
 
     Write-Info "Installing Hermes-managed Node.js $NodeVersion LTS..."

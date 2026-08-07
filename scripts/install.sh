@@ -830,13 +830,21 @@ check_node() {
     # bad-band npm (see npm_supports_npmrc) fails `npm ci` outright, and the
     # managed Node we install instead bundles one that works.
     if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
-        if ! command -v npm &> /dev/null || npm_supports_npmrc "$(npm --version 2>/dev/null)"; then
+        local npm_version=""
+        if command -v npm &> /dev/null; then
+            npm_version="$(npm --version 2>/dev/null || true)"
+        fi
+        if [ -n "$npm_version" ] && npm_supports_npmrc "$npm_version"; then
             log_success "Node.js $(node --version) found"
             HAS_NODE=true
             return 0
         fi
-        log_warn "npm $(npm --version) cannot honor this repo's .npmrc (npm 11.10-11.16 ignore"
-        log_warn "min-release-age-exclude) — installing Hermes-managed Node $NODE_VERSION instead..."
+        if [ -n "$npm_version" ]; then
+            log_warn "npm $npm_version cannot honor this repo's .npmrc (npm 11.10-11.16 ignore"
+            log_warn "min-release-age-exclude) — installing Hermes-managed Node $NODE_VERSION instead..."
+        else
+            log_warn "Node.js $(node --version) has no usable npm on PATH — installing Hermes-managed Node $NODE_VERSION instead..."
+        fi
         install_node
         return
     fi
@@ -2288,10 +2296,11 @@ install_node_deps() {
         cd "$INSTALL_DIR"
         # Time-boxed: a stalled registry fetch would otherwise hang here with no
         # progress (same #39219 stall class as the desktop build below).
-        run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent || {
+        if run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent; then
+            log_success "Node.js dependencies installed"
+        else
             log_warn "npm install failed or timed out (browser tools may not work)"
-        }
-        log_success "Node.js dependencies installed"
+        fi
 
         # Install Playwright browser + system dependencies.
         # Playwright's --with-deps only supports apt-based systems natively.
@@ -2390,10 +2399,11 @@ install_node_deps() {
         log_info "Installing TUI dependencies..."
         cd "$INSTALL_DIR/ui-tui"
         # Time-boxed: a stalled registry fetch would otherwise hang here (#39219).
-        run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent || {
+        if run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent; then
+            log_success "TUI dependencies installed"
+        else
             log_warn "TUI npm install failed or timed out (hermes --tui may not work)"
-        }
-        log_success "TUI dependencies installed"
+        fi
     fi
 
     # Keep the checkout clean so `hermes update` doesn't autostash every run.

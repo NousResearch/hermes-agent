@@ -165,6 +165,8 @@ _nb_ensure_bundled_npm_range() {
 
 _nb_have_modern_node() {
     command -v node >/dev/null 2>&1 || return 1
+    command -v npm >/dev/null 2>&1 || return 1
+    npm --version >/dev/null 2>&1 || return 1
     [ "$(_nb_node_major)" -ge "$HERMES_NODE_MIN_VERSION" ]
 }
 

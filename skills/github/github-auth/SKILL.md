@@ -245,3 +245,4 @@ fi
 | Credentials not persisting | Check `git config --global credential.helper` — must be `store` or `cache` |
 | Multiple GitHub accounts | Use SSH with different keys per host alias in `~/.ssh/config`, or per-repo credential URLs |
 | `gh: command not found` + no sudo | Use git-only Method 1 above — no installation needed |
+| Token "not set" under Docker, but it's in your `.env` | The `.env` lives at `$HERMES_HOME/.env` (e.g. `/opt/data/.env`). In the official Docker layout the subprocess `HOME` is redirected to `$HERMES_HOME/home`, so `~/.hermes/.env` points at the wrong file. Source `gh-env.sh` (it resolves via `HERMES_HOME` and prints the path it checked) rather than reading `~/.hermes/.env` directly |

@@ -162,19 +162,50 @@ def _(rid, params: dict) -> dict:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
-            history = session.get("history", [])
+            if ordinal < 0:
+                return _err(rid, 4018, "target user message is no longer in session history")
+            # session["history"] is only refreshed on resume (session.resume) —
+            # it does not track writes made by other clients sharing this same
+            # session_key (e.g. the REST gateway used by a web UI). Re-read the
+            # current segment from the DB before truncating so replace_messages
+            # does not operate on a stale in-memory snapshot.
+            #
+            # The Desktop ordinal is based on the full displayed lineage, while
+            # session["history"] and the model context contain only the current
+            # segment. Subtract the immutable ancestor display prefix instead of
+            # loading ancestors into `history`: persisting those rows into the
+            # tip would duplicate compressed history on every later resume.
+            db = _get_db()
+            history = list(session.get("history", []))
+            prefix_user_count = sum(
+                1
+                for message in session.get("display_history_prefix", [])
+                if message.get("role") == "user" and not message.get("display_kind")
+            )
+            segment_ordinal = ordinal - prefix_user_count
+            expected_history = list(history)
+            if db is not None and session.get("session_key"):
+                try:
+                    raw_history, _display_history = db.get_resume_conversations(
+                        session["session_key"]
+                    )
+                    expected_history = list(raw_history)
+                    history = sanitize_replay_history(raw_history)
+                except Exception as exc:
+                    # This path immediately performs a destructive transcript
+                    # replacement. If the authoritative read fails, do not fall
+                    # back to the stale snapshot and risk overwriting newer rows.
+                    return _err(rid, 5000, f"failed to load current session history: {exc}")
             user_indices = [
                 i for i, m in enumerate(history)
                 if m.get("role") == "user" and not m.get("display_kind")
             ]
-            # Reject out-of-range ordinals on BOTH ends. A negative value would
-            # otherwise sail past the upper-bound check and hit Python's negative
-            # indexing below (user_indices[-1] -> the LAST user turn), silently
-            # truncating history to everything before it and persisting that loss
-            # via replace_messages — an unrecoverable overwrite of the session DB.
-            if ordinal < 0 or ordinal >= len(user_indices):
+            # An ordinal that points into the display-only ancestor prefix is
+            # not editable from this continuation segment. Reject it on the same
+            # stale-target path as an ordinal beyond the current segment.
+            if segment_ordinal < 0 or segment_ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
-            truncated = history[: user_indices[ordinal]]
+            truncated = history[: user_indices[segment_ordinal]]
             # Stale clients can attach truncate_before_user_ordinal=0 to an
             # ordinary submit. That resolves to history[:0] == [] and
             # replace_messages() DELETEs every durable row — silent total
@@ -220,7 +251,11 @@ def _(rid, params: dict) -> dict:
             # Fail closed: refuse the turn and leave memory/DB unchanged.
             if (db := _get_db()) is not None:
                 try:
-                    db.replace_messages(session["session_key"], truncated)
+                    replaced = db.replace_active_messages_if_unchanged(
+                        session["session_key"],
+                        expected_history,
+                        truncated,
+                    )
                 except Exception as exc:
                     logger.error(
                         "prompt.submit: replace_messages failed for session %s "
@@ -235,6 +270,12 @@ def _(rid, params: dict) -> dict:
                         rid,
                         5008,
                         f"failed to persist history truncation: {exc}",
+                    )
+                if not replaced:
+                    return _err(
+                        rid,
+                        4091,
+                        "session history changed while editing; reload and retry",
                     )
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1

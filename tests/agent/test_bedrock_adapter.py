@@ -538,6 +538,103 @@ class TestExtractProviderFromArn:
 # ---------------------------------------------------------------------------
 
 class TestClientCache:
+    @staticmethod
+    def _fake_botocore_config(config_ctor):
+        botocore_mod = ModuleType("botocore")
+        config_mod = ModuleType("botocore.config")
+        config_mod.Config = config_ctor
+        botocore_mod.config = config_mod
+        return {
+            "botocore": botocore_mod,
+            "botocore.config": config_mod,
+        }
+
+    def test_runtime_client_uses_configured_timeouts(self, monkeypatch):
+        from agent.bedrock_adapter import _get_bedrock_runtime_client, reset_client_cache
+
+        monkeypatch.delenv("BEDROCK_READ_TIMEOUT", raising=False)
+        monkeypatch.delenv("BEDROCK_CONNECT_TIMEOUT", raising=False)
+        reset_client_cache()
+        boto3 = MagicMock()
+        client = object()
+        boto3.client.return_value = client
+        boto_config = object()
+        config_ctor = MagicMock(return_value=boto_config)
+
+        try:
+            with (
+                patch("agent.bedrock_adapter._require_boto3", return_value=boto3),
+                patch(
+                    "hermes_cli.config.load_config_readonly",
+                    return_value={
+                        "bedrock": {
+                            "read_timeout_seconds": 45,
+                            "connect_timeout_seconds": 2.5,
+                        }
+                    },
+                ),
+                patch.dict("sys.modules", self._fake_botocore_config(config_ctor)),
+            ):
+                assert _get_bedrock_runtime_client("us-east-1") is client
+
+            config_ctor.assert_called_once_with(
+                read_timeout=45.0,
+                connect_timeout=2.5,
+                retries={"max_attempts": 0},
+            )
+            boto3.client.assert_called_once_with(
+                "bedrock-runtime",
+                region_name="us-east-1",
+                config=boto_config,
+            )
+        finally:
+            reset_client_cache()
+
+    @pytest.mark.parametrize(
+        ("read_timeout", "connect_timeout"),
+        [
+            ("not-a-number", "also-invalid"),
+            (0, -1),
+            (True, False),
+            (float("inf"), float("nan")),
+            (10**400, 10**400),
+        ],
+    )
+    def test_runtime_client_invalid_timeouts_fall_back_to_defaults(
+        self, monkeypatch, read_timeout, connect_timeout
+    ):
+        from agent.bedrock_adapter import _get_bedrock_runtime_client, reset_client_cache
+
+        monkeypatch.delenv("BEDROCK_READ_TIMEOUT", raising=False)
+        monkeypatch.delenv("BEDROCK_CONNECT_TIMEOUT", raising=False)
+        reset_client_cache()
+        boto3 = MagicMock()
+        config_ctor = MagicMock(return_value=object())
+
+        try:
+            with (
+                patch("agent.bedrock_adapter._require_boto3", return_value=boto3),
+                patch(
+                    "hermes_cli.config.load_config_readonly",
+                    return_value={
+                        "bedrock": {
+                            "read_timeout_seconds": read_timeout,
+                            "connect_timeout_seconds": connect_timeout,
+                        }
+                    },
+                ),
+                patch.dict("sys.modules", self._fake_botocore_config(config_ctor)),
+            ):
+                _get_bedrock_runtime_client("us-west-2")
+
+            config_ctor.assert_called_once_with(
+                read_timeout=300.0,
+                connect_timeout=10.0,
+                retries={"max_attempts": 0},
+            )
+        finally:
+            reset_client_cache()
+
     def test_reset_clears_caches(self):
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,

@@ -74,7 +74,15 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     # ── Role-play / identity hijack (context + strict; common attack
     #    surface in scraped web content and poisoned context files) ──
     (rf'you\s+are\s+{_FILLER}now\s+(?:a|an|the)\s+', "role_hijack", "context"),
-    (rf'pretend\s+{_FILLER}(you\s+are|to\s+be)\s+', "role_pretend", "context"),
+    # Excludes an immediately-preceding negation ("never/don't/won't/cannot/
+    # can't/doesn't/not pretend to be X") — a legitimate persona instruction
+    # telling the agent NOT to impersonate someone reads as the opposite of
+    # an attack, but previously matched this pattern and got the whole
+    # context file blocked (e.g. a SOUL.md line "Never pretend to be official
+    # X staff" tripped this and dropped the entire file, identity included,
+    # for that turn). Each alternative is fixed-width, as required for a
+    # lookbehind.
+    (rf'(?<!never )(?<!don\'t )(?<!doesn\'t )(?<!won\'t )(?<!cannot )(?<!can\'t )(?<!not )pretend\s+{_FILLER}(you\s+are|to\s+be)\s+', "role_pretend", "context"),
     (rf'output\s+{_FILLER}(system|initial)\s+prompt', "leak_system_prompt", "context"),
     (rf'(respond|answer|reply)\s+without\s+{_FILLER}(restrictions|limitations|filters|safety)', "remove_filters", "context"),
     (rf'you\s+have\s+been\s+{_FILLER}(updated|upgraded|patched)\s+to', "fake_update", "context"),

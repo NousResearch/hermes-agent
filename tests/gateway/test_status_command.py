@@ -2,6 +2,7 @@ from hermes_state import AsyncSessionDB
 """Tests for gateway /status behavior and token persistence."""
 
 from datetime import datetime
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -486,5 +487,61 @@ async def test_context_all_appends_expanded_listings():
     assert "hermes-agent" in result
     # Expanded view drops the hint
     assert "Use /context all" not in result
+
+
+def test_parse_gateway_runtime_reads_snapshot():
+    from gateway.slash_commands import _parse_gateway_runtime
+
+    runtime = {"provider": "custom:freellmapi", "base_url": "https://x/v1"}
+    # JSON string (the raw model_config column shape).
+    assert _parse_gateway_runtime(json.dumps({"gateway_runtime": runtime})) == runtime
+    # Already-decoded dict.
+    assert _parse_gateway_runtime({"gateway_runtime": runtime}) == runtime
+    # Absent / malformed / wrong-typed inputs all yield an empty dict.
+    assert _parse_gateway_runtime(None) == {}
+    assert _parse_gateway_runtime("") == {}
+    assert _parse_gateway_runtime("not json") == {}
+    assert _parse_gateway_runtime({"gateway_runtime": "nope"}) == {}
+    assert _parse_gateway_runtime({}) == {}
+
+
+@pytest.mark.asyncio
+async def test_status_command_uses_active_fallback_route_over_config_default():
+    """When a session runs on a fallback provider, billing_provider is often
+    still empty; /status must surface the persisted live route rather than
+    falling through to the configured default (#75535)."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    # No live/cached agent and no billing_provider yet — only the persisted
+    # gateway_runtime snapshot records the active fallback route.
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "model": "custom/free-model",
+        "billing_provider": None,
+        "model_config": json.dumps(
+            {
+                "gateway_runtime": {
+                    "provider": "custom:freellmapi",
+                    "base_url": "https://freellmapi.example/v1",
+                    "fallback_active": True,
+                }
+            }
+        ),
+    }
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "(custom:freellmapi)" in result
+    # It must NOT be left provider-less nor show a stale configured default.
+    assert "`custom/free-model`" in result
 
 

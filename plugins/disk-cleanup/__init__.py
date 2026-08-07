@@ -39,6 +39,19 @@ logger = logging.getLogger(__name__)
 _recent_test_tracks: Dict[str, Set[str]] = {}
 _lock = threading.Lock()
 
+# #75403: per-tool-call snapshot of candidate paths that already existed
+# BEFORE the tool ran.  A tool that merely *edits* a pre-existing durable
+# file must never auto-track it for deletion.  Keyed by session_id + call
+# identity so session-end can remove only matching session entries without
+# disturbing another in-flight session's snapshots.
+_preexisting_paths: Dict[str, Set[str]] = {}
+
+
+def _snap_key(tool_call_id: str, task_id: str, session_id: str) -> str:
+    """Return a snap key that always encodes session_id for scoped cleanup."""
+    call_id = tool_call_id or _tracker_key(task_id, session_id)
+    return f"{session_id}::{call_id}"
+
 
 # Tool-call result shapes we can parse
 _WRITE_FILE_PATH_KEY = "path"
@@ -69,14 +82,41 @@ def _drain(task_id: str, session_id: str) -> Set[str]:
         return _recent_test_tracks.pop(key, set())
 
 
-def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
-    """Best-effort auto-track. Never raises."""
+def _attempt_track(
+    path_str: str, task_id: str, session_id: str, tool_call_id: str = ""
+) -> None:
+    """Best-effort auto-track. Never raises.
+
+    A file that already existed *before* the tool ran is never auto-tracked
+    (#75403): editing a durable file must not mark it disposable.  Only
+    genuinely newly-created files are tracked.
+    """
     try:
         p = Path(path_str).expanduser()
     except Exception:
         return
     if not p.exists():
         return
+
+    # #75403: consult the pre_tool_call existence snapshot for this call.
+    # A pre-existing path the tool merely edited is not disposable.
+    try:
+        resolved = str(p.resolve())
+    except Exception:
+        resolved = str(p)
+    snap_k = _snap_key(tool_call_id, task_id, session_id)
+    with _lock:
+        preexisting = _preexisting_paths.get(snap_k)
+    if preexisting and resolved in preexisting:
+        dg._log(f"SKIP pre-existing file: {p} (edited, not auto-tracked #75403)")
+        with _lock:
+            snap = _preexisting_paths.get(snap_k)
+            if snap is not None:
+                snap.discard(resolved)
+                if not snap:
+                    _preexisting_paths.pop(snap_k, None)
+        return
+
     category = dg.guess_category(p)
     if category is None:
         return
@@ -101,8 +141,11 @@ def _extract_paths_from_patch(args: Dict[str, Any]) -> Set[str]:
 
 
 def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
-    """Best-effort: pull candidate filesystem paths from a terminal command
-    and its output, then let ``guess_category`` / ``is_safe_path`` filter.
+    """Best-effort: pull candidate filesystem paths from a terminal command.
+
+    ONLY command-arg paths are eligible — result-only paths are NEVER
+    candidates because their pre-existence is unknowable at pre-call time
+    (#75403 concurrency/data-loss blocker).
     """
     paths: Set[str] = set()
     cmd = args.get("command") or ""
@@ -114,16 +157,67 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
                     paths.add(tok)
         except ValueError:
             pass
-    # Only scan the result text if it's a reasonable size (avoid 50KB dumps).
-    if isinstance(result, str) and len(result) < 4096:
-        for match in _TERMINAL_PATH_REGEX.findall(result):
-            paths.add(match)
+    # NOTE: result text is intentionally NOT scanned — paths that appear
+    # only in terminal output were not snapshotted pre-call, so their
+    # pre-existence is unknowable.  Auto-tracking them risks data loss.
     return paths
+
+
+def _candidate_paths_for_tracking(
+    tool_name: str, args: Dict[str, Any]
+) -> Set[str]:
+    """Paths a tool call may have created/touched that are worth tracking.
+
+    Shared by the ``pre_tool_call`` existence snapshot and the
+    ``post_tool_call`` track decision so the two stay in sync (#75403).
+    Terminal only extracts from command args — result paths are never
+    candidates because their pre-existence is unknowable.
+    """
+    if tool_name == "write_file":
+        return _extract_paths_from_write_file(args)
+    if tool_name == "patch":
+        return _extract_paths_from_patch(args)
+    if tool_name == "terminal":
+        return _extract_paths_from_terminal(args, "")  # never scan result
+    return set()
 
 
 # ---------------------------------------------------------------------------
 # Hooks
 # ---------------------------------------------------------------------------
+
+def _on_pre_tool_call(
+    tool_name: str = "",
+    args: Optional[Dict[str, Any]] = None,
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    **_: Any,
+) -> None:
+    """Snapshot which candidate paths already exist before the tool runs.
+
+    ``post_tool_call`` consults this snapshot so editing a pre-existing
+    durable file never auto-tracks it for deletion (#75403).  Observer-only
+    — returns None and never blocks the tool.
+    """
+    if not isinstance(args, dict):
+        return None
+    candidates = _candidate_paths_for_tracking(tool_name, args)
+    if not candidates:
+        return None
+    existing: Set[str] = set()
+    for path_str in candidates:
+        try:
+            cp = Path(path_str).expanduser()
+            if cp.exists():
+                existing.add(str(cp.resolve()))
+        except Exception:
+            pass
+    if existing:
+        snap_k = _snap_key(tool_call_id, task_id, session_id)
+        with _lock:
+            _preexisting_paths.setdefault(snap_k, set()).update(existing)
+    return None
 
 def _on_post_tool_call(
     tool_name: str = "",
@@ -138,18 +232,16 @@ def _on_post_tool_call(
     if not isinstance(args, dict):
         return
 
-    candidates: Set[str] = set()
-    if tool_name == "write_file":
-        candidates = _extract_paths_from_write_file(args)
-    elif tool_name == "patch":
-        candidates = _extract_paths_from_patch(args)
-    elif tool_name == "terminal":
-        candidates = _extract_paths_from_terminal(args, result if isinstance(result, str) else "")
-    else:
-        return
+    candidates = _candidate_paths_for_tracking(tool_name, args)
 
     for path_str in candidates:
-        _attempt_track(path_str, task_id, session_id)
+        _attempt_track(path_str, task_id, session_id, tool_call_id)
+
+    # Drain this call's pre-existence snapshot so it can't leak across
+    # turns (pre_tool_call and post_tool_call are paired per call).
+    snap_k = _snap_key(tool_call_id, task_id, session_id)
+    with _lock:
+        _preexisting_paths.pop(snap_k, None)
 
 
 def _on_session_end(
@@ -159,6 +251,15 @@ def _on_session_end(
     **_: Any,
 ) -> None:
     """Run quick cleanup if any test files were tracked during this turn."""
+    # #75403 safety net: clear pre-existence snapshots left behind when a
+    # pre_tool_call fired without a matching post_tool_call (blocked/errored
+    # tool).  Only remove entries matching *this* session — never disturb
+    # another in-flight session's snapshots.
+    prefix = f"{session_id}::"
+    with _lock:
+        stale_keys = [k for k in _preexisting_paths if k.startswith(prefix)]
+        for k in stale_keys:
+            _preexisting_paths.pop(k, None)
     # Drain both task-level and session-level buckets.  In practice only one
     # is populated per turn; the other is empty.
     drained_session = _drain("", session_id)
@@ -307,6 +408,7 @@ def _handle_slash(raw_args: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def register(ctx) -> None:
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("on_session_end", _on_session_end)
     ctx.register_command(

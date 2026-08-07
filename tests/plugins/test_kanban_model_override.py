@@ -205,3 +205,118 @@ def test_model_options_endpoint_shape(client, monkeypatch):
         assert "slug" in row and "label" in row and "models" in row
         assert isinstance(row["models"], list)
         assert len(row["models"]) >= 1  # empty-model rows are filtered out
+
+
+# ---------------------------------------------------------------------------
+# Per-task reasoning effort — the depth half of the board's model picker
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_effort_normalizes_and_rejects(conn):
+    tid = kb.create_task(conn, title="t", assignee="worker", reasoning_effort="  HIGH ")
+    assert kb.get_task(conn, tid).reasoning_effort == "high"
+
+    # "none" is a VALUE (thinking off), not a clear.
+    assert kb.set_reasoning_effort(conn, tid, "none")
+    assert kb.get_task(conn, tid).reasoning_effort == "none"
+
+    # Empty clears back to "inherit the profile".
+    assert kb.set_reasoning_effort(conn, tid, "")
+    assert kb.get_task(conn, tid).reasoning_effort is None
+
+    with pytest.raises(ValueError):
+        kb.set_reasoning_effort(conn, tid, "extremely-hard")
+
+
+def test_reasoning_effort_survives_clearing_the_model(conn):
+    """Depth and model are independent knobs: dropping a model override must
+    not silently reset the thinking depth the operator chose."""
+    tid = kb.create_task(
+        conn, title="t", assignee="worker",
+        model_override="glm-5", provider_override="openrouter",
+        reasoning_effort="ultra",
+    )
+    assert kb.set_model_override(conn, tid, None)
+    t = kb.get_task(conn, tid)
+    assert t.model_override is None
+    assert t.provider_override is None
+    assert t.reasoning_effort == "ultra"
+
+
+def test_reasoning_effort_without_a_model_override(conn):
+    """A task may run the profile's OWN model at a different depth."""
+    tid = kb.create_task(conn, title="t", assignee="worker", reasoning_effort="low")
+    t = kb.get_task(conn, tid)
+    assert t.model_override is None
+    assert t.reasoning_effort == "low"
+
+
+def test_spawn_passes_reasoning_without_a_model(monkeypatch, tmp_path, conn):
+    tid = kb.create_task(conn, title="t", assignee="elias", reasoning_effort="high")
+    task = kb.get_task(conn, tid)
+    cmd = _spawn_and_capture(monkeypatch, tmp_path, task)
+    assert "-m" not in cmd
+    i = cmd.index("--reasoning")
+    assert cmd[i + 1] == "high"
+
+
+def test_spawn_omits_reasoning_when_unset(monkeypatch, tmp_path, conn):
+    tid = kb.create_task(conn, title="t", assignee="elias")
+    task = kb.get_task(conn, tid)
+    cmd = _spawn_and_capture(monkeypatch, tmp_path, task)
+    assert "--reasoning" not in cmd
+
+
+def test_worker_cli_accepts_the_reasoning_flag():
+    """The dispatcher's --reasoning must be a real flag on the worker's CLI —
+    a spawn arg no parser accepts fails every dispatch."""
+    from hermes_cli._parser import build_top_level_parser
+
+    parser = build_top_level_parser()[0]
+    args = parser.parse_args(["--cli", "chat", "-q", "hi", "--reasoning", "high"])
+    assert args.reasoning == "high"
+
+
+def test_patch_sets_and_clears_reasoning_effort(client):
+    task = _create(client)
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"reasoning_effort": "xhigh"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["reasoning_effort"] == "xhigh"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"clear_reasoning_effort": True},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["reasoning_effort"] is None
+
+
+def test_patch_rejects_an_unknown_level(client):
+    task = _create(client)
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"reasoning_effort": "bogus"},
+    )
+    assert r.status_code == 400
+
+
+def test_create_accepts_reasoning_effort(client):
+    task = _create(client, reasoning_effort="minimal")
+    assert task["reasoning_effort"] == "minimal"
+
+
+def test_bulk_reasoning_effort(client):
+    t1 = _create(client)
+    t2 = _create(client)
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [t1["id"], t2["id"]], "reasoning_effort": "max"},
+    )
+    assert r.status_code == 200, r.text
+    assert all(entry["ok"] for entry in r.json()["results"])
+    for tid in (t1["id"], t2["id"]):
+        got = client.get(f"/api/plugins/kanban/tasks/{tid}").json()["task"]
+        assert got["reasoning_effort"] == "max"

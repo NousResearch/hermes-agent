@@ -34,6 +34,7 @@ import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
 import { resolveSessionProfile } from '../use-session-actions/utils'
 
+import { finalizeInterruptedMessages } from './rewind'
 import {
   _submitInFlight,
   type GatewayRequest,
@@ -347,13 +348,18 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           sid,
           state => ({
             ...state,
+            // A fresh user message may never land after a still-pending
+            // assistant bubble — settle any leftover (drop it when empty)
+            // before appending, or a stale spinner gets stranded
+            // mid-transcript above this message forever.
             messages: state.messages.some(m => m.id === optimisticId)
               ? state.messages
-              : [...state.messages, buildUserMessage()],
+              : [...finalizeInterruptedMessages(state.messages, state.streamId), buildUserMessage()],
             busy: true,
             awaitingResponse: true,
             pendingBranchGroup: null,
             sawAssistantPayload: false,
+            streamId: null,
             // Fresh submit = new turn — clear any leftover interrupt flag, else
             // mutateStream/completeAssistantMessage drop every delta of this turn
             // (what made drained-after-interrupt sends go silent).
@@ -478,6 +484,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           const resumed = await requestGateway<{ session_id: string }>('session.resume', {
             session_id: targetStoredSessionId,
             source: 'desktop',
+            omit_messages: true,
             ...(resumeProfile ? { profile: resumeProfile } : {})
           })
 
@@ -631,6 +638,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
               session_id: recoverStoredSessionId,
               source: 'desktop',
+              omit_messages: true,
               ...(resumeProfile ? { profile: resumeProfile } : {})
             })
 

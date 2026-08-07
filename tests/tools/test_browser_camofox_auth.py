@@ -18,6 +18,7 @@ from tools.browser_camofox import (
     camofox_scroll,
     camofox_snapshot,
     camofox_type,
+    get_camofox_url,
 )
 
 
@@ -41,6 +42,51 @@ class TestAuthHeaders:
     def test_empty_when_key_blank(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_API_KEY", "   ")
         assert _auth_headers() == {}
+
+    def test_multiplex_scope_key_wins_over_process_environment(self, monkeypatch):
+        from agent import secret_scope
+
+        monkeypatch.setenv("CAMOFOX_API_KEY", "default-profile-key")
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({"CAMOFOX_API_KEY": "secondary-profile-key"})
+        try:
+            assert _auth_headers() == {"Authorization": "Bearer secondary-profile-key"}
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_multiplex_scope_missing_key_fails_closed(self, monkeypatch):
+        from agent import secret_scope
+
+        monkeypatch.setenv("CAMOFOX_API_KEY", "default-profile-key")
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            assert _auth_headers() == {}
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_multiplex_scope_keeps_endpoint_and_key_in_same_profile(self, monkeypatch):
+        from agent import secret_scope
+
+        monkeypatch.setenv("CAMOFOX_URL", "https://default.example")
+        monkeypatch.setenv("CAMOFOX_API_KEY", "default-profile-key")
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope(
+            {
+                "CAMOFOX_URL": "https://secondary.example/",
+                "CAMOFOX_API_KEY": "secondary-profile-key",
+            }
+        )
+        try:
+            assert get_camofox_url() == "https://secondary.example"
+            assert _auth_headers() == {
+                "Authorization": "Bearer secondary-profile-key"
+            }
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
 
 
 class TestAuthHeadersSent:

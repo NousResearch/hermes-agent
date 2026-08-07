@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router'
 
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'

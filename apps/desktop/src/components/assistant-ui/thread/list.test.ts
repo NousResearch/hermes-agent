@@ -6,7 +6,8 @@ import {
   LIVE_TAIL_MIN_GROUPS,
   LIVE_TAIL_PARTS,
   liveTailStart,
-  type MessageGroup
+  type MessageGroup,
+  resolveThreadScrollTarget
 } from './list'
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
@@ -60,6 +61,53 @@ describe('buildGroups', () => {
   })
 })
 
+describe('resolveThreadScrollTarget', () => {
+  const context = (scrollElement: Pick<HTMLElement, 'scrollTop'>) => ({
+    contentElement: document.createElement('div'),
+    scrollElement: scrollElement as HTMLElement
+  })
+
+  it('settles when the browser clamps the requested bottom within half a CSS pixel', () => {
+    let actualScrollTop = 0
+    let writes = 0
+
+    const scrollElement = {
+      get scrollTop() {
+        return actualScrollTop
+      },
+      set scrollTop(value: number) {
+        writes += 1
+        actualScrollTop = value - 0.125
+      }
+    }
+
+    const target = 899
+
+    const requested = resolveThreadScrollTarget(target, context(scrollElement))
+    scrollElement.scrollTop = requested
+    const settled = resolveThreadScrollTarget(target, context(scrollElement))
+
+    expect(requested).toBe(target)
+    expect(actualScrollTop).toBe(898.875)
+    expect(settled).toBe(actualScrollTop)
+    expect(actualScrollTop < settled).toBe(false)
+    expect(writes).toBe(1)
+  })
+
+  it('keeps following while more than half a CSS pixel remains', () => {
+    const scrollElement = { scrollTop: 898.25 }
+
+    expect(resolveThreadScrollTarget(899, context(scrollElement))).toBe(899)
+  })
+
+  it('re-arms after streaming content increases the target', () => {
+    const scrollElement = { scrollTop: 898.875 }
+
+    expect(resolveThreadScrollTarget(899, context(scrollElement))).toBe(898.875)
+    expect(resolveThreadScrollTarget(999, context(scrollElement))).toBe(999)
+  })
+})
+
 describe('firstVisibleGroupIndex', () => {
   const group = (id: string, weight: number): MessageGroup => ({ id, index: 0, kind: 'standalone', weight })
 
@@ -85,6 +133,20 @@ describe('firstVisibleGroupIndex', () => {
 
   it('returns groups.length for an empty list', () => {
     expect(firstVisibleGroupIndex([], 60)).toBe(0)
+  })
+
+  it('keeps a floor of turns visible however heavy they are', () => {
+    // Without the floor a session of enormous turns puts "Show earlier" two
+    // turns from the bottom, which reads as broken rather than as paging.
+    const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 5_000))
+
+    expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(groups.length - 8)
+  })
+
+  it('does not force the floor to hide turns the budget already showed', () => {
+    const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 1))
+
+    expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(0)
   })
 })
 

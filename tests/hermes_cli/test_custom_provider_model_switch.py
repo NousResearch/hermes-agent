@@ -327,6 +327,7 @@ class TestCustomProviderModelSwitch:
         saved_text = config_path.read_text()
         saved = yaml.safe_load(saved_text) or {}
         entry = saved["providers"]["crs-henkee"]
+        assert saved["model"]["provider"] == "custom:crs-henkee"
         assert "api_key" not in entry, (
             f"providers.crs-henkee gained an api_key field: {entry.get('api_key')!r}"
         )
@@ -337,6 +338,53 @@ class TestCustomProviderModelSwitch:
         assert "cr_live_secret_xyz" not in saved_text
         # The synthesized template is also redundant here — key_env owns it.
         assert "${HERMES_CRS_HENKEE_KEY}" not in saved_text
+
+    @pytest.mark.parametrize(
+        "stored_provider",
+        [
+            "local-127.0.0.1:11434",
+            "custom:local-ollama",
+            "custom:local-127.0.0.1:11434",
+        ],
+    )
+    def test_picker_recognizes_current_provider_alias_when_name_differs(
+        self, config_home, monkeypatch, stored_provider
+    ):
+        """The classic picker maps legacy and stable IDs to the keyed row."""
+        from hermes_cli.main import select_provider_and_model
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            f"  provider: {stored_provider}\n"
+            "  default: qwen3.5:9b\n"
+            "providers:\n"
+            "  local-127.0.0.1:11434:\n"
+            "    name: Local Ollama\n"
+            "    base_url: http://127.0.0.1:11434/v1\n"
+            "    default_model: qwen3.5:9b\n"
+            "    models:\n"
+            "      qwen3.5:9b: {}\n"
+            "custom_providers: []\n",
+            encoding="utf-8",
+        )
+
+        captured = {}
+
+        def _capture_and_cancel(labels, default=0):
+            captured["labels"] = labels
+            captured["default"] = default
+            return len(labels) - 1
+
+        with patch(
+            "hermes_cli.main._prompt_provider_choice",
+            side_effect=_capture_and_cancel,
+        ), patch("builtins.print"):
+            select_provider_and_model()
+
+        active_label = captured["labels"][captured["default"]]
+        assert "Local Ollama" in active_label
+        assert "currently active" in active_label
 
     def test_key_env_providers_dict_preserves_existing_api_key(
         self, config_home, monkeypatch

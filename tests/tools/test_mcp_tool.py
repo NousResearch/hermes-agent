@@ -2454,6 +2454,79 @@ class TestRegisterMcpServers:
         assert "mcp__my_server__tool1" in result
         _servers.pop("my_server", None)
 
+    def test_skips_servers_already_connecting(self):
+        """Servers in _server_connecting must not be spawned again (#58862)."""
+        from tools.mcp_tool import (
+            register_mcp_servers, _servers, _server_connecting, _ensure_mcp_loop,
+        )
+
+        fake_config = {"my_srv": {"command": "npx", "args": ["test"]}}
+
+        # Simulate a prior call that started connecting but hasn't finished
+        _server_connecting.add("my_srv")
+        connect_calls = []
+
+        async def fake_register(name, cfg):
+            connect_calls.append(name)
+            server = _make_mock_server(name)
+            server._registered_tool_names = [f"mcp_{name}_tool"]
+            _servers[name] = server
+            return [f"mcp_{name}_tool"]
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=[]), \
+                 patch("tools.mcp_tool._connect_cooldown_active", return_value=False):
+                _ensure_mcp_loop()
+                result = register_mcp_servers(fake_config)
+
+            # Should NOT have attempted to connect my_srv again
+            assert connect_calls == [], (
+                f"Server already in _server_connecting should be skipped, "
+                f"but connect was called for: {connect_calls}"
+            )
+            assert result == []
+        finally:
+            _server_connecting.discard("my_srv")
+            _servers.pop("my_srv", None)
+
+    def test_clears_stale_connecting_on_timeout(self):
+        """Stale entries in _server_connecting are cleaned up after timeout (#58862)."""
+        from tools.mcp_tool import (
+            register_mcp_servers, _servers, _server_connecting,
+            _server_connect_errors, _ensure_mcp_loop,
+        )
+
+        fake_config = {
+            "srv_a": {"command": "npx", "args": ["a"]},
+            "srv_b": {"command": "npx", "args": ["b"]},
+        }
+
+        # Simulate that srv_a is already connecting from another call
+        _server_connecting.add("srv_a")
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._run_on_mcp_loop", side_effect=TimeoutError("timed out")), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]), \
+             patch("tools.mcp_tool._connect_cooldown_active", return_value=False):
+            _ensure_mcp_loop()
+
+            with pytest.raises(TimeoutError):
+                register_mcp_servers(fake_config)
+
+        # After timeout, srv_b (which was in new_servers and added to _server_connecting)
+        # should have been cleaned up from _server_connecting.
+        # srv_a should remain since it was added externally and not part of new_servers.
+        assert "srv_b" not in _server_connecting, (
+            "Stale server added during this call should have been removed from "
+            "_server_connecting after timeout"
+        )
+        # Cleanup
+        _server_connecting.discard("srv_a")
+        _servers.pop("srv_a", None)
+        _servers.pop("srv_b", None)
+
 # ---------------------------------------------------------------------------
 # Tests for parallel tool call support (port from openai/codex#17667)
 # ---------------------------------------------------------------------------

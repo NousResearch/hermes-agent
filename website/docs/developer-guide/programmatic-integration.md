@@ -50,7 +50,8 @@ clarify.respond         sudo.respond            secret.respond
 approval.respond        config.set / config.get commands.catalog
 command.resolve         command.dispatch        cli.exec
 reload.mcp              reload.env              process.stop
-delegation.status       subagent.interrupt      spawn_tree.save / list / load
+delegation.status       subagent.interrupt      subagent.steer
+spawn_tree.save / list / load
 terminal.resize         clipboard.paste         image.attach
 ```
 

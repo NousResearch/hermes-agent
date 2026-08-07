@@ -36,8 +36,14 @@ def has_xai_credentials() -> bool:
     other availability scans. Truthful refresh + expiry handling happens
     in ``search()`` (or whichever caller actually makes the request).
     """
-    if os.environ.get("XAI_API_KEY", "").strip():
-        return True
+    try:
+        from agent.secret_scope import get_secret
+    except ImportError:  # pragma: no cover — secret_scope is in-repo
+        if os.environ.get("XAI_API_KEY", "").strip():
+            return True
+    else:
+        if (get_secret("XAI_API_KEY", "") or "").strip():
+            return True
     try:
         from hermes_constants import get_hermes_home
 
@@ -79,13 +85,11 @@ def get_env_value(name: str, default=None):
     """
     try:
         from hermes_cli.config import get_env_value as _hermes_get_env_value
+    except ImportError:
+        return os.environ.get(name, default)
 
-        value = _hermes_get_env_value(name)
-        if value is not None:
-            return value
-    except Exception:
-        pass
-    return os.environ.get(name, default)
+    value = _hermes_get_env_value(name)
+    return value if value is not None else default
 
 
 def hermes_xai_user_agent() -> str:

@@ -491,6 +491,57 @@ class TestSessionStoreSwitchSession:
         assert resumed["end_reason"] is None
         db.close()
 
+    def test_switch_session_rebinds_full_compression_lineage(self, tmp_path):
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+
+        destination = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="destination-chat",
+            chat_type="dm",
+            user_id="destination-user",
+        )
+        current_entry = store.get_or_create_session(destination)
+        destination_key = current_entry.session_key
+        original_key = "agent:main:telegram:dm:original-chat"
+
+        db.create_session(
+            "compressed_root", "telegram", session_key=original_key,
+            user_id="original-user", chat_id="original-chat",
+        )
+        db.end_session("compressed_root", "compression")
+        db.create_session(
+            "compressed_tip", "telegram", session_key=original_key,
+            user_id="original-user", chat_id="original-chat",
+            parent_session_id="compressed_root",
+        )
+        db.end_session("compressed_tip", "session_reset")
+
+        switched = store.switch_session(destination_key, "compressed_tip")
+
+        assert switched is not None
+        assert db.get_session("compressed_root")["session_key"] == destination_key
+        assert db.get_session("compressed_tip")["session_key"] == destination_key
+        assert [
+            row["id"] for row in db.list_sessions_rich(
+                source="telegram", session_key=destination_key, limit=10
+            )
+            if row["id"] == "compressed_tip"
+        ] == ["compressed_tip"]
+        assert not any(
+            row["id"] == "compressed_tip"
+            for row in db.list_sessions_rich(
+                source="telegram", session_key=original_key, limit=10
+            )
+        )
+        db.close()
+
 
 class TestSessionStoreLookupBySessionId:
     @pytest.fixture()
@@ -688,6 +739,90 @@ class TestWhatsAppSessionKeyConsistency:
         )
         assert build_session_key(alice) == "agent:main:telegram:group:-1002285219667:17585"
         assert build_session_key(bob) == "agent:main:telegram:group:-1002285219667:17585"
+        assert build_session_key(alice) == build_session_key(bob)
+
+
+    def test_discord_prospective_thread_initiates_and_continues_one_session(self):
+        """Discord auto-thread continuity: a channel-initiating message (no
+        thread_id, but a connector-supplied prospective_thread_id) and the later
+        follow-ups that arrive IN that thread (real thread_id == the prospective
+        id) must resolve to ONE session — "initiate in channel, continue in
+        thread". This is the fix for every-thread-after-the-first never getting
+        an auto-title/rename (staging 2026-08-02)."""
+        # The channel-initiating message: no thread yet, connector says it will
+        # be threaded into thread id "msg-100" (== the message id).
+        initiating = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="cthulhu",
+            prospective_thread_id="msg-100",
+        )
+        # A follow-up that actually arrives inside that thread.
+        follow_up = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="thread",
+            thread_id="msg-100",
+            user_id="cthulhu",
+        )
+        key_init = build_session_key(initiating)
+        key_follow = build_session_key(follow_up)
+        assert key_init.endswith(":msg-100")
+        assert key_init == key_follow
+
+    def test_discord_distinct_prospective_threads_are_distinct_sessions(self):
+        """Two different channel messages each initiate their OWN thread/session,
+        so each gets its own auto-title/rename (the reported bug: only the first
+        thread per channel was ever named)."""
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="cthulhu",
+            prospective_thread_id="msg-100",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="cthulhu",
+            prospective_thread_id="msg-200",
+        )
+        assert build_session_key(first) != build_session_key(second)
+        assert build_session_key(first).endswith(":msg-100")
+        assert build_session_key(second).endswith(":msg-200")
+
+    def test_real_thread_id_wins_over_prospective(self):
+        """A real thread_id always takes precedence over prospective_thread_id
+        (they normally match; if both are somehow set, the real one wins)."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="thread",
+            thread_id="real-thread",
+            prospective_thread_id="ignored",
+            user_id="cthulhu",
+        )
+        assert build_session_key(source).endswith(":real-thread")
+
+    def test_prospective_thread_shares_across_participants(self):
+        """A prospective-thread session is shared across participants, same as a
+        real thread (thread sessions are not per-user by default)."""
+        alice = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="alice",
+            prospective_thread_id="msg-100",
+        )
+        bob = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="bob",
+            prospective_thread_id="msg-100",
+        )
         assert build_session_key(alice) == build_session_key(bob)
 
 
@@ -1028,15 +1163,39 @@ class TestHasAnySessions:
         return s
 
     def test_uses_database_count_when_available(self, store_with_mock_db):
-        """has_any_sessions should use database session_count, not len(_entries)."""
+        """has_any_sessions should use database session_count_ge, not len(_entries)."""
         store = store_with_mock_db
         # Simulate single-platform user with only 1 entry in memory
         store._entries = {"telegram:12345": MagicMock()}
         # But database has 3 sessions (current + 2 previous resets)
-        store._db.session_count.return_value = 3
+        store._db.session_count_ge.return_value = True
 
         assert store.has_any_sessions() is True
-        store._db.session_count.assert_called_once()
+        store._db.session_count_ge.assert_called_once_with(2)
+
+    def test_first_session_ever_returns_false(self, store_with_mock_db):
+        """First session ever should return False (only current session in DB)."""
+        store = store_with_mock_db
+        store._entries = {"telegram:12345": MagicMock()}
+        # Database has exactly 1 session (the current one just created)
+        store._db.session_count_ge.return_value = False
+
+        assert store.has_any_sessions() is False
+
+    def test_fallback_without_database(self, tmp_path):
+        """Should fall back to len(_entries) when DB is not available."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._entries = {"key1": MagicMock(), "key2": MagicMock()}
+
+        # > 1 entries means has sessions
+        assert store.has_any_sessions() is True
+
+        store._entries = {"key1": MagicMock()}
+        assert store.has_any_sessions() is False
 
 
 class TestLastPromptTokens:

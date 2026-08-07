@@ -90,7 +90,9 @@ jobs:
             uv.lock
 
       - name: Set up Python 3.11
-        run: uv python install 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
 
       - name: Install dependencies
         # `uv sync --locked` installs the exact pinned set from uv.lock (and

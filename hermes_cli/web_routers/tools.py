@@ -58,6 +58,7 @@ async def get_toolsets(profile: Optional[str] = None):
         _get_platform_tools,
         _toolset_configuration_platform,
         _toolset_has_keys,
+        get_nous_subscription_features,
         gui_toolset_label,
     )
     from hermes_cli.platforms import platform_label
@@ -77,6 +78,7 @@ async def get_toolsets(profile: Optional[str] = None):
             )
             for platform in target_platforms
         }
+        features = get_nous_subscription_features(config)
     result = []
     for name, label, desc in toolset_rows:
         try:
@@ -104,7 +106,7 @@ async def get_toolsets(profile: Optional[str] = None):
             ),
             "enabled": is_enabled,
             "available": is_enabled,
-            "configured": _toolset_has_keys(name, config),
+            "configured": _toolset_has_keys(name, config, features=features),
             "tools": tools,
         })
     return result

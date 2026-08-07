@@ -3,6 +3,7 @@ import type { HermesSkin } from '@hermes/shared/skin'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
@@ -34,7 +35,7 @@ import {
   setChangeEventsAvailable
 } from '@/store/live-sync'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { notify } from '@/store/notifications'
+import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { revealDesktopPane } from '@/store/pane-focus'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
@@ -59,6 +60,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { dropSessionState } from '@/store/session-states'
 import { pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
@@ -71,6 +73,7 @@ import { ingestBackendSkin } from '@/themes/backend-sync'
 import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
+import { finalizeInterruptedMessages } from '../use-prompt-actions/rewind'
 
 import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
 
@@ -331,6 +334,23 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         return
+      } else if (event.type === 'session.reclaimed') {
+        // The backend reclaimed a live session we may still be holding (idle
+        // TTL, LRU cap, or the WS-orphan reap). Without this the runtime id
+        // stays cached until something fails against it, which reads as the
+        // session vanishing rather than being reclaimed. Drop the cached state
+        // now — the stored row is untouched, so the sidebar keeps the
+        // conversation and reopening it resumes from the DB.
+        const reclaimedRuntimeId = String((payload as { session_id?: string } | undefined)?.session_id ?? '')
+
+        if (reclaimedRuntimeId) {
+          dropSessionState(reclaimedRuntimeId)
+        }
+
+        // The row's ended_at moved, so refresh the lists that render it.
+        notifySessionsChanged()
+
+        return
       } else if (event.type === 'session.info') {
         // Apply session-scoped fields when the event targets the active
         // session, OR when it's a global broadcast and we have no session.
@@ -474,6 +494,16 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                 ...state,
                 awaitingResponse: false,
                 busy,
+                // The turn is over but its streaming bubble may still say
+                // pending — running=false from the agent loop's finally block
+                // is the ONLY settle signal when message.complete never
+                // arrives (turn crash, reconnect gap). Left pending, that
+                // bubble shows a thinking indicator forever, stranded
+                // mid-transcript once the next user message lands after it.
+                // finalizeInterruptedMessages un-pends kept text and drops
+                // empty placeholders; on the normal path message.complete
+                // already settled everything and this is a no-op.
+                messages: finalizeInterruptedMessages(state.messages, state.streamId),
                 pendingBranchGroup: null,
                 streamId: null,
                 turnStartedAt: null
@@ -981,6 +1011,22 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             text: result ? JSON.stringify(result) : ''
           })
         }
+      } else if (event.type === 'preview.read.request') {
+        // read_preview tool: serialize the active preview tab (a Browser
+        // webview's page text is async) and answer. Empty text = nothing open.
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const start = typeof payload?.start === 'number' ? payload.start : undefined
+          const count = typeof payload?.count === 'number' ? payload.count : undefined
+
+          void readActivePreview({ count, start }).then(result => {
+            void $gateway.get()?.request('preview.read.respond', {
+              request_id: requestId,
+              text: result ? JSON.stringify(result) : ''
+            })
+          })
+        }
       } else if (event.type === 'agent.terminal.output') {
         // Live chunk from a background process → its read-only agent terminal tab.
         writeAgentTerminalChunk(payload?.process_id ?? '', payload?.chunk ?? '')
@@ -1143,6 +1189,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)
+        } else if (isDiskFullErrorMessage(errorMessage)) {
+          notifyError(new Error(errorMessage), translateNow('notifications.errors.diskFull'))
         } else {
           // Toast globally, not just when the failing thread is focused: a
           // turn-ending error (e.g. out of funds) blocks every thread, so the

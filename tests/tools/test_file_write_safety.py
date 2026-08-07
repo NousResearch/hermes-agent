@@ -308,6 +308,35 @@ class TestBomHandling:
         raw = target.read_bytes()
         assert raw == self.BOM.encode("utf-8") + b"import os, json\nimport sys\n"
 
+    def test_v4a_update_preserves_bom_real_ops(self, ops, tmp_path: Path):
+        # V4A UPDATE path against REAL ShellFileOperations. This is the one
+        # provider path whose pre_content is BOM-STRIPPED (read_file_raw
+        # strips before _apply_update forwards it), so it regresses if
+        # _file_has_bom ever trusts pre_content instead of probing disk.
+        # Regression for teknium1's review on PR #55661.
+        target = tmp_path / "bom_v4a.py"
+        target.write_bytes(self.BOM.encode("utf-8") + b"print('hello')\n")
+        patch = (
+            "*** Begin Patch\n"
+            f"*** Update File: {target}\n"
+            "@@\n"
+            "-print('hello')\n"
+            "+print('world')\n"
+            "*** End Patch"
+        )
+        res = ops.patch_v4a(patch)
+        assert res.success, res.error
+        raw = target.read_bytes()
+        assert raw.startswith(self.BOM.encode("utf-8")), "BOM lost on V4A update"
+        assert b"print('world')" in raw
+
+    def test_file_has_bom_ignores_stripped_pre_content(self, ops, tmp_path: Path):
+        # _file_has_bom must probe the DISK even when handed pre_content
+        # that (having been BOM-stripped upstream) claims there is no BOM.
+        target = tmp_path / "bom_probe.py"
+        target.write_bytes(self.BOM.encode("utf-8") + b"x = 1\n")
+        assert ops._file_has_bom(str(target), pre_content="x = 1\n") is True
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

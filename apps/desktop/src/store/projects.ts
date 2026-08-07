@@ -16,7 +16,16 @@ import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gatewa
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
-import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
+import {
+  $currentCwd,
+  $selectedStoredSessionId,
+  $sessions,
+  idsShareLineage,
+  sessionMatchesStoredId,
+  setSessions,
+  workspaceCwdForNewSession
+} from '@/store/session'
+import { $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -165,7 +174,7 @@ export function exitProjectScope(): void {
 // one. Empty for the path-less Home bucket. (The sidebar's `projectTreeCwd` is
 // the same rule over the same tree — this is the store-side copy so the store
 // doesn't reach into the sidebar's React module.)
-const projectRootCwd = (project: SidebarProjectTree | undefined): string =>
+export const projectRootCwd = (project: SidebarProjectTree | undefined): string =>
   (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
 
 // ⌘K "go to project": flip the sidebar into grouped mode and enter the project
@@ -191,12 +200,19 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
   }
 }
 
-// The cwd a NEW chat should start in. The "active project" is just an atom
-// ($projectScope) — so when you're inside a project, a new session (cmd-n, the
-// trunk "+") starts at that project's root (its primary repo = the default-branch
-// checkout) instead of inheriting whatever unrelated worktree the live cwd
-// drifted into. Outside a project it falls back to the plain default (detached),
-// so a bare new chat shows no branch.
+// The cwd a NEW chat should start in.
+//
+// Priority (first hit wins):
+//   1. Explicit sidebar project scope (drilled into a project / Home bucket)
+//   2. The FOCUSED session's workspace — so ⌘N / ⌘T from a chat that's already
+//      in a project/worktree stay there without requiring a sidebar drill-in
+//   3. Configured default project dir / remote remembered cwd (detached otherwise)
+//
+// The "active project" is just an atom ($projectScope) — so when you're inside
+// a project, a new session (cmd-n, the trunk "+") starts at that project's root
+// (its primary repo = the default-branch checkout). Outside a project it used
+// to fall straight to the plain default (detached), which dropped the workspace
+// of the chat you were looking at — that's the case (2) covers.
 export function resolveNewSessionCwd(): string {
   const scope = $projectScope.get()
 
@@ -214,7 +230,56 @@ export function resolveNewSessionCwd(): string {
     }
   }
 
+  // Inherit the focused chat's workspace. ⌘N/⌘T from a session that already
+  // has a project/pwd should stay there — drilling into the sidebar project
+  // is the uncommon path, not the requirement.
+  const focusedCwd = focusedSessionWorkspaceCwd()
+
+  if (focusedCwd) {
+    return focusedCwd
+  }
+
   return workspaceCwdForNewSession()
+}
+
+/** Live workspace of the session the user is looking at (tile or primary). */
+function focusedSessionWorkspaceCwd(): string {
+  const focusedStoredId = $focusedStoredSessionId.get()
+  const state = $focusedSessionState.get()
+
+  // Prefer the live runtime slice when it belongs to the focused chat
+  // (agent can relocate mid-turn). Cold tabs / mid-switch lag fall through
+  // to the stored session row.
+  const stateCwd = state?.cwd?.trim() || ''
+  const stateStoredId = state?.storedSessionId?.trim() || ''
+
+  if (
+    stateCwd &&
+    (!focusedStoredId ||
+      !stateStoredId ||
+      stateStoredId === focusedStoredId ||
+      idsShareLineage(focusedStoredId, stateStoredId, $sessions.get()))
+  ) {
+    return stateCwd
+  }
+
+  if (focusedStoredId) {
+    const row = $sessions.get().find(s => sessionMatchesStoredId(s, focusedStoredId))
+    const rowCwd = row?.cwd?.trim() || ''
+
+    if (rowCwd) {
+      return rowCwd
+    }
+
+    // Focused a real session with no workspace → stay detached. Do NOT fall
+    // through to `$currentCwd` (it may still hold a remembered path from an
+    // earlier chat and would re-attach a project the user left).
+    return ''
+  }
+
+  // No focused stored session: primary draft. The composer atom is the draft's
+  // workspace target (set by startFreshSession / startSessionInWorkspace).
+  return $currentCwd.get().trim()
 }
 
 const underPath = (parent: string, child: string): boolean =>
@@ -454,6 +519,45 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
   } catch {
     return null
   }
+}
+
+interface WorkspaceMovePayload {
+  branch?: null | string
+  cwd?: string
+  git_repo_root?: null | string
+}
+
+// Re-home a stored session into another project's root folder — the fix for a
+// chat created in the wrong directory. The backend replaces cwd + git identity
+// (so the tree's grouping follows) and re-anchors any live agent bound to the
+// row; here we mirror the move into the `$sessions` cache so both the flat list
+// and the grouped tree reflect it before the next authoritative refresh.
+export async function moveSessionToProject(
+  sessionId: string,
+  projectId: string,
+  profile?: null | string
+): Promise<void> {
+  const cwd = projectRootCwd($projectTree.get().find(node => node.id === projectId))
+
+  if (!cwd) {
+    throw new Error(translateNow('sidebar.projects.moveNoFolder'))
+  }
+
+  const res = await gatewayRequest<WorkspaceMovePayload>('session.workspace.move', {
+    cwd,
+    session_key: sessionId,
+    ...(profile ? { profile } : {})
+  })
+
+  const moved = res.cwd || cwd
+  setSessions(prev =>
+    prev.map(s =>
+      sessionMatchesStoredId(s, sessionId)
+        ? { ...s, cwd: moved, git_branch: res.branch ?? null, git_repo_root: res.git_repo_root ?? null }
+        : s
+    )
+  )
+  void refreshProjectTree()
 }
 
 export interface RepoDiscoveryPolicy {
@@ -982,8 +1086,11 @@ export async function startWorkInRepo(
   return { branch: result.branch, path: result.path }
 }
 
-// Local branches for the composer's "convert a branch into a worktree" picker.
-// Empty on a remote backend / non-repo (the Electron probe can't run).
+// Branches for the composer's "convert a branch into a worktree" picker: the
+// local heads, plus the remote-tracking refs that have no local branch yet. A
+// teammate's branch is therefore reachable, and the user does not check it out
+// by hand first.
+// Empty on a remote backend or a non-repo, where the Electron probe cannot run.
 export async function listRepoBranches(repoPath: string): Promise<HermesGitBranch[]> {
   const git = desktopGit()
 
@@ -1034,15 +1141,26 @@ export interface StartWorkSessionRequest {
 
 export const $startWorkSessionRequest = atom<StartWorkSessionRequest | null>(null)
 
-// Keyboard-driven "spin up a new worktree" intent. The composer's coding rail
-// owns the name dialog (it has the active repo + branch context), so a global
-// hotkey just bumps this token; the rail opens its branch-off dialog in
-// response. A monotonic token re-fires even on repeat presses. No-ops off a
-// repo (the rail isn't mounted), which is the right "nothing to branch" outcome.
-export const $newWorktreeRequest = atom(0)
+// The "make a new worktree" intent, from the keyboard or a menu. One dialog is
+// mounted, in the sidebar beside ProjectDialog, and it reads this atom. This
+// mirrors $projectDialog. This atom was a monotonic token that every mounted
+// coding rail subscribed to. N composers on screen therefore gave N stacked
+// dialogs for one ⌘⇧B, and the dialog the user dismissed showed an identical
+// empty one behind it. One mount cannot double-open.
+//
+// `repoPath` is resolved when the dialog opens (see resolveWorktreeRepoPath).
+// It is not read from the rail that received the key, so the dialog always
+// targets the surface the user looks at.
+export interface WorktreeDialogState {
+  repoPath: string
+  /** The base branch selected in a "branch off from X" menu. */
+  base?: string
+}
 
-export function requestNewWorktree(): void {
-  $newWorktreeRequest.set($newWorktreeRequest.get() + 1)
+export const $worktreeDialog = atom<null | WorktreeDialogState>(null)
+
+export function closeWorktreeDialog(): void {
+  $worktreeDialog.set(null)
 }
 
 let startWorkToken = 0

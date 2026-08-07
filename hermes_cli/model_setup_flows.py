@@ -26,6 +26,7 @@ import subprocess
 import urllib.parse
 
 from hermes_cli.config import clear_model_endpoint_credentials
+from hermes_cli.providers import custom_provider_slug
 
 
 # AWS cross-region inference profile prefixes. Any geo-prefixed profile only
@@ -1636,7 +1637,7 @@ def _model_flow_named_custom(config, provider_info):
         model = {"default": model} if model else {}
         cfg["model"] = model
     if provider_key:
-        model["provider"] = "custom:" + provider_key.strip().lower().replace(" ", "-")
+        model["provider"] = custom_provider_slug(name, provider_key)
         model.pop("base_url", None)
         model.pop("api_key", None)
     else:

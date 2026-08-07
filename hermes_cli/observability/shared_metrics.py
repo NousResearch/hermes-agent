@@ -17,17 +17,21 @@ from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
 from .shared_metrics_contract import (
+    CLIENT_ACTIVE_METRIC,
     COUNTER_METRICS,
-    MODEL_CALL_METRIC,
+    MODEL_ROUTE_METRIC,
+    client_resource_is_valid,
     counter_dimensions_are_valid,
 )
 
 
-_PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v1"
-_STORE_SCHEMA_VERSION = "1"
+_PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v2"
+_STORE_SCHEMA_VERSION = "2"
 _BUSY_TIMEOUT_MS = 250
 _SCHEMA_BUSY_TIMEOUT_MS = 5_000
 _LOCAL_HISTORY_RETENTION_DAYS = 30
+_ACTIVE_INSTALL_STATE_KEY = "client_active_recorded_at"
+_ACTIVE_INSTALL_INTERVAL = timedelta(hours=24)
 
 logger = logging.getLogger(__name__)
 
@@ -59,54 +63,138 @@ class SharedMetricsStore:
     def record_model_call(
         self,
         dimensions: dict[str, str],
-        hermes_version: str,
+        resource: dict[str, str],
     ) -> None:
         """Increment the terminal model-call counter for the current UTC day."""
-        self.record_counter(MODEL_CALL_METRIC, dimensions, hermes_version)
+        self.record_counter(MODEL_ROUTE_METRIC, dimensions, resource)
+
+    def record_client_active(self, resource: dict[str, str]) -> bool:
+        """Record this install at most once in any rolling 24-hour window."""
+        dimensions: dict[str, str] = {}
+        self._validate_counter(CLIENT_ACTIVE_METRIC, dimensions, resource)
+        now = _utc_now()
+        with self._connection() as connection:
+            with write_txn(connection):
+                row = connection.execute(
+                    "SELECT value FROM telemetry_state WHERE key = ?",
+                    (_ACTIVE_INSTALL_STATE_KEY,),
+                ).fetchone()
+                if row is not None:
+                    last_recorded = self._parse_state_timestamp(row["value"])
+                    if last_recorded is not None and last_recorded > now:
+                        # A wall-clock correction must not suppress activity until
+                        # the stale future timestamp plus another full interval.
+                        connection.execute(
+                            """
+                            UPDATE telemetry_state
+                            SET value = ?
+                            WHERE key = ?
+                            """,
+                            (_isoformat(now), _ACTIVE_INSTALL_STATE_KEY),
+                        )
+                        return False
+                    if (
+                        last_recorded is not None
+                        and now < last_recorded + _ACTIVE_INSTALL_INTERVAL
+                    ):
+                        return False
+
+                self._install_id(connection)
+                self._record_counter_in_transaction(
+                    connection,
+                    CLIENT_ACTIVE_METRIC,
+                    dimensions,
+                    resource,
+                    period_start=now.date().isoformat(),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO telemetry_state(key, value)
+                    VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    """,
+                    (_ACTIVE_INSTALL_STATE_KEY, _isoformat(now)),
+                )
+        return True
 
     def record_counter(
         self,
         metric_name: str,
         dimensions: dict[str, str],
-        hermes_version: str,
+        resource: dict[str, str],
     ) -> None:
         """Increment one allowlisted counter for the current UTC day."""
+        self._validate_counter(metric_name, dimensions, resource)
+        with self._connection() as connection:
+            self._record_counter_in_transaction(
+                connection,
+                metric_name,
+                dimensions,
+                resource,
+                period_start=_utc_now().date().isoformat(),
+            )
+
+    @staticmethod
+    def _validate_counter(
+        metric_name: str,
+        dimensions: dict[str, str],
+        resource: dict[str, str],
+    ) -> None:
         if metric_name not in COUNTER_METRICS:
             raise ValueError(f"Unsupported shared metric: {metric_name}")
         if not counter_dimensions_are_valid(metric_name, dimensions):
             raise ValueError(f"Unsupported dimensions for shared metric: {metric_name}")
+        if not client_resource_is_valid(resource):
+            raise ValueError("Unsupported shared-metrics client resource")
+
+    @staticmethod
+    def _record_counter_in_transaction(
+        connection: sqlite3.Connection,
+        metric_name: str,
+        dimensions: dict[str, str],
+        resource: dict[str, str],
+        *,
+        period_start: str,
+    ) -> None:
         dimensions_json = json.dumps(
             dimensions,
             sort_keys=True,
             separators=(",", ":"),
         )
-        period_start = _utc_now().date().isoformat()
-        with self._connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO counter_aggregates(
-                    period_start,
-                    metric_name,
-                    hermes_version,
-                    dimensions_json,
-                    value,
-                    packaged_value
-                ) VALUES (?, ?, ?, ?, 1, 0)
-                ON CONFLICT(
-                    period_start,
-                    metric_name,
-                    hermes_version,
-                    dimensions_json
-                )
-                DO UPDATE SET value = value + 1
-                """,
-                (
-                    period_start,
-                    metric_name,
-                    hermes_version or "unknown",
-                    dimensions_json,
-                ),
+        connection.execute(
+            """
+            INSERT INTO counter_aggregates(
+                period_start,
+                metric_name,
+                hermes_version,
+                os_family,
+                architecture,
+                install_method,
+                dimensions_json,
+                value,
+                packaged_value
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)
+            ON CONFLICT(
+                period_start,
+                metric_name,
+                hermes_version,
+                os_family,
+                architecture,
+                install_method,
+                dimensions_json
             )
+            DO UPDATE SET value = value + 1
+            """,
+            (
+                period_start,
+                metric_name,
+                resource["hermes_version"],
+                resource["os_family"],
+                resource["architecture"],
+                resource["install_method"],
+                dimensions_json,
+            ),
+        )
 
     def create_and_export_package(self) -> list[Path]:
         """Commit one pending delta package, then atomically export the outbox."""
@@ -141,18 +229,33 @@ class SharedMetricsStore:
                     period_start,
                     metric_name,
                     hermes_version,
+                    os_family,
+                    architecture,
+                    install_method,
                     dimensions_json,
                     value,
                     packaged_value
                 FROM counter_aggregates
-                ORDER BY period_start, hermes_version, metric_name, dimensions_json
+                ORDER BY
+                    period_start,
+                    hermes_version,
+                    os_family,
+                    architecture,
+                    install_method,
+                    metric_name,
+                    dimensions_json
                 """
             ).fetchall()
         return [
             {
                 "period_start": row["period_start"],
                 "metric_name": row["metric_name"],
-                "hermes_version": row["hermes_version"],
+                "resource": {
+                    "hermes_version": row["hermes_version"],
+                    "os_family": row["os_family"],
+                    "architecture": row["architecture"],
+                    "install_method": row["install_method"],
+                },
                 "dimensions": json.loads(row["dimensions_json"]),
                 "value": row["value"],
                 "packaged_value": row["packaged_value"],
@@ -213,29 +316,15 @@ class SharedMetricsStore:
         schema_row = connection.execute(
             "SELECT value FROM telemetry_state WHERE key = 'schema_version'"
         ).fetchone()
-        if schema_row is not None and str(schema_row["value"]) != _STORE_SCHEMA_VERSION:
+        schema_version = str(schema_row["value"]) if schema_row is not None else None
+        if schema_version == "1":
+            SharedMetricsStore._migrate_v1_counter_aggregates(connection)
+            schema_version = _STORE_SCHEMA_VERSION
+        if schema_version is not None and schema_version != _STORE_SCHEMA_VERSION:
             raise RuntimeError(
-                "Unsupported shared-metrics store schema version: "
-                f"{schema_row['value']}"
+                f"Unsupported shared-metrics store schema version: {schema_version}"
             )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS counter_aggregates (
-                period_start TEXT NOT NULL,
-                metric_name TEXT NOT NULL,
-                hermes_version TEXT NOT NULL,
-                dimensions_json TEXT NOT NULL,
-                value INTEGER NOT NULL,
-                packaged_value INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (
-                    period_start,
-                    metric_name,
-                    hermes_version,
-                    dimensions_json
-                )
-            )
-            """
-        )
+        SharedMetricsStore._create_counter_aggregates_table(connection)
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS package_outbox (
@@ -250,11 +339,73 @@ class SharedMetricsStore:
         )
         connection.execute(
             """
-            INSERT OR IGNORE INTO telemetry_state(key, value)
+            INSERT INTO telemetry_state(key, value)
             VALUES ('schema_version', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
             (_STORE_SCHEMA_VERSION,),
         )
+
+    @staticmethod
+    def _create_counter_aggregates_table(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS counter_aggregates (
+                period_start TEXT NOT NULL,
+                metric_name TEXT NOT NULL,
+                hermes_version TEXT NOT NULL,
+                os_family TEXT NOT NULL,
+                architecture TEXT NOT NULL,
+                install_method TEXT NOT NULL,
+                dimensions_json TEXT NOT NULL,
+                value INTEGER NOT NULL,
+                packaged_value INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (
+                    period_start,
+                    metric_name,
+                    hermes_version,
+                    os_family,
+                    architecture,
+                    install_method,
+                    dimensions_json
+                )
+            )
+            """
+        )
+
+    @staticmethod
+    def _migrate_v1_counter_aggregates(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "ALTER TABLE counter_aggregates RENAME TO counter_aggregates_v1"
+        )
+        SharedMetricsStore._create_counter_aggregates_table(connection)
+        connection.execute(
+            """
+            INSERT INTO counter_aggregates(
+                period_start,
+                metric_name,
+                hermes_version,
+                os_family,
+                architecture,
+                install_method,
+                dimensions_json,
+                value,
+                packaged_value
+            )
+            SELECT
+                period_start,
+                metric_name,
+                hermes_version,
+                'unknown',
+                'unknown',
+                'unknown',
+                dimensions_json,
+                value,
+                packaged_value
+            FROM counter_aggregates_v1
+            """
+        )
+        connection.execute("DROP TABLE counter_aggregates_v1")
 
     def _install_id(self, connection: sqlite3.Connection) -> str:
         row = connection.execute(
@@ -274,16 +425,36 @@ class SharedMetricsStore:
             raise RuntimeError("Unable to create the shared-metrics install identity")
         return str(row["value"])
 
+    @staticmethod
+    def _parse_state_timestamp(value: Any) -> datetime | None:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+
     def _pending_period_count(self) -> int:
         with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT COUNT(*) AS period_count
                 FROM (
-                    SELECT period_start, hermes_version
+                    SELECT
+                        period_start,
+                        hermes_version,
+                        os_family,
+                        architecture,
+                        install_method
                     FROM counter_aggregates
                     WHERE value > packaged_value
-                    GROUP BY period_start, hermes_version
+                    GROUP BY
+                        period_start,
+                        hermes_version,
+                        os_family,
+                        architecture,
+                        install_method
                 )
                 """
             ).fetchone()
@@ -322,10 +493,20 @@ class SharedMetricsStore:
     ) -> dict[str, Any] | None:
         period_row = connection.execute(
             """
-                SELECT period_start, hermes_version
+                SELECT
+                    period_start,
+                    hermes_version,
+                    os_family,
+                    architecture,
+                    install_method
                 FROM counter_aggregates
                 WHERE value > packaged_value
-                ORDER BY period_start, hermes_version
+                ORDER BY
+                    period_start,
+                    hermes_version,
+                    os_family,
+                    architecture,
+                    install_method
                 LIMIT 1
                 """
         ).fetchone()
@@ -339,16 +520,33 @@ class SharedMetricsStore:
                 FROM counter_aggregates
                 WHERE period_start = ?
                   AND hermes_version = ?
+                  AND os_family = ?
+                  AND architecture = ?
+                  AND install_method = ?
                   AND value > packaged_value
                 ORDER BY metric_name, dimensions_json
                 """,
-            (period_value, period_row["hermes_version"]),
+            (
+                period_value,
+                period_row["hermes_version"],
+                period_row["os_family"],
+                period_row["architecture"],
+                period_row["install_method"],
+            ),
         ).fetchall()
         period_start = datetime.fromisoformat(str(period_value)).replace(
             tzinfo=timezone.utc
         )
         period_end = period_start + timedelta(days=1)
         package_id = str(uuid.uuid4())
+        resource = {
+            "hermes_version": period_row["hermes_version"],
+            "os_family": period_row["os_family"],
+            "architecture": period_row["architecture"],
+            "install_method": period_row["install_method"],
+        }
+        if not client_resource_is_valid(resource):
+            raise ValueError("Unsupported shared-metrics client resource")
         payload = {
             "schema_version": _PACKAGE_SCHEMA_VERSION,
             "package_id": package_id,
@@ -356,7 +554,7 @@ class SharedMetricsStore:
             "period_start": _isoformat(period_start),
             "period_end": _isoformat(period_end),
             "generated_at": _isoformat(now),
-            "resource": {"hermes_version": period_row["hermes_version"]},
+            "resource": resource,
             "metrics": [self._package_metric(row) for row in rows],
         }
         payload_json = json.dumps(
@@ -390,12 +588,18 @@ class SharedMetricsStore:
                     WHERE period_start = ?
                       AND metric_name = ?
                       AND hermes_version = ?
+                      AND os_family = ?
+                      AND architecture = ?
+                      AND install_method = ?
                       AND dimensions_json = ?
                     """,
                 (
                     period_value,
                     row["metric_name"],
                     period_row["hermes_version"],
+                    period_row["os_family"],
+                    period_row["architecture"],
+                    period_row["install_method"],
                     row["dimensions_json"],
                 ),
             )

@@ -1,7 +1,8 @@
+import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
-import { embeddedImageUrls, textWithoutEmbeddedImages, textWithoutImageRefs } from '@/lib/embedded-images'
+import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -44,6 +45,41 @@ function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   })
 
   return appended ? { ...message, parts } : message
+}
+
+/** Reasoning / tool-call parts that the gateway inflight dump cannot express. */
+function hasStructuralParts(message: ChatMessage): boolean {
+  return message.parts.some(part => part.type === 'reasoning' || part.type === 'tool-call')
+}
+
+/**
+ * A live-turn row — the gateway's text-only `inflight` projection, a
+ * still-streaming local bubble, or an interim row sealed inside the running
+ * turn — as opposed to a committed transcript row.
+ */
+function isLiveTailRow(message: ChatMessage): boolean {
+  return (
+    message.pending === true ||
+    message.id.startsWith('assistant-stream-') ||
+    message.id.startsWith('inflight-assistant-') ||
+    message.interim === true
+  )
+}
+
+/**
+ * True when `next` is a pure forward extension of the previous *answer* text.
+ * Empty previous answer never accepts a dump as an extension — that is how the
+ * mid-turn inflight flat dump used to sandwich structured rows (#76444).
+ */
+export function isStrictAnswerTextExtension(next: string, previous: string): boolean {
+  const n = next.trim()
+  const p = previous.trim()
+
+  if (!p || !n) {
+    return false
+  }
+
+  return n.startsWith(p)
 }
 
 /**
@@ -250,7 +286,19 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     const nextText = chatMessageText(message).trim()
     const previousText = chatMessageText(previous)
     const previousVisibleText = textWithoutEmbeddedImages(previousText)
+    const previousTrimmed = previousVisibleText.trim()
     let preserved = message
+
+    // #75825: resume can project an empty (or lagging) inflight assistant shell
+    // at the same role-ordinal as the live stream row that still holds the
+    // streamed text, reasoning and tool calls. Prefer that richer pending row
+    // instead of painting the shell — otherwise the reply vanishes until
+    // restart. Guarded to the same reply further along (see
+    // localPendingSupersedes) so a different turn at the same ordinal cannot
+    // hijack the slot.
+    if (localPendingSupersedes(previous, message)) {
+      return withAuthoritativeTurnState(previous, message)
+    }
 
     const sameText = nextText === previousVisibleText || nextText === previousText.trim()
 
@@ -260,12 +308,36 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     // for structural carry-over. Attachment refs and image re-appending stay on
     // the strict equality path — they reconcile a SETTLED row, and a growing
     // row is by definition not settled.
+    //
+    // Live-tail identity: structure-only same-turn carry is allowed only when
+    // the *structure-bearing cached row* is still the in-flight stream
+    // (pending / stream id / interim). Marking only the text-only next row
+    // live is not enough — after compression a new live assistant can share a
+    // role ordinal with an unrelated historical structured row and must not
+    // inherit its reasoning/tool parts (#76444 review / salvage).
     const sameTurn =
       sameText ||
-      (nextText.length > 0 && previousVisibleText.length > 0 && nextText.startsWith(previousVisibleText.trim()))
+      (nextText.length > 0 && previousTrimmed.length > 0 && isStrictAnswerTextExtension(nextText, previousTrimmed)) ||
+      (message.role === 'assistant' &&
+        previous.role === 'assistant' &&
+        hasStructuralParts(previous) &&
+        !hasStructuralParts(message) &&
+        isLiveTailRow(previous))
 
     if (sameTurn) {
       preserved = preserveStructuralParts(preserved, previous)
+
+      // Never replace structured answer text with a non-extending flat dump.
+      if (
+        message.role === 'assistant' &&
+        hasStructuralParts(previous) &&
+        !hasStructuralParts(message) &&
+        !isStrictAnswerTextExtension(nextText, previousVisibleText)
+      ) {
+        const nonText = preserved.parts.filter(part => part.type !== 'text')
+        const priorAnswer = previous.parts.filter(part => part.type === 'text')
+        preserved = { ...preserved, parts: [...nonText, ...priorAnswer] }
+      }
     }
 
     if (
@@ -315,8 +387,10 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  * history window. Preserve only the newest optimistic user row: compression
  * rewrites past context, so older `user-*` rows in a warm cache are stale
  * history, not in-flight work. The latest authoritative user confirms whether
- * that tail has persisted; any authoritative assistant at the same ordinal
- * supersedes the local stream.
+ * that tail has persisted. An authoritative assistant at the same ordinal
+ * supersedes the local stream only when it is at least as complete; an empty
+ * or lagging inflight shell must not discard a fuller local pending reply
+ * (#75825).
  *
  * Gateway bookkeeping markers (the model-switch / personality notices written
  * by tui_gateway/server.py) are persisted as role=user but are not user turns.
@@ -327,6 +401,64 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  */
 const isGatewaySystemMarker = (message: ChatMessage): boolean =>
   message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
+
+/**
+ * Does the row carry anything a viewer would miss — streamed answer text, or
+ * the reasoning / tool-call structure the gateway's flat dump cannot express?
+ * An empty inflight shell carries none of it.
+ */
+const hasStreamedContent = (message: ChatMessage): boolean =>
+  chatMessageText(message).trim().length > 0 || hasStructuralParts(message)
+
+/**
+ * May the cached local row stand in for this authoritative assistant?
+ *
+ * Only for a live projection of the SAME reply that the local copy is further
+ * along on: an empty shell, or text the local row strictly extends. Comparing
+ * lengths alone lets an unrelated (merely longer) local row hijack the ordinal
+ * — or the stream id — of a genuine stored reply. A retained failure snapshot
+ * (`inflight.error`, projected with empty text) is never a shell: repainting it
+ * from the local partial would hide the error and mark the turn healthy again.
+ */
+const localPendingSupersedes = (local: ChatMessage, authoritative: ChatMessage): boolean => {
+  if (local.role !== 'assistant' || !isLiveTailRow(local)) {
+    return false
+  }
+
+  if (!isLiveTailRow(authoritative) || authoritative.error) {
+    return false
+  }
+
+  const authoritativeText = chatMessageText(authoritative).trim()
+
+  if (!authoritativeText.length) {
+    return hasStreamedContent(local)
+  }
+
+  const localText = chatMessageText(local).trim()
+
+  return localText.length > authoritativeText.length && isStrictAnswerTextExtension(localText, authoritativeText)
+}
+
+/**
+ * Take the cached row's content, but never its liveness. The renderer holds the
+ * only copy of the streamed parts; the gateway remains the authority on whether
+ * the turn is still running and on durable row identity — so a settled shell
+ * must not repaint the reply as perpetually streaming.
+ */
+const withAuthoritativeTurnState = (local: ChatMessage, authoritative: ChatMessage): ChatMessage => {
+  const merged: ChatMessage = { ...local, pending: authoritative.pending === true }
+
+  if (local.rowId === undefined && authoritative.rowId !== undefined) {
+    merged.rowId = authoritative.rowId
+  }
+
+  if (local.reactions === undefined && authoritative.reactions?.length) {
+    merged.reactions = [...authoritative.reactions]
+  }
+
+  return merged
+}
 
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
@@ -378,6 +510,9 @@ export function preserveLocalPendingTurnMessages(
 
   const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
   const preserved: ChatMessage[] = []
+  // Authoritative id → richer local pending row. Replacing (not appending)
+  // avoids painting both the empty inflight shell and the full stream bubble.
+  const replacements = new Map<string, ChatMessage>()
 
   for (const message of previousMessages) {
     if (isGatewaySystemMarker(message)) {
@@ -392,7 +527,21 @@ export function preserveLocalPendingTurnMessages(
     const isPendingAssistant =
       message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
 
-    if ((!isOptimisticUser && !isPendingAssistant) || nextIds.has(message.id)) {
+    if (!isOptimisticUser && !isPendingAssistant) {
+      continue
+    }
+
+    // Same id already present: still prefer a strictly more complete local
+    // pending body over an empty/stale shell that reused the stream id.
+    if (nextIds.has(message.id)) {
+      if (isPendingAssistant) {
+        const existing = nextMessages.find(candidate => candidate.id === message.id)
+
+        if (existing && localPendingSupersedes(message, existing)) {
+          replacements.set(message.id, withAuthoritativeTurnState(message, existing))
+        }
+      }
+
       continue
     }
 
@@ -403,19 +552,50 @@ export function preserveLocalPendingTurnMessages(
     if (
       isOptimisticUser &&
       latestAuthoritativeUser &&
-      textWithoutImageRefs(chatMessageText(latestAuthoritativeUser)) === textWithoutImageRefs(chatMessageText(message))
+      textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
+        textWithoutReferenceLines(chatMessageText(message))
     ) {
       continue
     }
 
     const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
 
+    // A settled stream row (`pending: false` after message.complete) whose reply
+    // the authoritative transcript already carries under its committed id is
+    // stale: ordinal pairing can't see it, because the commit shifted the row
+    // one ordinal earlier, and re-appending it renders the same answer twice
+    // (#70209). Only text-identical rows are dropped — a settled row the backend
+    // has NOT committed yet is the only copy of that reply and must survive.
+    if (
+      isPendingAssistant &&
+      message.pending !== true &&
+      nextMessages.some(
+        candidate =>
+          candidate.role === 'assistant' &&
+          textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
+      )
+    ) {
+      continue
+    }
+
     if (authoritative) {
       if (isPendingAssistant) {
+        // Keep the local pending row when it is the same reply further along
+        // and the authoritative row is an empty projection shell or a prefix.
+        // #75825
+        if (!localPendingSupersedes(message, authoritative)) {
+          continue
+        }
+
+        replacements.set(authoritative.id, withAuthoritativeTurnState(message, authoritative))
+
         continue
       }
 
-      if (textWithoutImageRefs(chatMessageText(authoritative)) === textWithoutImageRefs(chatMessageText(message))) {
+      if (
+        textWithoutReferenceLines(chatMessageText(authoritative)) ===
+        textWithoutReferenceLines(chatMessageText(message))
+      ) {
         continue
       }
     }
@@ -423,7 +603,10 @@ export function preserveLocalPendingTurnMessages(
     preserved.push(message)
   }
 
-  return preserved.length ? [...nextMessages, ...preserved] : nextMessages
+  const withReplacements =
+    replacements.size > 0 ? nextMessages.map(message => replacements.get(message.id) ?? message) : nextMessages
+
+  return preserved.length ? [...withReplacements, ...preserved] : withReplacements
 }
 
 /**
@@ -484,7 +667,9 @@ export function appendLiveSessionProjection(
   }
 
   const persistedInLatestRun = (text: string): boolean =>
-    latestUserRun.some(message => textWithoutImageRefs(chatMessageText(message)) === textWithoutImageRefs(text))
+    latestUserRun.some(
+      message => textWithoutReferenceLines(chatMessageText(message)) === textWithoutReferenceLines(text)
+    )
 
   const inflightUserAlreadyPersisted = Boolean(inflightUser) && persistedInLatestRun(inflightUser)
 
@@ -514,14 +699,54 @@ export function appendLiveSessionProjection(
 
   // Keep a pending assistant boundary even before the first delta when a
   // queued user turn follows it. This preserves the two distinct turns.
+  //
+  // When the *current live turn* already holds a structured mid-turn assistant
+  // row (reasoning / tool-call from the live stream or journal), do NOT append
+  // a pure-text projection of `inflight.assistant` — that flat dump re-renders
+  // thinking as answer text and sandwiches the structured parts (#76444).
+  // Only inspect the live tail after the latest user run — never a completed
+  // historical tool-bearing reply earlier in the transcript (review feedback).
+  const liveStreamId = `assistant-stream-${sessionId}`
+
+  const liveAssistantOfCurrentTurn = ((): ChatMessage | null => {
+    const byStreamId = messages.find(message => message.id === liveStreamId)
+
+    if (byStreamId) {
+      return byStreamId
+    }
+
+    // Assistants after the latest user row belong to this turn's tail.
+    if (latestUserIndex < 0) {
+      return null
+    }
+
+    for (let index = messages.length - 1; index > latestUserIndex; index -= 1) {
+      if (messages[index].role === 'assistant') {
+        return messages[index]
+      }
+    }
+
+    return null
+  })()
+
+  const turnAlreadyStructured = Boolean(
+    liveAssistantOfCurrentTurn &&
+    hasStructuralParts(liveAssistantOfCurrentTurn) &&
+    isLiveTailRow(liveAssistantOfCurrentTurn)
+  )
+
   if (inflightAssistant || inflightStreaming || inflightError || (inflightUser && queuedUser)) {
-    projected.push({
-      id: `assistant-stream-${sessionId}`,
-      role: 'assistant',
-      parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
-      pending: inflightStreaming,
-      ...(inflightError ? { error: inflightError } : {})
-    })
+    if (turnAlreadyStructured && !inflightError) {
+      // Structure is authoritative; skip the text-only dump row.
+    } else {
+      projected.push({
+        id: liveStreamId,
+        role: 'assistant',
+        parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
+        pending: inflightStreaming,
+        ...(inflightError ? { error: inflightError } : {})
+      })
+    }
   }
 
   if (queuedUser) {
@@ -706,13 +931,72 @@ type SessionRuntimeStatePatch = Partial<
   >
 >
 
-export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionRuntimeStatePatch | null {
+interface ApplyRuntimeInfoOptions {
+  /**
+   * Whether this runtime belongs to the session the MAIN pane is showing.
+   * Foreground (the default) mirrors into the composer atoms every main-pane
+   * surface reads.
+   *
+   * A tile or a background branch must pass `false`: it owns a different
+   * worktree, and writing its cwd into `$currentCwd` re-pointed the main
+   * composer's coding rail (and the persisted workspace cwd) at the tile's
+   * repo — the main rail painted a branch from a tree its session was never
+   * in. The returned patch still carries every field, so the caller's own
+   * per-session state is unaffected.
+   */
+  foreground?: boolean
+}
+
+/** Mirror a session's runtime state into the composer atoms the MAIN pane
+ *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions. */
+function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
+  if (state.model !== undefined) {
+    setCurrentModel(state.model)
+  }
+
+  if (state.provider !== undefined) {
+    setCurrentProvider(state.provider)
+  }
+
+  if (state.cwd !== undefined) {
+    setCurrentCwd(state.cwd)
+  }
+
+  if (state.branch !== undefined) {
+    setCurrentBranch(state.branch)
+  }
+
+  if (state.personality !== undefined) {
+    setCurrentPersonality(state.personality)
+  }
+
+  if (state.reasoningEffort !== undefined) {
+    setCurrentReasoningEffort(state.reasoningEffort)
+  }
+
+  if (state.serviceTier !== undefined) {
+    setCurrentServiceTier(state.serviceTier)
+  }
+
+  if (state.fast !== undefined) {
+    setCurrentFastMode(state.fast)
+  }
+
+  if (state.yolo !== undefined) {
+    setYoloActive(state.yolo)
+  }
+}
+
+export function applyRuntimeInfo(
+  info: SessionRuntimeInfo | undefined,
+  { foreground = true }: ApplyRuntimeInfoOptions = {}
+): SessionRuntimeStatePatch | null {
   if (!info) {
     return null
   }
 
-  const sessionState: SessionRuntimeStatePatch = {}
-
+  // App/profile-level reporting is session-independent — a tile's runtime
+  // reports backend skew and credential warnings just as usefully.
   reportBackendContract(info.desktop_contract)
 
   if (info.approval_mode !== undefined) {
@@ -723,54 +1007,50 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
 
   reportInstallMethodWarning(info.install_warning)
 
+  const sessionState: SessionRuntimeStatePatch = {}
+
   if (typeof info.model === 'string') {
-    setCurrentModel(info.model)
     sessionState.model = info.model
   }
 
   if (typeof info.provider === 'string') {
-    setCurrentProvider(info.provider)
     sessionState.provider = info.provider
   }
 
   if (info.cwd) {
-    setCurrentCwd(info.cwd)
     sessionState.cwd = info.cwd
   }
 
   if (info.branch !== undefined) {
-    setCurrentBranch(info.branch || '')
     sessionState.branch = info.branch || ''
   }
 
   if (typeof info.personality === 'string') {
-    const personality = normalizePersonalityValue(info.personality)
-    setCurrentPersonality(personality)
-    sessionState.personality = personality
+    sessionState.personality = normalizePersonalityValue(info.personality)
   }
 
   if (typeof info.reasoning_effort === 'string') {
-    setCurrentReasoningEffort(info.reasoning_effort)
     sessionState.reasoningEffort = info.reasoning_effort
   }
 
   if (typeof info.service_tier === 'string') {
-    setCurrentServiceTier(info.service_tier)
     sessionState.serviceTier = info.service_tier
   }
 
   if (typeof info.fast === 'boolean') {
-    setCurrentFastMode(info.fast)
     sessionState.fast = info.fast
   }
 
   if (typeof info.yolo === 'boolean') {
-    setYoloActive(info.yolo)
     sessionState.yolo = info.yolo
   }
 
-  if (info.usage) {
-    setCurrentUsage(current => ({ ...current, ...info.usage }))
+  if (foreground) {
+    publishRuntimeToComposer(sessionState)
+
+    if (info.usage) {
+      setCurrentUsage(current => ({ ...current, ...info.usage }))
+    }
   }
 
   return sessionState

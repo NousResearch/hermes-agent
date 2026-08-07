@@ -112,8 +112,6 @@ def _orphan_fts_schema(path: Path) -> None:
         conn.execute("PRAGMA writable_schema=OFF")
     finally:
         conn.close()
-
-
 def _make_page_spanning_source(
     path: Path,
     message_count: int = 320,
@@ -596,7 +594,58 @@ def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(
     }
 
 
+def test_partial_recovery_clears_only_unreadable_system_prompt_refs(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "corrupt-system-prompts.db"
+    output = tmp_path / "partial-system-prompts.db"
+    session_count = 180
+    _make_many_sessions_source(source, session_count)
 
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        row = conn.execute(
+            "SELECT rootpage FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'system_prompts'"
+        ).fetchone()
+        assert row is not None
+        prompt_root = int(row[0])
+    finally:
+        conn.close()
+    _corrupt_middle_table_leaf(source, prompt_root)
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        chunk_size=8,
+        allow_partial=True,
+    )
+
+    assert report["verified"] is True
+    assert report["partial"] is True
+    assert report["copy"]["sessions"]["status"] == "complete"
+    assert report["copy"]["messages"]["status"] == "complete"
+    assert report["copy"]["system_prompts"]["status"] == "partial"
+    cleared = report["orphan_cleanup"]["session_prompt_refs_cleared"]
+    assert 0 < cleared < session_count
+    assert report["verification"]["foreign_key_check"] == []
+
+    conn = sqlite3.connect(str(output))
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == session_count
+        retained = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE system_prompt_hash IS NOT NULL"
+        ).fetchone()[0]
+        assert retained == session_count - cleared
+        assert (
+            conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0]
+            == retained
+        )
+    finally:
+        conn.close()
 
 
 

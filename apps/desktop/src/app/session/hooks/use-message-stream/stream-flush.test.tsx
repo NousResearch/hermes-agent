@@ -87,7 +87,10 @@ describe('stream delta delivery', () => {
     })
 
     expect(states.get(SID)?.messages.at(-1)?.parts).toEqual([{ type: 'text', text: 'first and the rest' }])
-    // The flush must not have depended on a frame at all.
-    expect(rafSpy).not.toHaveBeenCalled()
+    // The flush must not have depended on a frame: this mock parks every rAF
+    // callback, yet the text arrived. runFlush still registers its
+    // adaptive-floor measurement callback here; that one is allowed to wait
+    // for a frame that may never come.
+    expect(rafSpy).toHaveBeenCalled()
   })
 })

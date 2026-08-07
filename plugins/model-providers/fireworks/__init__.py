@@ -9,6 +9,7 @@ Model IDs here track the canonical Fireworks catalog (fw-ai/fireconnect
 ``setup-cli``).
 """
 
+from hermes_cli import __version__ as _HERMES_VERSION
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -22,6 +23,9 @@ fireworks = ProviderProfile(
     env_vars=("FIREWORKS_API_KEY",),
     base_url="https://api.fireworks.ai/inference/v1",
     auth_type="api_key",
+    # Identifies the client, replacing the OpenAI SDK's own User-Agent. This is
+    # not partner attribution — HTTP-Referer/X-Title stay off (#61182).
+    default_headers={"User-Agent": f"HermesAgent/{_HERMES_VERSION}"},
     # Auxiliary model for cheap tasks (compaction, title generation, vision).
     # A standard pay-as-you-go catalog ``/models/`` ID.
     default_aux_model="accounts/fireworks/models/glm-5p2",

@@ -1138,3 +1138,23 @@ class TestMemoryInjectionRejectsMalformedSchema:
         names = {t["function"]["name"] for t in agent.tools}
         assert names == {"good_tool"}
         assert agent.valid_tool_names == {"good_tool"}
+
+
+class TestTrivialPromptClassifier:
+    """is_trivial_prompt — the shared gate for core prefetch + provider injection."""
+
+    def test_trivial_variants(self):
+        from agent.memory_provider import is_trivial_prompt
+
+        for t in ("hi", "HI!", "hey.", "hello", "yo", "sup~", "thanks :)",
+                  "done???", "ok", "yes.", "k", "", "   ", "/help", "lgtm"):
+            assert is_trivial_prompt(t), f"expected trivial: {t!r}"
+
+    def test_substantive_and_prefix_collisions_pass_through(self):
+        from agent.memory_provider import is_trivial_prompt
+
+        # Words that merely START with a trivial word must not match.
+        for t in ("k8s", "yolo", "hive", "note", "supper", "hind",
+                  "hello world", "ok so what's next", "what's my name",
+                  "hey can you check the logs", "continue the migration plan"):
+            assert not is_trivial_prompt(t), f"expected non-trivial: {t!r}"

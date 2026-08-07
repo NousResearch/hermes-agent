@@ -227,6 +227,18 @@ Then switch to it with:
 /personality codereviewer
 ```
 
+## Resetting to the default
+
+To cancel the active personality overlay and return to base behavior (your `SOUL.md` persona), use any of:
+
+```text
+/personality none
+/personality default
+/personality neutral
+```
+
+All three clear the overlay: the saved `agent.system_prompt` is emptied and the change takes effect on your next message. Running `/personality` with no arguments also lists `none` alongside the available presets.
+
 ## Recommended workflow
 
 A strong default setup is:

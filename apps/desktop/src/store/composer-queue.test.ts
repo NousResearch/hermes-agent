@@ -151,6 +151,19 @@ describe('migrateQueuedPrompts', () => {
     expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(false)
     expect(migrateQueuedPrompts('rt-x', 'rt-x')).toBe(false)
   })
+
+  it('must not be used across sessions without a same-lineage guard (documents the leak)', () => {
+    // ChatView used to call migrateQueuedPrompts(selectedA, routeKeyB) during the
+    // route-ahead/store-lag window of a session switch. That re-homes A's queue
+    // onto B so the idle ChatBar on B auto-drains it into the wrong conversation.
+    // The guard lives in shouldMigrateComposerScope — this test locks the
+    // underlying hazard so a future caller cannot treat migrate as free.
+    enqueueQueuedPrompt('root-a', { attachments: [], text: 'belongs to A' })
+
+    expect(migrateQueuedPrompts('root-a', 'root-b')).toBe(true)
+    expect(getQueuedPrompts('root-a')).toEqual([])
+    expect(getQueuedPrompts('root-b').map(e => e.text)).toEqual(['belongs to A'])
+  })
 })
 
 describe('shouldAutoDrain', () => {

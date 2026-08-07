@@ -1,11 +1,10 @@
 import { usageBarsText } from '../../../components/overlayPrimitives.js'
-import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
+import { introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
   ConfigSetResponse,
-  ImageAttachResponse,
   SessionBranchResponse,
   SessionCompressResponse,
   SessionUsageResponse,
@@ -192,17 +191,7 @@ export const sessionCommands: SlashCommand[] = [
   {
     help: 'attach an image',
     name: 'image',
-    run: (arg, ctx) => {
-      ctx.gateway.rpc<ImageAttachResponse>('image.attach', { path: arg, session_id: ctx.sid }).then(
-        ctx.guarded<ImageAttachResponse>(r => {
-          ctx.transcript.sys(attachedImageNotice(r))
-
-          if (r.remainder) {
-            ctx.composer.setInput(r.remainder)
-          }
-        })
-      )
-    }
+    run: (arg, ctx) => ctx.composer.attachImagePath(arg)
   },
 
   {

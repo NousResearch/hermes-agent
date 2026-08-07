@@ -659,7 +659,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           const status = async (): Promise<WakeStatusResponse> => {
-            const current = await requestGateway<WakeStatusResponse>('wake.status', {})
+            const current = await requestGateway<WakeStatusResponse>('wake.status', {
+              client_capture: true,
+              surface: 'gui'
+            })
+
             applyWakeStatus(current)
 
             return current
@@ -677,7 +681,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             if (action === 'on') {
               const started = await requestGateway<WakeStartResponse>(
                 'wake.start',
-                { persist: true, surface: 'gui' },
+                { persist: true, surface: 'gui', client_capture: true },
                 WAKE_START_TIMEOUT_MS
               )
 

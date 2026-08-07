@@ -46,7 +46,7 @@ def test_tick_process_job_sequence(monkeypatch):
     sequence run_job → save → deliver → mark, in that order."""
     calls = _patch_pipeline(monkeypatch)
     monkeypatch.setattr(s, "get_due_jobs", lambda: [{"id": "j1", "name": "t"}])
-    monkeypatch.setattr(s, "advance_next_run", lambda jid: True)
+    monkeypatch.setattr(s, "advance_next_runs", lambda ids: 1)
 
     s.tick(verbose=False, sync=True)
 

@@ -63,6 +63,13 @@ def _format_iso_timestamp(value) -> str:
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
+def _format_relative_ts(ts: float) -> str:
+    """Format an epoch timestamp as a short relative age for status output."""
+    from hermes_cli.timefmt import relative_time
+
+    return relative_time(ts)
+
+
 def _configured_model_label(config: dict) -> str:
     """Return the configured default model from config.yaml."""
     model_cfg = config.get("model")
@@ -572,20 +579,29 @@ def show_status(args):
     # Gateway session count: state.db is the source of truth (#9006);
     # fall back to sessions.json for pre-migration installs.
     _session_count = None
+    _gateway_rows = []
     try:
         from hermes_state import SessionDB
         _db = SessionDB()
         try:
             _lister = getattr(_db, "list_gateway_sessions", None)
             if callable(_lister):
-                _session_count = len(_lister(active_only=True))
+                _gateway_rows = _lister(active_only=True) or []
+                _session_count = len(_gateway_rows)
         finally:
             _db.close()
     except Exception:
         _session_count = None
+        _gateway_rows = []
 
     if _session_count is not None and _session_count > 0:
         print(f"  Active:       {_session_count} session(s)")
+        freshest = max(
+            (float(r.get("last_active") or 0) for r in _gateway_rows),
+            default=0.0,
+        )
+        if freshest > 0:
+            print(f"  Last activity:{_format_relative_ts(freshest):>13}")
     else:
         sessions_file = get_hermes_home() / "sessions" / "sessions.json"
         if sessions_file.exists():

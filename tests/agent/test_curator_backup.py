@@ -392,3 +392,69 @@ def _three_ordered_snapshots(cb, skills, monkeypatch):
 
 
 
+# ---------------------------------------------------------------------------
+# A failed extract must leave the skills tree exactly as it was found
+# ---------------------------------------------------------------------------
+
+def test_rollback_recovers_cleanly_from_a_partial_extract(backup_env, monkeypatch):
+    """An extract that dies part-way must restore the original tree exactly.
+
+    ``shutil.move`` moves *into* an existing directory rather than replacing
+    it, so debris from a half-finished extract buried the user's own skill one
+    level deeper (``skills/alpha/alpha/``) while rollback still reported
+    "state restored".
+    """
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+
+    _write_skill(skills, "alpha", body="snapshot copy")
+    assert cb.snapshot_skills(reason="before") is not None
+
+    # Diverge from the snapshot so a real restore would be observable.
+    _write_skill(skills, "alpha", body="current copy")
+    _write_skill(skills, "beta", body="current only")
+
+    real_open = tarfile.open
+
+    class _DiesMidExtract:
+        """Writes part of the archive, then fails like a full disk would."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def getmembers(self):
+            return self._inner.getmembers()
+
+        def extractall(self, path, *args, **kwargs):
+            partial = Path(path) / "alpha"
+            partial.mkdir(parents=True, exist_ok=True)
+            (partial / "SKILL.md").write_text("half written", encoding="utf-8")
+            (Path(path) / "gamma").mkdir(parents=True, exist_ok=True)
+            raise OSError(28, "No space left on device")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._inner.close()
+            return False
+
+    def _open(name, mode="r", *args, **kwargs):
+        # Only the rollback's read is intercepted; the pre-rollback safety
+        # snapshot opens for write and must keep working.
+        handle = real_open(name, mode, *args, **kwargs)
+        return _DiesMidExtract(handle) if mode.startswith("r") else handle
+
+    monkeypatch.setattr(cb.tarfile, "open", _open)
+
+    ok, msg, _ = cb.rollback()
+    assert not ok
+
+    assert not (skills / "alpha" / "alpha").exists(), \
+        "staged skill was nested, not restored"
+    present = sorted(
+        p.name for p in skills.iterdir() if p.name not in cb._EXCLUDE_TOP_LEVEL
+    )
+    assert present == ["alpha", "beta"], f"tree not restored: {present}"
+    assert "current copy" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+    assert "current only" in (skills / "beta" / "SKILL.md").read_text(encoding="utf-8")

@@ -1541,6 +1541,19 @@ def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -
     else:
         kwargs["vad_filter"] = False
 
+    # Push the confidence gate down into faster-whisper itself. Without this the
+    # library's own internal defaults (no_speech_threshold=0.6, log_prob_
+    # threshold=-1.0) drop low-confidence segments BEFORE they reach our
+    # _is_hallucinated_segment post-filter, so the ``stt.local`` threshold knobs
+    # were dead for that first gate. Non-English speech decodes at a lower
+    # avg_logprob, so the English-tuned defaults silently discard whole
+    # utterances. Mapping the same config values through keeps both gates in
+    # sync and makes the knobs actually usable. Defaults are unchanged, so
+    # behavior is identical unless a user tunes them.
+    no_speech_threshold, log_prob_threshold = _confidence_thresholds(local_cfg)
+    kwargs["no_speech_threshold"] = no_speech_threshold
+    kwargs["log_prob_threshold"] = log_prob_threshold
+
     forced_lang = _resolve_stt_language("local", stt_config)
     if forced_lang:
         kwargs["language"] = forced_lang

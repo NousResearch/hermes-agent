@@ -854,6 +854,75 @@ class SimplexAdapter(BasePlatformAdapter):
         return SendResult(success=True)
 
     # ------------------------------------------------------------------
+    # Channel directory enumeration
+    # ------------------------------------------------------------------
+
+    async def list_channels(self) -> Optional[List[Dict[str, Any]]]:
+        """Enumerate contacts and allowed groups for the channel directory.
+
+        Called by ``gateway.channel_directory.build_channel_directory()``
+        every refresh cycle. Uses the daemon's ``/contacts`` and ``/groups``
+        commands over the live WebSocket. Returns ``None`` (not ``[]``) when
+        the WebSocket is down so the directory falls back to session-history
+        discovery instead of wiping previously known targets.
+
+        Entry ``id`` values match the send-target formats the adapter
+        accepts: bare contact display name for DMs (``simplex:<name>``) and
+        ``group:<groupId>`` for groups (``simplex:group:<id>``).
+        """
+        if not self._ws:
+            return None
+
+        channels: List[Dict[str, Any]] = []
+
+        resp = await self._send_command("/contacts", timeout=10.0)
+        if resp is None:
+            # Daemon unresponsive — keep whatever the directory already has.
+            return None
+        for contact in resp.get("contacts") or []:
+            if not isinstance(contact, dict):
+                continue
+            contact_id = contact.get("contactId")
+            name = (
+                contact.get("localDisplayName", "")
+                or (contact.get("profile", {}) or {}).get("displayName", "")
+            )
+            if contact_id is None and not name:
+                continue
+            channels.append({
+                # Display name is what the DM send path (``@<name>``)
+                # actually addresses; fall back to the numeric contactId.
+                "id": str(name or contact_id),
+                "name": str(name or contact_id),
+                "type": "dm",
+            })
+
+        resp = await self._send_command("/groups", timeout=10.0)
+        if resp is not None:
+            for group in resp.get("groups") or []:
+                # The daemon returns each group as either a groupInfo dict
+                # or a [groupInfo, groupSummary] pair depending on version.
+                if isinstance(group, list) and group:
+                    group = group[0]
+                if not isinstance(group, dict):
+                    continue
+                group_id = group.get("groupId")
+                if group_id is None:
+                    continue
+                name = (
+                    group.get("localDisplayName", "")
+                    or (group.get("groupProfile", {}) or {}).get("displayName", "")
+                    or str(group_id)
+                )
+                channels.append({
+                    "id": f"group:{group_id}",
+                    "name": str(name),
+                    "type": "group",
+                })
+
+        return channels
+
+    # ------------------------------------------------------------------
     # Outbound — media
     # ------------------------------------------------------------------
 

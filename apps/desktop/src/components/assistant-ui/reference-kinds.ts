@@ -157,3 +157,17 @@ const REFERENCE_PATTERN = /@(file|folder|url|image|tool|line|terminal|session):(
 export function referenceRe(): RegExp {
   return new RegExp(REFERENCE_PATTERN.source, 'g')
 }
+
+/** Remove reference-only lines when comparing visible message text. */
+// Anchored + non-global: no shared `lastIndex` state (the hazard referenceRe()
+// exists to avoid), and hoisting skips a RegExp construction per call — this
+// runs on both sides of every message comparison in the reconcile loops.
+const REFERENCE_LINE_RE = new RegExp(`^(?:${REFERENCE_PATTERN.source})$`)
+
+export function textWithoutReferenceLines(text: string): string {
+  return text
+    .split('\n')
+    .filter(line => !REFERENCE_LINE_RE.test(line.trimEnd()))
+    .join('\n')
+    .trim()
+}

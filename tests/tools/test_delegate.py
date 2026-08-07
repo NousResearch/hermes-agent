@@ -81,6 +81,56 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("acp_args", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
+    def test_top_level_description_compact_and_complete(self):
+        """The top-level description must stay compact while keeping every
+        contract that exists nowhere else in the schema (keyword-level, not
+        prose-literal, so rewording doesn't break CI)."""
+        from tools.delegate_tool import _build_top_level_description
+
+        desc = _build_top_level_description()
+        # Compaction ceiling: the old description was ~4,000 chars.
+        self.assertLessEqual(len(desc), 2200)
+        # Contracts only the top-level text carries:
+        for keyword in (
+            "background",          # async semantics
+            "wait or poll",        # no-poll rule
+            "execute_code",        # mechanical-work routing
+            "cronjob",             # durable-work routing
+            "/stop",               # non-durability warning
+            "context",             # pass-everything-via-context rule
+            "respond in Chinese",  # language example (weak models regress without it)
+            "SELF-REPORTS",        # verification contract
+            "fetch the URL",       # concrete verification verbs
+            "clarify",             # leaf blocked-tool list
+            "send_message",
+            "delegation.provider", # model inheritance / pinning
+        ):
+            self.assertIn(keyword, desc, f"top-level description lost: {keyword!r}")
+
+    def test_dynamic_limits_moved_to_param_descriptions(self):
+        """Concurrency and nesting ceilings must reach the model through the
+        tasks/role parameter descriptions (the top-level text no longer
+        carries them)."""
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+        from tools.registry import registry
+
+        with (
+            patch("tools.delegate_tool._get_max_concurrent_children", return_value=7),
+            patch("tools.delegate_tool._get_max_spawn_depth", return_value=4),
+            patch("tools.delegate_tool._get_orchestrator_enabled", return_value=True),
+        ):
+            overrides = _build_dynamic_schema_overrides()
+            definition = registry.get_definitions({"delegate_task"})[0]["function"]
+
+        for parameters in (overrides["parameters"], definition["parameters"]):
+            self.assertIn("up to 7", parameters["properties"]["tasks"]["description"])
+            self.assertIn(
+                "max_spawn_depth=4", parameters["properties"]["role"]["description"]
+            )
+        # Static top-level text must not embed stale limits.
+        self.assertNotIn("up to 7", overrides["description"])
+        self.assertNotIn("max_spawn_depth", overrides["description"])
+
 class TestChildSystemPrompt(unittest.TestCase):
     def test_goal_only(self):
         prompt = _build_child_system_prompt("Fix the tests")
@@ -1059,6 +1109,69 @@ class TestDelegateHeartbeat(unittest.TestCase):
         self.assertGreater(
             len(touch_calls), 2,
             f"Heartbeat stopped too early while child was inside a tool; "
+            f"got {len(touch_calls)} touches",
+        )
+
+    def test_heartbeat_does_not_trip_idle_stale_while_waiting_on_model(self):
+        """A slow in-flight model wait (api_call_count frozen, no tool) must
+        stay alive when last_activity_ts keeps advancing.
+
+        Top-level delegate_task runs in the background; the async stall
+        monitor already treats ticking last_activity_ts as progress. The sync
+        heartbeat path must use the same signal so slow local / long-prefill
+        completions are not mistaken for a wedged idle child.
+        """
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        touch_calls = []
+        kept_going = threading.Event()
+
+        def record(desc):
+            touch_calls.append(desc)
+            if len(touch_calls) > 2:
+                kept_going.set()
+
+        parent._touch_activity = record
+
+        child = MagicMock()
+        activity = {"ts": 1000.0}
+
+        def _summary():
+            # Frozen iteration / no tool — only the activity clock moves,
+            # matching direct_api_call's mid-wait heartbeats.
+            activity["ts"] += 1.0
+            return {
+                "current_tool": None,
+                "api_call_count": 1,
+                "max_iterations": 50,
+                "last_activity_desc": "waiting for non-streaming API response",
+                "last_activity_ts": activity["ts"],
+            }
+
+        child.get_activity_summary.side_effect = _summary
+
+        def slow_run(**kwargs):
+            kept_going.wait(5)
+            return {"final_response": "done", "completed": True, "api_calls": 1}
+
+        child.run_conversation.side_effect = slow_run
+
+        with (
+            patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.01),
+            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 2),
+            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IN_TOOL", 40),
+        ):
+            _run_single_child(
+                task_index=0,
+                goal="Test slow model wait",
+                child=child,
+                parent_agent=parent,
+            )
+
+        self.assertGreater(
+            len(touch_calls), 2,
+            f"Heartbeat stopped too early while child was waiting on the model; "
             f"got {len(touch_calls)} touches",
         )
 

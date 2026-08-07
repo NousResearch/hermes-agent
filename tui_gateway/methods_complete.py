@@ -259,7 +259,20 @@ def _(rid, params: dict) -> dict:
                 ),
             }
             for c in completer.get_completions(doc, None)
-        ][:30]
+        ]
+
+        # Rank and bound the list (see _rank_slash_completions) while a
+        # `/token` is under the cursor — the one stage skills are offered at.
+        # An argument stage (`/personality `, `/details c`) keeps the order
+        # its own command chose.
+        if text.rsplit(" ", 1)[-1].startswith("/"):
+            usage, origin_of = _skill_usage_lookup()
+            items = _rank_slash_completions(
+                items, usage, origin_of, browsing=text == "/"
+            )
+        else:
+            items = items[:_SLASH_COMPLETION_LIMIT]
+
         text_lower = text.lower()
         extras = [
             {

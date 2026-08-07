@@ -3,8 +3,16 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { HermesGitWorktree, HermesRepoStatus } from '@/global'
 import { desktopGit } from '@/lib/desktop-git'
 
-import { $worktreeRefreshToken } from './projects'
+import {
+  $projectScope,
+  $projectTree,
+  $worktreeDialog,
+  $worktreeRefreshToken,
+  ALL_PROJECTS,
+  projectRootCwd
+} from './projects'
 import { $busy, $currentCwd, $selectedStoredSessionId } from './session'
+import { $focusedRuntimeId, $sessionStates } from './session-states'
 import { $workspaceChangeTick } from './workspace-events'
 
 // Live working-tree status for every git surface on screen — the data backbone
@@ -72,6 +80,33 @@ export function repoStatusForCwd(cwd?: null | string): ReadableAtom<HermesRepoSt
   return $slice
 }
 
+/**
+ * Is this path a git repo? This function reads the probe cache, and probes on
+ * demand when the cache has no entry for the path. Use it to validate any repo
+ * that was picked out of candidate FOLDERS: a path in a project row is not
+ * evidence that git can branch from it. False on a remote backend, because
+ * there is no local git truth to probe.
+ */
+export async function isGitRepoPath(cwd: string): Promise<boolean> {
+  const key = normalizeCwd(cwd)
+
+  if (!key) {
+    return false
+  }
+
+  if (key in $repoStatusByCwd.get()) {
+    return $repoStatusByCwd.get()[key] !== null
+  }
+
+  if (!desktopGit()?.repoStatus) {
+    return false
+  }
+
+  await refreshRepoStatus(key)
+
+  return ($repoStatusByCwd.get()[key] ?? null) !== null
+}
+
 /** Reactive worktree list for one repo cwd. Stable per cwd. */
 export function repoWorktreesForCwd(cwd?: null | string): ReadableAtom<HermesGitWorktree[]> {
   const key = normalizeCwd(cwd)
@@ -111,6 +146,14 @@ export const $repoChangeByPath = computed([$repoStatus, $currentCwd], (status, c
 
   return map
 })
+
+/**
+ * Per-row Git decoration subscription. A visible file row reads one scalar, so
+ * a fresh repo-status map only re-renders that row when its own kind changed.
+ */
+export function repoChangeKindForPath(path: string): ReadableAtom<RepoChangeKind | undefined> {
+  return computed($repoChangeByPath, changes => changes.get(path))
+}
 
 // Cwds whose rails are on screen right now (refcounted — two tiles in one
 // worktree register it twice). Every refresh edge re-probes each registered
@@ -425,4 +468,48 @@ export function _resetCodingStatusForTests(): void {
   $repoStatusByCwd.set({})
   $repoWorktreesByCwd.set({})
   $repoStatusLoading.set(false)
+}
+
+// ── New-worktree target resolution ───────────────────────────────────────────
+// This code lives here and not in projects.ts. To pick the target, it must read
+// both the project state and the git truth, and coding-status already depends
+// on projects. A dependency in the other direction is a cycle.
+
+// The repo that a new worktree is cut from: the cwd of the focused surface, or
+// the root of the project the user entered. Both are things the user points at.
+// There is no "use some other project's repo" step, because that branches
+// somewhere the user never selected.
+//
+// A project root is not always a repo, so existence alone is not proof. Each
+// candidate is validated against the probe cache. This function is the only
+// authority on the target, so the hotkey no longer tests `$repoStatus` first,
+// and ⌘⇧B now works from a detached session inside a project. '' means that no
+// repo is in reach. That is a no-op and not an error, because a worktree only
+// exists inside a repo.
+export async function resolveWorktreeRepoPath(): Promise<string> {
+  const runtimeId = $focusedRuntimeId.get()
+  const scope = $projectScope.get()
+
+  const candidates = [
+    runtimeId ? ($sessionStates.get()[runtimeId]?.cwd ?? '') : '',
+    scope === ALL_PROJECTS ? '' : projectRootCwd($projectTree.get().find(node => node.id === scope))
+  ]
+
+  for (const candidate of candidates) {
+    const path = candidate.trim()
+
+    if (path && (await isGitRepoPath(path))) {
+      return path
+    }
+  }
+
+  return ''
+}
+
+export async function openWorktreeDialog(options?: { base?: string; repoPath?: string }): Promise<void> {
+  const repoPath = options?.repoPath?.trim() || (await resolveWorktreeRepoPath())
+
+  if (repoPath) {
+    $worktreeDialog.set({ base: options?.base, repoPath })
+  }
 }

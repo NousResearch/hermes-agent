@@ -608,3 +608,56 @@ async def test_require_model_lock_hard_fails_when_global_default_would_be_used(a
     mock_run.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_patch_session_persists_pinned_and_archived(adapter, session_db):
+    """PATCH must accept the durable pin/archive flags and round-trip them.
+
+    These were rejected as unsupported fields, so every pin the desktop made
+    400'd silently (the client swallows the error) and the pin only ever lived
+    in that one app's localStorage. The auto-archive sweep reads
+    `sessions.pinned` server-side, so an unpersisted pin does not protect the
+    chat it was supposed to keep.
+    """
+    session_id = session_db.create_session("pin-session", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"pinned": True})
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["session"]["pinned"] is True
+
+        # The flag is durable, not just echoed back from the request body.
+        assert bool(session_db.get_session(session_id)["pinned"]) is True
+
+        resp = await cli.get(f"/api/sessions/{session_id}")
+        assert (await resp.json())["session"]["pinned"] is True
+
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"pinned": False})
+        assert (await resp.json())["session"]["pinned"] is False
+        assert bool(session_db.get_session(session_id)["pinned"]) is False
+
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"archived": True})
+        assert (await resp.json())["session"]["archived"] is True
+        assert bool(session_db.get_session(session_id)["archived"]) is True
+
+
+@pytest.mark.asyncio
+async def test_patch_session_rejects_non_boolean_pinned(adapter, session_db):
+    session_id = session_db.create_session("pin-type-session", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"pinned": "yes"})
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["error"]["code"] == "invalid_session_field"
+
+
+@pytest.mark.asyncio
+async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
+    session_id = session_db.create_session("unknown-field-session", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["error"]["code"] == "unsupported_session_field"

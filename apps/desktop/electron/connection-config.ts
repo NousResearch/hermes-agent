@@ -45,12 +45,25 @@ const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session
 // cookies above. `privy-token` is the access token (the required signal);
 // variants cover the secured-prefix forms and the older `privy-session` name.
 const PRIVY_SESSION_COOKIE_VARIANTS = ['__Host-privy-token', '__Secure-privy-token', 'privy-token', 'privy-session']
+// Keep this aligned with hermes_cli.profiles.validate_profile_name(). `default`
+// is the built-in root alias; these names cannot be created as profiles.
+const RESERVED_REMOTE_PROFILES = new Set(['hermes', 'test', 'tmp', 'root', 'sudo'])
 
 function normalizeRemoteBaseUrl(rawUrl) {
-  const value = String(rawUrl || '').trim()
+  let value = String(rawUrl || '').trim()
 
   if (!value) {
     throw new Error('Remote gateway URL is required.')
+  }
+
+  // Users routinely paste scheme-less "host:port" (a Tailscale IP, a LAN
+  // hostname). Without this, `new URL('100.64.0.1:9119')` either throws or —
+  // worse — parses `host:` as the protocol and produces a baffling
+  // "must be http:// or https://, got myhost:" error. Only a real
+  // `scheme://` prefix opts out, so explicit non-http schemes (ftp://,
+  // file://) still reach the protocol check below and get rejected.
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    value = `http://${value}`
   }
 
   let parsed
@@ -269,6 +282,16 @@ function normalizeSshConfig(entry) {
 
   if (remoteHermesPath) {
     out.remoteHermesPath = remoteHermesPath
+  }
+
+  // A Desktop profile can be a local routing label rather than the profile
+  // name used by the remote Hermes installation. Preserve an explicit mapping
+  // when it is a valid Hermes profile identifier; otherwise fall back to the
+  // historical same-name behavior in the caller.
+  const remoteProfile = String(entry.remoteProfile || '').trim()
+
+  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
+    out.remoteProfile = remoteProfile
   }
 
   return out

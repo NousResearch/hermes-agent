@@ -35,11 +35,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent.secret_sources.command import (  # noqa: E402
+    _run_helper,
     apply_command_secrets,
     get_command_secret,
     list_command_secrets,
     parse_secret_output,
     unquote_dotenv_value,
+)
+from agent.secret_sources.base import (  # noqa: E402
+    reset_source_environment,
+    set_source_environment,
 )
 from hermes_cli import env_loader  # noqa: E402
 
@@ -55,6 +60,22 @@ def _write_helper(tmp_path: Path, body: str, name: str = "helper.sh") -> Path:
     script.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return script
+
+
+def test_profile_helper_does_not_inherit_process_secret(monkeypatch):
+    monkeypatch.setenv("LEAK_CANARY", "global-secret")
+    token = set_source_environment({"PROFILE_ONLY": "profile-value"})
+    try:
+        output = _run_helper(
+            'printf "%s|%s" "${LEAK_CANARY-unset}" "$PROFILE_ONLY"',
+            "",
+            1.0,
+            1024,
+        )
+    finally:
+        reset_source_environment(token)
+
+    assert output == "unset|profile-value"
 
 
 @pytest.fixture(autouse=True)

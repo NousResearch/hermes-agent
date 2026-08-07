@@ -53,7 +53,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Retry once on transient Docker Hub / buildkit pull failures
+      # (connection reset, auth token timeout, rate limiting). The action
+      # generates a unique builder name per invocation so the retry doesn't
+      # collide with the failed first attempt. A genuine persistent failure
+      # still fails the job — only the first attempt has continue-on-error.
+      # Refs: docker/setup-buildx-action#510
       - name: Set up Docker Buildx
+        id: buildx
+        continue-on-error: true
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Set up Docker Buildx (retry)
+        if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       # Build once, load into the local daemon for testing.  Cached
@@ -95,7 +107,9 @@ jobs:
           version: "0.9.28"
 
       - name: Set up Python 3.11 (for docker tests)
-        run: uv python install 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
 
       - name: Install Python dependencies (for docker tests)
         # ``dev`` extra pulls in pytest, pytest-asyncio —
@@ -146,7 +160,15 @@ jobs:
       - name: Checkout trusted source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Retry once on transient Docker Hub / buildkit pull failures.
+      # See build job for rationale; same pattern.
       - name: Set up Docker Buildx
+        id: buildx
+        continue-on-error: true
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Set up Docker Buildx (retry)
+        if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub
@@ -208,7 +230,15 @@ jobs:
           pattern: digest-*
           merge-multiple: true
 
+      # Retry once on transient Docker Hub / buildkit pull failures.
+      # See build job for rationale; same pattern.
       - name: Set up Docker Buildx
+        id: buildx
+        continue-on-error: true
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Set up Docker Buildx (retry)
+        if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub

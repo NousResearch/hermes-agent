@@ -143,6 +143,80 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_conflict_retry_drops_pending_updates(monkeypatch):
+    """Conflict recovery must use drop_pending_updates=True (#75017).
+
+    Without this, each retry starts a new getUpdates session that
+    immediately gets 409'd by the previous still-expiring session,
+    creating the very conflict we are trying to recover from.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    adapter._drain_polling_connections = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    captured = {}
+
+    async def fake_start_polling(**kwargs):
+        captured["drop_pending_updates"] = kwargs.get("drop_pending_updates")
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    adapter._app = SimpleNamespace(updater=updater)
+
+    conflict = type("Conflict", (Exception,), {})
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
+
+    assert captured.get("drop_pending_updates") is True, (
+        "Conflict retry must use drop_pending_updates=True to terminate "
+        "stale getUpdates sessions on Telegram's servers (#75017)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_conflict_retry_progress_does_not_reset_retry_ladder(monkeypatch):
+    """First getUpdates progress after a conflict retry is not durable recovery.
+
+    Telegram can accept the first long-poll after a retry and then return a 409
+    from the still-expiring previous session. That transient success must not
+    reset the retry counter back to 0, or every new 409 looks like attempt 1/5
+    and the backoff never reaches the server-side expiry window.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+    adapter._drain_polling_connections = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    calls = {"n": 0}
+
+    async def fake_start_polling(**_kwargs):
+        calls["n"] += 1
+        adapter._record_polling_progress(adapter._polling_generation)
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    adapter._app = SimpleNamespace(updater=updater)
+
+    conflict = type("Conflict", (Exception,), {})
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
+
+    assert calls["n"] == 1
+    assert adapter._polling_conflict_count == 1
+    assert adapter._polling_conflict_recovery_generation is None
+    assert adapter._send_path_degraded is False
+
+
+@pytest.mark.asyncio
 async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     """After exhausting retries, the conflict should become fatal."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))

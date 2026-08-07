@@ -13,6 +13,12 @@ class _CapturingSessionDB:
         self.rows.append({"role": role, "content": content})
         return len(self.rows)
 
+    def append_messages_batch(self, session_id, messages, **kwargs):
+        # Mirror the real batch writer: same rows, one call.
+        for m in messages:
+            self.rows.append({"role": m.get("role"), "content": m.get("content")})
+        return list(range(len(self.rows) - len(messages) + 1, len(self.rows) + 1))
+
 
 def _agent_with_capturing_db():
     agent = AIAgent.__new__(AIAgent)

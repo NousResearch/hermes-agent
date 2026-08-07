@@ -44,6 +44,10 @@ class TestFireworksHeaders:
         assert "HTTP-Referer" not in fireworks_profile.default_headers
         assert "X-Title" not in fireworks_profile.default_headers
 
+    def test_user_agent_identifies_hermes(self, fireworks_profile):
+        # Prefix, not the full string — the version moves every release.
+        assert fireworks_profile.default_headers["User-Agent"].startswith("HermesAgent/")
+
 
 class TestFireworksAliases:
     @pytest.mark.parametrize("alias", ["fireworks-ai", "fw"])

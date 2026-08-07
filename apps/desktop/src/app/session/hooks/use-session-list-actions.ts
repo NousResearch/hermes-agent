@@ -29,12 +29,13 @@ import {
 } from '@/store/session'
 import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
-// The recents list is local-only: cron rows have their own section, and each
-// messaging platform (telegram, discord, …) is fetched separately into its own
-// self-managed sidebar section (refreshMessagingSessions). Excluding both here
-// keeps "Load more" paging through interactive local chats instead of
+// The recents list is local-only: cron rows have their own section, kanban
+// dispatcher workers are read on the board, and each messaging platform
+// (telegram, discord, …) is fetched separately into its own self-managed
+// sidebar section (refreshMessagingSessions). Excluding them here keeps
+// "Load more" paging through interactive local chats instead of
 // interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
@@ -261,8 +262,12 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)
     ])
 
-    // A full window back means the profile still has more on disk.
-    const truncated = result.sessions.length >= loaded + SIDEBAR_SESSIONS_PAGE_SIZE
+    // A full window back means the profile still has more on disk — but pinned
+    // rows arrive as a back-fill PAST the limit, so counting them fakes a full
+    // page and the "Load more" never goes away (it re-fetches the same rows
+    // forever). Only unpinned rows count toward the window.
+    const unpinned = result.sessions.filter(s => !s.pinned).length
+    const truncated = unpinned >= loaded + SIDEBAR_SESSIONS_PAGE_SIZE
     setSessionProfilesTruncated(prev => ({ ...prev, [key]: truncated }))
   }, [])
 

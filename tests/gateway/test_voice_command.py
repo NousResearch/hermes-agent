@@ -768,6 +768,49 @@ class TestDiscordVoiceChannelMethods:
 
 
     @pytest.mark.asyncio
+    async def test_disconnect_leaves_voice_before_cancelling_bot_task(self):
+        """Voice must be torn down while the gateway websocket is still alive.
+
+        VoiceClient.disconnect() sends a voice state update over the main gateway
+        connection and waits for the voice socket to close.  The bot task is the
+        loop running that connection, so cancelling it first strands the
+        handshake and the disconnect blocks until the caller's shutdown timeout.
+        """
+        adapter = self._make_adapter()
+        events = []
+
+        async def cancel_liveness_task():
+            events.append("cancel_liveness_task")
+
+        async def cancel_bot_task():
+            events.append("cancel_bot_task")
+
+        async def leave_voice_channel(guild_id):
+            events.append(f"leave_voice_channel:{guild_id}")
+
+        async def close():
+            events.append("close_client")
+
+        adapter._cancel_liveness_task = cancel_liveness_task
+        adapter._cancel_bot_task = cancel_bot_task
+        adapter.leave_voice_channel = leave_voice_channel
+        adapter._client.close = close
+        adapter._voice_clients[111] = MagicMock()
+        adapter._ready_event = MagicMock()
+        adapter._post_connect_task = None
+        adapter._missed_message_backfill_task = None
+
+        await adapter.disconnect()
+
+        assert events == [
+            "cancel_liveness_task",
+            "leave_voice_channel:111",
+            "cancel_bot_task",
+            "close_client",
+        ]
+
+
+    @pytest.mark.asyncio
     async def test_get_user_voice_channel_success(self):
         adapter = self._make_adapter()
         mock_vc = MagicMock()
@@ -1947,3 +1990,54 @@ class TestStreamTtsTempfileFallback:
         )
         # And the temp file is cleaned up afterwards.
         assert not os.path.exists(played[0]), "temp WAV was not unlinked"
+
+
+class TestPcmToWav:
+    """pcm_to_wav streams PCM through ffmpeg's stdin, not a temp file."""
+
+    def test_pcm_is_piped_to_stdin_not_staged_on_disk(self, tmp_path):
+        from plugins.platforms.discord.adapter import VoiceReceiver
+
+        out = tmp_path / "out.wav"
+        with patch("plugins.platforms.discord.adapter.subprocess.run") as run:
+            VoiceReceiver.pcm_to_wav(b"\x00\x01" * 16, str(out))
+
+        args, kwargs = run.call_args
+        cmd = args[0]
+        assert kwargs["input"] == b"\x00\x01" * 16, "PCM must be fed via stdin"
+        assert "pipe:0" in cmd, "ffmpeg must read the PCM from stdin"
+        assert cmd[-1] == str(out), (
+            "the WAV must be written to the real path; ffmpeg cannot seek on a "
+            "pipe, so a piped WAV gets placeholder RIFF/data sizes"
+        )
+        assert not any(str(a).endswith(".pcm") for a in cmd), (
+            "no temp .pcm file should be staged"
+        )
+
+    @pytest.mark.skipif(
+        __import__("shutil").which("ffmpeg") is None, reason="ffmpeg not installed",
+    )
+    def test_output_wav_header_reports_true_length(self, tmp_path):
+        """A piped-stdout WAV reports 0xFFFFFFFF sizes; the written file must not."""
+        import math
+        import struct
+        import wave
+
+        from plugins.platforms.discord.adapter import VoiceReceiver
+
+        frames = 48000  # 1s @ 48kHz stereo
+        pcm = b"".join(
+            struct.pack("<hh", v, v)
+            for v in (
+                int(20000 * math.sin(2 * math.pi * 440 * i / 48000))
+                for i in range(frames)
+            )
+        )
+        out = tmp_path / "out.wav"
+        VoiceReceiver.pcm_to_wav(pcm, str(out))
+
+        with wave.open(str(out)) as w:
+            assert w.getnchannels() == 1
+            assert w.getframerate() == 16000
+            # 48kHz -> 16kHz is a 3x decimation of a 1s clip.
+            assert w.getnframes() == 16000

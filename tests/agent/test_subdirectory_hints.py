@@ -176,3 +176,111 @@ class TestOutsideWorkspaceRejection:
         outside.mkdir(exist_ok=True)
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         assert tracker._is_valid_subdir(outside) is False
+
+
+class TestContentDeduplication:
+    """The same context content must never be injected twice (ref: symlinked
+    shared workspaces, hardlinks, and copied backups all alias one file)."""
+
+    def test_symlinked_duplicate_not_reinjected(self, tmp_path):
+        """Two directories whose AGENTS.md is the same file yield one injection."""
+        real = tmp_path / "real"
+        real.mkdir()
+        (real / "AGENTS.md").write_text("Shared workspace instructions")
+
+        mirror = tmp_path / "mirror"
+        mirror.mkdir()
+        (mirror / "AGENTS.md").symlink_to(real / "AGENTS.md")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        first = tracker.check_tool_call("read_file", {"path": str(real / "x.py")})
+        second = tracker.check_tool_call("read_file", {"path": str(mirror / "y.py")})
+
+        assert first is not None
+        assert "Shared workspace instructions" in first
+        assert second is None
+
+    def test_identical_copy_not_reinjected(self, tmp_path):
+        """Byte-identical copies in unrelated directories dedupe by digest."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        (a / "AGENTS.md").write_text("Same content")
+        (b / "AGENTS.md").write_text("Same content")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        assert tracker.check_tool_call("read_file", {"path": str(a / "f.py")}) is not None
+        assert tracker.check_tool_call("read_file", {"path": str(b / "f.py")}) is None
+
+    def test_differing_content_still_injected(self, tmp_path):
+        """Dedupe must not suppress genuinely different context."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        (a / "AGENTS.md").write_text("Alpha rules")
+        (b / "AGENTS.md").write_text("Beta rules")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        first = tracker.check_tool_call("read_file", {"path": str(a / "f.py")})
+        second = tracker.check_tool_call("read_file", {"path": str(b / "f.py")})
+
+        assert first is not None and "Alpha rules" in first
+        assert second is not None and "Beta rules" in second
+
+    def test_working_dir_content_seeded(self, tmp_path):
+        """A copy of the CWD's own context file is not re-injected."""
+        (tmp_path / "AGENTS.md").write_text("Root instructions")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "AGENTS.md").write_text("Root instructions")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        assert tracker.check_tool_call("read_file", {"path": str(elsewhere / "f.py")}) is None
+
+
+class TestExcludedDirectories:
+    """Backups, vendored deps, and caches hold copies — never context."""
+
+    @pytest.mark.parametrize(
+        "excluded",
+        ["backups", "node_modules", ".git", "venv", "site-packages", ".Trash", "vendor"],
+    )
+    def test_excluded_directory_skipped(self, tmp_path, excluded):
+        target = tmp_path / excluded / "snapshot"
+        target.mkdir(parents=True)
+        (target / "AGENTS.md").write_text("Stale archived instructions")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        assert tracker.check_tool_call("read_file", {"path": str(target / "f.py")}) is None
+
+    def test_excluded_ancestor_blocks_descendant(self, tmp_path):
+        """A hint nested under an excluded ancestor is still skipped."""
+        deep = tmp_path / "backups" / "2026" / "proj"
+        deep.mkdir(parents=True)
+        (deep / "AGENTS.md").write_text("Archived")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        assert tracker.check_tool_call("read_file", {"path": str(deep / "f.py")}) is None
+
+    def test_working_dir_inside_excluded_name_still_works(self, tmp_path):
+        """If the user works inside e.g. vendor/, its own subdirs stay eligible."""
+        root = tmp_path / "vendor" / "myproject"
+        root.mkdir(parents=True)
+        sub = root / "pkg"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Package rules")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(root))
+        result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
+        assert result is not None and "Package rules" in result
+
+    def test_normal_directory_unaffected(self, tmp_path):
+        normal = tmp_path / "backend"
+        normal.mkdir()
+        (normal / "AGENTS.md").write_text("Backend rules")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call("read_file", {"path": str(normal / "f.py")})
+        assert result is not None and "Backend rules" in result

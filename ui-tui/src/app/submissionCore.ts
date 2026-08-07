@@ -1,4 +1,3 @@
-import { attachedImageNotice } from '../domain/messages.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { InputDetectDropResponse, PromptSubmitResponse } from '../gatewayTypes.js'
 import type { Msg } from '../types.js'
@@ -109,17 +108,16 @@ export function submitPrompt(
   // Always ask the backend whether this looks like a file drop. The backend's
   // _detect_file_drop handles paths with spaces, quotes, Windows drive letters,
   // and escaped characters correctly.
+  //
+  // No notice is emitted for a match: an image dropped into the composer already
+  // shows as an `[[ Image N ]]` token, and a matched non-image path is rewritten
+  // in place. Announcing it a second time above the status bar was the old
+  // out-of-band attachment UI.
   deps.gw
     .request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
     .then(r => {
       if (!r?.matched) {
         return startSubmit(text, deps.expand(text), showUserMessage)
-      }
-
-      if (r.is_image) {
-        turnController.pushActivity(attachedImageNotice(r))
-      } else {
-        turnController.pushActivity(`detected file: ${r.name}`)
       }
 
       startSubmit(r.text || text, deps.expand(r.text || text), showUserMessage)

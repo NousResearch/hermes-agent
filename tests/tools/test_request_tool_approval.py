@@ -50,13 +50,35 @@ class TestRequestToolApproval:
         assert res["approved"] is True
 
     def test_cli_deny_blocks(self, monkeypatch):
+        from hermes_cli import lifecycle
+
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
         monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
         monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *a, **k: "deny")
-        res = request_tool_approval("terminal", "curl PUT to external API")
+        events = []
+        monkeypatch.setattr(
+            lifecycle,
+            "invoke_hook",
+            lambda hook_name, **kwargs: events.append((hook_name, kwargs)) or [],
+        )
+        tokens = approval.set_current_observability_context(
+            turn_id="turn-1",
+            tool_call_id="call-1",
+        )
+        try:
+            res = request_tool_approval("terminal", "curl PUT to external API")
+        finally:
+            approval.reset_current_observability_context(tokens)
         assert res["approved"] is False
         assert "denied" in res["message"].lower()
         assert res["pattern_key"].startswith("plugin_rule:")
+        assert [name for name, _ in events] == [
+            "pre_approval_request",
+            "post_approval_response",
+        ]
+        assert all(event["turn_id"] == "turn-1" for _, event in events)
+        assert all(event["tool_call_id"] == "call-1" for _, event in events)
+        assert events[-1][1]["choice"] == "deny"
 
     def test_cli_session_persists_session_only(self, monkeypatch):
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
@@ -77,8 +99,7 @@ class TestRequestToolApproval:
     def test_cron_deny_mode_blocks(self, monkeypatch):
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
         monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
-        monkeypatch.setattr(approval, "env_var_enabled",
-                            lambda v: v == "HERMES_CRON_SESSION")
+        monkeypatch.setattr(approval, "_is_cron_approval_context", lambda: True)
         monkeypatch.setattr(approval, "_get_cron_approval_mode", lambda: "deny")
         res = request_tool_approval("terminal", "smtp send")
         assert res["approved"] is False
@@ -87,8 +108,7 @@ class TestRequestToolApproval:
     def test_cron_approve_mode_allows(self, monkeypatch):
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
         monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
-        monkeypatch.setattr(approval, "env_var_enabled",
-                            lambda v: v == "HERMES_CRON_SESSION")
+        monkeypatch.setattr(approval, "_is_cron_approval_context", lambda: True)
         monkeypatch.setattr(approval, "_get_cron_approval_mode", lambda: "approve")
         res = request_tool_approval("terminal", "smtp send")
         assert res["approved"] is True
@@ -116,7 +136,7 @@ class TestRequestToolApproval:
         — a plugin-flagged action never runs ungated without a human."""
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
         monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
-        monkeypatch.setattr(approval, "env_var_enabled", lambda v: False)  # not cron
+        monkeypatch.setattr(approval, "_is_cron_approval_context", lambda: False)
         res = request_tool_approval("terminal", "smtp send")
         assert res["approved"] is False
         assert "no interactive user or gateway" in res["message"].lower()

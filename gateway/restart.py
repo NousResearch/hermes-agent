@@ -24,6 +24,15 @@ DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT = float(
     DEFAULT_CONFIG["agent"]["restart_drain_timeout"]
 )
 
+# In-band restart (``/restart``, SIGUSR1, self-restart from a child CLI)
+# waits for active turns to finish *before* ``stop()`` begins. Distinct
+# from ``restart_drain_timeout``, which is the force-interrupt budget
+# once ``stop()`` is running (and must stay short under systemd
+# TimeoutStopSec). See #77184.
+DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT = float(
+    DEFAULT_CONFIG["agent"]["restart_after_turn_timeout"]
+)
+
 
 def is_gateway_supervisor_process(
     environ: Mapping[str, str] | None = None,
@@ -64,3 +73,48 @@ def parse_restart_drain_timeout(raw: object) -> float:
     except (TypeError, ValueError):
         return DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     return max(0.0, value)
+
+
+def parse_restart_after_turn_timeout(raw: object) -> float:
+    """Parse the after-turn wait cap for in-band restart, falling back to default.
+
+    ``0`` is a deliberate disable (legacy immediate drain) and must not fall
+    through to the default — unlike empty/missing input.
+    """
+    if raw is None:
+        return DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
+    if isinstance(raw, str) and not raw.strip():
+        return DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
+    return max(0.0, value)
+
+
+def resolve_restart_exit_wait_budget(
+    drain_timeout: float,
+    after_turn_timeout: float,
+    *,
+    headroom: float = 15.0,
+) -> float:
+    """Seconds a CLI should wait for the gateway PID to exit after SIGUSR1.
+
+    In-band restart may defer ``stop()`` until active turns finish
+    (``after_turn_timeout``) and then spend up to ``drain_timeout`` inside
+    ``stop()``. Callers that fall back to a hard kill on wait expiry must
+    cover both phases or they reintroduce #77184.
+    """
+    try:
+        drain = max(float(drain_timeout), 0.0)
+    except (TypeError, ValueError):
+        drain = 0.0
+    try:
+        after_turn = max(float(after_turn_timeout), 0.0)
+    except (TypeError, ValueError):
+        after_turn = 0.0
+    try:
+        margin = max(float(headroom), 0.0)
+    except (TypeError, ValueError):
+        margin = 0.0
+    return drain + after_turn + margin

@@ -550,6 +550,14 @@ def _request_approval(action: str, args: Dict[str, Any],
             if verdict == "always_approve":
                 _session_auto_approve[session_id] = True
         return None
+    if verdict == "timeout":
+        return json.dumps({
+            "error": (
+                "approval prompt timed out — the user did not respond. "
+                "Silence is not consent; do not retry without the user."
+            ),
+            "action": action,
+        })
     return json.dumps({"error": "denied by user", "action": action})
 
 

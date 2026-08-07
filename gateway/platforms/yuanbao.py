@@ -2160,7 +2160,7 @@ class ForwardedRecordsParseMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         try:
             if ctx.forwarded_records:
-                self._send_loading_heartbeat(ctx)
+                await self._send_loading_heartbeat(ctx)
                 ctx.raw_text = self.build_forward_text(ctx.forwarded_records, ctx=ctx, is_dispatch=True)
         except Exception as exc:
             # Degrade gracefully: leave ctx.raw_text as-is.
@@ -4588,7 +4588,11 @@ class MessageSender:
         cached = self._adapter._member_cache.get(group_code)
         if cached:
             ts, member_list = cached
-            members = member_list if (time.time() - ts < self._adapter.MEMBER_CACHE_TTL_S) else []
+            if time.time() - ts < self._adapter.MEMBER_CACHE_TTL_S:
+                members = member_list
+            else:
+                del self._adapter._member_cache[group_code]
+                members = []
         else:
             members = []
         if not members:
@@ -5116,6 +5120,19 @@ class YuanbaoAdapter(BasePlatformAdapter):
             await super()._process_message_background(event, session_key)
         finally:
             self._outbound.cancel_slow_notifier(chat_id)
+            # Clear the RecallGuard tracking entries for this message only if
+            # our msg_id is still current.  A concurrent pending message may
+            # have already overwritten the entry in _dispatch_inbound_event
+            # while we were running; in that case the drain task owns it and
+            # we must not clear it.  Id-less events (internal/synthetic
+            # messages, pushes without a msg_id) never wrote a tracking entry
+            # in _dispatch_inbound_event, so they must never pop either — the
+            # entry they see belongs to a concurrently-queued id-bearing
+            # message whose drain task still needs it for recall matching.
+            msg_id = event.message_id
+            if msg_id and self._processing_msg_ids.get(session_key) == msg_id:
+                self._processing_msg_ids.pop(session_key, None)
+                self._processing_msg_texts.pop(session_key, None)
 
     # ------------------------------------------------------------------
     # Group query (delegate to GroupQueryService)

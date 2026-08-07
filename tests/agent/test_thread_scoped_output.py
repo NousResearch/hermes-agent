@@ -82,3 +82,15 @@ def test_many_concurrent_silenced_and_loud_threads():
     for i in range(5):
         assert f"S{i}" not in captured, f"silenced S{i} leaked"
         assert f"L{i}" in captured, f"loud L{i} swallowed"
+
+
+def test_repeated_contexts_never_write_to_a_closed_sink():
+    """The installed proxy must survive later silenced workers."""
+    original = sys.stdout
+    try:
+        for _ in range(3):
+            with thread_scoped_silence():
+                sys.stdout.write("hidden\n")
+            sys.stdout.fileno()
+    finally:
+        sys.stdout = original

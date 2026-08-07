@@ -15,6 +15,34 @@ _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
+# Project-tree session fetches feed SQLite ``LIMIT``. Negative LIMIT in SQLite
+# means *no bound*, and a hostile client can force a multi-thousand-row CTE
+# join via an oversized positive limit — keep both paths bounded.
+_PROJECT_SESSION_LIMIT_MAX = 10_000
+_PROJECT_PREVIEW_LIMIT_MAX = 50
+
+
+def _coerce_project_session_limit(raw, *, default: int) -> int:
+    try:
+        if raw is None or raw == "":
+            value = default
+        else:
+            value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, _PROJECT_SESSION_LIMIT_MAX))
+
+
+def _coerce_project_preview_limit(raw, *, default: int = 3) -> int:
+    try:
+        if raw is None or raw == "":
+            value = default
+        else:
+            value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(0, min(value, _PROJECT_PREVIEW_LIMIT_MAX))
+
 
 @method("projects.discover_repos")
 def _(rid, params: dict) -> dict:
@@ -119,9 +147,9 @@ def _(rid, params: dict) -> dict:
 
         tree, active_id = _build_project_tree(
             db,
-            preview_limit=int(params.get("preview_limit") or 3),
+            preview_limit=_coerce_project_preview_limit(params.get("preview_limit"), default=3),
             hydrate=False,
-            session_limit=int(params.get("session_limit") or 2000),
+            session_limit=_coerce_project_session_limit(params.get("session_limit"), default=2000),
             include_discovered=True,
         )
         return _ok(
@@ -149,7 +177,10 @@ def _(rid, params: dict) -> dict:
         # Drill-in only needs the entered project (which has sessions), so skip
         # the zero-session discovery tier entirely.
         tree, _active = _build_project_tree(
-            db, preview_limit=0, hydrate=True, session_limit=int(params.get("session_limit") or 5000),
+            db,
+            preview_limit=0,
+            hydrate=True,
+            session_limit=_coerce_project_session_limit(params.get("session_limit"), default=5000),
             include_discovered=False,
         )
         proj = next((p for p in tree["projects"] if p["id"] == project_id), None)
@@ -419,4 +450,10 @@ def _(rid, params: dict) -> dict:
 
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
+    # Handlers are rebound to server globals (see method_ctx); expose the
+    # clamp helpers they call by bare name.
+    server._coerce_project_session_limit = _coerce_project_session_limit
+    server._coerce_project_preview_limit = _coerce_project_preview_limit
+    server._PROJECT_SESSION_LIMIT_MAX = _PROJECT_SESSION_LIMIT_MAX
+    server._PROJECT_PREVIEW_LIMIT_MAX = _PROJECT_PREVIEW_LIMIT_MAX
     _registry.install(server)

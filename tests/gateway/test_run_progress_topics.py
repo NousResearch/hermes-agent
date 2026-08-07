@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import sys
+import threading
 import time
 import types
 from types import SimpleNamespace
@@ -124,6 +125,33 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
                 "metadata": metadata,
             }
         )
+        return SendResult(success=True, message_id=message_id)
+
+
+class MatrixStreamingProgressCaptureAdapter(ProgressCaptureAdapter):
+    """Records whether Matrix edits are progressive or finalizing."""
+
+    initial_send_seen = threading.Event()
+    progressive_edit_seen = threading.Event()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        result = await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+        self.initial_send_seen.set()
+        return result
+
+    async def edit_message(
+        self, chat_id, message_id, content, *, finalize: bool = False
+    ) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "finalize": finalize,
+            }
+        )
+        if not finalize:
+            self.progressive_edit_seen.set()
         return SendResult(success=True, message_id=message_id)
 
 
@@ -759,9 +787,10 @@ class StreamingRefineAgent:
     def run_conversation(self, message, conversation_history=None, task_id=None):
         if self.stream_delta_callback:
             self.stream_delta_callback("Continuing to refine:")
-        time.sleep(0.1)
+        MatrixStreamingProgressCaptureAdapter.initial_send_seen.wait(timeout=2.0)
         if self.stream_delta_callback:
             self.stream_delta_callback(" Final answer.")
+        MatrixStreamingProgressCaptureAdapter.progressive_edit_seen.wait(timeout=2.0)
         return {
             "final_response": "Continuing to refine: Final answer.",
             "response_previewed": True,
@@ -978,6 +1007,36 @@ async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, 
     assert result.get("already_sent") is not True
     assert adapter.edits == []
     assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_matrix_streaming_omits_cursor(monkeypatch, tmp_path):
+    MatrixStreamingProgressCaptureAdapter.initial_send_seen.clear()
+    MatrixStreamingProgressCaptureAdapter.progressive_edit_seen.clear()
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StreamingRefineAgent,
+        session_id="sess-matrix-streaming",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+        adapter_cls=MatrixStreamingProgressCaptureAdapter,
+    )
+
+    assert result.get("already_sent") is True
+    all_text = [call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits]
+    assert all_text, "expected streamed Matrix content to be sent or edited"
+    assert any(not call["finalize"] for call in adapter.edits), (
+        "Matrix should progressively edit the active message before finalization"
+    )
+    assert all("▉" not in text for text in all_text)
+    assert any("Continuing to refine:" in text for text in all_text)
 
 
 class TransformedStreamAgent:

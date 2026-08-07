@@ -5979,7 +5979,7 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     return max(existing, key=lambda p: p.stat().st_mtime)
 
 
-# ─── Desktop exe integrity gate (#69179) ────────────────────────────────────
+# ─── Desktop package integrity gate (#69179 / #70825) ─────────────────────
 #
 # The desktop self-update chain (Desktop → hermes-setup --update →
 # `hermes update` → `hermes desktop --build-only` → relaunch) rebuilds
@@ -6232,6 +6232,49 @@ def _desktop_exe_integrity_error(path: Path) -> Optional[str]:
     return None
 
 
+def _desktop_payload_integrity_error(packaged_executable: Path) -> Optional[str]:
+    """Return why the packaged Electron app payload cannot boot, if any.
+
+    A valid PE alone is insufficient: Electron shows its own help text when the
+    adjacent app archive is empty or lacks the package entry point. The Windows
+    package config unpacks ``dist/**``, so both the archive metadata and the two
+    runtime entry files are stable, cheap post-build invariants.
+    """
+    resources = packaged_executable.parent / "resources"
+    app_asar = resources / "app.asar"
+    try:
+        asar_size = app_asar.stat().st_size
+    except OSError as exc:
+        return f"missing or unreadable resources/app.asar: {exc}"
+    if asar_size < 4096:
+        return f"resources/app.asar is only {asar_size} bytes — packaged app payload is empty"
+    try:
+        with app_asar.open("rb") as fh:
+            header = fh.read(min(asar_size, 2 * 1024 * 1024))
+    except OSError as exc:
+        return f"could not inspect resources/app.asar: {exc}"
+    for entry in (b"package.json", b"electron-main.mjs"):
+        if entry not in header:
+            return f"resources/app.asar is missing required entry metadata: {entry.decode()}"
+
+    required_unpacked = (
+        resources / "app.asar.unpacked" / "dist" / "electron-main.mjs",
+        resources / "app.asar.unpacked" / "dist" / "index.html",
+    )
+    for runtime_file in required_unpacked:
+        try:
+            if runtime_file.stat().st_size <= 0:
+                return f"packaged runtime file is empty: {runtime_file}"
+        except OSError:
+            return f"packaged runtime file is missing: {runtime_file}"
+    return None
+
+
+def _desktop_packaged_app_integrity_error(path: Path) -> Optional[str]:
+    """Validate both the Windows executable and its Electron app payload."""
+    return _desktop_exe_integrity_error(path) or _desktop_payload_integrity_error(path)
+
+
 def _desktop_backup_unpacked_dir(packaged_executable: Path) -> Path:
     """The rollback tree before-pack.mjs preserves: ``<unpacked-dir>.bak``."""
     unpacked = packaged_executable.parent
@@ -6251,7 +6294,7 @@ def _rollback_desktop_from_backup(packaged_executable: Path) -> Optional[Path]:
     backup_exe = backup_dir / packaged_executable.name
     if not backup_exe.exists():
         return None
-    if _desktop_exe_integrity_error(backup_exe) is not None:
+    if _desktop_packaged_app_integrity_error(backup_exe) is not None:
         return None
     corrupt_dir = unpacked.parent / (unpacked.name + ".corrupt")
     try:
@@ -6270,13 +6313,14 @@ def _rollback_desktop_from_backup(packaged_executable: Path) -> Optional[Path]:
 def _ensure_desktop_exe_launchable(
     desktop_dir: Path, packaged_executable: Optional[Path]
 ) -> tuple:
-    """Windows post-build integrity gate for the self-update rebuild (#69179).
+    """Windows post-build integrity gate for the self-update rebuild.
 
-    Returns ``(verified_exe_or_None, rolled_back)``:
+    Returns ``(verified_exe_or_None, rolled_back)`` after validating both the
+    PE executable and its Electron app payload:
 
-    - exe passed the probe → ``(exe, False)``
-    - exe corrupt/wrong-arch, previous build restored → ``(old_exe, True)``
-    - exe corrupt and nothing restorable → ``(None, False)``
+    - package passed the probes → ``(exe, False)``
+    - package invalid, previous build restored → ``(old_exe, True)``
+    - package invalid and nothing restorable → ``(None, False)``
 
     On any integrity failure the corrupt cached Electron zip is purged and the
     desktop build stamp invalidated, so the updater's retry-once rebuild pulls
@@ -6286,7 +6330,7 @@ def _ensure_desktop_exe_launchable(
     if packaged_executable is None or sys.platform != "win32":
         return packaged_executable, False
 
-    error = _desktop_exe_integrity_error(packaged_executable)
+    error = _desktop_packaged_app_integrity_error(packaged_executable)
     if error is None:
         return packaged_executable, False
 

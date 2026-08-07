@@ -67,6 +67,68 @@ Every morning at 9am, check Hacker News for AI news and send me a summary on Tel
 
 Hermes will use the unified `cronjob` tool internally.
 
+## Reliability preflight and smoke checks
+
+Cron jobs can store optional smoke metadata that `hermes doctor` uses to check
+whether the job still has the local prerequisites it needs. These checks are
+static and declarative: Hermes validates the declaration, checks attached
+skills, checks paths, environment-variable presence, command availability,
+Python import availability, and MCP server configuration. Smoke/preflight
+metadata cannot run arbitrary commands.
+
+```bash
+hermes doctor cron <job_id_or_name>
+hermes doctor cron --all --json
+hermes doctor skill <skill_name>
+hermes doctor skill --all --json
+```
+
+Attach smoke metadata from a JSON or YAML file when creating or editing a job:
+
+```bash
+hermes cron create "every 1h" "Refresh the local report" \
+  --workdir /home/me/projects/reporting \
+  --smoke-file ./cron-smoke.yaml
+
+hermes cron edit <job_id_or_name> --smoke-file ./cron-smoke.yaml
+hermes cron edit <job_id_or_name> --clear-smoke
+```
+
+Supported smoke files use `version: 1` and a `probes` list:
+
+```yaml
+version: 1
+probes:
+  - type: file-exists
+    root: workdir
+    path: scripts/report.py
+  - type: directory-exists
+    root: hermes_home
+    path: cron
+  - type: env-present
+    name: REPORT_API_TOKEN
+  - type: command-exists
+    name: python
+  - type: python-import
+    module: requests
+  - type: mcp-configured
+    server: filesystem
+```
+
+Path probes are limited to declared roots (`hermes_home`, `scripts_dir`,
+`workdir`, or `skill_dir`) and relative paths. `env-present` checks only
+presence and never exposes environment values in doctor output.
+
+After `hermes cron create` or `hermes cron edit`, Hermes saves the job first and
+then runs static preflight by default. Add `--skip-preflight` to save without
+checking, or `--strict-preflight` to return a non-zero exit code if the
+post-save preflight fails. Strict mode does not roll back or delete the job; the
+output says `Job saved. Preflight failed.` so the saved state is unambiguous.
+
+Preflight probes never run on scheduler ticks. The `cronjob` model tool may
+validate and store static smoke metadata, but unsupported probe types such as
+`command` are rejected before the job is saved.
+
 ## Letting unpinned jobs track global defaults
 
 The model/provider drift guard is enabled by default. If your unpinned cron

@@ -585,7 +585,25 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    smoke_summary = _smoke_summary(job.get("smoke"))
+    if smoke_summary:
+        result["smoke"] = smoke_summary
     return result
+
+
+def _smoke_summary(smoke: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(smoke, dict):
+        return None
+    probes = smoke.get("probes")
+    if not isinstance(probes, list):
+        return None
+    return {
+        "version": smoke.get("version", 1),
+        "probe_count": len(probes),
+        "probe_types": sorted(
+            {str(probe.get("type")) for probe in probes if isinstance(probe, dict)}
+        ),
+    }
 
 
 def _execute_job_now(
@@ -1041,6 +1059,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    smoke: Optional[Dict[str, Any]] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1085,6 +1104,13 @@ def cronjob(
             base_url_error = _validate_cron_base_url(provider, base_url)
             if base_url_error:
                 return tool_error(base_url_error, success=False)
+            try:
+                if smoke is not None:
+                    from hermes_cli.reliability_doctor import validate_smoke_spec
+
+                    smoke = validate_smoke_spec(smoke)
+            except Exception as e:
+                return tool_error(f"Invalid smoke metadata: {e}", success=False)
 
             # Validate context_from references existing jobs
             if context_from:
@@ -1121,6 +1147,7 @@ def cronjob(
                     workdir=_normalize_optional_job_value(workdir),
                     no_agent=_no_agent,
                     attach_to_session=attach_to_session,
+                    smoke=smoke,
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -1353,6 +1380,16 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["workdir"] = _normalize_optional_job_value(workdir) or None
+            if smoke is not None:
+                if smoke == {}:
+                    updates["smoke"] = None
+                else:
+                    try:
+                        from hermes_cli.reliability_doctor import validate_smoke_spec
+
+                        updates["smoke"] = validate_smoke_spec(smoke)
+                    except Exception as e:
+                        return tool_error(f"Invalid smoke metadata: {e}", success=False)
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
@@ -1498,6 +1535,15 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
+            "smoke": {
+                "type": "object",
+                "description": (
+                    "Optional static declarative preflight metadata to validate and store with the job. "
+                    "Supported probes are file-exists, directory-exists, env-present, command-exists, "
+                    "python-import, and mcp-configured. Command probes are rejected. "
+                    "On update, pass an empty object to clear."
+                ),
+            },
         },
         "required": ["action"]
     }
@@ -1555,6 +1601,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        smoke=args.get("smoke"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
     ),

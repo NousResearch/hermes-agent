@@ -97,6 +97,41 @@ def test_config_get_unset_subcommands_parse():
     assert ns.key == "terminal.backend"
 
 
+def test_doctor_targeted_subcommands_parse_without_breaking_existing_shapes():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("doctor")
+    build_doctor_parser(sub, cmd_doctor=handler)
+
+    ns = parser.parse_args(["doctor"])
+    assert ns.func is handler
+    assert ns.command == "doctor"
+    assert ns.fix is False
+    assert ns.ack is None
+    assert getattr(ns, "doctor_target", None) is None
+
+    ns = parser.parse_args(["doctor", "--fix"])
+    assert ns.fix is True
+    assert getattr(ns, "doctor_target", None) is None
+
+    ns = parser.parse_args(["doctor", "--ack", "ADV-1"])
+    assert ns.ack == "ADV-1"
+    assert getattr(ns, "doctor_target", None) is None
+
+    ns = parser.parse_args(["doctor", "skill", "example", "--json"])
+    assert ns.doctor_target == "skill"
+    assert ns.target == "example"
+    assert ns.all is False
+    assert ns.json is True
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["doctor", "skill", "example", "--smoke"])
+    assert exc.value.code == 2
+
+    ns = parser.parse_args(["doctor", "cron", "--all"])
+    assert ns.doctor_target == "cron"
+    assert ns.all is True
+    assert ns.target is None
 
 
 # ── deprecated `hermes login` fails gracefully, not with argparse error ────

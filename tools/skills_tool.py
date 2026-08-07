@@ -964,6 +964,7 @@ def skill_view(
     file_path: str = None,
     task_id: str = None,
     preprocess: bool = True,
+    metadata_only: bool = False,
 ) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
@@ -976,6 +977,8 @@ def skill_view(
         preprocess: Apply configured SKILL.md template and inline shell rendering
             to main skill content. Internal slash/preload callers disable this
             because they render the skill message themselves.
+        metadata_only: Return parsed frontmatter without setup, registration,
+            preprocessing, or read-tracking hooks.
 
     Returns:
         JSON string with skill content or error message
@@ -1034,6 +1037,26 @@ def skill_view(
                                 f"been cleaned up — try again after the "
                                 f"plugin is reloaded."
                             ),
+                        },
+                        ensure_ascii=False,
+                    )
+                if metadata_only:
+                    try:
+                        plugin_content = plugin_skill_md.read_text(encoding="utf-8")
+                        plugin_frontmatter, _ = _parse_frontmatter(plugin_content)
+                    except Exception:
+                        return json.dumps(
+                            {
+                                "success": False,
+                                "error": f"Failed to read skill '{name}'.",
+                            },
+                            ensure_ascii=False,
+                        )
+                    return json.dumps(
+                        {
+                            "success": True,
+                            "name": plugin_frontmatter.get("name", bare),
+                            "frontmatter": plugin_frontmatter,
                         },
                         ensure_ascii=False,
                     )
@@ -1286,6 +1309,16 @@ def skill_view(
                         f"Skill '{resolved_name}' is disabled. "
                         "Enable it with `hermes skills` or inspect the files directly on disk."
                     ),
+                },
+                ensure_ascii=False,
+            )
+
+        if metadata_only:
+            return json.dumps(
+                {
+                    "success": True,
+                    "name": resolved_name,
+                    "frontmatter": parsed_frontmatter,
                 },
                 ensure_ascii=False,
             )

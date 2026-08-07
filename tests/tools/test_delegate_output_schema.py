@@ -289,7 +289,10 @@ class TestDelegateTaskDispatch:
             ),
         ):
             out = delegate_task(
-                tasks=[{"goal": "x", "output_schema": "not-a-dict"}],
+                tasks=[
+                    {"goal": "Summarize the release notes for module A", "output_schema": "not-a-dict"},
+                    {"goal": "Summarize the release notes for module B"},
+                ],
                 parent_agent=_make_mock_parent(),
             )
         payload = json.loads(out)
@@ -311,7 +314,10 @@ class TestDelegateTaskDispatch:
             ),
         ):
             out = delegate_task(
-                tasks=[{"goal": "x", "output_schema": {"type": 42}}],
+                tasks=[
+                    {"goal": "Summarize the release notes for module A", "output_schema": {"type": 42}},
+                    {"goal": "Summarize the release notes for module B"},
+                ],
                 parent_agent=_make_mock_parent(),
             )
         payload = json.loads(out)

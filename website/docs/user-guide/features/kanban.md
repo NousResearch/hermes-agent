@@ -265,6 +265,41 @@ hermes kanban unblock  t_abc t_def
 hermes kanban block    t_abc "need input" --ids t_def t_hij
 ```
 
+### Safe restart/reclaimer reproductions
+
+Run ad-hoc Python reproductions through `scripts/kanban_repro.py`. The helper
+replaces any inherited `HERMES_KANBAN_DB` with a temporary database, so a
+reproduction launched by a Kanban worker cannot accidentally write fixtures to
+the board that dispatched it:
+
+```bash
+python scripts/kanban_repro.py /tmp/reproduce_restart_orphan.py
+```
+
+Use `--db /absolute/path/to/repro.db` to keep an isolated reproduction DB.
+Existing databases require `--allow-existing-db`. The configured default,
+active, and named-board paths are guarded more strongly and require the
+explicitly dangerous `--allow-configured-db` opt-in. Put options before the
+script path. Normal reproductions should never need either opt-in.
+
+Clean up synthetic artifacts by provenance, not by weakening the completion
+evidence policy. Record every task id created by the reproduction, then inspect
+each one with `hermes kanban show <id>`. A restart-orphan fixture is safe to
+archive only when all of the reproduction's expected markers agree. For the
+historical `restart orphan repro` fixture these are: exact title, `created_by`
+unset, the deliberately nonexistent test assignee, and a `restart_reclaimed`
+event whose payload contains the expected synthetic host/epoch values and
+`exclusive_handoff=true`. Archive the individually verified ids:
+
+```bash
+hermes kanban archive t_repro_parent t_repro_child
+```
+
+Do not complete synthetic failures merely to remove them from Ready: that
+would fabricate implementation evidence. Do not archive by assignee, status,
+age, title keyword, or `created_by` alone; any mismatch means the task may be
+real work and must be left for operator review.
+
 :::note Where an unblocked task lands
 `unblock` itself only ever moves a task to **`ready`** (all parents `done`) or
 **`todo`** (a parent is still open — the task is dependency-gated and the

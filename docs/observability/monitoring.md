@@ -9,8 +9,8 @@ lifecycle state, platform connector health, and content-free warning/error
 diagnostics. It never exports prompts, messages, tool arguments or results,
 job names, destinations, schedules, raw errors, session history, usage
 analytics, audit logs, or detailed execution traces. Run/model/tool trajectory
-capture is a separate plane served by Hermes's native NeMo Relay SDK
-integration and explicitly configured Relay subscribers or exporters.
+capture is a separate plane served by the NeMo Relay integration
+(`plugins/observability/nemo_relay/`) and its Hermes-owned subscribers.
 
 ## What gets exported
 

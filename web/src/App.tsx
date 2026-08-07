@@ -63,6 +63,7 @@ import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
+import { CockpitSidebarSlot } from "@/components/CockpitSidebarSlot";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
@@ -689,6 +690,10 @@ export default function App() {
                 </div>
               )}
             </nav>
+
+            {/* Cockpit rail plugins — the `sidebar` slot renders only in the
+                cockpit layout variant (extending-the-dashboard.md). */}
+            <CockpitSidebarSlot layoutVariant={layoutVariant} />
 
             <SidebarSystemActions
               collapsed={isDesktopCollapsed}

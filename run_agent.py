@@ -7222,9 +7222,65 @@ class AIAgent:
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
             or self._needs_mimo_tool_reasoning()
+            or self._provider_reasoning_replay_configured()
         )
         self._thinking_pad_cache = (key, result)
         return result
+
+    def _provider_reasoning_replay_configured(self) -> bool:
+        """Return True when the provider config opts into reasoning_content echo-back.
+
+        Self-hosted thinking models have the same replay requirement as the
+        hosted Kimi / DeepSeek / MiMo APIs. Kimi K3 served locally by
+        llama.cpp is the motivating case: its model card requires the full
+        assistant message (including ``reasoning_content``) to be passed
+        back every turn, but unlike the hosted APIs nothing fails loudly —
+        the replay just silently renders history without thinking blocks and
+        agentic quality degrades. The hosted-endpoint detection (the
+        kimi-coding provider names plus api.kimi.com / moonshot.* host
+        matches) can never see these endpoints (127.0.0.1, LAN hosts,
+        tunnels), and model-name matching
+        was deliberately rejected for Kimi (aggregators re-exporting Kimi
+        models 422 on the echo — see ``_needs_kimi_tool_reasoning``), so an
+        explicit per-provider opt-in is the remaining safe signal::
+
+            providers:
+              llamacpp:
+                base_url: http://127.0.0.1:8091/v1
+                reasoning_replay: true
+
+        Reached only through ``_needs_thinking_reasoning_pad``'s cache, so
+        the config read stays off the hot path.
+        """
+        if not self.provider:
+            return False
+        try:
+            from hermes_cli.config import load_config_readonly
+            cfg = load_config_readonly() or {}
+        except Exception:
+            return False
+        providers_cfg = cfg.get("providers")
+        if not isinstance(providers_cfg, dict):
+            return False
+        # Direct name match covers built-in named providers (e.g. "ollama"),
+        # whose runtime provider label equals the config key.
+        entry = providers_cfg.get(self.provider)
+        if isinstance(entry, dict):
+            return bool(entry.get("reasoning_replay", False))
+        # Named custom endpoints resolve to runtime provider == "custom"
+        # (hermes_cli/runtime_provider.py), which never equals the config key.
+        # Recover the selected entry by matching the configured base_url
+        # against the agent's active base_url instead. No match keeps the
+        # strip-by-default behavior.
+        def _norm(url):
+            return url.strip().rstrip("/").lower() if isinstance(url, str) else ""
+        base = _norm(getattr(self, "base_url", ""))
+        if not base:
+            return False
+        for e in providers_cfg.values():
+            if isinstance(e, dict) and _norm(e.get("base_url")) == base:
+                return bool(e.get("reasoning_replay", False))
+        return False
 
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.

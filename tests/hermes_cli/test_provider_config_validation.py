@@ -30,6 +30,21 @@ class TestNormalizeCustomProviderEntry:
 
 
 
+    def test_reasoning_replay_not_flagged_unknown(self, caplog):
+        """reasoning_replay (self-hosted thinking-model echo-back opt-in) is a
+        documented provider key and must be accepted silently. Regression for
+        the cosmetic "unknown config keys ignored: reasoning_replay" warning
+        that made users think the flag did nothing (PR #73811)."""
+        entry = {
+            "base_url": "http://127.0.0.1:8091/v1",
+            "key_env": "LLAMACPP_KEY",
+            "reasoning_replay": True,
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="llamacpp-k3")
+        assert result is not None
+        assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
+
     def test_unknown_keys_warned_once_per_signature(self, caplog):
         """Repeated normalization of the same entry (as happens on every
         picker/inventory load) must warn only once — otherwise the warning

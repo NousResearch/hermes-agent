@@ -122,6 +122,19 @@ model:
   #       CF-Access-Client-Id: "xxxx.access"
   #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
   #       X-Client-Name: "hermes-agent"
+  #
+  # Self-hosted thinking models (e.g. Kimi K3 served by llama.cpp) need
+  # ``reasoning_replay: true`` so Hermes passes ``reasoning_content`` back
+  # on every replayed assistant message, as the hosted Kimi/DeepSeek APIs
+  # require. Without it the reasoning is stripped on replay (the safe
+  # default: strict OpenAI-compatible providers reject the field) and the
+  # model's agentic quality silently degrades. Only set this for endpoints
+  # that accept reasoning_content in input messages (llama.cpp does).
+  # providers:
+  #   llamacpp-k3:
+  #     base_url: "http://127.0.0.1:8091/v1"
+  #     key_env: "LLAMACPP_KEY"
+  #     reasoning_replay: true
 
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,

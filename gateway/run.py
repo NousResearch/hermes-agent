@@ -10930,6 +10930,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info("Active profile: %s", _profile)
         except Exception:
             pass
+        # Snapshot the *previous* gateway's runtime state BEFORE we overwrite it
+        # with "starting" below.  This lets us detect an unexpected restart
+        # (previous gateway died while "running" / "draining") at the end of
+        # start(), without being fooled by our own status writes.
+        prev_gateway_state: Optional[str] = None
+        try:
+            from gateway.status import read_runtime_status
+            _prev_state = read_runtime_status()
+            prev_gateway_state = (_prev_state or {}).get("gateway_state")
+        except Exception:
+            prev_gateway_state = None
+
         try:
             from gateway.status import write_runtime_status
             write_runtime_status(gateway_state="starting", exit_reason=None)
@@ -11595,6 +11607,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             finally:
                 _clear_planned_restart_notification()
+        elif not chat_restart_notification_pending:
+            # Also notify on unexpected restarts (SIGTERM from systemd, OOM kill,
+            # etc.) so the operator always knows when the gateway has come back
+            # online - not just on planned restarts.  We detect an "unexpected
+            # restart" by checking whether the previous gateway left a
+            # "running" / "draining" state behind (meaning it died while active)
+            # rather than a clean "stopped" state.  A first-ever boot has no
+            # state file at all, so we don't spam on initial install.
+            #
+            # prev_gateway_state was snapshotted at the top of start(), before
+            # we overwrote the status file with "starting" / "running".
+            if prev_gateway_state in ("running", "draining"):
+                logger.info(
+                    "Previous gateway state was '%s' - treating as unexpected restart, "
+                    "sending home-channel startup notification",
+                    prev_gateway_state,
+                )
+                await self._send_home_channel_startup_notifications(
+                    skip_targets=None,
+                )
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared

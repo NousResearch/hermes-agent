@@ -75,6 +75,13 @@ def test_catalog_placeholders_match_english(lang: str):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "value", ["vi", "vi-VN", "Vietnamese", "Tieng Viet", "Tiếng Việt"]
+)
+def test_vietnamese_language_aliases(value: str):
+    assert i18n._normalize_lang(value) == "vi"
+
+
 
 
 

@@ -13,6 +13,7 @@ import type {
   SessionCloseResponse,
   SessionCreateResponse,
   SessionInflightTurn,
+  SessionPendingPrompt,
   SessionResumeResponse,
   SessionTitleResponse,
   SetupStatusResponse
@@ -22,6 +23,7 @@ import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
+import { pendingPromptOverlay } from './pendingPromptOverlay.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -66,6 +68,19 @@ export const hydrateLiveSessionInflight = (inflight?: null | SessionInflightTurn
   }
 
   turnController.hydrateStreamingText(assistant)
+}
+
+export const restorePendingPrompt = (prompt?: SessionPendingPrompt) => {
+  const restored = pendingPromptOverlay(prompt)
+
+  if (!restored) {
+    return false
+  }
+
+  patchOverlayState(restored.overlay)
+  patchUiState({ status: restored.status })
+
+  return true
 }
 
 export const signalFreshSessionBoundary = (
@@ -339,6 +354,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             status: statusFromLiveSession(r.status, running),
             usage: usageFrom(info)
           })
+          restorePendingPrompt(r.pending_prompt)
           hydrateLiveSessionInflight(r.inflight)
           cancelResumeScrollRef.current?.()
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
@@ -393,6 +409,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               status: statusFromLiveSession(r.status, running),
               usage: usageFrom(info)
             })
+            restorePendingPrompt(r.pending_prompt)
             hydrateLiveSessionInflight(r.inflight)
             cancelResumeScrollRef.current?.()
             cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)

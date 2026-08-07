@@ -11,7 +11,8 @@ import type {
   DelegationStatusResponse,
   GatewayEvent,
   GatewaySkin,
-  SessionMostRecentResponse
+  SessionMostRecentResponse,
+  SessionPendingPrompt
 } from '../gatewayTypes.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
 import { relativeLuminance } from '../lib/color.js'
@@ -28,6 +29,7 @@ import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
+import { pendingPromptOverlay } from './pendingPromptOverlay.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
@@ -550,6 +552,19 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     patchUiState({ status })
+  }
+
+  // Blocking prompts arrive here as events and again from the gateway when a
+  // session the user switched away from is resumed. Both map through
+  // pendingPromptOverlay so the two paths cannot drift (#67265); only the way
+  // the status is pushed differs, which is why setStatus stays on this side.
+  const applyPendingPrompt = (prompt: SessionPendingPrompt) => {
+    const restored = pendingPromptOverlay(prompt)
+
+    if (restored) {
+      patchOverlayState(restored.overlay)
+      setStatus(restored.status)
+    }
   }
 
   const scheduleThinkingStatus = (status: string) => {
@@ -1160,10 +1175,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'clarify.request':
-        patchOverlayState({
-          clarify: { choices: ev.payload.choices, question: ev.payload.question, requestId: ev.payload.request_id }
-        })
-        setStatus('waiting for input…')
+        applyPendingPrompt({ event: 'clarify.request', payload: ev.payload })
 
         return
       case 'approval.request': {
@@ -1186,16 +1198,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'sudo.request':
-        patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
-        setStatus('sudo password needed')
+        applyPendingPrompt({ event: 'sudo.request', payload: ev.payload })
 
         return
 
       case 'secret.request':
-        patchOverlayState({
-          secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
-        })
-        setStatus('secret input needed')
+        applyPendingPrompt({ event: 'secret.request', payload: ev.payload })
 
         return
 

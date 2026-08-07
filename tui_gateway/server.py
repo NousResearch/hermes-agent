@@ -7875,17 +7875,52 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
     timer.start()
 
 
+def _session_pending_state(sid: str) -> tuple[str, dict] | None:
+    """Return a copy of the current blocking prompt for a live session."""
+    with _prompt_lock:
+        for rid, (owner_sid, _ev) in _pending.items():
+            if owner_sid != sid:
+                continue
+            event, payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
+            return str(event), dict(payload)
+    return None
+
+
 def _session_pending_kind(sid: str) -> str:
-    for rid, (owner_sid, _ev) in list(_pending.items()):
-        if owner_sid != sid:
-            continue
-        event, _payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
-        return str(event).removesuffix(".request")
-    return ""
+    pending = _session_pending_state(sid)
+    return pending[0].removesuffix(".request") if pending else ""
 
 
-def _session_live_status(sid: str, session: dict) -> str:
-    if _session_pending_kind(sid):
+def _session_rehydration_prompt(pending: tuple[str, dict] | None) -> dict | None:
+    """Serialize a pending prompt the Ink TUI can render after reconnecting.
+
+    ``terminal.read.request`` is intentionally omitted: it is a desktop-only
+    callback and the Ink TUI has no corresponding input surface. Returning a
+    prompt only when the client can answer it avoids rendering a dead overlay.
+
+    ``approval.request`` is missing for a different reason, and not because the
+    TUI cannot answer it — it has an approval overlay and an
+    ``approval.respond`` handler. Approvals never pass through ``_block``:
+    they are pushed by ``_emit_approval_request`` via ``register_gateway_notify``
+    and resolved through ``tools.approval.resolve_gateway_approval`` keyed by
+    ``session_key``, so nothing about them is recorded in ``_pending`` /
+    ``_pending_prompt_payloads`` for this function to find. Rehydrating them
+    means teaching ``tools.approval`` to report its outstanding requests per
+    session and reading that here — a change to a different subsystem, left as
+    follow-up rather than half-wired.
+    """
+    if pending is None:
+        return None
+    event, payload = pending
+    if event not in {"clarify.request", "secret.request", "sudo.request"}:
+        return None
+    return {"event": event, "payload": payload}
+
+
+def _session_live_status(sid: str, session: dict, *, pending_kind: str | None = None) -> str:
+    if pending_kind is None:
+        pending_kind = _session_pending_kind(sid)
+    if pending_kind:
         return "waiting"
     ready = session.get("agent_ready")
     # Unset + build never started = a lazy watch session sitting idle, not a
@@ -8088,6 +8123,8 @@ def _live_session_payload(
         if omit_messages
         else _live_visible_history(session, _get_db(), in_memory_history)
     )
+    pending = _session_pending_state(sid)
+    pending_kind = pending[0].removesuffix(".request") if pending else ""
     payload = {
         "info": _fallback_session_info(session),
         "message_count": len(history),
@@ -8097,8 +8134,10 @@ def _live_session_payload(
         "session_id": sid,
         "session_key": _session_lookup_key(session, fallback=sid),
         "started_at": float(session.get("created_at") or time.time()),
-        "status": _session_live_status(sid, session),
+        "status": _session_live_status(sid, session, pending_kind=pending_kind),
     }
+    if prompt := _session_rehydration_prompt(pending):
+        payload["pending_prompt"] = prompt
     if inflight:
         payload["inflight"] = inflight
     if queued:

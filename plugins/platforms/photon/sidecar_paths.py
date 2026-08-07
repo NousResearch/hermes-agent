@@ -50,6 +50,7 @@ SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 # it is either baked (managed image) or installed by npm in the mirror.
 _MIRROR_FILES = (
     "index.mjs",
+    "attachment-read.mjs",
     "package.json",
     "package-lock.json",
     "patch-spectrum-mixed-attachments.mjs",

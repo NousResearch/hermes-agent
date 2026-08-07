@@ -221,3 +221,85 @@ async def test_disconnect_cancels_pending_fffc_tasks(
     await adapter.disconnect()
 
     assert len(adapter._pending_fffc) == 0
+
+@pytest.mark.asyncio
+async def test_dispatch_reply_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _dm_event("placeholder", msg_id="spc-reply-msg")
+    event["content"] = {
+        "type": "reply",
+        "content": {"type": "text", "text": "this can be archived"},
+        "targetMessageId": "bot-msg-123",
+        "targetDirection": "outbound",
+        "targetText": "DHL parcel notification",
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    message = captured[0]
+    assert message.text == "this can be archived"
+    assert message.reply_to_message_id == "bot-msg-123"
+    assert message.reply_to_text == "DHL parcel notification"
+    assert message.reply_to_is_own_message is True
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reply_context_from_hydrated_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    event = _dm_event("this is the reply", msg_id="spc-envelope-reply")
+    event.update(
+        {
+            "replyToMessageId": "bot-msg-hydrated",
+            "replyToText": "Hydrated bot response text",
+            "replyToIsOwnMessage": True,
+        }
+    )
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    message = captured[0]
+    assert message.text == "this is the reply"
+    assert message.reply_to_message_id == "bot-msg-hydrated"
+    assert message.reply_to_text == "Hydrated bot response text"
+    assert message.reply_to_is_own_message is True
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reply_context_falls_back_to_sent_text_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    adapter._record_sent_message_text(
+        "+155****4567", "bot-msg-blank-target", "Cached bot response text"
+    )
+
+    event = _dm_event("placeholder", msg_id="spc-reply-blank-target")
+    event["content"] = {
+        "type": "reply",
+        "content": {"type": "text", "text": "this is the reply"},
+        "targetMessageId": "bot-msg-blank-target",
+        # Spectrum 8.2.2 emits an unresolved outbound target as a stub, so its
+        # direction and preview are both blank. The adapter must recover both
+        # ownership and text from its sent-message caches.
+        "targetDirection": None,
+        "targetText": None,
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    message = captured[0]
+    assert message.text == "this is the reply"
+    assert message.reply_to_message_id == "bot-msg-blank-target"
+    assert message.reply_to_text == "Cached bot response text"
+    assert message.reply_to_is_own_message is True
+

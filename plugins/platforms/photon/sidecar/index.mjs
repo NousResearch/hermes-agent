@@ -480,20 +480,23 @@ async function normalizeBinaryContent(content) {
   return meta;
 }
 
-// Best-effort text preview of a reaction's resolved target Message, so the
-// Python adapter can populate the gateway's `reply_to_text` (context: WHAT was
-// tapped back). The SDK only emits a reaction once it has resolved the full
-// target Message (toReactionMessages bails otherwise), so `target.content` is
-// hydrated here — no extra round trip. Handles plain text and our patched mixed
-// text+attachment groups (first text child); null for attachment/voice-only
-// targets. Capped so one long bubble can't balloon the NDJSON line.
-const REACTION_TARGET_TEXT_CAP = 2000;
-function reactionTargetText(target) {
+// Best-effort text preview of a resolved target Message, so the Python adapter
+// can populate the gateway's `reply_to_text` for reactions and replies. The SDK
+// hydrates reaction/reply targets when possible; stub reply targets have custom
+// content and return null. Handles plain text and mixed text+attachment groups
+// (first text child); null for attachment/voice-only targets. Capped so one long
+// bubble can't balloon the NDJSON line.
+const MESSAGE_PREVIEW_TEXT_CAP = 2000;
+function messagePreviewText(target) {
   const c = target && typeof target === "object" ? target.content : null;
   if (!c || typeof c !== "object") return null;
   let text = null;
   if (c.type === "text") {
     text = c.text;
+  } else if (c.type === "markdown") {
+    // Spectrum caches outbound markdown in its authored form. A reply can hit
+    // that cache before iMessage rehydrates the bubble as inbound `text`.
+    text = c.markdown;
   } else if (c.type === "richlink") {
     text = c.url;
   } else if (c.type === "group") {
@@ -503,6 +506,10 @@ function reactionTargetText(target) {
         text = ic.text;
         break;
       }
+      if (ic && ic.type === "markdown" && ic.markdown) {
+        text = ic.markdown;
+        break;
+      }
       if (ic && ic.type === "richlink" && ic.url) {
         text = ic.url;
         break;
@@ -510,8 +517,8 @@ function reactionTargetText(target) {
     }
   }
   if (typeof text !== "string" || !text) return null;
-  return text.length > REACTION_TARGET_TEXT_CAP
-    ? text.slice(0, REACTION_TARGET_TEXT_CAP)
+  return text.length > MESSAGE_PREVIEW_TEXT_CAP
+    ? text.slice(0, MESSAGE_PREVIEW_TEXT_CAP)
     : text;
 }
 
@@ -545,6 +552,16 @@ async function normalizeContent(content) {
     }
     return { type: "group", items };
   }
+  if (content.type === "reply") {
+    const target = content.target || null;
+    return {
+      type: "reply",
+      content: await normalizeContent(content.content),
+      targetMessageId: target?.id ?? null,
+      targetDirection: target?.direction ?? null,
+      targetText: messagePreviewText(target),
+    };
+  }
   if (content.type === "reaction") {
     const target = content.target;
     return {
@@ -557,7 +574,7 @@ async function normalizeContent(content) {
       targetDirection: target?.direction ?? null,
       // Text of the reacted-to message, so Python can correlate the tapback to
       // the gateway's reply_to_text. Null for attachment/voice-only targets.
-      targetText: reactionTargetText(target),
+      targetText: messagePreviewText(target),
     };
   }
   // A user tapping a poll choice arrives as `poll_option` carrying the chosen
@@ -590,8 +607,49 @@ async function normalizeEvent(space, message) {
   try {
     const msgSpace = message.space || {};
     const ts = message.timestamp;
+    const normalizedContent = await normalizeContent(message.content);
+    const replyTargetId =
+      message.replyTargetGuid ?? message.reply_to_guid ??
+      message.threadOriginatorGuid ?? message.threadRootMessageId ??
+      (normalizedContent.type === "reply"
+        ? normalizedContent.targetMessageId
+        : null);
+    // Reply targets are often Hermes' outbound messages, so they are not in
+    // knownMessages (which is populated from inbound events only). Hydrate a
+    // cache miss through Spectrum so the adapter can preserve quoted context.
+    let replyTarget = replyTargetId
+      ? knownMessages.get(replyTargetId)
+      : null;
+    if (replyTargetId && !replyTarget && typeof space.getMessage === "function") {
+      try {
+        replyTarget = await space.getMessage(replyTargetId);
+        if (replyTarget) rememberKnownMessage(replyTarget);
+      } catch (e) {
+        console.error(
+          `photon-sidecar: failed to hydrate reply target ${replyTargetId}: ` +
+            (e && e.message ? e.message : String(e))
+        );
+      }
+    }
+    const replyTargetText =
+      (normalizedContent.type === "reply"
+        ? normalizedContent.targetText
+        : null) ?? messagePreviewText(replyTarget);
+    const replyTargetDirection =
+      (normalizedContent.type === "reply"
+        ? normalizedContent.targetDirection
+        : null) ?? replyTarget?.direction ??
+      (replyTarget?.isFromMe === true ? "outbound" : null);
+    if (normalizedContent.type === "reply") {
+      normalizedContent.targetMessageId = replyTargetId;
+      normalizedContent.targetText = replyTargetText;
+      normalizedContent.targetDirection = replyTargetDirection;
+    }
     return {
       messageId: message.id ?? null,
+      replyToMessageId: replyTargetId,
+      replyToText: replyTargetText,
+      replyToIsOwnMessage: replyTargetDirection === "outbound",
       platform: message.platform || space.__platform || "iMessage",
       space: {
         id: space.id ?? msgSpace.id ?? null,
@@ -600,7 +658,7 @@ async function normalizeEvent(space, message) {
         phone: space.phone ?? msgSpace.phone ?? null,
       },
       sender: { id: message.sender ? message.sender.id : null },
-      content: await normalizeContent(message.content),
+      content: normalizedContent,
       timestamp:
         ts instanceof Date ? ts.toISOString() : ts ? String(ts) : null,
     };

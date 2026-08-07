@@ -103,3 +103,64 @@ async def test_standalone_send_includes_markdown_format(
 
     assert result.get("success") is True
     assert posted[0][1]["format"] == "markdown"
+    assert posted[0][1]["text"] == _MD
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_records_text_for_reply_hydration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway import rich_sent_store
+
+    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json() -> Dict[str, Any]:
+            return {"ok": True, "messageId": "m-reply"}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url: str, json: Dict[str, Any], headers=None):
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
+    cfg = PlatformConfig(enabled=True, token="", extra={})
+    chat_id = "any;-;+15551234567"
+
+    result = await photon_adapter._standalone_send(cfg, chat_id, _MD)
+
+    assert result.get("success") is True
+    assert rich_sent_store.lookup(chat_id, "m-reply") == _MD
+    assert rich_sent_store.lookup("+15551234567", "m-reply") == _MD
+
+@pytest.mark.asyncio
+async def test_adapter_send_records_text_for_stub_reply_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+
+    async def _fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        assert path == "/send"
+        return {"ok": True, "messageId": "m-in-gateway"}
+
+    monkeypatch.setattr(adapter, "_sidecar_call", _fake_call)
+
+    result = await adapter.send("+155****4567", "Bot response kept for a reply")
+
+    assert result.success is True
+    assert adapter._sent_message_ids["m-in-gateway"]
+    assert (
+        adapter._sent_message_text["m-in-gateway"]
+        == "Bot response kept for a reply"
+    )

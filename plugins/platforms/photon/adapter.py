@@ -816,6 +816,12 @@ class PhotonAdapter(BasePlatformAdapter):
         # preview artwork as separate image attachments immediately after the
         # URL bubble; this lets us coalesce those artifacts.
         self._recent_richlinks_by_chat: Dict[str, float] = {}
+        # Text preview for messages we sent, keyed by platform message id.
+        # Spectrum/iMessage sometimes emits reply targets as stubs: the target
+        # id is present but target.content is custom/empty, so the sidecar can't
+        # hydrate `reply_to_text`. Persisting send-time text lets replies still
+        # carry useful context when the target object comes through blank.
+        self._sent_message_text: Dict[str, str] = {}
         # Last time we sent a typing indicator per chat, for cooldown gating.
         self._typing_last_sent: Dict[str, float] = {}
 
@@ -1262,6 +1268,50 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
         ctype = content.get("type")
+        # Spectrum 8.2 can expose reply context either as a normalized
+        # ``content.type == reply`` wrapper or as envelope fields hydrated by
+        # the sidecar from iMessage's reply GUID. Accept both shapes: outbound
+        # targets commonly need the envelope lookup because they were never in
+        # the sidecar's inbound-only message cache.
+        reply_to_message_id = event.get("replyToMessageId") or None
+        reply_to_text = event.get("replyToText") or None
+        reply_to_is_own_message = event.get("replyToIsOwnMessage") is True
+        target_direction = None
+
+        if ctype == "reply":
+            reply_to_message_id = (
+                content.get("targetMessageId") or reply_to_message_id
+            )
+            reply_to_text = content.get("targetText") or reply_to_text
+            target_direction = content.get("targetDirection")
+            if target_direction == "outbound":
+                reply_to_is_own_message = True
+            elif target_direction == "inbound":
+                reply_to_is_own_message = False
+            content = content.get("content") or {}
+            ctype = content.get("type")
+
+        sent_text_fallback = None
+        if not reply_to_text and reply_to_message_id:
+            sent_text_fallback = self._lookup_sent_message_text(
+                space_id, reply_to_message_id
+            )
+            reply_to_text = sent_text_fallback
+
+        # Spectrum's unresolved reply target is a stub with an id but no
+        # direction. The id/text caches are the durable signal that this was
+        # one of our outbound messages; do not let the sidecar's envelope
+        # ``false`` for an unknown direction hide that fallback.
+        if (
+            reply_to_message_id
+            and target_direction not in {"outbound", "inbound"}
+            and (
+                reply_to_message_id in self._sent_message_ids
+                or sent_text_fallback is not None
+            )
+        ):
+            reply_to_is_own_message = True
+
         if ctype == "reaction":
             # Route only tapbacks on messages WE sent — those are implicitly
             # addressed to the bot (feishu precedent: synthetic text event).
@@ -1447,6 +1497,9 @@ class PhotonAdapter(BasePlatformAdapter):
             message_type=mtype,
             source=source,
             message_id=event.get("messageId"),
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_to_is_own_message,
             raw_message=event,
             timestamp=timestamp,
             media_urls=media_urls,
@@ -2153,6 +2206,8 @@ class PhotonAdapter(BasePlatformAdapter):
 
     _SENT_IDS_MAX = 1000
     _LAST_INBOUND_CHATS_MAX = 200
+    _SENT_TEXT_MAX = 1000
+    _SENT_TEXT_CHARS = 2000
 
     def _record_sent_message(self, message_id: Optional[str]) -> None:
         if not message_id:
@@ -2164,6 +2219,56 @@ class PhotonAdapter(BasePlatformAdapter):
         if len(sent) > self._SENT_IDS_MAX:
             for old in list(sent.keys())[: len(sent) - self._SENT_IDS_MAX]:
                 del sent[old]
+
+    def _record_sent_message_text(
+        self, chat_id: Optional[str], message_id: Optional[str], text: Optional[str]
+    ) -> None:
+        if not chat_id or not message_id or not text:
+            return
+        preview = text[: self._SENT_TEXT_CHARS]
+        cache = self._sent_message_text
+        if message_id in cache:
+            del cache[message_id]  # refresh insertion order
+        cache[message_id] = preview
+        if len(cache) > self._SENT_TEXT_MAX:
+            for old in list(cache.keys())[: len(cache) - self._SENT_TEXT_MAX]:
+                del cache[old]
+
+        # Shared durable index already used by Telegram/WhatsApp for reply
+        # hydration. It is best-effort and swallows errors, so send delivery
+        # never depends on this cache write succeeding.
+        try:
+            from gateway import rich_sent_store
+
+            rich_sent_store.record(chat_id, message_id, preview)
+            normalized = self._normalize_chat_key(str(chat_id))
+            if normalized != str(chat_id):
+                rich_sent_store.record(normalized, message_id, preview)
+        except Exception:
+            pass
+
+    def _lookup_sent_message_text(
+        self, chat_id: Optional[str], message_id: Optional[str]
+    ) -> Optional[str]:
+        if not message_id:
+            return None
+        text = self._sent_message_text.get(message_id)
+        if text:
+            return text
+        if not chat_id:
+            return None
+        try:
+            from gateway import rich_sent_store
+
+            text = rich_sent_store.lookup(chat_id, message_id)
+            if text:
+                return text
+            normalized = self._normalize_chat_key(str(chat_id))
+            if normalized != str(chat_id):
+                return rich_sent_store.lookup(normalized, message_id)
+        except Exception:
+            return None
+        return None
 
     # A DM space is addressable two ways — the chat GUID (`any;-;+1555...`)
     # that inbound events carry, and the bare E.164 phone that home-channel
@@ -2460,8 +2565,10 @@ class PhotonAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
-        self._record_sent_message(data.get("messageId"))
-        return SendResult(success=True, message_id=data.get("messageId"))
+        message_id = data.get("messageId")
+        self._record_sent_message(message_id)
+        self._record_sent_message_text(space_id, message_id, url)
+        return SendResult(success=True, message_id=message_id)
 
     async def _sidecar_send(
         self,
@@ -2506,8 +2613,10 @@ class PhotonAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
-        self._record_sent_message(data.get("messageId"))
-        return SendResult(success=True, message_id=data.get("messageId"))
+        message_id = data.get("messageId")
+        self._record_sent_message(message_id)
+        self._record_sent_message_text(space_id, message_id, text)
+        return SendResult(success=True, message_id=message_id)
 
     async def _sidecar_send_poll(
         self, space_id: str, title: str, options: list,
@@ -2532,8 +2641,10 @@ class PhotonAdapter(BasePlatformAdapter):
             data = await self._sidecar_call("/send-poll", body)
         except Exception as e:
             return SendResult(success=False, error=str(e))
-        self._record_sent_message(data.get("messageId"))
-        return SendResult(success=True, message_id=data.get("messageId"))
+        message_id = data.get("messageId")
+        self._record_sent_message(message_id)
+        self._record_sent_message_text(space_id, message_id, body["title"])
+        return SendResult(success=True, message_id=message_id)
 
     async def _sidecar_send_attachment(
         self,
@@ -2820,6 +2931,23 @@ async def _standalone_send(
                     if not data.get("ok"):
                         return _standalone_error(resp)
                     last_message_id = data.get("messageId")
+
+                # `hermes send` talks to the running sidecar directly rather
+                # than through PhotonAdapter.send(), so persist the same
+                # reply-hydration fallback here as the in-gateway send path.
+                if last_message_id:
+                    try:
+                        from gateway import rich_sent_store
+
+                        preview = message[: PhotonAdapter._SENT_TEXT_CHARS]
+                        rich_sent_store.record(chat_id, last_message_id, preview)
+                        normalized = PhotonAdapter._normalize_chat_key(str(chat_id))
+                        if normalized != str(chat_id):
+                            rich_sent_store.record(
+                                normalized, last_message_id, preview
+                            )
+                    except Exception:
+                        pass
 
             # 2. Each attachment as a separate /send-attachment call.
             #    media_files is List[Tuple[path, is_voice]] (see

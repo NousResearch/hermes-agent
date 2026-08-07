@@ -1134,6 +1134,7 @@ def _pricing_entry_from_metadata(
     *,
     source_url: str,
     pricing_version: str,
+    per_million: bool = False,
 ) -> Optional[PricingEntry]:
     if model_id not in metadata:
         return None
@@ -1157,6 +1158,8 @@ def _pricing_entry_from_metadata(
     def _per_token_to_per_million(value: Optional[Decimal]) -> Optional[Decimal]:
         if value is None:
             return None
+        if per_million:
+            return value
         return value * _ONE_MILLION
 
     return PricingEntry(
@@ -1196,6 +1199,7 @@ def get_pricing_entry(
             route.model,
             source_url=f"{route.base_url.rstrip('/')}/models",
             pricing_version="openai-compatible-models-api",
+            per_million=True,
         )
         if entry:
             return entry

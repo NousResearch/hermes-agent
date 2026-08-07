@@ -6,6 +6,7 @@ rate-limited provider concurrently.
 """
 
 import random
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -85,6 +86,47 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+# Aggregator gateways that proxy several upstream providers often cannot set a
+# ``Retry-After`` header (the 429 is synthesized after an internal failover walk),
+# so they state the reset window in the error body instead:
+#     [antigravity/claude-sonnet-4-6] [429]: {...} (reset after 4s)
+#     [claude/claude-opus-5] [429]: {...} (reset after 2m 13s)
+# Without reading this, the retry loop falls back to a generic exponential
+# backoff that is usually far shorter than the advertised window, so the retry
+# lands inside the same closed window, fails again, and the whole provider gets
+# abandoned for a fallback even though it would have been ready seconds later.
+_RESET_AFTER_RE = re.compile(
+    r"reset\s+after\s+"
+    r"(?:(\d+)\s*h)?\s*"
+    r"(?:(\d+)\s*m(?!s))?\s*"
+    r"(?:(\d+)\s*s)?",
+    re.IGNORECASE,
+)
+
+# Anything past this is not a usable interactive wait — treat it as "provider is
+# down for now" and let the normal fallback path take over instead of sleeping.
+_MAX_RESET_AFTER_SECONDS = 600.0
+
+
+def parse_reset_after_seconds(text: Any) -> Optional[float]:
+    """Extract the ``(reset after …)`` window a gateway states in its error body.
+
+    Handles the ``4s`` / ``2m 13s`` / ``1h 5m`` shapes. Returns seconds as a
+    float, or ``None`` when no such hint is present, the value parses to zero,
+    or it exceeds :data:`_MAX_RESET_AFTER_SECONDS`.
+    """
+    if not text:
+        return None
+    m = _RESET_AFTER_RE.search(str(text))
+    if not m:
+        return None
+    hours, minutes, seconds = (int(g) if g else 0 for g in m.groups())
+    total = float(hours * 3600 + minutes * 60 + seconds)
+    if total <= 0 or total > _MAX_RESET_AFTER_SECONDS:
+        return None
+    return total
 
 
 def jittered_backoff(

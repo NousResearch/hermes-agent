@@ -2041,11 +2041,20 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 fb_model, fb_provider, _norm_err,
             )
 
-        # Determine api_mode from provider / base URL / model
+        # Determine api_mode from provider / base URL / model. An explicit
+        # ``api_mode`` on the fallback entry always wins over the heuristics
+        # below — without this, a fallback pointed at a custom gateway
+        # (provider: custom, base_url without a path suffix the heuristics
+        # recognize) silently defaulted to chat_completions and 404'd, and
+        # the only way to force anthropic_messages was provider: anthropic,
+        # which ignores base_url entirely and hits api.anthropic.com for real.
         fb_api_mode = "chat_completions"
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        _fb_explicit_api_mode = str(fb.get("api_mode") or "").strip()
+        if _fb_explicit_api_mode:
+            fb_api_mode = _fb_explicit_api_mode
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
             # Portal is dual-wire: anthropic/* must land on /v1/messages.

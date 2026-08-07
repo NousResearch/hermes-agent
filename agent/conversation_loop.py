@@ -83,6 +83,7 @@ from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
     jittered_backoff,
+    parse_reset_after_seconds,
     zai_coding_overload_retry_ceiling,
 )
 from agent.trajectory import has_incomplete_scratchpad
@@ -5708,6 +5709,22 @@ def run_conversation(
                                 _retry_after = min(float(_ra_raw), 600)
                             except (TypeError, ValueError):
                                 pass
+                    if _retry_after is None:
+                        # Aggregator gateways synthesize the 429 after their own
+                        # internal failover walk, so they have no Retry-After
+                        # header to forward and state the window in the body
+                        # instead: "... [429]: {...} (reset after 4s)". These
+                        # windows are usually seconds long — honoring them turns
+                        # a needless provider abandonment into a short wait.
+                        _retry_after = parse_reset_after_seconds(
+                            agent._summarize_api_error(api_error)
+                        )
+                        if _retry_after:
+                            logger.info(
+                                "Honoring provider-advertised reset window: %.1fs "
+                                "(no Retry-After header) provider=%s model=%s",
+                                _retry_after, _provider, _model,
+                            )
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
                 if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
@@ -5718,6 +5735,32 @@ def run_conversation(
                         error=api_error,
                         default_wait=wait_time,
                     )
+                # Aggregator gateways (provider: custom) multiplex several
+                # upstream accounts behind one endpoint and name the one that
+                # actually 429'd inside the error body. Concurrent sessions
+                # (WhatsApp DMs, subagents, background review) can each land
+                # on the same upstream and independently compute their own
+                # short wait — merge with any cooldown another session already
+                # published for that upstream so they converge on one wait
+                # instead of retrying back into the same wall.
+                if is_rate_limited:
+                    from agent.downstream_rate_guard import (
+                        downstream_rate_limit_remaining,
+                        extract_upstream_tag,
+                        record_downstream_rate_limit,
+                    )
+                    _upstream_tag = extract_upstream_tag(agent._summarize_api_error(api_error))
+                    if _upstream_tag:
+                        _shared_rl_key = f"{getattr(agent, 'provider', 'unknown')}:{_upstream_tag}"
+                        _shared_remaining = downstream_rate_limit_remaining(_shared_rl_key)
+                        if _shared_remaining and _shared_remaining > wait_time:
+                            logger.info(
+                                "Extending retry wait for %s from %.1fs to %.1fs — another "
+                                "session already recorded this upstream as rate-limited",
+                                _shared_rl_key, wait_time, _shared_remaining,
+                            )
+                            wait_time = _shared_remaining
+                        record_downstream_rate_limit(_shared_rl_key, seconds=wait_time)
                 if is_rate_limited or _is_zai_coding_overload:
                     _policy_note = ""
                     if _backoff_policy == "zai_coding_overload_long":

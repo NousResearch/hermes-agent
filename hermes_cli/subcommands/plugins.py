@@ -103,4 +103,12 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         "disable", help="Disable a plugin without removing it"
     )
     plugins_disable.add_argument("name", help="Plugin name to disable")
+
+    plugins_show = plugins_subparsers.add_parser(
+        "show",
+        aliases=["info"],
+        help="Show details for a single plugin (including emits/listens)",
+    )
+    plugins_show.add_argument("name", help="Plugin name or key to show")
+
     plugins_parser.set_defaults(func=cmd_plugins)

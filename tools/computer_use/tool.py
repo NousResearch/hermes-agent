@@ -508,7 +508,12 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
             return _dispatch(backend, action, args)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
-        return json.dumps({"error": f"{action} failed: {e}"})
+        # Some failures carry no message at all — most notably the empty-str
+        # TimeoutError from the MCP bridge — which rendered as a bare
+        # "capture failed:" the model could not act on (#74969). Fall back to
+        # the exception class so there is always *something* to react to.
+        detail = str(e).strip() or type(e).__name__
+        return json.dumps({"error": f"{action} failed: {detail}"})
 
 
 def _request_approval(action: str, args: Dict[str, Any],

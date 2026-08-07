@@ -97,6 +97,10 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
   const s = t.statusStack
   const failed = item.state === 'failed'
   const running = item.state === 'running'
+  // Todo titles are the working plan the user reads mid-run — keep the full
+  // string visible (wrap) instead of a single truncated line. Other stack
+  // rows stay compact single-line chrome.
+  const isTodo = item.type === 'todo'
 
   const action =
     item.type === 'background'
@@ -114,6 +118,8 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
   return (
     <Fragment>
       <StatusRow
+        // Multi-line todo copy needs the glyph pinned to the first line.
+        className={isTodo ? 'items-start' : undefined}
         leading={leadingGlyph(item, s)}
         onActivate={onActivate}
         trailing={
@@ -140,12 +146,19 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
       >
         <span
           className={cn(
-            'min-w-0 max-w-[18rem] truncate text-[0.73rem] leading-4',
+            'min-w-0 text-[0.73rem] leading-4',
+            isTodo
+              ? 'flex-1 whitespace-normal break-words text-pretty'
+              : 'max-w-[18rem] truncate',
             failed
               ? 'text-destructive/90'
-              : item.todoStatus && item.todoStatus !== 'in_progress'
-                ? 'text-muted-foreground/75'
-                : 'text-foreground/92'
+              : isTodo
+                ? item.todoStatus === 'in_progress'
+                  ? 'text-foreground/92'
+                  : 'text-foreground/78'
+                : item.todoStatus && item.todoStatus !== 'in_progress'
+                  ? 'text-muted-foreground/75'
+                  : 'text-foreground/92'
           )}
         >
           {item.title}

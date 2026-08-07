@@ -425,7 +425,7 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from signal-cli daemon."""
-        url = f"{self.http_url}/api/v1/events?account={quote(self.account, safe='')}"
+        url = f"{self.http_url}/api/v1/events"
         backoff = SSE_RETRY_DELAY_INITIAL
 
         while self._running:
@@ -614,7 +614,7 @@ class SignalAdapter(BasePlatformAdapter):
         chat_type = "group" if is_group else "dm"
 
         # Extract text and render mentions
-        text = data_message.get("message", "")
+        text = data_message.get("message", "") or envelope.get("syncMessage", {}).get("sentMessage", {}).get("message", "")
         mentions = data_message.get("mentions", [])
         if text and mentions:
             text = _render_mentions(text, mentions)
@@ -627,10 +627,16 @@ class SignalAdapter(BasePlatformAdapter):
                 f"@{account_norm}" in (text or "")
             )
             mentioned_in_metadata = any(
-                m.get("number") == account_norm or m.get("uuid") == account_norm
+                m.get("number") == account_norm
+                or m.get("uuid") == account_norm
+                or (self._recipient_uuid_by_number.get(account_norm) and m.get("uuid") == self._recipient_uuid_by_number.get(account_norm))
                 for m in (data_message.get("mentions") or [])
             )
-            if not mentioned_in_text and not mentioned_in_metadata:
+            # Plaintext alias bypass (#65071 Block 3)
+            alias = os.getenv("SIGNAL_TRIGGER_ALIAS", "").lower()
+            if alias and text and alias in text.lower():
+                logger.debug("Signal: trigger alias '%s' found, bypassing mention filter", alias)
+            elif not mentioned_in_text and not mentioned_in_metadata:
                 logger.debug(
                     "Signal: ignoring group message (require_mention=true, bot not mentioned)"
                 )

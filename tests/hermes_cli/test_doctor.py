@@ -1410,3 +1410,201 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+@pytest.fixture
+def _doctor_probe_env(monkeypatch, tmp_path):
+    """Common monkeypatch setup for anthropic doctor probe tests."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except ImportError:
+        pass
+
+    return home, project
+
+
+def test_run_doctor_anthropic_probe_uses_config_relay_base_url(monkeypatch, tmp_path, _doctor_probe_env):
+    home, project = _doctor_probe_env
+    (home / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  base_url: https://asia.qcode.cc/api\n",
+        encoding="utf-8",
+    )
+    (home / ".env").write_text("ANTHROPIC_API_KEY=sk-test\n", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers, timeout))
+        return types.SimpleNamespace(status_code=200, text="")
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert any(url == "https://asia.qcode.cc/api/v1/models" for url, _, _ in calls)
+    assert "relay: asia.qcode.cc" in out
+
+
+def test_run_doctor_anthropic_probe_default_endpoint_unchanged(monkeypatch, tmp_path, _doctor_probe_env):
+    home, project = _doctor_probe_env
+    (home / "config.yaml").write_text("model:\n  provider: anthropic\n", encoding="utf-8")
+    (home / ".env").write_text("ANTHROPIC_API_KEY=sk-test\n", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers, timeout))
+        return types.SimpleNamespace(status_code=200, text="")
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert any(url == "https://api.anthropic.com/v1/models" for url, _, _ in calls)
+    assert "Anthropic API (relay:" not in out
+
+
+def test_run_doctor_anthropic_probe_relay_401_labels_host(monkeypatch, tmp_path, _doctor_probe_env):
+    home, project = _doctor_probe_env
+    (home / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  base_url: https://asia.qcode.cc/api\n",
+        encoding="utf-8",
+    )
+    (home / ".env").write_text("ANTHROPIC_API_KEY=sk-bad\n", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-bad")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers, timeout))
+        return types.SimpleNamespace(status_code=401, text="")
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert any(url == "https://asia.qcode.cc/api/v1/models" for url, _, _ in calls)
+    assert "relay: asia.qcode.cc" in out
+    assert "invalid API key" in out
+
+
+def test_run_doctor_anthropic_probe_silent_without_key(monkeypatch, tmp_path, _doctor_probe_env):
+    home, project = _doctor_probe_env
+    (home / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  base_url: https://asia.qcode.cc/api\n",
+        encoding="utf-8",
+    )
+    (home / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers, timeout))
+        return types.SimpleNamespace(status_code=200, text="")
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert not any("anthropic.com" in url or "asia.qcode.cc" in url for url, _, _ in calls)
+    assert "Anthropic API" not in out
+
+
+def test_run_doctor_anthropic_probe_base_url_with_v1_not_duplicated(monkeypatch, tmp_path, _doctor_probe_env):
+    home, project = _doctor_probe_env
+    (home / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  base_url: https://x.com/v1\n",
+        encoding="utf-8",
+    )
+    (home / ".env").write_text("ANTHROPIC_API_KEY=sk-test\n", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers, timeout))
+        return types.SimpleNamespace(status_code=200, text="")
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert any(url == "https://x.com/v1/models" for url, _, _ in calls)
+    assert not any("/v1/v1/" in url for url, _, _ in calls)
+
+
+def test_run_doctor_anthropic_probe_uses_env_base_url_fallback(monkeypatch, tmp_path, _doctor_probe_env):
+    home, project = _doctor_probe_env
+    (home / "config.yaml").write_text("model:\n  provider: anthropic\n", encoding="utf-8")
+    (home / ".env").write_text("ANTHROPIC_API_KEY=sk-test\n", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://my-proxy.local")
+
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers, timeout))
+        return types.SimpleNamespace(status_code=200, text="")
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert any(url == "https://my-proxy.local/v1/models" for url, _, _ in calls)
+    assert "relay: my-proxy.local" in out

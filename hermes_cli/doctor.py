@@ -2188,6 +2188,51 @@ def run_doctor(args):
         key = get_anthropic_key()
         if not key:
             return _ConnectivityResult("Anthropic API", [], [])
+
+        # --- resolve effective base_url (config → env → provider default) ---
+        from urllib.parse import urlparse
+        from agent.anthropic_adapter import (
+            _is_third_party_anthropic_endpoint,
+        )
+        from providers import get_provider_profile
+
+        base_url: str | None = None
+
+        # 1. config.yaml model.base_url (only when provider == "anthropic")
+        try:
+            import yaml
+            raw_config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            raw_config = {}
+        model_section = raw_config.get("model") or {}
+        if isinstance(model_section, dict) and (model_section.get("provider") or "").strip().lower() == "anthropic":
+            cfg_base = (model_section.get("base_url") or "").strip()
+            if cfg_base:
+                base_url = cfg_base
+
+        # 2. ANTHROPIC_BASE_URL environment variable
+        if not base_url:
+            base_url = os.environ.get("ANTHROPIC_BASE_URL", "").strip() or None
+
+        # 3. provider profile default
+        if not base_url:
+            profile = get_provider_profile("anthropic")
+            if profile and profile.base_url:
+                base_url = profile.base_url
+
+        # --- build models_url and label ---
+        base = base_url.rstrip("/") if base_url else "https://api.anthropic.com"
+        if not base.endswith("/v1"):
+            base += "/v1"
+        models_url = base + "/models"
+
+        is_third_party = _is_third_party_anthropic_endpoint(base_url)
+        if is_third_party:
+            host = urlparse(base_url).netloc
+            label = f"Anthropic API (relay: {host})"
+        else:
+            label = "Anthropic API"
+
         try:
             import httpx
             from agent.anthropic_adapter import (
@@ -2196,6 +2241,7 @@ def run_doctor(args):
                 _OAUTH_ONLY_BETAS,
                 _CONTEXT_1M_BETA,
             )
+
             headers = {"anthropic-version": "2023-06-01"}
             is_oauth = _is_oauth_token(key)
             if is_oauth:
@@ -2204,7 +2250,7 @@ def run_doctor(args):
             else:
                 headers["x-api-key"] = key
             r = httpx.get(
-                "https://api.anthropic.com/v1/models",
+                models_url,
                 headers=headers, timeout=10,
             )
             # Reactive recovery: OAuth subscriptions without 1M context reject the
@@ -2222,32 +2268,32 @@ def run_doctor(args):
                     + list(_OAUTH_ONLY_BETAS)
                 )
                 r = httpx.get(
-                    "https://api.anthropic.com/v1/models",
+                    models_url,
                     headers=headers, timeout=10,
                 )
             if r.status_code == 200:
                 return _ConnectivityResult(
-                    "Anthropic API",
-                    [(color("✓", Colors.GREEN), "Anthropic API", "")],
+                    label,
+                    [(color("✓", Colors.GREEN), label, "")],
                     [],
                 )
             if r.status_code == 401:
                 return _ConnectivityResult(
-                    "Anthropic API",
-                    [(color("✗", Colors.RED), "Anthropic API",
+                    label,
+                    [(color("✗", Colors.RED), label,
                       color("(invalid API key)", Colors.DIM))],
                     [],
                 )
             return _ConnectivityResult(
-                "Anthropic API",
-                [(color("⚠", Colors.YELLOW), "Anthropic API",
+                label,
+                [(color("⚠", Colors.YELLOW), label,
                   color("(couldn't verify)", Colors.DIM))],
                 [],
             )
         except Exception as e:
             return _ConnectivityResult(
-                "Anthropic API",
-                [(color("⚠", Colors.YELLOW), "Anthropic API",
+                label,
+                [(color("⚠", Colors.YELLOW), label,
                   color(f"({e})", Colors.DIM))],
                 [],
             )

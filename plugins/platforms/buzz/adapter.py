@@ -128,7 +128,10 @@ def _load_nostr_auth():
 
         path = Path(__file__).with_name("nostr_auth.py")
         spec = importlib.util.spec_from_file_location("plugin_adapter_buzz_nostr_auth", path)
-        assert spec is not None and spec.loader is not None
+        if spec is None or spec.loader is None:
+            raise ImportError(
+                f"Cannot load nostr_auth module from {path}"
+            )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module

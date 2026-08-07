@@ -6198,6 +6198,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
                         min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                     )
+                # FK integrity self-heal is independent of the destructive
+                # auto_prune sweep — default installs (auto_prune off) still
+                # self-heal. Own min_interval gate in state_meta; never raises.
+                self._session_db._db.maybe_repair_orphan_references(
+                    min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
+                )
                 if _sess_cfg.get("auto_prune", False):
                     # Construction-time, before the loop serves traffic; sync DB is fine.
                     self._session_db._db.maybe_auto_prune_and_vacuum(

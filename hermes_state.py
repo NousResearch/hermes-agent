@@ -9732,6 +9732,138 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._conn.execute("VACUUM")
         return optimized
 
+    def repair_orphan_references(self) -> Dict[str, int]:
+        """Repair dangling foreign-key references left by legacy deletions.
+
+        Deleting a session row with ``PRAGMA foreign_keys=OFF`` (e.g. a
+        connection opened before this class enforced it, or an external tool
+        touching the DB) skips the ON DELETE CASCADE on ``session_model_usage``
+        and the explicit message cleanup, stranding orphan rows that then trip
+        every later ``create_session`` upsert (the ON CONFLICT DO UPDATE
+        re-writes the stale ``parent_session_id`` and fails the FK check).
+
+        Fixes the four orphan classes in one transaction:
+          * ``sessions.parent_session_id`` → NULL (parent gone)
+          * ``messages`` rows → deleted (owning session gone)
+          * ``session_model_usage`` rows → deleted (owning session gone)
+          * ``telegram_dm_topic_bindings`` rows → deleted (owning session gone)
+
+        Idempotent and safe to run at any time; no-op when the DB is already
+        consistent. Returns counts of repaired rows per class.
+        """
+        result: Dict[str, int] = {
+            "parent_pointers_nulled": 0,
+            "orphan_messages_deleted": 0,
+            "orphan_usage_deleted": 0,
+            "orphan_topic_bindings_deleted": 0,
+        }
+
+        def _do(conn):
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM sessions s "
+                "LEFT JOIN sessions p ON s.parent_session_id = p.id "
+                "WHERE s.parent_session_id IS NOT NULL AND p.id IS NULL"
+            )
+            result["parent_pointers_nulled"] = cur.fetchone()[0]
+            conn.execute(
+                "UPDATE sessions SET parent_session_id = NULL "
+                "WHERE parent_session_id IS NOT NULL "
+                "AND parent_session_id NOT IN (SELECT id FROM sessions)"
+            )
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM messages m "
+                "LEFT JOIN sessions s ON m.session_id = s.id "
+                "WHERE s.id IS NULL"
+            )
+            result["orphan_messages_deleted"] = cur.fetchone()[0]
+            conn.execute(
+                "DELETE FROM messages "
+                "WHERE session_id NOT IN (SELECT id FROM sessions)"
+            )
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM session_model_usage u "
+                "LEFT JOIN sessions s ON u.session_id = s.id "
+                "WHERE s.id IS NULL"
+            )
+            result["orphan_usage_deleted"] = cur.fetchone()[0]
+            conn.execute(
+                "DELETE FROM session_model_usage "
+                "WHERE session_id NOT IN (SELECT id FROM sessions)"
+            )
+            # telegram_dm_topic_bindings is created on /topic opt-in only
+            # (apply_telegram_topic_migration); guard so default DBs skip it.
+            has_bindings = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='telegram_dm_topic_bindings'"
+            ).fetchone()
+            if has_bindings:
+                cur = conn.execute(
+                    "SELECT COUNT(*) FROM telegram_dm_topic_bindings b "
+                    "LEFT JOIN sessions s ON b.session_id = s.id "
+                    "WHERE s.id IS NULL"
+                )
+                result["orphan_topic_bindings_deleted"] = cur.fetchone()[0]
+                conn.execute(
+                    "DELETE FROM telegram_dm_topic_bindings "
+                    "WHERE session_id NOT IN (SELECT id FROM sessions)"
+                )
+            return result
+
+        try:
+            repaired = self._execute_write(_do)
+            if any(repaired.values()):
+                logger.info(
+                    "state.db orphan repair: %s", repaired,
+                )
+            return repaired
+        except Exception as exc:
+            logger.warning("state.db orphan repair failed: %s", exc)
+            result["error"] = str(exc)
+            return result
+
+    def maybe_repair_orphan_references(
+        self,
+        min_interval_hours: int = 24,
+    ) -> Dict[str, Any]:
+        """Idempotent FK self-heal, decoupled from the destructive auto-prune.
+
+        Runs :meth:`repair_orphan_references` at most once per
+        ``min_interval_hours`` (tracked independently in state_meta), so
+        default installations whose ``sessions.auto_prune`` is off still
+        self-heal FK corruption left by legacy FK-off deletions.
+
+        Never raises. On any failure, logs a warning and returns a dict
+        with ``\"error\"`` set.
+
+        Returns a dict with keys:
+          - ``\"skipped\"`` (bool) — true if within min_interval_hours of last run
+          - ``\"repaired\"`` (dict) — orphan-reference repair counts (see
+            :meth:`repair_orphan_references`); absent on error or skip
+          - ``\"error\"`` (str, optional) — present only on failure
+        """
+        result: Dict[str, Any] = {"skipped": False}
+        try:
+            last_raw = self.get_meta("last_orphan_repair")
+            now = time.time()
+            if last_raw:
+                try:
+                    last_ts = float(last_raw)
+                    if now - last_ts < min_interval_hours * 3600:
+                        result["skipped"] = True
+                        return result
+                except (TypeError, ValueError):
+                    pass  # corrupt meta; treat as no prior run
+
+            repaired = self.repair_orphan_references()
+            if not repaired.get("error"):
+                self.set_meta("last_orphan_repair", str(now))
+            result["repaired"] = repaired
+            return result
+        except Exception as exc:
+            logger.warning("state.db orphan self-heal failed: %s", exc)
+            result["error"] = str(exc)
+            return result
+
     def maybe_auto_prune_and_vacuum(
         self,
         retention_days: int = 90,
@@ -9759,10 +9891,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Returns a dict with keys:
           - ``"skipped"`` (bool) — true if within min_interval_hours of last run
           - ``"pruned"`` (int)   — number of sessions deleted
+          - ``"repaired"`` (dict) — orphan-reference repair counts (see
+            :meth:`repair_orphan_references`); absent on error or skip
           - ``"vacuumed"`` (bool) — true if VACUUM ran
           - ``"error"`` (str, optional) — present only on failure
         """
-        result: Dict[str, Any] = {"skipped": False, "pruned": 0, "vacuumed": False}
+        result: Dict[str, Any] = {
+            "skipped": False, "pruned": 0, "vacuumed": False,
+        }
         try:
             # Skip if another process/call did maintenance recently.
             last_raw = self.get_meta("last_auto_prune")
@@ -9781,6 +9917,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 sessions_dir=sessions_dir,
             )
             result["pruned"] = pruned
+
+            # FK integrity self-heal: legacy deletions (pre-FK-on connections)
+            # can strand orphan rows that trip every later create_session upsert.
+            repaired = self.repair_orphan_references()
+            if repaired.get("error"):
+                logger.warning(
+                    "state.db auto-maintenance: orphan repair failed: %s",
+                    repaired["error"],
+                )
+            else:
+                result["repaired"] = repaired
 
             # Only VACUUM if we actually freed rows, and no more often than
             # once every min_vacuum_interval_days -- a large prune (e.g. the

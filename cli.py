@@ -2169,6 +2169,16 @@ def _run_state_db_auto_maintenance(session_db) -> None:
                 min_interval_hours=int(cfg.get("min_interval_hours", 24)),
             )
 
+        # FK integrity self-heal is independent of both auto_archive and the
+        # destructive auto_prune sweep — run it before any early return so
+        # default installs (auto_prune off) still self-heal.
+        try:
+            session_db.maybe_repair_orphan_references(
+                min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+            )
+        except Exception as _heal_exc:
+            logger.debug("state.db orphan self-heal skipped: %s", _heal_exc)
+
         if not cfg.get("auto_prune", False):
             return
         session_db.maybe_auto_prune_and_vacuum(

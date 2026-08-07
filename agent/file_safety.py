@@ -46,6 +46,15 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level Anthropic PKCE credential store remains sensitive even
             # when a profile is active; default/non-profile sessions still read it.
             str(hermes_root / ".anthropic_oauth.json"),
+            # Provider credential store (OAuth refresh tokens, API keys,
+            # credential_pool). Already read-denied by get_read_block_error;
+            # writes/deletes/moves must be denied for the same reason.
+            str(hermes_home / "auth.json"),
+            str(hermes_root / "auth.json"),
+            # Advisory lock for the store above — a stray write here can wedge
+            # or corrupt concurrent auth operations.
+            str(hermes_home / "auth.lock"),
+            str(hermes_root / "auth.lock"),
             # Bitwarden Secrets Manager encrypted disk cache.
             str(hermes_home / "cache" / "bws_cache.enc.json"),
             str(hermes_root / "cache" / "bws_cache.enc.json"),

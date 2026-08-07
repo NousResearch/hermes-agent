@@ -91,5 +91,23 @@ class TestWriteAllowed:
         from hermes_constants import get_hermes_home
 
         home = get_hermes_home()
-        for name in ["auth.json", "config.yaml", "webhook_subscriptions.json"]:
+        for name in ["config.yaml", "webhook_subscriptions.json"]:
             assert _is_write_denied(str(home / name)) is False, f"{name} should be writable"
+
+    def test_hermes_auth_json_write_denied(self):
+        """auth.json (provider credential store) is write-denied (#70942)."""
+        from hermes_constants import get_hermes_home, get_default_hermes_root
+
+        home = get_hermes_home()
+        root = get_default_hermes_root()
+        assert _is_write_denied(str(home / "auth.json")) is True
+        assert _is_write_denied(str(root / "auth.json")) is True
+
+    def test_hermes_auth_lock_write_denied(self):
+        """auth.lock (advisory credential store lock) is write-denied (#70942)."""
+        from hermes_constants import get_hermes_home, get_default_hermes_root
+
+        home = get_hermes_home()
+        root = get_default_hermes_root()
+        assert _is_write_denied(str(home / "auth.lock")) is True
+        assert _is_write_denied(str(root / "auth.lock")) is True

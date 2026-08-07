@@ -1880,6 +1880,30 @@ class TestBuildSchemaFromConfig:
         # Fallback path: never returns an empty list.
         assert len(_timezone_options()) >= 1
 
+    def test_session_reset_ttl_ships_as_range(self):
+        """session_reset.finished_process_ttl_minutes must surface as a
+        bounded range slider (min/max/step/unit + default) so both desktop and
+        dashboard render a slider + text box instead of a free number."""
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        entry = CONFIG_SCHEMA["session_reset.finished_process_ttl_minutes"]
+        assert entry["type"] == "range"
+        assert entry["min"] >= 1
+        assert entry["max"] > entry["min"]
+        assert entry["step"] >= 1
+        assert entry["unit"]
+        # The default drives the UI's reset-to-default button; it must sit
+        # inside the slider bounds.
+        assert entry["min"] <= entry["default"] <= entry["max"]
+
+    def test_session_reset_mode_is_select(self):
+        """session_reset.mode is a closed enum, not free text."""
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        entry = CONFIG_SCHEMA["session_reset.mode"]
+        assert entry["type"] == "select"
+        assert set(entry["options"]) == {"none", "daily", "idle", "both"}
+
     def test_dynamic_merge_recomputes_memory_provider_options(self, monkeypatch):
         """The per-request schema merge re-discovers memory providers.
 

@@ -874,6 +874,37 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Context window override (0 = auto-detect from model metadata)",
         "category": "general",
     },
+    "session_reset.mode": {
+        "type": "select",
+        "description": "When sessions reset (lose context): none (never), daily (at at_hour), idle (after idle_minutes), or both",
+        "options": ["none", "daily", "idle", "both"],
+    },
+    "session_reset.at_hour": {
+        "type": "number",
+        "description": "Hour for daily session reset (0-23, local time)",
+    },
+    "session_reset.idle_minutes": {
+        "type": "number",
+        "description": "Minutes of inactivity before a session resets (24h = 1440)",
+    },
+    "session_reset.bg_process_max_age_hours": {
+        "type": "number",
+        "description": "Background processes older than this (hours) no longer block session reset (NOT killed)",
+    },
+    "session_reset.finished_process_ttl_minutes": {
+        "type": "range",
+        "min": 1,
+        "max": 120,
+        "step": 1,
+        "unit": "minutes",
+        "default": 10,
+        "description": (
+            "How long finished background processes stay tracked before pruning. "
+            "Finished sessions release their pipe/PTY handles immediately, so this "
+            "controls how long a finished job's buffered output stays queryable "
+            "via poll/log before the entry is pruned."
+        ),
+    },
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
@@ -1057,7 +1088,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
 # Display order for tabs — unlisted categories sort alphabetically after these.
 _CATEGORY_ORDER = [
     "general", "agent", "terminal", "display", "delegation",
-    "memory", "compression", "security", "browser", "voice",
+    "memory", "compression", "session_reset", "security", "browser", "voice",
     "tts", "stt", "logging", "discord", "auxiliary",
 ]
 

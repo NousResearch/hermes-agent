@@ -60,9 +60,30 @@ CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 
 # Limits
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
-FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
+# Default TTL for finished processes (10 min). The gateway overrides this at
+# startup from session_reset.finished_process_ttl_minutes via
+# set_finished_ttl_seconds() — the module-level constant is the fallback for
+# CLI/TUI sessions that never call the setter.
+FINISHED_TTL_SECONDS = 600      # Keep finished processes for 10 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
 MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_max_age_hours (#29177)
+
+# Mutable finished-process TTL (seconds). Initialized from FINISHED_TTL_SECONDS;
+# the gateway calls set_finished_ttl_seconds() at startup to honor
+# session_reset.finished_process_ttl_minutes from config.yaml.
+_finished_ttl_seconds: int = FINISHED_TTL_SECONDS
+
+
+def set_finished_ttl_seconds(seconds: int) -> None:
+    """Override the finished-process prune TTL (used by the gateway at startup)."""
+    global _finished_ttl_seconds
+    if seconds is not None and seconds > 0:
+        _finished_ttl_seconds = int(seconds)
+
+
+def get_finished_ttl_seconds() -> int:
+    """Return the effective finished-process prune TTL in seconds."""
+    return _finished_ttl_seconds
 
 # Watch pattern rate limiting — PER SESSION.
 # Hard rule: at most ONE watch-match notification every WATCH_MIN_INTERVAL_SECONDS.
@@ -2398,7 +2419,7 @@ class ProcessRegistry:
         now = time.time()
         expired = [
             sid for sid, s in self._finished.items()
-            if (now - s.started_at) > FINISHED_TTL_SECONDS
+            if (now - s.started_at) > get_finished_ttl_seconds()
         ]
         for sid in expired:
             del self._finished[sid]

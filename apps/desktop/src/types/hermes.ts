@@ -8,7 +8,17 @@ export interface ConfigFieldSchema {
   /** When true, a searchable select prepends a "clear" item that resets the
    *  value to ''. Matches the existing <Select> EMPTY_SELECT_VALUE pattern. */
   clearable?: boolean
-  type?: 'boolean' | 'list' | 'number' | 'select' | 'string' | 'text'
+  /** For type 'range': inclusive lower bound. */
+  min?: number
+  /** For type 'range': inclusive upper bound. */
+  max?: number
+  /** For type 'range': slider granularity. */
+  step?: number
+  /** For type 'range': unit label shown next to the value (e.g. "minutes"). */
+  unit?: string
+  /** For type 'range': default value, used by the reset-to-default button. */
+  default?: number
+  type?: 'boolean' | 'list' | 'number' | 'range' | 'select' | 'string' | 'text'
 }
 
 export interface ConfigSchemaResponse {

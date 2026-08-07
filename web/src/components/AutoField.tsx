@@ -130,6 +130,48 @@ export function AutoField({
     );
   }
 
+  if (schema.type === "range") {
+    const min = typeof schema.min === "number" ? schema.min : 0;
+    const max = typeof schema.max === "number" ? schema.max : 100;
+    const step = typeof schema.step === "number" ? schema.step : 1;
+    const unit = typeof schema.unit === "string" ? schema.unit : "";
+    const numeric = typeof value === "number" && Number.isFinite(value) ? value : min;
+    return (
+      <div className="grid gap-1.5">
+        <Label className="text-sm">{label}</Label>
+        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <div className="flex items-center gap-2">
+          <input
+            aria-label={`${label} slider`}
+            className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-border accent-accent"
+            max={max}
+            min={min}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (!Number.isNaN(n)) onChange(n);
+            }}
+            step={step}
+            type="range"
+            value={Math.min(max, Math.max(min, numeric))}
+          />
+          <Input
+            aria-label={`${label} value`}
+            className="w-20 text-right"
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === "") return;
+              const n = Number(raw);
+              if (!Number.isNaN(n)) onChange(Math.min(max, Math.max(min, n)));
+            }}
+            type="text"
+            value={String(numeric)}
+          />
+          {unit && <span className="text-xs text-muted-foreground">{unit}</span>}
+        </div>
+      </div>
+    );
+  }
+
   if (schema.type === "number") {
     return (
       <div className="grid gap-1.5">

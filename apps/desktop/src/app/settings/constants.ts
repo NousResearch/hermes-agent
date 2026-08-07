@@ -1,6 +1,7 @@
 import {
   Box,
   Brain,
+  Clock,
   type IconComponent,
   Lock,
   MessageCircle,
@@ -531,6 +532,14 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     userCharLimit: 'Profile Budget',
     provider: 'Memory Provider'
   },
+  sessionReset: {
+    mode: 'Reset Mode',
+    atHour: 'Daily Reset Hour',
+    idleMinutes: 'Idle Reset Timeout',
+    notify: 'Reset Notifications',
+    bgProcessMaxAgeHours: 'Process Reset Ignore Age',
+    finishedProcessTtlMinutes: 'Finished Process Retention'
+  },
   context: {
     engine: 'Context Engine'
   },
@@ -596,7 +605,17 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   memory: {
     memoryEnabled: 'Save durable memories that can help future sessions.',
-    userProfileEnabled: 'Maintain a compact profile of user preferences.'
+    userProfileEnabled: 'Maintain a compact profile of user preferences.',
+    memoryCharLimit: 'Maximum size of the saved memory pool.',
+    userCharLimit: 'Maximum size of the user profile pool.'
+  },
+  sessionReset: {
+    mode: 'When sessions reset (lose context). "none" keeps them forever; "daily" resets at the hour below; "idle" resets after inactivity; "both" is whichever comes first.',
+    atHour: 'Hour of day (0-23, local time) for daily resets.',
+    idleMinutes: 'Minutes of inactivity before an idle reset fires.',
+    notify: 'Send a notification when an auto-reset clears a session.',
+    bgProcessMaxAgeHours: 'Background processes older than this no longer pin a session open against reset (they are not killed).',
+    finishedProcessTtlMinutes: 'How long finished background processes stay tracked before pruning. Finished sessions release their handles immediately, so this controls how long a finished job\u2019s output stays queryable via poll/log.'
   },
   context: {
     engine: 'Strategy for managing long conversations near the context limit.'
@@ -700,6 +719,19 @@ export const SECTIONS: DesktopConfigSection[] = [
       'compression.threshold',
       'compression.target_ratio',
       'compression.protect_last_n'
+    ]
+  },
+  {
+    id: 'session-reset',
+    label: 'Session Reset',
+    icon: Clock,
+    keys: [
+      'session_reset.mode',
+      'session_reset.at_hour',
+      'session_reset.idle_minutes',
+      'session_reset.notify',
+      'session_reset.bg_process_max_age_hours',
+      'session_reset.finished_process_ttl_minutes'
     ]
   },
   {

@@ -14,6 +14,7 @@ import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, FRE
 import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { ListRow } from './primitives'
+import { RangeField } from './range-field'
 import { SearchableSelect } from './searchable-select'
 
 /**
@@ -153,6 +154,21 @@ export function ConfigField({
           ))}
         </SelectContent>
       </Select>
+    )
+  }
+
+  if (schema.type === 'range') {
+    return row(
+      <RangeField
+        defaultValue={schema.default}
+        max={schema.max}
+        min={schema.min}
+        onChange={value => onChange(value)}
+        step={schema.step}
+        unit={schema.unit}
+        value={value}
+      />,
+      true
     )
   }
 

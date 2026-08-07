@@ -17,6 +17,8 @@ from tools.process_registry import (
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
     MAX_ACTIVE_PROCESS_AGE,
+    get_finished_ttl_seconds,
+    set_finished_ttl_seconds,
 )
 
 
@@ -618,6 +620,48 @@ class TestPruning:
         registry._finished[old_session.id] = old_session
         registry._prune_if_needed()
         assert "proc_old" not in registry._finished
+
+    def test_prune_honors_configured_ttl(self, registry):
+        """The gateway can push a custom finished-process TTL via
+        set_finished_ttl_seconds(); pruning must use the configured value,
+        not the module default."""
+        original = get_finished_ttl_seconds()
+        try:
+            set_finished_ttl_seconds(5)
+            assert get_finished_ttl_seconds() == 5
+
+            # 10s old — beyond the configured 5s TTL, within the 600s default
+            old_session = _make_session(
+                sid="proc_custom_ttl",
+                exited=True,
+                started_at=time.time() - 10,
+            )
+            registry._finished[old_session.id] = old_session
+            registry._prune_if_needed()
+            assert "proc_custom_ttl" not in registry._finished
+
+            # fresh session survives the short TTL
+            fresh = _make_session(sid="proc_fresh", exited=True, started_at=time.time() - 1)
+            registry._finished[fresh.id] = fresh
+            registry._prune_if_needed()
+            assert "proc_fresh" in registry._finished
+        finally:
+            set_finished_ttl_seconds(original)
+
+    def test_set_finished_ttl_seconds_rejects_nonpositive(self, registry):
+        """A 0/negative/None TTL must be ignored, keeping the current value —
+        the gateway guards this before calling, but the setter should be
+        safe to call directly."""
+        original = get_finished_ttl_seconds()
+        try:
+            set_finished_ttl_seconds(0)
+            assert get_finished_ttl_seconds() == original
+            set_finished_ttl_seconds(-5)
+            assert get_finished_ttl_seconds() == original
+            set_finished_ttl_seconds(None)  # type: ignore[arg-type]
+            assert get_finished_ttl_seconds() == original
+        finally:
+            set_finished_ttl_seconds(original)
 
     def test_prune_over_max_removes_oldest(self, registry):
         # Fill up to MAX_PROCESSES

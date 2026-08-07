@@ -510,6 +510,16 @@ class SessionResetPolicy:
     # liveness should pin the conversation open.
     bg_process_max_age_hours: int = 24
 
+    # How long (minutes) a finished background process stays tracked in the
+    # gateway's process registry before being pruned. Finished processes are
+    # never reaped for FD reasons (the registry releases their pipe/PTY
+    # handles when they finish) — this TTL controls how long the finished
+    # job's buffered output stays queryable via poll/log before the entry is
+    # pruned. 10 minutes is the default; raise it if you routinely need to
+    # poll/log a finished job's output later, lower it if you churn
+    # background processes faster than the registry can prune.
+    finished_process_ttl_minutes: int = 10
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "mode": self.mode,
@@ -518,6 +528,7 @@ class SessionResetPolicy:
             "notify": self.notify,
             "notify_exclude_platforms": list(self.notify_exclude_platforms),
             "bg_process_max_age_hours": self.bg_process_max_age_hours,
+            "finished_process_ttl_minutes": self.finished_process_ttl_minutes,
         }
     
     @classmethod
@@ -530,6 +541,7 @@ class SessionResetPolicy:
         notify = data.get("notify")
         exclude = data.get("notify_exclude_platforms")
         bg_max_age = data.get("bg_process_max_age_hours")
+        finished_ttl = data.get("finished_process_ttl_minutes")
         return cls(
             mode=mode if mode is not None else "none",
             at_hour=at_hour if at_hour is not None else 4,
@@ -537,6 +549,7 @@ class SessionResetPolicy:
             notify=_coerce_bool(notify, True),
             notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
             bg_process_max_age_hours=bg_max_age if bg_max_age is not None else 24,
+            finished_process_ttl_minutes=_coerce_int(finished_ttl, 10),
         )
 
 

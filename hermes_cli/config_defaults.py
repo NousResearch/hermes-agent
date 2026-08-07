@@ -2784,6 +2784,28 @@ DEFAULT_CONFIG = {
         "search_slow_ms": 1000,
     },
 
+    # When sessions reset (lose context) and related session-lifecycle tuning.
+    # Mirrors gateway/config.py SessionResetPolicy — keep the two in sync.
+    # Modes: "none" (never auto-reset), "daily" (at at_hour), "idle" (after
+    # idle_minutes of inactivity), "both" (whichever fires first).
+    "session_reset": {
+        "mode": "none",
+        "at_hour": 4,
+        "idle_minutes": 1440,
+        "notify": True,
+        "notify_exclude_platforms": ["api_server", "webhook"],
+        # A background process this many hours old no longer blocks session
+        # idle/daily reset (the process is NOT killed, only ignored by the
+        # reset guard — #29177).
+        "bg_process_max_age_hours": 24,
+        # How long a finished background process stays tracked before pruning.
+        # Finished sessions release their pipe/PTY handles immediately, so this
+        # is a retention knob for querying finished output — not an FD-limit
+        # control (the registry never rejects spawns; it prunes oldest-finished
+        # at MAX_PROCESSES).
+        "finished_process_ttl_minutes": 10,
+    },
+
     # Contextual first-touch onboarding hints (see agent/onboarding.py).
     # Each hint is shown once per install and then latched here so it
     # never fires again.  Users can wipe the section to re-see all hints.

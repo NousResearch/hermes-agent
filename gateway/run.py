@@ -3166,6 +3166,22 @@ def _gateway_config_home() -> Path:
     return _hermes_home
 
 
+def _apply_finished_process_ttl(reset_policy) -> None:
+    """Push ``finished_process_ttl_minutes`` from a SessionResetPolicy into
+    the process registry's finished-process prune TTL.
+
+    Process-wide scope (documented at the call site): the registry is a
+    module-level singleton shared by every profile the gateway serves, so the
+    TTL is set once from the primary profile's default reset policy. Safe to
+    call repeatedly (e.g. from tests) — later calls win; non-positive values
+    are ignored by the setter, keeping the previous TTL.
+    """
+    minutes = getattr(reset_policy, "finished_process_ttl_minutes", 10)
+    if minutes and minutes > 0:
+        from tools.process_registry import set_finished_ttl_seconds
+        set_finished_ttl_seconds(minutes * 60)
+
+
 def _load_gateway_config() -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error.
 
@@ -5946,6 +5962,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _bg_max_age_seconds = (
             _bg_max_age_hours * 3600 if _bg_max_age_hours and _bg_max_age_hours > 0 else None
         )
+        # Push the finished-process prune TTL (session_reset.
+        # finished_process_ttl_minutes) into the registry so finished jobs are
+        # pruned at the configured rate instead of the module default.
+        #
+        # SCOPE: the process registry is a process-global singleton shared by
+        # every profile this gateway serves (including multiplex profiles,
+        # which load their own config via _start_one_profile_adapters). The
+        # finished-process TTL is therefore a PROCESS-WIDE setting: it is set
+        # once at startup from the primary profile's default reset policy, and
+        # all multiplexed profiles share the same prune cadence. Per-profile
+        # TTL values are intentionally not applied independently — the
+        # registry's _finished dict is not partitioned by profile. This also
+        # means the value only takes effect on the next gateway start; a live
+        # config edit does not re-push it.
+        _apply_finished_process_ttl(self.config.default_reset_policy)
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(

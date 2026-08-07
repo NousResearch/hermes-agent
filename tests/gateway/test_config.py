@@ -171,24 +171,62 @@ class TestGetConnectedPlatforms:
 class TestSessionResetPolicy:
     def test_roundtrip(self):
         policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120,
-                                    bg_process_max_age_hours=48)
+                                    bg_process_max_age_hours=48,
+                                    finished_process_ttl_minutes=15)
         d = policy.to_dict()
         restored = SessionResetPolicy.from_dict(d)
         assert restored.mode == "idle"
         assert restored.at_hour == 6
         assert restored.idle_minutes == 120
         assert restored.bg_process_max_age_hours == 48
+        assert restored.finished_process_ttl_minutes == 15
 
 
     def test_from_dict_treats_null_values_as_defaults(self):
         restored = SessionResetPolicy.from_dict(
             {"mode": None, "at_hour": None, "idle_minutes": None,
-             "bg_process_max_age_hours": None}
+             "bg_process_max_age_hours": None,
+             "finished_process_ttl_minutes": None}
         )
         assert restored.mode == "none"
         assert restored.at_hour == 4
         assert restored.idle_minutes == 1440
         assert restored.bg_process_max_age_hours == 24
+        assert restored.finished_process_ttl_minutes == 10
+
+
+    def test_from_dict_coerces_string_ttl_to_int(self):
+        """The web/dashboard config form may send numbers as strings; the TTL
+        must land as an int so the registry setter gets real seconds."""
+        restored = SessionResetPolicy.from_dict(
+            {"finished_process_ttl_minutes": "15"}
+        )
+        assert restored.finished_process_ttl_minutes == 15
+        restored_bad = SessionResetPolicy.from_dict(
+            {"finished_process_ttl_minutes": "oops"}
+        )
+        assert restored_bad.finished_process_ttl_minutes == 10
+
+
+class TestSessionResetDefaultConfigMirror:
+    """DEFAULT_CONFIG's session_reset block and gateway SessionResetPolicy
+    must stay in sync — the web schema is built from DEFAULT_CONFIG while the
+    gateway reads SessionResetPolicy, so a drift would show different defaults
+    in the settings UI vs. runtime behavior."""
+
+    def test_defaults_match(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        policy_defaults = SessionResetPolicy()
+        block = DEFAULT_CONFIG["session_reset"]
+
+        assert block["mode"] == policy_defaults.mode
+        assert block["at_hour"] == policy_defaults.at_hour
+        assert block["idle_minutes"] == policy_defaults.idle_minutes
+        assert block["notify"] == policy_defaults.notify
+        assert list(block["notify_exclude_platforms"]) == list(policy_defaults.notify_exclude_platforms)
+        assert block["bg_process_max_age_hours"] == policy_defaults.bg_process_max_age_hours
+        assert block["finished_process_ttl_minutes"] == policy_defaults.finished_process_ttl_minutes
 
 
 class TestStreamingConfig:

@@ -490,6 +490,21 @@ def _resolve_runtime_from_pool_entry(
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
+        # OpenRouter serves BOTH wires (``/v1/chat/completions`` and the
+        # Anthropic-compatible ``/v1/messages``), so a user who deliberately
+        # records ``provider: openrouter`` + ``api_mode: anthropic_messages``
+        # means it. Honor that here as the generic branch below already does
+        # for every other pooled provider — without this, the same config
+        # resolves to chat_completions on the pooled path but
+        # anthropic_messages via ``_resolve_openrouter_runtime``, so the wire
+        # silently depended on whether the caller passed explicit credentials.
+        # The provider gate keeps a FOREIGN config's mode from leaking in.
+        _or_configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        _or_configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+        if _or_configured_mode and _provider_supports_explicit_api_mode(
+            provider, _or_configured_provider
+        ):
+            api_mode = _or_configured_mode
     elif provider == "xai":
         api_mode = "codex_responses"
     elif provider == "nous":
@@ -1307,11 +1322,27 @@ def _resolve_openrouter_runtime(
     if effective_provider == "custom" and not api_key and not _is_openrouter_url:
         api_key = "no-key-required"
 
+    # Honor a persisted ``model.api_mode`` only when the config block that
+    # carries it actually describes THIS provider. Without the gate, a config
+    # whose default is e.g. direct Anthropic (``provider: anthropic``,
+    # ``api_mode: anthropic_messages``) pins every OpenRouter runtime onto the
+    # Anthropic Messages wire after a mid-session /model switch — the model
+    # then talks to OpenRouter's ``/v1/messages`` route instead of
+    # ``/v1/chat/completions``. Mirrors the guard already applied to Copilot
+    # (``_copilot_runtime_api_mode``) and to plain custom endpoints
+    # (``_resolve_plain_custom_api_mode``).
+    _configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+    _configured_mode = (
+        _parse_api_mode(model_cfg.get("api_mode"))
+        if _provider_supports_explicit_api_mode(effective_provider, _configured_provider)
+        else None
+    )
+
     return {
         "provider": effective_provider,
         "api_mode": _resolve_plain_custom_api_mode(model_cfg, base_url)
         if effective_provider == "custom"
-        else _parse_api_mode(model_cfg.get("api_mode"))
+        else _configured_mode
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
         "base_url": base_url,

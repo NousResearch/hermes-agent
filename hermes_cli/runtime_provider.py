@@ -1035,6 +1035,90 @@ def canonical_custom_identity(
     return None
 
 
+def resolve_custom_provider_display_name(
+    provider: Optional[str] = None,
+    *,
+    base_url: Optional[str] = None,
+    config_provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> str:
+    """Resolve a status/UI label for a provider, recovering named custom entries.
+
+    Named ``providers:`` / ``custom_providers:`` entries resolve at runtime to the
+    shared billing class ``"custom"``. Status surfaces that only print that
+    billing class look identical for every custom endpoint (``Model: x (custom)``).
+
+    This helper recovers the configured entry name from:
+
+    1. An already-named identity (``custom:<name>`` or a direct ``providers:`` key)
+    2. Session-scoped ``base_url`` / ``model`` reverse-lookup against ``config.yaml``
+    3. ``config_provider`` / active ``model.provider`` only when no session URL was
+       provided (routing recovery; must not override an explicit unmatched URL)
+
+    When several catalog entries share one gateway URL (e.g. ``openlux-claude``
+    and ``openlux-codex`` both pointing at the same host), a model catalog hit
+    that also owns that URL wins over the first URL-only match so ``/status``
+    names the entry that actually serves the session model.
+
+    Returns the config entry name (e.g. ``openlux``) when recovered, otherwise the
+    original ``provider`` string unchanged (including bare ``custom`` for ad-hoc
+    endpoints with no matching config entry).
+    """
+    raw = str(provider or "").strip()
+    low = raw.lower()
+
+    # Already a durable custom:<name> menu key — surface the entry name.
+    if low.startswith("custom:") and len(raw) > 7:
+        return _normalize_custom_provider_name(raw.split(":", 1)[1])
+
+    # Direct named providers key (e.g. model.provider: openlux).
+    if low and low not in {"custom", "auto"}:
+        try:
+            if _get_named_custom_provider(raw) is not None:
+                return _normalize_custom_provider_name(raw)
+        except Exception:
+            pass
+        # Non-custom providers (anthropic, deepseek, …) stay as-is.
+        return raw
+
+    # Bare "custom" (or empty) — recover from config.yaml.
+    identity: Optional[str] = None
+    url = str(base_url or "").strip()
+    model_id = str(model or "").strip()
+
+    if url:
+        # Session has an explicit endpoint. Only recover via that URL (and a
+        # model catalog entry that also owns the same URL). Never fall through
+        # to config.model.provider — an ad-hoc unmatched URL must stay "custom"
+        # even when the global default names a configured custom provider.
+        if model_id:
+            by_model = find_custom_provider_identity_by_model(model_id)
+            if by_model:
+                try:
+                    entry = _get_named_custom_provider(by_model)
+                except Exception:
+                    entry = None
+                if entry and _normalize_base_url_for_match(
+                    entry.get("api") or entry.get("url") or entry.get("base_url")
+                ) == _normalize_base_url_for_match(url):
+                    identity = by_model
+        if not identity:
+            identity = find_custom_provider_identity(url)
+    else:
+        # No session URL — model catalog and/or configured provider are fair
+        # game (same recovery sources as canonical_custom_identity).
+        identity = canonical_custom_identity(
+            base_url=None,
+            config_provider=config_provider,
+            model=model,
+        )
+
+    if identity and identity.lower().startswith("custom:") and len(identity) > 7:
+        return _normalize_custom_provider_name(identity.split(":", 1)[1])
+
+    return raw or "custom"
+
+
 def _normalize_base_url_for_match(value) -> str:
     return str(value or "").strip().rstrip("/").lower()
 

@@ -157,6 +157,13 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
             # paying for actually went out on the wire (July 2026 incident:
             # a config-matching bug silently dropped flex -> 2.3x billing).
             "service_tier": result.get("service_tier"),
+            # Why the turn ended the way it did, when the agent flagged it.
+            # Populated by agent/conversation_loop.py for the failure paths
+            # that previously exited 0 here (HTTP 402 / content-filter /
+            # context-overflow / interrupted). Pipelines that already parse
+            # this file can branch on ``failure_reason`` without inspecting
+            # the exit code — see #74659.
+            "failure_reason": result.get("failure_reason"),
         }
         if failure is not None:
             report["failure"] = failure
@@ -174,7 +181,32 @@ def run_oneshot(
     toolsets: object = None,
     usage_file: Optional[str] = None,
 ) -> int:
-    """Execute a single prompt and print only the final content block.
+    r"""Execute a single prompt and print only the final content block.
+
+    Exit codes (the contract this function owns — documented for the cron /
+    systemd / subprocess callers that branch on ``$?``):
+
+      0  → the turn produced usable output and the agent did not flag it as
+           failed/partial. (The natural reading of "the work succeeded".)
+      1  → the agent run itself crashed, raised, or produced no response at
+           all. Generic failure — investigate the stderr line.
+      2  → the call was made but the turn ended without doing the requested
+           work AND the agent flagged it as ``failed``. The two dominant
+           sub-cases (both historically exited 0 — #74659):
+
+             - ``failure_reason == "billing"``  (HTTP 402, credit exhaustion)
+             - ``failure_reason == "content_filter"`` (provider safety refusal)
+
+           Callers that only care about "did it run" can still treat 2 as a
+           soft failure; callers that need to distinguish "retry the provider"
+           from "escalate" can branch on ``--usage-file``'s ``failure_reason``.
+
+    The agent's own "I decline to proceed" text (e.g. a ``pre_tool_call`` hook
+    fenced the tool the task needed, and the model wrote a clarifying question
+    instead of doing the work) currently surfaces as a non-failed turn with a
+    non-empty ``final_response``. That is NOT detected here — it would require
+    semantic inspection of the response. The fix for that sub-case is tracked
+    separately; this change covers the unambiguous provider failures.
 
     Args:
         prompt: The user message to send.
@@ -186,7 +218,10 @@ def run_oneshot(
         usage_file: Optional path; when set, a JSON usage report (estimated
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
-            spend per invocation.
+            spend per invocation. The report gains a ``failure_reason`` field
+            when the turn ended in a flagged failure, so callers that already
+            parse the usage file can branch on it without inspecting the exit
+            code.
 
     Returns the exit code.  The caller owns process termination.
     """
@@ -283,10 +318,45 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
 
-    if (result.get("failed") or result.get("partial")) and not (response or "").strip():
+    # Exit-code contract — see the docstring above. The previous logic only
+    # surfaced a failure when the response was *empty*, so a 402 billing wall
+    # (which sets ``final_response`` to a guidance message AND ``failed=True``)
+    # exited 0 and was routinely misread as "the work succeeded" by unattended
+    # callers. #74659.
+    response_text = (response or "").strip()
+    run_failed = bool(result.get("failed"))
+    run_partial = bool(result.get("partial"))
+    failure_reason = result.get("failure_reason")
+
+    # Agent-flagged failure → non-zero regardless of whether the agent wrote
+    # a guidance/error string to ``final_response``. Use exit 2 (distinct from
+    # the generic 1 below) so callers can branch "retry the provider" (2)
+    # vs "investigate" (1) without parsing text. The common sub-cases are
+    # ``failure_reason`` values produced by agent/conversation_loop.py:
+    # ``billing`` (HTTP 402), ``content_filter`` (safety refusal),
+    # ``context_overflow`` / generic non-retryable exhaustion.
+    if run_failed:
+        if response_text:
+            # The agent produced an explanation (billing guidance, safety
+            # refusal text, etc.) — we already wrote it to stdout. Add a
+            # one-line stderr marker so cron/systemd logs aren't silent about
+            # the non-zero exit code, then return 2.
+            real_stderr.write(
+                f"hermes -z: turn ended without completing the request"
+                + (f" (failure_reason={failure_reason})" if failure_reason else "")
+                + ".\n"
+            )
+            real_stderr.flush()
+            return 2
+        # Failed AND no response at all — the generic crash path.
+        real_stderr.write("hermes -z: agent run failed and produced no final response.\n")
+        real_stderr.flush()
         return 2
 
-    if not (response or "").strip():
+    if run_partial and not response_text:
+        return 2
+
+    if not response_text:
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
         return 1

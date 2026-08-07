@@ -189,7 +189,10 @@ describe('applyStoredSessionPreviewRuntimeInfo workspace paint', () => {
   // and not-yet-backfilled rows, so it must never stand in for a real cwd —
   // doing so reads as "no workspace" and blanks a pane that was correct.
   it('uses the row cwd for a non-git workspace with no repo root', () => {
-    applyStoredSessionPreviewRuntimeInfo({ cwd: '/plain/folder', git_repo_root: null, model: 'gpt' } as never, 'session-nongit')
+    applyStoredSessionPreviewRuntimeInfo(
+      { cwd: '/plain/folder', git_repo_root: null, model: 'gpt' } as never,
+      'session-nongit'
+    )
     setSelectedStoredSessionId('session-nongit')
 
     expect($currentCwd.get()).toBe('/plain/folder')

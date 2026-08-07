@@ -134,6 +134,9 @@ API hooks describe provider attempts inside the agent loop:
 
 `pre_api_request` includes:
 
+- `set_ui_status(text)`: a bounded, fail-open callback for rendering transient
+  plugin status in the active CLI/TUI. It does not write to the conversation.
+
 - identity: `session_id`, `task_id`, `turn_id`, `api_request_id`
 - runtime: `platform`, `model`, `provider`, `base_url`, `api_mode`
 - attempt metadata: `api_call_count`, `message_count`, `tool_count`,

@@ -2949,8 +2949,15 @@ class TestRunConversation:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_wait_notice") as emit_wait_notice,
         ):
             result = agent.run_conversation("search something")
+            pre_status_callback = next(
+                kw["set_ui_status"]
+                for name, kw in hook_calls
+                if name == "pre_api_request"
+            )
+            pre_status_callback("◇ RFQ\x1b[31m   opening")
 
         assert result["final_response"] == "Done searching"
         pre_request_calls = [kw for name, kw in hook_calls if name == "pre_api_request"]
@@ -2970,6 +2977,8 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
+        assert all(callable(c["set_ui_status"]) for c in pre_request_calls + post_request_calls)
+        emit_wait_notice.assert_called_once_with("◇ RFQ opening")
 
     def test_terminal_task_closes_logical_calls_before_metrics_scope(self, agent):
         from agent import relay_runtime

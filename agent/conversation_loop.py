@@ -92,6 +92,32 @@ from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
+_PLUGIN_STATUS_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
+_PLUGIN_STATUS_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _set_plugin_ui_status(agent: Any, text: Any) -> None:
+    """Project one plugin-owned status into the host's transient UI surface.
+
+    The callback is passed only to in-process lifecycle plugins. It never
+    appends conversation content, and malformed display text cannot interrupt
+    the model call.
+    """
+    if not isinstance(text, str):
+        return
+    cleaned = " ".join(
+        _PLUGIN_STATUS_UNSAFE.sub(" ", _PLUGIN_STATUS_ANSI.sub("", text)).split()
+    )[:180]
+    if not cleaned:
+        return
+    try:
+        agent._emit_wait_notice(cleaned)
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "plugin status callback failed", exc_info=True
+        )
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -2453,6 +2479,7 @@ def run_conversation(
                         _request_payload = agent._api_request_payload_for_hook(api_kwargs)
                         _invoke_hook(
                             "pre_api_request",
+                            set_ui_status=lambda text: _set_plugin_ui_status(agent, text),
                             task_id=effective_task_id,
                             turn_id=turn_id,
                             api_request_id=api_request_id,
@@ -5911,6 +5938,7 @@ def run_conversation(
                     _api_ended_at = api_start_time + api_duration
                     _invoke_hook(
                         "post_api_request",
+                        set_ui_status=lambda text: _set_plugin_ui_status(agent, text),
                         task_id=effective_task_id,
                         turn_id=turn_id,
                         api_request_id=api_request_id,

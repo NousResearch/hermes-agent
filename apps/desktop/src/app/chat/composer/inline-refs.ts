@@ -5,8 +5,10 @@ import { contextPath } from '@/lib/chat-runtime'
 import type { DroppedFile } from '../hooks/use-composer-actions'
 
 import {
+  caretOffsetInEditor,
   composerPlainText,
   normalizeComposerEditorDom,
+  placeCaretAtOffset,
   placeCaretEnd,
   refChipElement,
   RICH_INPUT_SLOT
@@ -134,6 +136,49 @@ function buildRefFragment(
   return fragment
 }
 
+function isScaffoldingEmpty(editor: HTMLElement) {
+  if (editor.childNodes.length === 0) {
+    return true
+  }
+
+  // normalizeComposerEditorDom leaves a lone <br> so the contenteditable
+  // keeps its height — not user content.
+  if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
+    return true
+  }
+
+  // Chromium sometimes wraps that break: <div><br></div>.
+  if (editor.childNodes.length === 1 && editor.firstChild?.nodeType === Node.ELEMENT_NODE) {
+    const wrap = editor.firstChild as HTMLElement
+
+    if (
+      (wrap.tagName === 'DIV' || wrap.tagName === 'P') &&
+      wrap.childNodes.length === 1 &&
+      wrap.firstChild?.nodeName === 'BR'
+    ) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function placeCaretAfterNode(node: ChildNode | null) {
+  if (!node) {
+    return false
+  }
+
+  const selection = window.getSelection()
+  const caret = document.createRange()
+
+  caret.setStartAfter(node)
+  caret.collapse(true)
+  selection?.removeAllRanges()
+  selection?.addRange(caret)
+
+  return true
+}
+
 export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonly InlineRefInput[]) {
   const parsed = refs.map(parseInlineRef).filter((ref): ref is NonNullable<typeof ref> => ref !== null)
 
@@ -141,41 +186,87 @@ export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonl
     return null
   }
 
-  editor.focus({ preventScroll: true })
-
+  // Capture the insert point BEFORE focus(). Focusing a contenteditable
+  // restores its last caret — after Add-to-Chat the live selection was often
+  // cleared (or points at the preview), and focus() would resurrect a stale
+  // caret (commonly at offset 0 or after chip 1). Inserting there puts the
+  // next chip in the wrong place and leaves the caret mid-draft instead of
+  // after the new chip.
   const selection = window.getSelection()
 
-  const range =
-    selection?.rangeCount && editor.contains(selection.getRangeAt(0).commonAncestorContainer)
-      ? selection.getRangeAt(0)
+  const rangeBeforeFocus =
+    selection?.rangeCount &&
+    editor.contains(selection.getRangeAt(0).startContainer) &&
+    editor.contains(selection.getRangeAt(0).endContainer)
+      ? selection.getRangeAt(0).cloneRange()
       : null
+
+  editor.focus({ preventScroll: true })
+
+  // Empty (or scaffolding-only) editors: swap in the chip atomically.
+  // Removing the <br> then appending in two steps leaves a one-frame
+  // `<br><chip>` / empty state — scrollHeight spikes, the metrics engine
+  // flips `stacked`, and the dock visibly jumps ("newline flash").
+  if (isScaffoldingEmpty(editor)) {
+    const fragment = buildRefFragment(parsed, { needsAfterSpace: true, needsBeforeSpace: false })
+    const tail = fragment.lastChild
+
+    editor.replaceChildren(fragment)
+    delete editor.dataset.empty
+    placeCaretAfterNode(tail) || placeCaretEnd(editor)
+
+    const caretOffset = caretOffsetInEditor(editor)
+
+    normalizeComposerEditorDom(editor)
+    placeCaretAtOffset(editor, caretOffset)
+
+    return composerPlainText(editor).replace(/^\n+/, '')
+  }
+
+  const range = rangeBeforeFocus
 
   if (range && selection) {
     const beforeText = plainTextInRange(editor, range, 'before')
     const afterText = plainTextInRange(editor, range, 'after')
 
-    range.insertNode(
-      buildRefFragment(parsed, {
-        needsAfterSpace: afterText.length === 0 || !/^\s/.test(afterText),
-        needsBeforeSpace: beforeText.length > 0 && !/\s$/.test(beforeText)
-      })
-    )
-    range.collapse(false)
-    selection.removeAllRanges()
-    selection.addRange(range)
+    const fragment = buildRefFragment(parsed, {
+      needsAfterSpace: afterText.length === 0 || !/^\s/.test(afterText),
+      needsBeforeSpace: beforeText.length > 0 && !/\s$/.test(beforeText)
+    })
+
+    const tail = fragment.lastChild
+
+    range.insertNode(fragment)
+
+    // insertNode(DocumentFragment) leaves an unreliable range in Chromium —
+    // pin explicitly after the trailing space/chip, matching paste insertion.
+    if (!placeCaretAfterNode(tail)) {
+      range.collapse(false)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
   } else {
     const current = composerPlainText(editor)
 
-    editor.append(
-      buildRefFragment(parsed, {
-        needsAfterSpace: true,
-        needsBeforeSpace: current.length > 0 && !/\s$/.test(current)
-      })
-    )
-    placeCaretEnd(editor)
+    const fragment = buildRefFragment(parsed, {
+      needsAfterSpace: true,
+      needsBeforeSpace: current.length > 0 && !/\s$/.test(current)
+    })
+
+    const tail = fragment.lastChild
+
+    editor.append(fragment)
+    placeCaretAfterNode(tail) || placeCaretEnd(editor)
   }
 
-  normalizeComposerEditorDom(editor)
+  // Normalize can detach the live range; restore the post-insert offset so a
+  // second Add-to-Chat (or mid-line insert) keeps the caret after the new chip.
+  const caretOffset = caretOffsetInEditor(editor)
 
-  return composerPlainText(editor)
+  normalizeComposerEditorDom(editor)
+  placeCaretAtOffset(editor, caretOffset)
+
+  // Leading phantom breaks must not reach AUI state — hasHardNewline would
+  // expand the composer into the stacked (two-row) layout.
+  return composerPlainText(editor).replace(/^\n+/, '')
 }

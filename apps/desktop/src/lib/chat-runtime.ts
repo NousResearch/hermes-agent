@@ -4,6 +4,7 @@ import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { normalizeDisplayPath } from '@/lib/display-path'
 import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
@@ -139,14 +140,44 @@ export function isImageGenerationTool(name?: string): boolean {
   return name === 'image_generate'
 }
 
+/** Strip a workspace-relative path out of `path` when it sits under `cwd`.
+ *
+ *  Normalizes separators and Windows drive-letter case so Add-to-Chat / drops
+ *  never paint an absolute `C:\...` chip when the file is inside the session
+ *  cwd. `file:` URL pathnames (`/C:/...`) are accepted the same way.
+ */
 export function contextPath(path: string, cwd: string): string {
   if (!cwd) {
     return path
   }
 
-  const normalizedCwd = cwd.endsWith('/') ? cwd : `${cwd}/`
+  let normalizedPath = normalizeDisplayPath(path)
+  const normalizedCwd = normalizeDisplayPath(cwd)
 
-  return path.startsWith(normalizedCwd) ? path.slice(normalizedCwd.length) : path
+  if (!normalizedPath || !normalizedCwd) {
+    return path
+  }
+
+  // Chromium `file:` URL pathnames on Windows keep a leading slash: `/C:/...`.
+  if (/^\/[A-Za-z]:\//.test(normalizedPath)) {
+    normalizedPath = normalizedPath.slice(1)
+  }
+
+  const caseInsensitive = /^[A-Za-z]:\//.test(normalizedPath) || /^[A-Za-z]:\//.test(normalizedCwd)
+  const pathKey = caseInsensitive ? normalizedPath.toLowerCase() : normalizedPath
+  const cwdKey = caseInsensitive ? normalizedCwd.toLowerCase() : normalizedCwd
+
+  if (pathKey === cwdKey) {
+    return '.'
+  }
+
+  const prefix = cwdKey.endsWith('/') ? cwdKey : `${cwdKey}/`
+
+  if (!pathKey.startsWith(prefix)) {
+    return path
+  }
+
+  return normalizedPath.slice(prefix.length)
 }
 
 // IDs are content-derived (`kind:value`), not uuids, so upsertAttachment's

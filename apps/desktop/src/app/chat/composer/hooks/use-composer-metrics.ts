@@ -49,7 +49,11 @@ export function useComposerMetrics({
   // presence of a non-trailing newline actually flips, so typing within a line
   // costs nothing here.
   const isEmpty = useAuiState(s => s.composer.text.length === 0)
-  const hasHardNewline = useAuiState(s => s.composer.text.trimEnd().includes('\n'))
+  // trim() (not trimEnd): a leading phantom `\n` from contenteditable
+  // scaffolding must not force the stacked two-row layout — that jump is the
+  // "newline flash" when Add-to-Chat inserts into an empty composer. Trailing
+  // newlines still defer to the ResizeObserver, same as before.
+  const hasHardNewline = useAuiState(s => s.composer.text.trim().includes('\n'))
 
   // Expansion (input on its own full-width row, controls below) is driven by
   // the editor's *actual* rendered height via the ResizeObserver in

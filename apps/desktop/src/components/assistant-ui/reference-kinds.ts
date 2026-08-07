@@ -89,11 +89,9 @@ export const REFERENCE_STYLES: Record<ReferenceKind, ReferenceStyle> = {
     paths: ['M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5'],
     label: 'Tools'
   },
-  line: {
-    codicon: 'list-selection',
-    paths: ['M5 9l14 0', 'M5 15l14 0', 'M11 4l-4 16', 'M17 4l-4 16'],
-    label: 'Lines'
-  },
+  // Same text-file glyph as `file` — a line ref is a span of source text, not a
+  // hash/number token (the old Tabler "hash" paths read as a literal "#").
+  line: { codicon: 'file', paths: FILE_PATHS, label: 'Lines' },
   terminal: { codicon: 'terminal', paths: TERMINAL_PATHS, label: 'Terminal' },
   session: {
     codicon: 'comment-discussion',

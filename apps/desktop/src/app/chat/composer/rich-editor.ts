@@ -760,6 +760,22 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     }
   }
 
+  // Leading scaffolding <br> left when a chip was appended to an "empty"
+  // editor — same blank-line flash as above, just at the front.
+  const head = editor.firstChild
+
+  if (head?.nodeName === 'BR' && editor.childNodes.length > 1) {
+    let next: ChildNode | null = head.nextSibling
+
+    while (next?.nodeType === Node.TEXT_NODE && !(next.textContent || '').trim()) {
+      next = next.nextSibling
+    }
+
+    if (next && (next as HTMLElement).dataset?.refText) {
+      editor.removeChild(head)
+    }
+  }
+
   // ContentEditable elements with no children can visually collapse to
   // near-zero height in some browsers (especially Chromium), causing the
   // composer to appear as a tiny dot/pixel. Ensure there's always at least

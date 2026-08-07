@@ -6,6 +6,7 @@ import { Terminal } from '@xterm/xterm'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
+import { previewOwnsAddSelectionShortcut } from '@/app/chat/right-rail/preview-add-to-chat'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { triggerHaptic } from '@/lib/haptics'
@@ -479,8 +480,20 @@ export function useTerminalSession({
         return
       }
 
+      // Preview frame claims ⌘/Ctrl+L while it has a live line/text selection.
+      // Without this, the terminal listener (registered earlier) also quotes the
+      // same window.getSelection() as `@terminal:` before preview inserts `@line:`.
+      const termSelection = (termRef.current?.getSelection() || '').trim()
+
+      if (!termSelection && previewOwnsAddSelectionShortcut()) {
+        return
+      }
+
       event.preventDefault()
       event.stopPropagation()
+      // Block later capture listeners (preview Add to Chat) when we handle a
+      // real xterm selection — otherwise both `@terminal:` and `@line:` insert.
+      event.stopImmediatePropagation()
       addSelectionToChat()
     }
 

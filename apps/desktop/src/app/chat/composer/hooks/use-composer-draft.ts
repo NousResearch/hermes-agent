@@ -23,8 +23,10 @@ import {
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
 import {
+  caretOffsetInEditor,
   composerPlainText,
   normalizeComposerEditorDom,
+  placeCaretAtOffset,
   placeCaretEnd,
   REF_RE,
   renderComposerContents
@@ -106,6 +108,10 @@ export function useComposerDraft({
   queueEditStateRef.current = queueEditRef.current
 
   const [focusRequestId, setFocusRequestId] = useState(0)
+  // After an in-place chip insert the DOM already has the right glyphs. A
+  // sync-driven renderComposerContents would replaceChildren() and flash the
+  // leading icon (empty → SVG). Hold this until after the next paint.
+  const skipDomRepaintRef = useRef(false)
 
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)
@@ -277,7 +283,12 @@ export function useComposerDraft({
 
       const editor = editorRef.current
 
-      if (editor && document.activeElement !== editor && composerPlainText(editor) !== text) {
+      if (
+        editor &&
+        !skipDomRepaintRef.current &&
+        document.activeElement !== editor &&
+        composerPlainText(editor) !== text
+      ) {
         renderComposerContents(editor, text, { trailingCommitted: true })
       }
 
@@ -334,9 +345,33 @@ export function useComposerDraft({
       return false
     }
 
-    draftRef.current = nextDraft
-    setComposerText(nextDraft)
-    requestMainFocus()
+    // Belt-and-suspenders with insertInlineRefsIntoEditor: never publish a
+    // leading newline into AUI — metrics treats it as a hard wrap.
+    const draft = nextDraft.replace(/^\n+/, '')
+
+    draftRef.current = draft
+    skipDomRepaintRef.current = true
+    setComposerText(draft)
+
+    // Re-seat after AUI/focus churn: setText + requestMainFocus can move the
+    // caret (hidden textarea sync / focus retries) away from the chip we just
+    // inserted — especially on the second Add-to-Chat. Use the post-insert
+    // offset (not draft.length) so mid-line inserts stay mid-line.
+    const caretOffset = caretOffsetInEditor(editor)
+    placeCaretAtOffset(editor, caretOffset)
+    window.requestAnimationFrame(() => {
+      if (editorRef.current === editor && draftRef.current === draft) {
+        placeCaretAtOffset(editor, caretOffset)
+      }
+
+      window.requestAnimationFrame(() => {
+        skipDomRepaintRef.current = false
+      })
+    })
+
+    if (document.activeElement !== editor) {
+      requestMainFocus()
+    }
 
     return true
   }

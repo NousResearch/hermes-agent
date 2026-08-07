@@ -6,6 +6,7 @@ import {
   attachmentDisplayText,
   attachmentId,
   coerceThinkingText,
+  contextPath,
   messageCreatedAt,
   optimisticAttachmentRef,
   parseCommandDispatch,
@@ -17,6 +18,34 @@ const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'kind'>): ComposerAttachment {
   return { id: 'a', label: 'file.png', ...overrides }
 }
+
+describe('contextPath', () => {
+  it('strips a posix cwd prefix', () => {
+    expect(contextPath('/repo/apps/desktop/foo.ts', '/repo')).toBe('apps/desktop/foo.ts')
+    expect(contextPath('/repo/apps/desktop/foo.ts', '/repo/')).toBe('apps/desktop/foo.ts')
+  })
+
+  it('relativizes Windows paths despite backslashes and drive-letter case', () => {
+    expect(contextPath('C:\\workspace\\hermes-agent\\apps\\desktop\\foo.ts', 'C:\\workspace\\hermes-agent')).toBe(
+      'apps/desktop/foo.ts'
+    )
+    expect(contextPath('c:/workspace/hermes-agent/apps/desktop/foo.ts', 'C:/workspace/hermes-agent')).toBe(
+      'apps/desktop/foo.ts'
+    )
+  })
+
+  it('accepts file-URL pathnames with a leading slash on Windows', () => {
+    expect(contextPath('/C:/workspace/hermes-agent/src/a.ts', 'C:/workspace/hermes-agent')).toBe('src/a.ts')
+  })
+
+  it('leaves paths outside cwd unchanged', () => {
+    expect(contextPath('/other/src/a.ts', '/repo')).toBe('/other/src/a.ts')
+  })
+
+  it('returns the path unchanged when cwd is empty', () => {
+    expect(contextPath('/repo/a.ts', '')).toBe('/repo/a.ts')
+  })
+})
 
 describe('optimisticAttachmentRef', () => {
   it('renders an image from its in-hand base64 preview (no @image: path ref)', () => {

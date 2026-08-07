@@ -281,6 +281,12 @@ class TestShellFileOpsHelpers:
         assert normalize_read_pagination(offset="bad", limit="bad") == (1, 2000)
         assert normalize_read_pagination(offset=2, limit=999999) == (2, 2000)
 
+    def test_normalize_search_pagination_clamps_invalid_values(self):
+        assert normalize_search_pagination(offset=-10, limit=-5) == (0, 1)
+        assert normalize_search_pagination(offset="bad", limit="bad") == (0, 50)
+        assert normalize_search_pagination(offset=2, limit=999999) == (2, 500)
+        assert normalize_search_pagination(offset=0, limit=50) == (0, 50)
+
 
     def test_escape_shell_arg_simple(self, file_ops):
         assert file_ops._escape_shell_arg("hello") == "'hello'"

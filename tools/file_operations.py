@@ -724,6 +724,7 @@ DEFAULT_READ_OFFSET = 1
 DEFAULT_READ_LIMIT = 2000
 DEFAULT_SEARCH_OFFSET = 0
 DEFAULT_SEARCH_LIMIT = 50
+MAX_SEARCH_RESULTS = 500
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -755,9 +756,15 @@ def normalize_read_pagination(offset: Any = DEFAULT_READ_OFFSET,
 
 def normalize_search_pagination(offset: Any = DEFAULT_SEARCH_OFFSET,
                                 limit: Any = DEFAULT_SEARCH_LIMIT) -> tuple[int, int]:
-    """Return safe search pagination bounds for shell head/tail pipelines."""
+    """Return safe search pagination bounds for shell head/tail pipelines.
+
+    Unlike read pagination (which uses tool_output.max_lines), search is
+    capped at ``MAX_SEARCH_RESULTS`` so a huge limit cannot inflate
+    ``fetch_limit = limit + offset`` into unbounded ``head -n`` / rg work.
+    """
     normalized_offset = max(0, _coerce_int(offset, DEFAULT_SEARCH_OFFSET))
-    normalized_limit = max(1, _coerce_int(limit, DEFAULT_SEARCH_LIMIT))
+    normalized_limit = _coerce_int(limit, DEFAULT_SEARCH_LIMIT)
+    normalized_limit = max(1, min(normalized_limit, MAX_SEARCH_RESULTS))
     return normalized_offset, normalized_limit
 
 

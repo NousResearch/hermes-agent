@@ -191,7 +191,12 @@ class HostSupervisor:
             if self.is_running():
                 return
             self._closing = False
-            self.reconcile_startup_orphan()
+            reconciliation = self.reconcile_startup_orphan()
+            if reconciliation == "termination-failed":
+                raise RuntimeError(
+                    "could not terminate the registered compute host; "
+                    "refusing to start a duplicate"
+                )
             self._spawn_locked(reason="startup")
 
     def shutdown(self) -> None:
@@ -199,6 +204,9 @@ class HostSupervisor:
             self._closing = True
             proc = self._proc
         if proc is None:
+            self._fail_pending_controls(
+                reason="shutdown", message="compute host supervisor shut down"
+            )
             return
         try:
             if proc.poll() is None and proc.stdin is not None:
@@ -207,7 +215,16 @@ class HostSupervisor:
         except Exception:
             self._terminate_process(proc)
         finally:
-            self._remove_registry()
+            with self._lock:
+                if self._proc is proc:
+                    self._proc = None
+            self._fail_pending_turns(
+                reason="shutdown", message="compute host supervisor shut down"
+            )
+            self._fail_pending_controls(
+                reason="shutdown", message="compute host supervisor shut down"
+            )
+            self._remove_registry(expected_pid=int(proc.pid or 0))
 
     def reconcile_startup_orphan(self) -> str:
         """Terminate a stale registered host, guarding against PID reuse."""
@@ -216,7 +233,7 @@ class HostSupervisor:
         except FileNotFoundError:
             return "none"
         except Exception:
-            self._remove_registry()
+            self._remove_registry(force=True)
             return "invalid-registry"
 
         try:
@@ -224,15 +241,19 @@ class HostSupervisor:
         except Exception:
             pid = 0
         if pid <= 0 or not _pid_alive(pid):
-            self._remove_registry()
+            self._remove_registry(force=True)
             return "not-running"
         if not self._pid_matches_compute_host(pid):
             # PID was reused by another process. Never signal it.
-            self._remove_registry()
+            self._remove_registry(force=True)
             return "pid-reuse-ignored"
 
-        self._terminate_pid(pid, timeout=_SHUTDOWN_TIMEOUT_SECS)
-        self._remove_registry()
+        if not self._terminate_pid(pid, timeout=_SHUTDOWN_TIMEOUT_SECS):
+            # Keep the registry as the durable owner record.  Removing it and
+            # spawning anyway would create two live compute hosts after a
+            # permission error or a process that ignored both signals.
+            return "termination-failed"
+        self._remove_registry(expected_pid=pid)
         return "terminated"
 
     def submit_turn(
@@ -301,7 +322,13 @@ class HostSupervisor:
             q = queue.Queue(maxsize=1)
             with self._lock:
                 self._pending_controls[request_id] = q
-        self._send_frame(frame)
+        try:
+            self._send_frame(frame)
+        except Exception:
+            if wait:
+                with self._lock:
+                    self._pending_controls.pop(request_id, None)
+            raise
         if not wait or q is None:
             return {"status": "sent", "request_id": request_id}
         try:
@@ -346,11 +373,23 @@ class HostSupervisor:
         self._stdout_thread.start()
         self._stderr_thread.start()
         self._wait_thread.start()
-        if not self._hello_event.wait(timeout=10.0):
+        try:
+            if not self._hello_event.wait(timeout=10.0):
+                raise RuntimeError(
+                    f"compute host did not send hello; stderr={self._stderr_tail[-5:]}"
+                )
+            self._validate_hello()
+            self._persist_registry()
+        except Exception:
+            # Once Popen succeeds every later startup gate owns cleanup.  A
+            # rejected hello or failed registry write previously leaked a live
+            # unregistered child; its wait thread could then respawn it too.
+            with self._lock:
+                if self._proc is proc:
+                    self._proc = None
             self._terminate_process(proc)
-            raise RuntimeError(f"compute host did not send hello; stderr={self._stderr_tail[-5:]}")
-        self._validate_hello()
-        self._persist_registry()
+            self._remove_registry(expected_pid=int(proc.pid or 0))
+            raise
         logger.info("compute host started pid=%s reason=%s", proc.pid, reason)
 
     def _validate_hello(self) -> None:
@@ -377,13 +416,35 @@ class HostSupervisor:
         tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
         tmp.replace(self.registry_path)
 
-    def _remove_registry(self) -> None:
+    def _remove_registry(
+        self, *, expected_pid: int | None = None, force: bool = False
+    ) -> bool:
+        """Remove only the registry owned by the exiting child.
+
+        An old wait thread can run after a replacement has already published
+        its registry.  A blind unlink in that window erases the replacement's
+        durable identity and makes the next backend spawn another host.
+        """
         try:
+            if not force and expected_pid is not None:
+                try:
+                    data = json.loads(self.registry_path.read_text(encoding="utf-8"))
+                    registered_pid = int(data.get("host_pid") or 0)
+                except FileNotFoundError:
+                    return False
+                except Exception:
+                    # An unreadable registry cannot be proven to belong to this
+                    # child.  Startup reconciliation owns forced cleanup.
+                    return False
+                if registered_pid != int(expected_pid):
+                    return False
             self.registry_path.unlink()
+            return True
         except FileNotFoundError:
-            pass
+            return False
         except Exception:
             logger.debug("failed to remove compute host registry", exc_info=True)
+            return False
 
     def _send_frame(self, frame: dict[str, Any]) -> None:
         with self._lock:
@@ -471,8 +532,11 @@ class HostSupervisor:
             if self._proc is not proc:
                 return
             self._proc = None
-        self._remove_registry()
+        self._remove_registry(expected_pid=int(proc.pid or 0))
         self._fail_pending_turns(reason="crash", message=f"compute host exited with code {code}")
+        self._fail_pending_controls(
+            reason="crash", message=f"compute host exited with code {code}"
+        )
         self._maybe_respawn_after_crash()
 
     def _fail_pending_turns(self, *, reason: str, message: str) -> None:
@@ -504,6 +568,23 @@ class HostSupervisor:
                 except Exception:
                     logger.exception("compute host error callback failed")
 
+    def _fail_pending_controls(self, *, reason: str, message: str) -> None:
+        """Wake every synchronous control caller when its host disappears."""
+        with self._lock:
+            pending = self._pending_controls
+            self._pending_controls = {}
+        for request_id, waiter in pending.items():
+            frame = {
+                "type": "control.error",
+                "request_id": request_id,
+                "reason": reason,
+                "message": message,
+            }
+            try:
+                waiter.put_nowait(frame)
+            except queue.Full:
+                pass
+
     def _maybe_respawn_after_crash(self) -> None:
         now = time.monotonic()
         self._restart_times = [t for t in self._restart_times if now - t <= _RESPAWN_WINDOW_SECS]
@@ -524,31 +605,44 @@ class HostSupervisor:
                     self._spawn_locked(reason="crash")
                 except Exception:
                     logger.exception("compute host respawn failed")
+                    # A transient fork/import/registry failure must not make a
+                    # single crash permanently disable turn isolation.  Feed
+                    # it back through the same bounded crash-loop budget.
+                    self._maybe_respawn_after_crash()
 
         _Thread(target=_respawn, name="compute-host-respawn", daemon=True).start()
 
     def _pid_matches_compute_host(self, pid: int) -> bool:
         return is_compute_host_identity(pid)
 
-    def _terminate_pid(self, pid: int, *, timeout: float = _SHUTDOWN_TIMEOUT_SECS) -> None:
+    def _terminate_pid(
+        self, pid: int, *, timeout: float = _SHUTDOWN_TIMEOUT_SECS
+    ) -> bool:
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
-            return
+            return True
         except Exception:
             logger.debug("failed to SIGTERM compute host pid=%s", pid, exc_info=True)
-            return
+            return False
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not _pid_alive(pid):
-                return
+                return True
             time.sleep(0.05)
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
-            return
+            return True
         except Exception:
             logger.debug("failed to SIGKILL compute host pid=%s", pid, exc_info=True)
+            return False
+        deadline = time.monotonic() + min(2.0, max(0.1, timeout))
+        while time.monotonic() < deadline:
+            if not _pid_alive(pid):
+                return True
+            time.sleep(0.05)
+        return not _pid_alive(pid)
 
     def _terminate_process(self, proc: subprocess.Popen[str]) -> None:
         if proc.poll() is not None:

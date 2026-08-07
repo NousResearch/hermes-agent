@@ -39,6 +39,7 @@ from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
 from tui_gateway.turn_marker import (
+    _MAX_FUTURE_SKEW_SECS,
     clear_turn_marker,
     read_turn_marker,
     record_turn_start,
@@ -7358,7 +7359,12 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         return None
     enabled, freshness_secs, max_attempts = _auto_continue_config()
     age = time.time() - marker["started_at"]
-    if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
+    if (
+        not enabled
+        or age < -_MAX_FUTURE_SKEW_SECS
+        or age > freshness_secs
+        or marker["attempts"] >= max_attempts
+    ):
         # Stale, disabled, or crash-looping: stop trying. The journal/partial
         # transcript still shows what happened; a manual message continues it.
         clear_turn_marker(home, session_key)

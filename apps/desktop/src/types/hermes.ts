@@ -632,11 +632,13 @@ export interface SessionRuntimeInfo {
 }
 
 export interface UsageStats {
+  account_lines?: string[]
   calls: number
   context_max?: number
   context_percent?: number
   context_used?: number
   cost_usd?: number
+  credits_lines?: string[]
   input: number
   output: number
   total: number

@@ -69,6 +69,27 @@ describe('/usage slash command', () => {
     expect(printed(withBalance.sys)).toContain(USAGE_CTA)
   })
 
+  it('renders provider account limits even before the first API call', async () => {
+    const withProviderLimits = buildCtx({
+      'session.usage': baseUsage({
+        calls: 0,
+        account_lines: ['📈 Account limits', 'Antigravity Proxy', 'Gemini quota: 95% remaining']
+      })
+    })
+
+    await withProviderLimits.run('')
+
+    const sections = withProviderLimits.panel.mock.calls.find(c => c[0] === 'Provider limits')?.[1] as
+      | { text?: string }[]
+      | undefined
+
+    const body = (sections ?? []).map(section => section.text ?? '').join('\n')
+    expect(body).toContain('Antigravity Proxy')
+    expect(body).toContain('Gemini quota: 95% remaining')
+    expect(printed(withProviderLimits.sys)).not.toContain('no API calls yet')
+    expect(printed(withProviderLimits.sys)).toContain(USAGE_CTA)
+  })
+
   it('renders the dollar two-bar model (no "credits" wording) when available', async () => {
     const { panel, run } = buildCtx({
       'session.usage': baseUsage({

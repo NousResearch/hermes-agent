@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
 
-from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
+from agent.anthropic_adapter import _is_oauth_token, _requires_bearer_auth, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -881,14 +881,257 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _custom_usage_base_identity(
+    value: Optional[str],
+) -> Optional[tuple[str, str, int, str, str]]:
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(str(value or "").strip())
+        scheme = parsed.scheme.lower()
+        if scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        port = parsed.port or (443 if scheme == "https" else 80)
+        return (
+            scheme,
+            parsed.hostname.lower(),
+            port,
+            parsed.path.rstrip("/"),
+            parsed.query,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _custom_usage_config_entry(
+    provider: Optional[str],
+    base_url: Optional[str],
+) -> Optional[dict[str, Any]]:
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+        from hermes_cli.providers import custom_provider_aliases
+
+        entries = get_compatible_custom_providers()
+        requested = str(provider or "custom").strip().lower()
+        if requested != "custom":
+            return next(
+                (
+                    entry
+                    for entry in entries
+                    if requested
+                    in custom_provider_aliases(
+                        str(entry.get("name") or ""),
+                        str(entry.get("provider_key") or ""),
+                    )
+                ),
+                None,
+            )
+
+        target = _custom_usage_base_identity(base_url)
+        if target is None:
+            return None
+        matches = [
+            entry
+            for entry in entries
+            if _custom_usage_base_identity(str(entry.get("base_url") or "")) == target
+        ]
+        return matches[0] if len(matches) == 1 else None
+    except Exception:
+        return None
+
+
+def _peek_custom_usage_api_key(entry: dict[str, Any], base_url: str) -> Optional[str]:
+    try:
+        from agent.credential_pool import get_custom_provider_pool_key, load_pool
+
+        pool_key = get_custom_provider_pool_key(
+            base_url,
+            provider_name=str(entry.get("name") or ""),
+        )
+        if pool_key:
+            pooled = load_pool(pool_key).peek()
+            pooled_key = getattr(pooled, "runtime_api_key", None) if pooled else None
+            if pooled_key:
+                return str(pooled_key)
+    except Exception:
+        pass
+
+    try:
+        from agent.secret_scope import get_secret
+        from hermes_cli.auth import has_usable_secret
+
+        candidates = [entry.get("api_key")]
+        key_env = str(entry.get("key_env") or "").strip()
+        if key_env:
+            candidates.append(get_secret(key_env, ""))
+        return next(
+            (
+                str(candidate).strip()
+                for candidate in candidates
+                if has_usable_secret(candidate)
+            ),
+            None,
+        )
+    except Exception:
+        return None
+
+
+def _fetch_custom_account_usage(
+    provider: Optional[str],
+    base_url: Optional[str],
+    api_key: Optional[str],
+    api_mode: Optional[str],
+) -> Optional[AccountUsageSnapshot]:
+    resolved_base_url = str(base_url or "").strip()
+    resolved_api_key = api_key
+    resolved_api_mode = str(api_mode or "").strip().lower()
+    extra_headers: dict[str, str] = {}
+    live_pair_complete = bool(resolved_base_url) and resolved_api_key is not None
+    config_entry = _custom_usage_config_entry(provider, resolved_base_url)
+    config_base_url = str((config_entry or {}).get("base_url") or "").strip()
+    config_matches_live = (
+        live_pair_complete
+        and _custom_usage_base_identity(config_base_url) is not None
+        and _custom_usage_base_identity(config_base_url)
+        == _custom_usage_base_identity(resolved_base_url)
+    )
+
+    if config_entry and (not live_pair_complete or config_matches_live):
+        raw_headers = config_entry.get("extra_headers")
+        if isinstance(raw_headers, dict):
+            extra_headers = {
+                str(key): str(value)
+                for key, value in raw_headers.items()
+                if value is not None
+            }
+
+    if not live_pair_complete:
+        # A partial caller pair is never combined with unrelated config. Only a
+        # uniquely identified entry can supply the complete endpoint/key pair.
+        if config_entry and config_base_url:
+            resolved_base_url = config_base_url
+            resolved_api_key = _peek_custom_usage_api_key(config_entry, config_base_url)
+            resolved_api_mode = str(config_entry.get("api_mode") or "").strip().lower()
+        else:
+            resolved_api_key = None
+    elif config_matches_live and not resolved_api_mode:
+        resolved_api_mode = str((config_entry or {}).get("api_mode") or "").strip().lower()
+
+    if not resolved_base_url:
+        return None
+    try:
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(resolved_base_url)
+        if _custom_usage_base_identity(resolved_base_url) is None:
+            return None
+        base_path = parsed.path.rstrip("/")
+        usage_path = f"{base_path}/usage" if base_path.endswith("/v1") else f"{base_path}/v1/usage"
+        usage_url = urlunparse(
+            (parsed.scheme, parsed.netloc, usage_path, "", parsed.query, "")
+        )
+        headers = dict(extra_headers)
+        key = str(resolved_api_key or "").strip()
+        if key and key != "no-key-required":
+            lowered_header_names = {name.lower() for name in headers}
+            if not resolved_api_mode:
+                resolved_api_mode = (
+                    "anthropic_messages"
+                    if "/anthropic" in parsed.path.lower()
+                    else "chat_completions"
+                )
+            if resolved_api_mode == "anthropic_messages":
+                if _requires_bearer_auth(resolved_base_url):
+                    if "authorization" not in lowered_header_names:
+                        headers["Authorization"] = f"Bearer {key}"
+                elif "x-api-key" not in lowered_header_names:
+                    headers["x-api-key"] = key
+            elif "authorization" not in lowered_header_names:
+                headers["Authorization"] = f"Bearer {key}"
+        from agent.ssl_verify import resolve_httpx_verify
+
+        verify = resolve_httpx_verify(
+            ca_bundle=str((config_entry or {}).get("ssl_ca_cert") or "")
+            if config_matches_live or not live_pair_complete
+            else None,
+            ssl_verify=(config_entry or {}).get("ssl_verify")
+            if config_matches_live or not live_pair_complete
+            else None,
+            base_url=resolved_base_url,
+        )
+        with httpx.Client(timeout=5.0, verify=verify) as client:
+            resp = client.get(usage_url, headers=headers)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None
+
+            provider_name = str(data.get("provider") or "custom-proxy")
+            windows_raw = data.get("windows", [])
+            windows: list[AccountUsageWindow] = []
+            if isinstance(windows_raw, list):
+                for w in windows_raw:
+                    if isinstance(w, dict):
+                        label = str(w.get("label") or "Quota")
+                        used_pct = w.get("used_percent")
+                        rem_frac = w.get("remaining_fraction")
+                        if used_pct is None and _is_finite_num(rem_frac):
+                            used_pct = (1.0 - float(rem_frac)) * 100.0
+                        normalized_used_pct = (
+                            min(100.0, max(0.0, float(used_pct)))
+                            if _is_finite_num(used_pct)
+                            else None
+                        )
+                        reset_at = _parse_dt(w.get("reset_at"))
+                        windows.append(
+                            AccountUsageWindow(
+                                label=label,
+                                used_percent=normalized_used_pct,
+                                reset_at=reset_at,
+                            )
+                        )
+
+            details: list[str] = []
+            models_raw = data.get("models", [])
+            if isinstance(models_raw, list) and not windows:
+                for m in models_raw:
+                    if isinstance(m, dict):
+                        name = str(m.get("display_name") or m.get("id") or "Model")
+                        used = m.get("used_percent")
+                        if _is_finite_num(used):
+                            used_pct = min(100.0, max(0.0, float(used)))
+                            details.append(
+                                f"{name}: {100.0 - used_pct:.0f}% remaining "
+                                f"({used_pct:.0f}% used)"
+                            )
+
+            if not windows and not details:
+                return None
+
+            return AccountUsageSnapshot(
+                provider=provider_name,
+                source=str(data.get("source") or "custom-api"),
+                fetched_at=_utc_now(),
+                title="Account limits",
+                windows=tuple(windows),
+                details=tuple(details),
+            )
+    except Exception:
+        return None
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    api_mode: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     normalized = str(provider or "").strip().lower()
-    if normalized in {"", "auto", "custom"}:
+    if normalized in {"", "auto"}:
         return None
     try:
         if normalized == "openai-codex":
@@ -897,6 +1140,13 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "custom" or normalized.startswith("custom:"):
+            return _fetch_custom_account_usage(
+                provider=provider,
+                base_url=base_url,
+                api_key=api_key,
+                api_mode=api_mode,
+            )
     except Exception:
         return None
     return None

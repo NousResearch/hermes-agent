@@ -659,6 +659,13 @@ export const sessionCommands: SlashCommand[] = [
           })
         }
 
+        const accountLines = r?.account_lines ?? []
+        const showedAccount = accountLines.length > 0
+
+        if (showedAccount) {
+          ctx.transcript.panel('Provider limits', [{ text: accountLines.join('\n') }])
+        }
+
         // Nous balance block is agent-independent (a portal fetch), so it shows
         // even with zero API calls or on a resumed session. Prefer the shared
         // dollar usage model (two-bar view, dollars-only); fall back to the
@@ -701,7 +708,7 @@ export const sessionCommands: SlashCommand[] = [
         }
 
         if (!r?.calls) {
-          if (!showedBalance) {
+          if (!showedBalance && !showedAccount) {
             sys('no API calls yet')
           }
 

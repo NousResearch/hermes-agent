@@ -18,23 +18,15 @@ Behavior contract on a fresh (never-compacted) session: every row is
 also pinned below.
 """
 
-import os
-import sys
-
 import pytest
+
+from hermes_state import SessionDB
 
 
 @pytest.fixture
-def state_db(tmp_path, monkeypatch):
-    """A real SessionDB on a temp state.db with one compacted session."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    os.makedirs(tmp_path / ".hermes", exist_ok=True)
-    for mod in [m for m in sys.modules if m.startswith("hermes_state")]:
-        del sys.modules[mod]
-    import hermes_state
-
-    db = hermes_state.SessionDB(tmp_path / "state.db")
-    return db
+def state_db(tmp_path):
+    """A real SessionDB on a temp state.db."""
+    return SessionDB(tmp_path / "state.db")
 
 
 def _seed_compacted_session(db, session_id: str) -> None:
@@ -58,12 +50,11 @@ def _seed_compacted_session(db, session_id: str) -> None:
 
 
 def _archived_count(db, session_id: str) -> int:
-    with db._lock:
-        cur = db._conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 0",
-            (session_id,),
-        )
-        return cur.fetchone()[0]
+    return sum(
+        1
+        for m in db.get_messages(session_id, include_inactive=True)
+        if not m["active"]
+    )
 
 
 class TestAcpPersistPreservesArchives:
@@ -99,7 +90,12 @@ class TestAcpPersistPreservesArchives:
         import acp_adapter.session as acp_session
 
         src = inspect.getsource(acp_session.SessionManager._persist)
-        assert "has_archived = " not in src, (
+        # Assert on the CALL, not a local-variable name — a reintroduced probe
+        # under any local name (archived = db.has_archived_messages(...))
+        # must still trip this guard. The explanatory comment in _persist
+        # writes the name as "(has_archived_messages)" (paren BEFORE the
+        # name), so the call-shaped substring doesn't false-positive on it.
+        assert "has_archived_messages(" not in src, (
             "_persist re-grew a has_archived_messages probe — #80216 class"
         )
         assert "active_only=True" in src

@@ -6,8 +6,8 @@ Scans two directories for memory provider plugins:
 2. User-installed providers: ``$HERMES_HOME/plugins/<name>/``
 
 Each subdirectory must contain ``__init__.py`` with a class implementing
-the MemoryProvider ABC.  On name collisions, bundled providers take
-precedence.
+the MemoryProvider ABC.  On name collisions, user-installed providers take
+precedence so a same-name user plugin can override a bundled provider.
 
 Only ONE provider can be active at a time, selected via
 ``memory.provider`` in config.yaml.
@@ -90,32 +90,34 @@ def _is_memory_provider_dir(path: Path) -> bool:
 def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     """Yield ``(name, path)`` for all discovered provider directories.
 
-    Scans bundled first, then user-installed.  Bundled takes precedence
-    on name collisions (first-seen wins via ``seen`` set).
+    Scans user-installed plugins first, then bundled plugins. User plugins take
+    precedence on name collisions (first-seen wins via ``seen`` set).
     """
     seen: set = set()
     dirs: List[Tuple[str, Path]] = []
 
-    # 1. Bundled providers (plugins/memory/<name>/)
+    user_dir = _get_user_plugins_dir()
+
+    # 1. User-installed providers ($HERMES_HOME/plugins/<name>/)
+    if user_dir:
+        for child in sorted(user_dir.iterdir()):
+            if not child.is_dir() or child.name.startswith(("_", ".")):
+                continue
+            if not _is_memory_provider_dir(child):
+                continue
+            seen.add(child.name)
+            dirs.append((child.name, child))
+
+    # 2. Bundled providers (plugins/memory/<name>/)
     if _MEMORY_PLUGINS_DIR.is_dir():
         for child in sorted(_MEMORY_PLUGINS_DIR.iterdir()):
             if not child.is_dir() or child.name.startswith(("_", ".")):
                 continue
             if not (child / "__init__.py").exists():
                 continue
-            seen.add(child.name)
-            dirs.append((child.name, child))
-
-    # 2. User-installed providers ($HERMES_HOME/plugins/<name>/)
-    user_dir = _get_user_plugins_dir()
-    if user_dir:
-        for child in sorted(user_dir.iterdir()):
-            if not child.is_dir() or child.name.startswith(("_", ".")):
-                continue
             if child.name in seen:
-                continue  # bundled takes precedence
-            if not _is_memory_provider_dir(child):
-                continue  # skip non-memory plugins
+                continue
+            seen.add(child.name)
             dirs.append((child.name, child))
 
     return dirs
@@ -124,18 +126,17 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
 def find_provider_dir(name: str) -> Optional[Path]:
     """Resolve a provider name to its directory.
 
-    Checks bundled first, then user-installed.
+    Checks user-installed providers first, then bundled providers.
     """
-    # Bundled
-    bundled = _MEMORY_PLUGINS_DIR / name
-    if bundled.is_dir() and (bundled / "__init__.py").exists():
-        return bundled
-    # User-installed
     user_dir = _get_user_plugins_dir()
     if user_dir:
         user = user_dir / name
         if user.is_dir() and _is_memory_provider_dir(user):
             return user
+
+    bundled = _MEMORY_PLUGINS_DIR / name
+    if bundled.is_dir() and (bundled / "__init__.py").exists():
+        return bundled
     return None
 
 
@@ -158,7 +159,7 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     """Scan bundled and user-installed directories for available providers.
 
     Returns list of (name, description, is_available) tuples.
-    Bundled providers take precedence on name collisions.
+    User providers take precedence on name collisions.
     """
     results = []
 
@@ -194,9 +195,9 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
 def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
     """Load and return a MemoryProvider instance by name.
 
-    Checks both bundled (``plugins/memory/<name>/``) and user-installed
-    (``$HERMES_HOME/plugins/<name>/``) directories.  Bundled takes
-    precedence on name collisions.
+    Checks user-installed (``$HERMES_HOME/plugins/<name>/``) and bundled
+    (``plugins/memory/<name>/``) directories. User providers take precedence on
+    name collisions.
 
     Returns None if the provider is not found or fails to load.
     """

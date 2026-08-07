@@ -402,14 +402,20 @@ _JWT_RE = re.compile(
     r"(?:\.[A-Za-z0-9_=-]{4,}){0,2}"   # Optional payload and/or signature
 )
 
-# E.164 phone numbers: +<country><number>, 7-15 digits
+# E.164 phone numbers: +<country><number>, 7-15 digits.
 # Negative lookahead prevents matching hex strings or identifiers.
-# Also matches bare digit-only E.164-like sequences (10-15 digits) so
-# WhatsApp Cloud wa_id values without a leading '+' are redacted.
 _SIGNAL_PHONE_RE = re.compile(
-    r"(?<![A-Za-z0-9])"              # don't clip a longer numeric run
-    r"(\+[1-9]\d{6,14}"             # explicit +E.164 form, 7-15 digits
-    r"|[1-9]\d{9,14})"               # bare wa_id / E.164-like, 10-15 digits
+    r"(?<![A-Za-z0-9])"
+    r"(\+[1-9]\d{6,14})"
+    r"(?![A-Za-z0-9])"
+)
+
+# WhatsApp Cloud wa_id values are bare 10-15 digit E.164-like sequences.
+# Keep this separate from the established +E.164 matcher so code-shaped
+# advisory text can retain ordinary IDs, epochs, and numeric examples.
+_WHATSAPP_BARE_PHONE_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"([1-9]\d{9,14})"
     r"(?![A-Za-z0-9])"
 )
 
@@ -1002,13 +1008,21 @@ def redact_sensitive_text(
     if "&" in text and "=" in text:
         text = _redact_form_body(text)
 
-    # E.164 and bare phone-like numbers (Signal, WhatsApp, WhatsApp Cloud wa_id).
+    # E.164 phone numbers (Signal and WhatsApp). These are unambiguous even in
+    # source-shaped text because the explicit '+' is part of the identifier.
     def _redact_phone(m):
         phone = m.group(1)
         if len(phone) <= 8:
             return phone[:2] + "****" + phone[-2:]
         return phone[:4] + "****" + phone[-4:]
     text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+
+    # Bare Cloud wa_id values are intentionally excluded from source-shaped
+    # advisory text: a 10-15 digit run can be a line number, epoch, fixture ID,
+    # or other code-review evidence. File content still needs PII redaction;
+    # ``file_read=True`` is therefore an explicit exception to code_file=True.
+    if not code_file or file_read:
+        text = _WHATSAPP_BARE_PHONE_RE.sub(_redact_phone, text)
 
     return text
 

@@ -162,6 +162,148 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 # Task creation + status inference
 # ---------------------------------------------------------------------------
 
+def test_create_task_links_and_gates_dependents(kanban_home):
+    with kb.connect() as conn:
+        dependent = kb.create_task(conn, title="dependent", assignee="worker")
+
+        prerequisite = kb.create_task(
+            conn,
+            title="prerequisite",
+            assignee="worker",
+            dependents=[dependent],
+        )
+
+        assert kb.child_ids(conn, prerequisite) == [dependent]
+        assert kb.parent_ids(conn, dependent) == [prerequisite]
+        assert kb.get_task(conn, dependent).status == "todo"
+
+
+def test_create_task_inherits_parent_notify_sub_to_existing_dependent(kanban_home):
+    """A new prerequisite passes its inherited subscription to old children."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        dependent = kb.create_task(conn, title="dependent", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=parent,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="topic1",
+            user_id="user1",
+            notifier_profile="default",
+        )
+        with kb.write_txn(conn):
+            kb._append_event(conn, dependent, "blocked", {"reason": "old"})
+
+        prerequisite = kb.create_task(
+            conn,
+            title="prerequisite",
+            assignee="worker",
+            parents=[parent],
+            dependents=[dependent],
+        )
+
+        expected = {
+            ("telegram", "chat1", "topic1", "user1", "default"),
+        }
+        for task_id in (prerequisite, dependent):
+            subscriptions = kb.list_notify_subs(conn, task_id)
+            assert {
+                (
+                    sub["platform"],
+                    sub["chat_id"],
+                    sub["thread_id"],
+                    sub["user_id"],
+                    sub["notifier_profile"],
+                )
+                for sub in subscriptions
+            } == expected
+
+        _, events = kb.unseen_events_for_sub(
+            conn,
+            task_id=dependent,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="topic1",
+            kinds=["blocked", "linked"],
+        )
+        assert events == []
+
+
+def test_create_task_rejects_running_dependent_and_rolls_back(kanban_home):
+    with kb.connect() as conn:
+        ready_dependent = kb.create_task(
+            conn, title="ready dependent", assignee="worker"
+        )
+        running_dependent = kb.create_task(
+            conn, title="running dependent", assignee="worker"
+        )
+        assert kb.claim_task(conn, running_dependent, claimer="worker:1") is not None
+        task_ids_before = {task.id for task in kb.list_tasks(conn)}
+        edges_before = {
+            (row["parent_id"], row["child_id"])
+            for row in conn.execute(
+                "SELECT parent_id, child_id FROM task_links"
+            ).fetchall()
+        }
+
+        with pytest.raises(ValueError, match="ready or todo"):
+            kb.create_task(
+                conn,
+                title="unsafe prerequisite",
+                assignee="worker",
+                dependents=[ready_dependent, running_dependent],
+            )
+
+        assert {task.id for task in kb.list_tasks(conn)} == task_ids_before
+        edges_after = {
+            (row["parent_id"], row["child_id"])
+            for row in conn.execute(
+                "SELECT parent_id, child_id FROM task_links"
+            ).fetchall()
+        }
+        assert edges_after == edges_before
+        assert kb.get_task(conn, ready_dependent).status == "ready"
+        assert kb.get_task(conn, running_dependent).status == "running"
+
+
+def test_create_task_rolls_back_task_and_edges_for_cyclic_dependent(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        valid_dependent = kb.create_task(
+            conn, title="valid dependent", assignee="worker"
+        )
+        cyclic_dependent = kb.create_task(
+            conn, title="cyclic dependent", assignee="worker"
+        )
+        kb.link_tasks(conn, cyclic_dependent, parent)
+        task_ids_before = {task.id for task in kb.list_tasks(conn)}
+        edges_before = {
+            (row["parent_id"], row["child_id"])
+            for row in conn.execute(
+                "SELECT parent_id, child_id FROM task_links"
+            ).fetchall()
+        }
+
+        with pytest.raises(ValueError, match="cycle"):
+            kb.create_task(
+                conn,
+                title="invalid prerequisite",
+                assignee="worker",
+                parents=[parent],
+                dependents=[valid_dependent, cyclic_dependent],
+            )
+
+        assert {task.id for task in kb.list_tasks(conn)} == task_ids_before
+        edges_after = {
+            (row["parent_id"], row["child_id"])
+            for row in conn.execute(
+                "SELECT parent_id, child_id FROM task_links"
+            ).fetchall()
+        }
+        assert edges_after == edges_before
+        assert kb.parent_ids(conn, valid_dependent) == []
+        assert kb.get_task(conn, valid_dependent).status == "ready"
 
 
 # ---------------------------------------------------------------------------

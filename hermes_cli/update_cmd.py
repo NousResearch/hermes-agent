@@ -361,8 +361,9 @@ def _print_curator_first_run_notice() -> None:
     print("ℹ Skill curator")
     print(
         f"  Background skill maintenance is enabled. First pass is deferred "
-        f"~{days}d after installation; only agent-created skills are in "
-        f"scope and nothing is ever auto-deleted (archive is recoverable)."
+        f"~{days}d after installation; agent-created skills and unused "
+        f"bundled built-ins are in scope by default, hub-installed skills are "
+        f"exempt, and nothing is ever auto-deleted (archive is recoverable)."
     )
     print("  Preview now:  hermes curator run --dry-run")
     print("  Pause it:     hermes curator pause")

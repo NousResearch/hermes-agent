@@ -46,18 +46,20 @@ User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/cron
 
 ### Curator (skill lifecycle)
 
-Background maintenance for agent-created skills. Tracks usage, marks
-idle skills stale, archives stale ones, keeps a pre-run tar.gz backup
-so nothing is lost.
+Background maintenance primarily for agent-created skills. Tracks usage,
+marks idle skills stale, archives stale ones, and keeps a pre-run tar.gz
+backup so nothing is lost.
 
 - **CLI:** `hermes curator <verb>` — `status`, `usage`, `run`, `pause`,
   `resume`, `pin`, `unpin`, `archive`, `restore`, `list-archived`, `prune`,
   `backup`, `rollback`.
 - **Slash:** `/curator <subcommand>` mirrors the CLI.
-- **Scope:** only touches skills with `created_by: "agent"` provenance.
-  Bundled + hub-installed skills are off-limits. **Never deletes** —
-  max destructive action is archive. Pinned skills are exempt from
-  every auto-transition and every LLM review pass.
+- **Scope:** primarily touches skills with `created_by: "agent"`
+  provenance. Unused bundled built-ins may also be archived when
+  `curator.prune_builtins: true` (default); built-ins are archive-only
+  candidates. Hub-installed skills are always off-limits. **Never deletes**
+  — max destructive action is archive. Pinned skills are exempt from every
+  auto-transition and every LLM review pass.
 - **Cost:** the deterministic inactivity/prune sweep runs for free. The
   aux-model "consolidate overlapping skills into umbrellas" pass is
   **off by default** — opt in with `curator.consolidate: true` or
@@ -68,7 +70,8 @@ so nothing is lost.
   `last_activity_at`, `state`, `pinned`.
 
 Config: `curator.*` (`enabled`, `interval_hours`, `min_idle_hours`,
-`stale_after_days`, `archive_after_days`, `backup.*`).
+`stale_after_days`, `archive_after_days`, `consolidate`,
+`prune_builtins`, `backup.*`).
 User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/curator
 
 ### Kanban (multi-agent work queue)

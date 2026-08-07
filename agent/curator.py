@@ -1,19 +1,21 @@
 """Curator — background skill maintenance orchestrator.
 
-The curator is an auxiliary-model task that periodically reviews agent-created
-skills and maintains the collection. It runs inactivity-triggered (no cron
-daemon): when the agent is idle and the last curator run was longer than
-``interval_hours`` ago, ``maybe_run_curator()`` spawns a forked AIAgent to do
-the review.
+The curator maintains the skill collection on an inactivity-triggered schedule
+(no cron daemon). When the agent is idle and the last curator run was longer
+than ``interval_hours`` ago, ``maybe_run_curator()`` starts a curator pass:
+deterministic pruning runs first, and a forked AIAgent is spawned only for the
+optional LLM consolidation review.
 
 Responsibilities:
   - Auto-transition lifecycle states based on derived skill activity timestamps
-  - Spawn a background review agent that can pin / archive / consolidate /
-    patch agent-created skills via skill_manage
+  - Optionally spawn a background review agent for consolidation / patch /
+    archive decisions over agent-created skills
   - Persist curator state (last_run_at, paused, etc.) in .curator_state
 
 Strict invariants:
-  - Only touches agent-created skills (see tools/skill_usage.is_agent_created)
+  - Primarily touches agent-created skills; bundled built-ins may be archived
+    only when ``curator.prune_builtins`` is enabled
+  - Hub-installed skills stay off-limits regardless of ``prune_builtins``
   - Never auto-deletes — only archives. Archive is recoverable.
   - Pinned skills bypass all auto-transitions
   - Uses the auxiliary client; never touches the main session's prompt cache
@@ -1297,9 +1299,14 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     counts = p.get("counts") or {}
     lines.append(
         f"Model: `{model}` via `{prov}`  ·  Duration: {dur_label}  ·  "
-        f"Agent-created skills: {counts.get('before', 0)} → {counts.get('after', 0)} "
+        f"Curator-managed skills: {counts.get('before', 0)} → {counts.get('after', 0)} "
         f"({counts.get('delta', 0):+d})\n"
     )
+    if get_prune_builtins():
+        lines.append(
+            "_Note: bundled built-ins may be included as archive-only "
+            "candidates when `curator.prune_builtins` is enabled._\n"
+        )
 
     error = p.get("llm_error")
     if error:
@@ -1503,9 +1510,9 @@ def run_curator_review(
 
     Steps:
       1. Apply automatic state transitions (pure, no LLM).
-      2. If consolidation is enabled AND there are agent-created skills, spawn
-         a forked AIAgent that runs the LLM review prompt against the current
-         candidate list.
+      2. If consolidation is enabled AND there are curator-managed candidates,
+         spawn a forked AIAgent that runs the LLM review prompt against the
+         current candidate list.
       3. Update .curator_state with last_run_at and a one-line summary.
       4. Invoke *on_summary* with a user-visible description.
 

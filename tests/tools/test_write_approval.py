@@ -155,6 +155,12 @@ _SKILL = (
 # ---------------------------------------------------------------------------
 
 
+def _stage_pending(hermes_home, subsystem, name, action, summary, origin="foreground"):
+    from tools import write_approval as wa
+    wa.stage_write(subsystem, {"action": action, "name": name},
+                   summary=summary, origin=origin)
+
+
 def test_handle_approve_all(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools.memory_tool import MemoryStore
@@ -168,6 +174,70 @@ def test_handle_approve_all(hermes_home):
     assert "Approved 2" in out
     assert wa.pending_count("memory") == 0
     assert len(store.user_entries) == 2
+
+
+# ---------------------------------------------------------------------------
+# Pending list formatting (cap, sort, group, clip)
+# ---------------------------------------------------------------------------
+
+
+def _fmt(sub, *args):
+    from hermes_cli.write_approval_commands import _fmt_pending_list, _fmt_all_pending_list
+    if args and args[0] in ("--all", "-a"):
+        return _fmt_all_pending_list(sub)
+    return _fmt_pending_list(sub)
+
+
+def test_pending_list_caps_at_20(hermes_home):
+    from tools import write_approval as wa
+    for i in range(25):
+        wa.stage_write(wa.MEMORY, {"action": "add"}, summary=f"entry {i}", origin="foreground")
+    out = _fmt("memory")
+    assert "entry 24" in out  # newest — first in list
+    assert "entry 5" in out   # 20th record — last visible
+    assert "entry 4" not in out  # 21st record — hidden
+    assert "5 more" in out
+
+
+def test_pending_list_all_shows_everything(hermes_home):
+    from tools import write_approval as wa
+    for i in range(25):
+        wa.stage_write(wa.MEMORY, {"action": "add"}, summary=f"entry {i}", origin="foreground")
+    out = _fmt("memory", "--all")
+    assert "entry 24" in out
+    assert "more" not in out
+
+
+def test_pending_list_clips_long_summaries(hermes_home):
+    from tools import write_approval as wa
+    long_summary = "x" * 200
+    wa.stage_write(wa.MEMORY, {"action": "add"}, summary=long_summary, origin="foreground")
+    out = _fmt("memory")
+    assert len(long_summary) > 80
+    assert "x" * 80 in out
+    assert "x" * 81 not in out
+
+
+def test_pending_list_newest_first(hermes_home):
+    from tools import write_approval as wa
+    wa.stage_write(wa.MEMORY, {"action": "add"}, summary="oldest", origin="foreground")
+    wa.stage_write(wa.MEMORY, {"action": "add"}, summary="newest", origin="foreground")
+    out = _fmt("memory")
+    newest_line = [l for l in out.split("\n") if "newest" in l]
+    oldest_line = [l for l in out.split("\n") if "oldest" in l]
+    assert newest_line and oldest_line
+    assert out.index("newest") < out.index("oldest")
+
+
+def test_pending_list_groups_by_skill_name(hermes_home):
+    _stage_pending(hermes_home, "skills", "demo-1", "create", "create demo-1")
+    _stage_pending(hermes_home, "skills", "demo-1", "edit", "rewrite demo-1")
+    _stage_pending(hermes_home, "skills", "other", "create", "create other")
+    out = _fmt("skills")
+    assert "⚠ demo-1" in out
+    assert "other" in out
+    assert "create, edit" in out or "edit, create" in out
+    assert "Pending skills writes (3):" in out
 
 
 def test_handle_approval_on(hermes_home):

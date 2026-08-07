@@ -1353,18 +1353,12 @@ def save_jobs(
 
 
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
-    """Normalize and validate a cron job workdir.
+    """Normalize a cron job workdir without probing the scheduler host.
 
-    Rules:
-      - Empty / None → None (feature off, preserves old behaviour).
-      - ``~`` is expanded.  Relative paths are rejected — cron jobs run detached
-        from any shell cwd, so relative paths have no stable meaning.
-      - The path must exist and be a directory at create/update time.  We do
-        NOT re-check at run time (a user might briefly unmount the dir; the
-        scheduler will just fall back to old behaviour with a logged warning).
-
-    Returns the absolute path string, or None when disabled.
-    Raises ValueError on invalid input.
+    Cron workdirs are consumed by the profile terminal backend. An absolute
+    container or remote path such as ``/workspace`` need not exist on the host
+    process that stores the job, so existence and directory checks belong to
+    the backend at execution time.
     """
     if workdir is None:
         return None
@@ -1377,12 +1371,15 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
             f"Cron workdir must be an absolute path (got {raw!r}). "
             f"Cron jobs run detached from any shell cwd, so relative paths are ambiguous."
         )
-    resolved = expanded.resolve()
-    if not resolved.exists():
-        raise ValueError(f"Cron workdir does not exist: {resolved}")
-    if not resolved.is_dir():
-        raise ValueError(f"Cron workdir is not a directory: {resolved}")
-    return str(resolved)
+    # Preserve useful local validation when the path is visible to the scheduler,
+    # but accept paths absent on the host because they may exist only in a
+    # container or remote terminal backend.
+    if expanded.exists():
+        resolved = expanded.resolve()
+        if not resolved.is_dir():
+            raise ValueError(f"Cron workdir is not a directory: {resolved}")
+        return str(resolved)
+    return str(expanded)
 
 
 def _resolve_default_model_snapshot() -> Optional[str]:
@@ -1510,6 +1507,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    target: Optional[str] = None,
     attach_to_session: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
@@ -1555,6 +1553,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        target: Execution target for scripts. New script jobs default to the
+                profile terminal backend; use ``scheduler`` explicitly for
+                scheduler-host automation. Existing persisted jobs without this
+                field retain scheduler-host behavior at execution time.
 
     Returns:
         The created job dict
@@ -1586,6 +1588,9 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_target = str(target or ("backend" if normalized_script else "scheduler")).strip().lower()
+    if normalized_target not in {"scheduler", "backend"}:
+        raise ValueError("Cron target must be either 'scheduler' or 'backend'.")
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
@@ -1614,6 +1619,16 @@ def create_job(
     # covered, not just `hermes cron create`.
     from cron.lifecycle_guard import check_gateway_lifecycle
     check_gateway_lifecycle(prompt_text, normalized_script)
+
+    # Enforce target-aware path validation at the persistence boundary too.
+    # Tool/CLI checks give better early UX, but direct callers must not be able
+    # to write a job that bypasses the same execution-boundary contract.
+    from tools.cronjob_tools import _validate_cron_script_path
+    script_error = _validate_cron_script_path(
+        normalized_script, normalized_target, workdir=normalized_workdir,
+    )
+    if script_error:
+        raise ValueError(script_error)
 
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
 
@@ -1646,6 +1661,7 @@ def create_job(
         "skill": normalized_skills[0] if normalized_skills else None,
         "model": normalized_model,
         "provider": normalized_provider,
+        "target": normalized_target,
         # Provider/model resolution captured at creation for unpinned jobs
         # (#44585). None for pinned axes, no_agent jobs, resolution failures, and
         # any pre-existing job written before these fields existed (back-compat).
@@ -1782,6 +1798,16 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
+            updated_target = str(updated.get("target") or "scheduler").strip().lower()
+            if updated_target not in {"scheduler", "backend"}:
+                raise ValueError("Cron target must be either 'scheduler' or 'backend'.")
+            updated["target"] = updated_target
+            from tools.cronjob_tools import _validate_cron_script_path
+            script_error = _validate_cron_script_path(
+                updated.get("script"), updated_target, workdir=updated.get("workdir"),
+            )
+            if script_error:
+                raise ValueError(script_error)
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)

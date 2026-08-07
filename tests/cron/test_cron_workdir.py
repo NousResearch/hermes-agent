@@ -56,11 +56,10 @@ class TestNormalizeWorkdir:
         with pytest.raises(ValueError, match="absolute path"):
             _normalize_workdir("some/relative/path")
 
-    def test_missing_dir_rejected(self, tmp_path):
+    def test_host_missing_dir_is_retained_for_backend_validation(self, tmp_path):
         from cron.jobs import _normalize_workdir
         missing = tmp_path / "does-not-exist"
-        with pytest.raises(ValueError, match="does not exist"):
-            _normalize_workdir(str(missing))
+        assert _normalize_workdir(str(missing)) == str(missing)
 
     def test_file_not_dir_rejected(self, tmp_path):
         from cron.jobs import _normalize_workdir
@@ -251,3 +250,29 @@ class TestRunJobTerminalCwd:
         # And after run_job completes, it's still the sentinel (nothing
         # overwrote or cleared it).
         assert os.environ["TERMINAL_CWD"] == before
+
+    def test_agent_prerun_script_receives_job_workdir(self, monkeypatch, tmp_path):
+        """Agent-backed script context uses the declared backend-visible cwd."""
+        import cron.scheduler as sched
+
+        observed: dict = {}
+        self._install_stubs(monkeypatch, observed)
+        calls = []
+        monkeypatch.setattr(
+            sched,
+            "_run_job_script_with_claim_heartbeat",
+            lambda job, script, workdir=None: calls.append((script, workdir)) or (True, "data"),
+        )
+        job = {
+            "id": "script-cwd",
+            "name": "script-cwd",
+            "prompt": "summarize",
+            "script": "/workspace/collect.py",
+            "workdir": "/workspace",
+            "schedule_display": "manual",
+        }
+
+        success, *_ = sched.run_job(job)
+
+        assert success is True
+        assert calls == [("/workspace/collect.py", "/workspace")]

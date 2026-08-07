@@ -5,6 +5,7 @@ with a network error, Telegram re-delivers the `/restart` message to the new
 gateway process.  Without a dedup guard, the new gateway would process
 `/restart` again and immediately restart — a self-perpetuating loop.
 """
+import asyncio
 import json
 import time
 from unittest.mock import MagicMock
@@ -24,6 +25,51 @@ def _make_restart_event(update_id: int | None = 100) -> MessageEvent:
         message_id="m1",
         platform_update_id=update_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_restart_handler_writes_dedup_marker_with_update_id(tmp_path, monkeypatch):
+    """First /restart writes .restart_last_processed.json with the triggering update_id."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    runner, _adapter = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
+
+    event = _make_restart_event(update_id=12345)
+    result = await runner._handle_restart_command(event)
+
+    assert "Restarting gateway" in result
+    marker_path = tmp_path / ".restart_last_processed.json"
+    assert marker_path.exists()
+    data = json.loads(marker_path.read_text())
+    assert data["platform"] == "telegram"
+    assert data["update_id"] == 12345
+    assert isinstance(data["requested_at"], (int, float))
+
+
+@pytest.mark.asyncio
+async def test_redelivered_restart_with_same_update_id_is_ignored(tmp_path, monkeypatch):
+    """A /restart with update_id <= recorded marker is silently ignored as a redelivery."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    # Previous gateway recorded update_id=12345 a few seconds ago
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(json.dumps({
+        "platform": "telegram",
+        "update_id": 12345,
+        "requested_at": time.time() - 5,
+    }))
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock()
+
+    event = _make_restart_event(update_id=12345)  # same update_id → redelivery
+    result = await runner._handle_restart_command(event)
+
+    assert result == ""  # silently ignored
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -52,6 +98,34 @@ async def test_redelivered_restart_with_older_update_id_is_ignored(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_fresh_restart_with_higher_update_id_is_processed(tmp_path, monkeypatch):
+    """A NEW /restart from the user (higher update_id) bypasses the dedup guard."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    # Previous restart recorded update_id=12345
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(json.dumps({
+        "platform": "telegram",
+        "update_id": 12345,
+        "requested_at": time.time() - 5,
+    }))
+
+    runner, _adapter = make_restart_runner()
+    # runner.request_restart uses real method from make_restart_runner
+
+    event = _make_restart_event(update_id=12346)  # strictly higher → fresh
+    result = await runner._handle_restart_command(event)
+
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once()
+
+    # Marker is overwritten with the new update_id
+    data = json.loads(marker.read_text())
+    assert data["update_id"] == 12346
+
+
+@pytest.mark.asyncio
 async def test_stale_marker_older_than_5min_does_not_block(tmp_path, monkeypatch):
     """A marker older than the 5-minute window is ignored — fresh /restart proceeds."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -65,10 +139,82 @@ async def test_stale_marker_older_than_5min_does_not_block(tmp_path, monkeypatch
     }))
 
     runner, _adapter = make_restart_runner()
-    runner.request_restart = MagicMock(return_value=True)
+    # runner.request_restart uses real method from make_restart_runner
 
     # Same update_id as the stale marker, but the marker is too old to trust
     event = _make_restart_event(update_id=12345)
+    result = await runner._handle_restart_command(event)
+
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_slow_service_restart_still_ignores_same_update(tmp_path, monkeypatch):
+    """A slow drain must not outlive dedup when this boot came from /restart.
+
+    Service-managed shutdown can take more than five minutes while in-flight
+    gateway work drains. The replacement process still knows it booted from
+    the recorded chat restart, so the first same update must be suppressed
+    instead of requesting exit 75 again and entering a supervisor loop.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("INVOCATION_ID", "systemd-test")
+
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "platform": "telegram",
+                "update_id": 12345,
+                "requested_at": time.time() - 1200,
+            }
+        )
+    )
+
+    runner, _adapter = make_restart_runner()
+    request_restart = MagicMock()
+    monkeypatch.setattr(runner, "request_restart", request_restart)
+    runner._booted_from_restart = True
+
+    result = await runner._handle_restart_command(
+        _make_restart_event(update_id=12345)
+    )
+
+    assert result == ""
+    request_restart.assert_not_called()
+    assert runner._booted_from_restart is False
+
+
+@pytest.mark.asyncio
+async def test_no_marker_file_allows_restart(tmp_path, monkeypatch):
+    """Clean gateway start (no prior marker) processes /restart normally."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    runner, _adapter = make_restart_runner()
+    # runner.request_restart uses real method from make_restart_runner
+
+    event = _make_restart_event(update_id=100)
+    result = await runner._handle_restart_command(event)
+
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_corrupt_marker_file_is_treated_as_absent(tmp_path, monkeypatch):
+    """Malformed JSON in the marker file doesn't crash — /restart proceeds."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text("not-json{")
+
+    runner, _adapter = make_restart_runner()
+    # runner.request_restart uses real method from make_restart_runner
+
+    event = _make_restart_event(update_id=100)
     result = await runner._handle_restart_command(event)
 
     assert "Restarting gateway" in result
@@ -89,7 +235,7 @@ async def test_event_without_update_id_bypasses_dedup(tmp_path, monkeypatch):
     }))
 
     runner, _adapter = make_restart_runner()
-    runner.request_restart = MagicMock(return_value=True)
+    # runner.request_restart uses real method from make_restart_runner
 
     # No update_id — the dedup check should NOT kick in
     event = _make_restart_event(update_id=None)
@@ -116,7 +262,7 @@ async def test_different_platform_bypasses_dedup(tmp_path, monkeypatch):
     }))
 
     runner, _adapter = make_restart_runner()
-    runner.request_restart = MagicMock(return_value=True)
+    # runner.request_restart uses real method from make_restart_runner
 
     # /restart from Discord — not a redelivery candidate
     discord_source = SessionSource(
@@ -151,7 +297,7 @@ async def test_marker_missing_but_booted_from_restart_ignores_redelivery(tmp_pat
     monkeypatch.delenv("INVOCATION_ID", raising=False)
 
     runner, _adapter = make_restart_runner()
-    runner.request_restart = MagicMock(return_value=True)
+    # runner.request_restart uses real method from make_restart_runner
     runner._booted_from_restart = True
     runner._startup_time = time.time()
 
@@ -163,4 +309,47 @@ async def test_marker_missing_but_booted_from_restart_ignores_redelivery(tmp_pat
     # One-shot: the flag is consumed so a later legitimate /restart is honored.
     assert runner._booted_from_restart is False
 
+@pytest.mark.asyncio
+async def test_marker_missing_fresh_boot_allows_restart(tmp_path, monkeypatch):
+    """Missing marker on a genuine fresh boot (not from /restart) → /restart proceeds.
+
+    The guard must NOT swallow the first /restart a user sends shortly after a
+    normal (non-restart) startup: _booted_from_restart stays False, so the
+    fallback returns False and the restart goes through.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    runner, _adapter = make_restart_runner()
+    # runner.request_restart uses real method from make_restart_runner
+    runner._booted_from_restart = False
+    runner._startup_time = time.time()
+
+    event = _make_restart_event(update_id=100)
+    result = await runner._handle_restart_command(event)
+
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_marker_missing_booted_from_restart_but_old_process_allows(tmp_path, monkeypatch):
+    """Missing marker + booted from /restart but past the window → /restart proceeds.
+
+    A /restart arriving long after boot is a genuine user action, not a boot-time
+    redelivery, so the uptime bound stops the guard from suppressing it forever.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    runner, _adapter = make_restart_runner()
+    # runner.request_restart uses real method from make_restart_runner
+    runner._booted_from_restart = True
+    runner._startup_time = time.time() - 120  # well past the 60s window
+
+    event = _make_restart_event(update_id=100)
+    result = await runner._handle_restart_command(event)
+
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once()
 

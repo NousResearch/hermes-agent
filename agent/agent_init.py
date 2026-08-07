@@ -1034,6 +1034,7 @@ def init_agent(
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
         # (prompt caching, thinking budgets, adaptive thinking).
         _is_bedrock_anthropic = agent.provider == "bedrock"
+        _is_vertex_anthropic = agent.provider == "vertex" and "claude" in (agent.model or "").lower()
         if _is_bedrock_anthropic:
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
@@ -1048,6 +1049,26 @@ def init_agent(
             agent._client_kwargs = {}
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+        elif _is_vertex_anthropic:
+            from agent.anthropic_adapter import build_anthropic_vertex_client
+            from agent.vertex_adapter import _resolve_project_override, _resolve_region
+            _vertex_project = (
+                getattr(agent, "project_id", None)
+                or _resolve_project_override()
+                or ""
+            )
+            _vertex_region = getattr(agent, "region", None) or _resolve_region()
+            agent._vertex_project = _vertex_project
+            agent._vertex_region = _vertex_region
+            agent._anthropic_client = build_anthropic_vertex_client(_vertex_project, _vertex_region)
+            agent._anthropic_api_key = "vertex-adc-auth"
+            agent._anthropic_base_url = base_url
+            agent._is_anthropic_oauth = False
+            agent.api_key = "vertex-adc-auth"
+            agent.client = None
+            agent._client_kwargs = {}
+            if not agent.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {agent.model} (Vertex AI + AnthropicVertex SDK, {_vertex_region})")
         else:
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.

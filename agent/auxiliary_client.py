@@ -4487,6 +4487,43 @@ def _refresh_provider_credentials(provider: str) -> bool:
             # client is never evicted from _client_cache (whose cache key
             # ignores the rotating bearer token), so every subsequent
             # auxiliary Vertex call keeps 401ing until process restart.
+            #
+            # Claude-on-Vertex uses AnthropicVertex + ADC (no minted bearer
+            # in our cache); Gemini uses the OpenAI-compatible OAuth2 path.
+            _vertex_model = ""
+            with _client_cache_lock:
+                for key in _client_cache:
+                    if _normalize_aux_provider(str(key[0])) != "vertex":
+                        continue
+                    candidate = str(key[-1] or "")
+                    if "claude" in candidate.lower():
+                        _vertex_model = candidate
+                        break
+                    if not _vertex_model:
+                        _vertex_model = candidate
+            if not _vertex_model:
+                try:
+                    from hermes_cli.runtime_provider import _get_model_config
+                    _vertex_model = str(
+                        (_get_model_config() or {}).get("default") or ""
+                    )
+                except Exception:
+                    _vertex_model = ""
+
+            if "claude" in _vertex_model.lower():
+                from agent.vertex_adapter import _resolve_project_override, _resolve_region
+                from agent.anthropic_adapter import build_anthropic_vertex_client
+
+                project = _resolve_project_override() or ""
+                region = _resolve_region()
+                if not project:
+                    return False
+                # Validate ADC + AnthropicVertex can rebuild, then evict so
+                # the next resolve_provider_client call remints the client.
+                build_anthropic_vertex_client(project, region)
+                _evict_cached_clients(normalized)
+                return True
+
             from agent.vertex_adapter import get_vertex_config
 
             token, base_url = get_vertex_config()
@@ -6416,10 +6453,60 @@ def resolve_provider_client(
         return None, None
 
     elif pconfig.auth_type == "vertex":
-        # Google Vertex AI — Gemini via the OpenAI-compatible endpoint with an
-        # OAuth2 bearer token (NOT a static key). We build a standard OpenAI
-        # client pointed at the runtime-computed Vertex base_url with a fresh
-        # token; no custom SDK or message translation needed.
+        # Google Vertex AI — dual-route by model:
+        #   Claude → AnthropicVertex SDK (anthropic_messages / ADC)
+        #   Gemini → OpenAI-compatible endpoint with an OAuth2 bearer token
+        default_model = "google/gemini-3-flash-preview"
+        final_model = _normalize_resolved_model(model or default_model, provider)
+
+        if "claude" in (final_model or "").lower():
+            try:
+                from agent.vertex_adapter import _resolve_project_override, _resolve_region
+                from agent.anthropic_adapter import build_anthropic_vertex_client
+            except ImportError:
+                logger.warning(
+                    "resolve_provider_client: vertex Claude requested but "
+                    "vertex/anthropic deps not installed"
+                )
+                return None, None
+
+            project = _resolve_project_override() or ""
+            region = _resolve_region()
+            if not project:
+                logger.debug(
+                    "resolve_provider_client: vertex Claude requested but "
+                    "no GCP project found (VERTEX_PROJECT_ID / vertex.project_id)"
+                )
+                return None, None
+
+            try:
+                real_client = build_anthropic_vertex_client(project, region)
+            except Exception as exc:
+                logger.warning(
+                    "resolve_provider_client: cannot create AnthropicVertex "
+                    "client: %s", exc,
+                )
+                return None, None
+
+            base_url = f"https://{region}-aiplatform.googleapis.com"
+            client = AnthropicAuxiliaryClient(
+                real_client, final_model, api_key="vertex-adc-auth",
+                base_url=base_url,
+            )
+            logger.debug(
+                "resolve_provider_client: vertex anthropic (%s, %s)",
+                final_model, region,
+            )
+            return (
+                _to_async_client(client, final_model, is_vision=is_vision)
+                if async_mode
+                else (client, final_model)
+            )
+
+        # Gemini via the OpenAI-compatible endpoint with an OAuth2 bearer
+        # token (NOT a static key). We build a standard OpenAI client pointed
+        # at the runtime-computed Vertex base_url with a fresh token; no
+        # custom SDK or message translation needed.
         try:
             from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
         except ImportError:
@@ -6438,8 +6525,6 @@ def resolve_provider_client(
                            "could not mint token / resolve project")
             return None, None
 
-        default_model = "google/gemini-3-flash-preview"
-        final_model = _normalize_resolved_model(model or default_model, provider)
         try:
             from openai import OpenAI
             client = OpenAI(api_key=token, base_url=base_url)

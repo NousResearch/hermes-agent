@@ -1517,6 +1517,22 @@ def _resolve_explicit_runtime(
 
             api_key = resolve_anthropic_token()
             if not api_key:
+                from agent.vertex_adapter import _resolve_project_override, _resolve_region
+
+                vertex_project = _resolve_project_override() or ""
+                if vertex_project:
+                    vertex_region = _resolve_region()
+                    return {
+                        "provider": "vertex",
+                        "api_mode": "anthropic_messages",
+                        "base_url": f"https://{vertex_region}-aiplatform.googleapis.com",
+                        "api_key": "vertex-adc-auth",
+                        "source": "vertex-adc",
+                        "region": vertex_region,
+                        "project_id": vertex_project,
+                        "vertex_anthropic": True,
+                        "requested_provider": requested_provider,
+                    }
                 raise AuthError(
                     "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                     "run 'claude setup-token', or authenticate with 'claude /login'."
@@ -1747,17 +1763,49 @@ def resolve_runtime_provider(
         )
         return azure_runtime
 
-    # Vertex AI: OAuth2-token provider (Gemini via the OpenAI-compatible
-    # endpoint). Resolve BEFORE the custom-runtime / credential-pool / generic
-    # paths. The credential *path* (GOOGLE_APPLICATION_CREDENTIALS /
-    # VERTEX_CREDENTIALS_PATH) must never reach the credential pool or the
-    # generic api_key resolver — those would treat the file path as a static
-    # API key. Instead we mint a short-lived OAuth2 access token here and hand
-    # it to the standard OpenAI client as api_key, with base_url computed from
-    # the project ID + region. The token is re-minted per call (5-min refresh
-    # margin) by get_vertex_config(); mid-session expiry is additionally
-    # recovered on 401 by run_agent._try_refresh_vertex_client_credentials().
+    # Vertex AI: dual-route by model. Claude models use the AnthropicVertex
+    # SDK (anthropic_messages + ADC). Gemini/other models use the OpenAI-
+    # compatible endpoint (chat_completions + OAuth2 bearer). Resolve BEFORE
+    # the custom-runtime / credential-pool / generic paths. The credential
+    # *path* (GOOGLE_APPLICATION_CREDENTIALS / VERTEX_CREDENTIALS_PATH) must
+    # never reach the credential pool or the generic api_key resolver — those
+    # would treat the file path as a static API key. For the Gemini path we
+    # mint a short-lived OAuth2 access token here and hand it to the standard
+    # OpenAI client as api_key, with base_url computed from the project ID +
+    # region. The token is re-minted per call (5-min refresh margin) by
+    # get_vertex_config(); mid-session expiry is additionally recovered on
+    # 401 by run_agent._try_refresh_vertex_client_credentials().
     if requested_provider in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"):
+        # Determine transport: Claude models use AnthropicVertex SDK
+        # (anthropic_messages); Gemini/other models use the OpenAI-compatible
+        # endpoint (chat_completions).
+        _model_cfg = _get_model_config()
+        _model_lower = (target_model or str(_model_cfg.get("default", "") or "")).strip().lower()
+        if "claude" in _model_lower:
+            from agent.vertex_adapter import _resolve_project_override, _resolve_region
+
+            _project = _resolve_project_override() or ""
+            _region = _resolve_region()
+            if not _project:
+                raise AuthError(
+                    "No GCP project found for Vertex AI Claude. Set one of:\n"
+                    "  - VERTEX_PROJECT_ID in ~/.hermes/.env\n"
+                    "  - vertex.project_id in config.yaml\n"
+                    "  - GOOGLE_CLOUD_PROJECT (last resort)\n",
+                    code="no_vertex_credentials",
+                )
+            return {
+                "provider": "vertex",
+                "api_mode": "anthropic_messages",
+                "base_url": f"https://{_region}-aiplatform.googleapis.com",
+                "api_key": "vertex-adc-auth",
+                "source": "vertex-adc",
+                "region": _region,
+                "project_id": _project,
+                "vertex_anthropic": True,
+                "requested_provider": requested_provider,
+            }
+        # Existing Gemini/OpenAI-compatible path (unchanged)
         from agent.vertex_adapter import get_vertex_config
 
         token, base_url = get_vertex_config()
@@ -2094,6 +2142,22 @@ def resolve_runtime_provider(
             from agent.anthropic_adapter import resolve_anthropic_token
             token = resolve_anthropic_token()
             if not token:
+                from agent.vertex_adapter import _resolve_project_override, _resolve_region
+
+                vertex_project = _resolve_project_override() or ""
+                if vertex_project:
+                    vertex_region = _resolve_region()
+                    return {
+                        "provider": "vertex",
+                        "api_mode": "anthropic_messages",
+                        "base_url": f"https://{vertex_region}-aiplatform.googleapis.com",
+                        "api_key": "vertex-adc-auth",
+                        "source": "vertex-adc",
+                        "region": vertex_region,
+                        "project_id": vertex_project,
+                        "vertex_anthropic": True,
+                        "requested_provider": requested_provider,
+                    }
                 raise AuthError(
                     "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                     "run 'claude setup-token', or authenticate with 'claude /login'."

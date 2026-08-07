@@ -1920,6 +1920,7 @@ class MCPServerTask:
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
         "_reconnect_retries", "_session_proven", "_was_parked",
+        "_resolved_command", "_resolved_args", "_resolved_env",
     )
 
     def __init__(self, name: str):
@@ -1954,6 +1955,9 @@ class MCPServerTask:
         # until the session proves healthy again — used to log the
         # parked→revived transition exactly once.
         self._was_parked: bool = False
+        self._resolved_command: Optional[str] = None
+        self._resolved_args: list = []
+        self._resolved_env: Optional[dict] = None
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
         # MCP stdio sessions are a single JSON-RPC stream. Some servers emit
@@ -2470,17 +2474,37 @@ class MCPServerTask:
                 "then retry."
             )
 
-        command = config.get("command")
-        args = config.get("args", [])
-        user_env = config.get("env")
+        # Use the cached resolved command/env from a prior successful resolution
+        # so the reconnect path reuses the absolute path (resolved via
+        # shutil.which / _resolve_stdio_command) instead of re-resolving the
+        # original bare config value every time — which can fail if PATH or
+        # os.environ changed between the initial connect and the reconnect
+        # attempt (#72754).
+        # Use getattr for safe access: test fixtures may create instances
+        # via __new__ without __init__, bypassing slot initialization.
+        resolved_command = getattr(self, "_resolved_command", None)
+        if resolved_command is not None:
+            command = resolved_command
+            args = getattr(self, "_resolved_args", [])
+            safe_env = dict(getattr(self, "_resolved_env", {}) or {})
+        else:
+            command = config.get("command")
+            args = config.get("args", [])
+            user_env = config.get("env")
 
-        if not command:
-            raise ValueError(
-                f"MCP server '{self.name}' has no 'command' in config"
-            )
+            if not command:
+                raise ValueError(
+                    f"MCP server '{self.name}' has no 'command' in config"
+                )
 
-        safe_env = _build_safe_env(user_env)
-        command, safe_env = _resolve_stdio_command(command, safe_env)
+            safe_env = _build_safe_env(user_env)
+            command, safe_env = _resolve_stdio_command(command, safe_env)
+
+            # Cache the resolved values so subsequent reconnect attempts reuse
+            # the absolute path rather than re-resolving from the original config.
+            self._resolved_command = command
+            self._resolved_args = list(args)
+            self._resolved_env = dict(safe_env)
 
         # Check package against OSV malware database before spawning.
         # Run off the event loop (the urllib HTTPS call is blocking) and bound
@@ -3560,6 +3584,15 @@ class MCPServerTask:
         # there's no race where the helper misses the shutdown flag after
         # returning "reconnect".
         self._reconnect_event.set()
+        # Clear cached resolved state: a fresh connection after shutdown
+        # should re-read the original config (#72754).
+        # Use try/except for __slots__ safety (tests bypassing __init__).
+        try:
+            self._resolved_command = None
+            self._resolved_args = []
+            self._resolved_env = None
+        except AttributeError:
+            pass
         if self._task and not self._task.done():
             try:
                 await asyncio.wait_for(self._task, timeout=10)

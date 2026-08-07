@@ -28,12 +28,30 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+# Monotonic counter so same-nanosecond bursts still sort stably (#78323 review).
+_spool_seq_lock = threading.Lock()
+_spool_seq = 0
+
+
+def _next_spool_file_id() -> str:
+    """Return a lexicographically sortable unique id (time_ns + counter).
+
+    Recovery walks ``sorted(glob("*.json"))``. uuid4 names re-insert out of
+    order after a burst of pending-cap spools; time_ns + a process-local
+    sequence preserves write order (#78323 / #78182 reporter review).
+    """
+    global _spool_seq
+    with _spool_seq_lock:
+        _spool_seq += 1
+        seq = _spool_seq
+    return f"{time.time_ns():020d}-{seq:06d}"
 
 
 def _get_flush_dir():
@@ -62,7 +80,7 @@ def _write_payload(flush_dir: Path, payload: Dict[str, Any]) -> None:
     """Atomically write one private, uniquely named recovery payload."""
     from utils import atomic_json_write
 
-    file_id = uuid.uuid4().hex
+    file_id = _next_spool_file_id()
     final_path = flush_dir / f"pending-{file_id}.json"
     atomic_json_write(
         final_path,
@@ -166,6 +184,99 @@ def _serialise_value(value: Any) -> Optional[dict]:
     return {"text": str(value)}
 
 
+def _message_has_recoverable_payload(message: dict) -> bool:
+    """True when a transcript row is worth spooling even with empty text.
+
+    Assistant tool-call rows often have ``content=None`` while carrying
+    ``tool_calls`` / reasoning. Skipping them at spool time avoids infinite
+    "invalid pending" warnings on every startup (#78323 review item 2).
+    """
+    if message.get("tool_calls") or message.get("tool_call_id"):
+        return True
+    if message.get("reasoning") or message.get("reasoning_content"):
+        return True
+    if message.get("api_content"):
+        return True
+    content = message.get("content")
+    if content is None:
+        content = message.get("text")
+    if isinstance(content, str) and content.strip():
+        return True
+    if content not in (None, "", []):
+        return True
+    return False
+
+
+def spool_transcript_messages(
+    session_id: str,
+    messages: list,
+    *,
+    reason: str = "pending_cap_overflow",
+) -> bool:
+    """Persist dropped/pending transcript rows for later recovery (#78182).
+
+    Uses the same ``pending_messages/`` directory as
+    :func:`flush_pending_to_file`. Each message is written as its own payload
+    so :func:`recover_pending_to_db` can re-insert after the DB is repaired.
+
+    Returns True when at least one message was spooled.
+    """
+    if not session_id or not messages:
+        return False
+
+    flush_dir = _get_flush_dir()
+    # Sub-second ts in the payload for diagnostics; file names use time_ns
+    # for recovery ordering.
+    ts = time.time()
+    spooled = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            message = {"role": "user", "content": str(message)}
+        if not _message_has_recoverable_payload(message):
+            continue
+        content = message.get("content")
+        if content is None:
+            content = message.get("text", "")
+        text = content if isinstance(content, str) else (
+            "" if content is None else str(content)
+        )
+        try:
+            _write_payload(
+                flush_dir,
+                {
+                    "session_key": session_id,
+                    "reason": reason,
+                    "ts": ts,
+                    "data": {
+                        "session_id": session_id,
+                        "text": text,
+                        "role": message.get("role", "user"),
+                        # Full original row so recovery can restore
+                        # tool_calls / reasoning / api_content / timestamps
+                        # (#78323 review items 2–3).
+                        "message": message,
+                    },
+                },
+            )
+            spooled += 1
+        except Exception as exc:
+            logger.error(
+                "Failed to spool overflow transcript for session %s: %s",
+                session_id,
+                exc,
+            )
+    if spooled:
+        logger.error(
+            "Spooled %d overflow transcript message(s) for session %s to %s "
+            "(reason=%s) — pending queue cap would have discarded them (#78182)",
+            spooled,
+            session_id,
+            flush_dir,
+            reason,
+        )
+    return spooled > 0
+
+
 def recover_pending_to_db(
     session_db=None,
 ) -> int:
@@ -210,8 +321,32 @@ def recover_pending_to_db(
                 continue
             session_key = payload.get("session_key", "")
             data = payload.get("data", {})
+            if not isinstance(data, dict):
+                data = {}
+            original = data.get("message")
+            if not isinstance(original, dict):
+                original = {}
+
             text = data.get("text", "")
-            if not text or not session_key:
+            if not text and original:
+                content = original.get("content")
+                if content is None:
+                    content = original.get("text", "")
+                text = content if isinstance(content, str) else (
+                    "" if content is None else str(content)
+                )
+
+            # Role+text is the minimum for plain user pending flushes.
+            # Transcript spools may be tool-call rows with empty text but a
+            # recoverable structured payload (#78323 review item 2).
+            has_structure = bool(
+                original.get("tool_calls")
+                or original.get("tool_call_id")
+                or original.get("reasoning")
+                or original.get("reasoning_content")
+                or original.get("api_content")
+            )
+            if (not text and not has_structure) or not session_key:
                 logger.warning(
                     "Cannot recover structurally invalid pending message from %s; "
                     "the flush file has been preserved",
@@ -225,7 +360,7 @@ def recover_pending_to_db(
             # message row.  Try the session_id field from the serialised
             # data first; fall back to scanning sessions for a matching
             # session_key in the source column.
-            session_id = data.get("session_id", "")
+            session_id = data.get("session_id", "") or original.get("session_id", "")
 
             if not session_id:
                 # Try to extract from the session_key itself — gateway
@@ -241,12 +376,37 @@ def recover_pending_to_db(
                 )
                 continue
 
-            session_db.append_message(
-                session_id=session_id,
-                role="user",
-                content=text,
-                timestamp=payload.get("ts", int(time.time())),
+            # Prefer structured fields from the full original message when
+            # present (tool_calls / reasoning / api_content / timestamps).
+            # v1 still drops display_metadata and platform-specific extras
+            # that SessionDB does not need for FTS-visible recovery.
+            role = (
+                data.get("role")
+                or original.get("role")
+                or "user"
             )
+            ts = original.get("timestamp", payload.get("ts", time.time()))
+            append_kwargs: Dict[str, Any] = {
+                "session_id": session_id,
+                "role": role,
+                "content": text if text else None,
+                "timestamp": ts,
+            }
+            for key in (
+                "tool_name",
+                "tool_calls",
+                "tool_call_id",
+                "finish_reason",
+                "reasoning",
+                "reasoning_content",
+                "reasoning_details",
+                "api_content",
+                "display_kind",
+            ):
+                if key in original and original[key] is not None:
+                    append_kwargs[key] = original[key]
+
+            session_db.append_message(**append_kwargs)
             recovered += 1
             path.unlink(missing_ok=True)
         except Exception as exc:

@@ -166,5 +166,116 @@ class TestRuntimeFtsRebuild:
         _corrupt_fts(tmp_path / "state.db")
         with pytest.raises(sqlite3.DatabaseError):
             db.append_message("s1", "user", "second corruption")
+        # #78182: a rebuild that already ran, then a still-broken write path,
+        # must mark recovery failure (not claim silent success).
+        assert db._fts_write_path_broken is True
+
+
+class TestPendingCapSpoolsOverflow:
+    """Gateway pending-cap must not discard transcripts (#78182)."""
+
+    def test_overflow_message_is_spooled_not_only_dropped(self, tmp_path, monkeypatch):
+        import threading
+
+        from gateway.session import SessionStore
+        from gateway import shutdown_flush
+
+        monkeypatch.setattr(shutdown_flush, "_get_flush_dir", lambda: tmp_path / "pending")
+        (tmp_path / "pending").mkdir()
+
+        class FakeDb:
+            def rebuild_fts(self):
+                return 0
+
+            def append_message(self, **kwargs):
+                raise RuntimeError("database disk image is malformed")
+
+        store = object.__new__(SessionStore)
+        store._db = FakeDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = True
+
+        for i in range(store._MAX_PENDING_PER_SESSION + 3):
+            store.append_to_transcript("s1", {"role": "user", "content": f"msg{i}"})
+
+        pending = store._dirty_transcripts.get("s1", [])
+        assert len(pending) <= store._MAX_PENDING_PER_SESSION
+        # Overflow was written under pending_messages/
+        spools = list((tmp_path / "pending").glob("*.json"))
+        assert len(spools) >= 3
+        # Oldest messages should be among the spools
+        texts = []
+        for path in spools:
+            payload = __import__("json").loads(path.read_text(encoding="utf-8"))
+            texts.append(payload["data"]["text"])
+        assert "msg0" in texts
+
+    def test_spool_filenames_sort_in_write_order(self, tmp_path, monkeypatch):
+        """#78323: recovery must re-insert burst spools in write order."""
+        from gateway import shutdown_flush
+
+        monkeypatch.setattr(shutdown_flush, "_get_flush_dir", lambda: tmp_path / "pending")
+        (tmp_path / "pending").mkdir()
+
+        msgs = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "second"},
+            {"role": "user", "content": "third"},
+        ]
+        assert shutdown_flush.spool_transcript_messages("sess-order", msgs) is True
+        names = sorted(p.name for p in (tmp_path / "pending").glob("*.json"))
+        # Lexicographic order of filenames must match write order.
+        texts = []
+        for name in names:
+            payload = __import__("json").loads(
+                (tmp_path / "pending" / name).read_text(encoding="utf-8")
+            )
+            texts.append(payload["data"]["text"])
+        assert texts == ["first", "second", "third"]
+
+    def test_tool_call_row_spools_and_recovers_without_text(
+        self, tmp_path, monkeypatch
+    ):
+        """#78323: assistant tool_calls with content=None must recover intact."""
+        from gateway import shutdown_flush
+
+        monkeypatch.setattr(shutdown_flush, "_get_flush_dir", lambda: tmp_path / "pending")
+        (tmp_path / "pending").mkdir()
+
+        tool_row = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": "{}"},
+                }
+            ],
+            "timestamp": 1_700_000_000,
+        }
+        assert (
+            shutdown_flush.spool_transcript_messages("sess-tools", [tool_row]) is True
+        )
+
+        calls = []
+
+        class FakeDb:
+            def append_message(self, **kwargs):
+                calls.append(kwargs)
+                return 1
+
+        recovered = shutdown_flush.recover_pending_to_db(FakeDb())
+        assert recovered == 1
+        assert len(calls) == 1
+        assert calls[0]["session_id"] == "sess-tools"
+        assert calls[0]["role"] == "assistant"
+        assert calls[0]["content"] is None
+        assert calls[0]["tool_calls"] == tool_row["tool_calls"]
+        assert calls[0]["timestamp"] == 1_700_000_000
+        # File removed on success — no perpetual startup warning.
+        assert list((tmp_path / "pending").glob("*.json")) == []
 
 

@@ -2235,6 +2235,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # in place at most once per SessionDB instance so a genuinely
         # unrecoverable database can't put writers into a rebuild loop.
         self._fts_runtime_rebuild_attempted = False
+        # Set when the one-shot rebuild ran but the immediate retried write
+        # still failed with FTS corruption — recovery claimed success without
+        # a verified write path (#78182). Callers should escalate to ERROR and
+        # spool rather than silently rotating pending queues.
+        self._fts_write_path_broken = False
         # One-shot guard for the usermerge-floor config write on the
         # incremental FTS merge cadence (see _merge_fts_incrementally).
         self._fts_usermerge_floor_applied = False
@@ -2882,6 +2887,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # until the next process restart triggers the offline repair.
                 # Rebuild the FTS index in place (once per instance) via
                 # rebuild_fts() and retry the failed write immediately.
+                #
+                # If a rebuild already ran and the write path is still broken,
+                # do not log "rebuilt; retrying" as success — mark recovery
+                # failed and escalate (#78182).
+                if (
+                    self._fts_runtime_rebuild_attempted
+                    and self._is_fts_write_corruption_error(exc)
+                ):
+                    if not self._fts_write_path_broken:
+                        self._fts_write_path_broken = True
+                        # Wording: rebuild may have failed or still left a
+                        # broken write path — do not claim "completed" (#78323).
+                        logger.error(
+                            "state.db FTS write path still broken after the "
+                            "in-place rebuild attempt (%s). Treating as "
+                            "recovery failure — run `hermes doctor` / "
+                            "repair_state_db_schema. Canonical rows may still "
+                            "be intact; this process will not re-attempt FTS "
+                            "rebuild.",
+                            exc,
+                        )
+                    raise
                 if not self._try_runtime_fts_rebuild(exc):
                     raise
                 continue

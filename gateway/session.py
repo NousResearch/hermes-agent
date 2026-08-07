@@ -3367,14 +3367,33 @@ class SessionStore:
             pending = self._dirty_transcripts.setdefault(session_id, [])
             pending.append(dict(message))
             # Cap pending messages per session to avoid unbounded memory
-            # growth when the DB is persistently broken. Drop the oldest.
+            # growth when the DB is persistently broken. Spool the oldest to
+            # the recovery-snapshot directory instead of discarding it so a
+            # multi-day gateway outage cannot rotate transcripts away with
+            # only a WARNING (#78182; complements #72680 shutdown flush).
             if len(pending) > self._MAX_PENDING_PER_SESSION:
-                pending.pop(0)
-                logger.warning(
+                dropped = pending.pop(0)
+                logger.error(
                     "Session DB transcript pending queue full for %s "
-                    "(cap=%d); dropping oldest message to make room",
-                    session_id, self._MAX_PENDING_PER_SESSION,
+                    "(cap=%d); spooling oldest message to recovery file "
+                    "instead of discarding it (#78182)",
+                    session_id,
+                    self._MAX_PENDING_PER_SESSION,
                 )
+                try:
+                    from gateway.shutdown_flush import spool_transcript_messages
+
+                    spool_transcript_messages(
+                        session_id,
+                        [dropped],
+                        reason="pending_cap_overflow",
+                    )
+                except Exception as spool_exc:
+                    logger.error(
+                        "Failed to spool overflow transcript for %s: %s",
+                        session_id,
+                        spool_exc,
+                    )
             # Snapshot the first pending message, then release the lock
             # before the DB write so other sessions are not blocked.
             msg = pending[0]

@@ -843,6 +843,7 @@ class TestSharedBoardPaths:
             default_home / "kanban" / "workspaces"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+        assert env["HERMES_KANBAN_WORKSPACE_KIND"] == "worktree"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
         for key in sc._VAR_MAP:
             if key == "HERMES_SESSION_SOURCE":

@@ -9018,6 +9018,7 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    env["HERMES_KANBAN_WORKSPACE_KIND"] = task.workspace_kind or "scratch"
     # Tag the worker's session so it lands in state.db as `kanban`, not as an
     # untitled `cli` row. A worker is a dispatcher-owned run whose transcript is
     # read on the board and in `hermes kanban log` — it is not a conversation

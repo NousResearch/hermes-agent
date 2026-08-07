@@ -29,8 +29,14 @@ def test_env_can_disable(clear_kanban_env):
     assert build_kanban_stop_nudge(messages=[]) is None
 
 
-def test_nudge_when_no_terminal_tool(clear_kanban_env):
-    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_46be8aa5")
+def test_nudge_when_no_terminal_tool(clear_kanban_env, tmp_path):
+    clear_kanban_env.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="worker", assignee="worker")
+        kb.claim_task(conn, task_id)
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", task_id)
     messages = [
         {"role": "user", "content": "work kanban task"},
         {
@@ -50,7 +56,7 @@ def test_nudge_when_no_terminal_tool(clear_kanban_env):
     assert nudge is not None
     assert "kanban_complete" in nudge
     assert "kanban_block" in nudge
-    assert "t_46be8aa5" in nudge
+    assert task_id in nudge
     assert "protocol violation" in nudge.lower() or "protocol" in nudge.lower()
 
 

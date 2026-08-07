@@ -1,6 +1,7 @@
 import logging
 import os
 from io import StringIO
+from pathlib import Path
 import subprocess
 
 import pytest
@@ -99,6 +100,57 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     assert run_calls, "docker run should have been called"
     run_args_str = " ".join(run_calls[0][0])
     assert f"{project_dir}:/workspace" in run_args_str
+
+
+def test_web_cache_mount_precedes_host_side_producers(monkeypatch, tmp_path):
+    """A container started first must see web and browser cache files created later."""
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    assert not (hermes_home / "cache" / "web").exists()
+    _make_dummy_env(
+        persistent_filesystem=True,
+        persist_across_processes=False,
+    )
+
+    run_args = _run_args_from_calls(calls)
+    mounts = [
+        run_args[index + 1]
+        for index, arg in enumerate(run_args[:-1])
+        if arg == "-v"
+    ]
+    container_suffix = ":/root/.hermes/cache/web:ro"
+    web_mount = next(
+        (mount for mount in mounts if mount.endswith(container_suffix)),
+        None,
+    )
+    assert web_mount is not None
+    mounted_host_dir = Path(web_mount[:-len(container_suffix)])
+    assert mounted_host_dir == hermes_home / "cache" / "web"
+
+    from tools.browser_tool import _truncate_snapshot
+    from tools.web_tools import _truncate_with_footer
+
+    page = "\n".join(f"row {index}" for index in range(5000))
+    web_result, truncated = _truncate_with_footer(
+        page, "https://example.com/doc", 3000,
+    )
+    assert truncated is True
+
+    snapshot = "\n".join(
+        f'- item "Element {index}" [ref=e{index}]' for index in range(500)
+    )
+    browser_result = _truncate_snapshot(snapshot, max_chars=2000)
+
+    web_file = next(mounted_host_dir.glob("example.com-*.md"))
+    browser_file = next(mounted_host_dir.glob("browser-snapshot-*.txt"))
+    assert f"/root/.hermes/cache/web/{web_file.name}" in web_result
+    assert f"/root/.hermes/cache/web/{browser_file.name}" in browser_result
+    assert "row 2500" in web_file.read_text(encoding="utf-8")
+    assert '[ref=e499]' in browser_file.read_text(encoding="utf-8")
 
 
 def test_non_persistent_cleanup_removes_container(monkeypatch):
@@ -605,6 +657,7 @@ def test_labels_attribute_populated_after_init(monkeypatch):
         "hermes-task-id": "abc",
         "hermes-profile": "default",
         "hermes-egress": "off",
+        "hermes-cache-mounts": "v1",
     }
 
 
@@ -683,6 +736,39 @@ def test_reuse_attaches_to_running_container_without_docker_run(monkeypatch):
     assert not start_invocations, (
         f"docker start should be skipped when container already running, got: {start_invocations}"
     )
+
+
+def test_reuse_excludes_containers_without_cache_mount_layout(monkeypatch):
+    """Containers created before cache mounts were prepared must not be reused."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="Docker version", stderr="",
+                )
+            if cmd[1] == "ps":
+                assert (
+                    "label=hermes-cache-mounts=v1" in cmd
+                ), "reuse must require the current cache mount layout"
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="fresh-cid\n", stderr="",
+                )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(task_id="legacy-cache-layout")
+
+    assert env._container_id == "fresh-cid"
+    run_args = _run_args_from_calls(calls)
+    assert "hermes-cache-mounts=v1" in _labels_in_run_args(run_args)
 
 
 def test_egress_enabled_does_not_reuse_pre_egress_container(monkeypatch):
@@ -1258,7 +1344,7 @@ def test_credential_mount_skipped_when_source_is_directory(monkeypatch, tmp_path
     )
     monkeypatch.setattr(
         "tools.credential_files.get_cache_directory_mounts",
-        lambda: [],
+        lambda **_kwargs: [],
     )
 
     with caplog.at_level(logging.WARNING):
@@ -1298,7 +1384,7 @@ def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, cap
     )
     monkeypatch.setattr(
         "tools.credential_files.get_cache_directory_mounts",
-        lambda: [],
+        lambda **_kwargs: [],
     )
 
     with caplog.at_level(logging.WARNING):

@@ -405,18 +405,33 @@ _CACHE_DIRS: list[tuple[str, str]] = [
 
 def get_cache_directory_mounts(
     container_base: str = "/root/.hermes",
+    *,
+    create_missing: bool = False,
 ) -> List[Dict[str, str]]:
-    """Return mount entries for each cache directory that exists on disk.
+    """Return mount entries for cache directories available on disk.
 
     Used by Docker to create bind mounts.  Each entry has ``host_path`` and
     ``container_path`` keys.  The host path is resolved via
     ``get_hermes_dir()`` for backward compatibility with old directory layouts.
+    When ``create_missing`` is true, cache directories are created before the
+    mount list is built so host-side producers can add files after container
+    creation without changing the container's immutable mount configuration.
     """
     from hermes_constants import get_hermes_dir
 
     mounts: List[Dict[str, str]] = []
     for new_subpath, old_name in _CACHE_DIRS:
         host_dir = get_hermes_dir(new_subpath, old_name)
+        if create_missing:
+            try:
+                host_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    "Could not prepare cache directory for sandbox mount %s: %s",
+                    host_dir,
+                    exc,
+                )
+                continue
         if host_dir.is_dir():
             # Always map to the *new* container layout regardless of host layout.
             container_path = f"{container_base.rstrip('/')}/{new_subpath}"

@@ -42,16 +42,37 @@ class TestTruncation:
 
     def test_truncation_stores_full_text_readable(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("TERMINAL_ENV", "local")
         body = "UNIQUE_MIDDLE_MARKER\n" + ("\n".join(f"row {i}" for i in range(5000)))
         out, truncated = wt._truncate_with_footer(body, "https://example.com/doc", 3000)
         assert truncated is True
         # Extract the stored path from the footer and confirm full text is there.
         path_line = next(ln for ln in out.splitlines() if "Full text saved to:" in ln)
         stored_path = path_line.split("Full text saved to:", 1)[1].strip()
+        assert stored_path.startswith(str(tmp_path / ".hermes"))
         assert os.path.exists(stored_path)
         full = open(stored_path).read()
         assert "UNIQUE_MIDDLE_MARKER" in full
         assert "row 2500" in full  # the omitted-middle row is in the stored file
+
+    def test_truncation_uses_docker_visible_cache_path(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        body = "\n".join(f"row {i}" for i in range(5000))
+
+        out, truncated = wt._truncate_with_footer(
+            body, "https://example.com/doc", 3000
+        )
+
+        assert truncated is True
+        stored_files = list((hermes_home / "cache" / "web").glob("example.com-*.md"))
+        assert len(stored_files) == 1
+        visible_path = f"/root/.hermes/cache/web/{stored_files[0].name}"
+        assert f"Full text saved to: {visible_path}" in out
+        assert f'read_file path="{visible_path}"' in out
+        assert str(hermes_home) not in out
+        assert "row 2500" in stored_files[0].read_text(encoding="utf-8")
 
 
 class TestCharLimitConfig:

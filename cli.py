@@ -13485,14 +13485,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return inner + 2
 
         def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
-            wrapped = textwrap.wrap(
-                text,
-                width=max(8, width),
-                replace_whitespace=False,
-                drop_whitespace=False,
-                subsequent_indent=subsequent_indent,
-            )
-            return wrapped or [""]
+            """Wrap text preserving newlines — each original line segment is wrapped independently."""
+            wrapped = []
+            for line in text.split(chr(10)):
+                sub = textwrap.wrap(
+                    line,
+                    width=max(8, width),
+                    replace_whitespace=False,
+                    drop_whitespace=False,
+                    subsequent_indent=subsequent_indent,
+                )
+                wrapped.extend(sub if sub else [chr(39)*2])
+            return wrapped
 
         def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
             inner_width = max(0, box_width - 2)

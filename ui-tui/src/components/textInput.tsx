@@ -8,9 +8,11 @@ import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
   isActionMod,
+  isInterruptKey,
   isMac,
   isMacActionFallback,
   isVoiceToggleKey,
+  type ParsedInterruptKey,
   type ParsedVoiceRecordKey
 } from '../lib/platform.js'
 import { isTermuxTuiMode } from '../lib/termux.js'
@@ -617,6 +619,7 @@ export function TextInput({
   onSubmit,
   mask,
   mouseApiRef,
+  interruptKey,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   placeholderColor,
@@ -1100,7 +1103,7 @@ export function TextInput({
       // actually get voice toggled instead of a paste (Copilot round-7
       // follow-up on #19835). The pass-through predicate is a no-op for
       // ordinary typing and plain paste when voice is unbound to 'v'.
-      if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
+      if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey, interruptKey)) {
         flushKeyBurst()
 
         return
@@ -1491,6 +1494,7 @@ interface TextInputProps {
   color?: string
   columns?: number
   focus?: boolean
+  interruptKey?: ParsedInterruptKey
   mask?: string
   mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
   onChange: (v: string) => void
@@ -1536,7 +1540,8 @@ export function decideRightClickAction(
 export const shouldPassThroughToGlobalHandler = (
   input: string,
   key: Key,
-  voiceRecordKey: ParsedVoiceRecordKey = DEFAULT_VOICE_RECORD_KEY
+  voiceRecordKey: ParsedVoiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
+  interruptKey?: ParsedInterruptKey
 ): boolean =>
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
@@ -1546,6 +1551,7 @@ export const shouldPassThroughToGlobalHandler = (
   key.pageUp ||
   key.pageDown ||
   key.escape ||
+  (interruptKey ? isInterruptKey(key, input, interruptKey) : false) ||
   isVoiceToggleKey(key, input, voiceRecordKey)
 
 export interface TextInputMouseApi {

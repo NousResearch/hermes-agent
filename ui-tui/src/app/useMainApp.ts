@@ -31,7 +31,13 @@ import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
-import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+import {
+  DEFAULT_INTERRUPT_KEY,
+  DEFAULT_VOICE_RECORD_KEY,
+  isMac,
+  type ParsedInterruptKey,
+  type ParsedVoiceRecordKey
+} from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
@@ -194,6 +200,7 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [voiceRecordKey, setVoiceRecordKey] = useState<ParsedVoiceRecordKey>(DEFAULT_VOICE_RECORD_KEY)
+  const [interruptKey, setInterruptKey] = useState<ParsedInterruptKey>(DEFAULT_INTERRUPT_KEY)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [dashboardFreshSessionId, setDashboardFreshSessionId] = useState<null | string>(null)
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
@@ -565,7 +572,7 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [ui.busy, turnStartedAt])
 
-  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
+  useConfigSync({ gw, setBellOnComplete, setInterruptKey, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
   useBatteryPoll(gw)
 
   useEffect(() => {
@@ -758,6 +765,7 @@ export function useMainApp(gw: GatewayClient) {
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
     gateway,
+    interruptKey,
     terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
     voice: {
       enabled: voiceEnabled,
@@ -1144,6 +1152,7 @@ export function useMainApp(gw: GatewayClient) {
       handleTextPaste: composerActions.handleTextPaste,
       input: composerState.input,
       inputBuf: composerState.inputBuf,
+      interruptKey,
       pagerPageSize,
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
@@ -1151,7 +1160,7 @@ export function useMainApp(gw: GatewayClient) {
       updateInput,
       voiceRecordKey
     }),
-    [cols, composerActions, composerState, empty, pagerPageSize, submit, updateInput, voiceRecordKey]
+    [cols, composerActions, composerState, empty, interruptKey, pagerPageSize, submit, updateInput, voiceRecordKey]
   )
 
   // Pass current progress through unfrozen — streaming update throttling

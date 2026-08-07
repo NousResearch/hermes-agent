@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
 import { inlineSlashTrigger, looksLikeSlashCommand } from '../domain/slash.js'
@@ -80,16 +80,16 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
   const [compReplace, setCompReplace] = useState(0)
   const ref = useRef('')
 
-  useEffect(() => {
-    const clear = () => {
-      setCompletions(prev => (prev.length ? [] : prev))
-      setCompIdx(prev => (prev ? 0 : prev))
-      setCompReplace(prev => (prev ? 0 : prev))
-    }
+  const clearCompletions = useCallback(() => {
+    setCompletions(prev => (prev.length ? [] : prev))
+    setCompIdx(prev => (prev ? 0 : prev))
+    setCompReplace(prev => (prev ? 0 : prev))
+  }, [])
 
+  useEffect(() => {
     if (blocked) {
       ref.current = ''
-      clear()
+      clearCompletions()
 
       return
     }
@@ -103,7 +103,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     const request = completionRequestForInput(input)
 
     if (!request) {
-      clear()
+      clearCompletions()
 
       return
     }
@@ -161,7 +161,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     }, 60)
 
     return () => clearTimeout(t)
-  }, [blocked, gw, input])
+  }, [blocked, clearCompletions, gw, input])
 
-  return { completions, compIdx, setCompIdx, compReplace }
+  return { clearCompletions, completions, compIdx, setCompIdx, compReplace }
 }

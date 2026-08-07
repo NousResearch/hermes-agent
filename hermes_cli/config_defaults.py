@@ -1121,6 +1121,10 @@ DEFAULT_CONFIG = {
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        # TUI-only: which key interrupts a running turn (dismiss completions
+        # first, then interrupt). Accepts bare keys ("escape", "esc") or
+        # modifier combos ("ctrl+g", "alt+i"). Default "escape".
+        "interrupt_key": "escape",
         # When busy_input_mode="steer", suppress only the visible
         # "Steered into current run" confirmation bubble by setting this false.
         # The mid-turn steering itself still happens.

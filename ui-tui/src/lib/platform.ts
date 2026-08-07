@@ -412,3 +412,116 @@ export const isVoiceToggleKey = (
       return key.super === true && !key.ctrl && !key.alt && !key.meta
   }
 }
+
+// --- Interrupt key (display.interrupt_key) ---
+
+export interface ParsedInterruptKey {
+  ch: string
+  mod: 'alt' | 'ctrl' | 'super'
+  named?: string
+  raw: string
+}
+
+export const DEFAULT_INTERRUPT_KEY: ParsedInterruptKey = {
+  ch: '',
+  mod: 'ctrl',
+  raw: 'escape'
+}
+
+export const parseInterruptKey = (raw: unknown): ParsedInterruptKey => {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return DEFAULT_INTERRUPT_KEY
+  }
+
+  const normalized = raw.trim().toLowerCase()
+
+  if (normalized === 'escape' || normalized === 'esc') {
+    return DEFAULT_INTERRUPT_KEY
+  }
+
+  const parts = normalized
+    .split('+')
+    .map(p => p.trim())
+    .filter(Boolean)
+
+  if (!parts.length) {
+    return DEFAULT_INTERRUPT_KEY
+  }
+
+  const last = parts[parts.length - 1]
+  const modCandidates = parts.slice(0, -1)
+
+  if (modCandidates.length !== 1) {
+    return DEFAULT_INTERRUPT_KEY
+  }
+
+  const mod = _MOD_ALIASES[modCandidates[0]]
+
+  if (!mod) {
+    return DEFAULT_INTERRUPT_KEY
+  }
+
+  // Only reject ctrl+c — it's the universal SIGINT / exit chord in the TUI.
+  if (mod === 'ctrl' && last === 'c') {
+    return DEFAULT_INTERRUPT_KEY
+  }
+
+  if (last.length === 1) {
+    return { ch: last, mod, raw: normalized }
+  }
+
+  const named = _NAMED_KEY_ALIASES[last]
+
+  if (named) {
+    return { ch: named, mod, named, raw: normalized }
+  }
+
+  return DEFAULT_INTERRUPT_KEY
+}
+
+export const isInterruptKey = (
+  key: RuntimeKeyEvent,
+  ch: string,
+  configured: ParsedInterruptKey = DEFAULT_INTERRUPT_KEY
+): boolean => {
+  if (configured.raw === 'escape') {
+    return !!key.escape && !key.ctrl && !key.alt && key.super !== true && !key.shift
+  }
+
+  // Standalone matching — no macOS Cmd fallback (unlike voice toggle).
+  if (configured.named) {
+    if (!_matchesNamedKey(configured.named as VoiceRecordKeyNamed, key, ch)) {
+      return false
+    }
+  } else if (ch.toLowerCase() !== configured.ch) {
+    return false
+  }
+
+  if (key.shift === true) {
+    return false
+  }
+
+  switch (configured.mod) {
+    case 'alt':
+      return (key.alt === true || (key.meta && key.escape !== true)) && !key.ctrl && key.super !== true
+
+    case 'ctrl':
+      return !!key.ctrl && !key.alt && !key.meta && key.super !== true
+
+    case 'super':
+      return key.super === true && !key.ctrl && !key.alt && !key.meta
+  }
+}
+
+export const formatInterruptKey = (parsed: ParsedInterruptKey): string => {
+  if (parsed.raw === 'escape') {
+    return 'Esc'
+  }
+
+  const modLabel =
+    parsed.mod === 'super' ? (isMac ? 'Cmd' : 'Super') : parsed.mod[0].toUpperCase() + parsed.mod.slice(1)
+
+  const keyLabel = parsed.named ? parsed.named[0].toUpperCase() + parsed.named.slice(1) : parsed.ch.toUpperCase()
+
+  return `${modLabel}+${keyLabel}`
+}

@@ -12,7 +12,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { isAction, isCopyShortcut, isMac, isInterruptKey, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
@@ -132,7 +132,7 @@ export function dismissSensitivePrompt(
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
-  const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
+  const { actions, composer, gateway, interruptKey, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
 
   const overlay = useStore($overlayState)
@@ -527,6 +527,21 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (key.escape && terminal.hasSelection) {
       return clearSelection()
+    }
+
+    // Interrupt key (default: Esc) dismisses completions first; a subsequent
+    // press (with no completions showing) interrupts the running turn.
+    if (isInterruptKey(key, ch, interruptKey) && cState.completions.length) {
+      return cActions.clearCompletions()
+    }
+
+    if (isInterruptKey(key, ch, interruptKey) && live.busy && live.sid) {
+      return turnController.interruptTurn({
+        appendMessage: actions.appendMessage,
+        gw: gateway.gw,
+        sid: live.sid,
+        sys: actions.sys
+      })
     }
 
     if (key.upArrow && !cState.inputBuf.length) {

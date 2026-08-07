@@ -21,6 +21,7 @@ import {
   stableComposerColumns
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
+import { formatInterruptKey } from '../lib/platform.js'
 import { composerPromptText } from '../lib/prompt.js'
 import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from '../sdk/host.js'
 
@@ -419,11 +420,12 @@ const ComposerPane = memo(function ComposerPane({
                 <TextInput
                   color={ui.theme.color.text}
                   columns={inputColumns}
+                  interruptKey={composer.interruptKey}
                   mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? `${formatInterruptKey(composer.interruptKey)} / Ctrl+C to interrupt…` : ''}
                   // Exactly the "(and N more toolsets…)" tone. `muted` is a
                   // MID-luminance family tone, so it reads receded on both
                   // poles even when polarity detection is wrong (transparent

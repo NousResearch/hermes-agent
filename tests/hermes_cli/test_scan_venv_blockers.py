@@ -157,7 +157,7 @@ def _run_main_with_detector(monkeypatch, capsys, matches):
         monkeypatch.setitem(sys.modules, name, mod)
     import hermes_cli.main as cli_main
 
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: matches)
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda **kw: matches)
     with pytest.raises(SystemExit) as excinfo:
         main()
     out = capsys.readouterr().out

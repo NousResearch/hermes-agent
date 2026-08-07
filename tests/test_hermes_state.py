@@ -2439,7 +2439,63 @@ class TestAutoMaintenance:
         assert (sessions_dir / "new.jsonl").exists()
 
 
+class TestRemoveSessionFilesGlobLiteral:
+    """Regression: session IDs must stay literal in request-dump cleanup.
 
+    ``_remove_session_files`` used ``Path.glob`` with the raw session_id.
+    IDs like ``*``, ``?``, and ``[x]`` are path-safe at the API entry
+    guard but are glob metacharacters — without ``glob.escape`` they
+    delete unrelated sessions' ``request_dump_*`` files (PR #71120 review).
+    """
+
+    def test_star_session_id_does_not_delete_unrelated_dumps(self, tmp_path):
+        # Unescaped ``*`` expands to every ``request_dump_*_*.json``.
+        other = tmp_path / "request_dump_other-session_001.json"
+        safe = tmp_path / "request_dump_safe-session_002.json"
+        other.write_text("{}")
+        safe.write_text("{}")
+
+        SessionDB._remove_session_files(tmp_path, "*")
+
+        assert other.exists()
+        assert safe.exists()
+
+    def test_question_session_id_does_not_delete_single_char_prefix_dumps(
+        self, tmp_path
+    ):
+        # Unescaped ``?`` matches any single-character session prefix.
+        bait = tmp_path / "request_dump_x_001.json"
+        other = tmp_path / "request_dump_other-session_001.json"
+        bait.write_text("{}")
+        other.write_text("{}")
+
+        SessionDB._remove_session_files(tmp_path, "?")
+
+        assert bait.exists()
+        assert other.exists()
+
+    def test_bracket_session_id_does_not_delete_charclass_dumps(self, tmp_path):
+        # Unescaped ``[x]`` is a character class matching ``request_dump_x_*.json``.
+        bait = tmp_path / "request_dump_x_001.json"
+        other = tmp_path / "request_dump_other-session_001.json"
+        bait.write_text("{}")
+        other.write_text("{}")
+
+        SessionDB._remove_session_files(tmp_path, "[x]")
+
+        assert bait.exists()
+        assert other.exists()
+
+    def test_literal_session_id_still_deletes_matching_dumps(self, tmp_path):
+        target = tmp_path / "request_dump_safe-session_002.json"
+        other = tmp_path / "request_dump_other-session_001.json"
+        target.write_text("{}")
+        other.write_text("{}")
+
+        SessionDB._remove_session_files(tmp_path, "safe-session")
+
+        assert not target.exists()
+        assert other.exists()
 
 
 # =========================================================================

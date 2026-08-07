@@ -190,6 +190,57 @@ class TestStartRun:
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
 
+    @pytest.mark.asyncio
+    async def test_start_rejects_path_unsafe_session_id(self, adapter):
+        """Path-traversal session_id must 400 before becoming agent task_id
+        (Docker persistent sandbox joins get_sandbox_dir()/docker/task_id)."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                for bad in ("../../../../etc/pwned", "/abs/path", "..\\win"):
+                    resp = await cli.post(
+                        "/v1/runs",
+                        json={"input": "hello", "session_id": bad},
+                    )
+                    assert resp.status == 400, f"{bad!r} should be rejected"
+                    data = await resp.json()
+                    assert data["error"]["code"] == "invalid_session_id"
+                assert mock_create.call_count == 0
+                assert adapter._run_streams == {}
+                assert adapter._run_statuses == {}
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_control_char_session_id(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                for bad in ("evil\nid", "evil\rid", "evil\x00id"):
+                    resp = await cli.post(
+                        "/v1/runs",
+                        json={"input": "hello", "session_id": bad},
+                    )
+                    assert resp.status == 400, f"{bad!r} should be rejected"
+                    data = await resp.json()
+                    assert data["error"]["code"] == "invalid_session_id"
+                assert mock_create.call_count == 0
+                assert adapter._run_streams == {}
+                assert adapter._run_statuses == {}
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_oversized_session_id(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "x" * 257},
+                )
+                assert resp.status == 400
+                data = await resp.json()
+                assert data["error"]["code"] == "invalid_session_id"
+                assert mock_create.call_count == 0
+                assert adapter._run_streams == {}
+                assert adapter._run_statuses == {}
 
     @pytest.mark.asyncio
     async def test_start_rejects_conflicting_route_and_request_provider(self):

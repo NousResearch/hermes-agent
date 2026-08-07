@@ -2104,6 +2104,26 @@ class APIServerAdapter(BasePlatformAdapter):
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
 
+    def _reject_unsafe_session_id(self, session_id: str) -> Optional["web.Response"]:
+        """Entry-boundary guard for IDs that become filesystem path segments.
+
+        Shared by session create, chat continuation, and /v1/runs so path
+        traversal / control-char / length checks cannot drift apart.
+        """
+        from gateway.session import _is_path_unsafe
+
+        if re.search(r"[\r\n\x00]", session_id) or _is_path_unsafe(session_id):
+            return web.json_response(
+                _openai_error("Invalid session ID", code="invalid_session_id"),
+                status=400,
+            )
+        if len(session_id) > self._MAX_SESSION_HEADER_LEN:
+            return web.json_response(
+                _openai_error("Session ID too long", code="invalid_session_id"),
+                status=400,
+            )
+        return None
+
     def _parse_session_key_header(
         self, request: "web.Request"
     ) -> tuple[Optional[str], Optional["web.Response"]]:
@@ -3377,11 +3397,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         raw_id = body.get("id") or body.get("session_id")
         session_id = str(raw_id).strip() if raw_id else f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        from gateway.session import _is_path_unsafe
-        if not session_id or re.search(r'[\r\n\x00]', session_id) or _is_path_unsafe(session_id):
+        if not session_id:
             return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
-        if len(session_id) > self._MAX_SESSION_HEADER_LEN:
-            return web.json_response(_openai_error("Session ID too long", code="invalid_session_id"), status=400)
+        rejected = self._reject_unsafe_session_id(session_id)
+        if rejected is not None:
+            return rejected
 
         model = body.get("model") or self._model_name
         system_prompt = body.get("system_prompt")
@@ -4057,19 +4077,10 @@ class APIServerAdapter(BasePlatformAdapter):
             # Sanitize: reject control characters that could enable header
             # injection, and path-traversal-shaped IDs that would escape the
             # sessions directory when interpolated into on-disk artifact
-            # filenames (session snapshots, request dumps). Mirrors the native
-            # gateway's entry-boundary guard (gateway.session._is_path_unsafe).
-            from gateway.session import _is_path_unsafe
-            if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
-                return web.json_response(
-                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
-                    status=400,
-                )
-            if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
-                return web.json_response(
-                    {"error": {"message": "Session ID too long", "type": "invalid_request_error"}},
-                    status=400,
-                )
+            # filenames (session snapshots, request dumps).
+            rejected = self._reject_unsafe_session_id(provided_session_id)
+            if rejected is not None:
+                return rejected
             session_id = provided_session_id
             try:
                 db = await self._ensure_session_db_async()
@@ -6465,6 +6476,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         session_id = body.get("session_id") or stored_session_id
+        # session_id becomes AIAgent task_id; Docker/Singularity join it under
+        # the sandbox root (get_sandbox_dir()/docker/task_id). Reject traversal
+        # shapes before the run is accepted.
+        if session_id:
+            session_id = str(session_id)
+            rejected = self._reject_unsafe_session_id(session_id)
+            if rejected is not None:
+                return rejected
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
         selection_error = self._request_route_conflict_error(

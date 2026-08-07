@@ -78,6 +78,14 @@ _COMPACTION_PREFIXES = (
 )
 
 
+def _close_session_search_dbs(dbs: List[Any]) -> None:
+    for db in reversed(dbs):
+        try:
+            db.close()
+        except Exception:
+            logging.debug("Failed to close session_search SessionDB", exc_info=True)
+
+
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
 
@@ -864,27 +872,60 @@ def session_search(
 
     Discovery: pass ``query``.
     Scroll:    pass ``session_id`` + ``around_message_id``.
-    Read:      pass ``session_id`` (no anchor) — dumps the whole session.
+    Read:      pass ``session_id`` (no anchor) - dumps the whole session.
     Browse:    pass nothing.
 
     Pass ``profile`` to read another profile's sessions (e.g. resolving an
     ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
-    anchor is set — the agent has asked for a specific slice.
+    anchor is set - the agent has asked for a specific slice.
     """
+    owned_dbs: List[Any] = []
     if db is None:
         try:
             from hermes_state import SessionDB
             db = SessionDB()
+            owned_dbs.append(db)
         except Exception:
             logging.debug("SessionDB unavailable for session_search", exc_info=True)
             from hermes_state import format_session_db_unavailable
             return tool_error(format_session_db_unavailable(), success=False)
 
+    try:
+        return _session_search_with_db(
+            query=query,
+            role_filter=role_filter,
+            limit=limit,
+            db=db,
+            current_session_id=current_session_id,
+            session_id=session_id,
+            around_message_id=around_message_id,
+            window=window,
+            sort=sort,
+            profile=profile,
+            owned_dbs=owned_dbs,
+        )
+    finally:
+        _close_session_search_dbs(owned_dbs)
+
+
+def _session_search_with_db(
+    *,
+    query: str = "",
+    role_filter: str = None,
+    limit: int = 3,
+    db,
+    current_session_id: str = None,
+    session_id: str = None,
+    around_message_id: int = None,
+    window: int = 5,
+    sort: str = None,
+    profile: str = None,
+    owned_dbs: List[Any],
+) -> str:
     # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
-    # Session ids never contain "/", so a slash unambiguously means profile/id —
-    # always strip the prefix off the id, and adopt the embedded profile only
-    # when one wasn't passed explicitly. Handles every permutation the model
-    # might send (full value as id, with or without a separate profile=).
+    # Session ids never contain "/", so a slash unambiguously means profile/id.
+    # Always strip the prefix off the id, and adopt the embedded profile only
+    # when one was not passed explicitly.
     if isinstance(session_id, str) and "/" in session_id:
         emb_profile, _, emb_id = session_id.partition("/")
         if emb_id:
@@ -902,9 +943,10 @@ def session_search(
             return tool_error(f"profile '{profile}': {e}", success=False)
         if profile_db is not None:
             db = profile_db
+            owned_dbs.append(profile_db)
             current_session_id = None
 
-    # Scroll shape takes precedence — explicit anchor beats any query.
+    # Scroll shape takes precedence - explicit anchor beats any query.
     if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
         return _scroll(
             db=db,
@@ -914,14 +956,14 @@ def session_search(
             current_session_id=current_session_id,
         )
 
-    # Read shape: a session_id with no anchor → dump the whole session.
+    # Read shape: a session_id with no anchor -> dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
         sid = session_id.strip()
         result = _read_session(db, sid, link_profile=profile)
         if json.loads(result).get("success"):
             return result
 
-        # Miss in the target profile — the model may have dropped the owning
+        # Miss in the target profile - the model may have dropped the owning
         # profile from the link. Scan every profile and read it from wherever
         # it lives, tagging the profile it was found in.
         located, owner = _locate_session_db(sid)
@@ -943,7 +985,7 @@ def session_search(
             limit = 3
     limit = max(1, min(limit, 10))
 
-    # Browse shape: no query → recent sessions.
+    # Browse shape: no query -> recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
         return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
 
@@ -968,7 +1010,6 @@ def session_search(
         current_session_id=current_session_id,
         link_profile=profile,
     )
-
 
 def check_session_search_requirements() -> bool:
     """Requires the SQLite state database."""

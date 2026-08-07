@@ -764,6 +764,65 @@ class TestRewindExclusion:
         assert result_rewind["count"] == 0
 
 
+class TestSessionSearchConnectionLifetime:
+    class _ClosableDB:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def test_owned_default_db_closes_after_success(self, monkeypatch):
+        fake_db = self._ClosableDB()
+
+        import hermes_state
+        import tools.session_search_tool as session_search_mod
+
+        monkeypatch.setattr(hermes_state, "SessionDB", lambda: fake_db)
+        monkeypatch.setattr(
+            session_search_mod,
+            "_list_recent_sessions",
+            lambda *args, **kwargs: json.dumps({"success": True}),
+        )
+
+        assert json.loads(session_search())["success"] is True
+        assert fake_db.closed is True
+
+    def test_owned_default_db_closes_after_exception(self, monkeypatch):
+        fake_db = self._ClosableDB()
+
+        import hermes_state
+        import tools.session_search_tool as session_search_mod
+
+        monkeypatch.setattr(hermes_state, "SessionDB", lambda: fake_db)
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(session_search_mod, "_list_recent_sessions", boom)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            session_search()
+        assert fake_db.closed is True
+
+    def test_profile_db_closes_without_closing_caller_db(self, monkeypatch):
+        caller_db = self._ClosableDB()
+        profile_db = self._ClosableDB()
+
+        import tools.session_search_tool as session_search_mod
+
+        monkeypatch.setattr(session_search_mod, "_resolve_profile_db", lambda profile: profile_db)
+        monkeypatch.setattr(
+            session_search_mod,
+            "_list_recent_sessions",
+            lambda *args, **kwargs: json.dumps({"success": True}),
+        )
+
+        assert json.loads(session_search(db=caller_db, profile="work"))["success"] is True
+        assert caller_db.closed is False
+        assert profile_db.closed is True
+
+
 class TestCompressionEndedHelper:
     """Unit tests for _is_compression_ended."""
 

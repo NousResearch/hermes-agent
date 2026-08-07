@@ -10,6 +10,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'getting-started/quickstart',
         'getting-started/installation',
+        'getting-started/system-requirements',
         'getting-started/platform-support',
         'getting-started/termux',
         'getting-started/nix-setup',

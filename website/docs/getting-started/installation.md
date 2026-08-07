@@ -86,6 +86,8 @@ That logs you in, sets Nous as your provider, and turns on the Tool Gateway in o
 
 ## Prerequisites
 
+Before installing, check the **[System Requirements](./system-requirements.md)** for hardware, OS, and disk space guidance.
+
 **Installer:** On non-Windows platforms, the only prerequisite is **Git**. On Linux, also make sure `curl` and `xz-utils` are available (the installer downloads Node.js as a `.tar.xz` archive). The desktop app additionally requires `g++` (or `build-essential` on Debian/Ubuntu) to compile native modules. The installer automatically handles everything else:
 
 - **uv** (fast Python package manager)

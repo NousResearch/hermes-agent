@@ -547,6 +547,15 @@ def note_turn_persisted(agent):
     agent._inflight_turn_session_id = None
 
 
+# Bridge inserted ahead of a malformed leading assistant/tool turn so the
+# payload opens with a genuine user turn. Shared by ``repair_message_sequence``
+# (Pass 3, writes through to persisted history) and
+# ``ensure_user_leads_api_messages`` (send-time copy, belt-and-suspenders). Kept
+# short and framed as a continuation cue so weak local models don't treat it as
+# fresh input; the real current query is still the last user message.
+_LEADING_USER_BRIDGE = "(Conversation resumed — prior context follows below.)"
+
+
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
     """Collapse malformed role-alternation left in the live history.
 
@@ -579,6 +588,12 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
          any preceding assistant tool_call — dropped.
       2. Consecutive ``user`` messages — merged with newline separator
          so no user input is lost.
+      3. A first non-system turn that is not ``user`` — a minimal user
+         bridge is inserted ahead of it. Fixes resumed lineages whose
+         persisted history opens with a context-compaction summary merged
+         into a leading ``assistant(tool_calls)`` turn, which trips
+         OpenAI-compatible Qwen-derived chat templates ("No user query
+         found in messages.") and Anthropic's non-user-leading rejection.
 
     Deliberately does NOT rewind orphan ``assistant(tool_calls)+tool``
     pairs that precede a user message — that pattern IS valid when the
@@ -758,12 +773,76 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 continue
         merged.append(msg)
 
+    # Pass 3: guarantee the first non-system message is a user turn. A resumed
+    # lineage whose persisted history opens with a context-compaction summary
+    # merged into a leading ``assistant(tool_calls)`` turn otherwise trips
+    # OpenAI-compatible Qwen-derived chat templates ("No user query found in
+    # messages.") and Anthropic's non-user-leading rejection on every request.
+    # Inserting the bridge BEFORE the offending turn preserves assistant->tool
+    # adjacency and every tool_call pairing (Pass 1 already dropped any orphan
+    # leading ``tool``, so the first non-system turn here is user or assistant).
+    # Unlike the send-time copy, this writes through to persisted history, so a
+    # legacy malformed lineage is normalized once and stops replaying the broken
+    # shape. No-op on payloads that already lead with a user turn.
+    lead = 0
+    while (
+        lead < len(merged)
+        and isinstance(merged[lead], dict)
+        and merged[lead].get("role") == "system"
+    ):
+        lead += 1
+    if (
+        lead < len(merged)
+        and isinstance(merged[lead], dict)
+        and merged[lead].get("role") != "user"
+    ):
+        merged.insert(lead, {"role": "user", "content": _LEADING_USER_BRIDGE})
+        repairs += 1
+
     if repairs > 0:
         # Rewrite in place so downstream paths (persistence, return
         # value, session DB flush) see the repaired sequence.
         messages[:] = merged
 
     return repairs
+
+
+def ensure_user_leads_api_messages(api_messages: List[Dict]) -> int:
+    """Guarantee the first non-system message in an outbound payload is role=user.
+
+    OpenAI-compatible chat templates — notably the Qwen3-derived templates that
+    LM Studio and local gateways (LMLink) apply — resolve the "current user
+    query" by walking the turns, and raise ``"No user query found in messages."``
+    when the conversation leads with an ``assistant``/``tool`` turn instead of a
+    ``user`` turn. Anthropic likewise rejects a first message that is not
+    role=user. This shape is produced by a resumed lineage whose persisted
+    history opens with a context-compaction summary that an older compressor
+    merged into an ``assistant(tool_calls)`` message (the current compressor
+    pins that summary to role=user, but already-persisted histories replay the
+    malformed leading turn on every request).
+
+    Operates on the API-call-time copy only — never the persisted ``messages`` —
+    so nothing leaks into session persistence or the SessionDB flush cursor.
+    Inserts a minimal ``user`` bridge BEFORE the offending turn, which preserves
+    assistant->tool adjacency and every tool_call pairing (a leading ``tool`` or
+    ``assistant`` is invalid for these providers regardless, so this only fires
+    on already-broken payloads and is a no-op on well-formed ones).
+
+    Returns 1 if a bridge was inserted, else 0.
+    """
+    if not api_messages:
+        return 0
+    idx = 0
+    n = len(api_messages)
+    while idx < n and isinstance(api_messages[idx], dict) and api_messages[idx].get("role") == "system":
+        idx += 1
+    if idx >= n:
+        return 0  # nothing but system messages — no turn to lead
+    first = api_messages[idx]
+    if not isinstance(first, dict) or first.get("role") == "user":
+        return 0  # already well-formed
+    api_messages.insert(idx, {"role": "user", "content": _LEADING_USER_BRIDGE})
+    return 1
 
 
 def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
@@ -4051,6 +4130,7 @@ __all__ = [
     "convert_to_trajectory_format",
     "sanitize_tool_call_arguments",
     "repair_message_sequence",
+    "ensure_user_leads_api_messages",
     "strip_think_blocks",
     "recover_with_credential_pool",
     "try_recover_primary_transport",

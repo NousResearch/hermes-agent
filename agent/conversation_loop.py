@@ -2026,6 +2026,22 @@ def run_conversation(
             if _moa_prepared_request is not None:
                 api_messages = _moa_prepared_request["messages"]
 
+        # Fork: guarantee the outbound payload opens with a genuine user turn.
+        # Runs last — after prefill insertion, thinking-only drops, and tool
+        # sanitization have settled the leading structure — on the API copy
+        # only, so persisted history is untouched. A resumed lineage whose
+        # history begins with a context-compaction summary merged into a
+        # leading assistant(tool_calls) turn otherwise trips OpenAI-compatible
+        # Qwen-derived chat templates (LM Studio / LMLink: "No user query found
+        # in messages.") and Anthropic's non-user-leading rejection. No-op on
+        # well-formed payloads.
+        from agent.agent_runtime_helpers import ensure_user_leads_api_messages
+        if ensure_user_leads_api_messages(api_messages):
+            request_logger.info(
+                "Inserted leading user bridge to keep payload well-formed (session=%s)",
+                agent.session_id or "-",
+            )
+
         # One image-stripped message estimate feeds both figures. Was: a
         # str(msg) char walk (re-serialized base64 every call) + a second
         # messages walk inside estimate_request_tokens_rough. Tools added
@@ -3228,6 +3244,25 @@ def run_conversation(
                             )
                             if not _is_empty_partial_stub:
                                 interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                                # A length-truncated turn that produced
+                                # reasoning but no visible content would
+                                # persist as {"content": "", "reasoning": ...}.
+                                # On every later request the wire copy has the
+                                # reasoning stripped (non-DeepSeek/Kimi/MiMo
+                                # reasoning policy) and the empty turn is healed
+                                # per-call by repair_empty_non_final_messages —
+                                # re-logging a WARNING on every API call for the
+                                # rest of the session, and leaving the turn
+                                # permanently wire-empty in stored history.
+                                # Persist the same placeholder the send-boundary
+                                # repair would substitute so the stored
+                                # transcript is never wire-empty.  The general
+                                # "repair at the send boundary" design is
+                                # unchanged; this only stops WRITING a new
+                                # poisoned turn in the first place.
+                                if not interim_msg.get("content") and interim_msg.get("reasoning"):
+                                    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+                                    interim_msg["content"] = _INTERRUPTED_PLACEHOLDER
                                 messages.append(interim_msg)
                                 if assistant_message.content:
                                     truncated_response_parts.append(assistant_message.content)

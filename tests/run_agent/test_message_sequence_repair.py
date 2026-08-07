@@ -380,3 +380,146 @@ def test_sanitize_drops_empty_tool_calls_array():
 
 
 
+# ── ensure_user_leads_api_messages ─────────────────────────────────────────
+# Send-time invariant: the outbound payload must open with a genuine user turn.
+# A resumed lineage whose persisted history begins with a context-compaction
+# summary merged into a leading assistant(tool_calls) turn otherwise trips
+# OpenAI-compatible Qwen-derived chat templates (LM Studio / LMLink:
+# "No user query found in messages.") and Anthropic's non-user-leading reject.
+
+from agent.agent_runtime_helpers import ensure_user_leads_api_messages
+
+
+def test_leading_assistant_summary_gets_user_bridge():
+    """system -> assistant(tool_calls) -> tool -> ... -> user  (resumed lineage)."""
+    api_messages = [
+        {"role": "system", "content": "SOUL"},
+        {"role": "assistant", "content": "[PRIOR CONTEXT ...]",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "todo", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "{}"},
+        {"role": "assistant", "content": "Yes I can implement..."},
+        {"role": "user", "content": "move forward with all changes"},
+    ]
+
+    inserted = ensure_user_leads_api_messages(api_messages)
+
+    assert inserted == 1
+    assert api_messages[0]["role"] == "system"
+    assert api_messages[1]["role"] == "user"            # bridge now leads
+    assert api_messages[2]["role"] == "assistant"       # assistant->tool intact
+    assert api_messages[2]["tool_calls"][0]["id"] == "t1"
+    assert api_messages[3]["tool_call_id"] == "t1"      # pairing preserved
+
+
+def test_well_formed_payload_is_noop():
+    api_messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "hi"},
+    ]
+    assert ensure_user_leads_api_messages(api_messages) == 0
+    assert len(api_messages) == 2
+
+
+def test_leading_orphan_tool_gets_bridge():
+    api_messages = [
+        {"role": "system", "content": "s"},
+        {"role": "tool", "tool_call_id": "x", "content": "{}"},
+        {"role": "user", "content": "q"},
+    ]
+    assert ensure_user_leads_api_messages(api_messages) == 1
+    assert api_messages[1]["role"] == "user"
+
+
+def test_no_system_leading_assistant():
+    api_messages = [
+        {"role": "assistant", "content": "hi"},
+        {"role": "user", "content": "q"},
+    ]
+    assert ensure_user_leads_api_messages(api_messages) == 1
+    assert api_messages[0]["role"] == "user"
+
+
+def test_system_only_and_empty_are_noops():
+    system_only = [{"role": "system", "content": "a"}]
+    assert ensure_user_leads_api_messages(system_only) == 0
+    assert system_only == [{"role": "system", "content": "a"}]
+    assert ensure_user_leads_api_messages([]) == 0
+
+
+# ── repair_message_sequence Pass 3: leading-user invariant (persisted path) ──
+# Unlike ensure_user_leads_api_messages (send-time copy), Pass 3 writes through
+# to persisted history so a legacy malformed lineage is normalized once and
+# stops replaying the broken leading-assistant shape.
+
+from agent.agent_runtime_helpers import _LEADING_USER_BRIDGE
+
+
+def test_pass3_bridges_leading_assistant_summary_in_history():
+    """Resumed lineage: system -> assistant(tool_calls) summary -> tool -> user."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "system", "content": "SOUL"},
+        {"role": "assistant", "content": "[PRIOR CONTEXT ...]",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "todo", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "{}"},
+        {"role": "assistant", "content": "Yes I can implement..."},
+        {"role": "user", "content": "move forward"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert messages[0]["role"] == "system"
+    assert messages[1] == {"role": "user", "content": _LEADING_USER_BRIDGE}
+    assert messages[2]["role"] == "assistant"          # assistant->tool intact
+    assert messages[2]["tool_calls"][0]["id"] == "t1"
+    assert messages[3]["tool_call_id"] == "t1"          # pairing preserved
+
+
+def test_pass3_noop_on_well_formed_history():
+    agent = _bare_agent()
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "y"},
+    ]
+    assert AIAgent._repair_message_sequence(agent, messages) == 0
+    assert len(messages) == 3
+    assert all(m["content"] != _LEADING_USER_BRIDGE for m in messages)
+
+
+def test_pass3_leading_orphan_tool_dropped_then_leads_with_user():
+    """Pass 1 drops the orphan leading tool; Pass 3 then sees a user lead (no
+    double-bridge)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "tool", "tool_call_id": "x", "content": "{}"},  # orphan
+        {"role": "user", "content": "q"},
+    ]
+    AIAgent._repair_message_sequence(agent, messages)
+    assert messages == [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "q"},
+    ]
+
+
+def test_pass3_idempotent_after_persisted_bridge():
+    """Once normalized+persisted, re-running repair must not add a second
+    bridge (the resumed history now leads with the bridge user turn)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "assistant", "content": "summary",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "{}"},
+        {"role": "user", "content": "go"},
+    ]
+    AIAgent._repair_message_sequence(agent, messages)
+    n_bridges_1 = sum(1 for m in messages if m.get("content") == _LEADING_USER_BRIDGE)
+    AIAgent._repair_message_sequence(agent, messages)  # simulate next turn / resume
+    n_bridges_2 = sum(1 for m in messages if m.get("content") == _LEADING_USER_BRIDGE)
+    assert n_bridges_1 == 1 and n_bridges_2 == 1

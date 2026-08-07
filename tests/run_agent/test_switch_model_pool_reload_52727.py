@@ -217,3 +217,41 @@ class TestSwitchModelReloadsCredentialPool:
         assert agent.provider == "groq"
         assert agent.model == "llama-3.3-70b"
         assert agent._credential_pool is None
+
+
+@pytest.mark.parametrize(
+    "new_model,stale_mode,stale_url,expected_mode,expected_url",
+    [
+        (
+            "deepseek-v4-flash",
+            "chat_completions",
+            "https://api.deepseek.com/v1",
+            "codex_responses",
+            "https://api.deepseek.com",
+        ),
+        (
+            "deepseek-v4-pro",
+            "codex_responses",
+            "https://api.deepseek.com",
+            "chat_completions",
+            "https://api.deepseek.com/v1",
+        ),
+    ],
+)
+def test_direct_runtime_switch_normalizes_deepseek_wire_and_official_root(
+    new_model, stale_mode, stale_url, expected_mode, expected_url
+):
+    agent = _make_agent("deepseek", "deepseek-v4-pro", _make_pool("deepseek"))
+    agent.base_url = stale_url
+
+    switch_model(
+        agent,
+        new_model=new_model,
+        new_provider="deepseek",
+        api_key="deepseek-key",
+        base_url=stale_url,
+        api_mode=stale_mode,
+    )
+
+    assert agent.api_mode == expected_mode
+    assert agent.base_url == expected_url

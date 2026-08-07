@@ -6034,7 +6034,14 @@ class AIAgent:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
         self._credential_pool_entry_id = getattr(entry, "id", None)
+        from hermes_cli.providers import normalize_deepseek_base_url
         from hermes_cli.route_identity import normalize_route_base_url
+
+        runtime_base = normalize_deepseek_base_url(
+            self.provider,
+            self.api_mode,
+            runtime_base,
+        )
 
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(
             runtime_base

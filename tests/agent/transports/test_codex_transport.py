@@ -1009,6 +1009,62 @@ class TestDeepSeekNativeWebSearch:
 
 
 class TestDeepSeekWebSearchReplay:
+    def test_streamed_search_call_normalizes_and_replays_in_order(self, transport):
+        from agent.codex_runtime import _consume_codex_event_stream
+
+        search_item = SimpleNamespace(
+            type="web_search_call",
+            id="ws_stream_1",
+            call_id="ws_call_stream_1",
+            status="completed",
+            action=SimpleNamespace(type="search", query="latest release"),
+        )
+        message_item = SimpleNamespace(
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text="Latest result")],
+        )
+        response = _consume_codex_event_stream(
+            [
+                SimpleNamespace(
+                    type="response.output_item.done",
+                    item=search_item,
+                ),
+                SimpleNamespace(
+                    type="response.output_item.done",
+                    item=message_item,
+                ),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(status="completed", id="resp_1"),
+                ),
+            ],
+            model="deepseek-v4-flash",
+        )
+
+        normalized = transport.normalize_response(response)
+        replay = transport.convert_messages(
+            [
+                {
+                    "role": "assistant",
+                    "content": normalized.content,
+                    "codex_message_items": normalized.codex_message_items,
+                },
+                {"role": "user", "content": "source?"},
+            ],
+            base_url="https://api.deepseek.com",
+            replay_encrypted_reasoning=False,
+        )
+
+        assert [item["type"] for item in replay[:2]] == [
+            "web_search_call",
+            "message",
+        ]
+        assert replay[0]["call_id"] == "ws_call_stream_1"
+        assert replay[0]["action"]["query"] == "latest release"
+        assert replay[2] == {"role": "user", "content": "source?"}
+
     def test_completed_search_call_is_persisted_and_replayed_in_order(self, transport):
         response = SimpleNamespace(
             output=[

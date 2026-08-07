@@ -2476,7 +2476,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     change persists across turns (unlike fallback which is
     turn-scoped).
     """
-    from hermes_cli.providers import determine_api_mode
+    from hermes_cli.providers import (
+        deepseek_api_mode,
+        determine_api_mode,
+        normalize_deepseek_base_url,
+    )
 
     # ── Determine api_mode if not provided ──
     # Pass model so dual-wire providers (Nous Portal anthropic/* → Messages)
@@ -2484,6 +2488,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # openai_chat overlay default.
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url, model=new_model)
+    if str(new_provider or "").strip().lower() == "deepseek":
+        # DeepSeek is dual-wire by model. Do not trust a stale mode supplied by
+        # a direct caller when switching Flash <-> Pro.
+        api_mode = deepseek_api_mode(new_model)
 
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
     # /v1 into the anthropic_messages client, which would cause the SDK to
@@ -2497,6 +2505,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         and base_url
     ):
         base_url = re.sub(r"/v1/?$", "", base_url)
+
+    # Direct runtime callers do not necessarily pass through
+    # hermes_cli.model_switch, so keep DeepSeek's model-dependent official
+    # endpoint paired with the selected wire here as well.
+    base_url = normalize_deepseek_base_url(new_provider, api_mode, base_url)
 
     old_model = agent.model
     old_provider = agent.provider

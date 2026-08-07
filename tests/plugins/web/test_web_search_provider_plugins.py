@@ -187,6 +187,20 @@ class TestIsAvailable:
         )
         assert _deepseek_prefers_native_web_search() is True
 
+    def test_deepseek_key_alone_never_auto_selects_marker_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ensure_plugins_loaded()
+        import agent.web_search_registry as registry
+
+        provider = registry.get_provider("deepseek")
+        assert provider is not None
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "real")
+        monkeypatch.setattr(registry, "_providers", {"deepseek": provider})
+
+        assert registry._resolve(None, capability="search") is None
+        assert registry._resolve("deepseek", capability="search") is provider
+
     def test_searxng_requires_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider
@@ -351,5 +365,4 @@ class TestAsyncExtractDispatch:
 
 class TestErrorResponseShapes:
     """When credentials are missing, plugins return typed errors, not raises."""
-
 

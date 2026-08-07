@@ -2104,7 +2104,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
 
         if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
-            if fb_provider == "openai-codex":
+            if fb_provider == "deepseek":
+                from hermes_cli.providers import deepseek_api_mode
+
+                fb_api_mode = deepseek_api_mode(fb_model)
+            elif fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
             elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
                 # Portal is dual-wire: anthropic/* must land on /v1/messages.
@@ -2143,6 +2147,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 and base_url_host_matches(fb_base_url, "amazonaws.com")
             ):
                 fb_api_mode = "bedrock_converse"
+
+        if fb_provider == "deepseek":
+            from hermes_cli.providers import normalize_deepseek_base_url
+
+            fb_base_url = normalize_deepseek_base_url(
+                fb_provider,
+                fb_api_mode,
+                fb_base_url,
+            )
 
         old_model = agent.model
         old_provider = agent.provider
@@ -2220,6 +2233,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # Swap OpenAI client and config in-place
             agent.api_key = fb_client.api_key
             agent.client = fb_client
+            _fb_client_base_url = str(getattr(fb_client, "base_url", "") or "").rstrip("/")
+            _fb_route_changed = _fb_client_base_url != fb_base_url.rstrip("/")
             # Preserve provider-specific headers that
             # resolve_provider_client() may have baked into
             # fb_client via the default_headers kwarg.  The OpenAI
@@ -2238,10 +2253,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             }
             if _fb_timeout is not None:
                 agent._client_kwargs["timeout"] = _fb_timeout
-                # Rebuild the shared OpenAI client so the configured
-                # timeout takes effect on the very next fallback request,
-                # not only after a later credential-rotation rebuild.
-                agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+            if _fb_route_changed or _fb_timeout is not None:
+                # Rebuild the shared OpenAI client so endpoint normalization
+                # and/or the configured timeout take effect on the very next
+                # fallback request, not only after a later credential rotation.
+                agent._replace_primary_openai_client(
+                    reason=(
+                        "fallback_timeout_apply"
+                        if _fb_timeout is not None
+                        else "fallback_route_apply"
+                    )
+                )
 
         from agent.agent_runtime_helpers import sync_credential_pool_entry_id
         sync_credential_pool_entry_id(agent)

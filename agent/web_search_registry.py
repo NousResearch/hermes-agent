@@ -14,8 +14,8 @@ The active provider is chosen by configuration with this precedence:
 1. ``web.search_backend`` / ``web.extract_backend``
    (per-capability override).
 2. ``web.backend`` (shared fallback).
-3. If exactly one capability-eligible provider is registered AND available,
-   use it.
+3. If exactly one capability-eligible, auto-detectable provider is registered
+   AND available, use it.
 4. Legacy preference order — ``firecrawl`` → ``parallel`` → ``tavily`` →
    ``exa`` → ``searxng`` → ``brave-free`` → ``ddgs`` — filtered by
    availability. Matches the historic ``tools.web_tools._get_backend()``
@@ -181,7 +181,8 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
        :func:`tools.web_tools._get_backend` behavior for configured names.
 
     2. **Single-provider shortcut.** When only one registered provider
-       supports *capability* AND ``is_available()`` reports True, return it.
+       supports *capability*, permits auto-detection, AND ``is_available()``
+       reports True, return it.
 
     3. **Legacy preference walk, filtered by availability.** Walk the
        :data:`_LEGACY_PREFERENCE` order (firecrawl → parallel → tavily →
@@ -216,6 +217,16 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
             logger.debug("provider %s.is_available() raised %s", p.name, exc)
             return False
 
+    def _supports_auto_detection_safe(p: WebSearchProvider) -> bool:
+        """Keep opt-in marker providers out of implicit fallback selection."""
+        try:
+            return bool(p.supports_auto_detection())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "provider %s.supports_auto_detection() raised %s", p.name, exc
+            )
+            return False
+
     # 1. Explicit config wins — return regardless of is_available() so the
     #    user gets a precise downstream error message rather than a silent
     #    backend switch. Matches _get_backend() in web_tools.py.
@@ -240,7 +251,11 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
     #    a fresh install with no API keys at all.
     eligible = [
         p for p in snapshot.values()
-        if _capable(p) and _is_available_safe(p)
+        if (
+            _capable(p)
+            and _supports_auto_detection_safe(p)
+            and _is_available_safe(p)
+        )
     ]
     if len(eligible) == 1:
         return eligible[0]
@@ -250,6 +265,7 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
         if (
             provider is not None
             and _capable(provider)
+            and _supports_auto_detection_safe(provider)
             and _is_available_safe(provider)
         ):
             return provider

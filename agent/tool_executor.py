@@ -13,6 +13,7 @@ extracted functions reach back through the ``run_agent`` module via
 from __future__ import annotations
 
 import concurrent.futures
+import gc
 import json
 from pathlib import Path
 import logging
@@ -51,6 +52,24 @@ from tools.tool_result_storage import (
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
+
+# Trigger a full GC when a single tool result is >= 1 MB of UTF-8 JSON, so
+# large transient allocations (file reads, terminal output, web extracts) are
+# released promptly without paying the cost for every small result. (#70684)
+_GC_COLLECT_THRESHOLD_BYTES = 1_000_000
+
+
+def _maybe_collect_gc_after_tool_result(
+    content: Any,
+    threshold_bytes: int = _GC_COLLECT_THRESHOLD_BYTES,
+) -> None:
+    """Run gc.collect() when *content* serializes to >= *threshold_bytes* UTF-8 JSON."""
+    try:
+        size = len(json.dumps(content, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        size = len(str(content).encode("utf-8"))
+    if size >= threshold_bytes:
+        gc.collect()
 
 
 def _ensure_file_checkpoint(
@@ -786,6 +805,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 tc.id,
                 effect_disposition="none",
             ))
+            _maybe_collect_gc_after_tool_result(cancelled_result)
             _emit_terminal_post_tool_call(
                 agent,
                 function_name=tc.function.name,
@@ -1500,6 +1520,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             effect_disposition=effect_disposition,
         )
         messages.append(tool_message)
+        _maybe_collect_gc_after_tool_result(_tool_content)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(
             agent,
@@ -1592,12 +1613,14 @@ def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str) -
     """
     for tc in tool_calls:
         name = getattr(getattr(tc, "function", None), "name", "") or "tool"
+        cancelled_result = f"[Tool execution cancelled — {name} was skipped due to {reason}]"
         messages.append(make_tool_result_message(
             name,
-            f"[Tool execution cancelled — {name} was skipped due to {reason}]",
+            cancelled_result,
             getattr(tc, "id", "") or "",
             effect_disposition="none",
         ))
+        _maybe_collect_gc_after_tool_result(cancelled_result)
 
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
@@ -1631,6 +1654,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     skipped_tc.id,
                     effect_disposition="none",
                 ))
+                _maybe_collect_gc_after_tool_result(cancelled_result)
                 _emit_terminal_post_tool_call(
                     agent,
                     function_name=skipped_name,
@@ -1674,6 +1698,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     tool_call.id,
                 )
             )
+            _maybe_collect_gc_after_tool_result(malformed_args_result)
             if not _flush_session_db_after_tool_progress(
                 agent,
                 messages,
@@ -2246,6 +2271,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
         tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
         messages.append(tool_message)
+        _maybe_collect_gc_after_tool_result(_tool_content)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(
             agent,
@@ -2312,12 +2338,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
             for skipped_tc in assistant_message.tool_calls[i:]:
                 skipped_name = skipped_tc.function.name
+                skipped_result = f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]"
                 messages.append(make_tool_result_message(
                     skipped_name,
-                    f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
+                    skipped_result,
                     skipped_tc.id,
                     effect_disposition="none",
                 ))
+                _maybe_collect_gc_after_tool_result(skipped_result)
                 if not _flush_session_db_after_tool_progress(
                     agent,
                     messages,

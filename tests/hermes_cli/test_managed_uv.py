@@ -1100,3 +1100,122 @@ class TestVenvPythonUpdateBoundary:
             "/opt/hermes/venv/bin/python"
         )
 
+import subprocess
+
+class TestProvisioningTimeouts:
+    """#76684: provisioning subprocesses must time out and surface to stderr."""
+
+    def test_python_install_timeout_prints_stderr(self, tmp_path, capsys):
+        from hermes_cli.managed_uv import _attempt_install_generation
+        python_root = tmp_path / "python"
+        python_root.mkdir()
+
+        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="uv", timeout=1)
+            result = _attempt_install_generation(
+                "uv", "3.11",
+                project_root=tmp_path,
+                python_root=python_root,
+                current=MagicMock(),
+            )
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "timed out" in err
+        assert "network" in err.lower()
+        assert list(python_root.glob("generation-*")) == []
+        from hermes_cli.managed_uv import UV_PYTHON_INSTALL_TIMEOUT_SECONDS
+        assert mock_run.call_args.kwargs.get("timeout") == UV_PYTHON_INSTALL_TIMEOUT_SECONDS
+
+    def test_python_find_timeout_prints_stderr(self, tmp_path, capsys):
+        from hermes_cli.managed_uv import _attempt_install_generation
+        python_root = tmp_path / "python"
+        python_root.mkdir()
+
+        call_count = {"n": 0}
+        def _side_effect(*a, **k):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            raise subprocess.TimeoutExpired(cmd="uv", timeout=1)
+
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=_side_effect) as mock_run:
+            result = _attempt_install_generation(
+                "uv", "3.11",
+                project_root=tmp_path,
+                python_root=python_root,
+                current=MagicMock(),
+            )
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "timed out" in err
+        assert list(python_root.glob("generation-*")) == []
+        from hermes_cli.managed_uv import UV_PYTHON_FIND_TIMEOUT_SECONDS
+        assert mock_run.call_args_list[1].kwargs.get("timeout") == UV_PYTHON_FIND_TIMEOUT_SECONDS
+
+    def test_venv_timeout_prints_stderr(self, tmp_path, capsys):
+        from hermes_cli.managed_uv import _stage_candidate_venv
+        generation = tmp_path / "generation-test"
+        generation.mkdir()
+        python_exe = generation / "python"
+        python_exe.touch()
+
+        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="uv", timeout=1)
+            result = _stage_candidate_venv(
+                "uv",
+                project_root=tmp_path,
+                generation=generation,
+                python=python_exe,
+            )
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "timed out" in err
+        runtime_root = tmp_path / ".hermes-runtime"
+        assert list(runtime_root.glob("venv-candidate-*")) == []
+        from hermes_cli.managed_uv import UV_VENV_TIMEOUT_SECONDS
+        assert mock_run.call_args.kwargs.get("timeout") == UV_VENV_TIMEOUT_SECONDS
+
+    def test_sync_timeout_prints_stderr(self, tmp_path, capsys):
+        from hermes_cli.managed_uv import _stage_candidate_venv
+        generation = tmp_path / "generation-test"
+        generation.mkdir()
+        python_exe = generation / "python"
+        python_exe.touch()
+        (tmp_path / "uv.lock").touch()
+
+        call_count = {"n": 0}
+        def _side_effect(*a, **k):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            raise subprocess.TimeoutExpired(cmd="uv", timeout=1)
+
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=_side_effect) as mock_run, \
+             patch("hermes_cli.managed_uv._venv_python", return_value=python_exe):
+            result = _stage_candidate_venv(
+                "uv",
+                project_root=tmp_path,
+                generation=generation,
+                python=python_exe,
+            )
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "timed out" in err
+        from hermes_cli.managed_uv import UV_SYNC_TIMEOUT_SECONDS
+        assert mock_run.call_args_list[1].kwargs.get("timeout") == UV_SYNC_TIMEOUT_SECONDS
+
+    def test_timeout_constants_positive(self):
+        from hermes_cli.managed_uv import (
+            UV_PYTHON_INSTALL_TIMEOUT_SECONDS,
+            UV_PYTHON_FIND_TIMEOUT_SECONDS,
+            UV_VENV_TIMEOUT_SECONDS,
+            UV_SYNC_TIMEOUT_SECONDS,
+        )
+        assert UV_PYTHON_INSTALL_TIMEOUT_SECONDS > 0
+        assert UV_PYTHON_FIND_TIMEOUT_SECONDS > 0
+        assert UV_VENV_TIMEOUT_SECONDS > 0
+        assert UV_SYNC_TIMEOUT_SECONDS > 0

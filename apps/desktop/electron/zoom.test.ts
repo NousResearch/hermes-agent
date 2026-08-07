@@ -12,8 +12,11 @@ import {
   applyZoomLevel,
   clampZoomLevel,
   DEFAULT_ZOOM_LEVEL,
+  installZoomReassertOnDisplayEvents,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
+  ZOOM_DISPLAY_EVENTS,
+  ZOOM_DISPLAY_REASSERT_DELAY_MS,
   ZOOM_RESIZE_REASSERT_DELAY_MS,
   ZOOM_STEP,
   ZOOM_STORAGE_KEY,
@@ -159,6 +162,144 @@ test('installZoomReassertOnWindowEvents skips destroyed windows', () => {
   })
   destroyed = true
   handlers.get('show')()
+  assert.equal(calls, 0)
+})
+
+// Display-level events (monitor wake, connect/disconnect) also reset Chromium
+// zoom, but fire on Electron's `screen` module — not the BrowserWindow. The
+// reassert must subscribe there, debounce longer (staggered multi-monitor wake),
+// and clean up on window close to avoid leaking listeners.
+test('installZoomReassertOnDisplayEvents wires display-metrics-changed, display-added, display-removed', () => {
+  const screenHandlers = new Map()
+  const winHandlers = new Map()
+
+  const screen = {
+    on(event, listener) {
+      screenHandlers.set(event, listener)
+    },
+    off(event) {
+      screenHandlers.delete(event)
+    }
+  }
+
+  const win = {
+    isDestroyed: () => false,
+    on(event, listener) {
+      winHandlers.set(event, listener)
+    }
+  }
+
+  let calls = 0
+  installZoomReassertOnDisplayEvents(screen, win, () => {
+    calls += 1
+  })
+
+  assert.deepEqual([...screenHandlers.keys()], [...ZOOM_DISPLAY_EVENTS])
+})
+
+test('installZoomReassertOnDisplayEvents debounces with display delay', () => {
+  vi.useFakeTimers()
+
+  try {
+    const screenHandlers = new Map()
+    const winHandlers = new Map()
+
+    const screen = {
+      on(event, listener) {
+        screenHandlers.set(event, listener)
+      },
+      off() {}
+    }
+
+    const win = {
+      isDestroyed: () => false,
+      on(event, listener) {
+        winHandlers.set(event, listener)
+      }
+    }
+
+    let calls = 0
+    installZoomReassertOnDisplayEvents(screen, win, () => {
+      calls += 1
+    })
+
+    // Fire two display events in quick succession — should coalesce into one call
+    screenHandlers.get('display-metrics-changed')()
+    vi.advanceTimersByTime(ZOOM_DISPLAY_REASSERT_DELAY_MS / 2)
+    screenHandlers.get('display-added')()
+    vi.advanceTimersByTime(ZOOM_DISPLAY_REASSERT_DELAY_MS / 2)
+    assert.equal(calls, 0)
+    vi.advanceTimersByTime(ZOOM_DISPLAY_REASSERT_DELAY_MS / 2)
+    assert.equal(calls, 1)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('installZoomReassertOnDisplayEvents skips destroyed windows', () => {
+  const screenHandlers = new Map()
+
+  const screen = {
+    on(event, listener) {
+      screenHandlers.set(event, listener)
+    },
+    off() {}
+  }
+
+  let destroyed = false
+  const win = {
+    isDestroyed: () => destroyed,
+    on() {}
+  }
+
+  let calls = 0
+  installZoomReassertOnDisplayEvents(screen, win, () => {
+    calls += 1
+  })
+  destroyed = true
+  screenHandlers.get('display-metrics-changed')()
+  assert.equal(calls, 0)
+})
+
+test('installZoomReassertOnDisplayEvents cleans up screen listeners on window close', () => {
+  const screenHandlers = new Map()
+  let offCalls = 0
+
+  const screen = {
+    on(event, listener) {
+      screenHandlers.set(event, listener)
+    },
+    off() {
+      offCalls += 1
+    }
+  }
+
+  const winHandlers = new Map()
+  const win = {
+    isDestroyed: () => false,
+    on(event, listener) {
+      winHandlers.set(event, listener)
+    }
+  }
+
+  installZoomReassertOnDisplayEvents(screen, win, () => {})
+
+  // Fire the 'closed' event — should remove all three screen listeners
+  winHandlers.get('closed')()
+  assert.equal(offCalls, ZOOM_DISPLAY_EVENTS.length)
+})
+
+test('installZoomReassertOnDisplayEvents is a no-op when screen or win lacks .on', () => {
+  let calls = 0
+  installZoomReassertOnDisplayEvents(null, null, () => {
+    calls += 1
+  })
+  installZoomReassertOnDisplayEvents({}, { on() {} }, () => {
+    calls += 1
+  })
+  installZoomReassertOnDisplayEvents({ on() {} }, {}, () => {
+    calls += 1
+  })
   assert.equal(calls, 0)
 })
 

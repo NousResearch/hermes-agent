@@ -68,6 +68,52 @@ export function zoomReassertWindowEvents(platform = process.platform) {
   return platform === 'linux' ? ['show', 'restore', 'resize', 'move'] : ['show', 'restore', 'resized', 'moved']
 }
 
+/**
+ * Chromium can also silently reset webContents zoom when the display topology
+ * changes — monitors going to sleep, waking with stagger, or being connected/
+ * disconnected. These events fire on Electron's `screen` module, not on the
+ * BrowserWindow, so the window-level reassert above never runs. On multi-monitor
+ * setups with staggered wake (common on Windows), the window-level `resized`/
+ * `moved` events may arrive before all displays have settled, causing the
+ * persisted zoom to be applied and immediately overwritten by a later display
+ * change. A longer debounce (300ms vs 100ms for resize) absorbs the stagger.
+ *
+ * @see https://github.com/NousResearch/hermes-agent/issues/60693
+ */
+export const ZOOM_DISPLAY_REASSERT_DELAY_MS = 300
+
+export const ZOOM_DISPLAY_EVENTS = ['display-metrics-changed', 'display-added', 'display-removed'] as const
+
+export function installZoomReassertOnDisplayEvents(screen, win, reassert) {
+  if (!screen?.on || !win?.on) {
+    return
+  }
+
+  let timer
+
+  const debounced = () => {
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      if (!win.isDestroyed?.()) {
+        reassert()
+      }
+    }, ZOOM_DISPLAY_REASSERT_DELAY_MS)
+  }
+
+  for (const event of ZOOM_DISPLAY_EVENTS) {
+    screen.on(event, debounced)
+  }
+
+  // Clean up screen listeners when the window closes — without this they leak
+  // and accumulate across session windows, each holding a stale `win` reference.
+  win.on('closed', () => {
+    clearTimeout(timer)
+    for (const event of ZOOM_DISPLAY_EVENTS) {
+      screen.off(event, debounced)
+    }
+  })
+}
+
 export function installZoomReassertOnWindowEvents(win, reassert, platform = process.platform) {
   if (!win?.on) {
     return

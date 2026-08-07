@@ -52,6 +52,32 @@ _activity_callback_local = threading.local()
 _UNBOUNDED_CAPTURE_CHARS = 2**63 - 1
 
 
+class EnvironmentConnectionError(RuntimeError):
+    """Infrastructure/connection-class failure of a terminal backend.
+
+    Raised when the backend itself is unreachable (SSH host down, Docker
+    daemon not running, remote file sync failing on a dead link) — never
+    for a command that merely exited nonzero.  Subclassing RuntimeError
+    keeps every existing ``except RuntimeError`` catcher working.
+
+    ``terminal_tool`` turns this into a structured ``status: "degraded"``
+    tool result (config gate ``terminal.degraded_mode: warn|fail``) so the
+    model gets an actionable reason + retry hint instead of a traceback.
+    The failed backend is never cached, so a later call retries from
+    scratch and simply works once the backend is reachable again.
+    """
+
+    def __init__(self, reason: str, *, retry_hint: str = ""):
+        super().__init__(reason)
+        self.reason = reason
+        self.retry_hint = retry_hint or (
+            "This is an infrastructure failure, not a command failure. "
+            "Verify the backend is reachable (network, service running, "
+            "credentials), then retry the same command — recovery is "
+            "automatic once the backend is back."
+        )
+
+
 class _BoundedOutputCollector:
     """Retain a bounded 40/60 head-tail window of streamed text.
 

@@ -279,6 +279,12 @@ DEFAULT_CONFIG = {
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
+        # Remote-backend graceful degradation: when a connection-class
+        # infrastructure failure occurs (SSH host unreachable, Docker daemon
+        # down), "warn" (default) returns a structured degraded tool result
+        # with a reason + retry hint so the model can act on it; "fail"
+        # preserves the historical error + traceback behavior.
+        "degraded_mode": "warn",
         "cwd": ".",  # Use current directory
         # Terminal font family for the desktop app's embedded xterm.js terminal.
         # When set (e.g. "'CaskaydiaCoveNerdFont', 'JetBrains Mono', monospace"),

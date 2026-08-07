@@ -3134,6 +3134,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # wait out the full routine patience under contention. Sub-second budget;
     # a skipped write is retried naturally at the next heartbeat window.
     _ACTIVITY_WRITE_PATIENCE_S = 0.5
+    # Turn-end terminal stamp gets its own elevated patience. The turn is
+    # already over (we are in the ``finally`` block), so there is no
+    # response-critical path to protect. A dropped terminal stamp leaves
+    # ``last_activity_at`` stuck at a stale value, which breaks Desktop UI
+    # freshness detection — the exact bug this fixes. 2.0s is enough to survive
+    # routine lock contention on a large state.db without blocking indefinitely.
+    _ACTIVITY_FINALIZE_PATIENCE_S = 2.0
     # A live compression lock gets its own, much shorter budget than the write
     # lock. Compression publishes in a couple of seconds, so a brief wait saves
     # the overwhelming majority of concurrent turns (#75083). It deliberately
@@ -6825,6 +6832,53 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
 
         self._execute_write(_do, patience_s=self._ACTIVITY_WRITE_PATIENCE_S)
+
+    def finalize_session_activity(
+        self,
+        session_id: str,
+        ts: Optional[float] = None,
+        *,
+        patience_s: Optional[float] = None,
+    ) -> None:
+        """Atomically stamp ``last_activity_at`` and clear mid-turn labels.
+
+        Called from the turn ``finally`` block (via
+        ``AIAgent._finalize_activity_after_turn``) to ensure the terminal
+        timestamp is persisted even when all intermediate heartbeats were
+        throttled or dropped. Unlike :meth:`touch_session_activity`, this
+        method:
+
+        - Uses an **elevated write patience** (``_ACTIVITY_FINALIZE_PATIENCE_S``)
+          because the turn is already over and there is no response-critical
+          path to protect.
+        - **Clears** ``last_activity_description`` and
+          ``last_activity_provenance`` in the same UPDATE, avoiding a
+          transient ``"turn completed"`` label flash and halving teardown
+          writes.
+        - Never moves ``last_activity_at`` backwards (monotonic guard).
+
+        Fail-open: a failed write is debug-logged and never raises — the
+        next session start or heartbeat retries naturally.
+        """
+        if not session_id:
+            return
+        from agent.session_activity import ActivityProvenance
+
+        when = float(ts if ts is not None else time.time())
+        prov = ActivityProvenance.UNKNOWN.value
+        budget = patience_s if patience_s is not None else self._ACTIVITY_FINALIZE_PATIENCE_S
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET "
+                "last_activity_at = ?, "
+                "last_activity_description = '', "
+                "last_activity_provenance = ? "
+                "WHERE id = ? AND (last_activity_at IS NULL OR last_activity_at < ?)",
+                (when, prov, session_id, when),
+            )
+
+        self._execute_write(_do, patience_s=budget)
 
     def get_session_activity(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Return the durable activity snapshot for *session_id*, or None."""

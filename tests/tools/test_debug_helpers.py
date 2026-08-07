@@ -4,6 +4,8 @@ import json
 import os
 from unittest.mock import patch
 
+import pytest
+
 from tools.debug_helpers import DebugSession
 
 
@@ -15,7 +17,6 @@ class TestDebugSessionDisabled:
         assert ds.active is False
         assert ds.enabled is False
 
-
     def test_get_session_info_disabled(self):
         ds = DebugSession("test_tool", env_var="FAKE_DEBUG_VAR_XYZ")
         info = ds.get_session_info()
@@ -24,15 +25,28 @@ class TestDebugSessionDisabled:
         assert info["log_path"] is None
         assert info["total_calls"] == 0
 
+    @pytest.mark.parametrize("raw", ["0", "false", "off", "no", ""])
+    def test_falsy_aliases_stay_disabled(self, raw):
+        with patch.dict(os.environ, {"TEST_DEBUG": raw}):
+            ds = DebugSession("test_tool", env_var="TEST_DEBUG")
+        assert ds.enabled is False
+        assert ds.active is False
+
 
 class TestDebugSessionEnabled:
-    """When the env var is set to 'true', DebugSession records and saves."""
+    """When the env var is truthy, DebugSession records and saves."""
 
-    def _make_enabled(self, tmp_path):
-        with patch.dict(os.environ, {"TEST_DEBUG": "true"}):
+    def _make_enabled(self, tmp_path, raw: str = "true"):
+        with patch.dict(os.environ, {"TEST_DEBUG": raw}):
             ds = DebugSession("test_tool", env_var="TEST_DEBUG")
         ds.log_dir = tmp_path
         return ds
+
+    @pytest.mark.parametrize("raw", ["true", "1", "yes", "on", "TRUE", " On "])
+    def test_truthy_aliases_enable(self, tmp_path, raw):
+        ds = self._make_enabled(tmp_path, raw=raw)
+        assert ds.active is True
+        assert ds.enabled is True
 
     def test_active_when_env_set(self, tmp_path):
         ds = self._make_enabled(tmp_path)
@@ -42,7 +56,6 @@ class TestDebugSessionEnabled:
     def test_session_id_generated(self, tmp_path):
         ds = self._make_enabled(tmp_path)
         assert len(ds.session_id) > 0
-
 
     def test_save_empty_log(self, tmp_path):
         ds = self._make_enabled(tmp_path)

@@ -24,11 +24,11 @@ Usage in a tool module:
 import datetime
 import json
 import logging
-import os
 import uuid
 from typing import Any, Dict
 
 from hermes_constants import get_hermes_home
+from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +37,13 @@ class DebugSession:
     """Per-tool debug session that records tool calls to a JSON log file.
 
     Activated by a tool-specific environment variable (e.g. WEB_TOOLS_DEBUG=true).
+    Shared truthy aliases (1/true/yes/on) enable the session; anything else is off.
     When disabled, all methods are cheap no-ops.
     """
 
     def __init__(self, tool_name: str, *, env_var: str) -> None:
         self.tool_name = tool_name
-        self.enabled = os.getenv(env_var, "false").lower() == "true"
+        self.enabled = env_var_enabled(env_var, default="false")
         self.session_id = str(uuid.uuid4()) if self.enabled else ""
         self.log_dir = get_hermes_home() / "logs"
         self._calls: list[Dict[str, Any]] = []

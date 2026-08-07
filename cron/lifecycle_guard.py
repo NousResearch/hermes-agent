@@ -77,8 +77,13 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both
     # token orders because real reproductions show both.
-    r"|(?:p?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
-    r"|(?:p?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    # Leading \b is critical: without it, `KILL` inside `SKILL.md` (or any
+    # word ending in -kill) matches p?kill and a later `hermes ... gateway`
+    # anywhere on the same line turns a harmless file path into a false
+    # positive (#77131-class). `\b` after the optional `p` anchors both
+    # `kill` and `pkill` to a word boundary.
+    r"|(?:\bp?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
+    r"|(?:\bp?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
 )
 
 

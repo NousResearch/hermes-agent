@@ -93,6 +93,14 @@ class TestGatewayLifecyclePattern:
         "launchctl submit -l com.example.backup -- /bin/sh backup.sh",
         "systemctl restart hermes-meta.service",
         "systemctl restart hermes-cron-helper",
+        # #77131-class: `KILL` inside `SKILL.md` (or any word ending in
+        # -kill) must not match Branch D's p?kill — a leading \b anchors
+        # the verb to a word boundary. Without it, a harmless file path
+        # followed by `hermes ... gateway` on the same line is a false
+        # positive.
+        "SKILL.md hermes gateway",
+        "path/to/backfill.py hermes gateway",
+        "killall hermes gateway",
         # Regression (#30728 follow-up): legit prompts that merely mention an
         # unrelated gateway + a restart must NOT be blocked. The cron prompt is
         # fed to an LLM, not a shell, so substring detection on English text is
@@ -275,6 +283,11 @@ class TestTerminalToolGatewayLifecycleGuard:
         "launchctl submit -l com.foo -- /path/gateway",
         "launchctl bootstrap gui/501 ~/Library/LaunchAgents/ai.hermes.gateway.restart-once.plist",
         "pkill -f hermes.*gateway",
+        # Branch D direct kill shapes — both token orders, with and
+        # without sudo (real reproductions show both).
+        "kill hermes-gateway",
+        "kill -9 gateway hermes",
+        "sudo pkill hermes gateway --signal TERM",
     ])
     def test_blocks_lifecycle_commands_inside_gateway(self, monkeypatch, cmd):
         import tools.terminal_tool as tt

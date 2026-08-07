@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useMemo } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
@@ -11,7 +11,9 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { getPollInterval, type PollFeature } from '@/lib/polling-intervals'
 import { useSessionSlice } from '@/lib/use-session-slice'
+import { useWindowPollingState } from '@/lib/use-window-polling-state'
 import { cn } from '@/lib/utils'
 import { $billingBlock } from '@/store/billing-block'
 import {
@@ -31,14 +33,11 @@ import { openSessionInNewWindow } from '@/store/windows'
 import { PreviewStatusRow } from './preview-row'
 import { StatusItemRow } from './status-row'
 
-// Slow safety-net poll for silent exits (processes without notify_on_complete
-// emit no event when they die). Only armed while a running row is on screen.
-const BACKGROUND_POLL_MS = 5_000
-
 // A localhost/loopback preview is only meaningful while its dev server is up, so
 // we tie it to a live background process rather than persisting dismissals or
 // letting dead URLs pile up. File previews (a real on-disk artifact) stand alone.
-const isLocalhostPreview = (target: string): boolean => /\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0)\b/i.test(target)
+const isLocalhostPreview = (target: string): boolean =>
+  /\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0)\b/i.test(target)
 
 // Real codicons per group (no sparkles): a checklist for todos, the agent glyph
 // for subagents, a background process glyph for background tasks.
@@ -112,15 +111,49 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   // dead `localhost:5174` chips stick around. On-disk file previews are kept.
   const visiblePreviews = previews.filter(item => hasRunningBackground || !isLocalhostPreview(item.target))
 
+  // Dynamic polling based on window state (Active / Idle / Hidden)
+  const windowPollingState = useWindowPollingState()
+  const isFetchingRef = useRef(false)
+
+  // eslint-disable-next-line no-restricted-syntax -- false positive: no atom mirroring occurs here
   useEffect(() => {
-    if (!sessionId || !hasRunningBackground) {
-      return
+    let timerId: ReturnType<typeof setInterval> | null = null
+
+    const clearTimer = () => {
+      if (timerId) {
+        clearInterval(timerId)
+        timerId = null
+      }
     }
 
-    const timer = setInterval(() => void refreshBackgroundProcesses(sessionId), BACKGROUND_POLL_MS)
+    const updateTimer = () => {
+      clearTimer()
 
-    return () => clearInterval(timer)
-  }, [hasRunningBackground, sessionId])
+      const interval = getPollInterval('statusStack' as PollFeature, windowPollingState)
+
+      if (interval === null || !sessionId || !hasRunningBackground) {
+        // Hidden/Idle without running background: stop polling completely
+        return
+      }
+
+      timerId = setInterval(() => {
+        if (isFetchingRef.current) {return}
+        isFetchingRef.current = true
+        void refreshBackgroundProcesses(sessionId).finally(() => {
+          isFetchingRef.current = false
+        })
+      }, interval)
+    }
+
+    // Immediate load on mount / visibility restore (SWR pattern)
+    if (sessionId && hasRunningBackground) {
+      void refreshBackgroundProcesses(sessionId)
+    }
+
+    updateTimer()
+
+    return clearTimer
+  }, [hasRunningBackground, sessionId, windowPollingState])
 
   const openAgents = () => navigate(AGENTS_ROUTE)
 

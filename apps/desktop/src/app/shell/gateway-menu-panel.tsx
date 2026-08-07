@@ -7,7 +7,9 @@ import { Tip } from '@/components/ui/tooltip'
 import { getLogs } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { LayoutDashboard, RefreshCw } from '@/lib/icons'
+import { getPollInterval, type PollFeature } from '@/lib/polling-intervals'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { useWindowPollingState } from '@/lib/use-window-polling-state'
 import { cn } from '@/lib/utils'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { StatusResponse } from '@/types/hermes'
@@ -32,7 +34,10 @@ const LOG_NOISE_RE = /\bws (?:accepted|closed|response sent|ping|pong)\b/i
 // and stop on unmount, instead of a global always-on status poll.
 function useGatewayLogTail(): string[] {
   const [lines, setLines] = useState<string[]>([])
+  const windowPollingState = useWindowPollingState()
+  const isFetchingRef = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- false positive: windowPollingState is React state, not an atom
   useEffect(() => {
     let cancelled = false
 
@@ -40,6 +45,9 @@ function useGatewayLogTail(): string[] {
     // (plain-browser mode) — a sync throw here would take down the root
     // error boundary before the .catch even attaches.
     const load = async () => {
+      if (isFetchingRef.current) {return}
+      isFetchingRef.current = true
+
       try {
         const res = await getLogs({ file: 'gui', lines: LOG_TAIL })
 
@@ -55,17 +63,40 @@ function useGatewayLogTail(): string[] {
         )
       } catch {
         // Bridge/gateway unavailable — keep the last tail.
+      } finally {
+        isFetchingRef.current = false
       }
     }
 
+    let timerId: number | null = null
+
+    const updateTimer = () => {
+      if (timerId) {
+        clearInterval(timerId)
+        timerId = null
+      }
+
+      const interval = getPollInterval('gatewayLog' as PollFeature, windowPollingState)
+
+      if (interval === null) {
+        // Hidden/Idle: stop polling completely
+        return
+      }
+
+      timerId = window.setInterval(load, interval)
+    }
+
     void load()
-    const timer = window.setInterval(load, LOG_POLL_MS)
+    updateTimer()
 
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+
+      if (timerId) {
+        window.clearInterval(timerId)
+      }
     }
-  }, [])
+  }, [windowPollingState])
 
   return lines
 }

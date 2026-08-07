@@ -41,6 +41,8 @@ import {
 import { type Translations, useI18n } from '@/i18n'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
+import { getPollInterval, type PollFeature } from '@/lib/polling-intervals'
+import { useWindowPollingState } from '@/lib/use-window-polling-state'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -1535,11 +1537,17 @@ function McpLogs({
   // the active profile tears down the old poll (its `cancelled` flag blocks a
   // late setLines) so profile A's logs never flash in B.
   const activeProfile = useStore($activeGatewayProfile)
+  const windowPollingState = useWindowPollingState()
+  const isFetchingRef = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- false positive: activeProfile is a store value used only as effect dependency, not mirrored into ref
   useEffect(() => {
     let cancelled = false
 
     const poll = async () => {
+      if (isFetchingRef.current) {return}
+      isFetchingRef.current = true
+
       try {
         const response =
           source === 'stdio'
@@ -1551,18 +1559,41 @@ function McpLogs({
         }
       } catch {
         // Backend momentarily unavailable — keep the last tail.
+      } finally {
+        isFetchingRef.current = false
       }
+    }
+
+    let timerId: number | null = null
+
+    const updateTimer = () => {
+      if (timerId) {
+        clearInterval(timerId)
+        timerId = null
+      }
+
+      const interval = getPollInterval('mcpLog' as PollFeature, windowPollingState)
+
+      if (interval === null) {
+        // Hidden/Idle: stop polling completely
+        return
+      }
+
+      timerId = window.setInterval(() => void poll(), interval)
     }
 
     setLines(null)
     void poll()
-    const timer = window.setInterval(() => void poll(), LOG_POLL_MS)
+    updateTimer()
 
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+
+      if (timerId) {
+        window.clearInterval(timerId)
+      }
     }
-  }, [server, source, activeProfile])
+  }, [server, source, activeProfile, windowPollingState])
 
   return <LogTail emptyLabel={emptyLabel} lines={lines} />
 }

@@ -3379,8 +3379,7 @@ class SessionStore:
         compaction history that archive_and_compact() keeps on disk
         (#38763). Callers rewriting the live transcript of a session that
         may carry archived rows must pass ``active_only=True`` so only the
-        live rows are replaced; callers that mean to purge (e.g. yuanbao
-        recall redaction) keep the default.
+        live rows are replaced.
 
         Returns ``True`` when the write lands (or there is no DB to write to)
         and ``False`` when the canonical write fails. Most callers can ignore

@@ -70,6 +70,14 @@ def _capture(source_filter: str = "all") -> str:
     return sink.getvalue()
 
 
+def _capture_group(group: str) -> str:
+    """Run do_list with a group filter into a string buffer."""
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_list(group_filter=group, console=console)
+    return sink.getvalue()
+
+
 def _capture_check(monkeypatch, results, name=None) -> str:
     import tools.skills_hub as hub
 
@@ -122,6 +130,37 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     _capture()
 
     assert seen["platform"] is None
+
+
+def test_do_list_group_filter(three_source_env, monkeypatch):
+    """`hermes skills list --group <name>` shows only skills in that group."""
+    import hermes_cli.skills_groups as groups_mod
+
+    monkeypatch.setattr(
+        groups_mod,
+        "get_skill_groups",
+        lambda config=None: {"security": ["hub-skill", "local-skill"]},
+    )
+    out = _capture_group("security")
+    assert "hub-skill" in out
+    assert "local-skill" in out
+    assert "builtin-skill" not in out
+    assert "group 'security'" in out
+
+
+def test_do_list_unknown_group(three_source_env, monkeypatch):
+    """An unknown --group prints an error listing available groups."""
+    import hermes_cli.skills_groups as groups_mod
+
+    monkeypatch.setattr(
+        groups_mod,
+        "get_skill_groups",
+        lambda config=None: {"security": ["hub-skill"]},
+    )
+    out = _capture_group("nope")
+    assert "Unknown group 'nope'" in out
+    assert "Available groups: security" in out
+    assert "hub-skill" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -312,4 +351,37 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
+
+
+# ---------------------------------------------------------------------------
+#  Slash command --group parsing edge cases (#76985 salvage)
+# ---------------------------------------------------------------------------
+
+def test_slash_list_group_missing_value(capsys, monkeypatch):
+    """`/skills list --group` (no value) prints an error, not unfiltered output."""
+    import hermes_cli.skills_groups as groups_mod
+
+    monkeypatch.setattr(
+        groups_mod,
+        "get_skill_groups",
+        lambda config=None: {"security": ["godmode"]},
+    )
+    handle_skills_slash("/skills list --group")
+    captured = capsys.readouterr().out
+    assert "requires a group name" in captured
+
+
+def test_slash_list_group_flag_value(capsys, monkeypatch):
+    """`/skills list --group --source hub` rejects a flag-like value."""
+    import hermes_cli.skills_groups as groups_mod
+
+    monkeypatch.setattr(
+        groups_mod,
+        "get_skill_groups",
+        lambda config=None: {"security": ["godmode"]},
+    )
+    handle_skills_slash("/skills list --group --source hub")
+    captured = capsys.readouterr().out
+    assert "looks like a flag" in captured
+    assert "--source" in captured
 

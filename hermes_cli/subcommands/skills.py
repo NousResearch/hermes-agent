@@ -123,6 +123,12 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Hide disabled skills. Use with -p <profile> to see exactly "
         "which skills will load for that profile.",
     )
+    skills_list.add_argument(
+        "--group",
+        default="",
+        help="Only show skills that belong to this group "
+        "(see `hermes skills group list`)",
+    )
 
     skills_check = skills_subparsers.add_parser(
         "check", help="Check installed hub skills for updates"
@@ -306,6 +312,49 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     tap_add.add_argument("repo", help="GitHub repo (e.g. owner/repo)")
     tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
     tap_rm.add_argument("name", help="Tap name to remove")
+
+    skills_group = skills_subparsers.add_parser(
+        "group",
+        help="Organize skills into named groups",
+        description=(
+            "Create named groups and associate skills with them. Groups are "
+            "stored in config.yaml under skills.groups (group name -> list of "
+            "skill names) and let you filter `hermes skills list --group <name>`."
+        ),
+    )
+    group_subparsers = skills_group.add_subparsers(dest="group_action")
+
+    group_list = group_subparsers.add_parser(
+        "list", aliases=["ls"], help="List skill groups and their members"
+    )
+    group_list.add_argument(
+        "--json", action="store_true", help="Output the groups as JSON"
+    )
+
+    group_add = group_subparsers.add_parser(
+        "add",
+        help="Add skills to a group (creates the group if needed)",
+    )
+    group_add.add_argument("group", help="Group name (e.g. security)")
+    group_add.add_argument(
+        "skills",
+        nargs="+",
+        metavar="skill",
+        help="Skill name(s) to add to the group",
+    )
+
+    group_remove = group_subparsers.add_parser(
+        "remove",
+        aliases=["rm"],
+        help="Remove skills from a group, or delete the whole group",
+    )
+    group_remove.add_argument("group", help="Group name")
+    group_remove.add_argument(
+        "skills",
+        nargs="*",
+        metavar="skill",
+        help="Skill name(s) to remove. Omit to delete the whole group.",
+    )
 
     # config sub-action: interactive enable/disable
     skills_subparsers.add_parser(

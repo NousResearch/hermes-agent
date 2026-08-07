@@ -84,8 +84,13 @@ class CompressionConfig:
     """Configuration for trajectory compression."""
     # Tokenizer
     tokenizer_name: str = "moonshotai/Kimi-K2-Thinking"
+    # SECURITY:
+    # trust_remote_code=True allows the tokenizer to execute
+    # arbitrary Python code from the HuggingFace Hub at load time. This
+    # is required for some tokenizers (e.g. Kimi-K2) that use custom
+    # tokenizer implementations. Only use trusted model repos; if you
+    # change tokenizer_name to an untrusted repo, set this to False.
     trust_remote_code: bool = True
-    
     # Compression targets
     target_max_tokens: int = 15250
     summary_target_tokens: int = 750

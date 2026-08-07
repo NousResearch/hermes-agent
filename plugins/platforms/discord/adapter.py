@@ -1079,6 +1079,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._event_max_silence_seconds = self._finite_positive_config_float(
             "websocket_event_max_silence_seconds", 14400.0,
         )
+        # Auto-archive duration (minutes) for threads Hermes creates (auto-
+        # threads, /thread slash, handoffs). Discord only accepts 60/1440/4320/
+        # 10080; any other config value falls back to the default 1440.
+        self._thread_auto_archive_duration = self._config_int("thread_auto_archive_duration", 1440)
+        if self._thread_auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+            self._thread_auto_archive_duration = 1440
         self._liveness_task: Optional[asyncio.Task] = None
         self._liveness_notification_task: Optional[asyncio.Task] = None
         # True while disconnect() intentionally closes discord.py (done callback: shutdown vs crash).
@@ -4269,9 +4275,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
         async def slash_thread(
             interaction: discord.Interaction, name: str, message: str = "",
-            auto_archive_duration: int = 1440,
+            auto_archive_duration: Optional[int] = None,
         ):
-            # defer() happens inside the handler *after* the auth gate.
+            # defer() happens inside the handler *after* the auth gate. A missing
+            # auto_archive_duration resolves to the configured thread_auto_archive_duration.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
     def _register_slash_commands(self) -> None:
@@ -4540,19 +4547,27 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     # --- Thread creation helpers ---
 
     async def _handle_thread_create_slash(
-        self, interaction: discord.Interaction, name: str, message: str = "",
-        auto_archive_duration: int = 1440,
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        message: str = "",
+        auto_archive_duration: Optional[int] = None,
     ) -> None:
         """Create a Discord thread from a slash command and start a session in it."""
         if not await self._check_slash_authorization(interaction, "/thread"):
             return
+        effective_duration = (
+            auto_archive_duration
+            if auto_archive_duration is not None
+            else self._thread_auto_archive_duration
+        )
         deferred_response = await self._defer_unless_expired(
             interaction,
             "[Discord] /thread: interaction expired before defer. "
             "Creating the thread anyway, skipping interaction followups.",
         )
         result = await self._create_thread(
-            interaction, name=name, message=message, auto_archive_duration=auto_archive_duration,
+            interaction, name=name, message=message, auto_archive_duration=effective_duration,
         )
         if not result.get("success"):
             error = result.get("error", "unknown error")
@@ -5027,14 +5042,24 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return None
 
     async def _create_thread(
-        self, interaction: discord.Interaction, *, name: str, message: str = "",
-        auto_archive_duration: int = 1440,
+        self,
+        interaction: discord.Interaction,
+        *,
+        name: str,
+        message: str = "",
+        auto_archive_duration: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Create a thread in the current channel; falls back to seed message + create_thread on rejection (e.g. permissions)."""
         name = (name or "").strip()
         if not name:
             return {"error": "Thread name is required."}
-        if auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+
+        effective_duration = (
+            auto_archive_duration
+            if auto_archive_duration is not None
+            else self._thread_auto_archive_duration
+        )
+        if effective_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
             allowed = ", ".join(str(v) for v in sorted(VALID_THREAD_AUTO_ARCHIVE_MINUTES))
             return {"error": f"auto_archive_duration must be one of: {allowed}."}
         channel = await self._resolve_interaction_channel(interaction)
@@ -5050,7 +5075,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         starter_message = (message or "").strip()
         try:
             thread = await parent_channel.create_thread(
-                name=name, auto_archive_duration=auto_archive_duration, reason=reason,
+                name=name,
+                auto_archive_duration=effective_duration,
+                reason=reason,
             )
             if starter_message:
                 await thread.send(starter_message)
@@ -5060,7 +5087,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 seed_content = starter_message or f"\U0001f9f5 Thread created by Hermes: **{name}**"
                 seed_msg = await parent_channel.send(seed_content)
                 thread = await seed_msg.create_thread(
-                    name=name, auto_archive_duration=auto_archive_duration, reason=reason,
+                    name=name,
+                    auto_archive_duration=effective_duration,
+                    reason=reason,
                 )
                 return self._thread_created(thread, name)
             except Exception as fallback_error:
@@ -5121,16 +5150,31 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         last_fallback_error: Exception | None = None
         for attempt in range(2):
             try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
-                return self._stamp_auto_thread_name(thread, thread_name)
+                thread = await message.create_thread(
+                    name=thread_name,
+                    auto_archive_duration=self._thread_auto_archive_duration,
+                )
+                try:
+                    setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
+                except Exception:
+                    pass
+                return thread
             except Exception as direct_error:
                 last_direct_error = direct_error
                 try:
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
                     )
-                    thread = await seed_msg.create_thread(name=thread_name, auto_archive_duration=1440, reason=reason)
-                    return self._stamp_auto_thread_name(thread, thread_name)
+                    thread = await seed_msg.create_thread(
+                        name=thread_name,
+                        auto_archive_duration=self._thread_auto_archive_duration,
+                        reason=reason,
+                    )
+                    try:
+                        setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
+                    except Exception:
+                        pass
+                    return thread
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
                     if attempt == 0:
@@ -5220,7 +5264,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(name=thread_name, auto_archive_duration=1440, reason=reason)
+                thread = await create(
+                    name=thread_name,
+                    auto_archive_duration=self._thread_auto_archive_duration,
+                    reason=reason,
+                )
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -5233,7 +5281,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return None
             seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
             thread = await seed_msg.create_thread(
-                name=thread_name, auto_archive_duration=1440, reason=reason,
+                name=thread_name,
+                auto_archive_duration=self._thread_auto_archive_duration,
+                reason=reason,
             )
             return str(thread.id)
         except Exception as fallback_error:

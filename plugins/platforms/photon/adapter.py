@@ -98,6 +98,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_SIDECAR_PORT = 8789
 _DEFAULT_SIDECAR_BIND = "127.0.0.1"
+# NIC-505: how many *clean* (code 0) sidecar exits we'll silently restart
+# through before treating the pattern as flapping and escalating to a fatal
+# gateway error, and the window (seconds) those exits must fall within.
+_SIDECAR_CLEAN_EXIT_MAX = 3
+_SIDECAR_CLEAN_EXIT_WINDOW_S = 120.0
 
 # Photon iMessage messages from the SDK side have no documented hard
 # limit, but the underlying iMessage protocol limits practical message
@@ -801,6 +806,20 @@ class PhotonAdapter(BasePlatformAdapter):
         # natural traffic already proved the channel live within the interval.
         self._last_upstream_activity = 0.0
         self._respawn_lock: Optional[asyncio.Lock] = None
+        # NIC-505: serializes the sidecar process lifecycle (spawn/wait-ready
+        # in _start_sidecar, terminate/cleanup in _stop_sidecar). Without
+        # this, a clean-exit restart racing a concurrent disconnect()'s
+        # _stop_sidecar (e.g. both triggered by the same upstream stream
+        # instability — one via the sidecar's own graceful exit, the other
+        # via _monitor_sidecar_health's UPSTREAM_STREAM_DEGRADED fatal path)
+        # can null self._sidecar_proc out from under an in-flight
+        # _start_sidecar readiness loop, crashing it with
+        # 'NoneType' object has no attribute 'poll' — the exact failure that
+        # sank the first NIC-505 patch attempt (retired, see MANIFEST.txt).
+        self._sidecar_lifecycle_lock = asyncio.Lock()
+        # NIC-505: timestamps of recent clean (code 0) sidecar exits, for the
+        # bounded-restart flap check in _supervise_sidecar.
+        self._sidecar_clean_exit_times: List[float] = []
         # Lightweight in-memory dedup. The gRPC stream is at-least-once, so we
         # may see the same messageId more than once (e.g. after a reconnect).
         self._seen_messages: Dict[str, float] = {}
@@ -1558,6 +1577,15 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
     async def _start_sidecar(self) -> None:
+        # NIC-505: serialize against a concurrent _stop_sidecar (see the lock
+        # comment in __init__) so this method's use of self._sidecar_proc as
+        # a readiness-poll target can never observe it nulled out mid-wait.
+        # Nests INSIDE the tag's _respawn_lock (respawn holds that, then
+        # calls _start/_stop which take this) — single acquisition order.
+        async with self._sidecar_lifecycle_lock:
+            await self._start_sidecar_locked()
+
+    async def _start_sidecar_locked(self) -> None:
         if not sidecar_deps_installed():
             # Cold install (NS-606): on hosted/managed images the install
             # tree is immutable and the user has no CLI to run
@@ -1711,6 +1739,55 @@ class PhotonAdapter(BasePlatformAdapter):
             logger.warning("[photon-sidecar] supervisor exited: %s", e)
         if self._inbound_running:
             exit_code = proc.poll()
+
+            # NIC-505: exit code 0 means the sidecar shut itself down
+            # cleanly (observed after the upstream gRPC/cloud stream drops —
+            # see the "inbound stream dropped" warning in _inbound_loop).
+            # That is not a crash, so don't escalate it to a fatal gateway
+            # error (which used to force a systemd restart on ~62% of
+            # gateway starts) — just respawn the sidecar process. Only a
+            # repeated, rapid run of clean exits (flapping) still escalates,
+            # same as any non-zero exit always has. _start_sidecar takes
+            # self._sidecar_lifecycle_lock internally, so this can never
+            # race a concurrent _stop_sidecar from disconnect() — that race
+            # (self._sidecar_proc nulled mid-readiness-wait, raising
+            # 'NoneType' object has no attribute 'poll') is what sank the
+            # first, unguarded version of this fix.
+            if exit_code == 0:
+                now = time.monotonic()
+                self._sidecar_clean_exit_times = [
+                    t for t in self._sidecar_clean_exit_times
+                    if now - t < _SIDECAR_CLEAN_EXIT_WINDOW_S
+                ]
+                self._sidecar_clean_exit_times.append(now)
+                if len(self._sidecar_clean_exit_times) <= _SIDECAR_CLEAN_EXIT_MAX:
+                    logger.warning(
+                        "[photon] sidecar exited cleanly (code 0) — "
+                        "restarting sidecar (%d/%d clean exits in last %ds)",
+                        len(self._sidecar_clean_exit_times),
+                        _SIDECAR_CLEAN_EXIT_MAX,
+                        int(_SIDECAR_CLEAN_EXIT_WINDOW_S),
+                    )
+                    try:
+                        await self._start_sidecar()
+                        logger.info("[photon] sidecar restarted after clean exit")
+                        return
+                    except Exception as exc:
+                        logger.error(
+                            "[photon] failed to restart sidecar after clean "
+                            "exit: %s",
+                            exc,
+                        )
+                        # fall through to the fatal path below
+                else:
+                    logger.error(
+                        "[photon] sidecar had %d clean exits in the last "
+                        "%ds — treating as flapping, not another silent "
+                        "restart",
+                        len(self._sidecar_clean_exit_times),
+                        int(_SIDECAR_CLEAN_EXIT_WINDOW_S),
+                    )
+
             logger.error(
                 "[photon] sidecar exited unexpectedly (code %s) — triggering reconnect",
                 exit_code,
@@ -1723,6 +1800,14 @@ class PhotonAdapter(BasePlatformAdapter):
             self._dispatch_fatal_notification()
 
     async def _stop_sidecar(self) -> None:
+        # NIC-505: serialize against a concurrent _start_sidecar (see the
+        # lock comment in __init__) so this method's finally-block cleanup
+        # (self._sidecar_proc = None, supervisor-task cancel) can never race
+        # a fresh spawn+readiness-wait for a different process.
+        async with self._sidecar_lifecycle_lock:
+            await self._stop_sidecar_locked()
+
+    async def _stop_sidecar_locked(self) -> None:
         proc = self._sidecar_proc
         if proc is None:
             # Nothing to stop, but never leave a record behind on disconnect

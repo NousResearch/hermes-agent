@@ -1,5 +1,6 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -765,3 +766,269 @@ class TestDingTalkAdapterAICards:
         mock_card_sdk.deliver_card_with_options_async.assert_called_once()
         mock_card_sdk.streaming_update_with_options_async.assert_called_once()
         assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# Attachment upload / delivery (OpenAPI)
+# ---------------------------------------------------------------------------
+
+
+def _attachment_adapter():
+    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+    adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+    adapter._robot_code = "robot-1"
+    return adapter
+
+
+def _ok_response(json_data=None, status_code=200):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = json_data or {}
+    resp.text = "OK"
+    return resp
+
+
+class TestSendViaOpenAPI:
+    """Request shape for the group and DM delivery endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_group_request_shape(self):
+        adapter = _attachment_adapter()
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_ok_response({"processQueryKey": "pk1"})
+        )
+        with patch.object(
+            adapter, "_get_oapi_access_token", AsyncMock(return_value="tok")
+        ):
+            result = await adapter._send_via_openapi("cid-group-1", "sampleFile", "{}")
+
+        assert result.success is True
+        call = adapter._http_client.post.call_args
+        assert call[0][0].endswith("/robot/groupMessages/send")
+        body = call.kwargs["json"]
+        assert body["robotCode"] == "robot-1"
+        assert body["openConversationId"] == "cid-group-1"
+        assert "userIds" not in body
+
+    @pytest.mark.asyncio
+    async def test_dm_request_shape(self):
+        adapter = _attachment_adapter()
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_ok_response({"processQueryKey": "pk2"})
+        )
+        with patch.object(
+            adapter, "_get_oapi_access_token", AsyncMock(return_value="tok")
+        ):
+            result = await adapter._send_via_openapi(
+                "staff-9", "sampleImageMsg", "{}", dm=True
+            )
+
+        assert result.success is True
+        call = adapter._http_client.post.call_args
+        assert call[0][0].endswith("/robot/oToMessages/batchSend")
+        body = call.kwargs["json"]
+        assert body["userIds"] == ["staff-9"]
+        assert "openConversationId" not in body
+
+
+class TestAttachmentDelivery:
+    """DM detection must key off conversation_type, not sender_staff_id."""
+
+    @pytest.mark.asyncio
+    async def test_group_document_uses_group_endpoint_even_with_staff_id(self, tmp_path):
+        """Group messages also carry sender_staff_id — delivery must still go
+        to groupMessages/send, not oToMessages/batchSend."""
+        attachment = tmp_path / "report.pdf"
+        attachment.write_bytes(b"pdf")
+        adapter = _attachment_adapter()
+        adapter._message_contexts["cid-group"] = SimpleNamespace(
+            conversation_type="2", sender_staff_id="staff-sender"
+        )
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_ok_response({"processQueryKey": "pk"})
+        )
+        with patch.object(adapter, "_upload_media", AsyncMock(return_value="@media_1")), \
+             patch.object(adapter, "_get_oapi_access_token", AsyncMock(return_value="tok")):
+            result = await adapter.send_document("cid-group", str(attachment))
+
+        assert result.success is True
+        call = adapter._http_client.post.call_args
+        assert call[0][0].endswith("/robot/groupMessages/send")
+        body = call.kwargs["json"]
+        assert body["openConversationId"] == "cid-group"
+        assert "userIds" not in body
+
+    @pytest.mark.asyncio
+    async def test_dm_document_uses_batch_send_to_staff_id(self, tmp_path):
+        attachment = tmp_path / "report.pdf"
+        attachment.write_bytes(b"pdf")
+        adapter = _attachment_adapter()
+        adapter._message_contexts["cid-dm"] = SimpleNamespace(
+            conversation_type="1", sender_staff_id="staff-dm"
+        )
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_ok_response({"processQueryKey": "pk"})
+        )
+        with patch.object(adapter, "_upload_media", AsyncMock(return_value="@media_1")), \
+             patch.object(adapter, "_get_oapi_access_token", AsyncMock(return_value="tok")):
+            result = await adapter.send_document("cid-dm", str(attachment))
+
+        assert result.success is True
+        call = adapter._http_client.post.call_args
+        assert call[0][0].endswith("/robot/oToMessages/batchSend")
+        body = call.kwargs["json"]
+        assert body["userIds"] == ["staff-dm"]
+        assert body["msgKey"] == "sampleFile"
+        msg_param = json.loads(body["msgParam"])
+        assert msg_param["mediaId"] == "@media_1"
+        assert msg_param["fileName"] == "report.pdf"
+
+    @pytest.mark.asyncio
+    async def test_dm_without_staff_id_falls_back_to_webhook(self, tmp_path):
+        attachment = tmp_path / "report.pdf"
+        attachment.write_bytes(b"pdf")
+        adapter = _attachment_adapter()
+        adapter._message_contexts["cid-dm"] = SimpleNamespace(
+            conversation_type="1", sender_staff_id=""
+        )
+        adapter._session_webhooks["cid-dm"] = ("https://hook.example/x", 0)
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(return_value=_ok_response())
+        with patch.object(adapter, "_upload_media", AsyncMock(return_value="@media_1")), \
+             patch.object(adapter, "_get_oapi_access_token", AsyncMock(return_value="tok")):
+            result = await adapter.send_document("cid-dm", str(attachment))
+
+        assert result.success is True
+        call = adapter._http_client.post.call_args
+        assert call[0][0] == "https://hook.example/x"
+        payload = call.kwargs["json"]
+        assert payload["msgtype"] == "markdown"
+        assert "report.pdf" in payload["markdown"]["text"]
+
+
+class TestMediaUpload:
+
+    @pytest.mark.asyncio
+    async def test_upload_media_posts_multipart_and_returns_media_id(self, tmp_path):
+        attachment = tmp_path / "pic.png"
+        attachment.write_bytes(b"\x89PNG")
+        adapter = _attachment_adapter()
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_ok_response({"errcode": 0, "media_id": "@media_abc"})
+        )
+        with patch.object(
+            adapter, "_get_oapi_access_token", AsyncMock(return_value="tok")
+        ):
+            media_id = await adapter._upload_media(str(attachment), "image")
+
+        assert media_id == "@media_abc"
+        call = adapter._http_client.post.call_args
+        assert "oapi.dingtalk.com/media/upload" in call[0][0]
+        assert call.kwargs["params"] == {"access_token": "tok", "type": "image"}
+        assert call.kwargs["files"]["media"][0] == "pic.png"
+
+    @pytest.mark.asyncio
+    async def test_upload_media_api_error_returns_none(self, tmp_path):
+        attachment = tmp_path / "pic.png"
+        attachment.write_bytes(b"\x89PNG")
+        adapter = _attachment_adapter()
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_ok_response({"errcode": 40035, "errmsg": "bad media"})
+        )
+        with patch.object(
+            adapter, "_get_oapi_access_token", AsyncMock(return_value="tok")
+        ):
+            assert await adapter._upload_media(str(attachment), "image") is None
+
+
+class TestAttachmentFallback:
+
+    @pytest.mark.asyncio
+    async def test_document_upload_failure_falls_back_to_markdown(self, tmp_path):
+        attachment = tmp_path / "report.pdf"
+        attachment.write_bytes(b"pdf")
+        adapter = _attachment_adapter()
+        adapter._session_webhooks["cid-1"] = ("https://hook.example/x", 0)
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(return_value=_ok_response())
+        with patch.object(adapter, "_upload_media", AsyncMock(return_value=None)):
+            result = await adapter.send_document("cid-1", str(attachment))
+
+        assert result.success is True
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload["msgtype"] == "markdown"
+        assert "report.pdf" in payload["markdown"]["text"]
+
+    @pytest.mark.asyncio
+    async def test_image_upload_failure_falls_back_to_markdown(self, tmp_path):
+        attachment = tmp_path / "pic.png"
+        attachment.write_bytes(b"\x89PNG")
+        adapter = _attachment_adapter()
+        adapter._session_webhooks["cid-1"] = ("https://hook.example/x", 0)
+        adapter._http_client = AsyncMock()
+        adapter._http_client.post = AsyncMock(return_value=_ok_response())
+        with patch.object(adapter, "_upload_media", AsyncMock(return_value=None)):
+            result = await adapter.send_image_file("cid-1", str(attachment))
+
+        assert result.success is True
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload["msgtype"] == "markdown"
+        assert "pic.png" in payload["markdown"]["text"]
+
+
+class TestInboundDownload:
+    """Inbound file download enforces the shared size limit before caching."""
+
+    def _adapter_with_download_url(self):
+        adapter = _attachment_adapter()
+        adapter._robot_sdk = AsyncMock()
+        adapter._robot_sdk.robot_message_file_download_with_options_async = AsyncMock(
+            return_value=SimpleNamespace(
+                body=SimpleNamespace(download_url="https://dl.example/f.bin")
+            )
+        )
+        resp = MagicMock()
+        resp.headers = {}
+        adapter._http_client = AsyncMock()
+        adapter._http_client.get = AsyncMock(return_value=resp)
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_oversized_download_is_rejected(self):
+        adapter = self._adapter_with_download_url()
+        with patch(
+            "plugins.platforms.dingtalk.adapter._read_httpx_body_with_limit",
+            AsyncMock(side_effect=ValueError("exceeds size limit")),
+        ):
+            result = await adapter._fetch_download_url(
+                "code123", "robot-1", "tok", {}, "downloadCode"
+            )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_download_cached_and_obj_updated(self, tmp_path, monkeypatch):
+        adapter = self._adapter_with_download_url()
+        monkeypatch.setattr(
+            "plugins.platforms.dingtalk.adapter.get_document_cache_dir",
+            lambda: tmp_path,
+        )
+        obj = {"downloadCode": "code123"}
+        with patch(
+            "plugins.platforms.dingtalk.adapter._read_httpx_body_with_limit",
+            AsyncMock(return_value=b"file-bytes"),
+        ):
+            result = await adapter._fetch_download_url(
+                "code123", "robot-1", "tok", obj, "downloadCode", filename="data.csv"
+            )
+
+        assert result is not None
+        assert obj["downloadCode"] == result
+        from pathlib import Path
+        assert Path(result).read_bytes() == b"file-bytes"
+        assert Path(result).name.endswith("_data.csv")

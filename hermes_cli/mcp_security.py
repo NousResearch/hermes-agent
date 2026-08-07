@@ -5,13 +5,14 @@ run custom servers. This module does not try to sandbox that capability. It
 blocks two high-signal abuse shapes seen in the wild:
 
 1. The exfiltration shape from #45620: a shell interpreter whose inline script
-   invokes network egress tooling.
+   or environment invokes network egress tooling.
 2. The persistence shape from the June 2026 ``hermes-0day`` campaign: a shell
-   interpreter whose inline script writes to OS persistence surfaces
-   (``~/.ssh/authorized_keys``, ``/etc/ssh``, ``/etc/pam.d``, ``sudoers``,
-   crontab, shell rc files). The campaign planted ``command: bash`` MCP entries
-   whose payload appended an attacker SSH key to ``authorized_keys``; Hermes
-   re-executed them on every cron tick / startup, re-installing the backdoor.
+   interpreter whose inline script or environment writes to OS persistence
+   surfaces (``~/.ssh/authorized_keys``, ``/etc/ssh``, ``/etc/pam.d``,
+   ``sudoers``, crontab, shell rc files). The campaign planted MCP entries
+   with ``command: bash`` whose payload appended an attacker SSH key to
+   ``authorized_keys``; Hermes re-executed them on every cron tick / startup,
+   re-installing the backdoor.
 
 3. A hardcoded indicator-of-compromise (IOC) blocklist for that campaign — the
    attacker's ``hermes-0day`` SSH public key and source IPs. Any entry whose
@@ -126,8 +127,9 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
     scripts, npx, uvx, etc. We block three narrow shapes only:
 
     * a known hermes-0day IOC anywhere in command/args/env (hardcoded blocklist);
-    * a shell interpreter whose inline script invokes network egress (#45620);
-    * a shell interpreter whose inline script writes to an OS persistence
+    * a shell interpreter whose args or environment invoke network egress
+      (#45620);
+    * a shell interpreter whose args or environment write to an OS persistence
       surface (June 2026 hermes-0day SSH/PAM/sudoers/cron shape).
     """
     if not isinstance(entry, dict):
@@ -155,18 +157,23 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
     if not script:
         return issues
 
+    scan_text = script
+    env = entry.get("env")
+    if isinstance(env, dict):
+        scan_text += " " + " ".join(str(value) for value in env.values())
+
     # 2. Network exfiltration shape.
-    if _EGRESS_PATTERN.search(script):
+    if _EGRESS_PATTERN.search(scan_text):
         issue = (
             f"MCP server '{name}' uses shell interpreter '{command}' with "
-            f"network egress in args"
+            f"network egress in args or env"
         )
-        if _EXFIL_HINT_PATTERN.search(script):
+        if _EXFIL_HINT_PATTERN.search(scan_text):
             issue += " and exfiltration-shaped arguments"
         issues.append(issue)
 
     # 3. OS persistence shape (SSH key / PAM / sudoers / cron / rc files).
-    if _PERSISTENCE_PATTERN.search(script):
+    if _PERSISTENCE_PATTERN.search(scan_text):
         issues.append(
             f"MCP server '{name}' uses shell interpreter '{command}' to write "
             f"to an OS persistence surface (SSH keys / PAM / sudoers / cron / "

@@ -4618,12 +4618,12 @@ def _split_text_for_speak_stream(text: str, cap: int) -> list:
 
 @app.websocket("/api/audio/speak-stream")
 async def speak_stream_ws(ws: "WebSocket") -> None:
-    """Streaming TTS for the desktop: text in, raw int16 PCM frames out.
+    """Streaming TTS for Desktop: text in, PCM or encoded sentence audio out.
 
     The socket is a per-reply speech *session*: the client feeds text
     incrementally as LLM deltas arrive, the server cuts sentences
     (``SentenceChunker`` — same cutter as the CLI/TUI speaker pipeline) and
-    streams each one's PCM the moment it's ready. Speech overlaps generation,
+    streams each one's audio the moment it's ready. Speech overlaps generation,
     exactly like the token→sentence→TTS pipelining the realtime-voice
     literature converges on.
 
@@ -4632,9 +4632,13 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                ``{"done": true}`` when the reply is complete,
                ``{"stop": true}`` or disconnect = barge-in
       server → ``{"type": "start", "sample_rate": N, "channels": 1}``,
-               binary PCM frames, then ``{"type": "end"}``
-      server → ``{"type": "fallback"}`` when the configured provider has no
-               chunked API — the client uses the POST endpoint instead.
+               binary PCM frames, then ``{"type": "end"}`` for chunked providers
+      server → ``{"type": "start", "encoding": "encoded"}``, then one complete
+               browser-decodable audio file per sentence for sync providers.
+
+    Encoded audio is opt-in via ``?audio_protocol=2``. Older Desktop clients
+    treat every binary frame as PCM, so sync providers must fall back rather
+    than send them encoded files they would play as noise.
     """
     if not _ws_auth_ok(ws):
         await ws.close(code=4401)
@@ -4659,33 +4663,68 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         with _config_profile_scope(profile):
             cfg = _load_tts_config()
             streamer = resolve_streaming_provider(cfg)
-            cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
-        return streamer, cap
+            provider = _get_provider(cfg)
+            cap = _resolve_max_text_length(provider, cfg)
+        return streamer, cap, provider
 
     try:
-        streamer, cap = await loop.run_in_executor(None, _resolve)
+        streamer, cap, provider = await loop.run_in_executor(None, _resolve)
     except Exception:
         _log.exception("speak-stream provider resolution failed")
-        streamer, cap = None, 0
-    if streamer is None:
         with contextlib.suppress(Exception):
             await ws.send_json({"type": "fallback"})
             await ws.close()
         return
 
-    await ws.send_json(
-        {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
-    )
+    supports_encoded_audio = ws.query_params.get("audio_protocol") == "2"
+    if streamer is None and not supports_encoded_audio:
+        await ws.send_json({"type": "fallback"})
+        await ws.close()
+        return
+    if streamer is None:
+        await ws.send_json({"type": "start", "encoding": "encoded"})
+    else:
+        await ws.send_json(
+            {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
+        )
 
     stop = threading.Event()
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
-    chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
+    synthesis_failed = object()
+    chunks: asyncio.Queue = asyncio.Queue()  # bytes; failure marker; None = synthesis done
 
     def _produce():
         from tools.tts_streaming import SentenceChunker
-        from tools.tts_tool import _strip_markdown_for_tts
+        from tools.tts_tool import _strip_markdown_for_tts, text_to_speech_tool
 
         chunker = SentenceChunker()
+
+        def _sync_sentence_audio(sentence: str) -> bytes:
+            requested_path = None
+            generated_path = None
+            try:
+                handle = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+                requested_path = handle.name
+                handle.close()
+                with _config_profile_scope(profile):
+                    result = json.loads(
+                        text_to_speech_tool(
+                            text=sentence,
+                            output_path=requested_path,
+                            provider=provider,
+                        )
+                    )
+                if not result.get("success"):
+                    raise RuntimeError(result.get("error") or "TTS synthesis failed")
+                generated_path = result.get("file_path") or requested_path
+                audio = Path(generated_path).read_bytes()
+                if not audio:
+                    raise RuntimeError("TTS synthesis produced empty audio")
+                return audio
+            finally:
+                for candidate in {requested_path, generated_path} - {None}:
+                    with contextlib.suppress(OSError):
+                        Path(candidate).unlink(missing_ok=True)
 
         # The session stays open for a whole agent turn, and the client only
         # sends `done` when the turn ends. During tool execution no text
@@ -4723,12 +4762,18 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                 if not cleaned:
                     continue
                 for piece in _split_text_for_speak_stream(cleaned, cap):
-                    for chunk in streamer.stream(piece):
+                    audio_chunks = (
+                        streamer.stream(piece)
+                        if streamer is not None
+                        else (_sync_sentence_audio(piece),)
+                    )
+                    for chunk in audio_chunks:
                         if stop.is_set():
                             return
                         loop.call_soon_threadsafe(chunks.put_nowait, chunk)
         except Exception as exc:
             _log.warning("speak-stream synthesis failed: %s", exc)
+            loop.call_soon_threadsafe(chunks.put_nowait, synthesis_failed)
         finally:
             loop.call_soon_threadsafe(chunks.put_nowait, None)
 
@@ -4753,13 +4798,22 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
     pump = asyncio.ensure_future(_pump_client())
     try:
+        sent_audio = False
+        failed = False
         while True:
             chunk = await chunks.get()
             if chunk is None:
                 break
+            if chunk is synthesis_failed:
+                failed = True
+                continue
             await ws.send_bytes(chunk)
+            sent_audio = True
         if not stop.is_set():
-            await ws.send_json({"type": "end"})
+            if failed and not sent_audio:
+                await ws.send_json({"type": "fallback"})
+            else:
+                await ws.send_json({"type": "end"})
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:

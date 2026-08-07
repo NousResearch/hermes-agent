@@ -91,9 +91,9 @@ export function stopVoicePlayback() {
 }
 
 // ---------------------------------------------------------------------------
-// Streaming path — /api/audio/speak-stream WebSocket, raw int16 PCM frames
-// scheduled through Web Audio. Speech starts on the provider's first chunk
-// instead of after full synthesis + base64 transfer.
+// Streaming path — /api/audio/speak-stream WebSocket, raw int16 PCM chunks or
+// complete encoded sentence clips scheduled through Web Audio. Speech starts
+// on the provider's first sentence instead of after full-response synthesis.
 // ---------------------------------------------------------------------------
 
 async function resolveSpeakStreamUrl(): Promise<null | string> {
@@ -105,8 +105,8 @@ async function resolveSpeakStreamUrl(): Promise<null | string> {
 
   try {
     // Mint a fresh credential (single-use ticket in OAuth mode) for the
-    // ACTIVE profile's backend, then swap the gateway endpoint for the PCM
-    // one — auth is shared across WS routes.
+    // ACTIVE profile's backend, then swap the gateway endpoint for the speech
+    // stream — auth is shared across WS routes.
     const profile = getApiRequestProfile()
     const wsUrl = await resolveGatewayWsUrl(desktop, await desktop.getConnection(profile))
     const url = new URL(wsUrl)
@@ -122,6 +122,11 @@ async function resolveSpeakStreamUrl(): Promise<null | string> {
     if (profile) {
       url.searchParams.set('profile', profile)
     }
+
+    // Protocol v2 explicitly opts into browser-decodable encoded sentence
+    // frames. Older clients omit this and receive fallback for sync providers
+    // instead of misinterpreting MP3 bytes as raw PCM.
+    url.searchParams.set('audio_protocol', '2')
 
     return url.toString()
   } catch {
@@ -145,17 +150,22 @@ export interface SpeechStreamSession {
 /**
  * Open a live speech session: one WebSocket + one AudioContext for a whole
  * reply. Text is appended as LLM deltas arrive; the server cuts sentences and
- * streams PCM back while generation continues, so speech overlaps the text
- * stream (ChatGPT-style) with no per-sentence connection or synthesis gaps.
+ * streams audio back while generation continues, so speech overlaps the text
+ * stream (ChatGPT-style). Chunked providers send PCM; providers such as Edge
+ * send one browser-decodable audio file per sentence over the same socket.
  */
 function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechStreamSession {
   const ws = new WebSocket(wsUrl)
   ws.binaryType = 'arraybuffer'
 
   let context: AudioContext | null = null
+  let encoding: 'encoded' | 'pcm' = 'pcm'
   let streamRate = 24_000
   let nextStartAt = 0
   let carry: null | Uint8Array = null
+  let decodeQueue = Promise.resolve()
+  let decodeFailed = false
+  let receivedAudio = false
   let started = false
   let settled = false
   let finished = false
@@ -203,7 +213,26 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     window.setTimeout(() => settle('done'), remainingMs + 100)
   }
 
-  const schedule = (data: ArrayBuffer) => {
+  const scheduleBuffer = (buffer: AudioBuffer) => {
+    if (!context) {
+      return
+    }
+
+    const source = context.createBufferSource()
+    source.buffer = buffer
+    source.connect(context.destination)
+
+    const startAt = Math.max(context.currentTime + 0.05, nextStartAt)
+    source.start(startAt)
+    nextStartAt = startAt + buffer.duration
+
+    if (!started) {
+      started = true
+      setVoicePlaybackState(currentState('speaking', options))
+    }
+  }
+
+  const schedulePcm = (data: ArrayBuffer) => {
     if (!context) {
       return
     }
@@ -237,18 +266,37 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       channel[index] = pcm[index] / 32_768
     }
 
-    const source = context.createBufferSource()
-    source.buffer = buffer
-    source.connect(context.destination)
+    scheduleBuffer(buffer)
+  }
 
-    const startAt = Math.max(context.currentTime + 0.05, nextStartAt)
-    source.start(startAt)
-    nextStartAt = startAt + buffer.duration
+  const scheduleEncoded = (data: ArrayBuffer) => {
+    const owner = context
 
-    if (!started) {
-      started = true
-      setVoicePlaybackState(currentState('speaking', options))
+    if (!owner || decodeFailed) {
+      return
     }
+
+    // Decoding is asynchronous. Chaining sentences preserves provider order
+    // even when clips take different amounts of time to decode.
+    decodeQueue = decodeQueue
+      .then(async () => {
+        if (decodeFailed || settled || context !== owner) {
+          return
+        }
+
+        const buffer = await owner.decodeAudioData(data.slice(0))
+
+        if (!settled && context === owner) {
+          scheduleBuffer(buffer)
+        }
+      })
+      .catch(() => {
+        decodeFailed = true
+
+        if (!started) {
+          settle('fallback')
+        }
+      })
   }
 
   ws.onopen = () => {
@@ -257,12 +305,18 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
   ws.onmessage = event => {
     if (typeof event.data !== 'string') {
-      schedule(event.data as ArrayBuffer)
+      receivedAudio = true
+
+      if (encoding === 'encoded') {
+        scheduleEncoded(event.data as ArrayBuffer)
+      } else {
+        schedulePcm(event.data as ArrayBuffer)
+      }
 
       return
     }
 
-    let frame: { channels?: number; sample_rate?: number; type?: string }
+    let frame: { channels?: number; encoding?: 'encoded' | 'pcm'; sample_rate?: number; type?: string }
 
     try {
       frame = JSON.parse(event.data) as typeof frame
@@ -271,6 +325,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     }
 
     if (frame.type === 'start') {
+      encoding = frame.encoding || 'pcm'
       streamRate = frame.sample_rate || 24_000
       context = new AudioContext()
 
@@ -285,7 +340,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
       nextStartAt = 0
     } else if (frame.type === 'end') {
-      finishWhenDrained()
+      void decodeQueue.then(finishWhenDrained)
     } else if (frame.type === 'fallback') {
       settle(started ? 'done' : 'fallback')
     }
@@ -294,8 +349,21 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   // A drop before any audio means the endpoint is unavailable (old backend,
   // auth, network) → fall back. After audio started, replaying the whole
   // message via POST would stutter — treat what played as the playback.
-  ws.onerror = () => settle(started ? 'done' : 'fallback')
-  ws.onclose = () => (started ? finishWhenDrained() : settle('fallback'))
+  ws.onerror = () => {
+    if (receivedAudio) {
+      void decodeQueue.then(finishWhenDrained)
+    } else {
+      settle(started ? 'done' : 'fallback')
+    }
+  }
+
+  ws.onclose = () => {
+    if (receivedAudio) {
+      void decodeQueue.then(finishWhenDrained)
+    } else {
+      settle(started ? 'done' : 'fallback')
+    }
+  }
 
   return {
     // Raw deltas — the server strips markdown/emoji per *sentence*, which is

@@ -2773,7 +2773,20 @@ class GatewaySlashCommandsMixin:
                     message_id=event.message_id,
                     channel_prompt=event.channel_prompt,
                 )
-                self._enqueue_fifo(_quick_key, kickoff_event, adapter)
+                # Most adapters are still processing the slash-command event
+                # here, and their normal post-command drain will consume a
+                # FIFO entry.  Some command paths (notably Telegram's pending
+                # slash-input flow) dispatch directly to the gateway runner,
+                # however, so there is no adapter frame left to wake a queue.
+                # In that idle case, start the normal adapter pipeline directly
+                # rather than queuing a duplicate that its own drain would run
+                # a second time. Without this, /goal reports success but its
+                # first turn never runs.
+                active = getattr(adapter, "_active_sessions", {})
+                if _quick_key in active:
+                    self._enqueue_fifo(_quick_key, kickoff_event, adapter)
+                else:
+                    await adapter.handle_message(kickoff_event)
             except Exception as exc:
                 logger.debug("goal kickoff enqueue failed: %s", exc)
 

@@ -61,6 +61,18 @@ class _RecordingAdapter:
         return _R()
 
 
+class _PostDeliveryRecordingAdapter(_RecordingAdapter):
+    """Adapter probe for a response that streaming has already delivered."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.callbacks: list[object] = []
+        self._active_sessions = {}
+
+    def register_post_delivery_callback(self, session_key, callback, *, generation=None):
+        self.callbacks.append(callback)
+
+
 def _make_runner_with_adapter(session_id: str = None):
     from gateway.run import GatewayRunner
     import uuid
@@ -94,6 +106,58 @@ def _make_runner_with_adapter(session_id: str = None):
     adapter = _RecordingAdapter()
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner, adapter, session_entry, src
+
+
+@pytest.mark.asyncio
+async def test_goal_verdict_done_sent_via_adapter_send(hermes_home):
+    """When the judge says done, the '✓ Goal achieved' message must reach
+    the user through the adapter's ``send()`` method."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_entry.session_id)
+    mgr.set("ship the feature")
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "the feature shipped", False, None, False)):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="I shipped the feature.",
+        )
+        # fire-and-forget create_task — give the loop a tick
+        await asyncio.sleep(0.05)
+
+    assert len(adapter.sends) == 1, f"expected 1 send, got {len(adapter.sends)}: {adapter.sends}"
+    msg = adapter.sends[0]
+    assert msg["chat_id"] == "c1"
+    assert "Goal achieved" in msg["content"]
+    assert "the feature shipped" in msg["content"]
+
+
+@pytest.mark.asyncio
+async def test_streamed_goal_response_judges_and_sends_status_immediately(hermes_home):
+    """A streamed response returns None to the outer handler, so its goal
+    judge runs inside the streaming branch after the body has been delivered.
+    It must not register a callback which has already missed its delivery edge.
+    """
+    runner, _, session_entry, src = _make_runner_with_adapter()
+    adapter = _PostDeliveryRecordingAdapter()
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    from hermes_cli.goals import GoalManager
+
+    GoalManager(session_entry.session_id).set("ship the feature")
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "the feature shipped", False, None, False)):
+        await runner._post_streamed_goal_turn(
+            session_entry=session_entry,
+            source=src,
+            final_response="I shipped the feature.",
+        )
+
+    assert len(adapter.sends) == 1
+    assert "Goal achieved" in adapter.sends[0]["content"]
+    assert adapter.callbacks == []
 
 
 @pytest.mark.asyncio
@@ -153,3 +217,42 @@ async def test_goal_verdict_budget_exhausted_sends_pause(hermes_home):
     assert not adapter._pending_messages
 
 
+@pytest.mark.asyncio
+async def test_goal_verdict_skipped_when_no_active_goal(hermes_home):
+    """No goal set → the hook is a no-op. Nothing is sent, nothing enqueued."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    await runner._post_turn_goal_continuation(
+        session_entry=session_entry,
+        source=src,
+        final_response="anything",
+    )
+    await asyncio.sleep(0.05)
+
+    assert adapter.sends == []
+    assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_goal_verdict_survives_adapter_without_send(hermes_home):
+    """Bad adapter (no ``send`` attribute) must not crash the judge hook."""
+    runner, _adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    GoalManager(session_entry.session_id).set("survive missing send")
+
+    class _NoSendAdapter:
+        def __init__(self):
+            self._pending_messages: dict = {}
+
+    runner.adapters[Platform.TELEGRAM] = _NoSendAdapter()
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "ok", False, None, False)):
+        # must not raise
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="whatever",
+        )
+        await asyncio.sleep(0.05)

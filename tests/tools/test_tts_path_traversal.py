@@ -48,7 +48,7 @@ def test_output_path_rejects_hermes_oauth_store(tmp_path, monkeypatch):
     ))
 
     assert result["success"] is False
-    assert "protected credential" in result["error"]
+    assert "credential" in result["error"]
     assert not target.exists()
 
 
@@ -69,5 +69,53 @@ def test_output_path_rejects_mcp_token_directory(tmp_path, monkeypatch):
     ))
 
     assert result["success"] is False
-    assert "protected credential" in result["error"]
+    assert "credential" in result["error"]
+    assert not target.exists()
+
+
+def test_output_path_outside_safe_root_names_safe_root(tmp_path, monkeypatch):
+    """TTS output_path outside HERMES_WRITE_SAFE_ROOT must not be mislabeled
+    as a protected credential/system file (regression for #76594)."""
+    import agent.file_safety as file_safety
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: hermes_home)
+    monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: hermes_home)
+
+    safe_root = tmp_path / "workspace"
+    safe_root.mkdir()
+    monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+    outside = tmp_path / "audio-out" / "clip.mp3"
+    result = json.loads(text_to_speech_tool(
+        text="hello",
+        output_path=str(outside),
+    ))
+
+    assert result["success"] is False
+    assert "outside HERMES_WRITE_SAFE_ROOT" in result["error"]
+    assert "credential" not in result["error"]
+    assert not outside.exists()
+
+
+def test_output_path_session_state_names_session_state(tmp_path, monkeypatch):
+    """TTS output_path targeting session transcripts must be reported as
+    protected session/system state, not as a credential file."""
+    import agent.file_safety as file_safety
+
+    hermes_home = tmp_path / "hermes-home"
+    sessions_dir = hermes_home / "sessions"
+    sessions_dir.mkdir(parents=True)
+    monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: hermes_home)
+    monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: hermes_home)
+
+    target = sessions_dir / "session_abc.json"
+    result = json.loads(text_to_speech_tool(
+        text="hello",
+        output_path=str(target),
+    ))
+
+    assert result["success"] is False
+    assert "session/system state" in result["error"]
     assert not target.exists()

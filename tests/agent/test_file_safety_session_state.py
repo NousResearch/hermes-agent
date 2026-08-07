@@ -45,6 +45,41 @@ def test_session_state_paths_are_write_denied(fake_homes, relative):
     assert is_write_denied(str(target)) is True
 
 
+@pytest.mark.parametrize("relative", ["state.db", "sessions/session_abc.json"])
+def test_session_state_denial_classifies_as_sensitive_path(fake_homes, relative):
+    """Session transcripts must be classified as protected application state
+    ('sensitive_path'), not as a safe-root escape or a credential file
+    (regression for #76594)."""
+    from agent.file_safety import _classify_write_denial, get_write_denied_error
+
+    _root, profile = fake_homes
+    target = profile / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("existing transcript", encoding="utf-8")
+
+    assert _classify_write_denial(str(target)) == "sensitive_path"
+
+    err = get_write_denied_error(str(target))
+    assert err is not None
+    assert "session/system state" in err
+    assert "outside HERMES_WRITE_SAFE_ROOT" not in err
+    assert "credential file" not in err
+
+
+def test_session_state_denial_message_uses_verb(fake_homes):
+    """The sensitive-path message honors the requested verb."""
+    from agent.file_safety import get_write_denied_error
+
+    _root, profile = fake_homes
+    target = profile / "state.db"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("existing transcript", encoding="utf-8")
+
+    err = get_write_denied_error(str(target), verb="Delete")
+    assert err is not None
+    assert err.startswith("Delete denied:")
+
+
 
 
 

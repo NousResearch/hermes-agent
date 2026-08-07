@@ -99,7 +99,15 @@ def get_safe_write_roots() -> set[str]:
 
 
 def _classify_write_denial(path: str) -> Optional[str]:
-    """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
+    """Return ``'credential'``, ``'sensitive_path'``, ``'safe_root'``, or
+    ``None`` if writes are allowed.
+
+    ``'credential'`` means the path matches an explicit credential/system
+    denylist entry; ``'sensitive_path'`` means the path is application-owned
+    state (session transcripts) that agent file tools must not rewrite;
+    ``'safe_root'`` means the path is simply outside ``HERMES_WRITE_SAFE_ROOT``
+    and is not otherwise protected.
+    """
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
@@ -126,10 +134,10 @@ def _classify_write_denial(path: str) -> Optional[str]:
         # falsify conversation history and invalidate resume/compression state.
         try:
             if resolved == os.path.realpath(os.path.join(base_real, "state.db")):
-                return True
+                return "sensitive_path"
             sessions_real = os.path.realpath(os.path.join(base_real, "sessions"))
             if resolved == sessions_real or resolved.startswith(sessions_real + os.sep):
-                return True
+                return "sensitive_path"
         except Exception:
             pass
         try:
@@ -173,6 +181,11 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
         return (
             f"{verb} denied: '{path}' is outside HERMES_WRITE_SAFE_ROOT "
             f"({roots_display}). Unset the variable or add this path's directory prefix."
+        )
+    if denial == "sensitive_path":
+        return (
+            f"{verb} denied: '{path}' is protected Hermes session/system "
+            "state and cannot be rewritten by file tools."
         )
     return f"{verb} denied: '{path}' is a protected system/credential file."
 

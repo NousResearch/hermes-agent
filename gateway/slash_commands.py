@@ -386,7 +386,10 @@ class GatewaySlashCommandsMixin:
         (admin / user / unrestricted), and the slash commands they can
         actually run on this scope.
         """
-        from gateway.slash_access import policy_for_source as _policy_for_source
+        from gateway.slash_access import (
+            _ALWAYS_ALLOWED_FOR_USERS,
+            policy_for_source as _policy_for_source,
+        )
 
         source = event.source
         policy = _policy_for_source(self.config, source)
@@ -412,7 +415,11 @@ class GatewaySlashCommandsMixin:
             )
 
         # Non-admin user. Show what's actually reachable.
-        floor = ["help", "whoami"]  # mirrors slash_access._ALWAYS_ALLOWED_FOR_USERS
+        # Derived from the constant rather than restated as a literal: a second
+        # copy of this list can drift from _ALWAYS_ALLOWED_FOR_USERS, and then
+        # /whoami under-reports what the user can actually run. sorted() gives a
+        # stable order and reproduces the previous literal exactly.
+        floor = sorted(_ALWAYS_ALLOWED_FOR_USERS)
         configured = sorted(policy.user_allowed_commands)
         # Combine + dedupe, preserve order: floor first, then operator additions.
         seen: set[str] = set()

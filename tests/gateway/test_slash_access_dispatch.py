@@ -154,6 +154,20 @@ async def test_non_admin_with_empty_user_commands_gets_floor_only():
     whoami_result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="999")))
     assert "Tier: user" in whoami_result
 
+    # ...and it lists the ENTIRE always-allowed floor. With user_allowed_commands
+    # empty, the floor is the only possible source of these entries, so this is the
+    # only place a floor that has drifted from _ALWAYS_ALLOWED_FOR_USERS is visible.
+    # Iterating the constant (rather than a literal) means the test cannot drift
+    # from it either.
+    from gateway.slash_access import _ALWAYS_ALLOWED_FOR_USERS
+
+    for cmd in sorted(_ALWAYS_ALLOWED_FOR_USERS):
+        assert f"/{cmd}" in whoami_result, (
+            f"/whoami omitted always-allowed command /{cmd} for a non-admin with "
+            f"user_allowed_commands=[]; the display floor has drifted from "
+            f"_ALWAYS_ALLOWED_FOR_USERS"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Gate ALLOW — admin and listed user

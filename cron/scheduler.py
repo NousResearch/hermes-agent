@@ -504,6 +504,7 @@ class _ReadWriteLock:
                 if deadline is not None:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
+                        self._cond.notify_all()
                         return False
                     self._cond.wait(timeout=remaining)
                 else:
@@ -533,6 +534,7 @@ class _ReadWriteLock:
                     if deadline is not None:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
+                            self._cond.notify_all()
                             return False
                         self._cond.wait(timeout=remaining)
                     else:

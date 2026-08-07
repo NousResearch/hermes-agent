@@ -5796,10 +5796,11 @@ class TestStreamingApiCall:
         resp = agent._interruptible_streaming_api_call({"messages": []})
 
         assert resp.choices[0].message.content == error_text
-        assert resp.choices[0].finish_reason == "stop"
-        assert [
-            call.args[0] for call in agent.stream_delta_callback.call_args_list
-        ] == [error_text]
+        # Current main treats every text-only stream without a terminal finish
+        # signal as a partial response. The SSE-shaped text remains literal,
+        # but is withheld from the callback so the retry path can own delivery.
+        assert resp.choices[0].finish_reason == "length"
+        agent.stream_delta_callback.assert_not_called()
 
     def test_run_conversation_retries_stream_error_finish_rate_limit(self, agent):
         first_attempt = iter([

@@ -4,7 +4,7 @@ Hermes can pull API keys from external secret managers at process startup instea
 
 Supported:
 
-- [Bitwarden Secrets Manager](./bitwarden) — `bws` CLI, lazy-installed, free tier works.
+- [Bitwarden Secrets Manager](./bitwarden) — `bws` CLI, lazy-installed, free tier works. **Encrypted-only disk cache by default: secret values are never persisted as plaintext, never printed in status lines or logs, and never inherited by child processes.**
 - [1Password](./onepassword) — `op://` references via the official `op` CLI; service-account or desktop session auth.
 - [Command helper](./command) — any CLI vault (`keepassxc-cli`, `secret-tool`, `pass`, custom scripts) via a user-configured helper that prints `KEY=VALUE` lines.
 

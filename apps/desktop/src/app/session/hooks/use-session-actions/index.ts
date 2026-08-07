@@ -297,6 +297,16 @@ export function useSessionActions({
       setAwaitingResponse(false)
       clearNotifications()
       setIntroSeed(seed => seed + 1)
+      // A fresh chat takes the screen. Front the workspace — and ONLY that:
+      // `$terminalTakeover` is the terminal's open/closed state in every
+      // layout, not a Focus-only overlay flag, so clearing it here would close
+      // a terminal sitting harmlessly in its own zone (Default, Terminal deck,
+      // Quad) and would persist a `false` that leaves the Focus tab unable to
+      // mount its workspace on the next boot. Behind another tab the terminal
+      // is hidden, not closed: it keeps its PTYs and the overlay stops
+      // painting on the pane-hidden marker, which is what actually cleared the
+      // chat.
+      revealTreePane('workspace')
       // Clear the durable route intent synchronously, before React Router
       // publishes /new. Submit uses that intent to heal an existing-session
       // rebind race, so leaving the old id here could revive it on a very fast

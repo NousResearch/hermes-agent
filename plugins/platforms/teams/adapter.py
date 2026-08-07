@@ -1269,11 +1269,14 @@ class TeamsAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send any media file/URL as a Teams attachment.
 
-        Remote ``http(s)://`` URLs are attached by reference; local paths
-        (with optional ``file://`` prefix) are base64-encoded into a data
-        URI. MIME type is guessed from the path/extension, falling back to
-        ``default_mime``. Shared by send_image / send_video / send_voice /
-        send_document so every media kind uses the same Attachment path.
+        Remote ``http(s)://`` URLs are attached by reference. Local paths
+        (with optional ``file://`` prefix) are first uploaded to the Bot
+        Connector attachment endpoint, then attached by the returned URL.
+        Teams does not reliably accept inline base64 data URIs for document
+        types such as PDF and Excel. MIME type is guessed from the
+        path/extension, falling back to ``default_mime``. Shared by
+        send_image / send_video / send_voice / send_document so every media
+        kind uses the same Attachment path.
         """
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
@@ -1281,19 +1284,54 @@ class TeamsAdapter(BasePlatformAdapter):
         try:
             import base64
             import mimetypes
-            from microsoft_teams.api import Attachment, MessageActivityInput
+            from microsoft_teams.api import ApiClient, Attachment, MessageActivityInput
 
             if source.startswith("http://") or source.startswith("https://"):
                 content_url = source
                 mime_type = mimetypes.guess_type(source.split("?")[0])[0] or default_mime
+                attachment_name = None
             else:
-                # Local path — encode as base64 data URI
                 path = source.removeprefix("file://")
                 mime_type = mimetypes.guess_type(path)[0] or default_mime
-                with open(path, "rb") as f:
-                    content_url = f"data:{mime_type};base64,{base64.b64encode(f.read()).decode()}"
+                attachment_name = os.path.basename(path)
+                conv_ref = self._conv_refs.get(chat_id)
+                if not conv_ref:
+                    return SendResult(
+                        success=False,
+                        error="Teams conversation reference unavailable for local attachment upload",
+                        retryable=False,
+                    )
 
-            attachment = Attachment(content_type=mime_type, content_url=content_url)
+                with open(path, "rb") as f:
+                    encoded_content = base64.b64encode(f.read()).decode("ascii")
+
+                service_url = conv_ref.service_url.rstrip("/")
+                conversation_id = quote(conv_ref.conversation.id, safe="")
+                api = ApiClient(
+                    service_url=service_url,
+                    options=self._app.activity_sender._client,
+                )
+                upload_response = await api.http.post(
+                    f"{service_url}/v3/conversations/{conversation_id}/attachments",
+                    json={
+                        "name": attachment_name,
+                        "originalBase64": encoded_content,
+                        "type": mime_type,
+                    },
+                )
+                attachment_id = upload_response.json().get("id")
+                if not attachment_id:
+                    raise RuntimeError("Teams attachment upload response did not include an id")
+                content_url = (
+                    f"{service_url}/v3/attachments/"
+                    f"{quote(str(attachment_id), safe='')}/views/original"
+                )
+
+            attachment = Attachment(
+                content_type=mime_type,
+                content_url=content_url,
+                name=attachment_name,
+            )
             activity = MessageActivityInput().add_attachments(attachment)
             if caption:
                 activity = activity.add_text(caption)

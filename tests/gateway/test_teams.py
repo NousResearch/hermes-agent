@@ -85,6 +85,7 @@ def _ensure_teams_mock():
     # MessageActivity mock
     microsoft_teams_api.MessageActivity = MagicMock
     microsoft_teams_api.ConversationReference = MagicMock
+    microsoft_teams_api.ApiClient = MagicMock
     microsoft_teams_api.MessageActivityInput = MagicMock
     microsoft_teams_api.Attachment = MagicMock
 
@@ -729,23 +730,161 @@ class TestTeamsMediaAttachments:
         adapter._app.send = AsyncMock(return_value=MagicMock(id="msg-001"))
         return adapter
 
+    def _install_attachment_types(self, monkeypatch):
+        class FakeAttachment:
+            def __init__(self, *, content_type, content_url=None, name=None):
+                self.content_type = content_type
+                self.content_url = content_url
+                self.name = name
+
+        class FakeMessageActivityInput:
+            def __init__(self):
+                self.attachments = []
+                self.text = None
+
+            def add_attachments(self, *attachments):
+                self.attachments.extend(attachments)
+                return self
+
+            def add_text(self, text):
+                self.text = text
+                return self
+
+        api_module = sys.modules["microsoft_teams.api"]
+        monkeypatch.setattr(api_module, "Attachment", FakeAttachment)
+        monkeypatch.setattr(api_module, "MessageActivityInput", FakeMessageActivityInput)
+
+    def _install_upload_api(self, monkeypatch, response_json=None):
+        upload_response = SimpleNamespace(
+            json=MagicMock(
+                return_value={"id": "attachment-001"}
+                if response_json is None
+                else response_json
+            )
+        )
+        upload_post = AsyncMock(return_value=upload_response)
+        fake_api = SimpleNamespace(http=SimpleNamespace(post=upload_post))
+        api_client = MagicMock(return_value=fake_api)
+        monkeypatch.setattr(sys.modules["microsoft_teams.api"], "ApiClient", api_client)
+        return api_client, upload_post
+
+    def _add_conversation_ref(self, adapter, chat_id):
+        conv_ref = SimpleNamespace(
+            service_url="https://smba.trafficmanager.net/teams/",
+            conversation=SimpleNamespace(id=chat_id),
+        )
+        adapter._conv_refs[chat_id] = conv_ref
+        adapter._app.activity_sender = SimpleNamespace(
+            _client=MagicMock(),
+            send=AsyncMock(return_value=MagicMock(id="msg-001")),
+        )
+        return conv_ref
 
     @pytest.mark.asyncio
-    async def test_send_voice_local_file_base64(self, tmp_path):
+    async def test_send_voice_uploads_local_file_to_connector(self, tmp_path, monkeypatch):
         adapter = self._make_adapter()
+        self._install_attachment_types(monkeypatch)
+        api_client, upload_post = self._install_upload_api(monkeypatch)
+        chat_id = "19:abc@thread.v2"
+        conv_ref = self._add_conversation_ref(adapter, chat_id)
         audio = tmp_path / "reply.mp3"
         audio.write_bytes(b"ID3fakeaudio")
-        result = await adapter.send_voice("19:abc@thread.v2", str(audio), caption="here you go")
+        result = await adapter.send_voice(chat_id, str(audio), caption="here you go")
+
         assert result.success
-        adapter._app.send.assert_awaited_once()
+        api_client.assert_called_once_with(
+            service_url="https://smba.trafficmanager.net/teams",
+            options=adapter._app.activity_sender._client,
+        )
+        upload_post.assert_awaited_once_with(
+            "https://smba.trafficmanager.net/teams/v3/conversations/"
+            "19%3Aabc%40thread.v2/attachments",
+            json={
+                "name": "reply.mp3",
+                "originalBase64": "SUQzZmFrZWF1ZGlv",
+                "type": "audio/mpeg",
+            },
+        )
+        activity, sent_ref = adapter._app.activity_sender.send.await_args.args
+        assert sent_ref is conv_ref
+        assert activity.text == "here you go"
+        assert activity.attachments[0].content_url == (
+            "https://smba.trafficmanager.net/teams/v3/attachments/"
+            "attachment-001/views/original"
+        )
 
     @pytest.mark.asyncio
-    async def test_send_document_local_file_base64(self, tmp_path):
+    async def test_send_excel_upload_preserves_name_and_mime_type(self, tmp_path, monkeypatch):
         adapter = self._make_adapter()
-        doc = tmp_path / "report.pdf"
-        doc.write_bytes(b"%PDF-1.4 fake")
-        result = await adapter.send_document("19:abc@thread.v2", str(doc))
+        self._install_attachment_types(monkeypatch)
+        _, upload_post = self._install_upload_api(monkeypatch)
+        chat_id = "19:abc@thread.v2"
+        self._add_conversation_ref(adapter, chat_id)
+        doc = tmp_path / "report.xlsx"
+        doc.write_bytes(b"PKfakeexcel")
+        result = await adapter.send_document(chat_id, str(doc))
+
         assert result.success
+        payload = upload_post.await_args.kwargs["json"]
+        assert payload["name"] == "report.xlsx"
+        assert payload["type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        activity = adapter._app.activity_sender.send.await_args.args[0]
+        assert activity.attachments[0].name == "report.xlsx"
+        adapter._app.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_remote_document_stays_reference_attachment(self, monkeypatch):
+        adapter = self._make_adapter()
+        self._install_attachment_types(monkeypatch)
+        api_client, upload_post = self._install_upload_api(monkeypatch)
+
+        result = await adapter.send_document(
+            "19:abc@thread.v2",
+            "https://example.com/report.xlsx?download=1",
+        )
+
+        assert result.success
+        api_client.assert_not_called()
+        upload_post.assert_not_awaited()
         adapter._app.send.assert_awaited_once()
+        activity = adapter._app.send.await_args.args[1]
+        assert activity.attachments[0].content_url == (
+            "https://example.com/report.xlsx?download=1"
+        )
 
+    @pytest.mark.asyncio
+    async def test_local_document_requires_conversation_reference(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter()
+        self._install_attachment_types(monkeypatch)
+        api_client, upload_post = self._install_upload_api(monkeypatch)
+        doc = tmp_path / "report.xlsx"
+        doc.write_bytes(b"PKfakeexcel")
 
+        result = await adapter.send_document("19:missing@thread.v2", str(doc))
+
+        assert not result.success
+        assert not result.retryable
+        assert "conversation reference unavailable" in result.error
+        api_client.assert_not_called()
+        upload_post.assert_not_awaited()
+        adapter._app.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upload_response_requires_attachment_id(self, tmp_path, monkeypatch):
+        adapter = self._make_adapter()
+        self._install_attachment_types(monkeypatch)
+        _, upload_post = self._install_upload_api(monkeypatch, response_json={"unexpected": True})
+        chat_id = "19:abc@thread.v2"
+        self._add_conversation_ref(adapter, chat_id)
+        doc = tmp_path / "report.xlsx"
+        doc.write_bytes(b"PKfakeexcel")
+
+        result = await adapter.send_document(chat_id, str(doc))
+
+        assert not result.success
+        assert result.retryable
+        assert "did not include an id" in result.error
+        upload_post.assert_awaited_once()
+        adapter._app.activity_sender.send.assert_not_awaited()

@@ -2306,7 +2306,8 @@ export const ja = defineLocale({
     templateMoveUp: '上に移動',
     templateMoveDown: '下に移動',
     templateReset: 'デフォルトに戻す',
-    templateResetConfirm: 'すべてのテンプレートを3つの組み込みデフォルトに戻しますか？カスタムテンプレートは失われます。',
+    templateResetConfirm:
+      'すべてのテンプレートを3つの組み込みデフォルトに戻しますか？カスタムテンプレートは失われます。',
     templateLabelPlaceholder: 'ラベル',
     templateDescPlaceholder: '説明（任意）',
     templateTextPlaceholder: 'プロンプトテキスト',

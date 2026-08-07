@@ -106,6 +106,73 @@ def test_load_website_blocklist_wraps_shared_file_read_errors(tmp_path, monkeypa
     assert result["rules"] == []  # shared file rules skipped
 
 
+def test_load_website_blocklist_warns_on_unknown_keys(tmp_path, caplog):
+    """Unknown security.website_blocklist keys must log a warning.
+
+    A typo such as ``shared_file`` (instead of ``shared_files``) is otherwise
+    carried into the policy dict by ``update()`` and never read, making the
+    policy look deployed while fencing nothing.
+    """
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "security": {
+                    "website_blocklist": {
+                        "enabled": True,
+                        "domains": ["example.com"],
+                        "shared_file": "/etc/blocked-hosts",  # typo
+                        "allowed": ["example.org"],           # invented
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("WARNING", logger="tools.website_policy"):
+        policy = load_website_blocklist(config_path)
+
+    assert policy["enabled"] is True
+    assert {rule["pattern"] for rule in policy["rules"]} == {"example.com"}
+
+    warning = next(
+        (rec.message for rec in caplog.records if "Unknown security.website_blocklist keys" in rec.message),
+        None,
+    )
+    assert warning is not None
+    assert "allowed" in warning and "shared_file" in warning
+
+
+def test_load_website_blocklist_no_warning_for_known_keys(tmp_path, caplog):
+    """A fully-known key set must not log an unknown-keys warning."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "security": {
+                    "website_blocklist": {
+                        "enabled": True,
+                        "domains": ["example.com"],
+                        "shared_files": [],
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("WARNING", logger="tools.website_policy"):
+        load_website_blocklist(config_path)
+
+    assert not any(
+        "Unknown security.website_blocklist keys" in rec.message
+        for rec in caplog.records
+    )
+
+
 def test_check_website_access_blocks_scheme_less_urls(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

@@ -28,6 +28,12 @@ _DEFAULT_WEBSITE_BLOCKLIST = {
     "shared_files": [],
 }
 
+# Keys load_website_blocklist actually reads. Anything else in
+# security.website_blocklist is silently ignored by policy.update() — warn so
+# a typo (e.g. shared_file vs shared_files) can't look deployed while
+# fencing nothing.
+_KNOWN_KEYS = {"enabled", "domains", "shared_files"}
+
 # Cache: parsed policy + timestamp.  Avoids re-reading config.yaml on every
 # URL check (a multi-URL extract with 50 pages would otherwise mean 51 YAML parses).
 _CACHE_TTL_SECONDS = 30.0
@@ -125,6 +131,13 @@ def _load_policy_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
 
     policy = dict(_DEFAULT_WEBSITE_BLOCKLIST)
     policy.update(website_blocklist)
+
+    unknown = set(website_blocklist) - _KNOWN_KEYS
+    if unknown:
+        logger.warning(
+            "Unknown security.website_blocklist keys ignored: %s",
+            ", ".join(sorted(unknown)),
+        )
     return policy
 
 

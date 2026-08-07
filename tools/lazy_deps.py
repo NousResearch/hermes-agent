@@ -175,7 +175,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # sentencepiece is required by sherpa_onnx.text2token (runtime phrase
     # tokenization) even though sherpa-onnx doesn't declare it.
     "wake.sherpa": (
-        "sherpa-onnx==1.13.4",
+        # sherpa-onnx 1.13.x is a broken wheel on macOS arm64: KeywordSpotter
+        # builds and streams but produces ZERO detections even on the bundled
+        # model + test wavs (verified 2026-07-31; same result reported on the
+        # 1.13.4-core lock). Pin to 1.12.40 where KWS actually fires.
+        "sherpa-onnx==1.12.40",
+        "sherpa-onnx-core==1.12.40",
         "sentencepiece==0.2.2",
         "sounddevice==0.5.5",
         "numpy==2.4.3",

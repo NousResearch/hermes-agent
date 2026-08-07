@@ -44,6 +44,21 @@ def _cfg(model=None, providers=None, custom_providers=None) -> dict:
 
 
 
+def test_load_picker_context_reads_provider_scoped_model_exclusions():
+    cfg = _cfg()
+    cfg["model_catalog"] = {
+        "excluded_models": {
+            "openrouter": ["anthropic/*", "openai/*"],
+        },
+    }
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        ctx = load_picker_context()
+
+    assert ctx.excluded_models == {
+        "openrouter": ["anthropic/*", "openai/*"],
+    }
+
+
 # ─── with_overrides ────────────────────────────────────────────────────
 
 
@@ -84,6 +99,53 @@ def _nous_row(model: str = "openai/gpt-5.5") -> dict:
     }
 
 
+def test_build_models_payload_filters_models_by_provider_scope():
+    rows = [
+        {
+            "slug": "openrouter",
+            "name": "OpenRouter",
+            "models": [
+                "anthropic/claude-opus-4.8",
+                "openai/gpt-5.6-sol",
+                "deepseek/deepseek-v4",
+            ],
+            "total_models": 3,
+            "is_current": True,
+            "is_user_defined": False,
+            "source": "built-in",
+        },
+        {
+            "slug": "meridian",
+            "name": "Meridian",
+            "models": ["claude-opus-4-8"],
+            "total_models": 1,
+            "is_current": False,
+            "is_user_defined": True,
+            "source": "user-config",
+        },
+    ]
+    ctx = ConfigContext(
+        current_provider="openrouter",
+        current_model="anthropic/claude-opus-4.8",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        excluded_models={
+            "openrouter": ["anthropic/*", "openai/*"],
+        },
+    )
+
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    providers = {
+        row["slug"]: row
+        for row in payload["providers"]
+        if row["slug"] != "moa"
+    }
+    assert providers["openrouter"]["models"] == ["deepseek/deepseek-v4"]
+    assert providers["openrouter"]["total_models"] == 1
+    assert providers["meridian"]["models"] == ["claude-opus-4-8"]
 
 
 def test_cli_model_picker_forwards_force_refresh_to_probe_flags():

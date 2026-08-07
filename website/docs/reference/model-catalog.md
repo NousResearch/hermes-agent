@@ -105,6 +105,35 @@ model_catalog:
 
 The exclusion is matched case-insensitively against every key a provider can surface under — the Hermes id and models.dev id (built-in mapped providers), the overlay pid and resolved Hermes slug (overlay providers), and the canonical slug (canonical providers) — so a single entry like `copilot` hides the provider regardless of which section emits it. It is honored by every `/model` picker surface: the gateway interactive/text pickers, the TUI picker, and the interactive `hermes model` CLI picker. An empty list (or omitting the key) has no effect.
 
+### Hiding models from the picker
+
+`excluded_models` hides model IDs under a specific provider without affecting
+the same model family through another provider. Each provider key maps to a
+list of case-insensitive glob patterns:
+
+```yaml
+model_catalog:
+  excluded_models:
+    openrouter:
+      - anthropic/*
+      - openai/gpt-5.6-sol
+```
+
+In this example, OpenRouter's Anthropic models and its exact
+`openai/gpt-5.6-sol` route are omitted from picker inventories. Native
+Anthropic, OpenAI Codex, and custom providers remain unchanged because rules
+are matched only against the provider slug that contains them.
+
+The patterns use shell-style globs: `*` matches any sequence, `?` matches one
+character, and bracket expressions such as `[ab]` match one listed character.
+Exact model IDs work without wildcard characters. Matching is
+case-insensitive.
+
+This is a picker policy, not a runtime authorization block. An existing saved
+model remains valid, and CLI or slash-command paths that accept an explicit
+model ID can still select a hidden model. Omit `excluded_models` or use an
+empty mapping to leave all model inventories unchanged.
+
 ## Updating the manifest
 
 Maintainers:

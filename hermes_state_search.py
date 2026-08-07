@@ -22,6 +22,7 @@ from hermes_state_common import (
     FTS_SQL,
     FTS_STORAGE_VERSION,
     FTS_TRIGRAM_SQL,
+    FTS5_TERM_PUNCT,
     MAX_FTS5_QUERY_CHARS,
     SCHEMA_VERSION,
     _FTS_CJK_TRIGGERS,
@@ -1222,13 +1223,48 @@ class SessionSearchMixin:
         sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
         sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
 
-        # Step 5: Wrap unquoted dotted and/or hyphenated terms in double
-        # quotes.  FTS5's tokenizer splits on dots and hyphens, turning
-        # ``chat-send`` into ``chat AND send`` and ``P2.2`` into ``p2 AND 2``.
-        # Quoting preserves phrase semantics.  A single pass avoids the
-        # double-quoting bug that would occur if dotted, hyphenated and underscored
-        # patterns were applied sequentially (e.g. ``my-app.config``).
-        sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)
+        # Step 5: Quote any term carrying punctuation FTS5 would choke on.
+        #
+        # Dots and hyphens are the well-known case — the tokenizer splits them,
+        # turning ``chat-send`` into ``chat AND send`` and ``P2.2`` into
+        # ``p2 AND 2`` — but they are not the only ones. Every character in
+        # FTS5_TERM_PUNCT raises ``fts5: syntax error near "<c>"`` when it
+        # reaches MATCH bare, and the execute site swallows OperationalError
+        # into zero results (same failure mode the ``:`` note in Step 2
+        # describes). That silently emptied ordinary searches: ``#123``,
+        # ``src/main.py``, ``don't``, ``50%``, ``alice@example.com``, ``ok?``,
+        # ``$5``, ``a,b``.
+        #
+        # Quoting is the right repair rather than stripping: it preserves the
+        # term the user typed as an exact phrase, and FTS5 tokenizes inside a
+        # phrase, so ``"alice@example.com"`` matches the indexed content while
+        # ``alice example.com`` would change the query's meaning.
+        #
+        # One pass over whitespace-separated tokens, so a term with mixed
+        # punctuation (``my-app.config.ts``) is quoted once rather than
+        # accumulating nested quotes from sequential patterns. Placeholders
+        # from Step 1 and bare booleans are left alone, and a trailing ``*``
+        # stays outside the quotes so prefix search still works.
+        def _quote_token(token: str) -> str:
+            if not token or token.startswith("\x00Q"):
+                return token
+            if token.upper() in {"AND", "OR", "NOT"}:
+                return token
+            suffix = ""
+            core = token
+            if core.endswith("*"):
+                core, suffix = core[:-1], "*"
+            if not core or not any(c in FTS5_TERM_PUNCT for c in core):
+                return token
+            # A token that is punctuation only has nothing to match on; drop it
+            # rather than emit an empty phrase (itself a syntax error).
+            if not any(c.isalnum() for c in core):
+                return ""
+            return f'"{core}"{suffix}'
+
+        sanitized = " ".join(
+            _quote_token(tok) for tok in sanitized.split()
+        )
 
         # Step 6: Restore preserved quoted phrases
         for i, quoted in enumerate(_quoted_parts):

@@ -183,6 +183,16 @@ FTS_STORAGE_VERSION = 1
 # sanitizer/runtime behavior predictable under adversarial input.
 MAX_FTS5_QUERY_CHARS = 2_048
 
+# ASCII punctuation that FTS5's query parser rejects outright — a bare
+# ``alpha<c>beta`` raises ``fts5: syntax error near "<c>"``, and the search
+# execute site swallows OperationalError into zero results. A term containing
+# any of these is quoted so it reaches MATCH as an exact phrase instead.
+#
+# ``_`` is here for phrase fidelity rather than syntax: unicode61 treats it as
+# a separator, so ``sp_new`` must stay one phrase. ``*`` is deliberately
+# absent — it is FTS5's prefix operator and is preserved outside the quotes.
+FTS5_TERM_PUNCT = "!\"#$%&'(),-./:;<=>?@[\\]^_`{|}~+"
+
 
 _FTS_TRIGGERS = (
     "messages_fts_insert",

@@ -694,6 +694,59 @@ def _common_betas_for_base_url(
     return betas
 
 
+def _build_tls_http_client(
+    *,
+    ssl_ca_cert=None,
+    ssl_verify=None,
+    base_url: str = "",
+    read_timeout: float = 900.0,
+):
+    """Return an ``httpx.Client`` carrying the resolved TLS verify, or ``None``.
+
+    The Anthropic SDK builds its own httpx client with httpx's default
+    ``verify=True``, which pins certifi's bundle and therefore ignores
+    ``HERMES_CA_BUNDLE`` / ``SSL_CERT_FILE`` / ``REQUESTS_CA_BUNDLE`` /
+    ``CURL_CA_BUNDLE`` and the per-provider ``ssl_ca_cert`` / ``ssl_verify``
+    config. ``agent.ssl_verify.resolve_httpx_verify`` exists precisely because
+    those settings must be passed explicitly — ``create_openai_client`` and the
+    auxiliary clients already route through it, the Anthropic path never did.
+    Behind a corporate TLS-inspecting proxy every OpenAI-wire provider worked
+    while Anthropic-native failed verification with no way to configure it.
+
+    Returns ``None`` when verification resolves to the default (``True``) so the
+    SDK keeps building its own client exactly as before — no new transport, no
+    behaviour change, for the overwhelming majority of installs.
+    """
+    verify = None
+    try:
+        from agent.ssl_verify import resolve_httpx_verify
+
+        verify = resolve_httpx_verify(
+            ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify, base_url=base_url or "",
+        )
+    except Exception:
+        logger.debug("TLS verify resolution failed; using SDK defaults", exc_info=True)
+        return None
+
+    if verify is True:
+        return None
+
+    try:
+        import httpx
+
+        return httpx.Client(
+            verify=verify,
+            timeout=httpx.Timeout(timeout=float(read_timeout), connect=10.0),
+        )
+    except Exception:
+        logger.warning(
+            "Could not build a TLS-configured HTTP client for the Anthropic "
+            "endpoint; falling back to SDK defaults (custom CA bundle / "
+            "ssl_verify will NOT apply)", exc_info=True,
+        )
+        return None
+
+
 def _build_anthropic_client_with_bearer_hook(
     token_provider,
     base_url: str = None,
@@ -780,6 +833,8 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    ssl_ca_cert=None,
+    ssl_verify=None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -822,6 +877,9 @@ def build_anthropic_client(
             api_key, base_url, timeout,
             drop_context_1m_beta=drop_context_1m_beta,
         )
+    # Resolved before the auth branches below so every one of them — API key,
+    # OAuth, Kimi /coding, bearer-auth and third-party proxies — gets the same
+    # TLS treatment.
 
     normalize_proxy_env_vars()
 
@@ -832,6 +890,12 @@ def build_anthropic_client(
         import re as _re
         normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+    _tls_http_client = _build_tls_http_client(
+        ssl_ca_cert=ssl_ca_cert,
+        ssl_verify=ssl_verify,
+        base_url=normalized_base_url,
+        read_timeout=_read_timeout,
+    )
     kwargs = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
         # Delegate all rate-limit / 5xx retry to hermes's outer conversation
@@ -899,6 +963,9 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    if _tls_http_client is not None:
+        kwargs["http_client"] = _tls_http_client
 
     client = _anthropic_sdk.Anthropic(**kwargs)
     # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it

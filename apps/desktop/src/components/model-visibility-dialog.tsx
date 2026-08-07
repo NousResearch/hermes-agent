@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
+import { HERMES_CONFIG_KEY } from '@/app/hooks/use-config-record'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -9,12 +10,20 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { Switch } from '@/components/ui/switch'
-import type { HermesGateway } from '@/hermes'
+import { getHermesConfigRecord, type HermesGateway, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
+import {
+  excludedProviderName,
+  isProviderExcluded,
+  readExcludedProviders,
+  withExcludedProviders,
+  withProviderExcluded
+} from '@/lib/excluded-providers'
 import { Search } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
+import { cn } from '@/lib/utils'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -24,8 +33,15 @@ import {
   setVisibleModels,
   toggleModelVisibility
 } from '@/store/model-visibility'
+import { notifyError } from '@/store/notifications'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
-import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
+import type { HermesConfigRecord, ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
+
+/** Config record backing the provider switches, keyed by profile like the model
+ *  catalog above it: `GET /api/config` answers for whichever profile the app is
+ *  routed to, and this dialog is mounted across profile switches — one shared
+ *  key would paint the previous profile's blocklist. */
+const configQueryKey = (profile: string) => ['hermes-config', 'excluded-providers', profile] as const
 
 interface ModelVisibilityDialogProps {
   gw?: HermesGateway
@@ -49,6 +65,7 @@ export function ModelVisibilityDialog({
   const [search, setSearch] = useState('')
   const stored = useStore($visibleModels)
   const collapsedProviders = useStore($collapsedProviders)
+  const queryClient = useQueryClient()
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId),
@@ -56,9 +73,39 @@ export function ModelVisibilityDialog({
     enabled: open
   })
 
+  const config = useQuery({
+    queryKey: configQueryKey(profile),
+    queryFn: getHermesConfigRecord,
+    enabled: open
+  })
+
   const providers = useMemo(
     () => (modelOptions.data?.providers ?? []).filter(provider => (provider.models ?? []).length > 0),
     [modelOptions.data]
+  )
+
+  const excluded = useMemo(() => readExcludedProviders(config.data), [config.data])
+
+  // An excluded provider is absent from the catalog payload — the backend drops
+  // it before the picker sees it — so its row is synthesized from the config
+  // list. Without that, the switch would disappear along with the provider and
+  // there'd be no way back short of hand-editing config.yaml. Only the slug is
+  // known until it's re-enabled, which is why the row carries no models.
+  const rows = useMemo(
+    () => [
+      // The catalog can still carry an excluded provider in one case: it's the
+      // configured current provider, which the payload keeps so the UI can show
+      // the saved selection. Read `off` from the config either way so the switch
+      // never contradicts what's on disk.
+      ...providers.map(provider => ({ off: isProviderExcluded(excluded, provider.slug), provider })),
+      ...excluded
+        .filter(slug => !providers.some(provider => provider.slug.toLowerCase() === slug.toLowerCase()))
+        .map(slug => ({
+          off: true,
+          provider: { models: [], name: excludedProviderName(slug), slug } as ModelOptionProvider
+        }))
+    ],
+    [providers, excluded]
   )
 
   const visible = effectiveVisibleKeys(stored, providers)
@@ -71,10 +118,61 @@ export function ModelVisibilityDialog({
     setVisibleModels(setProviderVisibility($visibleModels.get(), providers, provider.slug, next))
   }
 
+  // Provider on/off is real config (`model_catalog.excluded_providers`), not a
+  // local preference: the backend builds every picker's catalog from it, so an
+  // off provider is gone from the composer menu, the ⌘-picker, the TUI and
+  // `hermes model` alike — including one that authenticated itself from ambient
+  // credentials (a logged-in `gh`, Claude Code's OAuth file).
+  //
+  // The switch flips optimistically (with rollback), but the record that gets
+  // PERSISTED is re-read first: `PUT /api/config` takes a whole record, and the
+  // cached one can be up to a staleTime old — edited meanwhile by a settings
+  // page, the CLI, or another profile's backend. Writing the cached copy would
+  // resurrect its stale values as an edit. The catalog is re-fetched afterwards
+  // because the backend derives it from the config we just changed.
+  const setProviderEnabled = async (provider: ModelOptionProvider, enabled: boolean) => {
+    const cached = config.data
+    const key = configQueryKey(profile)
+
+    if (!cached) {
+      return
+    }
+
+    queryClient.setQueryData<HermesConfigRecord>(
+      key,
+      withExcludedProviders(cached, withProviderExcluded(excluded, provider.slug, !enabled))
+    )
+
+    try {
+      const fresh = await getHermesConfigRecord()
+
+      const next = withExcludedProviders(
+        fresh,
+        withProviderExcluded(readExcludedProviders(fresh), provider.slug, !enabled)
+      )
+
+      await saveHermesConfig(next)
+      queryClient.setQueryData<HermesConfigRecord>(key, next)
+      // The settings pages cache the same record under their own key and save it
+      // back whole — leave theirs stale and their next save would PUT a
+      // `model_catalog` block from before this switch.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: HERMES_CONFIG_KEY }),
+        queryClient.invalidateQueries({ queryKey: ['model-options'] })
+      ])
+    } catch (err) {
+      queryClient.setQueryData<HermesConfigRecord>(key, cached)
+      notifyError(err, copy.providerToggleFailed)
+    }
+  }
+
   const q = normalize(search)
 
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q || `${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`.toLowerCase().includes(q)
+
+  const providerMatches = (provider: ModelOptionProvider) =>
+    !q || `${provider.name} ${provider.slug}`.toLowerCase().includes(q)
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -96,19 +194,20 @@ export function ModelVisibilityDialog({
         </div>
 
         <div className="max-h-[55vh] overflow-y-auto pb-1">
-          {providers.length === 0 ? (
+          {rows.length === 0 ? (
             <div className="px-3 py-5 text-center text-xs text-muted-foreground">
               {modelOptions.isPending ? <GlyphSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
             </div>
           ) : (
-            providers.map(provider => {
-              const models = collapseModelFamilies(provider.models ?? []).filter(family => matches(provider, family.id))
+            rows.map(({ off, provider }) => {
+              const allFamilies = collapseModelFamilies(provider.models ?? [])
+              const models = allFamilies.filter(family => matches(provider, family.id))
 
-              if (models.length === 0) {
+              // An off provider has no models to match, so its row survives a
+              // search on the provider itself; an on provider needs a model hit.
+              if (off ? !providerMatches(provider) : models.length === 0) {
                 return null
               }
-
-              const allFamilies = collapseModelFamilies(provider.models ?? [])
 
               const onCount = allFamilies.filter(family =>
                 visible.has(modelVisibilityKey(provider.slug, family.id))
@@ -116,28 +215,43 @@ export function ModelVisibilityDialog({
 
               const checkState = onCount === 0 ? false : onCount === allFamilies.length ? true : 'indeterminate'
 
-              const collapsed = collapsedProviders.includes(provider.slug) && !q
+              const collapsed = (collapsedProviders.includes(provider.slug) && !q) || off
 
               return (
                 <div className="py-0.5" key={provider.slug}>
                   <div className="flex items-center gap-2 px-3 pb-0.5 pt-1">
                     <button
-                      className="group/label flex w-full items-center gap-1 pb-0.5 pt-0.5 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary) hover:bg-transparent"
+                      className={cn(
+                        'group/label flex w-full items-center gap-1 pb-0.5 pt-0.5 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary) hover:bg-transparent',
+                        off && 'opacity-50'
+                      )}
+                      disabled={off}
                       onClick={() => toggleCollapsedProvider(provider.slug)}
                       type="button"
                     >
                       <span className="min-w-0 truncate">
                         <HighlightMatches query={search} text={provider.name} />
                       </span>
-                      <DisclosureCaret
-                        className="shrink-0 opacity-0 transition group-hover/label:opacity-100"
-                        open={!collapsed}
-                        size="0.625rem"
-                      />
+                      {!off && (
+                        <DisclosureCaret
+                          className="shrink-0 opacity-0 transition group-hover/label:opacity-100"
+                          open={!collapsed}
+                          size="0.625rem"
+                        />
+                      )}
                     </button>
-                    <Checkbox
-                      checked={checkState}
-                      onCheckedChange={next => setProviderVisible(provider, next !== false)}
+                    {!off && (
+                      <Checkbox
+                        checked={checkState}
+                        onCheckedChange={next => setProviderVisible(provider, next !== false)}
+                      />
+                    )}
+                    <Switch
+                      aria-label={copy.providerToggle(provider.name)}
+                      checked={!off}
+                      disabled={!config.data}
+                      onCheckedChange={next => void setProviderEnabled(provider, next)}
+                      size="xs"
                     />
                   </div>
                   {!collapsed &&

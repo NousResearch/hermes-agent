@@ -2162,7 +2162,9 @@ export const zhHant = defineLocale({
     title: '模型',
     search: '搜尋模型',
     noAuthenticatedProviders: '沒有已驗證的提供方。',
-    addProvider: '新增提供方…'
+    addProvider: '新增提供方…',
+    providerToggle: (provider: string) => `啟用 ${provider}`,
+    providerToggleFailed: '無法更新提供方。'
   },
 
   shell: {

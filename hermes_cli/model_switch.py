@@ -3093,6 +3093,28 @@ def list_authenticated_providers(
     except Exception:
         pass
 
+    # Apply ``model_catalog.excluded_providers`` as a final post-filter too.
+    # Sections 1/2/2b gate early on hermes / models.dev / canonical ids, but
+    # user ``providers:`` and ``custom_providers:`` rows (sections 3/4) never
+    # consulted the blocklist — so excluding a user-defined endpoint silently
+    # did nothing in any picker. Match the row slug and its ``provider_id``,
+    # with the ``custom:`` prefix stripped as well, so ``my-llm`` and
+    # ``custom:my-llm`` are both accepted spellings of the same row.
+    if _excluded:
+        def _row_excluded(row: dict) -> bool:
+            keys = {
+                str(row.get("slug", "")).strip().lower(),
+                str(row.get("provider_id", "")).strip().lower(),
+            }
+            keys |= {
+                key.split("custom:", 1)[1]
+                for key in list(keys)
+                if key.startswith("custom:")
+            }
+            return bool(keys & _excluded)
+
+        results = [r for r in results if not _row_excluded(r)]
+
     # Surface a custom / uncurated model the user selected via the CLI.
     # Each row's model list is its curated/live catalog, so a model the user set
     # with `/model <provider>/<uncurated-name>` would otherwise be invisible in

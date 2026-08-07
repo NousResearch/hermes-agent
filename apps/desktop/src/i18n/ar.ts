@@ -2025,7 +2025,9 @@ export const ar = defineLocale({
     title: 'النماذج',
     search: 'بحث في النماذج',
     noAuthenticatedProviders: 'لا يوجد مزوّدون مصادق عليهم.',
-    addProvider: 'إضافة مزوّد…'
+    addProvider: 'إضافة مزوّد…',
+    providerToggle: (provider: string) => `تمكين ${provider}`,
+    providerToggleFailed: 'تعذّر تحديث المزوّدين.'
   },
   shell: {
     windowControls: 'تحكم النافذة',

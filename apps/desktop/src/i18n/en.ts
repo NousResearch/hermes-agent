@@ -2402,7 +2402,9 @@ export const en: Translations = {
     title: 'Models',
     search: 'Search models',
     noAuthenticatedProviders: 'No authenticated providers.',
-    addProvider: 'Add provider…'
+    addProvider: 'Add provider…',
+    providerToggle: (provider: string) => `Enable ${provider}`,
+    providerToggleFailed: 'Could not update providers.'
   },
 
   shell: {

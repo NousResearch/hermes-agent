@@ -2239,7 +2239,9 @@ export const ja = defineLocale({
     title: 'モデル',
     search: 'モデルを検索',
     noAuthenticatedProviders: '認証済みプロバイダーがありません。',
-    addProvider: 'プロバイダーを追加…'
+    addProvider: 'プロバイダーを追加…',
+    providerToggle: (provider: string) => `${provider} を有効にする`,
+    providerToggleFailed: 'プロバイダーを更新できませんでした。'
   },
 
   shell: {

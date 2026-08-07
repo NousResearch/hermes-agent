@@ -2583,7 +2583,9 @@ export const zh: Translations = {
     title: '模型',
     search: '搜索模型',
     noAuthenticatedProviders: '没有已认证的提供方。',
-    addProvider: '添加提供方…'
+    addProvider: '添加提供方…',
+    providerToggle: (provider: string) => `启用 ${provider}`,
+    providerToggleFailed: '无法更新提供方。'
   },
 
   shell: {

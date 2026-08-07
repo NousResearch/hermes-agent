@@ -2482,9 +2482,36 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # is cheap thanks to ``IF NOT EXISTS`` and stays correct on fresh DBs
     # (where the columns already exist from SCHEMA_SQL).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
-    )
+    # Upgrade ``idx_tasks_idempotency`` to a partial UNIQUE index so the
+    # check-then-insert in ``create_task`` stops being the documented race
+    # ("two concurrent creators with the same key might both insert").
+    # Archived rows are excluded on purpose: creating a fresh task under a
+    # key whose previous task was archived is legal today and stays legal.
+    # Legacy boards that already contain duplicate live keys (a lost race
+    # from before this index) cannot satisfy UNIQUE — for those we keep the
+    # plain index and the old best-effort behaviour rather than failing
+    # initialization.
+    _idem_idx = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' "
+        "AND name='idx_tasks_idempotency'"
+    ).fetchone()
+    if _idem_idx and "UNIQUE" not in (_idem_idx[0] or ""):
+        conn.execute("DROP INDEX idx_tasks_idempotency")
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency "
+            "ON tasks(idempotency_key) "
+            "WHERE idempotency_key IS NOT NULL AND status != 'archived'"
+        )
+    except sqlite3.IntegrityError:
+        _log.warning(
+            "kanban: duplicate live idempotency keys exist (pre-unique race); "
+            "keeping the non-unique index for this board"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
+            "ON tasks(idempotency_key)"
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
@@ -3272,7 +3299,21 @@ def create_task(
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as exc:
+            if "idempotency_key" in str(exc):
+                # Another creator won the race on the same idempotency_key
+                # between our pre-check and this INSERT; the partial UNIQUE
+                # index did its job. Return the winner — the exact contract
+                # the pre-check promises.
+                row = conn.execute(
+                    "SELECT id FROM tasks WHERE idempotency_key = ? "
+                    "AND status != 'archived' "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (idempotency_key,),
+                ).fetchone()
+                if row:
+                    return row["id"]
+                raise
             if attempt == 1:
                 raise
             # Retry with a fresh id.

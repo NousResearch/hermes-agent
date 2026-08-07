@@ -37,7 +37,6 @@ from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
     SessionSource,
-    build_session_key,
     is_shared_multi_user_session,
 )
 from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
@@ -2986,11 +2985,11 @@ class GatewaySlashCommandsMixin:
         session_entry.last_prompt_tokens = 0
         # Evict the cached agent so the next turn rebuilds from the active-only
         # transcript and memory providers refresh their per-session caches.
-        try:
-            session_key = build_session_key(source)
-            self._evict_cached_agent(session_key)
-        except Exception as e:
-            logger.debug("undo: cached-agent eviction skipped: %s", e)
+        # Must use _session_key_for_source (not bare build_session_key) so the
+        # key matches agent-cache / SessionStore routing under
+        # group_sessions_per_user, thread_sessions_per_user, and multiplex
+        # profile namespaces.
+        self._evict_cached_agent(self._session_key_for_source(source))
 
         target_text = result["target_text"]
         preview = target_text[:200] + "..." if len(target_text) > 200 else target_text

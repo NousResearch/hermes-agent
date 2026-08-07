@@ -179,20 +179,26 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
     meaningless. Prefer the LAST user message whose content exactly matches
     this turn's text — the surviving copy in the common case — so the
     injection stamp and the #48677 persist override can't land on a
-    todo-snapshot or historical row. Fall back to the last user message when
-    no exact match survives (merge-summary-into-tail rewrites the content but
-    the trackers still need a live anchor). Returns -1 when the list has no
-    user message at all.
+    todo-snapshot or historical row. Fall back to the last *user-originated*
+    turn when no exact match survives (merge-summary-into-tail rewrites the
+    content but the trackers still need a live anchor). Compaction handoffs
+    must never become the fallback anchor (#80622) — they are reference-only
+    scaffolding, not the active ask. Returns -1 when the list has no
+    user-originated message at all.
     """
+    from agent.context_compressor import is_user_originated_turn
+
     fallback = -1
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             continue
-        if fallback < 0:
-            fallback = i
         if msg.get("content") == user_message:
             return i
+        # Prefer a real human turn over a synthetic handoff / continuation
+        # marker when the exact content was rewritten by merge-into-tail.
+        if fallback < 0 and is_user_originated_turn(msg):
+            fallback = i
     return fallback
 
 

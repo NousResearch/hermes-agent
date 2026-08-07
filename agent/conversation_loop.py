@@ -94,6 +94,70 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+
+def _restore_user_after_reference_handoff(
+    messages: List[Dict[str, Any]], user_message: Any
+) -> bool:
+    """Re-append this turn's real user ask when compaction left only a handoff.
+
+    Returns True when a restore append happened. Used before deciding whether
+    a post-compaction ``continue`` would let the reference-only summary drive
+    the next model call (#80622).
+    """
+    from agent.context_compressor import reference_handoff_would_drive_next_model_call
+
+    if not reference_handoff_would_drive_next_model_call(messages):
+        return False
+    if user_message is None:
+        return False
+    if isinstance(user_message, str):
+        if not user_message.strip():
+            return False
+        content: Any = user_message
+    elif isinstance(user_message, list):
+        if not user_message:
+            return False
+        content = user_message
+    else:
+        return False
+    if (
+        messages
+        and isinstance(messages[-1], dict)
+        and messages[-1].get("role") == "user"
+        and messages[-1].get("content") == content
+    ):
+        return False
+    messages.append({"role": "user", "content": content})
+    return True
+
+
+def _should_skip_model_call_for_reference_handoff(
+    messages: List[Dict[str, Any]], user_message: Any
+) -> bool:
+    """Guard post-compaction continues against sole-handoff active turns (#80622)."""
+    from agent.context_compressor import reference_handoff_would_drive_next_model_call
+
+    _restore_user_after_reference_handoff(messages, user_message)
+    return reference_handoff_would_drive_next_model_call(messages)
+
+
+def _final_response_from_messages(messages: List[Dict[str, Any]]) -> str:
+    """Best-effort recovery of the last real assistant text after a skipped call."""
+    from agent.context_compressor import is_compaction_summary_message
+
+    for message in reversed(messages or []):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        if message.get("tool_calls"):
+            continue
+        if is_compaction_summary_message(message):
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+    return ""
+
+
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
@@ -2151,6 +2215,19 @@ def run_conversation(
                 conversation_history = conversation_history_after_compression(
                     agent, messages, conversation_history
                 )
+                if _should_skip_model_call_for_reference_handoff(
+                    messages, user_message
+                ):
+                    # Reference-only handoff must not become the active turn
+                    # after a completed assistant response (#80622).
+                    logger.info(
+                        "Skipping post-compaction model call: reference-only "
+                        "handoff would be the sole active user turn (#80622)"
+                    )
+                    if not final_response:
+                        final_response = _final_response_from_messages(messages)
+                    _turn_exit_reason = "compaction_handoff_not_actionable"
+                    break
                 api_call_count -= 1
                 agent._api_call_count = api_call_count
                 agent.iteration_budget.refund()
@@ -5734,6 +5811,17 @@ def run_conversation(
                 messages, user_message
             )
             agent._persist_user_message_idx = current_turn_user_idx
+            if _should_skip_model_call_for_reference_handoff(
+                messages, user_message
+            ):
+                logger.info(
+                    "Skipping compressed-restart model call: reference-only "
+                    "handoff would be the sole active user turn (#80622)"
+                )
+                if not final_response:
+                    final_response = _final_response_from_messages(messages)
+                _turn_exit_reason = "compaction_handoff_not_actionable"
+                break
             continue
 
         if _retry.restart_with_rebuilt_messages:
@@ -6575,6 +6663,20 @@ def run_conversation(
                         conversation_history = conversation_history_after_compression(
                             agent, messages, conversation_history
                         )
+                        if _should_skip_model_call_for_reference_handoff(
+                            messages, user_message
+                        ):
+                            logger.info(
+                                "Skipping post-tool compaction model call: "
+                                "reference-only handoff would be the sole "
+                                "active user turn (#80622)"
+                            )
+                            if not final_response:
+                                final_response = _final_response_from_messages(
+                                    messages
+                                )
+                            _turn_exit_reason = "compaction_handoff_not_actionable"
+                            break
                 elif agent.compression_enabled:
                     # Over threshold but compression is blocked (summary-LLM
                     # cooldown or anti-thrashing). Surface a deduped warning so

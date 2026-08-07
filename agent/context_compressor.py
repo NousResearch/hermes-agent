@@ -106,6 +106,11 @@ SUMMARY_PREFIX = (
     "Respond ONLY to the latest user message that appears AFTER this "
     "summary — that message is the single source of truth for what to do "
     "right now. "
+    "If no user message appears AFTER this summary, do nothing: do not "
+    "resume, wrap up, or continue work from "
+    f"'{HISTORICAL_TASK_HEADING}' or any other section, do not call tools, "
+    "and wait for a new user message. This handoff must never become the "
+    "active turn by itself. "
     "Topic overlap with the summary does NOT mean you should resume its "
     "task: even on similar topics, the latest user message WINS. Treat ONLY "
     "the latest message as the active task and discard stale items from "
@@ -260,7 +265,38 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # written by that build generation; prepend only. tests/agent/
 # test_summary_prefix_semantics.py byte-pins every entry to enforce this.
 _HISTORICAL_SUMMARY_PREFIXES = (
-    # Pre-#69619: identical to the current prefix except the stale-item
+    # Pre-#80622: identical to the current prefix except it lacked the
+    # explicit "if no user message appears AFTER this summary, do nothing"
+    # clause. Standalone reference handoffs persisted by that build could
+    # occupy the active user slot after a completed assistant stop and
+    # resume stale Historical Task Snapshot work.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    "'## Historical Task Snapshot' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
+    # Pre-#69619: identical to the then-current prefix except the stale-item
     # discard clause named all four historical headings (the three
     # section headers removed by #69619 were still in the template).
     # Summaries persisted by builds immediately before #69619 carry this
@@ -6978,3 +7014,91 @@ def is_compaction_summary_message(message: Any) -> bool:
     else:
         content = message
     return ContextCompressor._is_context_summary_content(content)
+
+
+def _handoff_carries_live_user_content(message: Any) -> bool:
+    """Return True when a summary-bearing row still carries a live user ask.
+
+    Merge-into-tail carriers preserve prior turn content before the summary.
+    Force-user-leading merges prepend the handoff + end marker to the real
+    ask, leaving a non-empty remainder after ``_SUMMARY_END_MARKER``. Either
+    shape must remain actionable (#80622 must not treat them as sole-handoff).
+    """
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    kind = ContextCompressor.classify_summary_content(content)
+    if kind == "merged":
+        return True
+    text = _content_text_for_contains(content)
+    marker_idx = text.find(_SUMMARY_END_MARKER)
+    if marker_idx < 0:
+        return False
+    return bool(text[marker_idx + len(_SUMMARY_END_MARKER) :].strip())
+
+
+def reference_handoff_would_drive_next_model_call(
+    messages: Optional[List[Dict[str, Any]]],
+) -> bool:
+    """Return True when the next model call would be driven only by a handoff.
+
+    A reference-only compaction handoff must never become the active user turn
+    by itself after an assistant response has already completed (#80622). Mid
+    tool-loop compression remains allowed: tool results / assistant tool_calls
+    after the handoff mean the loop is continuing an in-flight exchange, not
+    starting a fresh turn from the synthetic summary.
+    """
+    if not messages:
+        return False
+
+    last_driving_handoff = -1
+    for index, message in enumerate(messages):
+        if not is_compaction_summary_message(message):
+            continue
+        if _handoff_carries_live_user_content(message):
+            # Embedded live ask — this row is not a sole-handoff driver.
+            continue
+        last_driving_handoff = index
+
+    if last_driving_handoff < 0:
+        return False
+
+    for message in messages[last_driving_handoff + 1 :]:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "tool":
+            return False
+        if role == "assistant" and message.get("tool_calls"):
+            return False
+        if (
+            ContextCompressor._is_actionable_user_turn(message)
+            and not ContextCompressor._is_synthetic_compression_user_turn(message)
+        ):
+            return False
+        if is_compaction_summary_message(message) and _handoff_carries_live_user_content(
+            message
+        ):
+            return False
+    return True
+
+
+def is_user_originated_turn(message: Any) -> bool:
+    """Return True for human-authored user turns (not compaction scaffolding).
+
+    Gateway/session dispatchers (retry, undo, active-turn selection) must use
+    this instead of ``role == "user" and not display_kind`` — standalone
+    handoffs with ``_compressed_summary_has_user_turn`` were previously left
+    without ``display_kind=hidden`` and could be mistaken for real asks (#80622).
+    Summary-bearing rows are never user-originated, even when they embed a
+    live ask after the end marker (callers that need that text should unwrap).
+    """
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    if message.get("display_kind"):
+        return False
+    if is_compaction_summary_message(message):
+        return False
+    if ContextCompressor._is_synthetic_compression_user_turn(message):
+        return False
+    return ContextCompressor._is_actionable_user_turn(message)

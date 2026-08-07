@@ -2242,10 +2242,26 @@ class AIAgent:
                     "codex_message_items": msg.get("codex_message_items"),
                     "timestamp": _row_timestamp,
                     "api_content": _row_api_content,
+                    # Standalone reference handoffs are always hidden, even
+                    # when the summarized transcript contained a user turn —
+                    # otherwise they occupy the active user slot in
+                    # retry/undo/session dispatch (#80622). Merge-into-tail
+                    # carriers keep prior visibility rules so preserved tail
+                    # content stays readable.
                     "display_kind": (
                         "hidden"
-                        if msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
-                        and not msg.get("_compressed_summary_has_user_turn")
+                        if (
+                            msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                            and (
+                                ContextCompressor.classify_summary_content(
+                                    msg.get("content")
+                                )
+                                == "standalone"
+                                or not msg.get(
+                                    "_compressed_summary_has_user_turn"
+                                )
+                            )
+                        )
                         else msg.get("display_kind")
                     ),
                     "display_metadata": msg.get("display_metadata"),

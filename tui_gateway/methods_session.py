@@ -2395,15 +2395,18 @@ def _(rid, params: dict) -> dict:
     removed = 0
     with session["history_lock"]:
         history = session.get("history", [])
-        # Truncate from the last *real* user turn (no display_kind). Popping
-        # only trailing assistant/tool then one user left timeline markers
-        # (async_delegation_complete, model_switch, …) as the undo target —
-        # so session.undo removed bookkeeping instead of the last exchange.
+        # Truncate from the last *real* user turn. Popping only trailing
+        # assistant/tool then one user left timeline markers
+        # (async_delegation_complete, model_switch, …) or compaction
+        # handoffs as the undo target — so session.undo removed
+        # bookkeeping instead of the last exchange (#80622).
         # Match list_recent_user_messages / CLI turn counting.
+        from agent.context_compressor import is_user_originated_turn
+
         last_user_idx = None
         for i in range(len(history) - 1, -1, -1):
             msg = history[i]
-            if msg.get("role") == "user" and not msg.get("display_kind"):
+            if is_user_originated_turn(msg):
                 last_user_idx = i
                 break
         if last_user_idx is not None:

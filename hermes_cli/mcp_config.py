@@ -614,7 +614,16 @@ def cmd_mcp_add(args):
     if _save_mcp_server(name, server_config):
         print()
         _success(f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{total} tools enabled)")
-        _info("Start a new session to use these tools.")
+        # #76954: "start a new session" was misleading in the desktop app,
+        # where a new chat session does NOT re-read the MCP config — the
+        # tool registry is built once at backend process start. /reload-mcp
+        # is the honest, immediate path (TUI/CLI); a desktop user must
+        # restart the app or gateway until #58414 lands.
+        _info(
+            "Run /reload-mcp to use these tools in the current session, "
+            "or restart the desktop app / gateway (a new chat session alone "
+            "does not pick up newly added MCP servers)."
+        )
 
 
 # ─── hermes mcp remove ───────────────────────────────────────────────────────
@@ -1065,7 +1074,13 @@ def cmd_mcp_configure(args):
 
     new_count = len(chosen)
     _success(f"Updated config: {new_count}/{total} tools enabled")
-    _info("Start a new session for changes to take effect.")
+    # Same truthfulness fix as mcp add (#76954): /reload-mcp is the honest
+    # immediate path; a new desktop chat session alone does not pick up the
+    # change (the tool registry is built once at backend start).
+    _info(
+        "Run /reload-mcp to apply changes in the current session, "
+        "or restart the desktop app / gateway."
+    )
 
 
 # ─── Dispatcher ───────────────────────────────────────────────────────────────

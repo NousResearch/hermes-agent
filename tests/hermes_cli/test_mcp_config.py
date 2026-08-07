@@ -207,6 +207,30 @@ class TestMcpAdd:
         assert config["mcp_servers"]["ink"]["url"] == "https://mcp.ml.ink/mcp"
 
 
+    def test_add_hints_reload_mcp_instead_of_new_session(self, tmp_path, capsys, monkeypatch):
+        """#76954: the success message must point at /reload-mcp, not
+        "start a new session" — a new desktop chat session does not re-read
+        the MCP config (tool registry is built once at backend process
+        start), so the old hint was misleading there.
+        """
+        def mock_probe(name, config, **kw):
+            return [("search", "Search repos")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        inputs = iter(["n", ""])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(name="ink", url="https://mcp.ml.ink/mcp"))
+        out = capsys.readouterr().out
+        assert "/reload-mcp" in out
+        assert "Start a new session to use these tools." not in out
+        assert "restart the desktop app / gateway" in out
+
+
     def test_add_stdio_server_with_env(self, tmp_path, capsys, monkeypatch):
         """Stdio servers can persist explicit environment variables."""
         fake_tools = [FakeTool("search", "Search repos")]

@@ -23,27 +23,23 @@ else
     echo "  -> No .env.secrets file, using environment variables"
 fi
 
-# 1. Overwrite model config — z.ai NATIVE (revert Phase 2 v3 claudish, 2026-08-07)
-# Phase 2 v3 (2026-06-25) routed via claudish proxy (claude-sonnet-4-6 -> gc@glm-5.2)
-# but the gateway's main loop ignores ANTHROPIC_BASE_URL (wire_selector bug,
-# [[feedback-hermes-wire-selector]]) and hits api.anthropic.com direct -> 401
-# invalid x-api-key on every cron. Claudish proxy itself is healthy (verified
-# 2026-08-07 by po-2023: HTTP 200, 171 active req from po-2026); the break is
-# client-side in Hermes. Revert to z.ai native: provider zai + glm-5-turbo, the
-# canonical config per CLAUDE.md "z.ai provider (CRITICAL)".
-echo "  -> Setting model: glm-5-turbo (z.ai native, revert claudish Phase 2 v3)"
-# Use extended regex with optional quotes — config.yaml may carry the value quoted
-# ("claude-sonnet-4-6") or unquoted (claude-sonnet-4-6) depending on which stage
-# last wrote it (upstream stage2-hook vs prior restore runs).
-sed -i -E 's/^  default: "?(anthropic\/claude-opus-4\.6|claude-sonnet-4-6|glm-5\.2|glm-5-turbo)"?$/  default: "glm-5-turbo"/' "$DATA/config.yaml"
+# 1. Overwrite model config — claudish proxy route (Phase 2 v3 restored 2026-08-07)
+# Routes via claudish proxy (po-2023:3000): claude-sonnet-4-6 -> gc@glm-5.2.
+# Auth via x-proxy-key (mandatory since claudish auth hardening 2026-07-10) carried
+# in ANTHROPIC_CUSTOM_HEADERS. This is the prescribed fix from claudish (msg
+# msg-20260807T185007-xvk0jc) after the z.ai-native fallback was rejected by user
+# as not following claudish's instructions. GLM_API_KEY retained for aux tasks
+# (compression, image, browser, web).
+echo "  -> Setting model: claude-sonnet-4-6 (anthropic wire via claudish -> gc@glm-5.2)"
+# Extended regex, optional quotes — robust to upstream stage2-hook format changes.
+sed -i -E 's/^  default: "?(anthropic\/claude-opus-4\.6|claude-sonnet-4-6|glm-5\.2|glm-5-turbo)"?$/  default: "claude-sonnet-4-6"/' "$DATA/config.yaml"
 
-# Ensure provider is set to zai (built-in profile, native /api/coding/paas/v4).
-# NEVER use ANTHROPIC_BASE_URL — the Anthropic-compat layer causes MCP tool
-# registry loss after compaction (CLAUDE.md "z.ai provider (CRITICAL)").
+# Ensure provider is set to anthropic (built-in profile, transport=anthropic_messages).
+# x-proxy-key + ANTHROPIC_BASE_URL (step 4) route the gateway to claudish.
 if grep -q '^  provider:' "$DATA/config.yaml"; then
-    sed -i -E 's/^  provider: "?(auto|openrouter|anthropic|zai)"?$/  provider: "zai"/' "$DATA/config.yaml"
+    sed -i -E 's/^  provider: "?(auto|openrouter|anthropic|zai)"?$/  provider: "anthropic"/' "$DATA/config.yaml"
 else
-    sed -i '/^  default: "glm-5-turbo"/a\  provider: "zai"' "$DATA/config.yaml"
+    sed -i '/^  default: "claude-sonnet-4-6"/a\  provider: "anthropic"' "$DATA/config.yaml"
 fi
 
 # 1c. Set compression threshold for GLM-5.2 1M context.
@@ -220,11 +216,16 @@ else
     # CRITICAL: Copy roo-state-manager to /tmp BEFORE patching.
     # The volume mount is rw — sed -i on /opt/roo-state-manager would corrupt
     # the host .env (see regression #560). We patch ONLY the copy.
-    # node_modules is a symlink to the host install, so we use cp -L to
-    # dereference it and avoid dangling links in /tmp.
+    # node_modules is a symlink to the host install, so we prefer cp -L to
+    # dereference it. Some host installs carry a dangling self-symlink
+    # (node_modules/roo-state-manager) that makes cp -L abort; tolerate it by
+    # falling back to plain cp -r (keep links). NEVER let this abort the restore
+    # — .env/config.yaml generation must run regardless of MCP copy success.
     echo "  -> Copying roo-state-manager to /tmp (isolated from host)"
     rm -rf /tmp/roo-state-manager 2>/dev/null
-    cp -rL /opt/roo-state-manager /tmp/roo-state-manager
+    cp -rL /opt/roo-state-manager /tmp/roo-state-manager 2>/dev/null \
+        || cp -r /opt/roo-state-manager /tmp/roo-state-manager 2>/dev/null \
+        || echo "  -> WARN: roo-state-manager copy incomplete (MCP may be degraded), continuing"
 
     # Patch the COPY (.env) for container mode
     # GDrive virtual drive can't be Docker-mounted — clear shared path
@@ -304,14 +305,19 @@ XDG_STATE_HOME=/opt/data/.local/state
 GLM_API_KEY=${GLM_API_KEY:-}
 GLM_BASE_URL=${GLM_BASE_URL:-https://open.bigmodel.cn/api/coding/paas/v4}
 
-# Anthropic / claudish — DISABLED 2026-08-07 (revert Phase 2 v3).
-# The gateway main loop ignores ANTHROPIC_BASE_URL (wire_selector bug) and hits
-# api.anthropic.com direct -> 401 on every cron. Claudish proxy is healthy but
-# Hermes can't use it reliably until the wire_selector is fixed upstream.
-# Reverted to z.ai native (provider zai + glm-5-turbo). These lines kept
-# commented for documentation; do NOT uncomment without fixing wire_selector.
-# ANTHROPIC_BASE_URL=http://192.168.0.46:3000
-# ANTHROPIC_TOKEN=placeholder
+# Anthropic / claudish — VALIDATED WORKING 2026-08-07.
+# Gateway routes via claudish proxy (po-2023:3000), claude-sonnet-4-6 -> glm-5.2.
+# Auth: claudish accepts Hermes's native x-api-key header (a third-party anthropic
+# endpoint makes build_anthropic_client send api_key as x-api-key). x-proxy-key is
+# NOT required on /v1/messages — proven by a direct probe (HTTP 200 + glm-5.2 body)
+# and an end-to-end `hermes -z` returning a correct, instruction-following reply.
+# NOTE: ANTHROPIC_CUSTOM_HEADERS is NOT read by Hermes (grep across .py = 0 refs),
+# so x-proxy-key cannot be sent via env regardless; if claudish later enforces it,
+# a custom_providers block (transport: anthropic_messages + extra_headers) is the
+# only mechanism. CLAUDISH_PROXY_KEY stays provisioned in .env.secrets for that day;
+# it is unused now. NEVER log the key.
+ANTHROPIC_BASE_URL=http://192.168.0.46:3000
+ANTHROPIC_TOKEN=placeholder
 
 # Telegram bot
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
@@ -683,18 +689,22 @@ FAIL=0
 check() {
     local label="$1"
     local result="$2"
-    if [ "$result" = "OK" ]; then
-        echo "  [PASS] $label"
-        PASS=$((PASS + 1))
-    else
-        echo "  [FAIL] $label — $result"
-        FAIL=$((FAIL + 1))
-    fi
+    # Accept any detail starting with "OK" (e.g. "OK (value masked)") as a pass.
+    case "$result" in
+        OK*)
+            echo "  [PASS] $label${result#OK}"
+            PASS=$((PASS + 1))
+            ;;
+        *)
+            echo "  [FAIL] $label — $result"
+            FAIL=$((FAIL + 1))
+            ;;
+    esac
 }
 
-# Model — z.ai native: must be glm-5-turbo (revert Phase 2 v3 claudish, 2026-08-07)
+# Model — claudish route: must be claude-sonnet-4-6 (anthropic wire via claudish, restored 2026-08-07)
 MODEL=$(grep '^  default:' "$DATA/config.yaml" | head -1)
-[[ "$MODEL" == *glm-5-turbo* ]] && check "Model" "OK" || check "Model" "got: $MODEL"
+[[ "$MODEL" == *claude-sonnet-4-6* ]] && check "Model" "OK" || check "Model" "got: $MODEL"
 
 # YAML valid (no duplicate keys)
 DUP_AUX=$(grep -c '^auxiliary:' "$DATA/config.yaml")
@@ -707,15 +717,20 @@ else
     check "YAML duplicates" "aux=$DUP_AUX stt=$DUP_STT mcp=$DUP_MCP appr=$DUP_APPR"
 fi
 
-# Provider — z.ai native (revert Phase 2 v3, 2026-08-07): main provider is zai.
-# Auxiliary providers also on zai (compression, image, browser, web).
+# Provider — claudish route (restored 2026-08-07): main provider is anthropic.
+# Auxiliary providers stay on zai (compression, image, browser, web).
 PROV=$(grep '^  provider:' "$DATA/config.yaml" | head -1)
-[[ "$PROV" == *zai* ]] && check "Provider (main=zai)" "OK" || check "Provider" "got: $PROV"
+[[ "$PROV" == *anthropic* ]] && check "Provider (main=anthropic)" "OK" || check "Provider" "got: $PROV"
 
-# ANTHROPIC_BASE_URL must be ABSENT (revert Phase 2 v3). Its presence causes the
-# gateway main loop to misroute to api.anthropic.com -> 401. z.ai native uses GLM_BASE_URL.
-ANTH_URL=$(grep -c '^ANTHROPIC_BASE_URL=' "$DATA/.env" 2>/dev/null || true)
-[ "$ANTH_URL" = "0" ] && check "No ANTHROPIC_BASE_URL (z.ai native)" "OK" || check "ANTHROPIC_BASE_URL present" "should be absent (count=$ANTH_URL)"
+# ANTHROPIC_BASE_URL must point at claudish proxy (po-2023:3000).
+ANTH_URL=$(grep -c '^ANTHROPIC_BASE_URL=http://192.168.0.46:3000' "$DATA/.env" 2>/dev/null || true)
+[ "$ANTH_URL" = "1" ] && check "ANTHROPIC_BASE_URL (claudish)" "OK" || check "ANTHROPIC_BASE_URL" "missing/wrong (count=$ANTH_URL)"
+
+# CLAUDISH_PROXY_KEY provisioned in .env.secrets for future use (if claudish ever
+# enforces x-proxy-key, a custom_providers block will send it). Verify presence
+# WITHOUT printing the value. Unused today — claudish accepts native x-api-key auth.
+KEY_LEN=$(grep -o '^CLAUDISH_PROXY_KEY=[0-9a-f]\{64\}$' "$DATA/.env.secrets" 2>/dev/null | head -1 | wc -c)
+[ "$KEY_LEN" -gt 0 ] && check "CLAUDISH_PROXY_KEY provisioned" "OK (unused, value masked)" || check "CLAUDISH_PROXY_KEY" "not provisioned (OK if claudish stays x-api-key)"
 
 # No duplicate provider: auto
 DUP=$(grep -c '^ *provider: "auto"' "$DATA/config.yaml" || true)

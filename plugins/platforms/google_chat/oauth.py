@@ -152,6 +152,148 @@ def _pending_auth_path(email: Optional[str] = None) -> Path:
     return _legacy_pending_path()
 
 
+def _adopt_legacy_file(
+    canonical_path: Path,
+    legacy_path: Path,
+    *,
+    legacy_label: str,
+    canonical_email: str,
+) -> bool:
+    """Copy a present legacy JSON file to its canonical path, then unlink.
+
+    Shared helper for legacy-token and legacy-pending migration. Idempotent
+    — running twice on the same canonical path is a no-op the second time
+    (the canonical ``exists()`` short-circuit is the caller's
+    responsibility). Returns ``True`` iff a legacy file was actually
+    migrated on this call.
+
+    Pre-#75492, ``/setup-files`` wrote per-user tokens under the Chat
+    resource name (``users/{id}``) while ``_send_file`` looked them up by
+    email — the keys never matched. After #75492 the write and read
+    paths use the same canonical identity, but a user who authorized
+    BEFORE the fix has a token file at the legacy
+    ``google_chat_user_tokens/users_<id>.json`` path with no
+    ``<email>.json`` counterpart. Idempotent.
+
+    Security/identity boundary:
+
+    * We only adopt a legacy file when the canonical email-keyed file is
+      ABSENT — a fresh re-auth at the canonical key always wins, never
+      the stale legacy artifact.
+    * The legacy file is deleted from disk ONLY after the canonical copy
+      has been written and verified — never before.
+    * Permissions are inherited from the legacy file (already
+      ``0o600`` because ``_write_private_json`` enforces it on every
+      write).
+    """
+    if not legacy_path.exists():
+        return False
+
+    try:
+        payload = legacy_path.read_bytes()
+    except OSError as exc:
+        logger.warning(
+            "[google_chat_user_oauth] could not read legacy %s at %s: %s",
+            legacy_label, legacy_path, exc,
+        )
+        return False
+
+    try:
+        parsed = json.loads(payload)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning(
+            "[google_chat_user_oauth] legacy %s at %s is not valid JSON "
+            "(%s); leaving in place for the user to inspect",
+            legacy_label, legacy_path, exc,
+        )
+        return False
+
+    # Copy to canonical path (preserves contents and mode). Use the
+    # existing private-write helper so the canonical copy is also
+    # ``0o600`` and atomically replaced.
+    _write_private_json(canonical_path, parsed)
+
+    # Delete the legacy file only after the canonical write succeeded.
+    try:
+        legacy_path.unlink()
+    except OSError as exc:
+        logger.debug(
+            "[google_chat_user_oauth] legacy %s at %s could not be "
+            "deleted after migration: %s (canonical copy is in place)",
+            legacy_label, legacy_path, exc,
+        )
+
+    logger.info(
+        "[google_chat_user_oauth] migrated legacy %s for %s to canonical "
+        "path %s",
+        legacy_label, canonical_email, canonical_path,
+    )
+    return True
+
+
+def adopt_legacy_token_with_resource(
+    canonical_email: str,
+    legacy_resource_name: Optional[str],
+) -> bool:
+    """One-shot legacy ``users/{id}`` token migration.
+
+    Copies a present pre-#75492 token file at the resource-name key
+    (``users/<id>``) to the canonical email-keyed path. The adapter
+    invokes this from the token-load path whenever it has both
+    identifiers on the inbound event. Idempotent — the canonical path
+    is the source of truth once it exists; running again is a no-op.
+
+    ``legacy_resource_name`` is required (the only caller in the
+    adapter passes the Chat resource name ``users/{id}``); ``None`` is
+    a no-op because the legacy file's filename is the resource name
+    and we have no way to discover it otherwise.
+    """
+    canonical_path = _token_path(canonical_email)
+    if canonical_path.exists():
+        return False
+    if not legacy_resource_name:
+        return False
+
+    legacy_path = _user_tokens_dir() / (
+        f"{_sanitize_email(legacy_resource_name)}.json"
+    )
+    return _adopt_legacy_file(
+        canonical_path,
+        legacy_path,
+        legacy_label=legacy_resource_name,
+        canonical_email=canonical_email,
+    )
+
+
+def adopt_legacy_pending_with_resource(
+    canonical_email: str,
+    legacy_resource_name: Optional[str],
+) -> bool:
+    """One-shot legacy pending-OAuth-state adoption for ``/setup-files
+    start`` mid-flight users.
+
+    Same shape as :func:`adopt_legacy_token_with_resource` but for the
+    per-user pending OAuth state file. Without this, a user mid-flow at
+    the time of upgrade would be forced to re-run ``start`` after
+    upgrading. Returns ``True`` iff a legacy pending file was adopted.
+    """
+    canonical_path = _pending_auth_path(canonical_email)
+    if canonical_path.exists():
+        return False
+    if not legacy_resource_name:
+        return False
+
+    legacy_path = _user_pending_dir() / (
+        f"{_sanitize_email(legacy_resource_name)}.json"
+    )
+    return _adopt_legacy_file(
+        canonical_path,
+        legacy_path,
+        legacy_label=legacy_resource_name,
+        canonical_email=canonical_email,
+    )
+
+
 # Minimum scope for native Chat attachment delivery.
 # `chat.messages.create` covers BOTH `media.upload` and the subsequent
 # `messages.create` that references the attachmentDataRef. We deliberately
@@ -183,7 +325,10 @@ _REDIRECT_URI = "http://localhost:1"
 # =============================================================================
 
 
-def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
+def load_user_credentials(
+    email: Optional[str] = None,
+    legacy_identity: Optional[str] = None,
+) -> Optional[Any]:
     """Load + validate persisted user OAuth credentials.
 
     ``email`` selects the per-user token file; ``None`` falls back to the
@@ -194,8 +339,22 @@ def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
     as "user has not run /setup-files yet" and surface the setup-instructions
     fallback to the user.
 
+    ``legacy_identity`` is the pre-#75492 ``users/{id}`` resource-name
+    key the adapter has available on the same inbound event. When the
+    canonical email-keyed file is missing AND a legacy file exists at
+    the resource-name key, the helper adopts it once and returns the
+    resulting credentials. Idempotent — a second call finds the now-
+    canonical file and skips the legacy read.
+
     Does NOT raise on the no-token case — that's expected.
     """
+    # Adopt the legacy token (if any) BEFORE the canonical lookup so the
+    # first call after upgrade picks up the pre-fix artifact and writes
+    # a canonical copy for subsequent loads. Idempotent — running on an
+    # already-canonical file is a no-op.
+    if email and legacy_identity:
+        adopt_legacy_token_with_resource(email, legacy_identity)
+
     token_path = _token_path(email)
     if not token_path.exists():
         return None
@@ -481,7 +640,15 @@ def _save_pending_auth(*, state: str, code_verifier: str,
     )
 
 
-def _load_pending_auth(email: Optional[str] = None) -> dict:
+def _load_pending_auth(
+    email: Optional[str] = None,
+    legacy_identity: Optional[str] = None,
+) -> dict:
+    # Adopt the legacy pending state (if any) BEFORE the canonical
+    # lookup so a user mid-``/setup-files start`` flow at the moment of
+    # upgrade can still paste their auth code without re-running start.
+    if email and legacy_identity:
+        adopt_legacy_pending_with_resource(email, legacy_identity)
     pending = _pending_auth_path(email)
     if not pending.exists():
         print("ERROR: No pending OAuth session found. Run --auth-url first.")
@@ -542,18 +709,27 @@ def get_auth_url(email: Optional[str] = None) -> None:
     print(auth_url)
 
 
-def exchange_auth_code(code: str, email: Optional[str] = None) -> None:
+def exchange_auth_code(
+    code: str,
+    email: Optional[str] = None,
+    *,
+    legacy_identity: Optional[str] = None,
+) -> None:
     """Exchange an auth code (or pasted redirect URL) for a refresh token.
 
     ``email`` selects the destination token path. ``None`` writes to the
     legacy single-user path (kept for the existing CLI entrypoint and for
     pre-multi-user installs).
+
+    ``legacy_identity`` is threaded through to ``_load_pending_auth`` so
+    a user mid-``/setup-files start`` flow at the time of upgrade can
+    still paste their auth code without re-running ``start``.
     """
     if not _client_secret_path().exists():
         print("ERROR: No client secret stored. Run --client-secret first.")
         sys.exit(1)
 
-    pending_auth = _load_pending_auth(email)
+    pending_auth = _load_pending_auth(email, legacy_identity=legacy_identity)
     raw_callback = code
     code, returned_state = _extract_code_and_state(code)
     if returned_state and returned_state != pending_auth["state"]:

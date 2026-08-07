@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import types
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1738,5 +1739,376 @@ class TestGoogleChatStandaloneSend:
         assert url == "https://chat.googleapis.com/v1/spaces/AAAA-BBBB/messages"
         assert kwargs["headers"]["Authorization"] == "Bearer the-token"
         assert kwargs["json"] == {"text": "hello cron"}
+
+
+
+# ===========================================================================
+# Legacy users/{id} OAuth-token migration (#75492)
+# ===========================================================================
+
+
+class TestLegacyOAuthTokenMigration:
+    """Regression for the deployment upgrade path introduced by #75492.
+
+    Pre-#75492, ``/setup-files`` wrote per-user tokens under the Chat
+    resource-name key (``users/{id}``) while ``_send_file`` looked them up
+    by email. After #75492 both paths use the same canonical identity, but
+    users who authorized BEFORE the fix have a token saved at the legacy
+    ``users_12345.json`` path. Without a migration/fallback, those users
+    lose their stored token on upgrade and are forced to re-run
+    ``/setup-files`` even though their original authorization is still
+    valid.
+
+    These tests assert:
+      1. The legacy ``users/{id}`` token file is adopted when the canonical
+         email-keyed file is absent.
+      2. The canonical email-keyed file takes precedence when BOTH exist
+         (a fresh re-auth always wins over the stale legacy artifact).
+      3. Legacy pending OAuth state (``/setup-files start`` mid-flight) is
+         also adopted so the user can paste a code without re-running
+         ``start``.
+      4. The migration is idempotent — running it twice does not corrupt
+         the token file or double-write.
+      5. A pristine canonical-only setup loads fine without any
+         ``legacy_identity`` (the migration is opt-in).
+      6. A malformed legacy token fails open — the legacy file is left
+         on disk so the user can inspect it, and no forced re-auth is
+         triggered.
+    """
+
+    @pytest.fixture()
+    def install_real_google_oauth_credentials(self):
+        """Make ``google.oauth2.credentials`` resolvable in the test env.
+
+        The module-level mock at the top of this file replaces
+        ``sys.modules['google']`` and ``sys.modules['google.oauth2']``
+        with ``MagicMock`` objects — which breaks the real
+        ``from google.oauth2.credentials import Credentials`` import
+        that ``oauth.load_user_credentials`` needs.  Pop the mocks
+        first so ``import google.oauth2.credentials`` locates the real
+        package, then restore the mocks after the test.
+        """
+        _saved_google = sys.modules.pop("google", None)
+        _saved_google_cloud = sys.modules.pop("google.cloud", None)
+        _saved_google_api_core = sys.modules.pop("google.api_core", None)
+        _saved_oauth2 = sys.modules.pop("google.oauth2", None)
+        _saved_credentials = sys.modules.pop(
+            "google.oauth2.credentials", None
+        )
+        _saved_auth_transport = sys.modules.pop(
+            "google.auth.transport", None
+        )
+        _saved_auth_transport_requests = sys.modules.pop(
+            "google.auth.transport.requests", None
+        )
+        try:
+            import google.oauth2.credentials as _creds_mod  # noqa: F811
+            import google.auth.transport.requests as _reqs_mod  # noqa: F811
+        except ImportError:
+            pytest.skip("google-auth not installed in this environment")
+
+        # Make the real submodules visible for the duration of the test.
+        sys.modules["google.oauth2.credentials"] = _creds_mod
+        sys.modules["google.auth.transport"] = types.SimpleNamespace(
+            requests=_reqs_mod,
+        )
+        sys.modules["google.auth.transport.requests"] = _reqs_mod
+
+        yield
+
+        # Cleanup: restore the mocks so other tests stay hermetic.
+        sys.modules.pop("google.oauth2.credentials", None)
+        sys.modules.pop("google.auth.transport", None)
+        sys.modules.pop("google.auth.transport.requests", None)
+        if _saved_credentials is not None:
+            sys.modules["google.oauth2.credentials"] = _saved_credentials
+        if _saved_auth_transport is not None:
+            sys.modules["google.auth.transport"] = _saved_auth_transport
+        if _saved_auth_transport_requests is not None:
+            sys.modules["google.auth.transport.requests"] = (
+                _saved_auth_transport_requests
+            )
+        if _saved_oauth2 is not None:
+            sys.modules["google.oauth2"] = _saved_oauth2
+        if _saved_google_api_core is not None:
+            sys.modules["google.api_core"] = _saved_google_api_core
+        if _saved_google_cloud is not None:
+            sys.modules["google.cloud"] = _saved_google_cloud
+        if _saved_google is not None:
+            sys.modules["google"] = _saved_google
+
+    def _write_token(self, path: Path, *, refresh_token: str = "rt-legacy") -> None:
+        """Seed a valid google-auth token JSON.
+
+        The ``expiry`` field is set one hour in the future so
+        ``Credentials.from_authorized_user_info`` resolves
+        ``creds.valid = True`` without needing a refresh round-trip —
+        tests against the real OAuth server would otherwise fail with
+        ``invalid_client`` because ``client_id`` is a placeholder.
+        """
+        from datetime import datetime, timedelta, timezone
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "type": "authorized_user",
+            "client_id": "cid",
+            "client_secret": "csec",
+            "refresh_token": refresh_token,
+            "token": "atok",
+            "expiry": (
+                datetime.now(timezone.utc) + timedelta(hours=1)
+            ).isoformat(),
+        }), encoding="utf-8")
+
+    def test_legacy_users_id_token_is_adopted_when_canonical_missing(
+        self, tmp_path, monkeypatch, install_real_google_oauth_credentials,
+    ):
+        """A token file at the legacy ``users_12345.json`` path (seeded by
+        a pre-#75492 install) MUST be found when the adapter asks for the
+        canonical email identity — otherwise affected users are forced to
+        re-run ``/setup-files`` after upgrade for no real reason."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        users_dir = tmp_path / "google_chat_user_tokens"
+        legacy = users_dir / "users_12345.json"
+        self._write_token(legacy, refresh_token="rt-legacy")
+
+        from plugins.platforms.google_chat import oauth as helper
+        # The adapter always passes the Chat resource name on the
+        # inbound event; the library-level helper adopts the legacy
+        # file at that key.
+        creds = helper.load_user_credentials(
+            "u@example.com", legacy_identity="users/12345",
+        )
+
+        assert creds is not None, (
+            "Legacy users/{id} token was NOT adopted — affected users will "
+            "lose access after the #75427/#75492 upgrade until they "
+            "manually re-run /setup-files. Migration/fallback is required."
+        )
+        # The loaded token must be the legacy one (refresh_token survives).
+        assert creds.refresh_token == "rt-legacy"
+        # Side-effects: canonical file written, legacy file removed.
+        assert (users_dir / "u@example.com.json").exists()
+        assert not legacy.exists()
+
+    def test_canonical_email_key_wins_over_legacy_when_both_exist(
+        self, tmp_path, monkeypatch, install_real_google_oauth_credentials,
+    ):
+        """If both the canonical email-keyed file and the legacy
+        ``users/{id}`` file exist (e.g. user re-ran ``/setup-files`` after
+        upgrade while the legacy file was still on disk), the canonical
+        file MUST take precedence — never the stale legacy artifact."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        users_dir = tmp_path / "google_chat_user_tokens"
+        users_dir.mkdir(parents=True)
+        # Canonical email path (new).
+        canonical = users_dir / "u@example.com.json"
+        self._write_token(canonical, refresh_token="rt-canonical")
+        # Legacy resource-name path (old).
+        legacy = users_dir / "users_12345.json"
+        self._write_token(legacy, refresh_token="rt-legacy")
+
+        from plugins.platforms.google_chat import oauth as helper
+        creds = helper.load_user_credentials(
+            "u@example.com", legacy_identity="users/12345",
+        )
+
+        assert creds is not None
+        assert creds.refresh_token == "rt-canonical", (
+            "Canonical email-keyed token must win when both exist; "
+            "loading the stale legacy artifact would silently downgrade "
+            "the user's refresh token."
+        )
+        # Legacy file MUST NOT be removed when the canonical already
+        # exists — the user might want to inspect it later.
+        assert legacy.exists()
+
+    def test_legacy_pending_oauth_state_is_adopted(
+        self, tmp_path, monkeypatch
+    ):
+        """A user mid-``/setup-files start`` flow (pending OAuth state
+        saved under the legacy ``users/{id}`` key) MUST be recovered when
+        they paste the auth code, otherwise the bot would force them to
+        re-run ``start`` after upgrade for no fault of their own."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pending_dir = tmp_path / "google_chat_user_oauth_pending"
+        pending_dir.mkdir(parents=True)
+        legacy_pending = pending_dir / "users_12345.json"
+        legacy_pending.write_text(json.dumps({
+            "state": "st-legacy",
+            "code_verifier": "cv-legacy",
+            "redirect_uri": "http://localhost:1",
+            "email": "u@example.com",
+        }), encoding="utf-8")
+
+        from plugins.platforms.google_chat import oauth as helper
+
+        # The adapter has both the email and the resource name on the
+        # inbound event; passing ``legacy_identity`` is what lets the
+        # helper locate the legacy pending file. The legacy file is
+        # adopted BEFORE the canonical lookup so the user can paste
+        # their code without re-running ``start``.
+        state = helper._load_pending_auth(
+            "u@example.com", legacy_identity="users/12345",
+        )
+
+        assert state["state"] == "st-legacy"
+        assert state["code_verifier"] == "cv-legacy"
+        # Side-effect: legacy file removed after adoption.
+        assert not legacy_pending.exists()
+
+    def test_legacy_adoption_is_idempotent(
+        self, tmp_path, monkeypatch, install_real_google_oauth_credentials,
+    ):
+        """Loading the legacy token twice must not corrupt the file or
+        leave stale state behind. Both loads must succeed and return
+        usable credentials."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        users_dir = tmp_path / "google_chat_user_tokens"
+        legacy = users_dir / "users_12345.json"
+        self._write_token(legacy, refresh_token="rt-legacy")
+
+        from plugins.platforms.google_chat import oauth as helper
+
+        first = helper.load_user_credentials(
+            "u@example.com", legacy_identity="users/12345",
+        )
+        second = helper.load_user_credentials(
+            "u@example.com", legacy_identity="users/12345",
+        )
+
+        assert first is not None
+        assert second is not None
+        assert first.refresh_token == "rt-legacy"
+        assert second.refresh_token == "rt-legacy"
+        # Legacy file gone after first call; subsequent calls operate
+        # only on the canonical path.
+        assert not legacy.exists()
+
+    def test_canonical_load_works_with_no_legacy_or_resource_name(
+        self, tmp_path, monkeypatch, install_real_google_oauth_credentials,
+    ):
+        """Sanity: a pristine canonical token file loads fine even when
+        no ``legacy_identity`` is supplied — the migration only fires
+        when (a) canonical is missing AND (b) the resource name points
+        at a legacy file."""
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        users_dir = tmp_path / "google_chat_user_tokens"
+        canonical = users_dir / "u@example.com.json"
+        self._write_token(canonical, refresh_token="rt-canonical")
+
+        from plugins.platforms.google_chat import oauth as helper
+
+        creds = helper.load_user_credentials("u@example.com")
+        assert creds is not None
+        assert creds.refresh_token == "rt-canonical"
+
+    def test_malformed_legacy_token_fails_open_no_reauth_forced(
+        self, tmp_path, monkeypatch
+    ):
+        """A corrupt legacy token file (e.g. partial write, truncated
+        JSON) MUST NOT trigger a forced re-auth — the migration is
+        allowed to fail silently and the canonical read returns
+        ``None`` so the caller surfaces the standard setup prompt.
+
+        The legacy file is left on disk so the user can inspect it
+        manually; we never silently delete user data on parse errors.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        users_dir = tmp_path / "google_chat_user_tokens"
+        legacy = users_dir / "users_12345.json"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text("{ this is not valid json", encoding="utf-8")
+
+        from plugins.platforms.google_chat import oauth as helper
+
+        creds = helper.load_user_credentials(
+            "u@example.com", legacy_identity="users/12345",
+        )
+
+        assert creds is None
+        # Legacy file is NOT deleted on JSON parse failure — the user
+        # may want to inspect or recover it manually.
+        assert legacy.exists()
+        # No canonical file was fabricated from the broken payload.
+        assert not (users_dir / "u@example.com.json").exists()
+
+    def test_adapter_acquire_chat_api_threads_legacy_identity_to_migration(
+        self, tmp_path, monkeypatch, install_real_google_oauth_credentials,
+    ):
+        """End-to-end: the adapter's ``_acquire_user_chat_api`` →
+        ``_load_per_user_chat_api`` → ``load_user_credentials`` path
+        passes ``legacy_identity`` through so the one-shot migration
+        actually fires when a legacy ``users/{id}`` token file exists.
+
+        This is the real-world path — a user's DM receives an inbound
+        message, the adapter caches both canonical and legacy identities
+        in ``_build_message_event``, and the outbound ``_send_file``
+        path looks them up and passes them through. Without this
+        threading the migration helpers are dead code.
+        """
+        from plugins.platforms.google_chat.adapter import GoogleChatAdapter
+        from plugins.platforms.google_chat import oauth as helper
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # Seed a legacy token at the pre-#75492 ``users/{id}`` path.
+        users_dir = tmp_path / "google_chat_user_tokens"
+        legacy = users_dir / "users_12345.json"
+        self._write_token(legacy, refresh_token="rt-legacy-adapter")
+
+        # Build a minimal adapter that won't try to connect or load SA
+        # creds.  We only need the user-OAuth path exercised.
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra.update({
+            "project_id": "test-project",
+            "subscription_name": "projects/test-project/subscriptions/test-sub",
+            "service_account_json": str(tmp_path / "fake-sa.json"),
+        })
+        # Write a dummy SA file so _load_sa_credentials doesn't fail
+        # immediately.
+        (tmp_path / "fake-sa.json").write_text("{}")
+        adapter = GoogleChatAdapter(cfg)
+
+        # Simulate what _build_message_event stores.
+        adapter._last_sender_by_chat["spaces/S"] = "u@example.com"
+        adapter._last_sender_alt_by_chat["spaces/S"] = "users/12345"
+
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            chat_api, identity = loop.run_until_complete(
+                adapter._acquire_user_chat_api(
+                    "u@example.com", legacy_identity="users/12345",
+                )
+            )
+        finally:
+            loop.close()
+
+        # The adapter path must return a usable API client built from
+        # the adopted legacy credentials.
+        assert chat_api is not None, (
+            "Adapter's _acquire_user_chat_api did NOT adopt legacy "
+            "users/{id} token — the migration path is broken in the "
+            "normal adapter flow."
+        )
+        assert identity == "u@example.com"
+
+        # Side-effects: canonical file written, legacy file removed.
+        canonical = users_dir / "u@example.com.json"
+        assert canonical.exists(), (
+            "Canonical email-keyed token was NOT created — migration "
+            "side-effect missing."
+        )
+        assert not legacy.exists(), (
+            "Legacy users/{id} token was NOT removed after adoption — "
+            "duplicate tokens will confuse future lookups."
+        )
+
+        # The loaded token should be the legacy one.
+        creds = helper.load_user_credentials("u@example.com")
+        assert creds is not None
+        assert creds.refresh_token == "rt-legacy-adapter"
 
 

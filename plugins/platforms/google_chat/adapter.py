@@ -674,21 +674,28 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # User B asks for a file in B's DM the bot uploads as B (not as
         # whoever first set up files long ago).
         #
-        # ``_user_credentials`` / ``_user_chat_api`` keep their old names
-        # but now hold the LEGACY single-user token (if any) — used as a
-        # last-ditch fallback when the requesting user has no per-user
-        # token yet. Pre-multi-user installs continue to work unchanged.
-        self._user_chat_api: Optional[Any] = None
-        self._user_credentials: Optional[Any] = None
-        # Per-email caches. Populated lazily by ``_get_user_chat_for_chat``.
-        self._user_creds_by_email: Dict[str, Any] = {}
-        self._user_chat_api_by_email: Dict[str, Any] = {}
         # chat_id → most-recent inbound sender's email. Populated in
         # ``_build_message_event`` whenever the inbound event carries a
         # non-empty ``sender.email``. Drives the per-user token lookup
         # in ``_send_file`` so the bot uploads as the user who triggered
         # the request, not as some other authorized user.
         self._last_sender_by_chat: Dict[str, str] = {}
+        # chat_id → legacy sender resource name (``users/{id}``) from the
+        # same inbound event. Used alongside ``_last_sender_by_chat`` to
+        # thread the ``legacy_identity`` argument through to
+        # ``load_user_credentials`` so the one-shot legacy-token migration
+        # (#75492) actually fires in the normal adapter path.
+        self._last_sender_alt_by_chat: Dict[str, str] = {}
+        # Per-email caches. Populated lazily by ``_get_user_chat_for_chat``.
+        self._user_creds_by_email: Dict[str, Any] = {}
+        self._user_chat_api_by_email: Dict[str, Any] = {}
+        #
+        # ``_user_credentials`` / ``_user_chat_api`` keep their old names
+        # but now hold the LEGACY single-user token (if any) — used as a
+        # last-ditch fallback when the requesting user has no per-user
+        # token yet. Pre-multi-user installs continue to work unchanged.
+        self._user_chat_api: Optional[Any] = None
+        self._user_credentials: Optional[Any] = None
         self._credentials: Optional[Any] = None
         self._project_id: Optional[str] = None
         self._subscription_path: Optional[str] = None
@@ -1548,6 +1555,19 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         return True, ""
 
+    @staticmethod
+    def _oauth_identity_key(user_id: Optional[str]) -> Optional[str]:
+        """Canonical per-user OAuth token lookup key.
+
+        Both the write path (``/setup-files``) and the read path
+        (``_send_file`` → ``_last_sender_by_chat``) must pass the SAME
+        identity through this so the token-file basename matches at both
+        ends.  ``user_id`` is the canonical sender identity (email,
+        falling back to the ``users/{id}`` resource name when the sender
+        has no email — bot-to-bot or system events).
+        """
+        return (user_id or "").strip().lower() or None
+
     async def _dispatch_message(self, msg: Dict[str, Any], envelope: Dict[str, Any]) -> None:
         """Translate a Chat message payload to a MessageEvent and hand off.
 
@@ -1563,21 +1583,27 @@ class GoogleChatAdapter(BasePlatformAdapter):
             # Short-circuit /setup-files before the agent dispatch.
             text = (event.text or "").strip()
             if text.startswith("/setup-files") and event.source is not None:
-                # The sender's email (user_id_alt) is the per-user OAuth
-                # key — the bot stores this user's token at
+                # ``user_id`` is the canonical identity (email, falling
+                # back to the ``users/{id}`` resource name) — the SAME
+                # key ``_send_file`` later looks the token up by.  The
+                # bot stores this user's token at
                 # ${HERMES_HOME}/google_chat_user_tokens/<sanitized>.json
                 # so when User B asks for a file later in B's DM, B's
                 # token gets used (not the first person who set up files).
-                sender_email = (
-                    event.source.user_id_alt
-                    if event.source and event.source.user_id_alt
-                    else None
+                sender_email = self._oauth_identity_key(
+                    event.source.user_id if event.source else None
+                )
+                sender_alt = event.source.user_id_alt if event.source else None
+                logger.debug(
+                    "[GoogleChat] /setup-files identity key: %s alt: %s",
+                    sender_email, sender_alt,
                 )
                 handled = await self._handle_setup_files_command(
                     chat_id=event.source.chat_id,
                     thread_id=event.source.thread_id,
                     raw_text=text,
                     sender_email=sender_email,
+                    sender_alt=sender_alt,
                 )
                 if handled:
                     return
@@ -1592,18 +1618,23 @@ class GoogleChatAdapter(BasePlatformAdapter):
         thread_id: Optional[str],
         raw_text: str,
         sender_email: Optional[str] = None,
+        sender_alt: Optional[str] = None,
     ) -> bool:
         """Run the in-chat OAuth setup flow for native attachment delivery.
 
         Returns ``True`` if the message was consumed (no agent dispatch),
         ``False`` if it should fall through.
 
-        Multi-user mode: ``sender_email`` is the asker's identity, which
-        is also the per-user OAuth key. ``status`` / ``start`` / ``revoke``
-        / code-exchange all operate on THIS user's token slot. When
-        ``sender_email`` is ``None`` (e.g. tests, or older inbound events
-        without a populated email field) the handler falls back to the
-        legacy single-user path so pre-multi-user installs keep working.
+        Multi-user mode: ``sender_email`` is the asker's identity (canonical),
+        which is also the per-user OAuth key. ``sender_alt`` is the legacy
+        ``users/{id}`` resource name from the same inbound event, threaded
+        through to ``load_user_credentials`` so the one-shot legacy-token
+        migration (#75492) actually fires on the ``/setup-files`` path too.
+        ``status`` / ``start`` / ``revoke`` / code-exchange all operate on
+        THIS user's token slot. When ``sender_email`` is ``None`` (e.g.
+        tests, or older inbound events without a populated email field) the
+        handler falls back to the legacy single-user path so pre-multi-user
+        installs keep working.
 
         Subcommands:
           /setup-files                  → show status + next step
@@ -1646,7 +1677,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
             token_path = oauth_helper._token_path(sender_key)
             token_present = token_path.exists()
             creds = (
-                oauth_helper.load_user_credentials(sender_key)
+                oauth_helper.load_user_credentials(
+                    sender_key, legacy_identity=sender_alt,
+                )
                 if token_present else None
             )
             if creds is not None:
@@ -1759,7 +1792,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 await asyncio.to_thread(
-                    oauth_helper.exchange_auth_code, arg, sender_key,
+                    oauth_helper.exchange_auth_code,
+                    arg,
+                    sender_key,
+                    legacy_identity=sender_alt,
                 )
             output = buf.getvalue().strip()
         except SystemExit:
@@ -1780,7 +1816,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # them WITHOUT a gateway restart.
         try:
             new_creds = await asyncio.to_thread(
-                oauth_helper.load_user_credentials, sender_key,
+                oauth_helper.load_user_credentials,
+                sender_key,
+                legacy_identity=sender_alt,
             )
             if new_creds is not None:
                 new_api = await asyncio.to_thread(
@@ -1824,12 +1862,21 @@ class GoogleChatAdapter(BasePlatformAdapter):
         sender_display = sender.get("displayName") or sender.get("email") or sender_name
         sender_email = sender.get("email") or ""
 
-        # Cache the asker's email per chat_id so _send_file can pick the
-        # right per-user OAuth token when the agent later wants to send
-        # an attachment in this conversation. Lower-cased so cache hits
-        # match the sanitized token-file lookup.
-        if sender_email and space_name:
-            self._last_sender_by_chat[space_name] = sender_email.strip().lower()
+        # Cache the sender's identity per chat_id so _send_file can pick
+        # the right per-user OAuth token when the agent later wants to
+        # send an attachment. Uses the SAME key derivation as the
+        # /setup-files write path (``_oauth_identity_key``) — email when
+        # available, falling back to the ``users/{id}`` resource name —
+        # so the token-file basename matches at both ends.
+        identity = self._oauth_identity_key(sender_email or sender_name)
+        if identity and space_name:
+            self._last_sender_by_chat[space_name] = identity
+        # Also cache the legacy resource name (``sender.name``, e.g.
+        # ``users/12345``) so the adapter can pass it through to
+        # ``load_user_credentials(legacy_identity=...)`` on the outbound
+        # send path — without this the one-shot migration is dead code.
+        if sender_name and space_name:
+            self._last_sender_alt_by_chat[space_name] = sender_name
 
         chat_type = "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group"
         text = msg.get("argumentText") or msg.get("text") or ""
@@ -2995,7 +3042,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
     _LEGACY_USER_IDENTITY = "__legacy__"
 
-    async def _load_per_user_chat_api(self, email: str) -> Optional[Any]:
+    async def _load_per_user_chat_api(
+        self, email: str, *, legacy_identity: Optional[str] = None,
+    ) -> Optional[Any]:
         """Get (or build + cache) a user-authed Chat client for ``email``.
 
         Hits ``self._user_chat_api_by_email`` first; on miss, loads the
@@ -3003,6 +3052,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
         client, and caches both. Refresh failures evict the slot so the
         next request goes back through the disk path (and ultimately the
         text-notice fallback if the user has revoked).
+
+        ``legacy_identity`` is the pre-#75492 ``users/{id}`` resource-name
+        key the adapter has available on the same inbound event. Passed
+        through to ``load_user_credentials`` so the one-shot legacy-token
+        migration actually fires on the normal adapter send path.
         """
         from .oauth import (
             load_user_credentials as _load,
@@ -3028,7 +3082,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return cached_api
 
         try:
-            creds = await asyncio.to_thread(_load, email)
+            creds = await asyncio.to_thread(_load, email, legacy_identity=legacy_identity)
             if creds is None:
                 return None
             api = await asyncio.to_thread(lambda: _build(creds))
@@ -3044,12 +3098,19 @@ class GoogleChatAdapter(BasePlatformAdapter):
         return api
 
     async def _acquire_user_chat_api(
-        self, sender_email: Optional[str]
+        self,
+        sender_email: Optional[str],
+        *,
+        legacy_identity: Optional[str] = None,
     ) -> Tuple[Optional[Any], Optional[str]]:
         """Resolve the user-authed Chat client for an outbound attachment.
 
         Lookup order:
           1. Per-user token for ``sender_email`` — the asker's identity.
+             ``legacy_identity`` (the pre-#75492 ``users/{id}`` resource
+             name) is threaded through so the one-shot migration fires
+             when the canonical email-keyed token is missing and a legacy
+             ``users/{id}`` file exists on disk.
           2. Legacy single-user fallback (``self._user_chat_api``) for
              pre-multi-user installs.
           3. None — caller posts the setup-instructions text notice.
@@ -3060,7 +3121,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
         on auth failure.
         """
         if sender_email:
-            api = await self._load_per_user_chat_api(sender_email)
+            api = await self._load_per_user_chat_api(
+                sender_email, legacy_identity=legacy_identity,
+            )
             if api is not None:
                 return api, sender_email
 
@@ -3142,7 +3205,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
         mime = mime_hint or "application/octet-stream"
 
         sender_email = self._last_sender_by_chat.get(chat_id)
-        chat_api, identity = await self._acquire_user_chat_api(sender_email)
+        sender_alt = self._last_sender_alt_by_chat.get(chat_id)
+        logger.debug(
+            "[GoogleChat] _send_file identity lookup for %s: email=%s alt=%s",
+            chat_id, sender_email, sender_alt,
+        )
+        chat_api, identity = await self._acquire_user_chat_api(
+            sender_email, legacy_identity=sender_alt,
+        )
 
         # No user OAuth → can't upload natively. Surface clear setup
         # instructions in chat instead of silently failing.

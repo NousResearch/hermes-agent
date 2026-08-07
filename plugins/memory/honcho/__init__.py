@@ -292,6 +292,10 @@ class HonchoMemoryProvider(MemoryProvider):
         self._init_lock = threading.Lock()
         self._init_error = ""
 
+        # Init auth failures live here because the failed manager is discarded.
+        self._init_auth_failure: Optional[str] = None
+        self._init_auth_notice_emitted = False
+
         # Cron and flush contexts disable the plugin entirely.
         self._cron_skipped = False
 
@@ -445,11 +449,19 @@ class HonchoMemoryProvider(MemoryProvider):
             init_session_id = self._lazy_init_session_id or "hermes-default"
 
             def _run() -> None:
+                from plugins.memory.honcho.session import HonchoAuthError
+
                 try:
                     self._do_session_init(cfg, init_session_id, **init_kwargs)
                     self._lazy_init_kwargs = None
                     self._lazy_init_session_id = None
                     self._init_error = ""
+                    self._clear_init_auth_failure()
+                except HonchoAuthError as e:
+                    self._init_error = str(e)
+                    self._record_init_auth_failure(e)
+                    self._manager = None
+                    logger.warning("Honcho background session init failed: authentication rejected")
                 except Exception as e:
                     self._init_error = str(e)
                     self._manager = None
@@ -563,6 +575,8 @@ class HonchoMemoryProvider(MemoryProvider):
         if not self._config or self._lazy_init_kwargs is None:
             return False
 
+        from plugins.memory.honcho.session import HonchoAuthError
+
         try:
             self._do_session_init(
                 self._config,
@@ -572,12 +586,28 @@ class HonchoMemoryProvider(MemoryProvider):
             # Clear lazy refs
             self._lazy_init_kwargs = None
             self._lazy_init_session_id = None
+            self._clear_init_auth_failure()
             return self._manager is not None
+        except HonchoAuthError as e:
+            self._record_init_auth_failure(e)
+            self._manager = None
+            self._session_initialized = False
+            logger.warning("Honcho lazy session init failed: authentication rejected")
+            return False
         except Exception as e:
             self._manager = None
             self._session_initialized = False
             logger.warning("Honcho lazy session init failed: %s", e)
             return False
+
+    def _record_init_auth_failure(self, exc: BaseException) -> None:
+        """Keep the auth detail so the one-time notice survives the manager discard."""
+        self._init_auth_failure = str(exc)
+
+    def _clear_init_auth_failure(self) -> None:
+        if self._init_auth_failure is not None:
+            self._init_auth_failure = None
+            self._init_auth_notice_emitted = False
 
     def _session_ready(self) -> bool:
         """Return whether a manager/session key can be used safely.
@@ -701,7 +731,8 @@ class HonchoMemoryProvider(MemoryProvider):
                         timeout=max(0.0, first_turn_base_deadline - time.monotonic())
                     )
             if not self._session_ready():
-                return ""
+                # A failed auth init still owes the user the one-time notice.
+                return self._pop_auth_notice()
 
         # First-turn mode suppresses only the base layer; dialectic is independent.
         _skip_base = (
@@ -852,15 +883,19 @@ class HonchoMemoryProvider(MemoryProvider):
 
     def _pop_auth_notice(self) -> str:
         """One-time model-facing notice that Honcho auth expired and memory is paused."""
+        msg = None
         pop = getattr(self._manager, "pop_auth_notice", None)
-        if not callable(pop):
-            return ""
-        try:
-            msg = pop()
-        except Exception:
-            return ""
+        if callable(pop):
+            try:
+                msg = pop()
+            except Exception:
+                msg = None
         if not isinstance(msg, str) or not msg:
-            return ""
+            # Init failures discard the manager; the provider kept the detail.
+            if self._init_auth_failure is None or self._init_auth_notice_emitted:
+                return ""
+            self._init_auth_notice_emitted = True
+            msg = self._init_auth_failure
         return (
             "[Honcho memory status] Authentication with the Honcho memory backend "
             "has expired and automatic token refresh failed, so memory sync and "
@@ -1460,6 +1495,10 @@ class HonchoMemoryProvider(MemoryProvider):
             if self._init_thread and self._init_thread.is_alive():
                 return tool_error("Honcho session is still initializing; try again shortly.")
             if not self._ensure_session():
+                if self._init_auth_failure:
+                    return tool_error(
+                        f"Honcho memory authentication failed: {self._init_auth_failure}"
+                    )
                 return tool_error("Honcho session could not be initialized.")
 
         if not self._manager or not self._session_key:

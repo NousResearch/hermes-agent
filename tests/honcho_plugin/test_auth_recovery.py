@@ -828,3 +828,160 @@ class TestToolAuthVisibility:
         out = self._provider(_Mgr()).handle_tool_call("honcho_profile", {})
         assert "No profile facts" not in out
         assert "authentication failed" in out
+
+
+# ---------------------------------------------------------------------------
+# initialization-time auth failures: the notice must survive the manager discard
+# ---------------------------------------------------------------------------
+
+
+def _healthy_client():
+    """A mock SDK client whose peers and sessions behave like an empty backend."""
+    client = MagicMock()
+    peer = MagicMock()
+    peer.chat.return_value = ""
+    peer.get_card.return_value = None
+    peer.context.return_value = SimpleNamespace(representation="", peer_card=[])
+    client.peer.return_value = peer
+    sdk_session = MagicMock()
+    sdk_session.context.return_value = SimpleNamespace(summary=None, messages=[])
+    client.session.return_value = sdk_session
+    return client
+
+
+def _wire_init(tmp_path, monkeypatch, client, *, recall_mode="hybrid", dead_refresh=True):
+    """Route provider initialization through a real manager backed by ``client``."""
+    from plugins.memory.honcho import client as client_mod
+    from plugins.memory.honcho import session as session_mod
+
+    path = tmp_path / "honcho.json"
+    _write(path, {"hosts": {"hermes": _host_block(expires_at=time.time() + 3600)}})
+    monkeypatch.setattr(client_mod, "resolve_config_path", lambda: path)
+    monkeypatch.setattr(client_mod, "get_honcho_client", lambda *a, **k: client)
+    monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: client)
+    if dead_refresh:
+        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: None)
+    cfg = HonchoClientConfig(
+        host="hermes", api_key="hch-at-old", enabled=True, recall_mode=recall_mode,
+        timeout=0.5, session_strategy="per-session",
+    )
+    monkeypatch.setattr(
+        client_mod.HonchoClientConfig, "from_global_config", lambda *a, **k: cfg
+    )
+    return path
+
+
+def _initialized_provider():
+    provider = HonchoMemoryProvider()
+    provider.initialize(session_id="init-auth-session")
+    if provider._init_thread:
+        provider._init_thread.join(timeout=5)
+    return provider
+
+
+class TestInitAuthFailureNotice:
+    def test_peer_setup_401_in_hybrid_mode_produces_notice(self, tmp_path, monkeypatch):
+        client = MagicMock()
+        client.peer.side_effect = Exception("HTTP 401 Unauthorized")
+        _wire_init(tmp_path, monkeypatch, client)
+        provider = _initialized_provider()
+
+        assert provider._manager is None
+        notice = provider.prefetch("what did we decide about the schema?")
+        assert "hermes honcho setup" in notice
+        assert "paused" in notice
+
+    def test_notice_is_emitted_exactly_once(self, tmp_path, monkeypatch):
+        client = MagicMock()
+        client.peer.side_effect = Exception("HTTP 401 Unauthorized")
+        _wire_init(tmp_path, monkeypatch, client)
+        provider = _initialized_provider()
+
+        assert "hermes honcho setup" in provider.prefetch("first question")
+        # Retries keep failing, but the same episode never re-arms the notice.
+        for query in ("second question", "third question"):
+            assert provider.prefetch(query) == ""
+
+    def test_dead_grant_during_session_setup_produces_notice(self, tmp_path, monkeypatch):
+        client = _healthy_client()
+        env = {}
+
+        def _session_dies(*a, **k):
+            path = env["path"]
+            block = json.loads(path.read_text())["hosts"]["hermes"]
+            cred = oauth.OAuthCredential.from_host_block(block)
+            oauth._mark_grant_dead((str(path), "hermes"), cred)
+            raise Exception("Invalid or expired access token")
+
+        client.session.side_effect = _session_dies
+        env["path"] = _wire_init(tmp_path, monkeypatch, client, dead_refresh=False)
+        provider = _initialized_provider()
+
+        assert provider._manager is None
+        assert client.peer.called  # failure hit session setup, not peer setup
+        notice = provider.prefetch("what happened before the grant died?")
+        assert "hermes honcho setup" in notice
+
+    def test_tools_lazy_init_reports_auth_error(self, tmp_path, monkeypatch):
+        client = MagicMock()
+        client.peer.side_effect = Exception("Invalid or expired access token")
+        _wire_init(tmp_path, monkeypatch, client, recall_mode="tools")
+        provider = _initialized_provider()
+
+        out = provider.handle_tool_call("honcho_profile", {})
+        assert "authentication failed" in out
+        assert "could not be initialized" not in out
+
+    def test_relogin_resumes_init_and_clears_failure(self, tmp_path, monkeypatch):
+        client = _healthy_client()
+        client.peer.side_effect = Exception("HTTP 401 Unauthorized")
+        path = _wire_init(tmp_path, monkeypatch, client)
+        provider = _initialized_provider()
+        assert "hermes honcho setup" in provider.prefetch("first question")
+
+        _relogin(path)
+        client.peer.side_effect = None
+        provider.prefetch("after re-login")
+        if provider._init_thread:
+            provider._init_thread.join(timeout=5)
+
+        assert provider._session_initialized is True
+        assert provider._manager is not None
+        assert provider._init_auth_failure is None
+
+    def test_tools_relogin_resumes_without_restart(self, tmp_path, monkeypatch):
+        client = _healthy_client()
+        client.peer.side_effect = Exception("Invalid or expired access token")
+        path = _wire_init(tmp_path, monkeypatch, client, recall_mode="tools")
+        provider = _initialized_provider()
+        assert "authentication failed" in provider.handle_tool_call("honcho_profile", {})
+
+        _relogin(path)
+        client.peer.side_effect = None
+        out = provider.handle_tool_call("honcho_profile", {})
+
+        assert "authentication failed" not in out
+        assert provider._session_initialized is True
+        assert provider._init_auth_failure is None
+
+    def test_non_auth_init_timeout_fails_open_without_notice(self, tmp_path, monkeypatch):
+        client = MagicMock()
+        client.peer.side_effect = TimeoutError("request timed out")
+        _wire_init(tmp_path, monkeypatch, client, dead_refresh=False)
+        reauths = []
+        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: reauths.append(1))
+        provider = _initialized_provider()
+
+        assert provider._manager is None
+        assert provider._init_auth_failure is None
+        assert provider.prefetch("a real question") == ""
+        assert reauths == []
+
+    def test_non_auth_tools_init_failure_keeps_generic_error(self, tmp_path, monkeypatch):
+        client = MagicMock()
+        client.peer.side_effect = TimeoutError("request timed out")
+        _wire_init(tmp_path, monkeypatch, client, recall_mode="tools", dead_refresh=False)
+        provider = _initialized_provider()
+
+        out = provider.handle_tool_call("honcho_profile", {})
+        assert "could not be initialized" in out

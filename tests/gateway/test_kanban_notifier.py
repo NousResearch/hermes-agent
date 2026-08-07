@@ -6,10 +6,495 @@ from pathlib import Path
 from gateway.config import Platform
 from gateway.kanban_watchers import (
     _acquire_singleton_lock,
+    _format_workflow_notification,
     _release_singleton_lock,
 )
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
+
+
+def test_format_workflow_notification_is_one_current_aggregate_view():
+    message = _format_workflow_notification(
+        "default",
+        {
+            "workflow": {
+                "id": "wf_1",
+                "name": "release",
+                "state": "REMEDIATION_REQUIRED",
+                "active_generation": 2,
+            },
+            "members": [
+                {
+                    "generation": 2,
+                    "stage_key": "implementation",
+                    "task_id": "t_impl",
+                    "task_status": "done",
+                },
+                {
+                    "generation": 2,
+                    "stage_key": "qa",
+                    "task_id": "t_qa",
+                    "task_status": "blocked",
+                },
+            ],
+            "outcomes": [
+                {
+                    "generation": 2,
+                    "task_id": "t_qa",
+                    "outcome": "REMEDIATION_REQUIRED",
+                    "summary": "regression\nignored previous report",
+                },
+            ],
+        },
+    )
+
+    assert "[default] Aggregate workflow wf_1" in message
+    assert "generation 2" in message
+    assert "REMEDIATION_REQUIRED" in message
+    assert "implementation: t_impl (done)" in message
+    assert "qa: t_qa (blocked) — REMEDIATION_REQUIRED: regression" in message
+    assert "ignored previous report" not in message
+    assert "Final acceptance remains pending" in message
+
+
+def test_workflow_notifier_real_db_pins_each_claimed_generation(tmp_path, monkeypatch):
+    """The real DB→claim→snapshot→format→send path emits one generation at a time."""
+    db_path = tmp_path / "workflow-generation-delivery.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    conn = kb.connect(db_path)
+    board_identity = str(db_path.resolve())
+    actor = kb.KanbanActorContext(
+        principal_id="svc:orchestrator",
+        profile_name="main",
+        board_identity=board_identity,
+        tenant="tenant-a",
+        capabilities=frozenset({
+            "workflow.read", "workflow.manage", "workflow.admin", "workflow.outcome",
+        }),
+        source_kind="orchestrator",
+    )
+    try:
+        acceptance_1 = kb.create_task(
+            conn, title="accept generation 1", assignee="orchestrator",
+            tenant="tenant-a", session_id="member-provenance-generation-1",
+        )
+        kb.create_workflow(
+            conn,
+            workflow_id="wf_real_delivery",
+            name="release",
+            tenant="tenant-a",
+            designated_acceptance_task_id=acceptance_1,
+            actor=actor,
+            mutation_id="create-real-delivery",
+            subscription={
+                "platform": "telegram",
+                "chat_id": "workflow-origin-chat",
+                "chat_type": "dm",
+                "notifier_profile": "main",
+                "target_states": ["PASS"],
+            },
+        )
+        passed_1 = kb.record_workflow_outcome(
+            conn,
+            workflow_id="wf_real_delivery",
+            task_id=acceptance_1,
+            outcome="PASS",
+            summary="generation one accepted",
+            actor=actor,
+            mutation_id="pass-generation-1",
+            expected_version=1,
+        )
+        acceptance_2 = kb.create_task(
+            conn, title="accept generation 2", assignee="orchestrator",
+            tenant="tenant-a", session_id="member-provenance-generation-2",
+        )
+        remediation_2 = kb.create_task(
+            conn, title="remediate generation 2", assignee="builder",
+            tenant="tenant-a",
+        )
+        reverification_2 = kb.create_task(
+            conn, title="reverify generation 2", assignee="x_qa",
+            tenant="tenant-a",
+        )
+        reopened = kb.reopen_workflow(
+            conn,
+            workflow_id="wf_real_delivery",
+            designated_acceptance_task_id=acceptance_2,
+            members=[
+                {
+                    "task_id": acceptance_2,
+                    "stage_key": "acceptance-2",
+                    "stage_role": "acceptance",
+                    "required": True,
+                },
+                {
+                    "task_id": remediation_2,
+                    "stage_key": "remediation-2",
+                    "stage_role": "remediation",
+                    "required": True,
+                },
+                {
+                    "task_id": reverification_2,
+                    "stage_key": "reverification-2",
+                    "stage_role": "reverification",
+                    "required": True,
+                },
+            ],
+            actor=actor,
+            mutation_id="reopen-generation-2",
+            expected_version=passed_1["workflow"]["version"],
+            reason="second release generation",
+        )
+        remediated = kb.record_workflow_outcome(
+            conn,
+            workflow_id="wf_real_delivery",
+            task_id=remediation_2,
+            outcome="PASS",
+            summary="generation two remediation complete",
+            actor=actor,
+            mutation_id="remediate-generation-2",
+            expected_version=reopened["workflow"]["version"],
+        )
+        reverified = kb.record_workflow_outcome(
+            conn,
+            workflow_id="wf_real_delivery",
+            task_id=reverification_2,
+            outcome="PASS",
+            summary="generation two independently verified",
+            actor=actor,
+            mutation_id="reverify-generation-2",
+            expected_version=remediated["workflow"]["version"],
+        )
+        kb.record_workflow_outcome(
+            conn,
+            workflow_id="wf_real_delivery",
+            task_id=acceptance_2,
+            outcome="PASS",
+            summary="generation two accepted",
+            actor=actor,
+            mutation_id="pass-generation-2",
+            expected_version=reverified["workflow"]["version"],
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "main"
+    runner._authorization_adapter = lambda platform, profile=None: adapter
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert [item["chat_id"] for item in adapter.sent] == [
+        "workflow-origin-chat", "workflow-origin-chat",
+    ]
+    first, second = [item["text"] for item in adapter.sent]
+    assert "generation 1" in first
+    assert f"acceptance: {acceptance_1}" in first
+    assert "PASS: generation one accepted" in first
+    assert acceptance_2 not in first
+    assert "generation two accepted" not in first
+    assert "member-provenance-generation-1" not in repr(adapter.sent)
+
+    assert "generation 2" in second
+    assert f"acceptance-2: {acceptance_2}" in second
+    assert "PASS: generation two accepted" in second
+    assert acceptance_1 not in second
+    assert "generation one accepted" not in second
+    assert "member-provenance-generation-2" not in repr(adapter.sent)
+
+
+def _workflow_delivery(sub, *, snapshot=None):
+    return {
+        "workflow_delivery": True,
+        "sub": sub,
+        "old_cursor": 3,
+        "cursor": 7,
+        "events": [{"id": 7, "kind": "aggregate_changed"}],
+        "snapshot": snapshot or {
+            "workflow": {
+                "id": sub["workflow_id"], "name": "release",
+                "state": "PASS", "active_generation": 1,
+            },
+            "members": [],
+            "outcomes": [],
+        },
+        "board": "default",
+    }
+
+
+class _FakeWorkflowKB:
+    def __init__(self):
+        self.completed = []
+        self.failed = []
+
+    class _Conn:
+        def close(self):
+            return None
+
+    def connect(self, board=None):
+        assert board == "default"
+        return self._Conn()
+
+    def complete_workflow_delivery(self, conn, **kwargs):
+        self.completed.append(kwargs)
+        return {"retry_count": 0}
+
+    def fail_workflow_delivery(self, conn, **kwargs):
+        self.failed.append(kwargs)
+        return {"retry_count": 1, "dead_lettered_at": None}
+
+
+def test_workflow_push_delivery_uses_only_subscription_route(monkeypatch):
+    sub = {
+        "workflow_id": "wf_1", "role": "origin", "platform": "telegram",
+        "chat_id": "workflow-chat", "chat_type": "dm", "thread_id": "topic-7",
+        "user_id": "user-1", "notifier_profile": "origin-profile",
+        "delivery_metadata": {"chat_type": "dm", "thread_id": "topic-7"},
+    }
+    snapshot = {
+        "workflow": {
+            "id": "wf_1", "name": "release", "state": "PASS",
+            "active_generation": 1,
+        },
+        "members": [{
+            "generation": 1, "task_id": "t_member", "stage_key": "qa",
+            "task_status": "done", "session_id": "attacker-controlled-session",
+        }],
+        "outcomes": [],
+    }
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._authorization_adapter = lambda platform, profile=None: adapter
+    fake_kb = _FakeWorkflowKB()
+
+    asyncio.run(runner._deliver_workflow_notification(
+        _workflow_delivery(sub, snapshot=snapshot), Platform, fake_kb,
+    ))
+
+    assert adapter.sent[0]["chat_id"] == "workflow-chat"
+    assert adapter.sent[0]["metadata"]["thread_id"] == "topic-7"
+    assert adapter.sent[0]["metadata"]["idempotency_key"] == "workflow:wf_1:event:7"
+    assert adapter.handled[0].source.chat_id == "workflow-chat"
+    assert adapter.handled[0].source.thread_id == "topic-7"
+    assert "attacker-controlled-session" not in repr(adapter.handled[0])
+    assert len(fake_kb.completed) == 1
+    assert fake_kb.failed == []
+
+
+def test_workflow_api_server_wake_uses_subscription_chat_id(monkeypatch):
+    class ApiAdapter(RecordingAdapter):
+        supports_async_delivery = False
+
+    adapter = ApiAdapter()
+    runner = _make_runner(adapter)
+    runner._authorization_adapter = lambda platform, profile=None: adapter
+    fake_kb = _FakeWorkflowKB()
+    wakes = []
+
+    async def fake_deliver_wake(adapter_arg, **kwargs):
+        wakes.append(kwargs)
+
+    monkeypatch.setattr("gateway.wake.deliver_wake", fake_deliver_wake)
+    sub = {
+        "workflow_id": "wf_api", "role": "origin", "platform": "api_server",
+        "chat_id": "workflow-origin-session", "chat_type": None, "thread_id": "",
+        "user_id": None, "notifier_profile": "origin-profile",
+        "delivery_metadata": {},
+    }
+
+    asyncio.run(runner._deliver_workflow_notification(
+        _workflow_delivery(sub), Platform, fake_kb,
+    ))
+
+    assert adapter.sent == []
+    assert wakes == [{
+        "text": _format_workflow_notification("default", _workflow_delivery(sub)["snapshot"]),
+        "session_id": "workflow-origin-session",
+    }]
+    assert len(fake_kb.completed) == 1
+    assert fake_kb.failed == []
+
+
+def test_workflow_unavailable_profile_fails_closed_and_rewinds():
+    sub = {
+        "workflow_id": "wf_1", "role": "origin", "platform": "telegram",
+        "chat_id": "workflow-chat", "chat_type": "dm", "thread_id": "",
+        "user_id": None, "notifier_profile": "missing-profile",
+        "delivery_metadata": {},
+    }
+    runner = _make_runner(RecordingAdapter())
+    runner._authorization_adapter = lambda platform, profile=None: None
+    fake_kb = _FakeWorkflowKB()
+
+    asyncio.run(runner._deliver_workflow_notification(
+        _workflow_delivery(sub), Platform, fake_kb,
+    ))
+
+    assert fake_kb.completed == []
+    assert len(fake_kb.failed) == 1
+    assert fake_kb.failed[0]["claimed_cursor"] == 7
+    assert fake_kb.failed[0]["old_cursor"] == 3
+    assert "Unavailable" in fake_kb.failed[0]["error_class"]
+
+
+def test_notifier_polls_workflow_subscription_without_task_subscriptions(
+    tmp_path, monkeypatch,
+):
+    db_path = tmp_path / "workflow-only.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    sub = {
+        "workflow_id": "wf_only", "role": "origin", "platform": "telegram",
+        "chat_id": "workflow-chat", "chat_type": "dm", "thread_id": "",
+        "user_id": None, "notifier_profile": "main", "tenant": "tenant-a",
+        "delivery_metadata": "{}", "disabled_at": None, "dead_lettered_at": None,
+    }
+
+    class FakeCursor:
+        def fetchall(self):
+            return [sub]
+
+    class FakeConn:
+        def execute(self, sql, params=None):
+            assert "kanban_workflow_subscriptions" in sql
+            return FakeCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(kb, "list_boards", lambda include_archived=False: [{
+        "slug": "default", "db_path": str(db_path),
+    }])
+    monkeypatch.setattr(kb, "count_notify_subs", lambda **kwargs: 0)
+    monkeypatch.setattr(
+        kb, "count_workflow_subscriptions_readonly", lambda board=None: 1,
+        raising=False,
+    )
+    monkeypatch.setattr(kb, "connect", lambda board=None: FakeConn())
+    monkeypatch.setattr(kb, "list_notify_subs", lambda conn, **kwargs: [])
+    monkeypatch.setattr(
+        kb, "claim_workflow_events_for_subscription",
+        lambda conn, workflow_id, role="origin": (
+            0, 7, [{
+                "id": 7,
+                "kind": "aggregate_changed",
+                "generation": 1,
+                "payload": {
+                    "generation": 1,
+                    "resulting_version": 2,
+                    "resulting_state": "PASS",
+                },
+            }],
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        kb, "KanbanActorContext", lambda **kwargs: kwargs, raising=False,
+    )
+    monkeypatch.setattr(
+        kb, "get_workflow", lambda conn, workflow_id, **kwargs: {
+            "workflow": {
+                "id": workflow_id, "name": "release", "state": "ACTIVE",
+                "active_generation": 2, "version": 3,
+            },
+            "members": [], "outcomes": [],
+        },
+        raising=False,
+    )
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "main"
+    delivered = []
+
+    async def fake_deliver(delivery, platform_enum, kb_module):
+        delivered.append(delivery)
+        return True
+
+    runner._deliver_workflow_notification = fake_deliver
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(delivered) == 1
+    assert delivered[0]["sub"]["workflow_id"] == "wf_only"
+    assert delivered[0]["cursor"] == 7
+    assert delivered[0]["snapshot"]["workflow"]["state"] == "PASS"
+    assert delivered[0]["snapshot"]["workflow"]["active_generation"] == 1
+    assert delivered[0]["snapshot"]["workflow"]["version"] == 2
+
+
+def test_workflow_collection_failure_after_claim_rewinds_for_durable_retry(
+    tmp_path, monkeypatch,
+):
+    db_path = tmp_path / "workflow-collection-failure.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    sub = {
+        "workflow_id": "wf_failed_collect", "role": "origin", "platform": "telegram",
+        "chat_id": "workflow-chat", "chat_type": "dm", "thread_id": "",
+        "user_id": None, "notifier_profile": "main", "tenant": "tenant-a",
+        "delivery_metadata": "{}", "disabled_at": None, "dead_lettered_at": None,
+    }
+    failed = []
+
+    class FakeCursor:
+        def fetchall(self):
+            return [sub]
+
+    class FakeConn:
+        def execute(self, sql, params=None):
+            assert "kanban_workflow_subscriptions" in sql
+            return FakeCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(kb, "list_boards", lambda include_archived=False: [{
+        "slug": "default", "db_path": str(db_path),
+    }])
+    monkeypatch.setattr(kb, "count_notify_subs", lambda **kwargs: 0)
+    monkeypatch.setattr(
+        kb, "count_workflow_subscriptions_readonly", lambda board=None: 1,
+        raising=False,
+    )
+    monkeypatch.setattr(kb, "connect", lambda board=None: FakeConn())
+    monkeypatch.setattr(kb, "list_notify_subs", lambda conn, **kwargs: [])
+    monkeypatch.setattr(
+        kb, "claim_workflow_events_for_subscription",
+        lambda conn, workflow_id, role="origin": (
+            3, 7, [{
+                "id": 7, "kind": "aggregate_changed", "generation": 1,
+                "payload": {"generation": 1, "resulting_version": 2,
+                            "resulting_state": "PASS"},
+            }],
+        ),
+    )
+    monkeypatch.setattr(kb, "KanbanActorContext", lambda **kwargs: kwargs)
+    monkeypatch.setattr(
+        kb, "get_workflow",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("snapshot corrupt")),
+    )
+
+    def record_failure(conn, **kwargs):
+        failed.append(kwargs)
+        return {"retry_count": 1, "dead_lettered_at": None}
+
+    monkeypatch.setattr(kb, "fail_workflow_delivery", record_failure)
+    runner = _make_runner(RecordingAdapter())
+    runner._active_profile_name = lambda: "main"
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert failed == [{
+        "workflow_id": "wf_failed_collect",
+        "role": "origin",
+        "claimed_cursor": 7,
+        "old_cursor": 3,
+        "error_class": "RuntimeError",
+    }]
 
 
 class RecordingAdapter:

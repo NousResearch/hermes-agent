@@ -21,6 +21,7 @@ import os
 import shlex
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -950,6 +951,77 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_repair.add_argument("--json", action="store_true",
                           help="Emit the repair report as JSON")
 
+    # --- workflow ---
+    p_workflow = sub.add_parser(
+        "workflow", help="Create, inspect, and mutate aggregate workflows"
+    )
+    workflow_sub = p_workflow.add_subparsers(dest="workflow_action", required=True)
+
+    def _workflow_common(p, *, version: bool = True, mutation: bool = True):
+        p.add_argument("workflow_id")
+        p.add_argument("--tenant", required=True)
+        if version:
+            p.add_argument("--expected-version", required=True, type=int)
+        if mutation:
+            p.add_argument("--mutation-id")
+        p.add_argument("--json", action="store_true")
+
+    w_create = workflow_sub.add_parser("create", help="Create generation 1")
+    w_create.add_argument("workflow_id")
+    w_create.add_argument("--name", required=True)
+    w_create.add_argument("--tenant", required=True)
+    w_create.add_argument("--acceptance-task", required=True)
+    w_create.add_argument("--root-task")
+    w_create.add_argument("--mutation-id")
+    w_create.add_argument("--json", action="store_true")
+
+    w_show = workflow_sub.add_parser("show", help="Show workflow state and event history")
+    _workflow_common(w_show, version=False, mutation=False)
+
+    w_add = workflow_sub.add_parser("add-member", help="Enroll a task explicitly")
+    _workflow_common(w_add)
+    w_add.add_argument("task_id")
+    w_add.add_argument("--stage-key", required=True)
+    w_add.add_argument("--stage-role", required=True, choices=sorted(kb._WORKFLOW_ROLES))
+    w_add.add_argument("--required", action=argparse.BooleanOptionalAction, default=True)
+
+    w_remove = workflow_sub.add_parser("remove-member", help="Remove an enrolled task")
+    _workflow_common(w_remove)
+    w_remove.add_argument("task_id")
+    w_remove.add_argument("--reason", required=True)
+
+    w_outcome = workflow_sub.add_parser("outcome", help="Record a durable stage outcome")
+    _workflow_common(w_outcome)
+    w_outcome.add_argument("task_id")
+    w_outcome.add_argument("outcome", choices=sorted(kb._WORKFLOW_OUTCOMES))
+    w_outcome.add_argument("--run-id", type=int)
+    w_outcome.add_argument("--supersedes-outcome-id", type=int)
+    w_outcome.add_argument("--summary")
+    w_outcome.add_argument("--metadata-json")
+
+    w_subscribe = workflow_sub.add_parser("subscribe", help="Set the one origin destination")
+    _workflow_common(w_subscribe)
+    w_subscribe.add_argument("--platform", required=True)
+    w_subscribe.add_argument("--chat-id", required=True)
+    w_subscribe.add_argument("--chat-type")
+    w_subscribe.add_argument("--thread-id")
+    w_subscribe.add_argument("--user-id")
+    w_subscribe.add_argument("--notifier-profile", required=True)
+    w_subscribe.add_argument("--target-state", action="append", dest="target_states")
+
+    w_reopen = workflow_sub.add_parser("reopen", help="Create a new generation")
+    _workflow_common(w_reopen)
+    w_reopen.add_argument("--acceptance-task", required=True)
+    w_reopen.add_argument("--members-json", required=True)
+    w_reopen.add_argument("--reason", required=True)
+
+    w_cancel = workflow_sub.add_parser("cancel", help="Terminate the active generation")
+    _workflow_common(w_cancel)
+    w_cancel.add_argument("--reason", required=True)
+
+    w_resume = workflow_sub.add_parser("resume-subscription", help="Resume dead-letter delivery")
+    _workflow_common(w_resume, version=False, mutation=False)
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -1084,6 +1156,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
             "gc":       _cmd_gc,
+            "workflow": _cmd_workflow,
         }
         handler = handlers.get(action)
         if not handler:
@@ -1114,6 +1187,7 @@ def _profile_author() -> str:
 
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
+    "workflow-mutation",
     "init",
     "create",
     "swarm",
@@ -1159,6 +1233,10 @@ _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
 
 def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
     action = getattr(args, "kanban_action", None)
+    if action == "workflow":
+        if getattr(args, "workflow_action", None) == "show":
+            return False
+        action = "workflow-mutation"
     if action == "boards":
         boards_action = getattr(args, "boards_action", None) or "list"
         if boards_action not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
@@ -1402,6 +1480,119 @@ def _parse_duration(val) -> Optional[int]:
             raise ValueError(f"malformed duration {val!r}") from exc
         return int(n * units[s[-1]])
     raise ValueError(f"malformed duration {val!r} (expected 30s, 5m, 2h, 1d, or a number)")
+
+
+def _workflow_actor(tenant: str) -> kb.KanbanActorContext:
+    """Build the trusted local-CLI actor; request bodies cannot mint capabilities."""
+    return kb.KanbanActorContext(
+        principal_id=f"cli:{_profile_author()}",
+        profile_name=_profile_author(),
+        board_identity=str(kb.kanban_db_path().resolve()),
+        tenant=tenant,
+        capabilities=frozenset({
+            "workflow.read", "workflow.manage", "workflow.outcome", "workflow.admin",
+        }),
+        source_kind="cli",
+    )
+
+
+def _workflow_mutation_id(args: argparse.Namespace) -> str:
+    return getattr(args, "mutation_id", None) or f"cli-{uuid.uuid4().hex}"
+
+
+def _print_workflow_result(result: dict[str, Any], *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+    workflow = result["workflow"]
+    print(
+        f"Workflow {workflow['id']}: {workflow['state']} v{workflow['version']} "
+        f"(generation {workflow['active_generation']})"
+    )
+
+
+def _cmd_workflow(args: argparse.Namespace) -> int:
+    action = args.workflow_action
+    actor = _workflow_actor(args.tenant)
+    with kb.connect_closing() as conn:
+        if action == "create":
+            result = kb.create_workflow(
+                conn, workflow_id=args.workflow_id, name=args.name, tenant=args.tenant,
+                designated_acceptance_task_id=args.acceptance_task, actor=actor,
+                mutation_id=_workflow_mutation_id(args), root_task_id=args.root_task,
+            )
+        elif action == "show":
+            result = kb.get_workflow(
+                conn, args.workflow_id, actor=actor, include_events=True,
+            )
+            if result is None:
+                raise ValueError(f"unknown workflow: {args.workflow_id}")
+        elif action == "add-member":
+            result = kb.add_workflow_member(
+                conn, workflow_id=args.workflow_id, task_id=args.task_id,
+                stage_key=args.stage_key, stage_role=args.stage_role,
+                required=args.required, actor=actor,
+                mutation_id=_workflow_mutation_id(args),
+                expected_version=args.expected_version,
+            )
+        elif action == "remove-member":
+            result = kb.remove_workflow_member(
+                conn, workflow_id=args.workflow_id, task_id=args.task_id,
+                actor=actor, mutation_id=_workflow_mutation_id(args),
+                expected_version=args.expected_version, reason=args.reason,
+            )
+        elif action == "outcome":
+            metadata = json.loads(args.metadata_json) if args.metadata_json else None
+            if metadata is not None and not isinstance(metadata, dict):
+                raise ValueError("--metadata-json must contain an object")
+            result = kb.record_workflow_outcome(
+                conn, workflow_id=args.workflow_id, task_id=args.task_id,
+                outcome=args.outcome, actor=actor,
+                mutation_id=_workflow_mutation_id(args),
+                expected_version=args.expected_version, run_id=args.run_id,
+                supersedes_outcome_id=args.supersedes_outcome_id,
+                summary=args.summary, metadata=metadata,
+            )
+        elif action == "subscribe":
+            result = kb.set_workflow_subscription(
+                conn, workflow_id=args.workflow_id, platform=args.platform,
+                chat_id=args.chat_id, chat_type=args.chat_type,
+                thread_id=args.thread_id, user_id=args.user_id,
+                notifier_profile=args.notifier_profile, actor=actor,
+                mutation_id=_workflow_mutation_id(args),
+                expected_version=args.expected_version,
+                target_states=args.target_states,
+            )
+        elif action == "reopen":
+            members = json.loads(args.members_json)
+            if not isinstance(members, list):
+                raise ValueError("--members-json must contain an array")
+            result = kb.reopen_workflow(
+                conn, workflow_id=args.workflow_id,
+                designated_acceptance_task_id=args.acceptance_task,
+                members=members, actor=actor,
+                mutation_id=_workflow_mutation_id(args),
+                expected_version=args.expected_version, reason=args.reason,
+            )
+        elif action == "cancel":
+            result = kb.cancel_workflow(
+                conn, workflow_id=args.workflow_id, actor=actor,
+                mutation_id=_workflow_mutation_id(args),
+                expected_version=args.expected_version, reason=args.reason,
+            )
+        elif action == "resume-subscription":
+            kb.resume_workflow_subscription(
+                conn, workflow_id=args.workflow_id, actor=actor,
+            )
+            result = kb.get_workflow(
+                conn, args.workflow_id, actor=actor, include_events=True,
+            )
+            if result is None:
+                raise ValueError(f"unknown workflow: {args.workflow_id}")
+        else:
+            raise ValueError(f"unknown workflow action: {action}")
+    _print_workflow_result(result, as_json=bool(args.json))
+    return 0
 
 
 def _cmd_init(args: argparse.Namespace) -> int:

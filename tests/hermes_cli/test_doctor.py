@@ -138,6 +138,154 @@ class TestDoctorEnvFileEncoding:
             doctor_mod.run_doctor(Namespace(fix=False))
 
 
+def test_workflow_health_is_quiet_for_clean_legacy_board(tmp_path, monkeypatch):
+    from hermes_cli import kanban_db as kb
+
+    path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(path))
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db(path)
+    assert doctor._check_kanban_workflow_health(path) == []
+
+
+def test_workflow_health_reports_active_dead_letter_and_integrity(tmp_path, monkeypatch):
+    from hermes_cli import kanban_db as kb
+
+    path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(path))
+    kb._INITIALIZED_PATHS.clear()
+    with kb.connect(path) as conn:
+        acceptance = kb.create_task(
+            conn, title="accept", assignee="orchestrator", tenant="tenant-a"
+        )
+        actor = kb.KanbanActorContext(
+            principal_id="doctor-test", profile_name="orchestrator",
+            board_identity="board:test", tenant="tenant-a",
+            capabilities=frozenset({"workflow.manage"}), source_kind="orchestrator",
+        )
+        kb.create_workflow(
+            conn, workflow_id="wf_doctor", name="doctor", tenant="tenant-a",
+            designated_acceptance_task_id=acceptance, actor=actor,
+            mutation_id="create-doctor", subscription={
+                "platform": "telegram", "chat_id": "origin",
+                "notifier_profile": "default",
+            },
+        )
+        conn.execute(
+            "UPDATE kanban_workflow_subscriptions SET dead_lettered_at=1,last_error_class='SendError' "
+            "WHERE workflow_id='wf_doctor'"
+        )
+        conn.execute("UPDATE kanban_workflows SET state='PASS' WHERE id='wf_doctor'")
+
+    diagnostics = doctor._check_kanban_workflow_health(path)
+    text = "\n".join(diagnostics)
+    assert "dead-letter" in text
+    assert "integrity" in text
+    assert "older binaries" in text
+
+
+def test_workflow_health_uses_keyword_integrity_api_and_errors_key(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import kanban_db as kb
+
+    path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(path))
+    kb._INITIALIZED_PATHS.clear()
+    with kb.connect(path) as conn:
+        acceptance = kb.create_task(
+            conn, title="accept", assignee="orchestrator", tenant="tenant-a"
+        )
+        actor = kb.KanbanActorContext(
+            principal_id="doctor-test",
+            profile_name="orchestrator",
+            board_identity="board:test",
+            tenant="tenant-a",
+            capabilities=frozenset({"workflow.manage"}),
+            source_kind="orchestrator",
+        )
+        kb.create_workflow(
+            conn,
+            workflow_id="wf_keyword",
+            name="doctor",
+            tenant="tenant-a",
+            designated_acceptance_task_id=acceptance,
+            actor=actor,
+            mutation_id="create-keyword",
+        )
+
+    def keyword_only_report(conn, *, workflow_id=None):
+        assert workflow_id == "wf_keyword"
+        return {"ok": False, "errors": ["orphan designation"], "warnings": []}
+
+    monkeypatch.setattr(kb, "workflow_integrity_report", keyword_only_report)
+    diagnostics = doctor._check_kanban_workflow_health(path)
+    assert any("orphan designation" in item for item in diagnostics)
+    assert not any("health check failed" in item for item in diagnostics)
+
+
+def test_workflow_health_terminal_delivery_semantics_include_superseded(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import kanban_db as kb
+
+    path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(path))
+    kb._INITIALIZED_PATHS.clear()
+    with kb.connect(path) as conn:
+        acceptance = kb.create_task(
+            conn, title="accept", assignee="orchestrator", tenant="tenant-a"
+        )
+        actor = kb.KanbanActorContext(
+            principal_id="doctor-test",
+            profile_name="orchestrator",
+            board_identity="board:test",
+            tenant="tenant-a",
+            capabilities=frozenset({"workflow.manage"}),
+            source_kind="orchestrator",
+        )
+        kb.create_workflow(
+            conn,
+            workflow_id="wf_superseded",
+            name="doctor",
+            tenant="tenant-a",
+            designated_acceptance_task_id=acceptance,
+            actor=actor,
+            mutation_id="create-superseded",
+            subscription={
+                "platform": "telegram",
+                "chat_id": "origin",
+                "notifier_profile": "default",
+            },
+        )
+        kb.record_workflow_outcome(
+            conn,
+            workflow_id="wf_superseded",
+            task_id=acceptance,
+            outcome="SUPERSEDED",
+            actor=kb.KanbanActorContext(
+                principal_id="doctor-test",
+                profile_name="orchestrator",
+                board_identity="board:test",
+                tenant="tenant-a",
+                capabilities=frozenset({"workflow.outcome"}),
+                source_kind="orchestrator",
+            ),
+            mutation_id="supersede",
+            expected_version=1,
+        )
+
+    diagnostics = doctor._check_kanban_workflow_health(path)
+    assert any("undelivered" in item for item in diagnostics)
+    with kb.connect(path) as conn:
+        conn.execute(
+            "UPDATE kanban_workflow_subscriptions SET last_event_id=("
+            "SELECT last_event_id FROM kanban_workflows WHERE id='wf_superseded') "
+            "WHERE workflow_id='wf_superseded'"
+        )
+    assert doctor._check_kanban_workflow_health(path) == []
+
+
 class TestDoctorToolAvailabilityOverrides:
 
 

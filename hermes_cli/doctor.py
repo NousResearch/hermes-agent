@@ -99,6 +99,83 @@ def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
     )
 
 
+def _check_kanban_workflow_health(db_path: Path | str | None = None) -> list[str]:
+    """Return read-only aggregate-workflow diagnostics without repairing state."""
+    import sqlite3
+    from hermes_cli import kanban_db as kb
+
+    path = Path(db_path) if db_path is not None else kb.kanban_db_path()
+    if not path.exists():
+        return []
+    diagnostics: list[str] = []
+    try:
+        conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            tables = {
+                row["name"] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "kanban_workflows" not in tables:
+                return []
+            workflow_count = int(conn.execute(
+                "SELECT COUNT(*) AS n FROM kanban_workflows"
+            ).fetchone()["n"])
+            if workflow_count == 0:
+                return []
+            active_count = int(conn.execute(
+                "SELECT COUNT(*) AS n FROM kanban_workflows "
+                "WHERE state IN ('ACTIVE','REMEDIATION_REQUIRED','NEEDS_INPUT')"
+            ).fetchone()["n"])
+            if active_count:
+                diagnostics.append(
+                    f"{active_count} active/nonterminal aggregate workflow(s) require monitoring"
+                )
+            if "kanban_workflow_subscriptions" in tables:
+                dead = int(conn.execute(
+                    "SELECT COUNT(*) AS n FROM kanban_workflow_subscriptions "
+                    "WHERE dead_lettered_at IS NOT NULL"
+                ).fetchone()["n"])
+                if dead:
+                    diagnostics.append(f"{dead} aggregate workflow subscription(s) are dead-lettered")
+                undelivered = int(conn.execute(
+                    "SELECT COUNT(DISTINCT s.workflow_id || ':' || s.role) AS n "
+                    "FROM kanban_workflow_subscriptions s "
+                    "JOIN kanban_workflows w ON w.id=s.workflow_id "
+                    "JOIN kanban_workflow_events e ON e.workflow_id=w.id "
+                    "AND e.kind='aggregate_changed' AND e.id>s.last_event_id "
+                    "WHERE w.state IN ('PASS','CANCELLED','SUPERSEDED')"
+                ).fetchone()["n"])
+                if undelivered:
+                    diagnostics.append(
+                        f"{undelivered} terminal aggregate workflow notification(s) remain undelivered"
+                    )
+            for row in conn.execute("SELECT id FROM kanban_workflows ORDER BY id"):
+                report = kb.workflow_integrity_report(
+                    conn, workflow_id=str(row["id"])
+                )
+                if not report.get("ok"):
+                    details = list(report.get("errors") or []) + list(
+                        report.get("warnings") or []
+                    )
+                    diagnostics.append(
+                        f"workflow {row['id']} integrity mismatch: "
+                        + ", ".join(details or ["unknown mismatch"])
+                    )
+            if diagnostics:
+                diagnostics.insert(
+                    0,
+                    f"{workflow_count} aggregate workflow(s) require aggregate-aware "
+                    "handling; older binaries must not run while these diagnostics remain",
+                )
+        finally:
+            conn.close()
+    except Exception as exc:
+        diagnostics.append(f"aggregate workflow health check failed: {exc}")
+    return diagnostics
+
+
 def _safe_which(cmd: str) -> str | None:
     """shutil.which wrapper resilient to platform monkeypatching in tests."""
     try:
@@ -1436,6 +1513,15 @@ def run_doctor(args):
         fixed_count += 1
     else:
         check_warn(f"{_DHH} not found", "(will be created on first use)")
+
+    _section("Kanban Aggregate Workflows")
+    workflow_diagnostics = _check_kanban_workflow_health()
+    if workflow_diagnostics:
+        for diagnostic in workflow_diagnostics:
+            check_warn("Aggregate workflow", diagnostic)
+        check_info("Workflow doctor is read-only; inspect/reconcile through workflow APIs")
+    else:
+        check_ok("No aggregate workflow hazards detected")
     
     # Check expected subdirectories
     expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]

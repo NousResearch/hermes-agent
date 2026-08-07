@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -133,6 +134,14 @@ def _check_kanban_orchestrator_mode() -> bool:
     if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
         return False
     return _profile_has_kanban_toolset()
+
+
+def _check_kanban_worker_mode() -> bool:
+    """Worker-only tools require dispatcher task scope and no delegation."""
+    return bool(
+        os.environ.get("HERMES_KANBAN_TASK")
+        and not _is_delegated_child_context()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1531,6 +1540,332 @@ def _handle_link(args: dict, **kw) -> str:
         return tool_error(f"kanban_link: {e}")
 
 
+_WORKFLOW_READ_CAPABILITIES = frozenset({"workflow.read"})
+_WORKFLOW_MANAGE_CAPABILITIES = frozenset(
+    {"workflow.read", "workflow.manage", "workflow.admin"}
+)
+_WORKFLOW_WORKER_CAPABILITIES = frozenset(
+    {"workflow.read", "workflow.outcome"}
+)
+
+
+def _workflow_profile_name() -> str:
+    """Return audit metadata; profile names never grant workflow authority."""
+    return (
+        os.environ.get("HERMES_PROFILE_NAME")
+        or os.environ.get("HERMES_PROFILE")
+        or "default"
+    )
+
+
+def _workflow_actor(
+    kb,
+    *,
+    tenant: str,
+    board: Optional[str],
+    capabilities: frozenset[str],
+    source_kind: str,
+    task_scope: Optional[str] = None,
+    run_id: Optional[int] = None,
+    claim_lock: Optional[str] = None,
+):
+    """Stamp authority selected by this trusted adapter entry point."""
+    return kb.KanbanActorContext(
+        principal_id=f"{source_kind}:{_workflow_profile_name()}",
+        profile_name=_workflow_profile_name(),
+        board_identity=str(kb.kanban_db_path(board=board).resolve()),
+        tenant=tenant,
+        capabilities=capabilities,
+        source_kind=source_kind,
+        task_scope=task_scope,
+        run_id=run_id,
+        claim_lock=claim_lock,
+    )
+
+
+def _workflow_worker_actor(kb, conn, *, board: Optional[str]):
+    """Bind an outcome actor to the currently active task/run/claim rows."""
+    task_id = os.environ.get("HERMES_KANBAN_TASK") or ""
+    run_raw = os.environ.get("HERMES_KANBAN_RUN_ID") or ""
+    claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or ""
+    try:
+        run_id = int(run_raw)
+    except (TypeError, ValueError):
+        run_id = -1
+    task = kb.get_task(conn, task_id) if task_id else None
+    run = kb.latest_run(conn, task_id) if task is not None else None
+    if (
+        task is None
+        or not task.tenant
+        or task.status != "running"
+        or task.current_run_id != run_id
+        or getattr(task, "claim_lock", None) != claim_lock
+        or run is None
+        or run.id != run_id
+        or run.status != "running"
+    ):
+        raise PermissionError("workflow outcome requires an active run/claim binding")
+    return _workflow_actor(
+        kb,
+        tenant=task.tenant,
+        board=board,
+        capabilities=_WORKFLOW_WORKER_CAPABILITIES,
+        source_kind="dispatcher_worker",
+        task_scope=task_id,
+        run_id=run_id,
+        claim_lock=claim_lock,
+    )
+
+
+def _workflow_existing_actor(
+    kb,
+    conn,
+    *,
+    workflow_id: str,
+    board: Optional[str],
+    capabilities: frozenset[str],
+):
+    """Derive tenant from the durable workflow row, never from tool JSON."""
+    row = conn.execute(
+        "SELECT tenant FROM kanban_workflows WHERE id=?", (workflow_id,)
+    ).fetchone()
+    if row is None or not row["tenant"]:
+        raise KeyError(f"unknown workflow or missing tenant: {workflow_id}")
+    return _workflow_actor(
+        kb,
+        tenant=str(row["tenant"]),
+        board=board,
+        capabilities=capabilities,
+        source_kind="orchestrator",
+    )
+
+
+def _workflow_create_actor(kb, conn, *, acceptance_task_id: str, board: Optional[str]):
+    """Derive a new workflow tenant from its designated acceptance task."""
+    task = kb.get_task(conn, acceptance_task_id)
+    if task is None or not task.tenant:
+        raise ValueError("designated acceptance task must have a non-null tenant")
+    return _workflow_actor(
+        kb,
+        tenant=task.tenant,
+        board=board,
+        capabilities=_WORKFLOW_MANAGE_CAPABILITIES,
+        source_kind="orchestrator",
+    )
+
+
+def _workflow_origin_subscription_from_context(tenant: str) -> Optional[dict[str, Any]]:
+    """Build the sole origin destination from gateway-bound session context."""
+    try:
+        from gateway.session_context import get_session_env
+
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        if not platform or not chat_id:
+            return None
+        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or ""
+        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
+        user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+        notifier_profile = (
+            get_session_env("HERMES_SESSION_PROFILE", "")
+            or _workflow_profile_name()
+        )
+        metadata: dict[str, Any] = {}
+        if thread_id:
+            metadata["thread_id"] = thread_id
+        if chat_type:
+            metadata["chat_type"] = chat_type
+        return {
+            "role": "origin",
+            "platform": platform,
+            "chat_id": chat_id,
+            "chat_type": chat_type,
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "notifier_profile": notifier_profile,
+            "delivery_metadata": metadata or None,
+            "tenant": tenant,
+        }
+    except Exception:
+        logger.warning("workflow origin context unavailable", exc_info=True)
+        return None
+
+
+def _handle_workflow_show(args: dict, **kw) -> str:
+    workflow_id = str(args.get("workflow_id") or "").strip()
+    if not workflow_id:
+        return tool_error("workflow_id is required")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            actor = _workflow_existing_actor(
+                kb, conn, workflow_id=workflow_id, board=board,
+                capabilities=_WORKFLOW_READ_CAPABILITIES,
+            )
+            result = kb.get_workflow(conn, workflow_id, actor=actor, include_events=True)
+            if result is None:
+                return tool_error(f"unknown workflow: {workflow_id}")
+            return json.dumps(result, ensure_ascii=False)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return tool_error(f"kanban_workflow_show: {exc}")
+
+
+def _handle_workflow_manage(args: dict, **kw) -> str:
+    delegated_err = _reject_delegated_child_mutation("kanban_workflow_manage")
+    if delegated_err:
+        return delegated_err
+    guard = _require_orchestrator_tool("kanban_workflow_manage")
+    if guard:
+        return guard
+    action = str(args.get("action") or "").strip()
+    workflow_id = str(args.get("workflow_id") or "").strip()
+    mutation_id = str(args.get("mutation_id") or f"tool-{secrets.token_hex(16)}")
+    if not action or not workflow_id:
+        return tool_error("action and workflow_id are required")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            if action == "create":
+                acceptance_task_id = str(args.get("acceptance_task_id") or "").strip()
+                actor = _workflow_create_actor(
+                    kb, conn, acceptance_task_id=acceptance_task_id, board=board,
+                )
+                result = kb.create_workflow(
+                    conn,
+                    workflow_id=workflow_id,
+                    name=str(args.get("name") or ""),
+                    tenant=actor.tenant,
+                    designated_acceptance_task_id=acceptance_task_id,
+                    root_task_id=args.get("root_task_id"),
+                    actor=actor,
+                    mutation_id=mutation_id,
+                    subscription=_workflow_origin_subscription_from_context(actor.tenant),
+                )
+            else:
+                actor = _workflow_existing_actor(
+                    kb, conn, workflow_id=workflow_id, board=board,
+                    capabilities=_WORKFLOW_MANAGE_CAPABILITIES,
+                )
+                expected_version = (
+                    int(args["expected_version"])
+                    if action in {
+                        "add_member", "remove_member", "cancel", "reopen",
+                        "set_subscription", "skip_subscription_event",
+                    }
+                    else None
+                )
+                if action == "add_member":
+                    result = kb.add_workflow_member(
+                        conn, workflow_id=workflow_id,
+                        task_id=str(args.get("task_id") or ""),
+                        stage_key=str(args.get("stage_key") or ""),
+                        stage_role=str(args.get("stage_role") or ""),
+                        required=bool(args.get("required", True)), actor=actor,
+                        mutation_id=mutation_id, expected_version=expected_version,
+                    )
+                elif action == "remove_member":
+                    result = kb.remove_workflow_member(
+                        conn, workflow_id=workflow_id,
+                        task_id=str(args.get("task_id") or ""), actor=actor,
+                        mutation_id=mutation_id, expected_version=expected_version,
+                        reason=str(args.get("reason") or ""),
+                    )
+                elif action == "cancel":
+                    result = kb.cancel_workflow(
+                        conn, workflow_id=workflow_id, actor=actor,
+                        mutation_id=mutation_id, expected_version=expected_version,
+                        reason=str(args.get("reason") or ""),
+                    )
+                elif action == "reopen":
+                    result = kb.reopen_workflow(
+                        conn, workflow_id=workflow_id, actor=actor,
+                        mutation_id=mutation_id, expected_version=expected_version,
+                        designated_acceptance_task_id=str(
+                            args.get("acceptance_task_id") or ""
+                        ),
+                        members=args.get("members") or [],
+                        reason=str(args.get("reason") or ""),
+                    )
+                elif action == "set_subscription":
+                    result = kb.set_workflow_subscription(
+                        conn,
+                        workflow_id=workflow_id,
+                        platform=str(args.get("platform") or ""),
+                        chat_id=str(args.get("chat_id") or ""),
+                        chat_type=args.get("chat_type"),
+                        thread_id=args.get("thread_id"),
+                        user_id=args.get("user_id"),
+                        notifier_profile=str(args.get("notifier_profile") or ""),
+                        delivery_metadata=args.get("delivery_metadata"),
+                        target_states=args.get("target_states"),
+                        actor=actor,
+                        mutation_id=mutation_id,
+                        expected_version=expected_version,
+                    )
+                elif action == "resume_subscription":
+                    result = kb.resume_workflow_subscription(
+                        conn, workflow_id=workflow_id, actor=actor,
+                    )
+                elif action == "disable_subscription":
+                    result = kb.disable_workflow_subscription(
+                        conn, workflow_id=workflow_id, actor=actor,
+                        reason=str(args.get("reason") or ""),
+                    )
+                elif action == "skip_subscription_event":
+                    result = kb.skip_workflow_subscription_event(
+                        conn, workflow_id=workflow_id, actor=actor,
+                        event_id=int(args["event_id"]),
+                        mutation_id=mutation_id,
+                        expected_version=expected_version,
+                        reason=str(args.get("reason") or ""),
+                    )
+                else:
+                    return tool_error(f"unsupported workflow manage action: {action}")
+            return json.dumps(result, ensure_ascii=False)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return tool_error(f"kanban_workflow_manage: {exc}")
+
+
+def _handle_workflow_outcome(args: dict, **kw) -> str:
+    delegated_err = _reject_delegated_child_mutation("kanban_workflow_outcome")
+    if delegated_err:
+        return delegated_err
+    workflow_id = str(args.get("workflow_id") or "").strip()
+    if not workflow_id:
+        return tool_error("workflow_id is required")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            actor = _workflow_worker_actor(kb, conn, board=board)
+            result = kb.record_workflow_outcome(
+                conn,
+                workflow_id=workflow_id,
+                task_id=actor.task_scope,
+                outcome=str(args.get("outcome") or ""),
+                actor=actor,
+                mutation_id=str(
+                    args.get("mutation_id") or f"tool-{secrets.token_hex(16)}"
+                ),
+                expected_version=int(args["expected_version"]),
+                run_id=actor.run_id,
+                supersedes_outcome_id=args.get("supersedes_outcome_id"),
+                summary=args.get("summary"),
+                metadata=args.get("metadata"),
+            )
+            return json.dumps(result, ensure_ascii=False)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return tool_error(f"kanban_workflow_outcome: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -2136,6 +2471,112 @@ KANBAN_LINK_SCHEMA = {
     },
 }
 
+KANBAN_WORKFLOW_SHOW_SCHEMA = {
+    "name": "kanban_workflow_show",
+    "description": "Read one durable aggregate workflow and its event history.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string"},
+            "board": _board_schema_prop(),
+        },
+        "required": ["workflow_id"],
+    },
+}
+
+KANBAN_WORKFLOW_MANAGE_SCHEMA = {
+    "name": "kanban_workflow_manage",
+    "description": (
+        "Orchestrator-only workflow mutation. Tenant and capabilities are "
+        "derived from the resolved board and durable task/workflow rows."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": [
+                    "create", "add_member", "remove_member", "cancel", "reopen",
+                    "set_subscription", "resume_subscription", "disable_subscription",
+                    "skip_subscription_event",
+                ],
+            },
+            "workflow_id": {"type": "string"},
+            "name": {"type": "string"},
+            "acceptance_task_id": {"type": "string"},
+            "root_task_id": {"type": "string"},
+            "task_id": {"type": "string"},
+            "stage_key": {"type": "string"},
+            "stage_role": {"type": "string"},
+            "required": {"type": "boolean"},
+            "members": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string"},
+                        "stage_key": {"type": "string"},
+                        "stage_role": {"type": "string"},
+                        "required": {"type": "boolean"},
+                    },
+                    "required": ["task_id", "stage_key", "stage_role"],
+                },
+            },
+            "reason": {"type": "string"},
+            "event_id": {"type": "integer"},
+            "platform": {"type": "string"},
+            "chat_id": {"type": "string"},
+            "chat_type": {"type": ["string", "null"]},
+            "thread_id": {"type": ["string", "null"]},
+            "user_id": {"type": ["string", "null"]},
+            "notifier_profile": {"type": "string"},
+            "delivery_metadata": {"type": ["object", "null"]},
+            "target_states": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "ACTIVE", "PASS", "REMEDIATION_REQUIRED", "NEEDS_INPUT",
+                        "SUPERSEDED", "CANCELLED",
+                    ],
+                },
+            },
+            "expected_version": {"type": "integer"},
+            "mutation_id": {"type": "string"},
+            "board": _board_schema_prop(),
+        },
+        "required": ["action", "workflow_id"],
+    },
+}
+
+KANBAN_WORKFLOW_OUTCOME_SCHEMA = {
+    "name": "kanban_workflow_outcome",
+    "description": (
+        "Record an outcome for the dispatcher's current task. The active "
+        "task, run, claim, board, and tenant are reloaded from trusted state."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string"},
+            "outcome": {
+                "type": "string",
+                "enum": [
+                    "PASS", "REMEDIATION_REQUIRED", "NEEDS_INPUT",
+                    "SUPERSEDED", "CANCELLED",
+                ],
+            },
+            "expected_version": {"type": "integer"},
+            "mutation_id": {"type": "string"},
+            "supersedes_outcome_id": {"type": "integer"},
+            "summary": {"type": "string"},
+            "metadata": {"type": "object"},
+            "board": _board_schema_prop(),
+        },
+        "required": ["workflow_id", "outcome", "expected_version"],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -2247,4 +2688,31 @@ registry.register(
     handler=_handle_link,
     check_fn=_check_kanban_mode,
     emoji="🔗",
+)
+
+registry.register(
+    name="kanban_workflow_show",
+    toolset="kanban",
+    schema=KANBAN_WORKFLOW_SHOW_SCHEMA,
+    handler=_handle_workflow_show,
+    check_fn=_check_kanban_mode,
+    emoji="🧭",
+)
+
+registry.register(
+    name="kanban_workflow_manage",
+    toolset="kanban",
+    schema=KANBAN_WORKFLOW_MANAGE_SCHEMA,
+    handler=_handle_workflow_manage,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🧭",
+)
+
+registry.register(
+    name="kanban_workflow_outcome",
+    toolset="kanban",
+    schema=KANBAN_WORKFLOW_OUTCOME_SCHEMA,
+    handler=_handle_workflow_outcome,
+    check_fn=_check_kanban_worker_mode,
+    emoji="🧭",
 )

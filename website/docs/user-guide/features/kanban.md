@@ -890,7 +890,39 @@ hermes kanban create "monthly report" \
     --workspace dir:~/tenants/business-a/data/
 ```
 
-Workers receive `$HERMES_TENANT` and namespace their memory writes by prefix. The board, the dispatcher, and the profile definitions are all shared; only the data is scoped.
+Workers receive `$HERMES_TENANT` and namespace their memory writes by prefix. The board, the dispatcher, and the profile definitions are all shared; only the data is scoped. This remains a soft filter for legacy tasks. Native workflows are stricter: every workflow and member has a non-null matching tenant, and any prerequisite link touching an enrolled member is checked fail-closed.
+
+## Native aggregate workflows
+
+A workflow is a durable acceptance aggregate over an explicit set of task stages. It is not a synonym for a dependency graph:
+
+- A **link** still means only “the parent must finish before the child may run.” It controls scheduling.
+- A **workflow member** means “this stage contributes to this workflow generation's aggregate.” Membership is explicit and audited; linking or unlinking tasks never enrolls or removes them.
+- Completing an ordinary task is not workflow acceptance. Each required member needs a durable workflow outcome, and the designated acceptance member must have `PASS` before the aggregate can become `PASS`.
+
+Workflow states are `ACTIVE`, `NEEDS_INPUT`, `REMEDIATION_REQUIRED`, `PASS`, `CANCELLED`, and `SUPERSEDED`. Stage outcomes are separate facts: `PASS`, `NEEDS_INPUT`, `REMEDIATION_REQUIRED`, `CANCELLED`, or `SUPERSEDED`. This separation lets a QA task finish its worker run while still recording `REMEDIATION_REQUIRED`; task status `done` never masquerades as a passing gate.
+
+`PASS`, `CANCELLED`, and `SUPERSEDED` are terminal for a generation. A later defect cannot rewrite a recorded `PASS`. An authorized reopen creates generation N+1 with a new designated acceptance stage and explicit remediation/re-verification obligations while generation N remains immutable. Mutations use expected workflow versions and idempotent mutation IDs, so concurrent acceptance and remediation cannot both silently win.
+
+### Workflow authorization and tenant guarantees
+
+Workflow tools derive their actor from trusted runtime and board state. Request bodies cannot mint a tenant, capability, notifier profile, task scope, run ID, or claim. Orchestrator authority is selected by the gated tool entry point and applies regardless of who originally created the workflow. Worker outcomes are accepted only when the durable member task, current run, live claim, board identity, and non-null tenant all match. Profile names are audit metadata, not authority.
+
+Legacy unenrolled tasks keep their existing soft-tenant behavior for compatibility. Once a task is enrolled, workflow membership, member identity changes, and every prerequisite link touching it require the same board and tenant. Corrupt, orphaned, cross-tenant, or ambiguous workflow facts fail closed to an operator-visible integrity error and can never reduce to `PASS`.
+
+### One origin subscription and delivery limits
+
+A workflow has at most one durable `origin` subscription. Member creation and task links do not copy or multiply it. `workflow_subscription.chat_id` is the destination; a member task's `session_id` is provenance only and cannot reroute delivery.
+
+For an API-server origin, the notifier uses the existing wake path with `session_id=workflow_subscription.chat_id`. Push adapters reconstruct chat type, thread, user, profile, and delivery metadata solely from the workflow subscription. An unavailable stamped notifier profile fails closed instead of falling back to another profile's bot.
+
+Workflow notification processing is durable **at least once**, not exactly once. The notifier claims a workflow-event cursor before delivery, rewinds it on failure, applies bounded exponential backoff, and retains a dead-lettered subscription for operator action. Administrators can resume it without moving the cursor, explicitly skip one event with an audit record, change its destination, or disable it. A crash after an external adapter accepted a message but before Hermes acknowledged the cursor can duplicate that message unless the adapter honors the `(workflow_id, workflow_event_id)` idempotency key. “At least once” describes Hermes' durable retry state; it cannot guarantee eventual receipt from an external service.
+
+### Migration, downgrade, and rollback
+
+Workflow storage is additive and opt-in. Opening an existing board adds workflow tables and indexes without rewriting legacy tasks, links, runs, events, or task subscriptions. Hermes does not infer workflows from old dependency graphs because links do not encode membership.
+
+Older Hermes versions ignore the additive tables and continue dispatching legacy tasks, but they cannot reduce workflows or deliver workflow events. Before downgrade, run `hermes doctor`, resolve or explicitly pause active workflows and undelivered/dead-lettered aggregate events, then back up the SQLite database together with its WAL and SHM files. Rollback leaves workflow tables intact; workflow processing is degraded until the newer version is reinstalled and event replay/materialized-state verification succeeds. Dropping workflow tables is destructive and is not a rollback step.
 
 ## Gateway notifications
 

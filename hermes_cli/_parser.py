@@ -63,6 +63,9 @@ Examples:
     hermes -s hermes-agent-dev,github-auth
     hermes -w                     Start in isolated git worktree
     hermes gateway install        Install gateway background service
+    hermes start                  Alias for gateway start
+    hermes stop                   Alias for gateway stop
+    hermes restart                Alias for gateway restart
     hermes sessions list          List past sessions
     hermes sessions browse        Interactive session picker
     hermes sessions rename ID T   Rename/title a session
@@ -405,7 +408,7 @@ def build_top_level_parser():
         type=int,
         default=None,
         metavar="N",
-        help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)",
+        help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
     )
     _inherited_flag(
         chat_parser,

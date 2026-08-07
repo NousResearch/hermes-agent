@@ -8,6 +8,7 @@ Usage:
     hermes gateway             # Run gateway in foreground
     hermes gateway start       # Start gateway as service
     hermes gateway stop        # Stop gateway service
+    hermes start / stop        # Aliases for gateway start / stop
     hermes gateway status      # Show gateway status
     hermes gateway install     # Install gateway service
     hermes gateway uninstall   # Uninstall gateway service
@@ -10623,7 +10624,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
+        "skin", "skills", "slack", "start", "stop", "restart", "status", "sync", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         "verify",
         # Help-ish invocations — plugin commands not being listed in

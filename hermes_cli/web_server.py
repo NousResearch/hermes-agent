@@ -12225,6 +12225,37 @@ def _normalize_mcp_server_create(
     return name, server_config, bearer_token
 
 
+_MCP_REDACTED_QUERY_KEYS = frozenset({"token", "api_key", "key", "access_token"})
+
+
+def _redact_mcp_url(url: Any) -> Any:
+    """Mask common secret query parameters in a saved MCP URL for display.
+
+    Redacts only the JSON response; the stored config is left untouched so the
+    real token remains on disk and the MCP client can use it at runtime.
+    """
+    if not isinstance(url, str) or "?" not in url:
+        return url
+    try:
+        scheme, netloc, path, query, fragment = urllib.parse.urlsplit(url)
+    except (ValueError, TypeError):
+        return url
+    params = urllib.parse.parse_qsl(query, keep_blank_values=True)
+    parts: list[str] = []
+    for k, v in params:
+        if v is None:
+            v = ""
+        if k.lower() in _MCP_REDACTED_QUERY_KEYS:
+            v = "<redacted>"
+        # Quote keys/values manually so the literal ``<redacted>`` placeholder
+        # is not percent-encoded, while still producing a valid query string.
+        parts.append(
+            f"{urllib.parse.quote(k, safe='')}={v if v == '<redacted>' else urllib.parse.quote(v, safe='')}"
+        )
+    query = "&".join(parts)
+    return urllib.parse.urlunsplit((scheme, netloc, path, query, fragment))
+
+
 def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
     """Mask secret-shaped MCP env values for read responses."""
     out: Dict[str, str] = {}
@@ -12247,7 +12278,7 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "name": name,
         "transport": transport,
-        "url": cfg.get("url"),
+        "url": _redact_mcp_url(cfg.get("url")),
         "command": cfg.get("command"),
         "args": list(cfg.get("args") or []),
         "env": _redact_mcp_env(cfg.get("env") or {}),

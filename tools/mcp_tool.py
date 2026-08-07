@@ -114,7 +114,7 @@ from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 from tools.registry import tool_error
 
@@ -1153,6 +1153,35 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
             f"({stripped!r})"
         )
     return stripped
+
+
+def _mcp_url_with_token(url: str, token: Any) -> str:
+    """Append or replace ``token=<token>`` as a query parameter on *url*.
+
+    Windmill-style Streamable HTTP and SSE MCP endpoints require the token in
+    the query string. Keeping the token as a separate config field lets the
+    dashboard display the URL without exposing the secret, and redaction logic
+    can safely mask any token that is still embedded in a saved URL.
+    """
+    if token is None or token == "":
+        return url
+    token_str = str(token)
+    try:
+        scheme, netloc, path, query, fragment = urlsplit(url)
+    except (ValueError, TypeError):
+        # urlparse is very permissive, so this is a last-resort fallback.
+        if "?" in url:
+            return f"{url}&token={token_str}"
+        return f"{url}?token={token_str}"
+
+    # parse_qsl preserves existing query parameters and ordering.
+    params = parse_qsl(query, keep_blank_values=True)
+    # Remove any existing ``token`` query parameter (case-insensitive) so the
+    # configured value is authoritative and we never send duplicate tokens.
+    params = [(k, v) for k, v in params if k.lower() != "token"]
+    params.append(("token", token_str))
+    query = urlencode(params)
+    return urlunsplit((scheme, netloc, path, query, fragment))
 
 
 def _resolve_client_cert(server_name: str, config: dict):
@@ -2888,7 +2917,7 @@ class MCPServerTask:
                 "Upgrade the mcp package to get HTTP support."
             )
 
-        url = config["url"]
+        url = _mcp_url_with_token(config["url"], config.get("token"))
         headers = dict(config.get("headers") or {})
         # Optional per-user identity header (config-gated; static or
         # profile-derived). Explicit headers of the same name win.
@@ -3226,8 +3255,14 @@ class MCPServerTask:
         # critically, no reconnect-backoff burn.  (Ported from
         # anomalyco/opencode#25019.)
         if self._is_http():
+            # Windmill-style MCP endpoints require ``?token=<token>``. Build the
+            # effective URL once so validation, preflight and the SDK all see
+            # the same request target.
+            _url_with_token = _mcp_url_with_token(
+                config.get("url"), config.get("token"),
+            )
             try:
-                _validate_remote_mcp_url(self.name, config.get("url"))
+                _validate_remote_mcp_url(self.name, _url_with_token)
             except InvalidMcpUrlError as exc:
                 logger.warning("%s", exc)
                 self._error = exc
@@ -3250,7 +3285,7 @@ class MCPServerTask:
                 try:
                     _probe_headers = dict(config.get("headers") or {})
                     await self._preflight_content_type(
-                        config["url"],
+                        _url_with_token,
                         headers=_probe_headers,
                         ssl_verify=config.get("ssl_verify", True),
                         client_cert=_resolve_client_cert(self.name, config),

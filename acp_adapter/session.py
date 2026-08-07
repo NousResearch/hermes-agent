@@ -425,6 +425,25 @@ class SessionManager:
         provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
+        # Named custom providers normalize to the runtime bucket ``custom``
+        # after client construction. Persisting that bare bucket loses the
+        # provider identity (and therefore its credential pool) when ACP
+        # recreates the agent for the next turn. Recover the durable
+        # ``custom:<name>`` identity from the endpoint/model before writing
+        # session metadata. This mirrors the TUI session-healing path.
+        if isinstance(provider, str) and provider.strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                provider = canonical_custom_identity(
+                    base_url=base_url,
+                    model=model_str,
+                ) or provider
+            except Exception:
+                logger.debug(
+                    "Failed to canonicalize ACP custom provider identity",
+                    exc_info=True,
+                )
         if isinstance(provider, str) and provider.strip():
             session_meta["provider"] = provider.strip()
         if isinstance(base_url, str) and base_url.strip():

@@ -7107,6 +7107,14 @@ async def get_env_vars(profile: Optional[str] = None):
 async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
+            # When value is empty/blank, treat as a delete request — remove the
+            # key from .env entirely rather than writing KEY= (which leaves a
+            # ghost entry that the Keys page can never clear, GH-72552).
+            if not (body.value or "").strip():
+                from hermes_cli.credential_lifecycle import remove_provider_env_credential
+
+                result = remove_provider_env_credential(body.key)
+                return result
             # Unified credential lifecycle: writes .env AND reconciles any
             # config.yaml mirror still holding the previous value of this var
             # (model.api_key / auxiliary.*.api_key / custom_providers[*]),

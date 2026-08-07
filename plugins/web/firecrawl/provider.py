@@ -440,6 +440,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         if _is_interrupted():
             return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
 
+        headers = kwargs.get("headers") or None
         format = kwargs.get("format")
         formats: List[str] = []
         if format == "markdown":
@@ -485,12 +486,13 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
 
             try:
                 logger.info("Firecrawl scraping: %s", url)
+                scrape_kwargs: Dict[str, Any] = {"url": url, "formats": formats}
+                if headers:
+                    scrape_kwargs["headers"] = headers
                 try:
                     scrape_result = await asyncio.wait_for(
                         asyncio.to_thread(
-                            _get_firecrawl_client().scrape,
-                            url=url,
-                            formats=formats,
+                            lambda: _get_firecrawl_client().scrape(**scrape_kwargs)
                         ),
                         timeout=60,
                     )

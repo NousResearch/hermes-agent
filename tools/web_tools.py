@@ -743,6 +743,7 @@ async def web_extract_tool(
     urls: List[Any],
     format: str = None,
     char_limit: Optional[int] = None,
+    headers: Optional[Dict[str, str]] = None,
 ) -> str:
     """
     Extract content from specific web pages using available extraction API backend.
@@ -761,6 +762,7 @@ async def web_extract_tool(
         format (str): Desired output format ("markdown" or "html", optional)
         char_limit (Optional[int]): Per-page char budget sent to the model
             (default: web.extract_char_limit or 15000). Larger pages truncate.
+        headers (Optional[Dict[str, str]]): Optional HTTP headers sent with fetch.
 
     Security: URLs are checked for embedded secrets before fetching.
 
@@ -823,6 +825,7 @@ async def web_extract_tool(
             "urls": normalized_urls,
             "format": format,
             "char_limit": char_limit,
+            "headers": headers,
         },
         "error": None,
         "pages_extracted": 0,
@@ -934,12 +937,12 @@ async def web_extract_tool(
             # extract(); exa + tavily are sync.
             import inspect
             if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
+                results = await provider.extract(safe_urls, format=format, headers=headers)
             else:
                 # Run sync extract() in a thread so we don't block the
                 # event loop on network I/O.
                 results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
+                    provider.extract, safe_urls, format=format, headers=headers
                 )
 
         # Reconstruct the original input order across invalid, blocked, and
@@ -1204,6 +1207,11 @@ WEB_EXTRACT_SCHEMA = {
                 "type": "integer",
                 "description": "Optional per-page character budget sent back (default 15000). Pages larger than this are head+tail truncated with the full text stored to disk. Raise it when you need more of a long page inline.",
                 "minimum": 2000
+            },
+            "headers": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Optional HTTP request headers to send with the fetch (e.g. User-Agent)."
             }
         },
         "required": ["urls"]
@@ -1228,6 +1236,7 @@ registry.register(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
         "markdown",
         char_limit=args.get("char_limit"),
+        headers=args.get("headers"),
     ),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),

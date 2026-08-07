@@ -105,6 +105,9 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     localeRef.current = locale
     setRuntimeI18nLocale(locale)
     applyDocumentLocale(locale)
+    // Keep native (main-process) dialogs in sync with the app's display language
+    // so the quit-confirm prompt and future tray/menu text match the UI.
+    window.hermesDesktop?.setAppLocale?.(locale)
   }, [locale])
 
   useEffect(() => {

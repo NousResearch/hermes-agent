@@ -159,7 +159,8 @@ import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import { fetchPrimaryProfileSessions } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
-import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import { type ActiveWork, mergeActiveWork, normalizeActiveWork } from './quit-guard'
+import { setAppLocale, quitConfirmPrompt } from './native-strings'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   RemoteLivenessTracker,
@@ -9349,6 +9350,18 @@ function createWindow() {
   mainWindow.on('unmaximize', schedulePersistWindowState)
   mainWindow.on('close', () => schedulePersistWindowState.flush())
 
+  // Intercept the close *while the window is still alive* so "Keep Running"
+  // can leave it exactly as-is (on Windows, `before-quit` fires only after the
+  // window is already destroyed, so it can't preserve it). Clicking the X runs
+  // this first; preventDefault keeps the window open and the user chooses.
+  // A genuine quit (Quit Anyway, or any non-X exit) re-enters with the latch set
+  // and falls through, so the window closes normally.
+  mainWindow.on('close', (event: Electron.Event) => {
+    if (heldQuitForActiveWork(event)) {
+      return
+    }
+  })
+
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   const createdMainWindow = mainWindow
   mainWindow.on('closed', () => {
@@ -10584,6 +10597,15 @@ ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWat
 // merged picture. Keyed by webContents id so a closed window stops counting.
 const activeWorkByWebContents = new Map<number, ActiveWork>()
 
+// Synchronous, webContents-independent cache of the most recent active-work
+// summary we heard from *any* renderer. The per-webContents map above is
+// dropped the moment a webContents is destroyed (a stream can reload its
+// webContents mid-turn), so at quit time it can read empty even though a turn
+// is live. This cached value survives that and is what the quit guard falls
+// back to. It is only ever refreshed by real publishes, so an idle app
+// (count=0) clears it — no false positives after a turn ends.
+let lastActiveWorkSeen: ActiveWork = { count: 0, titles: [] }
+
 // The same merged picture drives background throttling: chat windows run
 // unthrottled while any turn is in flight (streaming must paint while hidden)
 // and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
@@ -10603,8 +10625,16 @@ ipcMain.on('hermes:active-work', (event, payload) => {
     })
   }
 
-  activeWorkByWebContents.set(id, normalizeActiveWork(payload))
+  const work = normalizeActiveWork(payload)
+  activeWorkByWebContents.set(id, work)
+  lastActiveWorkSeen = work
   updateStreamThrottleFromActiveWork()
+})
+
+// The renderer reports its display language so native (main-process) dialogs
+// match the UI. See electron/native-strings.ts.
+ipcMain.on('hermes:app-locale', (_event, locale) => {
+  setAppLocale(typeof locale === 'string' ? locale : null)
 })
 
 ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
@@ -11909,17 +11939,41 @@ function configureSpellChecker() {
 }
 
 // Ask before a quit kills a turn in flight. True when the quit was intercepted
-// and the confirmation is on screen; "Quit Anyway" re-enters before-quit with
-// the latch set and falls straight through to the teardown below.
+// and the confirmation is on screen; "Quit Anyway" re-enters with the latch set
+// and falls straight through to the teardown below.
+//
+// MUST stay synchronous: Electron commits the quit when the handler returns, so
+// `event.preventDefault()` has to run *before* this function yields. An async
+// version (awaiting the renderer) lets the quit proceed first and the dialog
+// never shows. The main-process mirror (activeWorkByWebContents) is fed
+// synchronously by the renderer's `hermes:active-work` IPC, so no async read is
+// needed here. The per-webContents map is merged with `lastActiveWorkSeen`, a
+// webContents-independent cache, because a stream can reload its webContents
+// mid-turn and drop the map entry before the quit is intercepted.
+//
+// Called from two places: `mainWindow.on('close')` (user clicks the X — the
+// window is still alive, so "Keep Running" leaves it exactly as-is) and
+// `before-quit` (a non-close exit path, e.g. the app menu — the window may
+// already be gone, which is a last-ditch guard, not the smooth "keep running"
+// experience). Both share this logic.
 function heldQuitForActiveWork(event: Electron.Event): boolean {
   if (SKIP_QUIT_CONFIRM || quitConfirmedWithActiveWork || quitPromptOpen) {
     return false
   }
 
-  const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
-  const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  const mapWork = mergeActiveWork(activeWorkByWebContents.values())
+  const work = mergeActiveWork([mapWork, lastActiveWorkSeen])
 
-  if (!prompt || !parent || parent.isDestroyed()) {
+  const prompt = quitConfirmPrompt(work, isQuittingForHandoff)
+  // On Windows a click on the X destroys the window *before* `before-quit`
+  // fires (window-all-closed -> app.quit -> before-quit), so no live window
+  // exists to parent the dialog on that path. `showMessageBox` accepts a null
+  // parent and still displays, so we must not skip on a missing/dead parent —
+  // doing so silently drops the confirmation on the platform it matters most.
+  // (On the `close` path the window is still alive, so this resolves to it.)
+  const liveParent = BrowserWindow.getAllWindows().find(w => !w.isDestroyed()) ?? null
+
+  if (!prompt) {
     return false
   }
 
@@ -11927,8 +11981,8 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
   quitPromptOpen = true
 
   void dialog
-    .showMessageBox(parent, {
-      buttons: ['Keep Running', 'Quit Anyway'],
+    .showMessageBox(liveParent, {
+      buttons: prompt.buttons,
       cancelId: 0,
       defaultId: 0,
       detail: prompt.detail,
@@ -11955,7 +12009,8 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
 
 app.on('before-quit', event => {
   // Runs ahead of every teardown below, so "Keep Running" leaves the app
-  // exactly as it was.
+  // exactly as it was. The guard is synchronous: event.preventDefault() must
+  // run before this handler returns or the quit is already committed.
   if (heldQuitForActiveWork(event)) {
     return
   }

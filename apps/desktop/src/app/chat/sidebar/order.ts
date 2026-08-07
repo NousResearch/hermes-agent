@@ -1,10 +1,12 @@
 /** New ids first, then ids still present in the persisted order. */
 export function reconcileFreshFirst(currentIds: string[], orderIds: string[]): string[] {
   const current = new Set(currentIds)
+  // Dedupe while retaining: a corrupted persisted order (same id twice) must
+  // not self-perpetuate through reconcile — it paints as duplicate headers.
   const retained = orderIds.filter(id => current.has(id))
   const retainedSet = new Set(retained)
 
-  return [...currentIds.filter(id => !retainedSet.has(id)), ...retained]
+  return [...currentIds.filter(id => !retainedSet.has(id)), ...new Set(retained)]
 }
 
 export function resolveManualSessionOrderIds(currentIds: string[], orderIds: string[], manual: boolean): string[] {
@@ -35,7 +37,10 @@ export function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: 
   for (const id of orderIds) {
     const item = byId.get(id)
 
-    if (item) {
+    // Guard against duplicates in the persisted order: pushing the same item
+    // twice renders the row/header twice (e.g. two identical repo headers
+    // under one project).
+    if (item && !seen.has(id)) {
       ordered.push(item)
       seen.add(id)
     }

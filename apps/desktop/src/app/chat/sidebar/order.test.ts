@@ -37,6 +37,11 @@ describe('orderByIds', () => {
     const items = [{ id: 'fresh' }, { id: 'a' }, { id: 'b' }]
     expect(orderByIds(items, id, ['b', 'a'])).toEqual([{ id: 'fresh' }, { id: 'b' }, { id: 'a' }])
   })
+
+  it('never duplicates an item when the persisted order repeats its id', () => {
+    const items = [{ id: 'a' }, { id: 'b' }]
+    expect(orderByIds(items, id, ['a', 'a', 'b'])).toEqual([{ id: 'a' }, { id: 'b' }])
+  })
 })
 
 describe('reconcileOrderIds', () => {
@@ -50,6 +55,10 @@ describe('reconcileOrderIds', () => {
 
   it('puts newly-seen ids ahead of the retained saved order', () => {
     expect(reconcileOrderIds(['fresh', 'a', 'b'], ['b', 'a', 'gone'])).toEqual(['fresh', 'b', 'a'])
+  })
+
+  it('dedupes a corrupted saved order instead of perpetuating it', () => {
+    expect(reconcileOrderIds(['a', 'b'], ['a', 'a', 'b'])).toEqual(['a', 'b'])
   })
 })
 

@@ -354,6 +354,17 @@ mkdir -p "$COMMAND_LINK_DIR"
 ln -sf "$HERMES_BIN" "$COMMAND_LINK_DIR/hermes"
 echo -e "${GREEN}✓${NC} Symlinked hermes → $COMMAND_LINK_DISPLAY_DIR/hermes"
 
+# The `acp` extra is part of the standard install (see _ALL_EXTRAS above),
+# so venv/bin/hermes-acp exists on nearly every setup. Symlink it out too —
+# ACP-speaking editors/clients (Zed, VS Code, Buzz, etc.) look for
+# `hermes-acp` on PATH and otherwise report Hermes as "not installed" even
+# though the adapter is already present.
+HERMES_ACP_BIN="$SCRIPT_DIR/venv/bin/hermes-acp"
+if [ -f "$HERMES_ACP_BIN" ]; then
+    ln -sf "$HERMES_ACP_BIN" "$COMMAND_LINK_DIR/hermes-acp"
+    echo -e "${GREEN}✓${NC} Symlinked hermes-acp → $COMMAND_LINK_DISPLAY_DIR/hermes-acp"
+fi
+
 if is_termux; then
     export PATH="$COMMAND_LINK_DIR:$PATH"
     echo -e "${GREEN}✓${NC} $COMMAND_LINK_DISPLAY_DIR is already on PATH in Termux"

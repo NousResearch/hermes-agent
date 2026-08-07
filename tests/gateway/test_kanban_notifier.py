@@ -266,6 +266,59 @@ def test_legacy_subscription_requires_confirmed_dispatcher_lock_owner(
         _release_singleton_lock(winner_handle)
 
 
+def test_notify_subscribe_cli_unset_profile_delivers_as_dispatcher_owner(
+    tmp_path, monkeypatch,
+):
+    """End-to-end: a CLI subscription left unset delivers only through the
+    dispatcher-lock-owning gateway, not through an arbitrary non-owner one.
+
+    Regression for #76483/#76514: `hermes kanban notify-subscribe` without
+    `--notifier-profile` now leaves the row unstamped instead of stamping the
+    invoking shell's own profile. That makes it a legacy/unowned row per
+    `gateway/kanban_watchers.py`'s owner check, so it is delivered only by
+    whichever gateway holds the dispatcher singleton lock — not by "any
+    gateway" a named non-dispatch profile might be running.
+    """
+    from hermes_cli import kanban as kc
+
+    db_path = tmp_path / "cli-unset-profile.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="notify me", assignee="worker")
+    finally:
+        conn.close()
+
+    out = kc.run_slash(
+        f"notify-subscribe {tid} --platform telegram --chat-id chat1"
+    )
+    assert "Subscribed" in out, out
+
+    conn = kb.connect()
+    try:
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    non_owner_adapter = RecordingAdapter()
+    non_owner_runner = _make_runner(non_owner_adapter)
+    non_owner_runner._active_profile_name = lambda: "writer"
+    non_owner_runner._kanban_dispatcher_lock_handle = None
+    asyncio.run(_run_one_notifier_tick(monkeypatch, non_owner_runner))
+    assert non_owner_adapter.sent == []
+
+    owner_adapter = RecordingAdapter()
+    owner_runner = _make_runner(owner_adapter)
+    owner_runner._active_profile_name = lambda: "writer"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, owner_runner))
+    assert [item["chat_id"] for item in owner_adapter.sent] == ["chat1"]
+    assert tid in owner_adapter.sent[0]["text"]
+
+
 class FailingAdapter:
     """Adapter whose send() always raises, simulating a transient send error."""
 

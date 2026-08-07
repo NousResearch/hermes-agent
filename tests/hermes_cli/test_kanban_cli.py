@@ -154,6 +154,81 @@ def test_run_slash_reclaim_running_task(kanban_home):
     assert "ready" in out2.lower()
 
 
+# ---------------------------------------------------------------------------
+# notify-subscribe: notifier_profile stamping (#76483)
+# ---------------------------------------------------------------------------
+
+def test_notify_subscribe_cli_leaves_notifier_profile_unset_by_default(
+    kanban_home, monkeypatch,
+):
+    """`hermes kanban notify-subscribe` must not guess a `notifier_profile`
+    from the invoking shell's own active profile.
+
+    A subscription created from a root/default-profile operator shell used
+    to get stamped with the literal string "default" (via `_profile_author()`).
+    A gateway serving only a named, non-default profile then treats that
+    stamp as belonging to a *different* owner it has no adapter for, and
+    silently skips delivery forever (see gateway/kanban_watchers.py's
+    owner check). Leaving the stamp unset makes the subscription a
+    legacy/unowned row instead, delivered only by whichever gateway holds
+    the dispatcher singleton lock (see
+    ``test_legacy_subscription_requires_confirmed_dispatcher_lock_owner``
+    and ``test_notify_subscribe_cli_unset_profile_delivers_as_dispatcher_owner``
+    in tests/gateway/test_kanban_notifier.py), unless the caller explicitly
+    names the serving profile via ``--notifier-profile``.
+    """
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="notify me")
+    finally:
+        conn.close()
+
+    out = kc.run_slash(
+        f"notify-subscribe {tid} --platform telegram --chat-id chat1"
+    )
+    assert "Subscribed" in out, out
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert not subs[0]["notifier_profile"], subs[0]["notifier_profile"]
+
+
+def test_notify_subscribe_cli_honors_explicit_notifier_profile(
+    kanban_home, monkeypatch,
+):
+    """An explicit ``--notifier-profile`` still stamps the subscription."""
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="notify me")
+    finally:
+        conn.close()
+
+    kc.run_slash(
+        f"notify-subscribe {tid} --platform telegram --chat-id chat1 "
+        "--notifier-profile work"
+    )
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["notifier_profile"] == "work"
+
+
 
 
 # ---------------------------------------------------------------------------

@@ -675,7 +675,7 @@ class GatewayKanbanWatchersMixin:
                                 )
                                 logger.info(
                                     "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
-                                    sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
+                                    sub["task_id"], platform_str, sub["chat_id"], sub_profile or "(unowned)", _wake_kinds,
                                 )
                                 sub_fail_counts.pop(sub_key, None)
                             except Exception as _wk_err:
@@ -773,7 +773,7 @@ class GatewayKanbanWatchersMixin:
                                 )
                                 logger.info(
                                     "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
-                                    sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
+                                    sub["task_id"], platform_str, sub["chat_id"], sub_profile or "(unowned)", _wake_kinds,
                                 )
                             except Exception as _wk_err:
                                 # Best-effort: the notification itself already

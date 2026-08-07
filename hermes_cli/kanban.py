@@ -775,7 +775,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nsub.add_argument("--user-id", default=None)
     p_nsub.add_argument(
         "--notifier-profile", default=None,
-        help="Profile gateway that owns/delivers this subscription (default: active profile)",
+        help="Name of the gateway profile that will deliver this subscription; "
+             "must match a running gateway's own profile name, not the "
+             "invoking shell's profile. Leave unset to make it a "
+             "legacy/unowned row, delivered only by whichever gateway holds "
+             "the dispatcher singleton lock.",
     )
 
     p_nlist = sub.add_parser(
@@ -2760,7 +2764,14 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             platform=args.platform, chat_id=args.chat_id,
             chat_type=args.chat_type,
             thread_id=args.thread_id, user_id=args.user_id,
-            notifier_profile=args.notifier_profile or _profile_author(),
+            # Unlike created_by/assignee, this stamp picks which *gateway*
+            # delivers the subscription (gateway/kanban_watchers.py's owner
+            # check) — the invoking shell's own profile (_profile_author())
+            # has no relation to that and can stamp a value no serving
+            # gateway ever claims, silently dropping delivery forever
+            # (#76483). Leave it unstamped unless the caller names the
+            # actual serving profile.
+            notifier_profile=args.notifier_profile,
         )
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")

@@ -908,6 +908,11 @@ hermes kanban notify-unsubscribe t_abcd \
 
 A subscription removes itself automatically once the task reaches `done` or `archived`; no cleanup needed.
 
+In a one-gateway-per-profile deployment, pass `--notifier-profile <name>` only
+when `<name>` is the exact profile name of the gateway that must deliver it —
+it does not default to the shell's own active profile. Omit it and the
+subscription is treated like a legacy/unowned row (see below).
+
 ### Multi-profile setups: delivery is profile-owned
 
 In a one-gateway-per-profile deployment (one dispatcher, separate gateway

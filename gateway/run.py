@@ -17264,13 +17264,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                                     loop = asyncio.get_running_loop()
                                     _hyg_commit_fence = CompressionCommitFence()
-                                    _hyg_future = loop.run_in_executor(
-                                        None,
-                                        lambda: _hyg_agent._compress_context(
-                                            _hyg_msgs, "",
-                                            approx_tokens=_approx_tokens,
-                                            commit_fence=_hyg_commit_fence,
-                                        ),
+                                    _hyg_future = self._spawn_hygiene_compression(
+                                        loop,
+                                        _hyg_agent,
+                                        _hyg_msgs,
+                                        _approx_tokens,
+                                        _hyg_commit_fence,
                                     )
                                     try:
                                         # Progress-aware wait: the timeout is an
@@ -21696,6 +21695,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Restore session context variables to their pre-handler values."""
         from gateway.session_context import clear_session_vars
         clear_session_vars(tokens)
+
+    @staticmethod
+    def _spawn_hygiene_compression(loop, agent, messages, approx_tokens, commit_fence):
+        """Start pre-turn hygiene compression on the default executor.
+
+        Returns the ``Future`` the caller polls with its progress-aware wait.
+
+        The hop MUST carry the caller's ``contextvars`` context. The multiplexed
+        inbound handler runs the whole message under ``_profile_runtime_scope``,
+        which installs the profile's ``HERMES_HOME`` override and its secret
+        scope as contextvars; a bare ``loop.run_in_executor(None, fn)`` starts
+        the worker with an EMPTY context, so the compressor's aux-client
+        provider resolution reads credentials unscoped (process-global
+        ``os.environ``, i.e. possibly another profile's keys) and
+        ``get_hermes_home()`` falls back to the default profile.
+
+        This is the same reason ``/compress`` goes through
+        ``_run_in_executor_with_context``; the automatic pre-turn path needs the
+        identical treatment. Kept as its own method so the contract can be
+        exercised directly instead of only through the full message handler.
+        """
+        ctx = copy_context()
+        return loop.run_in_executor(
+            None,
+            ctx.run,
+            lambda: agent._compress_context(
+                messages, "",
+                approx_tokens=approx_tokens,
+                commit_fence=commit_fence,
+            ),
+        )
 
     async def _run_in_executor_with_context(self, func, *args):
         """Run blocking work in the thread pool while preserving session contextvars."""

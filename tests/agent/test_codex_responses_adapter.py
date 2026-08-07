@@ -10,6 +10,7 @@ from agent.codex_responses_adapter import (
     _preflight_codex_api_kwargs,
     _preflight_codex_input_items,
 )
+from agent.transports.codex import ResponsesApiTransport
 
 
 _HARMONY_SOURCE_SNIPPET = (
@@ -259,6 +260,50 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
 
 _OVERSIZED_ITEM_ID = "x" * 408
 _VALID_ITEM_ID = "msg_abc123"
+
+
+def test_responses_transport_preserves_explicit_reasoning_none_for_gpt56():
+    kwargs = ResponsesApiTransport().build_kwargs(
+        model="gpt-5.6-sol",
+        messages=[{"role": "user", "content": "hi"}],
+        reasoning_config={"enabled": False},
+        base_url="https://api.openai.com/v1",
+    )
+
+    assert kwargs["reasoning"] == {"effort": "none"}
+    assert "include" not in kwargs
+
+
+def test_responses_transport_preserves_explicit_reasoning_none_for_codex_backend():
+    kwargs = ResponsesApiTransport().build_kwargs(
+        model="gpt-5.6-sol",
+        messages=[{"role": "user", "content": "hi"}],
+        reasoning_config={"enabled": False},
+        base_url="https://chatgpt.com/backend-api/codex",
+        is_codex_backend=True,
+    )
+
+    assert kwargs["reasoning"] == {"effort": "none"}
+    assert "include" not in kwargs
+
+
+def test_responses_transport_rejects_reasoning_none_for_unknown_endpoint():
+    with pytest.raises(ValueError, match="does not support reasoning_effort 'none'"):
+        ResponsesApiTransport().build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": False},
+            base_url="https://responses-relay.example/v1",
+        )
+
+
+def test_responses_transport_rejects_reasoning_none_for_unknown_support():
+    with pytest.raises(ValueError, match="does not support reasoning_effort 'none'"):
+        ResponsesApiTransport().build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": False},
+        )
 
 
 

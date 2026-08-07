@@ -2182,6 +2182,41 @@ class APIServerAdapter(BasePlatformAdapter):
             cache[key] = db
         return db
 
+    def _maybe_auto_title_api(self, agent, result, fallback_session_id, user_message):
+        """Same post-response auto-title hook as GatewayRunner channels.
+
+        api_server bypassed GatewayRunner's hook (gateway/run.py), so API
+        sessions never received auto-titles regardless of the
+        auxiliary.title_generation config. Fire-and-forget; failures are
+        logged at debug level only, matching the gateway behaviour.
+        """
+        try:
+            final_response = result.get("final_response") if isinstance(result, dict) else None
+            session_id = (result.get("session_id") if isinstance(result, dict) else None) or fallback_session_id
+            db = self._ensure_session_db()
+            if not (final_response and session_id and db):
+                return
+            from agent.title_generator import maybe_auto_title
+            maybe_auto_title(
+                getattr(db, "_db", db),
+                session_id,
+                user_message,
+                final_response,
+                result.get("messages", []) if isinstance(result, dict) else [],
+                failure_callback=lambda task, exc: logger.debug(
+                    "[%s] auto-title failure suppressed: %s: %s", self.name, task, exc
+                ),
+                main_runtime={
+                    "model": getattr(agent, "model", None),
+                    "provider": getattr(agent, "provider", None),
+                    "base_url": getattr(agent, "base_url", None),
+                    "api_key": getattr(agent, "api_key", None),
+                    "api_mode": getattr(agent, "api_mode", None),
+                } if agent is not None else None,
+            )
+        except Exception:
+            logger.debug("[%s] auto-title hook failed", self.name, exc_info=True)
+
     def _ensure_session_db(self):
         """Lazily initialise and return the SessionDB for the active profile home.
 
@@ -6225,6 +6260,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         if isinstance(result, dict):
                             result["runtime"] = runtime
                         usage["runtime"] = runtime
+                    self._maybe_auto_title_api(agent, result, effective_task_id, user_message)
                     return result, usage
                 except _ProviderAuthResolutionError as exc:
                     # Only _ProviderAuthResolutionError — raised exclusively
@@ -6653,6 +6689,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                             "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
                         }
+                        self._maybe_auto_title_api(agent, r, effective_task_id, user_message)
                         return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)

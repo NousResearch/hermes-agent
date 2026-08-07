@@ -532,7 +532,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
-    from hermes_time import now as _hermes_now
+    from hermes_time import now as _hermes_now, get_timezone as _hermes_tz
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable
     # for the full day.  Minute-precision changes invalidate prefix-cache KV
@@ -540,7 +540,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # session resume without a stored prompt).  The model can still query the
     # exact wall-clock time via tools when it actually needs it.
     # Credit: @iamfoz (PR #20451).
-    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
+    #
+    # The timezone IS cache-safe: it only changes when the user's configured
+    # zone changes, landing on the next prompt rebuild.  Including it here
+    # gives every surface (CLI, TUI, gateway, cron, desktop) the same
+    # date+timezone awareness instead of depending on per-surface injection.
+    # (Issue #76307.)
+    _tz_label = getattr(_hermes_tz(), "key", None) or (now.tzname() or "UTC")
+    # Colons (e.g. fixed-offset labels like "UTC+05:30") would trip the
+    # date-only cache-stability pattern (HH:MM); strip them for the label.
+    _tz_label = _tz_label.replace(":", "")
+    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')} ({_tz_label})"
     if agent.pass_session_id and agent.session_id:
         timestamp_line += f"\nSession ID: {agent.session_id}"
     if agent.model:

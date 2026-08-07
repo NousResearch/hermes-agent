@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
@@ -160,7 +161,7 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
         expected_profile,
         "SYSTEM_MESSAGE",
         "CONTEXT_FILES",
-        "Conversation started: Friday, January 02, 2026",
+        "Conversation started: Friday, January 02, 2026 (UTC)",
     ))
 
     with (
@@ -178,11 +179,75 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
         ),
         patch("agent.file_safety._resolve_active_profile_name", return_value="default"),
         patch("hermes_time.now", return_value=datetime(2026, 1, 2)),
+        patch("hermes_time.get_timezone", return_value=None),
     ):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
 
     assert prompt == expected
     assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
+
+
+def test_timestamp_line_includes_configured_timezone():
+    """The cached timestamp line carries the configured IANA timezone so
+    every surface gets the same date+timezone awareness (issue #76307).
+
+    Timezone is cache-safe: it only changes on a prompt rebuild (session
+    start / compression), unlike minute-precision wall-clock time which the
+    codebase deliberately excludes (see test_datetime_is_date_only_not_minute_precision).
+    """
+    agent = _make_agent()
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch(
+            "hermes_time.now",
+            return_value=datetime(2026, 1, 2, 9, 30, tzinfo=ZoneInfo("America/Sao_Paulo")),
+        ),
+        patch("hermes_time.get_timezone", return_value=ZoneInfo("America/Sao_Paulo")),
+    ):
+        parts = build_system_prompt_parts(agent)
+
+    assert "Conversation started: Friday, January 02, 2026 (America/Sao_Paulo)" in parts["volatile"]
+
+
+def test_timestamp_timezone_label_never_contains_colon():
+    """Fixed-offset tz labels (e.g. "UTC+05:30") must not introduce an HH:MM
+    pattern into the cached prompt — the date-only cache-stability contract
+    (test_datetime_is_date_only_not_minute_precision) forbids colons."""
+    from datetime import timedelta, timezone as dt_timezone
+
+    agent = _make_agent()
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch(
+            "hermes_time.now",
+            return_value=datetime(
+                2026, 1, 2,
+                tzinfo=dt_timezone(timedelta(hours=5, minutes=30)),
+            ),
+        ),
+        patch("hermes_time.get_timezone", return_value=None),
+    ):
+        parts = build_system_prompt_parts(agent)
+
+    import re as _re
+
+    line = next(
+        l for l in parts["volatile"].splitlines()
+        if l.startswith("Conversation started:")
+    )
+    # The line legitimately contains "Conversation started:" — the contract
+    # is the HH:MM pattern (colon + digits), same as
+    # test_datetime_is_date_only_not_minute_precision.
+    assert not _re.search(r":\d", line)
+    # tzname of a fixed-offset zone without abbreviation is like "UTC+05:30";
+    # the label must have been sanitized to a colon-free form.
+    assert "Conversation started: Friday, January 02, 2026 (UTC+0530)" in parts["volatile"]
 
 
 class TestTelegramRichMessagesHint:

@@ -108,7 +108,7 @@ entry point is src/atlas/main.py. Always run `make lint` before
 committing.
 
 # Layer 9: Timestamp + session
-Current time: 2026-03-30T14:30:00-07:00
+Conversation started: Monday, March 30, 2026 (America/Los_Angeles)
 Session: abc123
 
 # Layer 10: Platform hint

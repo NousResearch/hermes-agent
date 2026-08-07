@@ -3253,7 +3253,40 @@ class ContextCompressor(ContextEngine):
         next_rearm_tokens = after + runway
         if session_db and session_id:
             # The capability gate above guarantees archive_and_compact exists.
+            # archive_and_compact soft-archives the active=1 rows and inserts a
+            # replacement set; a batch compression running concurrently on the
+            # same session_id (background_review forks share session_id with
+            # their parent; a gateway restart can race an old worker still
+            # finishing a rotation) does the exact same thing. Whichever
+            # commits second silently discards the other's already-committed
+            # write — the "split session lineage" corruption
+            # try_acquire_compression_lock's docstring says a caller MUST NOT
+            # risk. Take the same durable lock the batch path holds for its
+            # own archive_and_compact call before this one.
+            from agent.conversation_compression import _compression_lock_holder
+
+            holder = _compression_lock_holder(self)
+            lock_acquired = False
             try:
+                try_acquire = getattr(session_db, "try_acquire_compression_lock", None)
+                if callable(try_acquire):
+                    lock_acquired = try_acquire(session_id, holder, ttl_seconds=30.0)
+                else:
+                    # Legacy SessionDB instance predating the lock API
+                    # (hot-reload version skew) — nothing to coordinate
+                    # against, so proceed the same as before this fix existed.
+                    lock_acquired = True
+
+                if not lock_acquired:
+                    logger.info(
+                        "Proactive tool-result prune DB commit skipped for "
+                        "session=%s — a batch compression currently holds the "
+                        "compression lock; this cycle's reclaim is dropped "
+                        "and pruning re-evaluates on the next eligible turn",
+                        session_id,
+                    )
+                    return messages, 0
+
                 session_db.archive_and_compact(
                     session_id,
                     pruned_msgs,
@@ -3268,6 +3301,16 @@ class ContextCompressor(ContextEngine):
                     exc,
                 )
                 return messages, 0
+            finally:
+                if lock_acquired:
+                    try:
+                        release = getattr(session_db, "release_compression_lock", None)
+                        if callable(release):
+                            release(session_id, holder)
+                    except Exception:
+                        logger.debug(
+                            "proactive prune lock release failed", exc_info=True
+                        )
             for msg in pruned_msgs:
                 if isinstance(msg, dict):
                     msg[_DB_PERSISTED_MARKER] = True

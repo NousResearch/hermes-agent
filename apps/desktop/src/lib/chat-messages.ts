@@ -1172,3 +1172,25 @@ export function preserveLocalAssistantErrors(
 export function branchGroupForUser(userMessage: ChatMessage): string {
   return `branch:${userMessage.id}`
 }
+
+/**
+ * Resolve the effective text to display when a completion arrives.
+ * If the streaming-accumulated text is longer than the completion payload
+ * AND the completion text is a normalized prefix of the streamed text,
+ * the gateway likely truncated the payload — preserve the streamed content.
+ */
+export function resolveCompletionText(streamedText: string, completionText: string): string {
+  if (!streamedText || !completionText) {
+    return completionText || streamedText
+  }
+
+  const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
+  const normalizedStreamed = normalize(streamedText)
+  const normalizedCompletion = normalize(completionText)
+
+  const completionTruncatedStreamed =
+    streamedText.length > completionText.length &&
+    normalizedStreamed.startsWith(normalizedCompletion)
+
+  return completionTruncatedStreamed ? streamedText : completionText
+}

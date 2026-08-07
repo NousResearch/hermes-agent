@@ -12,6 +12,7 @@ import {
   type GatewayEventPayload,
   mergeFinalAssistantText,
   reasoningPart,
+  resolveCompletionText,
   renderMediaTags,
   upsertToolPart
 } from '@/lib/chat-messages'
@@ -570,7 +571,15 @@ export function useMessageStream({
         const replaceTextPart = (parts: ChatMessagePart[]) => {
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
 
-          return mergeFinalAssistantText(parts, visibleFinalText)
+          // The gateway may truncate the message.complete payload - keep the
+          // richer streaming text over the shorter truncated completion.
+          const streamedText = parts
+            .filter((p): p is Extract<ChatMessagePart, { type: 'text' }> => p.type === 'text')
+            .map(p => p.text)
+            .join('')
+            .trim()
+
+          return mergeFinalAssistantText(parts, resolveCompletionText(streamedText, visibleFinalText))
         }
 
         // Settling the final response onto a bubble makes it the turn's real

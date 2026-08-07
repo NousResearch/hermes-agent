@@ -818,14 +818,20 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     }
 
     if (baseButton !== 0) {
+      // A motion/drag frame for a non-left button (bit 0x20 set) is not a
+      // fresh press — some terminals (observed: Ghostty) report repeated
+      // button-2 motion frames while the pointer merely moves/hovers with
+      // no real click. Without this guard those frames fell through to
+      // onMouseDownAt below whenever there was no active selection,
+      // re-firing right-click-paste on every such frame (#79204).
+      if ((m.button & 0x20) !== 0) {
+        return
+      }
+
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
 
       if (baseButton === 2 && hasSelection(sel)) {
-        if ((m.button & 0x20) !== 0) {
-          return
-        }
-
         if (!app.props.getSelectedText()) {
           return
         }

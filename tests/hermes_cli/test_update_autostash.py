@@ -103,6 +103,63 @@ def test_reload_updated_runtime_modules_restores_new_hermes_constants_symbol(mon
     assert callable(hermes_constants.apply_subprocess_home_env)
 
 
+# ---------------------------------------------------------------------------
+# Gate-hijack guard: the update branch-switch must NEVER run `git checkout`
+# against the live checkout under pytest (recreates local main + moves HEAD).
+# Root cause: the update branch-switch in _cmd_update_impl
+# ran unguarded against PROJECT_ROOT; in a detached-HEAD test checkout
+# current_branch=="HEAD" != target, so it fired `checkout -B main origin/main`,
+# hijacking the gate worktree. Guard mirrors the marker-write path.
+# ---------------------------------------------------------------------------
+
+def test_update_branch_switch_guarded_under_pytest_live_checkout(monkeypatch, tmp_path, capsys):
+    """When _pytest_owns_live_checkout is True, the branch-switch must skip —
+    NO `git checkout` subprocess may touch the live repo HEAD."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    # Simulate the hazard condition: running under pytest AND PROJECT_ROOT is
+    # the live checkout (guard True). In production the guard's own root-equality
+    # check gates this; here we force it so the test doesn't depend on cwd.
+    monkeypatch.setattr(hermes_main, "_pytest_owns_live_checkout", lambda root: True)
+
+    # current_branch reports detached HEAD ("HEAD"), target defaults to main,
+    # so current_branch != branch and the switch path is entered.
+    side_effect, recorded = _make_update_side_effect(current_branch="HEAD")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    # Should return cleanly (early-exit), issuing zero checkout calls.
+    hermes_main.cmd_update(SimpleNamespace())
+
+    checkout_calls = [
+        cmd for cmd in recorded
+        if any("checkout" in str(c) for c in cmd)
+    ]
+    assert checkout_calls == [], (
+        f"branch-switch must not run git checkout under the live-checkout guard; "
+        f"got {checkout_calls}"
+    )
+
+
+def test_update_branch_switch_still_fires_when_not_live_checkout(monkeypatch, tmp_path):
+    """Belt-and-suspenders: the guard must NOT over-block. When PROJECT_ROOT is
+    a sandboxed tmp repo (guard False), the real switch still runs as before —
+    the fix protects the live checkout only, not legitimate sandboxed exercises.
+    """
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(hermes_main, "_pytest_owns_live_checkout", lambda root: False)
+
+    side_effect, recorded = _make_update_side_effect(current_branch="HEAD")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    checkout_calls = [
+        cmd for cmd in recorded
+        if any("checkout" in str(c) for c in cmd)
+    ]
+    assert checkout_calls, "sandboxed (guard-False) run should still perform the branch switch"
+
+
 
 
 

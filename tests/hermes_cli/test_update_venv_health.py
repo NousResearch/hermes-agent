@@ -135,6 +135,13 @@ def _run_update_until_guard(args):
         return_value=[(101, "python.exe", "python.exe -m hermes_cli.main serve")],
     ), patch.object(
         cli_main, "PROJECT_ROOT", _RootSentinel()
+    ), patch.object(
+        # Hard backstop for the live-HEAD-hijack hazard: the
+        # branch-switch source guard always refuses under this test, so even if
+        # a leaky polluter earlier in the run lets execution slip past the venv
+        # guard and reach the branch-switch, it can never mutate the real repo
+        # HEAD. Keeps this test from being hostage to cross-test isolation.
+        cli_main, "_pytest_owns_live_checkout", return_value=True
     ):
         try:
             cli_main._cmd_update_impl(args, gateway_mode=False)

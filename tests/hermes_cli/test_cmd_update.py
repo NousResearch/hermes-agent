@@ -424,6 +424,18 @@ class TestCmdUpdateBranchFlag:
     target without monkey-patching the implementation.
     """
 
+    @pytest.fixture(autouse=True)
+    def _exercise_branch_switch_against_mocked_git(self):
+        """These tests deliberately exercise the real branch-switch path with a
+        fully-mocked ``subprocess.run`` — no real git runs. The live-checkout
+        guard (added for the live-HEAD-hijack fix) would otherwise short-
+        circuit the switch because PROJECT_ROOT == the running checkout under
+        pytest. Tell the guard this is a controlled exercise, not the live-
+        checkout hazard, so the switch logic under test actually executes.
+        """
+        with patch("hermes_cli.main._pytest_owns_live_checkout", return_value=False):
+            yield
+
     def _branch_side_effect(self, current_branch, target_branch, *, checkout_fails=False, track_fails=False, commit_count="0"):
         """Mock side-effect that knows about checkout/track behavior.
 

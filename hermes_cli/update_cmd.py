@@ -3784,6 +3784,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the same thing — get HEAD onto the requested branch first, then
         # fast-forward.
         if current_branch != branch:
+            # Never mutate the real HEAD when running under pytest against the
+            # live checkout. The branch-switch below runs `git checkout` (and a
+            # `checkout -B <branch> origin/<branch>` fallback) against the live
+            # PROJECT_ROOT; in a detached-HEAD test checkout current_branch is
+            # always "HEAD" != branch, so without this guard a stray test that
+            # reaches _cmd_update_impl recreates local `main` and moves HEAD —
+            # hijacking the gate worktree. Same posture as the guarded
+            # marker-write path (_write_marker_file) at PROJECT_ROOT.
+            if _m()._pytest_owns_live_checkout(_m().PROJECT_ROOT):
+                logger.debug(
+                    "Skipping update branch-switch under pytest (live checkout); "
+                    "would have switched %s -> %s",
+                    current_branch,
+                    branch,
+                )
+                return
             label = (
                 "detached HEAD"
                 if current_branch == "HEAD"

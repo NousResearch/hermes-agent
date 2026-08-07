@@ -97,10 +97,12 @@ export function displayModelName(model: string): string {
 
 /** Status bar trigger label — model name plus the live session state (effort/fast).
  *  `defaultEffort` is the profile's configured level, used when the surface has
- *  no explicit effort so the label never advertises a default the agent won't use. */
+ *  no explicit effort so the label never advertises a default the agent won't use.
+ *  `effortLabels` (e.g. the i18n `t.shell.modelOptions` catalog) localizes the
+ *  effort segment; without it the compact English labels are used. */
 export function formatModelStatusLabel(
   model: string,
-  options?: { defaultEffort?: string; fastMode?: boolean; reasoningEffort?: string }
+  options?: { defaultEffort?: string; fastMode?: boolean; reasoningEffort?: string; effortLabels?: Record<string, string> }
 ): string {
   const name = displayModelName(model)
 
@@ -118,7 +120,9 @@ export function formatModelStatusLabel(
 
   // Always surface the effort so the current reasoning level is visible at a
   // glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || DEFAULT_REASONING_EFFORT))
+  parts.push(
+    reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || DEFAULT_REASONING_EFFORT, options?.effortLabels)
+  )
 
   return `${name} · ${parts.join(' ')}`
 }

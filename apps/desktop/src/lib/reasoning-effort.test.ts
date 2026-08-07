@@ -27,6 +27,22 @@ describe('reasoning-effort', () => {
     expect(reasoningEffortLabel('bogus')).toBe('bogus')
   })
 
+  it('uses i18n labels when provided, falling back per-key', () => {
+    const zhLabels: Record<string, string> = {
+      low: '低',
+      medium: '中',
+      high: '高',
+      none: '关闭'
+    }
+
+    expect(reasoningEffortLabel('high', zhLabels)).toBe('高')
+    expect(reasoningEffortLabel('medium', zhLabels)).toBe('中')
+    expect(reasoningEffortLabel('none', zhLabels)).toBe('关闭')
+    // Keys missing from the catalog fall back to the compact English label.
+    expect(reasoningEffortLabel('ultra', zhLabels)).toBe('Ultra')
+    expect(reasoningEffortLabel('')).toBe('')
+  })
+
   it('recognizes only real scale levels', () => {
     expect(isReasoningEffort(DEFAULT_REASONING_EFFORT)).toBe(true)
     expect(isReasoningEffort('HIGH')).toBe(true)

@@ -409,7 +409,7 @@ export function ModelCatalogMenu({
 
                     const meta = [
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort) : null
+                      (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort, t.shell.modelOptions) : null
                     ]
                       .filter(Boolean)
                       .join(' ')

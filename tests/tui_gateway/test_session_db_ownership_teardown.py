@@ -120,6 +120,28 @@ def test_close_is_idempotent_for_an_owned_handle():
     assert db.closed == 1
 
 
+def test_raising_close_is_swallowed_and_not_retried():
+    """A raising ``session_db.close()`` must not escape ``agent.close()``,
+    and the flag stays cleared so a second ``agent.close()`` does not
+    re-attempt the close (the flag is dropped BEFORE the close call —
+    the documented-idempotency ordering)."""
+    attempts: list[int] = []
+
+    class _Raising(_RecordingDB):
+        def close(self):
+            attempts.append(1)
+            raise RuntimeError("disk gone")
+
+    db = _Raising()
+    agent = _bare_agent(_session_db=db, _owns_session_db=True)
+
+    agent.close()  # must not raise
+    agent.close()  # flag already cleared — no second attempt
+
+    assert attempts == [1]
+    assert getattr(agent, "_owns_session_db") is False
+
+
 def test_close_still_ends_the_session_row_before_closing():
     """Ordering matters: the row is finalized THROUGH the handle we then close."""
     calls: list[str] = []

@@ -2,21 +2,21 @@
 
 Hermes includes NeMo Relay as a normal runtime dependency on platforms for
 which Relay publishes a native wheel. The shared-metrics integration is built
-into Hermes and does not require `hermes plugins enable
-observability/nemo_relay`. Hermes remains importable without Relay on other
-native targets. Those targets use an explicit reduced-capability no-op host:
+into Hermes and does not require a Hermes observability plugin. Hermes remains
+importable without Relay on other native targets. Those targets use an
+explicit reduced-capability no-op host:
 Hermes execution remains available, while Relay scopes, middleware, plugins,
 and subscribers are unavailable. The `hermes-agent[nemo-relay]` extra remains
 as a no-op compatibility alias for existing installation commands.
 
-Hermes requires NeMo Relay 0.6.0 or later within the 0.6 release line. That
+Hermes requires NeMo Relay 0.7.1 or later within the 0.7 release line. That
 release establishes the lossless provider-codec contract used for Anthropic
 Messages, OpenAI Chat Completions, and OpenAI Responses requests.
 
 ## Runtime Dependency and Data Boundary
 
 Hermes installs the platform-specific `nemo-relay` native wheel from the
-bounded `>=0.6.0,<0.7` dependency range. The published package is built from
+bounded `>=0.7.1,<0.8` dependency range. The published package is built from
 the [NVIDIA NeMo Relay repository](https://github.com/NVIDIA/NeMo-Relay).
 Unsupported platforms use the explicit no-op runtime described above rather
 than downloading a different implementation.
@@ -41,9 +41,12 @@ This choice is read from the profile's own `config.yaml`. A machine-managed
 configuration overlay cannot enable or disable shared metrics on the profile's
 behalf.
 
-The existing `observability/nemo_relay` plugin remains separate. Enable that
-plugin only for its opt-in rich observability exporters, adaptive execution,
-or dynamic Relay plugins.
+Relay plugin activation is owned by the native runtime and remains explicitly
+opt-in. Set `HERMES_NEMO_RELAY_PLUGINS_TOML` to a selected `plugins.toml` to
+activate configured middleware, exporters, or dynamic plugins. When it is
+unset, Hermes does not invoke Relay's plugin initializer or trigger Relay
+plugin configuration discovery. Invalid explicit configuration is reported
+and Hermes continues without native plugin activation.
 
 Hermes core owns one Relay host and one isolated Relay session scope per Hermes
 session. Core lifecycle producers use

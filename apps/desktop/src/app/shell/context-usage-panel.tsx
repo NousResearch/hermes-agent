@@ -80,7 +80,33 @@ export function ContextUsagePanel({
     [breakdown?.categories, copy]
   )
 
-  const segmentTotal = categories.reduce((sum, category) => sum + category.tokens, 0) || contextUsed || 1
+  const categoryTotal = categories.reduce((sum, category) => sum + category.tokens, 0)
+
+  // Two ways to read the same breakdown, toggled by clicking the bar:
+  //  - 'window' (default): segments are scaled against the whole context window,
+  //    so the filled portion matches the "N% Full" figure above and the
+  //    remaining track is visibly free space.
+  //  - 'used': segments are scaled against used tokens only, filling the bar,
+  //    which makes the relative split between small categories easier to read.
+  // Scaling only against the used total is what made the bar look 100% full at
+  // 26% usage — free space was never drawn.
+  const [barScale, setBarScale] = useState<'used' | 'window'>('window')
+  const [showPercent, setShowPercent] = useState(false)
+
+  const barTotal =
+    barScale === 'window'
+      ? Math.max(contextMax, categoryTotal, 1)
+      : categoryTotal || contextUsed || 1
+
+  // Percentages in the list follow the same denominator as the bar, so the two
+  // readings can never disagree.
+  const listTotal = barTotal
+
+  const formatPercent = (tokens: number) => {
+    const pct = (tokens / listTotal) * 100
+
+    return pct > 0 && pct < 0.1 ? '<0.1%' : `${pct.toFixed(1)}%`
+  }
 
   return (
     <div className="flex w-72 flex-col gap-3 p-3 text-[0.75rem]" data-slot="context-usage-panel">
@@ -92,9 +118,27 @@ export function ContextUsagePanel({
         </span>
       </div>
 
-      <p className="text-[0.6875rem] text-foreground">{copy.percentFull(contextPercent)}</p>
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-[0.6875rem] text-foreground">{copy.percentFull(contextPercent)}</p>
 
-      <ContextUsageBar categories={categories} segmentTotal={segmentTotal} />
+        <button
+          className="text-[0.6875rem] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          onClick={() => setShowPercent(value => !value)}
+          type="button"
+        >
+          {showPercent ? copy.showTokens : copy.showPercentages}
+        </button>
+      </div>
+
+      <button
+        aria-label={barScale === 'window' ? copy.scaleToUsed : copy.scaleToWindow}
+        className="cursor-pointer"
+        onClick={() => setBarScale(value => (value === 'window' ? 'used' : 'window'))}
+        title={barScale === 'window' ? copy.scaleToUsed : copy.scaleToWindow}
+        type="button"
+      >
+        <ContextUsageBar categories={categories} segmentTotal={barTotal} />
+      </button>
 
       <ul className="flex flex-col gap-1.5">
         {categories.map(category => (
@@ -105,7 +149,9 @@ export function ContextUsagePanel({
               <span className="truncate text-muted-foreground">{category.label}</span>
             </span>
 
-            <span className="shrink-0 tabular-nums text-foreground">{compactNumber(category.tokens)}</span>
+            <span className="shrink-0 tabular-nums text-foreground">
+              {showPercent ? formatPercent(category.tokens) : compactNumber(category.tokens)}
+            </span>
           </li>
         ))}
       </ul>

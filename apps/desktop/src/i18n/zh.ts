@@ -2707,6 +2707,10 @@ export const zh: Translations = {
         empty: '暂无上下文数据',
         loading: '正在加载明细…',
         percentFull: percent => `已用 ${percent}%`,
+        scaleToUsed: '按已用令牌缩放进度条',
+        scaleToWindow: '按完整上下文窗口缩放进度条',
+        showPercentages: '显示百分比',
+        showTokens: '显示令牌数',
         title: '上下文用量',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },

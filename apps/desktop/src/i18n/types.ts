@@ -2125,6 +2125,10 @@ export interface Translations {
         empty: string
         loading: string
         percentFull: (percent: number) => string
+        scaleToUsed: string
+        scaleToWindow: string
+        showPercentages: string
+        showTokens: string
         title: string
         tokenSummary: (used: string, max: string) => string
       }

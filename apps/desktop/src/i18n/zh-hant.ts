@@ -2273,6 +2273,10 @@ export const zhHant = defineLocale({
         empty: '尚無上下文資料',
         loading: '正在載入明細…',
         percentFull: percent => `已用 ${percent}%`,
+        scaleToUsed: '以已用權杖縮放長條',
+        scaleToWindow: '以完整脈絡視窗縮放長條',
+        showPercentages: '顯示百分比',
+        showTokens: '顯示權杖數',
         title: '上下文使用量',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },

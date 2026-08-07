@@ -2350,6 +2350,10 @@ export const ja = defineLocale({
         empty: 'コンテキストデータはまだありません',
         loading: '内訳を読み込み中…',
         percentFull: percent => `${percent}% 使用中`,
+        scaleToUsed: '使用済みトークンでバーを表示',
+        scaleToWindow: 'コンテキスト全体でバーを表示',
+        showPercentages: '％を表示',
+        showTokens: 'トークンを表示',
         title: 'コンテキスト使用状況',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },

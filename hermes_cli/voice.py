@@ -183,6 +183,27 @@ def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
     return f"{normalized_mod}{named}"
 
 
+def prompt_toolkit_key_binding_args(normalized: str) -> tuple[str, ...]:
+    """Translate a normalized ``c-x`` / ``a-x`` key into ``KeyBindings.add`` args.
+
+    prompt_toolkit 3.0.x has no Alt/Meta entries in its ``Keys`` enum, so
+    binding an ``a-<key>`` string directly raises ``ValueError: Invalid key``
+    and crashes the CLI at startup (#74169). In a terminal Alt+<key> arrives as
+    Escape followed by <key>, which prompt_toolkit binds as the two-key
+    sequence ``("escape", "<key>")``. Ctrl keys (and the ``c-b`` default) bind
+    as their single string unchanged.
+
+    ``normalize_voice_record_key_for_prompt_toolkit`` only ever emits ``c-<key>``
+    or ``a-<key>`` (everything else falls back to the ``c-b`` default), and every
+    ``a-<key>`` it produces — single chars plus the named keys ``backspace``,
+    ``delete``, ``enter``, ``escape``, ``space``, ``tab`` — binds cleanly as the
+    escape sequence, so the returned args are always accepted by ``kb.add``.
+    """
+    if normalized.startswith("a-"):
+        return ("escape", normalized[2:])
+    return (normalized,)
+
+
 def format_voice_record_key_for_status(raw: Any) -> str:
     """Render ``voice.record_key`` for ``/voice status`` in CLI-friendly form.
 

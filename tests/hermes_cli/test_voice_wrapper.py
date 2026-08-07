@@ -72,6 +72,135 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
     # TUI falls back to Ctrl+B.
 
 
+class TestPromptToolkitKeyBindingArgs:
+    """Regression for #74169: ``alt+<key>`` crashed the CLI at startup.
+
+    prompt_toolkit 3.0.x has no Alt/Meta keys in its ``Keys`` enum, so
+    ``@kb.add("a-v")`` raises ``ValueError: Invalid key`` and takes the whole
+    CLI down. Alt must instead bind as the ``(escape, <key>)`` two-key sequence
+    the terminal actually sends.
+    """
+
+    def test_ctrl_keys_bind_as_a_single_string(self):
+        from hermes_cli.voice import prompt_toolkit_key_binding_args
+
+        assert prompt_toolkit_key_binding_args("c-b") == ("c-b",)
+        assert prompt_toolkit_key_binding_args("c-o") == ("c-o",)
+        assert prompt_toolkit_key_binding_args("c-space") == ("c-space",)
+
+    def test_alt_keys_expand_to_an_escape_sequence(self):
+        from hermes_cli.voice import prompt_toolkit_key_binding_args
+
+        assert prompt_toolkit_key_binding_args("a-v") == ("escape", "v")
+        assert prompt_toolkit_key_binding_args("a-space") == ("escape", "space")
+        assert prompt_toolkit_key_binding_args("a-enter") == ("escape", "enter")
+
+    def test_every_normalized_key_actually_binds_in_prompt_toolkit(self):
+        """The real crash: the translated args must be accepted by ``kb.add``."""
+        from prompt_toolkit.key_binding.key_bindings import KeyBindings
+
+        from hermes_cli.voice import (
+            normalize_voice_record_key_for_prompt_toolkit,
+            prompt_toolkit_key_binding_args,
+        )
+
+        for raw in ("alt+v", "alt+space", "alt+enter", "option+r", "ctrl+b", "ctrl+o", "super+b", ""):
+            normalized = normalize_voice_record_key_for_prompt_toolkit(raw)
+            args = prompt_toolkit_key_binding_args(normalized)
+            kb = KeyBindings()
+            # Must not raise — this is exactly what cli.py does at startup.
+            kb.add(*args)(lambda event: None)
+
+    def test_raw_alt_string_would_crash_without_the_fix(self):
+        """Documents the underlying prompt_toolkit limitation this guards."""
+        from prompt_toolkit.key_binding.key_bindings import KeyBindings
+
+        kb = KeyBindings()
+        with pytest.raises(ValueError):
+            kb.add("a-v")(lambda event: None)
+
+
+class TestVoiceBindingCollisionPrecedence:
+    """Regression for #74169 review: an Alt PTT chord must not collide with
+    the non-eager Escape bindings that share its ``(escape, <key>)`` sequence
+    — Alt+V clipboard paste, Alt+Enter, Alt+G.
+
+    cli.py registers the voice binding with ``filter=Condition(voice_mode)``
+    and ``eager=True``. This mirrors exactly what prompt_toolkit's
+    ``KeyProcessor`` consumes when it resolves a key sequence
+    (``key_processor.py``: matches are filtered to ``b.filter()`` truthy, then
+    eager matches win, then the last registered wins). We rebuild that real
+    binding set and assert the resolved handler in both voice-mode states so
+    the precedence contract can't silently regress.
+    """
+
+    def _resolve(self, kb, keys):
+        """Replicate KeyProcessor's binding selection for ``keys``.
+
+        Filter to active bindings (``KeyProcessor._get_matches``), prefer eager
+        matches, then take the last registered — the exact contract at
+        ``key_processor.py`` lines 129 and 180-187.
+        """
+        matches = [b for b in kb.get_bindings_for_keys(keys) if b.filter()]
+        eager = [b for b in matches if b.eager()]
+        chosen = (eager or matches)
+        return chosen[-1] if chosen else None
+
+    def _build(self, configured_key):
+        """Build the real competing binding set for one configured PTT chord.
+
+        The sibling Escape bindings are registered *after* the voice binding —
+        matching cli.py, where Alt+V clipboard paste (and friends) come later
+        in the same ``KeyBindings`` — so a naive last-wins resolution would
+        pick the sibling.
+        """
+        from prompt_toolkit.filters import Condition
+        from prompt_toolkit.key_binding.key_bindings import KeyBindings
+
+        from hermes_cli.voice import prompt_toolkit_key_binding_args
+
+        voice_mode = {"on": False}
+        kb = KeyBindings()
+
+        def voice_handler(event):  # pragma: no cover - never invoked in test
+            pass
+
+        kb.add(
+            *prompt_toolkit_key_binding_args(configured_key),
+            filter=Condition(lambda: bool(voice_mode["on"])),
+            eager=True,
+        )(voice_handler)
+
+        # Existing non-eager siblings sharing the (escape, <key>) sequence.
+        for keyname in ("v", "enter", "g"):
+            def sibling(event, _k=keyname):  # pragma: no cover
+                pass
+
+            kb.add("escape", keyname)(sibling)
+
+        # Query with the exact normalized key tuple prompt_toolkit stored for
+        # the voice binding (``enter``/``g`` become ``Keys`` members), so the
+        # lookup matches the way KeyProcessor resolves a real key sequence.
+        assert kb.bindings[0].handler is voice_handler
+        keys = kb.bindings[0].keys
+        return kb, keys, voice_mode, voice_handler
+
+    @pytest.mark.parametrize("configured_key", ["a-v", "a-enter", "a-g"])
+    def test_voice_wins_only_while_voice_mode_active(self, configured_key):
+        kb, keys, voice_mode, voice_handler = self._build(configured_key)
+
+        # Voice mode ON: the eager filtered voice binding must win over the
+        # non-eager sibling that shares the sequence (the reported alt+v bug).
+        voice_mode["on"] = True
+        assert self._resolve(kb, keys).handler is voice_handler
+
+        # Voice mode OFF: the filter drops the voice binding entirely, so the
+        # sibling (clipboard paste / newline / editor) keeps its behavior — no
+        # shadowing.
+        voice_mode["on"] = False
+        assert self._resolve(kb, keys).handler is not voice_handler
+
+
 class TestVoiceRecordKeyFromConfig:
     """Round-11 Copilot review regression on #19835.
 

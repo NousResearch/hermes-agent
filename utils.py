@@ -43,6 +43,34 @@ def _preserve_file_mode(path: Path) -> "int | None":
         return None
 
 
+def _preserve_file_owner(path: Path) -> "tuple[int, int] | None":
+    """Capture the owning uid/gid of *path* if the platform supports it."""
+    if os.name != "posix":
+        return None
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_uid, st.st_gid
+
+
+def _restore_file_owner(path: Path, owner: "tuple[int, int] | None") -> None:
+    """Re-apply uid/gid after an atomic replace when permitted.
+
+    Docker and NAS-backed installs often run some commands as root while the
+    persistent volume is owned by the runtime user. ``os.replace`` swaps in the
+    temp file's owner, so a root-run config write can leave ``config.yaml`` owned
+    by root. Best-effort chown preserves the existing owner for privileged
+    callers and is harmless for unprivileged callers that cannot chown.
+    """
+    if owner is None or not hasattr(os, "chown"):
+        return
+    try:
+        os.chown(path, owner[0], owner[1])
+    except OSError:
+        pass
+
+
 def _restore_file_mode(path: Path, mode: "int | None") -> None:
     """Re-apply *mode* to *path* after an atomic replace.
 
@@ -108,6 +136,73 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     return real_path
 
 
+def atomic_write_text(
+    path: Union[str, Path],
+    content: str,
+    *,
+    encoding: str = "utf-8",
+    tmp_prefix: str = ".tmp_",
+    preserve_mode: bool = False,
+    create_mode: "int | None" = None,
+) -> None:
+    """Write *content* to *path* via temp file + fsync + atomic rename.
+
+    Ensures the target file is never left in a partially-written state if
+    the process crashes or is interrupted.  ``atomic_replace`` preserves
+    symlinks and handles cross-device / busy-file fallbacks.
+
+    Used by the memory store, skill manager, and agent importer so that
+    every destructive file rewrite in the codebase shares one implementation.
+
+    Args:
+        preserve_mode: When True, carry an existing target's permission bits
+            and (POSIX, best-effort) owner across the replace, like
+            ``atomic_yaml_write`` does unconditionally.  ``os.replace`` swaps
+            in mkstemp's 0600 temp file owned by the writing user, so without
+            this a root-run rewrite of a user-owned file flips its owner and
+            tightens its mode.  The mode is applied to the temp fd *before*
+            the replace, so the file never transits through 0600.  Off by
+            default: the historical callers (memory store, skill manager,
+            cron) own their 0600-is-fine files.
+        create_mode: Permission bits to apply when the target does not yet
+            exist (otherwise the new file keeps mkstemp's 0600).  Never
+            applied to an existing file.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    original_mode = _preserve_file_mode(path) if preserve_mode else None
+    original_owner = _preserve_file_owner(path) if preserve_mode else None
+    effective_mode = original_mode
+    if effective_mode is None and create_mode is not None and not path.exists():
+        effective_mode = create_mode
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=tmp_prefix, suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as handle:
+            if effective_mode is not None and hasattr(os, "fchmod"):
+                # fchmod the temp fd BEFORE the replace so the target never
+                # transits through mkstemp's 0600. fchmod is Unix-only; on
+                # Windows the post-replace chmod below applies the mode.
+                os.fchmod(handle.fileno(), effective_mode)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        real_path = atomic_replace(tmp_path, path)
+        if preserve_mode:
+            _restore_file_owner(Path(real_path), original_owner)
+        if effective_mode is not None and not hasattr(os, "fchmod"):
+            _restore_file_mode(Path(real_path), effective_mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def atomic_json_write(
     path: Union[str, Path],
     data: Any,
@@ -136,6 +231,7 @@ def atomic_json_write(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     original_mode = None if mode is not None else _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
@@ -160,13 +256,15 @@ def atomic_json_write(
             os.fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
         if mode is not None:
             try:
-                os.chmod(real_path, mode)
+                os.chmod(real_path_obj, mode)
             except OSError:
                 pass
         else:
-            _restore_file_mode(Path(real_path), original_mode)
+            _restore_file_mode(real_path_obj, original_mode)
     except BaseException:
         # Intentionally catch BaseException so temp-file cleanup still runs for
         # KeyboardInterrupt/SystemExit before re-raising the original signal.
@@ -175,6 +273,47 @@ def atomic_json_write(
         except OSError:
             pass
         raise
+
+
+def warn_if_credential_file_broadly_readable(
+    path: Union[str, Path],
+    *,
+    label: str = "",
+    log: logging.Logger | None = None,
+) -> bool:
+    """Warn (once per call) when a credential file is group/world-readable.
+
+    Secret-bearing files that users create by hand (or that older Hermes
+    versions wrote without an explicit mode) commonly end up 0o644 under the
+    default umask. This helper is the shared read-time check for that class:
+    call it before loading any token/credential file so the owner gets a
+    remediation hint in the logs.
+
+    Returns True when a warning was emitted. No-ops (returns False) on
+    platforms without POSIX permission bits semantics (best effort), when the
+    file is missing, or when permissions are already tight.
+    """
+    p = Path(path)
+    _log = log or logger
+    try:
+        file_mode = p.stat().st_mode
+    except OSError:
+        return False
+    if os.name != "posix":
+        # Windows ACLs don't map onto POSIX group/other bits; st_mode there
+        # is synthesized and would false-positive.
+        return False
+    if not (file_mode & (stat.S_IRGRP | stat.S_IROTH)):
+        return False
+    _log.warning(
+        "%s%s is group/world-readable (mode 0%o) and contains secrets. "
+        "Run: chmod 600 %s",
+        f"{label} " if label else "",
+        p.name,
+        stat.S_IMODE(file_mode),
+        p,
+    )
+    return True
 
 
 class IndentDumper(yaml.SafeDumper):
@@ -200,6 +339,7 @@ def atomic_yaml_write(
     default_flow_style: bool = False,
     sort_keys: bool = False,
     extra_content: str | None = None,
+    create_mode: "int | None" = None,
 ) -> None:
     """Write YAML data to a file atomically.
 
@@ -214,11 +354,17 @@ def atomic_yaml_write(
         sort_keys: Whether to sort dict keys (default False).
         extra_content: Optional string to append after the YAML dump
             (e.g. commented-out sections for user reference).
+        create_mode: Permission bits to apply when the target does not yet
+            exist (a created file otherwise keeps mkstemp's 0600).  Never
+            applied to an existing file, whose mode is always preserved.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     original_mode = _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
+    if original_mode is None and create_mode is not None and not path.exists():
+        original_mode = create_mode
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
@@ -227,6 +373,12 @@ def atomic_yaml_write(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
+            if original_mode is not None and hasattr(os, "fchmod"):
+                # Apply the mode to the temp fd BEFORE the replace so the
+                # target never transits through mkstemp's 0600 (the
+                # post-replace _restore_file_mode below then re-applies it
+                # harmlessly, and remains the sole path on Windows).
+                os.fchmod(f.fileno(), original_mode)
             # allow_unicode=True writes emoji/kaomoji (e.g. personalities, skin
             # cursors) as real UTF-8 instead of fragile escape sequences. Without
             # it, PyYAML emits astral-plane chars as `\UXXXXXXXX` (8-digit) escapes
@@ -248,7 +400,9 @@ def atomic_yaml_write(
             os.fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
-        _restore_file_mode(real_path, original_mode)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
+        _restore_file_mode(real_path_obj, original_mode)
     except BaseException:
         # Match atomic_json_write: cleanup must also happen for process-level
         # interruptions before we re-raise them.
@@ -303,6 +457,7 @@ def atomic_roundtrip_yaml_update(
     current[keys[-1]] = value
 
     original_mode = _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
@@ -314,7 +469,9 @@ def atomic_roundtrip_yaml_update(
             f.flush()
             os.fsync(f.fileno())
         real_path = atomic_replace(tmp_path, path)
-        _restore_file_mode(real_path, original_mode)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
+        _restore_file_mode(real_path_obj, original_mode)
     except BaseException:
         try:
             os.unlink(tmp_path)

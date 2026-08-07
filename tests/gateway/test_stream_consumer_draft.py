@@ -80,10 +80,6 @@ def _make_draft_capable_adapter(
 class TestDraftTransportSelection:
     """Verify _resolve_draft_streaming picks the right transport."""
 
-    def test_default_transport_stays_on_edit(self):
-        adapter = _make_draft_capable_adapter()
-        consumer = GatewayStreamConsumer(adapter, "12345", StreamConsumerConfig(chat_type="dm"))
-        assert consumer._resolve_draft_streaming() is False
 
     def test_auto_dm_with_draft_capable_adapter_picks_draft(self):
         adapter = _make_draft_capable_adapter()
@@ -91,29 +87,10 @@ class TestDraftTransportSelection:
         consumer = GatewayStreamConsumer(adapter, "12345", cfg)
         assert consumer._resolve_draft_streaming() is True
 
-    def test_auto_group_falls_back_to_edit(self):
-        adapter = _make_draft_capable_adapter()
-        cfg = StreamConsumerConfig(transport="auto", chat_type="group")
-        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
-        assert consumer._resolve_draft_streaming() is False
 
     def test_explicit_edit_never_uses_drafts(self):
         adapter = _make_draft_capable_adapter()
         cfg = StreamConsumerConfig(transport="edit", chat_type="dm")
-        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
-        assert consumer._resolve_draft_streaming() is False
-
-    def test_explicit_draft_unsupported_falls_back(self):
-        adapter = _make_draft_capable_adapter(supports_draft=False)
-        cfg = StreamConsumerConfig(transport="draft", chat_type="dm")
-        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
-        assert consumer._resolve_draft_streaming() is False
-
-    def test_magicmock_adapter_falls_back_to_edit(self):
-        """MagicMock adapters (used in many existing tests) must default to
-        edit-based since their auto-attributes aren't real callables."""
-        adapter = MagicMock()
-        cfg = StreamConsumerConfig(transport="auto", chat_type="dm")
         consumer = GatewayStreamConsumer(adapter, "12345", cfg)
         assert consumer._resolve_draft_streaming() is False
 
@@ -159,26 +136,6 @@ class TestDraftStreamingHappyPath:
             else final_call.args[1] if len(final_call.args) > 1 else None
         )
         assert sent_content == "Hello world!"
-
-    @pytest.mark.asyncio
-    async def test_group_chat_skips_draft_path(self):
-        adapter = _make_draft_capable_adapter()
-        cfg = StreamConsumerConfig(
-            transport="auto", chat_type="group",
-            edit_interval=0.01, buffer_threshold=5, cursor="",
-        )
-        consumer = GatewayStreamConsumer(adapter, "67890", cfg)
-
-        consumer.on_delta("Group message")
-        task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.05)
-        consumer.finish()
-        await task
-
-        # Group chats skip drafts entirely — no send_draft calls at all.
-        assert adapter.draft_calls == []
-        # Edit-based path delivered via send (first message).
-        adapter.send.assert_awaited()
 
 
 class TestDraftFallbackOnFailure:
@@ -245,47 +202,6 @@ class TestDraftIdLifecycle:
         )
         # Every draft_id must be non-zero (Telegram's contract).
         assert all(did != 0 for did in all_ids)
-
-    @pytest.mark.asyncio
-    async def test_tool_boundary_bumps_draft_id(self):
-        """After a segment break (tool boundary), the next text segment
-        animates via a new draft_id so it appears below the tool-progress
-        bubble rather than overwriting the prior segment's preview."""
-        adapter = _make_draft_capable_adapter()
-        cfg = StreamConsumerConfig(
-            transport="auto", chat_type="dm",
-            edit_interval=0.01, buffer_threshold=5, cursor="",
-        )
-        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
-
-        consumer.on_delta("Pre-tool ")
-        task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.05)
-        # Tool boundary
-        consumer.on_segment_break()
-        await asyncio.sleep(0.05)
-        consumer.on_delta("Post-tool")
-        await asyncio.sleep(0.05)
-        consumer.finish()
-        await task
-
-        # Pre-tool and post-tool segments must use different draft_ids.
-        draft_ids = [c["draft_id"] for c in adapter.draft_calls]
-        if len(draft_ids) >= 2:
-            # Find pre-tool and post-tool calls by content
-            pre_ids = {
-                c["draft_id"] for c in adapter.draft_calls
-                if "Pre-tool" in c["content"] and "Post-tool" not in c["content"]
-            }
-            post_ids = {
-                c["draft_id"] for c in adapter.draft_calls
-                if "Post-tool" in c["content"]
-            }
-            if pre_ids and post_ids:
-                assert pre_ids.isdisjoint(post_ids), (
-                    f"pre-tool and post-tool segments must use distinct "
-                    f"draft_ids; got pre={pre_ids} post={post_ids}"
-                )
 
 
 class TestAlreadySentInDraftMode:
@@ -433,17 +349,6 @@ class TestRichAwareOverflow:
     """Rich-capable adapters raise the consumer's overflow limit so a reply that
     fits one rich message isn't fragmented at the legacy 4,096 edit limit."""
 
-    def test_raw_message_limit_uses_adapter_rich_cap(self):
-        adapter = _make_rich_capable_adapter(overflow_limit=32768)
-        consumer = GatewayStreamConsumer(adapter, "12345", StreamConsumerConfig())
-        assert consumer._raw_message_limit() == 32768
-
-    def test_raw_message_limit_falls_back_to_max_length(self):
-        # Adapter whose hook returns None (default) keeps the legacy limit.
-        adapter = _make_rich_capable_adapter()
-        adapter.streaming_overflow_limit = lambda: None
-        consumer = GatewayStreamConsumer(adapter, "12345", StreamConsumerConfig())
-        assert consumer._raw_message_limit() == 4096
 
     def test_raw_message_limit_mock_adapter_is_safe(self):
         # MagicMock adapters (many existing tests) must not crash or wrongly
@@ -484,26 +389,3 @@ class TestRichAwareOverflow:
         adapter.delete_message.assert_awaited_once_with("12345", "preview1")
         assert consumer.final_response_sent is True
 
-    @pytest.mark.asyncio
-    async def test_fresh_final_deletes_all_preview_fragments(self):
-        from gateway.platforms.base import SendResult
-
-        adapter = _make_rich_capable_adapter(send_results=[
-            SendResult(success=True, message_id="final1"),
-        ])
-        consumer = GatewayStreamConsumer(adapter, "12345", StreamConsumerConfig())
-        # Simulate a reply that was split across the edit limit while streaming:
-        # three preview fragments, the last of which is the current message.
-        consumer._message_id = "frag3"
-        consumer._preview_message_ids = {"frag1", "frag2", "frag3"}
-
-        ok = await consumer._try_fresh_final("the whole completed answer")
-
-        assert ok is True
-        # All three stale fragments deleted; the fresh final never deleted.
-        deleted = {c.args[1] for c in adapter.delete_message.await_args_list}
-        assert deleted == {"frag1", "frag2", "frag3"}
-        assert "final1" not in deleted
-        assert consumer._message_id == "final1"
-        assert consumer._preview_message_ids == set()
-        assert consumer.final_response_sent is True

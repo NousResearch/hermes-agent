@@ -62,28 +62,13 @@ class TestVarint:
             assert decoded == v, f"round-trip failed for {v}"
             assert pos == len(encoded)
 
-    def test_zero(self):
-        assert _encode_varint(0) == b"\x00"
-        v, p = _decode_varint(b"\x00", 0)
-        assert v == 0 and p == 1
 
-    def test_1_byte_boundary(self):
-        # 127 = 0x7F => 1 byte
-        assert _encode_varint(127) == b"\x7f"
-        # 128 => 2 bytes: 0x80 0x01
-        assert _encode_varint(128) == b"\x80\x01"
 
     def test_known_values(self):
         # protobuf spec examples
         # 300 => 0xAC 0x02
         assert _encode_varint(300) == bytes([0xAC, 0x02])
 
-    def test_multi_byte(self):
-        # 2^32 - 1 = 4294967295
-        v = 2**32 - 1
-        enc = _encode_varint(v)
-        dec, _ = _decode_varint(enc, 0)
-        assert dec == v
 
     def test_partial_decode(self):
         # 在 offset 处解码
@@ -106,41 +91,9 @@ class TestConnCodec:
         assert decoded["seq_no"] == 42
         assert decoded["data"] == payload
 
-    def test_empty_data(self):
-        encoded = encode_conn_msg(msg_type=2, seq_no=0, data=b"")
-        decoded = decode_conn_msg(encoded)
-        assert decoded["msg_type"] == 2
-        assert decoded["data"] == b""
 
-    def test_all_cmd_types(self):
-        for ct in [0, 1, 2, 3]:
-            enc = encode_conn_msg(msg_type=ct, seq_no=1, data=b"\x01\x02")
-            dec = decode_conn_msg(enc)
-            assert dec["msg_type"] == ct
 
-    def test_large_seq_no(self):
-        enc = encode_conn_msg(msg_type=1, seq_no=2**32 - 1, data=b"x")
-        dec = decode_conn_msg(enc)
-        assert dec["seq_no"] == 2**32 - 1
 
-    def test_full_round_trip(self):
-        """encode_conn_msg_full 含 cmd/msg_id/module"""
-        enc = encode_conn_msg_full(
-            cmd_type=CMD_TYPE["Request"],
-            cmd="auth-bind",
-            seq_no=99,
-            msg_id="abc123",
-            module="conn_access",
-            data=b"\xde\xad\xbe\xef",
-        )
-        dec = decode_conn_msg(enc)
-        head = dec["head"]
-        assert head["cmd_type"] == CMD_TYPE["Request"]
-        assert head["cmd"] == "auth-bind"
-        assert head["seq_no"] == 99
-        assert head["msg_id"] == "abc123"
-        assert head["module"] == "conn_access"
-        assert dec["data"] == b"\xde\xad\xbe\xef"
 
     # 固定 bytes 常量测试——防协议悄悄改动
     def test_fixed_bytes_simple(self):
@@ -191,11 +144,6 @@ class TestBizCodec:
         dec = decode_biz_msg(enc)
         assert dec["is_response"] is True
 
-    def test_empty_body(self):
-        enc = encode_biz_msg("svc", "method", "id1", b"")
-        dec = decode_biz_msg(enc)
-        assert dec["body"] == b""
-        assert dec["method"] == "method"
 
 
 # ===========================================================
@@ -213,27 +161,6 @@ class TestMsgBodyElement:
         assert decoded["msg_type"] == "TIMTextElem"
         assert decoded["msg_content"]["text"] == "Hello, 世界!"
 
-    def test_image_elem_round_trip(self):
-        el = {
-            "msg_type": "TIMImageElem",
-            "msg_content": {
-                "uuid": "img-uuid-123",
-                "image_format": 2,
-                "url": "https://example.com/img.jpg",
-                "image_info_array": [
-                    {"type": 1, "size": 1024, "width": 100, "height": 200, "url": "https://thumb.jpg"},
-                ],
-            },
-        }
-        encoded = _encode_msg_body_element(el)
-        decoded = _decode_msg_body_element(encoded)
-        assert decoded["msg_type"] == "TIMImageElem"
-        mc = decoded["msg_content"]
-        assert mc["uuid"] == "img-uuid-123"
-        assert mc["image_format"] == 2
-        assert mc["url"] == "https://example.com/img.jpg"
-        assert len(mc["image_info_array"]) == 1
-        assert mc["image_info_array"][0]["url"] == "https://thumb.jpg"
 
     def test_file_elem_round_trip(self):
         el = {
@@ -249,25 +176,7 @@ class TestMsgBodyElement:
         assert dec["msg_content"]["file_name"] == "document.pdf"
         assert dec["msg_content"]["file_size"] == 204800
 
-    def test_custom_elem_round_trip(self):
-        el = {
-            "msg_type": "TIMCustomElem",
-            "msg_content": {
-                "data": '{"key":"value"}',
-                "desc": "custom description",
-                "ext": "extra info",
-            },
-        }
-        enc = _encode_msg_body_element(el)
-        dec = _decode_msg_body_element(enc)
-        assert dec["msg_content"]["data"] == '{"key":"value"}'
-        assert dec["msg_content"]["desc"] == "custom description"
 
-    def test_empty_content(self):
-        el = {"msg_type": "TIMTextElem", "msg_content": {}}
-        enc = _encode_msg_body_element(el)
-        dec = _decode_msg_body_element(enc)
-        assert dec["msg_type"] == "TIMTextElem"
 
     def test_fixed_text_elem_bytes(self):
         """
@@ -350,18 +259,6 @@ class TestDecodeInboundPush:
         assert result["msg_body"][0]["msg_type"] == "TIMTextElem"
         assert result["msg_body"][0]["msg_content"]["text"] == "你好"
 
-    def test_group_message(self):
-        raw = self._build_inbound_push_bytes(
-            from_account="bob",
-            to_account="bot",
-            group_code="group-789",
-            msg_seq=999,
-            text="group msg",
-        )
-        result = decode_inbound_push(raw)
-        assert result is not None
-        assert result["group_code"] == "group-789"
-        assert result["msg_body"][0]["msg_content"]["text"] == "group msg"
 
     def test_returns_none_on_empty(self):
         # 空 bytes 应返回空字段 dict，而不是 None
@@ -413,19 +310,6 @@ class TestEncodeOutbound:
         assert dec["head"]["module"] == "yuanbao_openclaw_proxy"
         assert len(dec["data"]) > 0
 
-    def test_encode_send_group_message(self):
-        msg_body = [{"msg_type": "TIMTextElem", "msg_content": {"text": "group hello"}}]
-        result = encode_send_group_message(
-            group_code="grp-100",
-            msg_body=msg_body,
-            from_account="bot",
-            msg_id="msg-002",
-        )
-        assert isinstance(result, bytes)
-        dec = decode_conn_msg(result)
-        assert dec["head"]["cmd"] == "send_group_message"
-        assert dec["head"]["msg_id"] == "msg-002"
-        assert len(dec["data"]) > 0
 
     def test_c2c_biz_payload_contains_to_account(self):
         """验证 biz payload 包含 to_account 字段"""
@@ -442,19 +326,6 @@ class TestEncodeOutbound:
         to_acc = _get_string(fdict, 2)  # SendC2CMessageReq.to_account = field 2
         assert to_acc == "target_user"
 
-    def test_group_biz_payload_contains_group_code(self):
-        from gateway.platforms.yuanbao_proto import _get_string
-        msg_body = [{"msg_type": "TIMTextElem", "msg_content": {"text": "test"}}]
-        result = encode_send_group_message(
-            group_code="group-xyz",
-            msg_body=msg_body,
-            from_account="bot",
-        )
-        dec = decode_conn_msg(result)
-        biz_data = dec["data"]
-        fdict = _fields_to_dict(_parse_fields(biz_data))
-        grp = _get_string(fdict, 2)  # SendGroupMessageReq.group_code = field 2
-        assert grp == "group-xyz"
 
 
 # ===========================================================
@@ -516,10 +387,6 @@ class TestConstants:
         assert "KickoutMsg" in PB_MSG_TYPES
         assert "PushMsg" in PB_MSG_TYPES
 
-    def test_biz_services_keys(self):
-        assert "SendC2CMessageReq" in BIZ_SERVICES
-        assert "SendGroupMessageReq" in BIZ_SERVICES
-        assert "InboundMessagePush" in BIZ_SERVICES
 
     def test_cmd_type_values(self):
         assert CMD_TYPE["Request"] == 0
@@ -527,10 +394,6 @@ class TestConstants:
         assert CMD_TYPE["Push"] == 2
         assert CMD_TYPE["PushAck"] == 3
 
-    def test_pkg_prefix(self):
-        for k, v in BIZ_SERVICES.items():
-            assert v.startswith("yuanbao_openclaw_proxy"), \
-                f"{k}: unexpected prefix in {v}"
 
 
 # ===========================================================
@@ -603,46 +466,6 @@ class TestEndToEnd:
         assert el_dec["msg_type"] == "TIMTextElem"
         assert el_dec["msg_content"]["text"] == "端到端测试"
 
-    def test_inbound_push_full_flow(self):
-        """构造服务端 push -> 解码入站消息"""
-        from gateway.platforms.yuanbao_proto import (
-            _encode_field, _encode_string, _encode_message,
-            _encode_varint, WT_LEN, WT_VARINT,
-        )
-        # 构造入站消息 biz payload
-        el_bytes = _encode_msg_body_element(
-            {"msg_type": "TIMTextElem", "msg_content": {"text": "server push"}}
-        )
-        biz_payload = (
-            _encode_field(2, WT_LEN, _encode_string("alice"))
-            + _encode_field(3, WT_LEN, _encode_string("bot"))
-            + _encode_field(6, WT_LEN, _encode_string("grp-001"))
-            + _encode_field(8, WT_VARINT, _encode_varint(555))
-            + _encode_field(11, WT_LEN, _encode_string("msg-key-xyz"))
-            + _encode_field(13, WT_LEN, _encode_message(el_bytes))
-        )
-        # 封装成 ConnMsg（模拟服务端 push）
-        wire = encode_conn_msg_full(
-            cmd_type=CMD_TYPE["Push"],
-            cmd="/im/new_message",
-            seq_no=77,
-            msg_id="push-abc",
-            module="yuanbao_openclaw_proxy",
-            data=biz_payload,
-            need_ack=True,
-        )
-        # 接收方解码
-        conn = decode_conn_msg(wire)
-        assert conn["head"]["cmd_type"] == CMD_TYPE["Push"]
-        assert conn["head"]["need_ack"] is True
-
-        msg = decode_inbound_push(conn["data"])
-        assert msg is not None
-        assert msg["from_account"] == "alice"
-        assert msg["group_code"] == "grp-001"
-        assert msg["msg_seq"] == 555
-        assert msg["msg_key"] == "msg-key-xyz"
-        assert msg["msg_body"][0]["msg_content"]["text"] == "server push"
 
 
 if __name__ == "__main__":

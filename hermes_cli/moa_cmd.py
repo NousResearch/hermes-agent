@@ -29,7 +29,10 @@ def _prompt_choice(title: str, rows: list[str], default: int = 0) -> int:
 def _model_options() -> list[dict[str, Any]]:
     payload = build_models_payload(
         load_picker_context(),
-        include_unconfigured=True,
+        # Slot pickers must only offer providers the user can actually call.
+        # Including setup-only rows makes an unconfigured canonical provider
+        # (usually OpenRouter, due to catalog ordering) become the default.
+        include_unconfigured=False,
         picker_hints=True,
         canonical_order=True,
         pricing=True,
@@ -37,7 +40,13 @@ def _model_options() -> list[dict[str, Any]]:
         max_models=200,
     )
     providers = payload.get("providers") or []
-    return [p for p in providers if p.get("slug") and p.get("models")]
+    return [
+        p
+        for p in providers
+        if p.get("slug")
+        and str(p.get("slug")).strip().lower() != "moa"
+        and p.get("models")
+    ]
 
 
 def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
@@ -60,6 +69,12 @@ def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
     return {"provider": str(provider.get("slug") or ""), "model": str(model)}
 
 
+def _format_slot(slot: dict[str, Any]) -> str:
+    label = f"{slot['provider']}:{slot['model']}"
+    effort = str(slot.get("reasoning_effort") or "").strip()
+    return f"{label} [reasoning={effort}]" if effort else label
+
+
 def _print_config(config: dict[str, Any]) -> None:
     cfg = normalize_moa_config(config.get("moa") if isinstance(config, dict) else {})
     print("Mixture of Agents presets")
@@ -71,9 +86,9 @@ def _print_config(config: dict[str, Any]) -> None:
         print(f"\n{marker} {name}")
         print("  Reference models:")
         for idx, slot in enumerate(preset["reference_models"], start=1):
-            print(f"    {idx}. {slot['provider']}:{slot['model']}")
+            print(f"    {idx}. {_format_slot(slot)}")
         agg = preset["aggregator"]
-        print(f"  Aggregator: {agg['provider']}:{agg['model']}")
+        print(f"  Aggregator: {_format_slot(agg)}")
 
 
 def cmd_moa(args) -> None:
@@ -96,7 +111,9 @@ def cmd_moa(args) -> None:
         idx = 0
         while True:
             base = existing[idx] if idx < len(existing) else None
-            refs.append(_pick_slot(base))
+            picked = _pick_slot(base)
+            picked["enabled"] = bool((base or {}).get("enabled", True))
+            refs.append(picked)
             idx += 1
             choice = _prompt_choice("Add another reference model?", ["Add another", "Done"], 1)
             if choice == 1:

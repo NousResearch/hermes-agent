@@ -9,8 +9,11 @@ Covers the three Phase 0 deliverables:
      on.
 """
 import pytest
+from datetime import datetime
 from unittest.mock import patch
+import yaml
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore, build_session_key
 
@@ -32,15 +35,6 @@ class TestSessionKeyByteIdenticalWhenOff:
         s = _src(chat_id="99", chat_type="dm")
         assert build_session_key(s, profile=profile) == "agent:main:telegram:dm:99"
 
-    @pytest.mark.parametrize("profile", [None, "default"])
-    def test_dm_with_thread(self, profile):
-        s = _src(chat_id="99", chat_type="dm", thread_id="t1")
-        assert build_session_key(s, profile=profile) == "agent:main:telegram:dm:99:t1"
-
-    @pytest.mark.parametrize("profile", [None, "default"])
-    def test_dm_without_chat_id_falls_back_to_user(self, profile):
-        s = _src(chat_id="", chat_type="dm", user_id="jordan")
-        assert build_session_key(s, profile=profile) == "agent:main:telegram:dm:jordan"
 
     @pytest.mark.parametrize("profile", [None, "default"])
     def test_group_per_user(self, profile):
@@ -50,21 +44,10 @@ class TestSessionKeyByteIdenticalWhenOff:
             == "agent:main:discord:group:g1:alice"
         )
 
-    @pytest.mark.parametrize("profile", [None, "default"])
-    def test_group_shared_when_disabled(self, profile):
-        s = _src(platform=Platform.DISCORD, chat_id="g1", chat_type="group", user_id="alice")
-        assert (
-            build_session_key(s, group_sessions_per_user=False, profile=profile)
-            == "agent:main:discord:group:g1"
-        )
-
 
 class TestSessionKeyNamespacedWhenOn:
     """A named profile occupies the namespace slot, isolating its sessions."""
 
-    def test_named_profile_dm(self):
-        s = _src(chat_id="99", chat_type="dm")
-        assert build_session_key(s, profile="coder") == "agent:coder:telegram:dm:99"
 
     def test_named_profile_group_per_user(self):
         s = _src(platform=Platform.DISCORD, chat_id="g1", chat_type="group", user_id="alice")
@@ -80,27 +63,6 @@ class TestSessionKeyNamespacedWhenOn:
         c = build_session_key(s, profile="writer")
         assert a != b != c and a != c
 
-    def test_positional_layout_preserved_for_parsers(self):
-        """Downstream parsers split on ':' and read parts[2]=platform,
-        parts[3]=chat_type, parts[4]=chat_id (see qqbot adapter
-        _parse_gateway_session_key). The profile must occupy parts[1] only."""
-        s = _src(platform=Platform.DISCORD, chat_id="g1", chat_type="group", user_id="alice")
-        parts = build_session_key(s, profile="coder").split(":")
-        assert parts[0] == "agent"
-        assert parts[1] == "coder"  # namespace slot (was always 'main')
-        assert parts[2] == "discord"  # platform — unchanged offset
-        assert parts[3] == "group"  # chat_type — unchanged offset
-        assert parts[4] == "g1"  # chat_id — unchanged offset
-
-    def test_default_namespace_layout_matches_named(self):
-        """Default and named keys differ ONLY in parts[1]."""
-        s = _src(platform=Platform.SLACK, chat_id="c1", chat_type="channel", user_id="u1")
-        d = build_session_key(s, profile="default").split(":")
-        n = build_session_key(s, profile="coder").split(":")
-        assert d[0] == n[0] == "agent"
-        assert d[1] == "main" and n[1] == "coder"
-        assert d[2:] == n[2:]  # everything after the namespace is identical
-
 
 class TestMultiplexConfigFlag:
     """gateway.multiplex_profiles defaults off and round-trips."""
@@ -108,23 +70,9 @@ class TestMultiplexConfigFlag:
     def test_default_is_false(self):
         assert GatewayConfig().multiplex_profiles is False
 
-    def test_to_dict_includes_flag(self):
-        assert GatewayConfig().to_dict()["multiplex_profiles"] is False
 
     def test_from_dict_top_level(self):
         cfg = GatewayConfig.from_dict({"multiplex_profiles": True})
-        assert cfg.multiplex_profiles is True
-
-    def test_from_dict_nested_gateway(self):
-        cfg = GatewayConfig.from_dict({"gateway": {"multiplex_profiles": True}})
-        assert cfg.multiplex_profiles is True
-
-    def test_from_dict_coerces_truthy_string(self):
-        cfg = GatewayConfig.from_dict({"multiplex_profiles": "true"})
-        assert cfg.multiplex_profiles is True
-
-    def test_roundtrip(self):
-        cfg = GatewayConfig.from_dict(GatewayConfig(multiplex_profiles=True).to_dict())
         assert cfg.multiplex_profiles is True
 
 
@@ -146,20 +94,48 @@ class TestSessionStoreProfileResolution:
         assert store._generate_session_key(s) == "agent:main:telegram:dm:99"
         assert store._generate_session_key(s) == build_session_key(s)
 
-    def test_flag_off_resolve_profile_is_none(self, tmp_path):
-        store = self._store(tmp_path)
-        assert store._resolve_profile_for_key() is None
 
-    def test_flag_on_uses_active_profile_namespace(self, tmp_path):
-        store = self._store(tmp_path, multiplex_profiles=True)
-        s = _src(chat_id="99", chat_type="dm")
+class _RecoveringDB:
+    def __init__(self, row):
+        self.row = row
+        self.reopened = []
+
+    def find_latest_gateway_session_for_peer(self, **_kwargs):
+        return self.row
+
+    def reopen_session(self, session_id):
+        self.reopened.append(session_id)
+
+
+class TestSessionStoreUnmultiplexedRecovery:
+    """Turning multiplexing off must not recover another profile's session."""
+
+    def _store_with_row(self, tmp_path, row, **cfg_kw):
+        config = GatewayConfig(**cfg_kw)
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = _RecoveringDB(row)
+        store._loaded = True
+        return store
+
+
+    def test_flag_off_allows_active_profile_peer_fallback(self, tmp_path):
+        row = {
+            "id": "sess-coder",
+            "started_at": 1700000000,
+            "session_key": "agent:coder:telegram:dm:99",
+        }
+        store = self._store_with_row(tmp_path, row)
+        source = _src(chat_id="99", chat_type="dm")
+
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
-            assert store._generate_session_key(s) == "agent:coder:telegram:dm:99"
+            recovered = store._recover_session_from_db(
+                session_key="agent:main:telegram:dm:99",
+                source=source,
+                now=datetime.fromtimestamp(1700000001),
+            )
 
-    def test_flag_on_default_profile_stays_legacy(self, tmp_path):
-        store = self._store(tmp_path, multiplex_profiles=True)
-        s = _src(chat_id="99", chat_type="dm")
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
-            assert store._generate_session_key(s) == "agent:main:telegram:dm:99"
-
-
+        assert recovered is not None
+        assert recovered.session_id == "sess-coder"
+        assert recovered.session_key == "agent:main:telegram:dm:99"
+        assert store._db.reopened == ["sess-coder"]

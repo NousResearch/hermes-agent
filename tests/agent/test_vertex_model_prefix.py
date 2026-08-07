@@ -133,3 +133,19 @@ def test_provider_alias_is_repaired_before_official_vertex_request(monkeypatch):
 
     assert configured_model == "gemini-3.1-flash-lite"
     assert kwargs["model"] == "google/gemini-3.1-flash-lite"
+
+
+def test_build_api_kwargs_prefixes_vertex_request_with_profile(monkeypatch):
+    """The provider-profile path must also receive the publisher-qualified id.
+
+    Real Vertex installs register a provider profile under
+    plugins/model-providers/vertex, so build_api_kwargs delegates to the
+    profile branch; the request-scoped normalization must still apply there.
+    """
+    monkeypatch.setattr("providers.get_provider_profile", lambda provider: object())
+    agent = _make_chat_agent()
+
+    kwargs = build_api_kwargs(agent, [{"role": "user", "content": "hi"}])
+
+    assert kwargs["model"] == "google/gemini-3.1-flash-lite"
+    assert agent.model == "gemini-3.1-flash-lite"

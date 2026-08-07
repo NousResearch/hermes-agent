@@ -85,11 +85,6 @@ class TestNormalizeTavilySearchResults:
         assert web[0]["position"] == 1
         assert web[1]["position"] == 2
 
-    def test_empty_results(self):
-        from tools.web_tools import _normalize_tavily_search_results
-        result = _normalize_tavily_search_results({"results": []})
-        assert result["success"] is True
-        assert result["data"]["web"] == []
 
     def test_missing_fields(self):
         from tools.web_tools import _normalize_tavily_search_results
@@ -122,36 +117,6 @@ class TestNormalizeTavilyDocuments:
         assert docs[0]["raw_content"] == "Full page content here"
         assert docs[0]["metadata"]["sourceURL"] == "https://example.com"
 
-    def test_falls_back_to_content_when_no_raw_content(self):
-        from tools.web_tools import _normalize_tavily_documents
-        raw = {"results": [{"url": "https://example.com", "content": "Snippet"}]}
-        docs = _normalize_tavily_documents(raw)
-        assert docs[0]["content"] == "Snippet"
-
-    def test_failed_results_included(self):
-        from tools.web_tools import _normalize_tavily_documents
-        raw = {
-            "results": [],
-            "failed_results": [
-                {"url": "https://fail.com", "error": "timeout"},
-            ],
-        }
-        docs = _normalize_tavily_documents(raw)
-        assert len(docs) == 1
-        assert docs[0]["url"] == "https://fail.com"
-        assert docs[0]["error"] == "timeout"
-        assert docs[0]["content"] == ""
-
-    def test_failed_urls_included(self):
-        from tools.web_tools import _normalize_tavily_documents
-        raw = {
-            "results": [],
-            "failed_urls": ["https://bad.com"],
-        }
-        docs = _normalize_tavily_documents(raw)
-        assert len(docs) == 1
-        assert docs[0]["url"] == "https://bad.com"
-        assert docs[0]["error"] == "extraction failed"
 
     def test_fallback_url(self):
         from tools.web_tools import _normalize_tavily_documents

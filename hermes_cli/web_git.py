@@ -19,6 +19,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from hermes_cli._subprocess_compat import noninteractive_git_env
+
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
 _MAX_BUFFER = 32 * 1024 * 1024
@@ -31,14 +33,22 @@ _TRUNK_BRANCHES = ("main", "master")
 
 def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int, str, str]:
     """Run ``git`` in ``cwd``. Returns (returncode, stdout, stderr); never raises
-    on a non-zero exit (callers decide what an error means)."""
+    on a non-zero exit (callers decide what an error means).
+
+    Runs non-interactively (stdin nulled, ``GIT_TERMINAL_PROMPT=0``): these
+    calls serve authenticated REST requests from the dashboard/desktop, so a
+    credential prompt from ``fetch``/``push``/``pull`` could never be answered
+    — it would just hang the request until the timeout. Failing fast surfaces
+    the real auth error in the toast instead."""
     try:
         proc = subprocess.run(
             ["git", *args],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=timeout,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return 1, "", "git invocation failed"
@@ -419,9 +429,15 @@ def review_commit_context(cwd: str) -> dict:
 def _gh(cwd: str, args: list[str]) -> tuple[bool, str]:
     if not shutil.which("gh"):
         return False, ""
+    # Same non-interactive contract as _git: these serve REST requests, so gh
+    # must fail fast instead of prompting (GH_PROMPT_DISABLED is gh's own
+    # documented kill-switch for interactive prompts).
+    env = noninteractive_git_env()
+    env["GH_PROMPT_DISABLED"] = "1"
     try:
         proc = subprocess.run(
-            ["gh", *args], cwd=cwd, capture_output=True, text=True, timeout=_GH_TIMEOUT
+            ["gh", *args], cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=_GH_TIMEOUT,
+            stdin=subprocess.DEVNULL, env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return False, ""
@@ -597,7 +613,15 @@ def worktree_add(cwd: str, options: dict) -> dict:
     target = _unique_dir(os.path.join(root, ".worktrees", slug))
     args = ["worktree", "add", "-b", branch, target]
     if options.get("base"):
-        args.append(str(options["base"]))
+        base = str(options["base"])
+        # Remote-tracking branches may be stale or missing; fetch just that
+        # branch so the local ref is up to date before branching. Ignore fetch
+        # failures (offline / no remote) — git will use whatever local ref
+        # exists, or raise a clear error below if the ref is entirely missing.
+        if base.startswith("origin/"):
+            remote_branch = base[len("origin/"):]
+            _git(root, ["fetch", "origin", remote_branch])
+        args.append(base)
     code, _, err = _git(root, args)
     if code != 0:
         if "already exists" in (err or "").lower():
@@ -644,3 +668,46 @@ def branch_switch(cwd: str, branch: str) -> dict:
         raise RuntimeError("Branch name is required.")
     _git_ok(cwd, ["switch", target])
     return {"branch": target}
+
+
+def base_branch_list(cwd: str) -> list[dict]:
+    """Local heads + remote-tracking refs for the base-branch picker.
+
+    The remote default (origin/HEAD) is flagged so the UI can preselect it.
+    """
+    out = _git_out(
+        cwd,
+        [
+            "for-each-ref",
+            "--format=%(refname:short)\t%(committerdate:iso)",
+            "--sort=-committerdate",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )
+    if not out:
+        return []
+    remote_default = _git_out(
+        cwd, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]
+    ).strip()
+    local_default = _default_branch(cwd) if not remote_default else ""
+    result: list[dict] = []
+    for line in out.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        name = line.split("\t")[0]
+        result.append(
+            {
+                "name": name,
+                "isRemote": name.startswith("origin/"),
+                # origin/HEAD when a remote exists; otherwise the local
+                # default (main/master/init.defaultBranch) so a no-remote
+                # repo still flags its trunk.
+                "isDefault": bool(
+                    (remote_default and name == remote_default)
+                    or (not remote_default and local_default and name == local_default)
+                ),
+            }
+        )
+    return result

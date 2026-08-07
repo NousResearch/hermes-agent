@@ -282,7 +282,7 @@ def _process_single_prompt(
                         print(f"   Prompt {prompt_index}: Pulling docker image {container_image}...", flush=True)
                     pull = _sp.run(
                         ["docker", "pull", container_image],
-                        capture_output=True, text=True, timeout=600,
+                        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600,
                     )
                     if pull.returncode != 0:
                         return {
@@ -485,6 +485,8 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
             # Append to batch output file
             with open(batch_output_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(trajectory_entry, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
         
         # Aggregate tool statistics
         for tool_name, stats in result.get("tool_stats", {}).items():
@@ -978,8 +980,15 @@ class BatchRunner:
                         except Exception as ckpt_err:
                             # Don't fail the run if checkpoint write fails
                             print(f"⚠️  Warning: Failed to save incremental checkpoint: {ckpt_err}")
+                except KeyboardInterrupt:
+                    print("\n⚠️  Interrupted — terminating batch workers...")
+                    pool.terminate()
+                    pool.join()
+                    raise
                 except Exception as e:
                     logger.error("Batch worker failed: %s", e, exc_info=True)
+                    pool.terminate()
+                    pool.join()
                     raise
                 finally:
                     root_logger.setLevel(original_level)
@@ -1192,7 +1201,7 @@ def main(
         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")
         provider_sort (str): Sort providers by "price", "throughput", or "latency" (OpenRouter only)
         max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
-        reasoning_effort (str): OpenRouter reasoning effort level: "none", "minimal", "low", "medium", "high", "xhigh" (default: "medium")
+        reasoning_effort (str): Reasoning effort: "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra" (default: "medium")
         reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
         prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
         max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
@@ -1261,7 +1270,7 @@ def main(
         print("🧠 Reasoning: DISABLED (effort=none)")
     elif reasoning_effort:
         # Use specified effort level
-        valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh"]
+        valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
         if reasoning_effort not in valid_efforts:
             print(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
             return

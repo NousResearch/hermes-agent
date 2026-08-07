@@ -36,6 +36,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import requests
 
+from agent.secret_scope import get_secret
 from hermes_cli.config import cfg_get, load_config, read_raw_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
@@ -82,7 +83,7 @@ def _get_command_timeout() -> int:
 
 def _auth_headers() -> Dict[str, str]:
     """Return Authorization header when CAMOFOX_API_KEY is set."""
-    key = os.getenv("CAMOFOX_API_KEY", "").strip()
+    key = (get_secret("CAMOFOX_API_KEY", "") or "").strip()
     if key:
         return {"Authorization": f"Bearer {key}"}
     return {}
@@ -90,7 +91,7 @@ def _auth_headers() -> Dict[str, str]:
 
 def get_camofox_url() -> str:
     """Return the configured Camofox server URL, or empty string."""
-    return os.getenv("CAMOFOX_URL", "").rstrip("/")
+    return (get_secret("CAMOFOX_URL", "") or "").rstrip("/")
 
 
 def _config_cdp_url() -> str:
@@ -191,12 +192,15 @@ def _camofox_identity_override(task_id: Optional[str], camofox_cfg: Dict[str, An
     so Hermes operates in the same browser profile instead of creating a
     separate private session.
     """
-    user_id = os.getenv("CAMOFOX_USER_ID", "").strip() or str(camofox_cfg.get("user_id") or "").strip()
+    user_id = (
+        (get_secret("CAMOFOX_USER_ID", "") or "").strip()
+        or str(camofox_cfg.get("user_id") or "").strip()
+    )
     if not user_id:
         return None
 
     session_key = (
-        os.getenv("CAMOFOX_SESSION_KEY", "").strip()
+        (get_secret("CAMOFOX_SESSION_KEY", "") or "").strip()
         or str(camofox_cfg.get("session_key") or "").strip()
         or f"task_{(task_id or 'default')[:16]}"
     )
@@ -570,6 +574,40 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
         return tool_error(str(e), success=False)
 
 
+def _camofox_private_page_block(session: Dict[str, Any], task_id: Optional[str], action: str) -> Optional[str]:
+    """Return a blocked payload when the current Camofox page is private/internal.
+
+    Mirrors the eval-path guard added for ``_camofox_eval`` (browser_tool.py):
+    Camofox snapshot / vision / image-extraction all read current page state, so
+    on a non-local backend they can leak the content of an intranet/metadata
+    page the terminal itself can't reach.  The gate matches ``browser_snapshot``
+    / ``browser_vision`` — only active when the SSRF guard applies (non-local
+    backend, not a local sidecar, ``allow_private_urls`` unset).  Fail-open on
+    probe failure, matching the sibling guards.
+
+    Imports are deferred to call time because ``browser_tool`` imports this
+    module; importing it at module load would create a circular import.
+    """
+    from tools.browser_tool import (
+        _camofox_current_page_private_url,
+        _eval_ssrf_guard_active,
+    )
+
+    if not _eval_ssrf_guard_active(task_id or "default"):
+        return None
+    blocked_url = _camofox_current_page_private_url(session["tab_id"], session["user_id"])
+    if not blocked_url:
+        return None
+    return json.dumps({
+        "success": False,
+        "error": (
+            "Blocked: page URL targets a private or internal address "
+            f"({blocked_url}). Refusing to {action} on this page in this "
+            "browser mode."
+        ),
+    }, ensure_ascii=False)
+
+
 def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
                      user_task: Optional[str] = None) -> str:
     """Get accessibility tree snapshot from Camofox."""
@@ -577,6 +615,10 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
         session = _get_session(task_id)
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
+
+        blocked = _camofox_private_page_block(session, task_id, "read a page snapshot")
+        if blocked:
+            return blocked
 
         data = _get(
             f"/tabs/{session['tab_id']}/snapshot",
@@ -615,6 +657,10 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
+        blocked = _camofox_private_page_block(session, task_id, "click")
+        if blocked:
+            return blocked
+
         # Strip @ prefix if present (our tool convention)
         clean_ref = ref.lstrip("@")
 
@@ -637,6 +683,10 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         session = _get_session(task_id)
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
+
+        blocked = _camofox_private_page_block(session, task_id, "type")
+        if blocked:
+            return blocked
 
         clean_ref = ref.lstrip("@")
 
@@ -707,6 +757,10 @@ def camofox_press(key: str, task_id: Optional[str] = None) -> str:
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
+        blocked = _camofox_private_page_block(session, task_id, "press")
+        if blocked:
+            return blocked
+
         _post(
             f"/tabs/{session['tab_id']}/press",
             {"userId": session["user_id"], "key": key},
@@ -741,6 +795,10 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
         session = _get_session(task_id)
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
+
+        blocked = _camofox_private_page_block(session, task_id, "extract page images")
+        if blocked:
+            return blocked
 
         import re
 
@@ -785,6 +843,10 @@ def camofox_vision(question: str, annotate: bool = False,
         session = _get_session(task_id)
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
+
+        blocked = _camofox_private_page_block(session, task_id, "capture a screenshot")
+        if blocked:
+            return blocked
 
         # Get screenshot as binary PNG
         resp = _get_raw(

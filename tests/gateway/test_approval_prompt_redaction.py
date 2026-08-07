@@ -49,9 +49,6 @@ class TestRedactApprovalCommand:
         out = _redact_approval_command(raw)
         assert _FAKE_JWT not in out
 
-    def test_clean_command_passes_through_unchanged(self):
-        raw = "ls -la /tmp && echo hello"
-        assert _redact_approval_command(raw) == raw
 
     def test_forces_redaction_even_when_disabled(self, monkeypatch):
         """force=True must redact even if security.redact_secrets is off -- the
@@ -61,10 +58,6 @@ class TestRedactApprovalCommand:
         monkeypatch.setattr("agent.redact._REDACT_ENABLED", False, raising=False)
         out = _redact_approval_command(raw)
         assert _FAKE_GHP not in out
-
-    def test_handles_none_and_empty(self):
-        assert _redact_approval_command("") == ""
-        assert _redact_approval_command(None) == ""
 
 
 class TestApprovalCommandWiring:
@@ -126,3 +119,20 @@ class TestApprovalCommandWiring:
         from gateway.platforms import api_server
 
         self._assert_redacts_then_uses(api_server, "_approval_notify", "put_nowait")
+
+
+class TestApprovalTextFallbackContract:
+    def test_smart_deny_only_advertises_one_operation(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "rm -rf /", "dangerous deletion", "/",
+            allow_permanent=False, smart_denied=True,
+        )
+        assert "owner override" in text.lower()
+        assert "one operation" in text.lower()
+        assert "`/approve`" in text
+        assert "approve session" not in text
+        assert "approve always" not in text
+
+

@@ -428,6 +428,15 @@ def browser_cdp(
 
     # --- Route iframe-scoped calls through the supervisor ---------------
     if frame_id:
+        # Same private-page/SSRF boundary as the stateless path below —
+        # frame_id routing must not become the sibling bypass for it.
+        blocked = _browser_cdp_private_guard(
+            task_id=effective_task_id,
+            method=method,
+            params=params or {},
+        )
+        if blocked:
+            return blocked
         return _browser_cdp_via_supervisor(
             task_id=effective_task_id,
             frame_id=frame_id,
@@ -644,7 +653,7 @@ def _browser_cdp_check() -> bool:
     """
     try:
         from tools.browser_tool import (  # type: ignore[import-not-found]
-            _get_cdp_override,
+            _get_cdp_override_raw,
             check_browser_requirements,
         )
     except ImportError as exc:  # pragma: no cover — defensive
@@ -652,7 +661,10 @@ def _browser_cdp_check() -> bool:
         return False
     if not check_browser_requirements():
         return False
-    return bool(_get_cdp_override())
+    # Raw (no-I/O) gate: check_fns run during tool-schema assembly at every
+    # startup; resolving the endpoint over HTTP here would block launch when
+    # the configured endpoint is stale/unreachable.
+    return bool(_get_cdp_override_raw())
 
 
 registry.register(

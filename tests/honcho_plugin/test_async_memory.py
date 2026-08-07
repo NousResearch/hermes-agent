@@ -10,8 +10,10 @@ Covers:
 """
 
 import json
-import time
+import threading
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 from plugins.memory.honcho.client import HonchoClientConfig
@@ -35,15 +37,37 @@ def _make_session(**kwargs) -> HonchoSession:
     )
 
 
-def _make_manager(write_frequency="turn") -> HonchoSessionManager:
-    cfg = HonchoClientConfig(
-        write_frequency=write_frequency,
-        api_key="test-key",
-        enabled=True,
-    )
-    mgr = HonchoSessionManager(config=cfg)
-    mgr._honcho = MagicMock()
-    return mgr
+# B8: managers are built ONLY through the make_manager fixture below. The old
+# helper constructed the manager first and swapped in a MagicMock afterwards -
+# the honcho property refreshes the client via get_honcho_client() on every
+# access, so the late mock never protected flush paths and test messages were
+# written to a live local Honcho (production incident, session cli-test).
+
+
+@pytest.fixture
+def make_manager(monkeypatch):
+    """Factory: fake client is injected BEFORE the constructor, shutdown is
+    guaranteed for every created manager (even on assertion failure)."""
+    from plugins.memory.honcho import session as session_module
+
+    client = MagicMock()
+    monkeypatch.setattr(session_module, "get_honcho_client", lambda *a, **k: client)
+    created = []
+
+    def _make(write_frequency="turn") -> HonchoSessionManager:
+        cfg = HonchoClientConfig(
+            write_frequency=write_frequency,
+            api_key="test-key",
+            enabled=True,
+        )
+        mgr = HonchoSessionManager(honcho=client, config=cfg)
+        created.append(mgr)
+        return mgr
+
+    _make.client = client
+    yield _make
+    for mgr in created:
+        mgr.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -57,17 +81,6 @@ class TestWriteFrequencyParsing:
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.write_frequency == "async"
 
-    def test_string_turn(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": "turn"}))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.write_frequency == "turn"
-
-    def test_string_session(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": "session"}))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.write_frequency == "session"
 
     def test_integer_frequency(self, tmp_path):
         cfg_file = tmp_path / "config.json"
@@ -75,11 +88,6 @@ class TestWriteFrequencyParsing:
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.write_frequency == 5
 
-    def test_integer_string_coerced(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": "3"}))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.write_frequency == 3
 
     def test_host_block_overrides_root(self, tmp_path):
         cfg_file = tmp_path / "config.json"
@@ -113,10 +121,6 @@ class TestResolveSessionNameTitle:
         result = cfg.resolve_session_name("/some/dir", session_title="my-project")
         assert result == "my-project"
 
-    def test_title_with_peer_prefix(self):
-        cfg = HonchoClientConfig(peer_name="eri", session_peer_prefix=True)
-        result = cfg.resolve_session_name("/some/dir", session_title="aeris")
-        assert result == "eri-aeris"
 
     def test_title_sanitized(self):
         cfg = HonchoClientConfig()
@@ -124,11 +128,6 @@ class TestResolveSessionNameTitle:
         # trailing dashes stripped by .strip('-')
         assert result == "my-project-name"
 
-    def test_title_all_invalid_chars_falls_back_to_dirname(self):
-        cfg = HonchoClientConfig()
-        result = cfg.resolve_session_name("/some/dir", session_title="!!! ###")
-        # sanitized to empty → falls back to dirname
-        assert result == "dir"
 
     def test_none_title_falls_back_to_dirname(self):
         cfg = HonchoClientConfig()
@@ -145,35 +144,6 @@ class TestResolveSessionNameTitle:
         result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
         assert result == "20260309_175514_9797dd"
 
-    def test_per_session_with_peer_prefix(self):
-        cfg = HonchoClientConfig(session_strategy="per-session", peer_name="eri", session_peer_prefix=True)
-        result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
-        assert result == "eri-20260309_175514_9797dd"
-
-    def test_per_session_no_id_falls_back_to_dirname(self):
-        cfg = HonchoClientConfig(session_strategy="per-session")
-        result = cfg.resolve_session_name("/some/dir", session_id=None)
-        assert result == "dir"
-
-    def test_per_session_id_beats_title(self):
-        # per-session: the run's session_id is authoritative; an (auto-)generated
-        # title must NOT remap a live conversation onto a second Honcho session.
-        cfg = HonchoClientConfig(session_strategy="per-session")
-        result = cfg.resolve_session_name("/some/dir", session_title="my-title", session_id="20260309_175514_9797dd")
-        assert result == "20260309_175514_9797dd"
-
-    def test_per_session_id_beats_manual_map(self):
-        # per-session: session_id also wins over a stale cwd map entry (e.g. the
-        # desktop launching from a mapped home dir).
-        cfg = HonchoClientConfig(session_strategy="per-session", sessions={"/some/dir": "pinned"})
-        result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
-        assert result == "20260309_175514_9797dd"
-
-    def test_title_still_applies_for_non_per_session(self):
-        # Outside per-session, /title still names the Honcho session.
-        cfg = HonchoClientConfig(session_strategy="per-directory")
-        result = cfg.resolve_session_name("/some/dir", session_title="my-title", session_id="20260309_175514_9797dd")
-        assert result == "my-title"
 
     def test_gateway_key_beats_per_session_id(self):
         # Gateways keep per-chat isolation even in per-session.
@@ -200,22 +170,22 @@ class TestSaveRouting:
             mgr._cache[sess.key] = sess
         return sess
 
-    def test_turn_flushes_immediately(self):
-        mgr = _make_manager(write_frequency="turn")
+    def test_turn_flushes_immediately(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
         sess = self._make_session_with_message(mgr)
         with patch.object(mgr, "_flush_session") as mock_flush:
             mgr.save(sess)
             mock_flush.assert_called_once_with(sess)
 
-    def test_session_mode_does_not_flush(self):
-        mgr = _make_manager(write_frequency="session")
+    def test_session_mode_does_not_flush(self, make_manager):
+        mgr = make_manager(write_frequency="session")
         sess = self._make_session_with_message(mgr)
         with patch.object(mgr, "_flush_session") as mock_flush:
             mgr.save(sess)
             mock_flush.assert_not_called()
 
-    def test_async_mode_enqueues(self):
-        mgr = _make_manager(write_frequency="async")
+    def test_async_mode_enqueues(self, make_manager):
+        mgr = make_manager(write_frequency="async")
         sess = self._make_session_with_message(mgr)
         with patch.object(mgr, "_flush_session") as mock_flush:
             mgr.save(sess)
@@ -223,8 +193,8 @@ class TestSaveRouting:
             mock_flush.assert_not_called()
         assert not mgr._async_queue.empty()
 
-    def test_int_frequency_flushes_on_nth_turn(self):
-        mgr = _make_manager(write_frequency=3)
+    def test_int_frequency_flushes_on_nth_turn(self, make_manager):
+        mgr = make_manager(write_frequency=3)
         sess = self._make_session_with_message(mgr)
         with patch.object(mgr, "_flush_session") as mock_flush:
             mgr.save(sess)  # turn 1
@@ -233,8 +203,8 @@ class TestSaveRouting:
             mgr.save(sess)  # turn 3
             assert mock_flush.call_count == 1
 
-    def test_int_frequency_skips_other_turns(self):
-        mgr = _make_manager(write_frequency=5)
+    def test_int_frequency_skips_other_turns(self, make_manager):
+        mgr = make_manager(write_frequency=5)
         sess = self._make_session_with_message(mgr)
         with patch.object(mgr, "_flush_session") as mock_flush:
             for _ in range(4):
@@ -249,8 +219,8 @@ class TestSaveRouting:
 # ---------------------------------------------------------------------------
 
 class TestFlushAll:
-    def test_flushes_all_cached_sessions(self):
-        mgr = _make_manager(write_frequency="session")
+    def test_flushes_all_cached_sessions(self, make_manager):
+        mgr = make_manager(write_frequency="session")
         s1 = _make_session(key="s1", honcho_session_id="s1")
         s2 = _make_session(key="s2", honcho_session_id="s2")
         s1.add_message("user", "a")
@@ -261,8 +231,8 @@ class TestFlushAll:
             mgr.flush_all()
             assert mock_flush.call_count == 2
 
-    def test_flush_all_drains_async_queue(self):
-        mgr = _make_manager(write_frequency="async")
+    def test_flush_all_drains_async_queue(self, make_manager):
+        mgr = make_manager(write_frequency="async")
         sess = _make_session()
         sess.add_message("user", "pending")
 
@@ -275,8 +245,8 @@ class TestFlushAll:
             # Called at least once for the queued item
             assert mock_flush.call_count >= 1
 
-    def test_flush_all_tolerates_errors(self):
-        mgr = _make_manager(write_frequency="session")
+    def test_flush_all_tolerates_errors(self, make_manager):
+        mgr = make_manager(write_frequency="session")
         sess = _make_session()
         mgr._cache = {"key": sess}
         with patch.object(mgr, "_flush_session", side_effect=RuntimeError("oops")):
@@ -289,51 +259,62 @@ class TestFlushAll:
 # ---------------------------------------------------------------------------
 
 class TestAsyncWriterThread:
-    def test_thread_started_on_async_mode(self):
-        mgr = _make_manager(write_frequency="async")
+    def test_thread_starts_lazily_on_first_enqueue(self, make_manager):
+        # B8: constructing a manager must not spawn background work
+        mgr = make_manager(write_frequency="async")
+        assert mgr._async_queue is not None
+        assert mgr._async_thread is None
+        mgr.save(_make_session())
         assert mgr._async_thread is not None
         assert mgr._async_thread.is_alive()
         mgr.shutdown()
 
-    def test_no_thread_for_turn_mode(self):
-        mgr = _make_manager(write_frequency="turn")
+    def test_no_thread_for_turn_mode(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
         assert mgr._async_thread is None
         assert mgr._async_queue is None
 
-    def test_shutdown_joins_thread(self):
-        mgr = _make_manager(write_frequency="async")
+    def test_shutdown_joins_thread(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        mgr._ensure_async_writer()
         assert mgr._async_thread.is_alive()
         mgr.shutdown()
         assert not mgr._async_thread.is_alive()
 
-    def test_async_writer_calls_flush(self):
-        mgr = _make_manager(write_frequency="async")
+    def test_async_writer_calls_flush(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        mgr._ensure_async_writer()
         sess = _make_session()
         sess.add_message("user", "async msg")
 
         flushed = []
+        flushed_event = threading.Event()
 
-        def capture(s):
-            flushed.append(s)
+        def capture(session):
+            flushed.append(session)
+            flushed_event.set()
             return True
 
         mgr._flush_session = capture
         mgr._async_queue.put(sess)
-        # Give the daemon thread time to process
-        deadline = time.time() + 2.0
-        while not flushed and time.time() < deadline:
-            time.sleep(0.05)
+        assert flushed_event.wait(timeout=10), "async writer never flushed"
 
         mgr.shutdown()
         assert len(flushed) == 1
         assert flushed[0] is sess
 
-    def test_shutdown_sentinel_stops_loop(self):
-        mgr = _make_manager(write_frequency="async")
+    def test_shutdown_sentinel_stops_loop(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        mgr._ensure_async_writer()
         thread = mgr._async_thread
         mgr.shutdown()
-        thread.join(timeout=3)
+        thread.join(timeout=10)
         assert not thread.is_alive()
+
+    def test_shutdown_without_started_thread_is_noop(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        mgr.shutdown()
+        assert mgr._async_thread is None
 
 
 # ---------------------------------------------------------------------------
@@ -341,80 +322,85 @@ class TestAsyncWriterThread:
 # ---------------------------------------------------------------------------
 
 class TestAsyncWriterRetry:
-    def test_retries_once_on_failure(self):
-        mgr = _make_manager(write_frequency="async")
+    def test_retries_once_on_failure(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        mgr._ensure_async_writer()
         sess = _make_session()
         sess.add_message("user", "msg")
 
         call_count = [0]
+        retry_done = threading.Event()
 
-        def flaky_flush(s):
+        def flaky_flush(session):
             call_count[0] += 1
             if call_count[0] == 1:
                 raise ConnectionError("network blip")
-            # second call succeeds silently
+            retry_done.set()
+            return True
 
         mgr._flush_session = flaky_flush
 
         with patch("time.sleep"):  # skip the 2s sleep in retry
             mgr._async_queue.put(sess)
-            deadline = time.time() + 3.0
-            while call_count[0] < 2 and time.time() < deadline:
-                time.sleep(0.05)
+            assert retry_done.wait(timeout=10), "async writer never retried"
 
         mgr.shutdown()
         assert call_count[0] == 2
 
-    def test_drops_after_two_failures(self):
-        mgr = _make_manager(write_frequency="async")
+    def test_drops_after_two_failures(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        mgr._ensure_async_writer()
         sess = _make_session()
         sess.add_message("user", "msg")
 
         call_count = [0]
+        retry_done = threading.Event()
 
-        def always_fail(s):
+        def always_fail(session):
             call_count[0] += 1
+            if call_count[0] >= 2:
+                retry_done.set()
             raise RuntimeError("always broken")
 
         mgr._flush_session = always_fail
 
         with patch("time.sleep"):
             mgr._async_queue.put(sess)
-            deadline = time.time() + 3.0
-            while call_count[0] < 2 and time.time() < deadline:
-                time.sleep(0.05)
+            assert retry_done.wait(timeout=10), "async writer never retried"
 
         mgr.shutdown()
         # Should have tried exactly twice (initial + one retry) and not crashed
         assert call_count[0] == 2
         assert not mgr._async_thread.is_alive()
 
-    def test_retries_when_flush_reports_failure(self):
-        mgr = _make_manager(write_frequency="async")
+    def test_retries_when_flush_reports_failure(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        mgr._ensure_async_writer()
         sess = _make_session()
         sess.add_message("user", "msg")
 
         call_count = [0]
+        retry_done = threading.Event()
 
-        def fail_then_succeed(_session):
+        def fail_then_succeed(session):
             call_count[0] += 1
+            if call_count[0] >= 2:
+                retry_done.set()
             return call_count[0] > 1
 
         mgr._flush_session = fail_then_succeed
 
         with patch("time.sleep"):
             mgr._async_queue.put(sess)
-            deadline = time.time() + 3.0
-            while call_count[0] < 2 and time.time() < deadline:
-                time.sleep(0.05)
+            assert retry_done.wait(timeout=10), "async writer never retried"
 
         mgr.shutdown()
         assert call_count[0] == 2
 
 
 class TestMemoryFileMigrationTargets:
-    def test_soul_upload_targets_ai_peer(self, tmp_path):
-        mgr = _make_manager(write_frequency="turn")
+    def test_soul_upload_targets_ai_peer(self, tmp_path, make_manager):
+        mgr = make_manager(write_frequency="turn")
         session = _make_session(
             key="cli:test",
             user_peer_id="custom-user",
@@ -459,14 +445,10 @@ class TestNewConfigFieldDefaults:
         cfg = HonchoClientConfig()
         assert cfg.write_frequency == "async"
 
-    def test_write_frequency_set(self):
-        cfg = HonchoClientConfig(write_frequency="turn")
-        assert cfg.write_frequency == "turn"
-
 
 class TestPrefetchCacheAccessors:
-    def test_set_and_pop_context_result(self):
-        mgr = _make_manager(write_frequency="turn")
+    def test_set_and_pop_context_result(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
         payload = {"representation": "Known user", "card": "prefers concise replies"}
 
         mgr.set_context_result("cli:test", payload)

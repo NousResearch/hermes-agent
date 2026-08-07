@@ -82,6 +82,12 @@ class CronScheduler(ABC):
         Built-in: no-op (it re-reads jobs.json on every tick)."""
         return None
 
+    def recover_interrupted(self) -> int:
+        """Run profile-local attempt recovery for every provider lifecycle."""
+        from cron.executions import recover_interrupted_executions
+
+        return recover_interrupted_executions()
+
     def fire_due(self, job_id: str, *, adapters: Any = None, loop: Any = None) -> bool:
         """Run a single job NOW via the shared orchestrator. Called by the
         inbound fire webhook when an external scheduler signals a job is due.
@@ -95,6 +101,7 @@ class CronScheduler(ABC):
         was lost (another machine/retry won it) or the job no longer exists.
         """
         from cron.jobs import claim_job_for_fire, get_job
+        from cron.executions import create_execution
         from cron.scheduler import run_one_job
 
         if not claim_job_for_fire(job_id):
@@ -102,6 +109,7 @@ class CronScheduler(ABC):
         job = get_job(job_id)
         if job is None:
             return False  # job removed (e.g. repeat-N exhausted) between arm and fire
+        job["execution_id"] = create_execution(job_id, source=self.name)["id"]
         return run_one_job(job, adapters=adapters, loop=loop)
 
     def reconcile(self) -> None:
@@ -156,27 +164,77 @@ class InProcessCronScheduler(CronScheduler):
 
     ``start()`` blocks in the tick loop until ``stop_event`` is set, identical
     to the pre-refactor ``_start_cron_ticker`` core loop. The caller runs it in
-    a daemon thread.
+    a daemon thread. ``can_dispatch`` is an optional synchronous gate supplied
+    by GatewayRunner during external drain; skipped ticks leave due jobs intact
+    for the next allowed tick.
     """
 
     @property
     def name(self) -> str:
         return "builtin"
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+    def start(
+        self,
+        stop_event,
+        *,
+        adapters=None,
+        loop=None,
+        interval=60,
+        can_dispatch=None,
+        profile_homes=None,
+    ):
         import logging
         from cron.scheduler import tick as cron_tick
-        from cron.jobs import record_ticker_heartbeat
+        from cron.jobs import (
+            clear_ticker_error,
+            record_ticker_error,
+            record_ticker_heartbeat,
+        )
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
+
+        # ── Multiplex profiles ────────────────────────────────────────────
+        # When profile_homes is set (multiplex_profiles on), tick EACH profile's
+        # cron store on every tick cycle so secondary-profile jobs actually fire
+        # instead of languishing in a store no ticker owns (#69377). Without this,
+        # only the process-global HERMES_HOME (the default profile) is ticked.
+        # Heartbeats and recovery are also scoped per profile so `hermes cron
+        # status` reflects liveness for every profile independently.
+        if profile_homes:
+            self._start_multiplex(
+                stop_event,
+                profile_homes=profile_homes,
+                adapters=adapters,
+                loop=loop,
+                interval=interval,
+                can_dispatch=can_dispatch,
+            )
+            return
+
+        # ── Single-profile (legacy) path ──────────────────────────────────
+        recovered = self.recover_interrupted()
+        if recovered:
+            logger.warning(
+                "Marked %d interrupted cron execution(s) unknown after restart",
+                recovered,
+            )
         # Heartbeat once before the first sleep so `hermes cron status` sees a
         # live ticker immediately after startup, not only after the first tick.
         record_ticker_heartbeat()
         while not stop_event.is_set():
             ok = False
             try:
-                cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
+                if can_dispatch is not None and not can_dispatch():
+                    logger.debug("Cron dispatch paused while gateway drains existing work")
+                else:
+                    cron_tick(
+                        verbose=False,
+                        adapters=adapters,
+                        loop=loop,
+                        sync=False,
+                        can_dispatch=can_dispatch,
+                    )
                 ok = True
             except BaseException as e:
                 # Catch BaseException (not just Exception) so a SystemExit from
@@ -187,8 +245,113 @@ class InProcessCronScheduler(CronScheduler):
                 # an exception in this daemon thread, so swallowing it and
                 # re-checking stop_event keeps shutdown clean.
                 logger.error("Cron tick error: %s", e, exc_info=True)
+                # Persist the failure reason next to the heartbeat markers so
+                # `hermes cron status`/`list` (separate processes) can show
+                # WHY ticks fail, not just that the success marker is stale —
+                # e.g. a root-rewritten jobs.json locking out the ticker's
+                # uid went unnoticed for ~14h with the reason buried in the
+                # gateway log (#68483).
+                record_ticker_error(f"{type(e).__name__}: {e}")
             # Record liveness every iteration; bump the success marker only on a
             # clean tick, so status can tell "alive but failing every tick" from
             # "actually firing jobs" (#32612, #32895).
             record_ticker_heartbeat(success=ok)
+            if ok:
+                clear_ticker_error()
+            stop_event.wait(interval)
+
+    def _start_multiplex(
+        self,
+        stop_event,
+        *,
+        profile_homes,
+        adapters=None,
+        loop=None,
+        interval=60,
+        can_dispatch=None,
+    ):
+        """Tick every served profile's cron store when multiplex_profiles is on.
+
+        Each profile uses ``set_hermes_home_override()`` + ``use_cron_store()``
+        to scope its tick, heartbeat, recovery, lock file, config/.env, and
+        agent execution to that profile's home — mirroring how
+        ``_profile_runtime_scope`` scopes the multiplexed inbound path and
+        ``web_server.py`` scopes per-profile cron API calls.
+        """
+        import logging
+        from cron.scheduler import tick as cron_tick
+        from cron.jobs import (
+            clear_ticker_error,
+            record_ticker_error,
+            record_ticker_heartbeat,
+            use_cron_store,
+        )
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        logger = logging.getLogger("cron.scheduler_provider")
+        logger.info(
+            "Multiplex cron scheduler started for %d profile(s): %s",
+            len(profile_homes),
+            [p[0] if isinstance(p, tuple) else p for p in profile_homes],
+        )
+
+        # Recovery + initial heartbeat for every profile.
+        for entry in profile_homes:
+            home = entry[1] if isinstance(entry, tuple) else entry
+            home_token = set_hermes_home_override(str(home))
+            try:
+                with use_cron_store(home):
+                    recovered = self.recover_interrupted()
+                    if recovered:
+                        logger.warning(
+                            "Marked %d interrupted cron execution(s) for profile at %s",
+                            recovered,
+                            home,
+                        )
+                    record_ticker_heartbeat()
+            finally:
+                reset_hermes_home_override(home_token)
+
+        while not stop_event.is_set():
+            ok = False
+            try:
+                if can_dispatch is not None and not can_dispatch():
+                    logger.debug("Cron dispatch paused while gateway drains existing work")
+                else:
+                    for entry in profile_homes:
+                        home = entry[1] if isinstance(entry, tuple) else entry
+                        home_token = set_hermes_home_override(str(home))
+                        try:
+                            with use_cron_store(home):
+                                cron_tick(
+                                    verbose=False,
+                                    adapters=adapters,
+                                    loop=loop,
+                                    sync=False,
+                                    can_dispatch=can_dispatch,
+                                )
+                        finally:
+                            reset_hermes_home_override(home_token)
+                ok = True
+            except BaseException as e:
+                logger.error("Cron tick error: %s", e, exc_info=True)
+                _tick_error = f"{type(e).__name__}: {e}"
+            else:
+                _tick_error = None
+            # Record per-profile heartbeat after each tick cycle.
+            for entry in profile_homes:
+                home = entry[1] if isinstance(entry, tuple) else entry
+                home_token = set_hermes_home_override(str(home))
+                try:
+                    with use_cron_store(home):
+                        record_ticker_heartbeat(success=ok)
+                        # Surface the failure reason (or clear it) per profile
+                        # so `hermes cron status` can show WHY ticks fail
+                        # (#68483).
+                        if ok:
+                            clear_ticker_error()
+                        elif _tick_error:
+                            record_ticker_error(_tick_error)
+                finally:
+                    reset_hermes_home_override(home_token)
             stop_event.wait(interval)

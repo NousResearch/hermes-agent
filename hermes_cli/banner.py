@@ -898,10 +898,15 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         padding=(0, 2),
     )
 
-    console.print()
+    from rich.console import Group
+    from rich.text import Text
+    
+    renderables = [Text("")]
     term_width = shutil.get_terminal_size().columns
     if term_width >= 95:
         _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
-        console.print(_logo)
-        console.print()
-    console.print(outer_panel)
+        renderables.append(_logo)
+        renderables.append(Text(""))
+    renderables.append(outer_panel)
+    
+    console.print(Group(*renderables))

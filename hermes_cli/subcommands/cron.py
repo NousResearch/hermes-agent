@@ -225,6 +225,23 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_runs.add_argument("job_id", nargs="?", help="Optional job ID filter")
     cron_runs.add_argument("--limit", type=int, default=20, help="Rows to show (1-500)")
 
+    # cron notepad — per-job durable KV scratchpad (injected into the job
+    # prompt each run; the running agent writes it via this CLI).
+    cron_notepad = cron_subparsers.add_parser(
+        "notepad",
+        help="Read/write a job's durable notepad (persistent KV across runs)",
+    )
+    cron_notepad.add_argument("job_id", help="Job ID the notepad belongs to")
+    cron_notepad.add_argument(
+        "notepad_action",
+        nargs="?",
+        default="list",
+        choices=["get", "set", "delete", "list"],
+        help="Action (default: list)",
+    )
+    cron_notepad.add_argument("key", nargs="?", help="Notepad key (get/set/delete)")
+    cron_notepad.add_argument("value", nargs="?", help="Value to store (set)")
+
     # cron tick (mostly for debugging)
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     add_accept_hooks_flag(cron_tick)

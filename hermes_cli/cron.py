@@ -478,6 +478,69 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     return 0
 
 
+def cron_notepad(args) -> int:
+    """Handle ``hermes cron notepad <job_id> [get|set|delete|list]``.
+
+    The per-job durable KV scratchpad (``cron/notepad.py``). This CLI is the
+    write path — a running cron agent updates its own notepad by invoking
+    these commands via its terminal tool; the scheduler injects non-empty
+    notepads into the job prompt on each run.
+    """
+    from cron import notepad
+
+    job_id = str(getattr(args, "job_id", "") or "")
+    action = getattr(args, "notepad_action", None) or "list"
+    key = getattr(args, "key", None)
+    value = getattr(args, "value", None)
+
+    if not job_id:
+        print(color("A job ID is required.", Colors.RED))
+        return 1
+
+    try:
+        if action == "set":
+            if key is None or value is None:
+                print(color("Usage: hermes cron notepad <job_id> set <key> <value>", Colors.RED))
+                return 1
+            notepad.set_note(job_id, key, value)
+            print(color(f"Set notepad key '{key}' for job {job_id}.", Colors.GREEN))
+            return 0
+
+        if action == "get":
+            if key is None:
+                print(color("Usage: hermes cron notepad <job_id> get <key>", Colors.RED))
+                return 1
+            stored = notepad.get_note(job_id, key)
+            if stored is None:
+                print(color(f"No notepad key '{key}' for job {job_id}.", Colors.YELLOW))
+                return 1
+            print(stored)
+            return 0
+
+        if action == "delete":
+            if key is None:
+                print(color("Usage: hermes cron notepad <job_id> delete <key>", Colors.RED))
+                return 1
+            if notepad.delete_note(job_id, key):
+                print(color(f"Deleted notepad key '{key}' for job {job_id}.", Colors.GREEN))
+                return 0
+            print(color(f"No notepad key '{key}' for job {job_id}.", Colors.YELLOW))
+            return 1
+
+        # list (default)
+        notes = notepad.list_notes(job_id)
+        if not notes:
+            print(color(f"Notepad for job {job_id} is empty.", Colors.DIM))
+            return 0
+        for note in notes:
+            print(f"  {color(note['key'], Colors.YELLOW)} = {note['value']}")
+            print(f"    {color('updated: ' + str(note['updated_at']), Colors.DIM)}")
+        return 0
+    except ValueError as exc:
+        print(color(f"Notepad error: {exc}", Colors.RED))
+        return 1
+
+
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
@@ -498,6 +561,9 @@ def cron_command(args):
     if subcmd in {"runs", "history"}:
         cron_runs(getattr(args, "job_id", None), getattr(args, "limit", 20))
         return 0
+
+    if subcmd == "notepad":
+        return cron_notepad(args)
 
     if subcmd in {"create", "add"}:
         return cron_create(args)

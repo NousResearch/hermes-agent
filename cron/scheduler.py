@@ -2673,6 +2673,16 @@ def _build_job_prompt(
                 logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
                 # silent skip — do not pollute the prompt with error messages
 
+    # Inject the job's durable notepad (per-job KV scratchpad surviving
+    # scheduled wake-ups). Empty notepad renders as "" so jobs that never
+    # use the feature get a byte-identical prompt.
+    from cron import notepad as cron_notepad
+
+    notepad_section = cron_notepad.render_notepad_section(str(job.get("id") or ""))
+    if notepad_section:
+        prompt = f"{notepad_section}{prompt}"
+        has_injected_data = True
+
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
     cron_hint = (

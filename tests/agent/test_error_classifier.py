@@ -240,6 +240,75 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_fallback is True
 
+    def test_openrouter_upstream_429_flat_body_does_not_rotate_credential(self):
+        """The OpenAI SDK exposes OpenRouter's inner error object as ``body``.
+
+        The live Kimi K3 failure therefore had a flat
+        ``{message, code, metadata}`` body rather than the HTTP response's
+        nested ``{error: {...}}`` envelope.  It must still be treated as an
+        upstream model-route limit, with provider context preserved.
+        """
+        error = MockAPIError(
+            "Error code: 429",
+            status_code=429,
+            body={
+                "message": "Provider returned error",
+                "code": 429,
+                "metadata": {
+                    "raw": (
+                        "moonshotai/kimi-k3 is temporarily rate-limited upstream. "
+                        "Please retry shortly."
+                    ),
+                    "provider_name": "Moonshot AI",
+                    "retry_after_seconds": 1,
+                },
+            },
+        )
+        result = classify_api_error(
+            error,
+            provider="openrouter",
+            model="moonshotai/kimi-k3",
+        )
+
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
+        assert result.error_context == {"upstream_provider": "Moonshot AI"}
+
+    def test_openrouter_account_429_with_incidental_phrase_rotates_credential(self):
+        """Free-form text must not override an account-level OpenRouter 429."""
+
+        class RateLimitError(Exception):
+            status_code = 429
+
+        result = classify_api_error(
+            RateLimitError(
+                "This is not a Provider returned error; account rate limit exceeded"
+            ),
+            provider="openrouter",
+            model="moonshotai/kimi-k3",
+        )
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+    def test_non_openrouter_429_with_metadata_words_rotates_credential(self):
+        """Metadata words in unrelated free text are not OpenRouter structure."""
+
+        class RateLimitError(Exception):
+            status_code = 429
+
+        result = classify_api_error(
+            RateLimitError(
+                "Provider returned error; malformed metadata provider_name"
+            ),
+            provider="other-provider",
+            model="example/model",
+        )
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
     def test_alibaba_rate_increased_too_quickly(self):
         """Alibaba/DashScope returns a unique throttling message.
 

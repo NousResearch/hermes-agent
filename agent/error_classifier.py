@@ -1796,6 +1796,20 @@ def _extract_message(error: Exception, body: dict) -> str:
     return str(error)[:500]
 
 
+def _openrouter_error_payload(body: Any) -> Optional[dict]:
+    """Return OpenRouter's error object from nested HTTP or flat SDK bodies."""
+    if not isinstance(body, dict):
+        return None
+    nested = body.get("error")
+    if isinstance(nested, dict):
+        return nested
+    # The OpenAI SDK's APIStatusError.body is already the inner ``error``
+    # object, so OpenRouter metadata appears at the top level.
+    if isinstance(body.get("metadata"), dict):
+        return body
+    return None
+
+
 def _is_openrouter_upstream_error(body: Any, provider: str) -> bool:
     """Detect OpenRouter's aggregator-wrapped upstream provider errors.
 
@@ -1805,11 +1819,9 @@ def _is_openrouter_upstream_error(body: Any, provider: str) -> bool:
     user's OpenRouter key is healthy — the upstream provider is the one that
     failed — so credential rotation is the wrong recovery.
     """
-    if not isinstance(body, dict):
-        return False
     provider_lower = (provider or "").strip().lower()
-    err = body.get("error")
-    if not isinstance(err, dict):
+    err = _openrouter_error_payload(body)
+    if err is None:
         return False
     outer_msg = str(err.get("message") or "").strip().lower()
     if outer_msg != "provider returned error":
@@ -1828,10 +1840,8 @@ def _is_openrouter_upstream_error(body: Any, provider: str) -> bool:
 
 def _extract_upstream_provider_name(body: Any) -> Optional[str]:
     """Pull the upstream provider name out of OpenRouter's error metadata."""
-    if not isinstance(body, dict):
-        return None
-    err = body.get("error")
-    if not isinstance(err, dict):
+    err = _openrouter_error_payload(body)
+    if err is None:
         return None
     metadata = err.get("metadata")
     if not isinstance(metadata, dict):

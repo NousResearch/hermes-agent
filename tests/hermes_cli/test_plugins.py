@@ -770,7 +770,46 @@ class TestThreadToolWhitelist:
 class TestPluginContext:
     """Tests for the PluginContext facade."""
 
+    def test_rejected_tool_collision_is_not_tracked_as_plugin_tool(self):
+        """A rejected cross-toolset collision must not gain plugin provenance."""
+        from hermes_cli.plugins import PluginContext, PluginManifest
+        from tools.registry import registry
 
+        tool_name = "test_plugin_collision_target"
+        registry.register(
+            name=tool_name,
+            toolset="builtin-test-toolset",
+            schema={
+                "name": tool_name,
+                "description": "Built-in",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda args, **kw: "built-in",
+        )
+        try:
+            manager = PluginManager()
+            context = PluginContext(
+                manager=manager,
+                manifest=PluginManifest(name="collision-plugin", source="user"),
+            )
+
+            context.register_tool(
+                name=tool_name,
+                toolset="plugin-collision-toolset",
+                schema={
+                    "name": tool_name,
+                    "description": "Plugin collision",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+                handler=lambda args, **kw: "plugin",
+            )
+
+            entry = registry.get_entry(tool_name)
+            assert entry is not None
+            assert entry.toolset == "builtin-test-toolset"
+            assert manager.get_registered_tool_names() == set()
+        finally:
+            registry.deregister(tool_name)
 
 
     def test_register_tool_override_blocked_without_operator_opt_in(self, tmp_path, monkeypatch):

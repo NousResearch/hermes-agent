@@ -23,30 +23,27 @@ else
     echo "  -> No .env.secrets file, using environment variables"
 fi
 
-# 1. Overwrite model config — Phase 2 v3 (2026-06-25): route via claudish proxy
-# Why claude-sonnet-4-6, not glm-5.2? Hermes Python wire selector picks the HTTP
-# format from the model registry: a Claude name => /v1/messages (Anthropic wire),
-# which is what claudish serves. A GLM name => /chat/completions (OpenAI wire),
-# which claudish does NOT serve. Claudish remaps `claude-sonnet-*` => `gc@glm-5.2`
-# server-side via modelMap (commit 16949b4). Slug normalization also fixed in
-# claudish (5316c42). Net result: Hermes hits gc@glm-5.2 with claudish's 529
-# patient-backoff (Issue B, deploy #3 ~5min schedule) in front of z.ai.
-# See [[feedback-hermes-wire-selector]] for the full diagnosis.
-echo "  -> Setting model: claude-sonnet-4-6 (anthropic wire via claudish -> gc@glm-5.2)"
-sed -i 's/^  default: "anthropic\/claude-opus-4.6"/  default: "claude-sonnet-4-6"/' "$DATA/config.yaml"
-# Idempotent: handles re-runs and older Phase-1 configs that still have glm-5.2.
-sed -i 's/^  default: "glm-5.2"/  default: "claude-sonnet-4-6"/' "$DATA/config.yaml"
+# 1. Overwrite model config — z.ai NATIVE (revert Phase 2 v3 claudish, 2026-08-07)
+# Phase 2 v3 (2026-06-25) routed via claudish proxy (claude-sonnet-4-6 -> gc@glm-5.2)
+# but the gateway's main loop ignores ANTHROPIC_BASE_URL (wire_selector bug,
+# [[feedback-hermes-wire-selector]]) and hits api.anthropic.com direct -> 401
+# invalid x-api-key on every cron. Claudish proxy itself is healthy (verified
+# 2026-08-07 by po-2023: HTTP 200, 171 active req from po-2026); the break is
+# client-side in Hermes. Revert to z.ai native: provider zai + glm-5-turbo, the
+# canonical config per CLAUDE.md "z.ai provider (CRITICAL)".
+echo "  -> Setting model: glm-5-turbo (z.ai native, revert claudish Phase 2 v3)"
+# Use extended regex with optional quotes — config.yaml may carry the value quoted
+# ("claude-sonnet-4-6") or unquoted (claude-sonnet-4-6) depending on which stage
+# last wrote it (upstream stage2-hook vs prior restore runs).
+sed -i -E 's/^  default: "?(anthropic\/claude-opus-4\.6|claude-sonnet-4-6|glm-5\.2|glm-5-turbo)"?$/  default: "glm-5-turbo"/' "$DATA/config.yaml"
 
-# Ensure provider is set to anthropic (built-in profile, transport=anthropic_messages).
-# DO NOT add a `providers.anthropic` section in user-config — resolve_user_provider()
-# would default its transport to openai_chat, defeating the Claude-name trick.
-# Instead, ANTHROPIC_BASE_URL env var (set in step 4 below) points at claudish.
+# Ensure provider is set to zai (built-in profile, native /api/coding/paas/v4).
+# NEVER use ANTHROPIC_BASE_URL — the Anthropic-compat layer causes MCP tool
+# registry loss after compaction (CLAUDE.md "z.ai provider (CRITICAL)").
 if grep -q '^  provider:' "$DATA/config.yaml"; then
-    sed -i 's/^  provider: "auto"/  provider: "anthropic"/' "$DATA/config.yaml"
-    sed -i 's/^  provider: "openrouter"/  provider: "anthropic"/' "$DATA/config.yaml"
-    sed -i 's/^  provider: "zai"/  provider: "anthropic"/' "$DATA/config.yaml"
+    sed -i -E 's/^  provider: "?(auto|openrouter|anthropic|zai)"?$/  provider: "zai"/' "$DATA/config.yaml"
 else
-    sed -i '/^  default: "claude-sonnet-4-6"/a\  provider: "anthropic"' "$DATA/config.yaml"
+    sed -i '/^  default: "glm-5-turbo"/a\  provider: "zai"' "$DATA/config.yaml"
 fi
 
 # 1c. Set compression threshold for GLM-5.2 1M context.
@@ -307,12 +304,14 @@ XDG_STATE_HOME=/opt/data/.local/state
 GLM_API_KEY=${GLM_API_KEY:-}
 GLM_BASE_URL=${GLM_BASE_URL:-https://open.bigmodel.cn/api/coding/paas/v4}
 
-# Anthropic / claudish (Phase 2 v3 2026-06-25): main model routes via po-2023 claudish proxy.
-# Claudish accepts model: claude-sonnet-4-6 on /v1/messages and remaps to gc@glm-5.2.
-# Token is placeholder because claudish ignores it on LAN trust path.
-# See [[feedback-hermes-wire-selector]] for why this matters.
-ANTHROPIC_BASE_URL=http://192.168.0.46:3000
-ANTHROPIC_TOKEN=placeholder
+# Anthropic / claudish — DISABLED 2026-08-07 (revert Phase 2 v3).
+# The gateway main loop ignores ANTHROPIC_BASE_URL (wire_selector bug) and hits
+# api.anthropic.com direct -> 401 on every cron. Claudish proxy is healthy but
+# Hermes can't use it reliably until the wire_selector is fixed upstream.
+# Reverted to z.ai native (provider zai + glm-5-turbo). These lines kept
+# commented for documentation; do NOT uncomment without fixing wire_selector.
+# ANTHROPIC_BASE_URL=http://192.168.0.46:3000
+# ANTHROPIC_TOKEN=placeholder
 
 # Telegram bot
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
@@ -693,9 +692,9 @@ check() {
     fi
 }
 
-# Model — Phase 2 v3: must be claude-sonnet-4-6 (anthropic wire via claudish)
+# Model — z.ai native: must be glm-5-turbo (revert Phase 2 v3 claudish, 2026-08-07)
 MODEL=$(grep '^  default:' "$DATA/config.yaml" | head -1)
-[[ "$MODEL" == *claude-sonnet-4-6* ]] && check "Model" "OK" || check "Model" "got: $MODEL"
+[[ "$MODEL" == *glm-5-turbo* ]] && check "Model" "OK" || check "Model" "got: $MODEL"
 
 # YAML valid (no duplicate keys)
 DUP_AUX=$(grep -c '^auxiliary:' "$DATA/config.yaml")
@@ -708,14 +707,15 @@ else
     check "YAML duplicates" "aux=$DUP_AUX stt=$DUP_STT mcp=$DUP_MCP appr=$DUP_APPR"
 fi
 
-# Provider — Phase 2 v3: main provider is anthropic (claudish wire).
-# Auxiliary providers still on zai (compression, image, browser, web) — verified separately below.
+# Provider — z.ai native (revert Phase 2 v3, 2026-08-07): main provider is zai.
+# Auxiliary providers also on zai (compression, image, browser, web).
 PROV=$(grep '^  provider:' "$DATA/config.yaml" | head -1)
-[[ "$PROV" == *anthropic* ]] && check "Provider (main=anthropic)" "OK" || check "Provider" "got: $PROV"
+[[ "$PROV" == *zai* ]] && check "Provider (main=zai)" "OK" || check "Provider" "got: $PROV"
 
-# ANTHROPIC_BASE_URL must point at claudish proxy for Phase 2 v3 to work.
-ANTH_URL=$(grep -c '^ANTHROPIC_BASE_URL=http://192.168.0.46:3000' "$DATA/.env" 2>/dev/null || echo 0)
-[ "$ANTH_URL" = "1" ] && check "ANTHROPIC_BASE_URL (claudish)" "OK" || check "ANTHROPIC_BASE_URL" "missing or wrong (count=$ANTH_URL)"
+# ANTHROPIC_BASE_URL must be ABSENT (revert Phase 2 v3). Its presence causes the
+# gateway main loop to misroute to api.anthropic.com -> 401. z.ai native uses GLM_BASE_URL.
+ANTH_URL=$(grep -c '^ANTHROPIC_BASE_URL=' "$DATA/.env" 2>/dev/null || true)
+[ "$ANTH_URL" = "0" ] && check "No ANTHROPIC_BASE_URL (z.ai native)" "OK" || check "ANTHROPIC_BASE_URL present" "should be absent (count=$ANTH_URL)"
 
 # No duplicate provider: auto
 DUP=$(grep -c '^ *provider: "auto"' "$DATA/config.yaml" || true)

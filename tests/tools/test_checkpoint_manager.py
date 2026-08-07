@@ -1044,3 +1044,51 @@ class TestSessionDiff:
         assert result["success"] is True
         assert "feature.py" in result["diff"]
         assert "+x = 1" in result["diff"]
+
+
+# =========================================================================
+# node-compile-cache exclude tests (#78888)
+# =========================================================================
+
+class TestNodeCompileCacheExclude:
+    def test_default_excludes_contains_node_compile_cache(self):
+        from tools.checkpoint_manager import DEFAULT_EXCLUDES
+        assert "node-compile-cache/" in DEFAULT_EXCLUDES
+
+    def test_ensure_store_excludes_syncs_to_existing_store(self, tmp_path):
+        from tools.checkpoint_manager import _ensure_store_excludes
+        store = tmp_path / "store"
+        info_exclude = store / "info" / "exclude"
+        info_exclude.parent.mkdir(parents=True)
+        info_exclude.write_text("node_modules/\n.cache/\n", encoding="utf-8")
+
+        _ensure_store_excludes(store)
+
+        content = info_exclude.read_text(encoding="utf-8")
+        assert "node-compile-cache/" in content
+
+    def test_checkpoint_ignores_node_compile_cache(self, mgr, work_dir):
+        from tools.checkpoint_manager import _store_path, _ref_name, _project_hash, _run_git
+
+        (work_dir / "app.py").write_text("print('hello')\n")
+        cache_dir = work_dir / "node-compile-cache"
+        cache_dir.mkdir()
+        (cache_dir / "v26.5.1-x64-1234").write_text("cache data\n")
+
+        res = mgr.ensure_checkpoint(str(work_dir), "with cache dir")
+        assert res is True
+
+        checkpoints = mgr.list_checkpoints(str(work_dir))
+        assert len(checkpoints) >= 1
+
+        store = _store_path()
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(work_dir)))],
+            store,
+            str(work_dir),
+        )
+        assert ok
+        tracked_files = set(files.splitlines())
+        assert "app.py" in tracked_files
+        assert not any("node-compile-cache" in f for f in tracked_files)
+

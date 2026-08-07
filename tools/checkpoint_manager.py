@@ -95,6 +95,7 @@ DEFAULT_EXCLUDES = [
     ".pytest_cache/",
     ".mypy_cache/",
     ".ruff_cache/",
+    "node-compile-cache/",
     "coverage/",
     ".coverage",
     # Virtualenvs
@@ -418,6 +419,24 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
     return legacy_root
 
 
+def _ensure_store_excludes(store: Path) -> None:
+    """Ensure all patterns in DEFAULT_EXCLUDES are present in store/info/exclude."""
+    info_exclude = store / "info" / "exclude"
+    try:
+        if not info_exclude.exists():
+            info_exclude.parent.mkdir(parents=True, exist_ok=True)
+            info_exclude.write_text("\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8")
+            return
+        content = info_exclude.read_text(encoding="utf-8")
+        existing = set(line.strip() for line in content.splitlines() if line.strip())
+        missing = [pat for pat in DEFAULT_EXCLUDES if pat not in existing]
+        if missing:
+            new_content = content.rstrip("\n") + "\n" + "\n".join(missing) + "\n"
+            info_exclude.write_text(new_content, encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not update excludes in checkpoint store %s: %s", store, exc)
+
+
 def _init_store(store: Path, working_dir: str) -> Optional[str]:
     """Initialise the shared shadow store if needed.  Returns error or None.
 
@@ -436,6 +455,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         _migrate_legacy_store(base)
 
     if (store / "HEAD").exists():
+        _ensure_store_excludes(store)
         return None
 
     store.mkdir(parents=True, exist_ok=True)
@@ -477,11 +497,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     _run_git(["config", "tag.gpgSign", "false"], store, cfg_wd)
     _run_git(["config", "gc.auto", "0"], store, cfg_wd)
 
-    info_dir = store / "info"
-    info_dir.mkdir(exist_ok=True)
-    (info_dir / "exclude").write_text(
-        "\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8"
-    )
+    _ensure_store_excludes(store)
 
     logger.debug("Initialised checkpoint store at %s", store)
     return None

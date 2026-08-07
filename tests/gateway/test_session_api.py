@@ -127,6 +127,40 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_session_messages_include_compression_ancestors_in_order(adapter, session_db):
+    parent_id = session_db.create_session("compression-parent", "api_server")
+    session_db.append_message(parent_id, "user", "parent question")
+    session_db.append_message(parent_id, "assistant", "parent answer")
+    session_db.end_session(parent_id, "compression")
+
+    continuation_id = session_db.create_session(
+        "compression-continuation",
+        "api_server",
+        parent_session_id=parent_id,
+    )
+    session_db.append_message(continuation_id, "user", "continuation question")
+    session_db.append_message(continuation_id, "assistant", "continuation answer")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(f"/api/sessions/{continuation_id}/messages")
+        assert response.status == 200
+        payload = await response.json()
+
+    assert payload["object"] == "list"
+    assert payload["session_id"] == continuation_id
+    assert [
+        (message["session_id"], message["role"], message["content"])
+        for message in payload["data"]
+    ] == [
+        (parent_id, "user", "parent question"),
+        (parent_id, "assistant", "parent answer"),
+        (continuation_id, "user", "continuation question"),
+        (continuation_id, "assistant", "continuation answer"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter, session_db):
     """run.completed must include the full interleaved turn transcript so a
     client that lost intermediate (pre-tool-call) assistant text from the live

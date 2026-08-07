@@ -2021,6 +2021,22 @@ export const ar = defineLocale({
     freeTier: 'طبقة مجانية',
     priceTitle: 'السعر'
   },
+  contextWindow: {
+    title: 'نافذة السياق',
+    description: 'عدد الرموز التي يحتفظ بها Hermes قبل ضغط المحادثة.',
+    autoDetected: (tokens: string) => `اكتشاف تلقائي: ${tokens}`,
+    effective: 'قيد الاستخدام',
+    forModel: (model: string, provider: string) => `${model} · ${provider}`,
+    routeScoped: 'ينطبق على هذا النموذج والمزود فقط. تغيير أي منهما يعيد الاكتشاف التلقائي.',
+    nextTurnNotice: 'يسري مفعوله في رسالتك التالية.',
+    overrideLabel: 'تجاوز',
+    placeholder: 'اكتشاف تلقائي',
+    invalid: 'أدخل عدد رموز صحيحا، أو اتركه فارغا للاكتشاف التلقائي.',
+    useAuto: 'استخدام الاكتشاف التلقائي',
+    usingAuto: 'اكتشاف تلقائي',
+    saveFailed: 'تعذر حفظ نافذة السياق',
+    unknown: 'غير معروف'
+  },
   modelVisibility: {
     title: 'النماذج',
     search: 'بحث في النماذج',

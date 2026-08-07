@@ -2530,7 +2530,6 @@ class TestModelContextLength:
         assert result["model"] == "anthropic/claude-sonnet-4"
         assert result["model_context_length"] == 0
 
-
     def test_denormalize_writes_context_length_into_model_dict(self):
         """denormalize should write model_context_length back into model dict."""
         from hermes_cli.web_server import _denormalize_config_from_web
@@ -2548,6 +2547,145 @@ class TestModelContextLength:
         assert isinstance(result["model"], dict)
         assert result["model"]["context_length"] == 100000
         assert "model_context_length" not in result  # virtual field removed
+
+    def test_denormalize_zero_removes_context_length(self):
+        """denormalize with model_context_length=0 should remove context_length key."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "provider": "openrouter",
+                "context_length": 50000,
+            }
+        })
+
+        result = _denormalize_config_from_web({
+            "model": "anthropic/claude-opus-4.6",
+            "model_context_length": 0,
+        })
+        assert isinstance(result["model"], dict)
+        assert "context_length" not in result["model"]
+
+    def test_denormalize_upgrades_bare_string_to_dict(self):
+        """denormalize should upgrade bare string model to dict when context_length set."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        # Disk has model as bare string
+        save_config({"model": "anthropic/claude-sonnet-4"})
+
+        result = _denormalize_config_from_web({
+            "model": "anthropic/claude-sonnet-4",
+            "model_context_length": 65000,
+        })
+        assert isinstance(result["model"], dict)
+        assert result["model"]["default"] == "anthropic/claude-sonnet-4"
+        assert result["model"]["context_length"] == 65000
+
+    def test_denormalize_bare_string_stays_string_when_zero(self):
+        """denormalize should keep bare string model as string when context_length=0."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({"model": "anthropic/claude-sonnet-4"})
+
+        result = _denormalize_config_from_web({
+            "model": "anthropic/claude-sonnet-4",
+            "model_context_length": 0,
+        })
+        assert result["model"] == "anthropic/claude-sonnet-4"
+
+    def test_denormalize_coerces_string_context_length(self):
+        """denormalize should handle string model_context_length from frontend."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {"default": "test/model", "provider": "openrouter"}
+        })
+
+        result = _denormalize_config_from_web({
+            "model": "test/model",
+            "model_context_length": "32000",
+        })
+        assert isinstance(result["model"], dict)
+        assert result["model"]["context_length"] == 32000
+
+    def test_put_config_clearing_override_actually_removes_the_pin(self):
+        """Saving model_context_length=0 must delete the on-disk pin.
+
+        ``_denormalize_config_from_web`` expresses "back to auto-detect" as the
+        ABSENCE of ``model.context_length``, but ``_deep_merge`` can only add or
+        replace keys -- so the merge used to resurrect the stored pin and the
+        override could never be cleared from the UI.
+        """
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "provider": "openrouter",
+                "context_length": 50000,
+            }
+        })
+
+        client = TestClient(app)
+        client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        resp = client.put("/api/config", json={"config": {
+            "model": "anthropic/claude-opus-4.6",
+            "model_context_length": 0,
+        }})
+        assert resp.status_code == 200
+
+        model_cfg = load_config().get("model")
+        assert isinstance(model_cfg, dict)
+        assert "context_length" not in model_cfg
+        # Clearing the window must not disturb the rest of the model route.
+        assert model_cfg["default"] == "anthropic/claude-opus-4.6"
+        assert model_cfg["provider"] == "openrouter"
+
+    def test_put_config_persists_an_explicit_override(self):
+        """The round trip a user makes from the desktop dialog: set N, get N."""
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"}
+        })
+
+        client = TestClient(app)
+        client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        resp = client.put("/api/config", json={"config": {
+            "model": "anthropic/claude-opus-4.6",
+            "model_context_length": 128000,
+        }})
+        assert resp.status_code == 200
+        assert load_config()["model"]["context_length"] == 128000
+
+    def test_put_config_without_the_field_leaves_an_existing_pin_alone(self):
+        """A partial save of some unrelated section must not drop the pin."""
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "provider": "openrouter",
+                "context_length": 50000,
+            }
+        })
+
+        client = TestClient(app)
+        client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        resp = client.put("/api/config", json={"config": {"timezone": "UTC"}})
+        assert resp.status_code == 200
+        assert load_config()["model"]["context_length"] == 50000
 
 
 class TestDenormalizeProviderSwitch:

@@ -6924,7 +6924,25 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
             # frontend can only overwrite what it explicitly sends.
             existing = read_raw_config()
             incoming = _denormalize_config_from_web(body.config)
-            save_config(_deep_merge(existing, incoming))
+            merged = _deep_merge(existing, incoming)
+            # `_deep_merge` can only ADD or REPLACE keys, never delete one.
+            # Clearing the context-window override is expressed as the ABSENCE
+            # of `model.context_length` in `incoming`, so the merge would keep
+            # resurrecting the on-disk pin and "back to auto-detect" silently
+            # did nothing. Honor the denormalized model dict's intent to drop it.
+            #
+            # Gated on the caller having actually SENT the virtual
+            # `model_context_length` field: a payload that never mentions it
+            # (a partial save of some unrelated section) must leave an
+            # existing pin untouched rather than silently dropping it.
+            if (
+                "model_context_length" in body.config
+                and isinstance(incoming.get("model"), dict)
+                and isinstance(merged.get("model"), dict)
+                and "context_length" not in incoming["model"]
+            ):
+                merged["model"].pop("context_length", None)
+            save_config(merged)
         return {"ok": True}
     except HTTPException:
         raise

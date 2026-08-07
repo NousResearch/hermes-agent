@@ -143,7 +143,9 @@ export function useSlashCompletions(options: {
       try {
         if (!query) {
           const catalog = filterDesktopCommandsCatalog(
-            await cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+            await cachedSlashCompletion('catalog', () =>
+              gateway.request<CommandsCatalogLike>('commands.catalog', { surface: 'desktop' })
+            )
           )
 
           // Prefer the categorized layout so the popover renders section headers
@@ -184,7 +186,10 @@ export function useSlashCompletions(options: {
         }
 
         const result = await cachedSlashCompletion(`slash:${text.toLowerCase()}`, () =>
-          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text })
+          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', {
+            text,
+            surface: 'desktop'
+          })
         )
 
         // Arg-completion items (replace_from > 1) carry just the arg stub —

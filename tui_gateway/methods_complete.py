@@ -222,7 +222,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"items": []})
 
     try:
-        from hermes_cli.commands import SlashCommandCompleter
+        from hermes_cli.commands import DESKTOP_ONLY_COMMANDS, SlashCommandCompleter
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import to_plain_text
 
@@ -274,6 +274,21 @@ def _(rid, params: dict) -> dict:
             items = items[:_SLASH_COMPLETION_LIMIT]
 
         text_lower = text.lower()
+        # SlashCommandCompleter deliberately excludes desktop-only commands.
+        # Add them back only for Electron's typed-prefix completion path.
+        if str(params.get("surface") or "") == "desktop":
+            for cmd, desc in DESKTOP_ONLY_COMMANDS.items():
+                if cmd.startswith(text_lower) and not any(
+                    f"/{item['text']}".rstrip() == cmd for item in items
+                ):
+                    items.append(
+                        {
+                            "text": cmd.lstrip("/"),
+                            "display": cmd,
+                            "meta": desc,
+                            "kind": "command",
+                        }
+                    )
         extras = [
             {
                 "text": "/density",

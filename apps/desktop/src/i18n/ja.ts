@@ -2235,6 +2235,23 @@ export const ja = defineLocale({
     wasPrice: '旧価格'
   },
 
+  contextWindow: {
+    title: 'コンテキストウィンドウ',
+    description: 'Hermes が会話を圧縮するまでに保持するトークン数です。',
+    autoDetected: (tokens: string) => `自動検出: ${tokens}`,
+    effective: '使用中',
+    forModel: (model: string, provider: string) => `${model} · ${provider}`,
+    routeScoped: '現在のモデルとプロバイダーにのみ適用されます。どちらかを切り替えると自動検出に戻ります。',
+    nextTurnNotice: '次のメッセージから有効になります。',
+    overrideLabel: '手動指定',
+    placeholder: '自動検出',
+    invalid: 'トークン数を整数で入力するか、空欄にして自動検出にしてください。',
+    useAuto: '自動検出を使う',
+    usingAuto: '自動検出',
+    saveFailed: 'コンテキストウィンドウを保存できませんでした',
+    unknown: '不明'
+  },
+
   modelVisibility: {
     title: 'モデル',
     search: 'モデルを検索',

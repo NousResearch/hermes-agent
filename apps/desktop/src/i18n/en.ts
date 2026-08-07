@@ -2398,6 +2398,23 @@ export const en: Translations = {
     wasPrice: 'was'
   },
 
+  contextWindow: {
+    title: 'Context window',
+    description: 'How many tokens Hermes keeps before it compresses the conversation.',
+    autoDetected: (tokens: string) => `Auto-detected: ${tokens}`,
+    effective: 'In use',
+    forModel: (model: string, provider: string) => `${model} · ${provider}`,
+    routeScoped: 'Applies to this model and provider. Switching either one returns to auto-detect.',
+    nextTurnNotice: 'Takes effect on your next message.',
+    overrideLabel: 'Override',
+    placeholder: 'Auto-detect',
+    invalid: 'Enter a whole number of tokens, or leave blank for auto-detect.',
+    useAuto: 'Use auto-detect',
+    usingAuto: 'Auto-detect',
+    saveFailed: 'Could not save the context window',
+    unknown: 'unknown'
+  },
+
   modelVisibility: {
     title: 'Models',
     search: 'Search models',

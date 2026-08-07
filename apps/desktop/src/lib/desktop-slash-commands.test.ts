@@ -7,6 +7,7 @@ import {
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
   isDesktopSlashCommand,
+  isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
   isModelPickerCommand,
   isPickerCommand,
@@ -43,6 +44,17 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/skills')).toBe(false)
     expect(isDesktopSlashSuggestion('/voice')).toBe(false)
     expect(isDesktopSlashSuggestion('/curator')).toBe(false)
+  })
+
+  it('opens the context-window dialog for /ctxwindow and keeps it discoverable', () => {
+    // Unlike /model (reachable from the status-bar pill, so hidden from the
+    // popover), /ctxwindow has no other entry point — it must stay suggestable.
+    expect(resolveDesktopCommand('/ctxwindow')?.surface).toEqual({ kind: 'picker', picker: 'ctxwindow' })
+    expect(isPickerCommand('/ctxwindow', 'ctxwindow')).toBe(true)
+    expect(isDesktopSlashCommand('/ctxwindow')).toBe(true)
+    expect(isDesktopSlashSuggestion('/ctxwindow')).toBe(true)
+    // It's a known built-in, not a skill/quick command.
+    expect(isDesktopSlashExtensionCommand('/ctxwindow')).toBe(false)
   })
 
   it('routes /compact to /compress (context compression), not the TUI display toggle', () => {

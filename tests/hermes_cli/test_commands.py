@@ -8,6 +8,7 @@ from hermes_cli.commands import (
     COMMANDS,
     COMMANDS_BY_CATEGORY,
     CommandDef,
+    DESKTOP_ONLY_COMMANDS,
     GATEWAY_KNOWN_COMMANDS,
     SUBCOMMANDS,
     SlashCommandAutoSuggest,
@@ -99,6 +100,13 @@ class TestResolveCommand:
 
 class TestDerivedDicts:
 
+    def test_commands_dict_includes_all_cli_commands(self):
+        for cmd in COMMAND_REGISTRY:
+            # `desktop_only` commands are fulfilled by an Electron overlay and
+            # have no CLI handler, so they are deliberately absent here.
+            if not cmd.gateway_only and not cmd.desktop_only:
+                assert f"/{cmd.name}" in COMMANDS, \
+                    f"/{cmd.name} missing from COMMANDS dict"
 
     def test_commands_dict_includes_aliases(self):
         assert "/bg" in COMMANDS
@@ -109,8 +117,35 @@ class TestDerivedDicts:
         assert "/gateway" in COMMANDS
 
     def test_commands_by_category_covers_all_categories(self):
-        registry_categories = {cmd.category for cmd in COMMAND_REGISTRY if not cmd.gateway_only}
+        registry_categories = {
+            cmd.category
+            for cmd in COMMAND_REGISTRY
+            if not cmd.gateway_only and not cmd.desktop_only
+        }
         assert set(COMMANDS_BY_CATEGORY.keys()) == registry_categories
+
+    def test_every_command_has_nonempty_description(self):
+        for cmd, desc in COMMANDS.items():
+            assert isinstance(desc, str) and len(desc) > 0, f"{cmd} has empty description"
+
+    def test_desktop_only_commands_are_exposed_as_data(self):
+        """Excluded from COMMANDS, but still reachable for the desktop surface.
+
+        `COMMANDS` drives CLI/TUI help and autocomplete, where a `desktop_only`
+        command would dead-end. The gateway's `complete.slash` needs the names
+        anyway to complete a typed prefix for the Electron popover, so they
+        live in a separate projection instead of being unavailable entirely.
+        """
+        expected = {
+            f"/{cmd.name}" for cmd in COMMAND_REGISTRY if cmd.desktop_only
+        }
+        assert expected, "expected at least one desktop_only command"
+        assert set(DESKTOP_ONLY_COMMANDS) >= expected
+        # The two projections must not overlap: a command belongs to the CLI
+        # surface or the desktop-only one, never both.
+        assert not set(DESKTOP_ONLY_COMMANDS) & set(COMMANDS)
+        for cmd, desc in DESKTOP_ONLY_COMMANDS.items():
+            assert isinstance(desc, str) and desc, f"{cmd} has empty description"
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +161,17 @@ class TestGatewayKnownCommands:
                 assert cmd.name in GATEWAY_KNOWN_COMMANDS, \
                     f"config-gated command '{cmd.name}' should be in GATEWAY_KNOWN_COMMANDS"
 
+    def test_includes_gateway_commands(self):
+        for cmd in COMMAND_REGISTRY:
+            # Desktop-only commands have no gateway handler either.
+            if not cmd.cli_only and not cmd.desktop_only:
+                assert cmd.name in GATEWAY_KNOWN_COMMANDS
+                for alias in cmd.aliases:
+                    assert alias in GATEWAY_KNOWN_COMMANDS
+
+    def test_bg_alias_in_gateway(self):
+        assert "bg" in GATEWAY_KNOWN_COMMANDS
+        assert "background" in GATEWAY_KNOWN_COMMANDS
 
     def test_is_frozenset(self):
         assert isinstance(GATEWAY_KNOWN_COMMANDS, frozenset)
@@ -1027,3 +1073,52 @@ class TestPluginCommandEnumeration:
         slack_names = set(slack_subcommand_map())
         assert "status" in tg_names
         assert "status" in slack_names
+
+
+class TestDesktopOnlyCommands:
+    """`desktop_only` commands are fulfilled by an Electron desktop overlay.
+
+    They live in the registry so the desktop slash palette (which is built from
+    `commands.catalog`) can discover them, but they have NO CLI or gateway
+    handler -- so every surface that would dispatch or advertise them must
+    leave them out rather than dead-ending on a missing handler.
+    """
+
+    def test_ctxwindow_is_registered_as_desktop_only(self):
+        cmd = resolve_command("ctxwindow")
+        assert cmd is not None
+        assert cmd.desktop_only is True
+
+    def test_desktop_only_commands_stay_out_of_cli_help(self):
+        assert "/ctxwindow" not in COMMANDS
+        for commands in COMMANDS_BY_CATEGORY.values():
+            assert "/ctxwindow" not in commands
+
+    def test_desktop_only_commands_are_not_gateway_dispatchable(self):
+        assert "ctxwindow" not in GATEWAY_KNOWN_COMMANDS
+
+    def test_desktop_only_commands_are_absent_from_gateway_surfaces(self):
+        assert not any("/ctxwindow" in line for line in gateway_help_lines())
+        assert "ctxwindow" not in {name for name, _desc in telegram_bot_commands()}
+        assert "ctxwindow" not in set(slack_subcommand_map())
+
+    def test_ctxwindow_does_not_shadow_the_cli_context_command(self):
+        """`/context` is the CLI/gateway context-usage view and must stay intact.
+
+        The desktop context-window dialog is a different feature with a
+        different name, so registering it must not steal `/context`'s name,
+        alias, or its reach into the CLI and gateway surfaces.
+        """
+        usage_view = resolve_command("context")
+        assert usage_view is not None
+        assert usage_view.name == "context"
+        assert usage_view.desktop_only is False
+        assert "/context" in COMMANDS
+        assert "context" in GATEWAY_KNOWN_COMMANDS
+        assert resolve_command("ctx").name == "context"
+
+    def test_ordinary_commands_are_unaffected(self):
+        """The new flag must not narrow any existing command's reach."""
+        assert "/status" in COMMANDS
+        assert "status" in GATEWAY_KNOWN_COMMANDS
+        assert resolve_command("status").desktop_only is False

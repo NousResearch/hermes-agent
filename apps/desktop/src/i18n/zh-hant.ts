@@ -2158,6 +2158,23 @@ export const zhHant = defineLocale({
     wasPrice: '原價'
   },
 
+  contextWindow: {
+    title: '上下文視窗',
+    description: 'Hermes 在壓縮對話前保留的 Token 數量。',
+    autoDetected: (tokens: string) => `自動偵測：${tokens}`,
+    effective: '目前生效',
+    forModel: (model: string, provider: string) => `${model} · ${provider}`,
+    routeScoped: '僅對目前模型和提供方生效。切換其中任一項都會恢復為自動偵測。',
+    nextTurnNotice: '將在你的下一則訊息生效。',
+    overrideLabel: '手動指定',
+    placeholder: '自動偵測',
+    invalid: '請輸入整數 Token 數，或留空以自動偵測。',
+    useAuto: '使用自動偵測',
+    usingAuto: '自動偵測',
+    saveFailed: '無法儲存上下文視窗',
+    unknown: '未知'
+  },
+
   modelVisibility: {
     title: '模型',
     search: '搜尋模型',

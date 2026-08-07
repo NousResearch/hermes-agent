@@ -8206,6 +8206,86 @@ def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
         server._sessions.pop("sid", None)
 
 
+def test_commands_catalog_hides_desktop_only_commands_from_the_tui():
+    """`commands.catalog` feeds BOTH the Ink TUI and the desktop slash palette.
+
+    A `desktop_only` command has no TUI handler, so it must not appear in the
+    default (TUI) response -- otherwise the TUI popover would offer a command
+    that dead-ends.
+    """
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+    pairs = dict(resp["result"]["pairs"])
+    assert "/ctxwindow" not in pairs
+    # The CLI/gateway context-usage view is a DIFFERENT command and must stay.
+    assert "/context" in pairs
+
+
+def test_commands_catalog_includes_desktop_only_commands_for_the_desktop():
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "commands.catalog",
+            "params": {"surface": "desktop"},
+        }
+    )
+    pairs = dict(resp["result"]["pairs"])
+    assert "/ctxwindow" in pairs
+    # Commands available everywhere are unaffected by the opt-in.
+    assert "/status" in pairs
+
+
+def test_complete_slash_hides_desktop_only_commands_from_the_tui():
+    """The prefix path must stay TUI-clean, same as `commands.catalog`."""
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/ctxw"}}
+    )
+    assert not any(item["text"] == "ctxwindow" for item in resp["result"]["items"])
+
+
+def test_complete_slash_includes_desktop_only_commands_for_the_desktop():
+    """A typed prefix must complete `/ctxwindow` for the desktop popover.
+
+    `SlashCommandCompleter` walks `COMMANDS`, which deliberately excludes
+    `desktop_only` commands. The desktop slash popover routes an EMPTY query to
+    `commands.catalog` but a typed one to `complete.slash`, so without the same
+    surface opt-in here, `/ctxw` reported "No matches" for a command that runs
+    fine when typed in full -- the command existed but was undiscoverable.
+    """
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "complete.slash",
+            "params": {"text": "/ctxw", "surface": "desktop"},
+        }
+    )
+    items = resp["result"]["items"]
+    ctxwindow = next((it for it in items if it["text"] == "ctxwindow"), None)
+    assert ctxwindow is not None
+    # Display/meta follow the same plain-string contract as every other item.
+    assert ctxwindow["display"] == "/ctxwindow"
+    assert isinstance(ctxwindow["meta"], str) and ctxwindow["meta"]
+    # `replace_from` still points at the command position, so accepting the
+    # completion replaces `ctxw` rather than appending to it.
+    assert resp["result"]["replace_from"] == 1
+
+
+def test_complete_slash_desktop_opt_in_keeps_ordinary_commands():
+    """The desktop opt-in ADDS desktop-only rows without dropping shared ones."""
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "complete.slash",
+            "params": {"text": "/con", "surface": "desktop"},
+        }
+    )
+    items = resp["result"]["items"]
+    # `/config` and the CLI `/context` view both share the `con` prefix.
+    assert any(it["text"] == "config" for it in items)
+    assert any(it["text"] == "context" for it in items)
+
+
 def test_commands_catalog_surfaces_quick_commands(monkeypatch):
     monkeypatch.setattr(
         server,

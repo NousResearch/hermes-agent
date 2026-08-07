@@ -2579,6 +2579,23 @@ export const zh: Translations = {
     wasPrice: '原价'
   },
 
+  contextWindow: {
+    title: '上下文窗口',
+    description: 'Hermes 在压缩对话前保留的 token 数量。',
+    autoDetected: (tokens: string) => `自动检测：${tokens}`,
+    effective: '当前生效',
+    forModel: (model: string, provider: string) => `${model} · ${provider}`,
+    routeScoped: '仅对当前模型和提供方生效。切换任意一项都会恢复为自动检测。',
+    nextTurnNotice: '将在你的下一条消息生效。',
+    overrideLabel: '手动指定',
+    placeholder: '自动检测',
+    invalid: '请输入整数 token 数，或留空以自动检测。',
+    useAuto: '使用自动检测',
+    usingAuto: '自动检测',
+    saveFailed: '无法保存上下文窗口',
+    unknown: '未知'
+  },
+
   modelVisibility: {
     title: '模型',
     search: '搜索模型',

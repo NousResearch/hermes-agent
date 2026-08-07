@@ -19,6 +19,7 @@ import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { setComposerDraft } from '@/store/composer'
 import { enqueueQueuedPrompt } from '@/store/composer-queue'
+import { setContextWindowOpen } from '@/store/context-window'
 import { applyGoalStatusText } from '@/store/goals'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
@@ -860,7 +861,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           const { render: renderSlashOutput, sessionId } = resolved
 
           try {
-            const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
+            const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', {
+              session_id: sessionId,
+              // Same desktop opt-in the completion popover uses, so /help and
+              // the popover list the same set of commands.
+              surface: 'desktop'
+            })
 
             renderSlashOutput(renderCommandsCatalog(catalog, copy))
           } catch (err) {
@@ -995,6 +1001,15 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // Picker commands open a desktop overlay; a typed arg is resolved by that
       // picker so the command never dead-ends or falls through to the backend.
       const openPicker = async (pickerId: DesktopPickerId, ctx: SlashActionCtx): Promise<void> => {
+        // The context-window dialog owns the whole interaction (it reads the
+        // resolved window from the backend and writes the override through the
+        // config surface), so a typed arg has nothing to resolve against.
+        if (pickerId === 'ctxwindow') {
+          setContextWindowOpen(true)
+
+          return
+        }
+
         if (pickerId === 'model') {
           if (!ctx.arg.trim()) {
             setModelPickerOpen(true)

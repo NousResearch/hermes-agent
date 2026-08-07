@@ -1997,6 +1997,23 @@ export interface Translations {
     wasPrice: string
   }
 
+  contextWindow: {
+    title: string
+    description: string
+    autoDetected: (tokens: string) => string
+    effective: string
+    forModel: (model: string, provider: string) => string
+    routeScoped: string
+    nextTurnNotice: string
+    overrideLabel: string
+    placeholder: string
+    invalid: string
+    useAuto: string
+    usingAuto: string
+    saveFailed: string
+    unknown: string
+  }
+
   modelVisibility: {
     title: string
     search: string

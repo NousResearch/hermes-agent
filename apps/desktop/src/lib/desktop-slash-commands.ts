@@ -60,7 +60,7 @@ export type DesktopActionId =
   | 'yolo'
 
 /** A command fulfilled by opening a desktop overlay picker. */
-export type DesktopPickerId = 'model' | 'session'
+export type DesktopPickerId = 'ctxwindow' | 'model' | 'session'
 
 /** Why a known Hermes command has no desktop UI surface. */
 export type DesktopUnavailableReason = 'advanced' | 'messaging' | 'settings' | 'terminal'
@@ -205,6 +205,11 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
 
   // Overlay pickers
   { name: '/model', description: 'Switch the model for this session', surface: picker('model'), hidden: true },
+  {
+    name: '/ctxwindow',
+    description: 'View or set the context-window override for the current model',
+    surface: picker('ctxwindow')
+  },
   {
     name: '/resume',
     description: 'Resume a saved session',
@@ -388,6 +393,7 @@ const UNAVAILABLE_MESSAGE: Record<DesktopUnavailableReason, (command: string) =>
 }
 
 const PICKER_UNAVAILABLE_MESSAGE: Record<DesktopPickerId, (command: string) => string> = {
+  ctxwindow: command => `${command} uses the desktop context-window dialog instead of a slash command.`,
   model: command => `${command} uses the desktop model picker instead of a slash command.`,
   session: command => `${command} uses the desktop session picker instead of a slash command.`
 }

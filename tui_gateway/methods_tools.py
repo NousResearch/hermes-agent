@@ -268,8 +268,14 @@ def _(rid, params: dict) -> dict:
         cat_map: dict[str, list[list[str]]] = {}
         cat_order: list[str] = []
 
+        # Desktop-only commands are fulfilled by Electron overlays and must
+        # stay invisible to Ink, which has no handler for them.
+        want_desktop = str(params.get("surface") or "") == "desktop"
+
         for cmd in COMMAND_REGISTRY:
             if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
+                continue
+            if cmd.desktop_only and not want_desktop:
                 continue
 
             c = f"/{cmd.name}"

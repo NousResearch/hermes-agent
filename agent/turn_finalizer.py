@@ -764,7 +764,7 @@ def finalize_turn(
             platform=getattr(agent, "platform", None) or "",
         )
     except Exception as exc:
-        logger.warning("on_session_end hook failed: %s", exc)
+        logger.warning("on_session_end hook failed: %s", exc, exc_info=True)
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False

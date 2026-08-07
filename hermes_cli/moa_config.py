@@ -366,6 +366,15 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # last advisor run. Also accepts the mapping form
         # {mode: every_n, n: N}, normalized to the canonical string.
         "fanout": _coerce_fanout(raw.get("fanout")),
+        # How many times to retry a reference that returns a *successful but
+        # empty* body (HTTP 200, no content). Free-tier endpoints occasionally
+        # drop an empty response instead of erroring; call_llm's transport
+        # retry never catches this because no exception is raised. 1 = retry
+        # once (2 total attempts). 0 disables. Bounded by _resolve_empty_retries
+        # to [0, 6]. Defaults to 1 so flaky empties self-heal without config.
+        "reference_empty_retries": _coerce_int_or_none(
+            raw.get("reference_empty_retries")
+        ),
     }
 
 

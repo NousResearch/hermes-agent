@@ -1873,6 +1873,7 @@ def run_conversation(
                     degraded_reference_policy=str(
                         moa_config.get("degraded_reference_policy") or "loud"
                     ),
+                    reference_empty_retries=moa_config.get("reference_empty_retries"),
                     agent=agent,
                 )
                 if _moa_context:

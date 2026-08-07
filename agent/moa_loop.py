@@ -461,6 +461,36 @@ def _maybe_apply_moa_cache_control(
         return messages
 
 
+def _resolve_empty_retries(slot: dict[str, Any], empty_retries: int | None) -> int:
+    """Resolve the EMPTY-retry count for one reference slot.
+
+    Priority: ``slot["empty_retries"]`` (per-model override) → the explicit
+    ``empty_retries`` argument (preset-level / caller) → the global config
+    default ``moa.reference_empty_retries`` (default 1). Clamped to [0, 6] so a
+    typo can't blow up per-turn wall time. 0 disables the EMPTY retry entirely.
+    """
+    raw = slot.get("empty_retries")
+    if raw is None:
+        raw = empty_retries
+    if raw is None:
+        try:
+            from hermes_cli.config import load_config as _lc
+            raw = (_lc() or {}).get("moa", {}).get("reference_empty_retries")
+        except Exception:  # pragma: no cover - config read must never break a ref
+            raw = None
+    if raw is None:
+        return 1
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        val = 1
+    if val < 0:
+        val = 0
+    if val > 6:
+        val = 6
+    return val
+
+
 def _run_reference(
     slot: dict[str, Any],
     ref_messages: list[dict[str, Any]],
@@ -470,8 +500,18 @@ def _run_reference(
     reference_timeout: float | None = None,
     context_length_cache: Any = None,
     cache_disabled: bool | None = None,
+    empty_retries: int | None = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model and return ``(label, text, accounting)``.
+
+    ``empty_retries`` (default 1 when ``None``) retries the call when the
+    provider returns a *successful but empty* body (``(empty response)``) — a
+    flaky-free-tier failure mode that the transport-layer retry in
+    ``call_llm`` never catches, because the HTTP request itself succeeded.
+    A raised exception (timeout, 5xx, auth, …) is still surfaced as a
+    ``[failed: …]`` note exactly as before; only the silent-empty case is
+    retried here. Slot-level ``slot["empty_retries"]`` overrides this value
+    when set (see ``_resolve_empty_retries``).
 
     The slot is resolved to its provider's real runtime (via ``_slot_runtime``)
     and called through the same ``call_llm`` request-building path any model
@@ -499,132 +539,167 @@ def _run_reference(
 
     label = _slot_label(slot)
     runtime = _slot_runtime(slot)
-    try:
-        # Prepend the advisory-role system prompt so the reference understands
-        # it is analyzing state for an aggregator, not acting on the task. The
-        # trimmed view (_reference_messages) already strips the agent's own
-        # system prompt, so this is the only system message the reference sees.
-        messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
-        # Trim to fit THIS reference model's context window. Reference models
-        # may have a smaller window than the aggregator (e.g. kimi-k2.7-code
-        # @ 262K advising a glm-5.2 @ 1M conversation); without this trim the
-        # provider returns a hard HTTP 400 which the except below silently
-        # converts to a [failed: …] note (issue #60345). Estimated AFTER the
-        # advisory system prompt is prepended so its tokens count against the
-        # budget too.
-        messages = _trim_messages_for_reference(
-            messages,
-            slot,
-            runtime,
-            reserve_output_tokens=max_tokens,
-            context_length_cache=context_length_cache,
-        )
-        # Apply the Anthropic-style prompt-caching decoration used by the main
-        # agent loop. This fixed reference prompt has no session-specific
-        # prefix split, so the helper uses its legacy system-and-3 fallback.
-        # The advisory view is append-only across iterations (new turns append
-        # before the trailing synthetic marker), so on cache-honoring routes (Claude via
-        # OpenRouter/native, MiniMax, Qwen/DashScope) iteration N+1's prefix
-        # replays iteration N's cached prefix. Without this, Claude advisors
-        # served ZERO cache reads across an entire benchmark run (measured:
-        # 0/1227 calls, 11.5M re-billed input tokens) because Anthropic
-        # caching is opt-in per request. OpenAI-family advisors are untouched
-        # (their caching is automatic; markers are ignored harmlessly, but we
-        # only decorate when the policy says the route honors them).
-        # Pin the live agent disable onto the runtime so advisor decoration
-        # tracks conversation state, not a fresh config re-read (#76085).
-        cache_runtime = runtime
-        if cache_disabled is not None:
-            cache_runtime = {**runtime, "_cache_disabled": cache_disabled}
-        messages = _maybe_apply_moa_cache_control(messages, cache_runtime)
-        # Per-slot max_tokens takes precedence over the preset-level
-        # reference_max_tokens passed in by the caller. This lets each
-        # reference model have its own output cap independently.
-        _slot_max_tokens: int | None = slot.get("max_tokens")
-        _effective_max_tokens = _slot_max_tokens if _slot_max_tokens is not None else max_tokens
-        extra_headers = None
-        # Normalize provider aliases (github, github-copilot, github-models,
-        # ...) through the auxiliary client's canonical alias table so slot
-        # configs that spell Copilot differently still get the header.
-        from agent.auxiliary_client import _normalize_aux_provider
-
-        if _normalize_aux_provider(str(runtime.get("provider") or "")) in (
-            "copilot",
-            "copilot-acp",
-        ):
-            # Copilot Pro/Pro+ gates some premium chat models on request
-            # attribution. The main agent marks the first API request of a
-            # user turn as ``x-initiator: user``; MoA reference fan-out is also
-            # directly serving the user's current turn, not a background agent
-            # task, so mirror that header here. Without it, Claude/Gemini
-            # Copilot advisors can be rejected as unavailable to the
-            # ``copilot-language-server`` integrator even though standalone
-            # Copilot calls work.
-            extra_headers = {"x-initiator": "user"}
-        response = call_llm(
-            task="moa_reference",
-            messages=messages,
-            temperature=temperature,
-            max_tokens=_effective_max_tokens,
-            timeout=reference_timeout,
-            reasoning_config=_slot_reasoning_config(slot),
-            extra_headers=extra_headers,
-            **runtime,
-        )
-        usage = CanonicalUsage()
-        raw_usage = getattr(response, "usage", None)
-        if raw_usage:
-            try:
-                usage = normalize_usage(
-                    raw_usage,
-                    provider=runtime.get("provider"),
-                    api_mode=runtime.get("api_mode"),
-                )
-            except Exception:  # pragma: no cover - defensive
-                usage = CanonicalUsage()
-        # Price this advisor at ITS OWN model/provider rate (with correct
-        # cache-read/cache-write split), not the aggregator's. This is why
-        # advisor cost is summed as dollars rather than by folding tokens into
-        # the aggregator's usage.
-        cost_usd = None
-        cost_status = None
-        cost_source = None
+    # Resolve how many EMPTY retries to attempt. Slot-level ``empty_retries``
+    # wins, then the passed ``empty_retries`` (preset-level / caller), then the
+    # global config default (moa.reference_empty_retries, default 1). Only a
+    # *successful but empty* body is retried — call_llm's own transport retry
+    # already covers transients, and a raised exception here must stay a
+    # [failed: …] note (not be silently retried into a different error).
+    _empty_retries = _resolve_empty_retries(slot, empty_retries)
+    for _attempt in range(1, 2 + _empty_retries):
         try:
-            cost = estimate_usage_cost(
-                slot.get("model") or "",
-                usage,
-                provider=runtime.get("provider"),
-                base_url=runtime.get("base_url"),
-                api_key=runtime.get("api_key"),
+            # Prepend the advisory-role system prompt so the reference understands
+            # it is analyzing state for an aggregator, not acting on the task. The
+            # trimmed view (_reference_messages) already strips the agent's own
+            # system prompt, so this is the only system message the reference sees.
+            messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
+            # Trim to fit THIS reference model's context window. Reference models
+            # may have a smaller window than the aggregator (e.g. kimi-k2.7-code
+            # @ 262K advising a glm-5.2 @ 1M conversation); without this trim the
+            # provider returns a hard HTTP 400 which the except below silently
+            # converts to a [failed: …] note (issue #60345). Estimated AFTER the
+            # advisory system prompt is prepended so its tokens count against the
+            # budget too.
+            messages = _trim_messages_for_reference(
+                messages,
+                slot,
+                runtime,
+                reserve_output_tokens=max_tokens,
+                context_length_cache=context_length_cache,
             )
-            cost_usd = cost.amount_usd
-            cost_status = cost.status
-            cost_source = cost.source
-        except Exception:  # pragma: no cover - defensive
-            pass
-        _output_text = _extract_text(response) or "(empty response)"
-        acct = _RefAccounting(
-            usage,
-            cost_usd,
-            cost_status,
-            cost_source,
-            messages=messages,
-            output=_output_text,
-            model=slot.get("model"),
-            provider=runtime.get("provider") or slot.get("provider"),
-            temperature=temperature,
-        )
-        return label, _output_text, acct
-    except Exception as exc:
-        logger.warning("MoA reference model %s failed: %s", label, exc)
-        return label, f"[failed: {exc}]", _RefAccounting(
-            CanonicalUsage(),
-            messages=[{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages],
-            output=f"[failed: {exc}]",
-            model=slot.get("model"),
-            provider=runtime.get("provider") or slot.get("provider"),
-            temperature=temperature,
-        )
+            # Apply the Anthropic-style prompt-caching decoration used by the main
+            # agent loop. This fixed reference prompt has no session-specific
+            # prefix split, so the helper uses its legacy system-and-3 fallback.
+            # The advisory view is append-only across iterations (new turns append
+            # before the trailing synthetic marker), so on cache-honoring routes (Claude via
+            # OpenRouter/native, MiniMax, Qwen/DashScope) iteration N+1's prefix
+            # replays iteration N's cached prefix. Without this, Claude advisors
+            # served ZERO cache reads across an entire benchmark run (measured:
+            # 0/1227 calls, 11.5M re-billed input tokens) because Anthropic
+            # caching is opt-in per request. OpenAI-family advisors are untouched
+            # (their caching is automatic; markers are ignored harmlessly, but we
+            # only decorate when the policy says the route honors them).
+            # Pin the live agent disable onto the runtime so advisor decoration
+            # tracks conversation state, not a fresh config re-read (#76085).
+            cache_runtime = runtime
+            if cache_disabled is not None:
+                cache_runtime = {**runtime, "_cache_disabled": cache_disabled}
+            messages = _maybe_apply_moa_cache_control(messages, cache_runtime)
+            # Per-slot max_tokens takes precedence over the preset-level
+            # reference_max_tokens passed in by the caller. This lets each
+            # reference model have its own output cap independently.
+            _slot_max_tokens: int | None = slot.get("max_tokens")
+            _effective_max_tokens = _slot_max_tokens if _slot_max_tokens is not None else max_tokens
+            extra_headers = None
+            # Normalize provider aliases (github, github-copilot, github-models,
+            # ...) through the auxiliary client's canonical alias table so slot
+            # configs that spell Copilot differently still get the header.
+            from agent.auxiliary_client import _normalize_aux_provider
+
+            if _normalize_aux_provider(str(runtime.get("provider") or "")) in (
+                "copilot",
+                "copilot-acp",
+            ):
+                # Copilot Pro/Pro+ gates some premium chat models on request
+                # attribution. The main agent marks the first API request of a
+                # user turn as ``x-initiator: user``; MoA reference fan-out is also
+                # directly serving the user's current turn, not a background agent
+                # task, so mirror that header here. Without it, Claude/Gemini
+                # Copilot advisors can be rejected as unavailable to the
+                # ``copilot-language-server`` integrator even though standalone
+                # Copilot calls work.
+                extra_headers = {"x-initiator": "user"}
+            response = call_llm(
+                task="moa_reference",
+                messages=messages,
+                temperature=temperature,
+                max_tokens=_effective_max_tokens,
+                timeout=reference_timeout,
+                reasoning_config=_slot_reasoning_config(slot),
+                extra_headers=extra_headers,
+                **runtime,
+            )
+            usage = CanonicalUsage()
+            raw_usage = getattr(response, "usage", None)
+            if raw_usage:
+                try:
+                    usage = normalize_usage(
+                        raw_usage,
+                        provider=runtime.get("provider"),
+                        api_mode=runtime.get("api_mode"),
+                    )
+                except Exception:  # pragma: no cover - defensive
+                    usage = CanonicalUsage()
+            # Price this advisor at ITS OWN model/provider rate (with correct
+            # cache-read/cache-write split), not the aggregator's. This is why
+            # advisor cost is summed as dollars rather than by folding tokens into
+            # the aggregator's usage.
+            cost_usd = None
+            cost_status = None
+            cost_source = None
+            try:
+                cost = estimate_usage_cost(
+                    slot.get("model") or "",
+                    usage,
+                    provider=runtime.get("provider"),
+                    base_url=runtime.get("base_url"),
+                    api_key=runtime.get("api_key"),
+                )
+                cost_usd = cost.amount_usd
+                cost_status = cost.status
+                cost_source = cost.source
+            except Exception:  # pragma: no cover - defensive
+                pass
+            _output_text = _extract_text(response) or "(empty response)"
+            # EMPTY retry: a *successful* (HTTP 200) but body-empty response is
+            # the flaky-free-tier failure mode call_llm's transport retry never
+            # catches. Retry up to _empty_retries times before giving up. Only a
+            # genuinely non-empty answer short-circuits the loop; otherwise we
+            # fall through to the final attempt and return the empty note (the
+            # historical EMPTY behavior, so downstream aggregation is unchanged
+            # when retries are exhausted).
+            if _output_text and _output_text != "(empty response)":
+                acct = _RefAccounting(
+                    usage,
+                    cost_usd,
+                    cost_status,
+                    cost_source,
+                    messages=messages,
+                    output=_output_text,
+                    model=slot.get("model"),
+                    provider=runtime.get("provider") or slot.get("provider"),
+                    temperature=temperature,
+                )
+                return label, _output_text, acct
+            if _attempt < 1 + _empty_retries:
+                logger.info(
+                    "MoA reference %s returned empty body (attempt %d/%d); retrying",
+                    label, _attempt, 1 + _empty_retries,
+                )
+                continue
+            # Retries exhausted — return the empty note (backward-compatible).
+            acct = _RefAccounting(
+                usage,
+                cost_usd,
+                cost_status,
+                cost_source,
+                messages=messages,
+                output=_output_text,
+                model=slot.get("model"),
+                provider=runtime.get("provider") or slot.get("provider"),
+                temperature=temperature,
+            )
+            return label, _output_text, acct
+        except Exception as exc:
+            logger.warning("MoA reference model %s failed: %s", label, exc)
+            return label, f"[failed: {exc}]", _RefAccounting(
+                CanonicalUsage(),
+                messages=[{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages],
+                output=f"[failed: {exc}]",
+                model=slot.get("model"),
+                provider=runtime.get("provider") or slot.get("provider"),
+                temperature=temperature,
+            )
 
 
 # Output-token headroom reserved inside the reference's context window when
@@ -783,6 +858,7 @@ def _run_references_parallel(
     reference_timeout: float | None = None,
     agent: Any = None,
     late_accounting_sink: Any = None,
+    empty_retries: int | None = None,
 ) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
@@ -862,6 +938,7 @@ def _run_references_parallel(
                     reference_timeout=reference_timeout,
                     context_length_cache=_ctx_len_cache,
                     cache_disabled=cache_disabled,
+                    empty_retries=empty_retries,
                 )
             ] = idx
 
@@ -1218,6 +1295,7 @@ def aggregate_moa_context(
     reference_timeout: float | None = None,
     degraded_reference_policy: str = "loud",
     agent: Any = None,
+    reference_empty_retries: int | None = None,
 ) -> str:
     """Run configured reference models and synthesize their advice.
 
@@ -1251,6 +1329,7 @@ def aggregate_moa_context(
         max_tokens=reference_max_tokens,
         reference_timeout=reference_timeout,
         agent=agent,
+        empty_retries=reference_empty_retries,
     )
 
     successful_outputs = _successful_references(reference_outputs)
@@ -2077,6 +2156,7 @@ class MoAChatCompletions:
                 reference_timeout=reference_timeout,
                 agent=self._agent,
                 late_accounting_sink=self._record_late_reference_accounting,
+                empty_retries=preset.get("reference_empty_retries"),
             )
             interrupted_any = any(
                 text == _INTERRUPTED_REFERENCE_NOTE

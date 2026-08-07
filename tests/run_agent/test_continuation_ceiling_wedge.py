@@ -229,3 +229,24 @@ class TestContinuationCeilingWedge:
         )
         assert "second turn partial" in result2["final_response"]
         assert "and the rest." in result2["final_response"]
+
+
+class TestTruncatedPartJoining:
+    """#78577 — parts joined with no separator glued text together."""
+
+    def test_glued_parts_get_a_newline(self):
+        from agent.conversation_loop import _join_truncated_parts
+        assert _join_truncated_parts(
+            ["Edited index.html", "Review the 5 changes"]
+        ) == "Edited index.html\nReview the 5 changes"
+
+    def test_existing_whitespace_is_not_doubled(self):
+        from agent.conversation_loop import _join_truncated_parts
+        assert _join_truncated_parts(["line one\n", "line two"]) == "line one\nline two"
+        assert _join_truncated_parts(["word", " next"]) == "word next"
+
+    def test_degenerate_inputs(self):
+        from agent.conversation_loop import _join_truncated_parts
+        assert _join_truncated_parts([]) == ""
+        assert _join_truncated_parts(["only"]) == "only"
+        assert _join_truncated_parts(["a", "", "b"]) == "a\nb"

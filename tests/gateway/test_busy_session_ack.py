@@ -188,6 +188,70 @@ class TestBusySessionAck:
         # Verify agent interrupt was called
         agent.interrupt.assert_called_once_with("Are you working?")
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["1", "yes", "on", "TRUE", " true "])
+    async def test_busy_ack_enabled_accepts_truthy_aliases(self, raw, monkeypatch):
+        """HERMES_GATEWAY_BUSY_ACK_ENABLED must accept shared truthy aliases.
+
+        The previous ``.lower() == "true"`` check treated ``1`` / ``on`` /
+        ``yes`` (and whitespace-padded ``true``) as disabled and silenced acks
+        while the user thought they were enabling them.
+        """
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", raw)
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="ping while busy")
+        sk = build_session_key(event.source)
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 1,
+            "max_iterations": 60,
+            "current_tool": None,
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 60
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        adapter._send_with_retry.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["0", "false", "no", "off", "FALSE"])
+    async def test_busy_ack_disabled_accepts_falsy_aliases(self, raw, monkeypatch):
+        """Falsy aliases must still suppress the ack bubble."""
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", raw)
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="quiet please")
+        sk = build_session_key(event.source)
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 1,
+            "max_iterations": 60,
+            "current_tool": None,
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 60
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        adapter._send_with_retry.assert_not_called()
+        agent.interrupt.assert_called_once_with("quiet please")
+
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self, monkeypatch):

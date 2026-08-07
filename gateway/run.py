@@ -9136,8 +9136,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
-        # never actually delivered.
-        busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
+        # never actually delivered. Accept the same truthy aliases as steer-ack /
+        # utils.TRUTHY_STRINGS (1/true/yes/on), not only the literal "true".
+        busy_ack_enabled = is_truthy_value(
+            os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true"),
+        )
         if not busy_ack_enabled:
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent

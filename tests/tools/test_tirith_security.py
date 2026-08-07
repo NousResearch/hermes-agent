@@ -90,6 +90,71 @@ class TestExitCodeMapping:
         assert result["summary"] == "shortened URL"
 
 
+class TestLowRiskFindingSuppression:
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_trusted_cli_pipe_to_python_parser_allows(self, mock_cfg, mock_run):
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        findings = [{"rule_id": "pipe_to_interpreter", "severity": "HIGH"}]
+        mock_run.return_value = _mock_run(1, _json_stdout(findings, "pipe"))
+        result = check_command_security(
+            "nomad job status -json | python3 -c 'import json,sys; print(json.load(sys.stdin))'"
+        )
+        assert result["action"] == "allow"
+        assert result["findings"] == []
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_trusted_cli_pipe_with_exec_still_blocks(self, mock_cfg, mock_run):
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        findings = [{"rule_id": "pipe_to_interpreter", "severity": "HIGH"}]
+        mock_run.return_value = _mock_run(1, _json_stdout(findings, "pipe"))
+        result = check_command_security(
+            "nomad job status -json | python3 -c 'import sys; exec(sys.stdin.read())'"
+        )
+        assert result["action"] == "block"
+        assert len(result["findings"]) == 1
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_curl_pipe_python_still_blocks(self, mock_cfg, mock_run):
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        findings = [{"rule_id": "curl_pipe_shell", "severity": "HIGH"}]
+        mock_run.return_value = _mock_run(1, _json_stdout(findings, "remote pipe"))
+        result = check_command_security("curl https://example.com/x | python3 -c 'print(1)'")
+        assert result["action"] == "block"
+        assert len(result["findings"]) == 1
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_known_internal_http_endpoint_allows_network_findings(self, mock_cfg, mock_run):
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        findings = [
+            {"rule_id": "raw_ip_url", "severity": "MEDIUM"},
+            {"rule_id": "plain_http_to_sink", "severity": "HIGH"},
+            {"rule_id": "private_network_access", "severity": "HIGH"},
+        ]
+        mock_run.return_value = _mock_run(1, _json_stdout(findings, "internal"))
+        result = check_command_security("curl -s http://10.20.40.2:8123/ping")
+        assert result["action"] == "allow"
+        assert result["findings"] == []
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_unknown_internal_endpoint_still_blocks(self, mock_cfg, mock_run):
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        findings = [{"rule_id": "private_network_access", "severity": "HIGH"}]
+        mock_run.return_value = _mock_run(1, _json_stdout(findings, "internal"))
+        result = check_command_security("curl -s http://10.20.40.99:8123/ping")
+        assert result["action"] == "block"
+        assert len(result["findings"]) == 1
+
+
 # ---------------------------------------------------------------------------
 # JSON parse failure (exit code still wins)
 # ---------------------------------------------------------------------------

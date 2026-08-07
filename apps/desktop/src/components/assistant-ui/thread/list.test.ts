@@ -7,6 +7,7 @@ import {
   LIVE_TAIL_PARTS,
   liveTailStart,
   type MessageGroup,
+  resolveStickyHumanTop,
   resolveThreadScrollTarget
 } from './list'
 
@@ -224,5 +225,21 @@ describe('liveTailStart', () => {
 
       expect(rendered(liveTailStart(groups))).toBeLessThanOrEqual(rendered(oldStart))
     }
+  })
+})
+
+describe('resolveStickyHumanTop', () => {
+  it('parks the sticky bubble below the "show earlier" control (#80141)', () => {
+    const style = resolveStickyHumanTop(true, false, 'calc(var(--titlebar-height) + 0.75rem)')
+    expect(style?.['--sticky-human-top']).toContain('var(--show-earlier-clearance')
+  })
+
+  it('leaves the default park when no "show earlier" control and main window', () => {
+    expect(resolveStickyHumanTop(false, false, 'calc(var(--titlebar-height) + 0.75rem)')).toBeUndefined()
+  })
+
+  it('reserves the titlebar gap for secondary windows', () => {
+    const style = resolveStickyHumanTop(false, true, 'calc(var(--titlebar-height) + 0.75rem)')
+    expect(style?.['--sticky-human-top']).toBe('calc(var(--titlebar-height) + 0.75rem)')
   })
 })

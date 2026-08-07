@@ -404,6 +404,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     ? 'pt-[calc(var(--titlebar-height)+0.75rem)]'
     : 'pt-[calc(var(--titlebar-height)-0.5rem)]'
 
+  // The "show earlier" button sits at the top of the transcript. When it's
+  // present, the sticky user bubble must park BELOW it — otherwise the
+  // sticky bubble (top: var(--sticky-human-top), z-40) covers the control
+  // and the user can't click through to older context (#80141). Reserve a
+  // clearance equal to the control's height (pill + turn gap).
+  const showEarlierVisible = hiddenCount > 0 || olderAvailable
+
   useEffect(() => setThreadAtBottom(isAtBottom), [isAtBottom])
   useEffect(() => () => resetThreadScroll(), [])
 
@@ -595,7 +602,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       style={
         {
           height: clampToComposer ? 'var(--thread-viewport-height)' : '100%',
-          ...(secondaryWindow ? { '--sticky-human-top': secondaryTitlebarGap } : {})
+          ...resolveStickyHumanTop(showEarlierVisible, secondaryWindow, secondaryTitlebarGap)
         } as CSSProperties
       }
     >
@@ -653,6 +660,25 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       </div>
     </div>
   )
+}
+
+export function resolveStickyHumanTop(
+  showEarlierVisible: boolean,
+  secondaryWindow: boolean,
+  secondaryTitlebarGap: string
+): Record<string, string> | undefined {
+  // #80141: when the "show earlier" control is visible, bump the sticky
+  // bubble's park position below it. calc() needs the spaces.
+  if (showEarlierVisible && !secondaryWindow) {
+    return {
+      '--sticky-human-top':
+        'calc(var(--sticky-human-top) + var(--show-earlier-clearance, 2.25rem))'
+    }
+  }
+  if (secondaryWindow) {
+    return { '--sticky-human-top': secondaryTitlebarGap }
+  }
+  return undefined
 }
 
 export const ThreadMessageList = memo(ThreadMessageListInner)

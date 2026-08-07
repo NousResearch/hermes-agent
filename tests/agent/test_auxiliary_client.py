@@ -860,6 +860,148 @@ class TestResolveProviderClientUniversalModelFallback:
         assert mock_build.call_args.args[0] == "grok-4.20-multi-agent"
 
 
+class TestExplicitCustomEndpointModelScope:
+    """resolve_provider_client() must not send the *primary* provider's model
+    to a *different* explicit custom endpoint (#78948).
+
+    The explicit-custom-endpoint branch (``provider == "custom"`` +
+    ``explicit_base_url``) historically fell back to ``main_runtime.model``
+    when the caller left the model unset.  When ``explicit_base_url`` targets
+    a different backend than ``main_runtime`` (e.g. a ``fallback_providers``
+    entry pointing at a local server), the primary model slug is sent to the
+    wrong endpoint and 404s.
+
+    The sibling named-custom-provider branch avoids this by consulting the
+    entry's own ``model`` first; this branch has no entry, so it must instead
+    refuse to borrow a model from a mismatched endpoint.
+    """
+
+    _PRIMARY = {
+        "model": "gpt-5.5",
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "sk-primary",
+        "api_mode": "codex_responses",
+    }
+    _FALLBACK_URL = "http://127.0.0.1:11434/v1"
+
+    def test_mismatched_endpoint_does_not_borrow_primary_model(self):
+        """No caller model + primary main_runtime → must NOT return gpt-5.5."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        with (
+            patch(
+                "agent.auxiliary_client._read_main_model_for_aux",
+                return_value="gpt-5.5",
+            ),
+            patch(
+                "agent.auxiliary_client._get_aux_model_for_provider",
+                return_value="",
+            ),
+        ):
+            client, model = resolve_provider_client(
+                "custom",
+                "",
+                explicit_base_url=self._FALLBACK_URL,
+                explicit_api_key="no-key-required",
+                main_runtime=dict(self._PRIMARY),
+            )
+
+        assert client is not None
+        # The resolved model must NOT be the primary provider's slug.
+        assert model != "gpt-5.5", (
+            "explicit custom endpoint must not borrow the primary model across "
+            "a mismatched endpoint (#78948)"
+        )
+        # It should be the neutral default, never None.
+        assert model == "gpt-4o-mini"
+
+    def test_same_endpoint_runtime_model_is_used(self):
+        """When main_runtime targets the SAME endpoint, its model is safe."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        consistent_runtime = {
+            "model": "qwen3:4b",
+            "provider": "custom",
+            "base_url": self._FALLBACK_URL,
+            "api_key": "no-key-required",
+            "api_mode": "",
+        }
+        with (
+            patch(
+                "agent.auxiliary_client._read_main_model_for_aux",
+                return_value="gpt-5.5",  # config still says primary
+            ),
+            patch(
+                "agent.auxiliary_client._get_aux_model_for_provider",
+                return_value="",
+            ),
+        ):
+            client, model = resolve_provider_client(
+                "custom",
+                "",
+                explicit_base_url=self._FALLBACK_URL,
+                explicit_api_key="no-key-required",
+                main_runtime=consistent_runtime,
+            )
+
+        assert client is not None
+        assert model == "qwen3:4b", (
+            "when main_runtime and explicit_base_url agree on the endpoint, "
+            "the runtime model should be used"
+        )
+
+    def test_caller_supplied_model_wins(self):
+        """An explicit caller model is always honoured."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        with (
+            patch(
+                "agent.auxiliary_client._read_main_model_for_aux",
+                return_value="gpt-5.5",
+            ),
+            patch(
+                "agent.auxiliary_client._get_aux_model_for_provider",
+                return_value="",
+            ),
+        ):
+            client, model = resolve_provider_client(
+                "custom",
+                "llama3.2:3b",
+                explicit_base_url=self._FALLBACK_URL,
+                explicit_api_key="no-key-required",
+                main_runtime=dict(self._PRIMARY),
+            )
+
+        assert client is not None
+        assert model == "llama3.2:3b"
+
+    def test_no_runtime_uses_neutral_default(self):
+        """No caller model + no main_runtime → neutral default, not primary."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        with (
+            patch(
+                "agent.auxiliary_client._read_main_model_for_aux",
+                return_value="gpt-5.5",
+            ),
+            patch(
+                "agent.auxiliary_client._get_aux_model_for_provider",
+                return_value="",
+            ),
+        ):
+            client, model = resolve_provider_client(
+                "custom",
+                "",
+                explicit_base_url=self._FALLBACK_URL,
+                explicit_api_key="no-key-required",
+                main_runtime=None,
+            )
+
+        assert client is not None
+        assert model == "gpt-4o-mini"
+
+
 class TestExpiredCodexFallback:
     """Test that expired Codex tokens don't block the auto chain."""
 

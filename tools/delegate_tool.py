@@ -759,6 +759,28 @@ def _get_inherit_mcp_toolsets() -> bool:
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
 
+def _get_include_tool_trace() -> bool:
+    """Whether delegate_task result entries include the tool_trace field.
+
+    Config key: delegation.include_tool_trace (bool, default True). This is a
+    narrow switch that controls ONLY the tool_trace field of delegate_task
+    results: set false to drop the per-child trace (tool names + byte counts +
+    sanitized input summaries) and save parent-context tokens. All other
+    observability fields (status, model, tokens, api_calls, exit_reason, error
+    diagnostics, and the summary-budget recovery fields summary_truncated /
+    summary_full_path) are always returned regardless of this setting.
+
+    Authoritatively enforced by ``_project_result_entry`` inside
+    ``_finalize_child_results`` — the shared aggregate boundary every
+    completion path flows through (synchronous batches, background dispatch,
+    the forced-sync fallbacks, and plugin single-child lifecycles) — with a
+    construction-skip fast path in ``_run_single_child`` so the trace is not
+    built just to be dropped.
+    """
+    cfg = _load_config()
+    return is_truthy_value(cfg.get("include_tool_trace"), default=True)
+
+
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
     if not name:
@@ -2567,10 +2589,17 @@ def _run_single_child(
 
         # Build tool trace from conversation messages (already in memory).
         # Uses tool_call_id to correctly pair parallel tool calls with results.
+        # delegation.include_tool_trace (default true): when false, skip the
+        # build entirely — don't construct what will be dropped. This is only
+        # an optimization; the authoritative omission of the field happens in
+        # _project_result_entry at the _finalize_child_results aggregate
+        # boundary, which every completion path (sync, background, fallback)
+        # flows through.
+        include_tool_trace = _get_include_tool_trace()
         tool_trace: list[Dict[str, Any]] = []
         trace_by_id: Dict[str, Dict[str, Any]] = {}
         messages = result.get("messages") or []
-        if isinstance(messages, list):
+        if include_tool_trace and isinstance(messages, list):
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
@@ -2926,6 +2955,34 @@ def _parent_finalization_lock(parent_agent) -> threading.RLock:
     return lock
 
 
+def _project_result_entry(entry: Any, include_tool_trace: bool) -> None:
+    """Apply the model-facing result-detail contract to ONE result entry.
+
+    Single authoritative projection point for delegation.include_tool_trace.
+    Called from _finalize_child_results — the shared aggregate boundary that
+    every completion path flows through: the synchronous batch path, the
+    background (background=true) runner executing on the daemon executor, the
+    forced-sync / pool-at-capacity fallbacks (all via _execute_and_aggregate),
+    and plugin single-child lifecycles (_run_child_lifecycle) — so an entry is
+    shaped identically no matter how (or how late) the child completed.
+
+    Scope is deliberately narrow (the closed detail_level/#20697 projector is
+    NOT revived): when the switch is off, ONLY the per-child ``tool_trace``
+    field is dropped from the entry serialised back to the parent model. All
+    other observability fields — status, summary, model, tokens, api_calls,
+    exit_reason, error diagnostics, and the summary-budget recovery fields
+    ``summary_truncated`` / ``summary_full_path`` (already applied by
+    _apply_summary_budget before projection) — are left untouched. Host-side
+    consumers are unaffected by the projection itself: the subagent_stop
+    hook's redacted tool_call_history is derived from the entry BEFORE this
+    runs (it is empty when the switch is off simply because the trace was
+    never built).
+    """
+    if not isinstance(entry, dict) or include_tool_trace:
+        return
+    entry.pop("tool_trace", None)
+
+
 def _finalize_child_results(
     results: List[Dict[str, Any]],
     task_list: List[Dict[str, Any]],
@@ -2935,6 +2992,7 @@ def _finalize_child_results(
     """Apply host-owned summary, memory, hook, and cost contracts once."""
     with _parent_finalization_lock(parent_agent):
         _apply_summary_budget(results, parent_agent)
+        include_tool_trace = _get_include_tool_trace()
         child_by_index = {index: child for index, _task, child in children}
 
         if parent_agent and getattr(parent_agent, "_memory_manager", None):
@@ -2991,6 +3049,13 @@ def _finalize_child_results(
                 )
             except Exception:
                 logger.debug("subagent_stop hook invocation failed", exc_info=True)
+
+        # Model-facing result-detail contract (delegation.include_tool_trace),
+        # applied last so summary-budget recovery fields and hook payloads are
+        # settled first. Runs here — and only here — so sync, background, and
+        # fallback completions all leave this boundary with the same shape.
+        for entry in results:
+            _project_result_entry(entry, include_tool_trace)
 
         if children_cost_total > 0.0:
             try:

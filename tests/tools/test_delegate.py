@@ -11,6 +11,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import tempfile
 import threading
 import time
 import types
@@ -54,6 +55,30 @@ def _make_mock_parent(depth=0):
     parent.tool_progress_callback = None
     parent.thinking_callback = None
     return parent
+
+
+def _make_traced_mock_child(final_response="done"):
+    """Mock child whose conversation contains exactly one paired tool call,
+    so a real tool_trace can be built from it. Shared by the
+    include_tool_trace tests (sync, background, fallback, summary budget)."""
+    mock_child = MagicMock()
+    mock_child.model = "claude-sonnet-4-6"
+    mock_child.session_prompt_tokens = 5000
+    mock_child.session_completion_tokens = 1200
+    mock_child.run_conversation.return_value = {
+        "final_response": final_response,
+        "completed": True,
+        "interrupted": False,
+        "api_calls": 3,
+        "messages": [
+            {"role": "assistant", "tool_calls": [
+                {"id": "tc_1", "function": {"name": "web_search", "arguments": '{"query": "test"}'}}
+            ]},
+            {"role": "tool", "tool_call_id": "tc_1", "content": '{"results": [1,2,3]}'},
+            {"role": "assistant", "content": final_response},
+        ],
+    }
+    return mock_child
 
 
 class TestDelegateRequirements(unittest.TestCase):
@@ -540,6 +565,197 @@ class TestDelegateObservability(unittest.TestCase):
 
             result = json.loads(delegate_task(goal="Test empty sentinel", parent_agent=parent))
             self.assertEqual(result["results"][0]["status"], "failed")
+
+    def _run_traced_delegation(self):
+        """Run a mocked synchronous delegation whose child made one tool call;
+        return the first result entry. Shared by the include_tool_trace
+        config tests."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = _make_traced_mock_child()
+            result = json.loads(delegate_task(goal="Trace config test", parent_agent=parent))
+        return result["results"][0]
+
+    @patch("tools.delegate_tool._load_config", return_value={"include_tool_trace": False})
+    def test_tool_trace_omitted_when_config_disables_it(self, _mock_cfg):
+        """delegation.include_tool_trace=false omits ONLY tool_trace; every
+        other observability field is still returned."""
+        entry = self._run_traced_delegation()
+
+        self.assertNotIn("tool_trace", entry)
+        # All other observability fields are unaffected.
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(entry["summary"], "done")
+        self.assertEqual(entry["model"], "claude-sonnet-4-6")
+        self.assertEqual(entry["exit_reason"], "completed")
+        self.assertEqual(entry["api_calls"], 3)
+        self.assertEqual(entry["tokens"]["input"], 5000)
+        self.assertEqual(entry["tokens"]["output"], 1200)
+        self.assertIn("duration_seconds", entry)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_tool_trace_present_by_default(self, _mock_cfg):
+        """When include_tool_trace is absent from config, the default is true
+        and tool_trace is returned as before."""
+        entry = self._run_traced_delegation()
+
+        self.assertIn("tool_trace", entry)
+        self.assertEqual(len(entry["tool_trace"]), 1)
+        self.assertEqual(entry["tool_trace"][0]["tool"], "web_search")
+
+    @patch("tools.delegate_tool._load_config", return_value={"include_tool_trace": True})
+    def test_tool_trace_present_when_explicitly_enabled(self, _mock_cfg):
+        entry = self._run_traced_delegation()
+
+        self.assertIn("tool_trace", entry)
+        self.assertEqual(entry["tool_trace"][0]["tool"], "web_search")
+
+
+class TestIncludeToolTraceAggregateBoundary(unittest.TestCase):
+    """delegation.include_tool_trace is enforced by _project_result_entry
+    inside _finalize_child_results — the shared aggregate boundary that both
+    _execute_and_aggregate (sync path, background runner, forced-sync and
+    pool-at-capacity fallbacks) and _run_child_lifecycle flow through — so a
+    child's completion mode never changes the result-detail contract, and the
+    summary-budget recovery fields (summary_truncated/summary_full_path)
+    survive trace omission."""
+
+    def setUp(self):
+        from tools import async_delegation as ad
+        from tools.process_registry import process_registry
+
+        self._ad = ad
+        self._queue = process_registry.completion_queue
+        ad._reset_for_tests()
+        self._drain_all()
+
+    def tearDown(self):
+        # Let just-released workers finalize before resetting, so their
+        # completion events can't leak into the next test's queue.
+        deadline = time.monotonic() + 2.0
+        while self._ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self._ad._reset_for_tests()
+        self._drain_all()
+
+    def _drain_all(self):
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except Exception:
+                break
+
+    def _drain_one(self, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not self._queue.empty():
+                return self._queue.get_nowait()
+            time.sleep(0.02)
+        return None
+
+    def _background_entry(self, cfg):
+        """Dispatch background=True, wait for the async completion event, and
+        return its first result entry (the background aggregate's output)."""
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "sess-bg-trace"
+        parent._interrupt_requested = False
+
+        with patch("tools.delegate_tool._load_config", return_value=cfg), \
+                patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = _make_traced_mock_child()
+            out = json.loads(
+                delegate_task(goal="bg trace", background=True, parent_agent=parent)
+            )
+            self.assertEqual(out.get("status"), "dispatched", out)
+            self.assertEqual(out.get("mode"), "background")
+            # Drain INSIDE the patch context: the batch runner executes
+            # _run_single_child + _finalize_child_results on the daemon
+            # executor AFTER delegate_task returned, and must still see the
+            # patched config when it projects the aggregated entries.
+            evt = self._drain_one()
+
+        self.assertIsNotNone(evt, "background completion event never arrived")
+        self.assertEqual(evt["type"], "async_delegation")
+        return evt["results"][0]
+
+    def test_background_completion_omits_trace_when_disabled(self):
+        """A child completing via the background aggregate is projected at the
+        same boundary as sync results: tool_trace omitted, everything else
+        intact."""
+        entry = self._background_entry({"include_tool_trace": False})
+
+        self.assertNotIn("tool_trace", entry)
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(entry["summary"], "done")
+        self.assertEqual(entry["api_calls"], 3)
+        self.assertEqual(entry["exit_reason"], "completed")
+        self.assertEqual(entry["tokens"]["input"], 5000)
+
+    def test_background_completion_keeps_trace_by_default(self):
+        entry = self._background_entry({})
+
+        self.assertIn("tool_trace", entry)
+        self.assertEqual(len(entry["tool_trace"]), 1)
+        self.assertEqual(entry["tool_trace"][0]["tool"], "web_search")
+
+    def test_forced_sync_fallback_omits_trace_when_disabled(self):
+        """background=True on a runtime without async delivery (and no wakeable
+        session id) falls back to synchronous execution — same boundary,
+        same shape."""
+        parent = _make_mock_parent(depth=0)
+        parent._interrupt_requested = False
+
+        with patch("tools.delegate_tool._load_config",
+                   return_value={"include_tool_trace": False}), \
+                patch("gateway.session_context.async_delivery_supported",
+                      return_value=False), \
+                patch("tools.async_delegation._current_origin_session_id",
+                      return_value=""), \
+                patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = _make_traced_mock_child()
+            out = json.loads(
+                delegate_task(goal="fallback trace", background=True, parent_agent=parent)
+            )
+
+        self.assertNotEqual(out.get("status"), "dispatched")
+        self.assertIn("SYNCHRONOUSLY", out.get("note", ""))
+        entry = out["results"][0]
+        self.assertNotIn("tool_trace", entry)
+        self.assertEqual(entry["status"], "completed")
+        self.assertEqual(entry["summary"], "done")
+
+    def test_summary_budget_recovery_fields_survive_trace_omission(self):
+        """summary_truncated/summary_full_path (the summary-budget recovery
+        contract, applied by _apply_summary_budget at the same boundary) must
+        still be produced when include_tool_trace is off — the projection
+        drops ONLY tool_trace and never touches the trimmed summary or its
+        spill pointer."""
+        big = "HEAD_MARKER\n" + ("X" * 5000) + "\nTAIL_MARKER"
+
+        with tempfile.TemporaryDirectory() as td, \
+                patch.dict(os.environ, {"HERMES_HOME": os.path.join(td, ".hermes")}), \
+                patch("tools.delegate_tool._load_config",
+                      return_value={"include_tool_trace": False,
+                                    "max_summary_chars": 600}), \
+                patch("run_agent.AIAgent") as MockAgent:
+            parent = _make_mock_parent(depth=0)
+            parent.context_compressor = None  # static char ceiling only
+            MockAgent.return_value = _make_traced_mock_child(final_response=big)
+
+            out = json.loads(delegate_task(goal="budget trace", parent_agent=parent))
+            entry = out["results"][0]
+
+            self.assertNotIn("tool_trace", entry)
+            self.assertIs(entry["summary_truncated"], True)
+            path = entry.get("summary_full_path")
+            self.assertTrue(path and os.path.exists(path), entry)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), big)
+            # Head+tail recovery window plus the read_file paging footer.
+            self.assertIn("HEAD_MARKER", entry["summary"])
+            self.assertIn("TAIL_MARKER", entry["summary"])
+            self.assertIn("read_file", entry["summary"])
 
 
 class TestSubagentCostRollup(unittest.TestCase):

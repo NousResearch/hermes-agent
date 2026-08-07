@@ -414,6 +414,24 @@ class TestResolveOneshotResume:
             == "caller_minted_key_1"
         )
 
+    @staticmethod
+    def _assert_hardened_exit(fn, rc=2):
+        """Every _resolve_oneshot_resume failure must exit through
+        _fail_and_exit_oneshot — cleanup + os._exit, not a bare sys.exit —
+        because _prepare_agent_startup has already discovered plugins/MCP
+        servers by the time oneshot dispatch runs (#30387, #43055). Mock the
+        hard-exit boundary rather than expecting SystemExit: _exit_after_oneshot
+        is a real os._exit, which would kill the test process outright."""
+        import hermes_cli.main as main_mod
+
+        with (
+            patch.object(main_mod, "_cleanup_oneshot_runtime") as cleanup,
+            patch.object(main_mod, "_exit_after_oneshot") as hard_exit,
+        ):
+            fn()
+        cleanup.assert_called_once_with()
+        hard_exit.assert_called_once_with(rc)
+
     @pytest.mark.parametrize(
         "bad",
         ["../../../../tmp/pwned", "..", "a/b", "a\\b", "C:/tmp/x"],
@@ -425,12 +443,13 @@ class TestResolveOneshotResume:
         ``sessions delete``/``prune`` would unlink outside the sessions dir).
         The gateway already rejects these at its own entry boundary
         (``gateway.session._is_path_unsafe``); the new oneshot entry boundary
-        must too."""
+        must too — and via the same hardened exit path as every other -z
+        failure, not a bare sys.exit."""
         from hermes_cli.main import _resolve_oneshot_resume
 
-        with pytest.raises(SystemExit) as exc:
-            _resolve_oneshot_resume(self._args(resume=bad))
-        assert exc.value.code == 2
+        self._assert_hardened_exit(
+            lambda: _resolve_oneshot_resume(self._args(resume=bad))
+        )
 
     def test_path_unsafe_value_still_allowed_when_it_resolves(self):
         """The guard only applies to values about to become NEW ids. A title
@@ -456,17 +475,17 @@ class TestResolveOneshotResume:
     def test_continue_by_name_unmatched_errors(self):
         from hermes_cli.main import _resolve_oneshot_resume
 
-        with pytest.raises(SystemExit) as exc:
-            _resolve_oneshot_resume(self._args(continue_last="nothing here"))
-        assert exc.value.code == 2
+        self._assert_hardened_exit(
+            lambda: _resolve_oneshot_resume(self._args(continue_last="nothing here"))
+        )
 
     def test_bare_continue_with_no_prior_session_errors(self):
         from hermes_cli.main import _resolve_oneshot_resume
 
         with patch("hermes_cli.main._resolve_last_session", return_value=None):
-            with pytest.raises(SystemExit) as exc:
-                _resolve_oneshot_resume(self._args(continue_last=True))
-        assert exc.value.code == 2
+            self._assert_hardened_exit(
+                lambda: _resolve_oneshot_resume(self._args(continue_last=True))
+            )
 
     def test_bare_continue_uses_most_recent_cli_session(self):
         from hermes_cli.main import _resolve_oneshot_resume

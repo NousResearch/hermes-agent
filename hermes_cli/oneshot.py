@@ -470,15 +470,22 @@ def _run_agent(
     )
 
     session_db = _create_session_db_for_oneshot()
-    # --resume chaining: load the prior transcript and pin the agent to the
-    # caller's session id so this turn appends to the SAME session.
-    resume_session_id, conversation_history = _load_resume_history(session_db, resume)
-    # The try spans agent construction (not just ``chat``) so the SQLite store
-    # opened above is always closed — including when ``AIAgent(...)`` itself
-    # raises on a provider/config error. The one-shot exit path hard-exits via
-    # os._exit and skips finalizers, so an un-closed connection here would leak.
+    # The try spans the resume load and agent construction (not just ``chat``)
+    # so the SQLite store opened above is always closed — including when
+    # ``AIAgent(...)`` itself raises on a provider/config error. The one-shot
+    # exit path hard-exits via os._exit and skips finalizers, so an un-closed
+    # connection here would leak.
     agent = None
     try:
+        # --resume chaining: load the prior transcript and pin the agent to
+        # the caller's session id so this turn appends to the SAME session.
+        # Inside the try because it touches session_db — the per-step guards
+        # in _load_resume_history keep a broken store from failing the turn,
+        # but the connection must still be closed if anything else escapes.
+        resume_session_id, conversation_history = _load_resume_history(
+            session_db, resume
+        )
+
         # Read the effective fallback chain from profile config so oneshot
         # workers honour the same merge semantics as interactive CLI and
         # gateway sessions.

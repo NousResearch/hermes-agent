@@ -173,6 +173,29 @@ def _cleanup_oneshot_runtime() -> None:
         pass
 
 
+def _fail_and_exit_oneshot(message: str, rc: int = 2) -> None:
+    """Abort a ``-z`` invocation through the SAME hardened exit path as a run.
+
+    A plain ``sys.exit()`` here would be wrong twice over: by the time oneshot
+    dispatch is reached, ``_prepare_agent_startup()`` has already discovered
+    plugins and (on the non-fast path) kicked off MCP server startup, so
+    unwinding through normal interpreter finalization both orphans those
+    subprocesses — ``_cleanup_oneshot_runtime()`` is what reaps them — and
+    re-enters the native finalizer teardown that ``_exit_after_oneshot``
+    exists to skip (#30387, #43055). Argument-validation failures must exit
+    exactly like a completed run: cleanup, then ``os._exit``.
+    """
+    try:
+        sys.stderr.write(message)
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        _cleanup_oneshot_runtime()
+    finally:
+        _exit_after_oneshot(rc)
+
+
 def _run_and_exit_oneshot(
     prompt: str,
     *,
@@ -1383,6 +1406,12 @@ def _resolve_oneshot_resume(args) -> Optional[str]:
     ``--continue`` resolves by name when a value is given, otherwise the most
     recent CLI session; an unresolvable ``--continue`` is an error (there is
     nothing sensible to chain onto).
+
+    Every failure exits via ``_fail_and_exit_oneshot`` rather than a plain
+    ``sys.exit`` so it reaps MCP/plugin startup and hard-exits like every
+    other ``-z`` exit (by this point ``_prepare_agent_startup`` has already
+    run) — see that function's docstring for why a bare ``sys.exit`` here is
+    wrong twice over.
     """
     resume = (getattr(args, "resume", None) or "").strip() or None
     if resume:
@@ -1391,11 +1420,10 @@ def _resolve_oneshot_resume(args) -> Optional[str]:
             return resolved
         # Create-on-first-use: the raw value becomes a new session id.
         if _is_unsafe_new_session_id(resume):
-            sys.stderr.write(
+            _fail_and_exit_oneshot(
                 f"hermes -z: invalid --resume session id '{resume}': "
                 "path separators and '..' are not allowed.\n"
             )
-            sys.exit(2)
         return resume
     cont = getattr(args, "continue_last", None)
     if not cont:
@@ -1403,16 +1431,16 @@ def _resolve_oneshot_resume(args) -> Optional[str]:
     if isinstance(cont, str):
         resolved = _resolve_session_by_name_or_id(cont)
         if not resolved:
-            sys.stderr.write(
+            _fail_and_exit_oneshot(
                 f"hermes -z: no session found matching '{cont}'. "
                 "Use 'hermes sessions list' to see available sessions.\n"
             )
-            sys.exit(2)
         return resolved
     last_id = _resolve_last_session(source="cli")
     if not last_id:
-        sys.stderr.write("hermes -z: no previous CLI session found to continue.\n")
-        sys.exit(2)
+        _fail_and_exit_oneshot(
+            "hermes -z: no previous CLI session found to continue.\n"
+        )
     return last_id
 
 

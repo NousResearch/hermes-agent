@@ -12,7 +12,7 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
+import { isBlockingPromptEvent, resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
@@ -311,6 +311,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       const sessionId = route.sessionId
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
+
+      // Stop/delete marks the runtime interrupted before awaiting the backend.
+      // Drop a prompt already queued on the event transport during that window;
+      // otherwise it can recreate its overlay and native notification after the
+      // conversation has been stopped or removed.
+      if (sessionId && isBlockingPromptEvent(event.type) && sessionInterrupted(sessionId)) {
+        return
+      }
 
       // Mid-turn compaction does not emit another message.start. The first
       // model output or tool event proves summarization has finished and the

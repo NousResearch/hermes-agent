@@ -197,3 +197,52 @@ async def test_non_reply_message_has_no_reply_context(monkeypatch):
     assert msg.reply_to_text is None
     assert msg.reply_to_author_id is None
     assert msg.reply_to_author_name is None
+
+
+# ---------------------------------------------------------------------------
+# Media message sender + reply context (sibling gap fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_media_message_carries_sender_and_reply_context(monkeypatch):
+    """Media messages must carry sender + reply context, same as text messages.
+
+    A user replying to a photo in Matrix produces a media event with the
+    same inline ``> <@user:server> ...`` reply fallback. The media handler
+    must parse it and populate reply_to_* fields, not just the text handler.
+    """
+    adapter = _make_adapter(monkeypatch=monkeypatch)
+    adapter._startup_ts = time.time() - 10
+
+    # Simulate a reply to a media message — the body carries the reply
+    # fallback prefix. We don't need a real mxc:// URL since the adapter
+    # validates URL format and rejects non-MXC; use a valid mxc:// URL.
+    reply_body = "> <@erin:example.org> nice photo\n\n"
+    event = SimpleNamespace(
+        sender="@frank:example.org",
+        event_id="$media_evt1",
+        room_id="!room1:example.org",
+        timestamp=int(time.time() * 1000),
+        content={
+            "body": reply_body,
+            "msgtype": "m.image",
+            "url": "mxc://example.org/abc123",
+            "info": {"mimetype": "image/png", "size": 1024},
+            "m.relates_to": {"m.in_reply_to": {"event_id": "$target_media1"}},
+        },
+    )
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+
+    # Sender metadata must be present on media messages too.
+    assert msg.user_id == "@frank:example.org"
+    assert msg.user_name == "frank"
+    # Reply context must be parsed from the fallback.
+    assert msg.reply_to_message_id == "$target_media1"
+    assert msg.reply_to_text is not None
+    assert "nice photo" in msg.reply_to_text
+    assert msg.reply_to_author_id == "@erin:example.org"
+    assert msg.reply_to_author_name == "erin"

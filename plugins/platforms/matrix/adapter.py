@@ -3682,6 +3682,36 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         body, is_dm, chat_type, thread_id, display_name, source = ctx
 
+        # Reply-to detection (mirrors _handle_text_message).
+        reply_to = None
+        in_reply_to = relates_to.get("m.in_reply_to", {})
+        if in_reply_to:
+            reply_to = in_reply_to.get("event_id")
+
+        reply_to_text: Optional[str] = None
+        reply_to_author_id: Optional[str] = None
+        reply_to_author_name: Optional[str] = None
+        if reply_to and body.startswith("> "):
+            reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
+            lines = body.split("\n")
+            stripped = []
+            past_fallback = False
+            for line in lines:
+                if not past_fallback:
+                    if line.startswith("> ") or line == ">":
+                        continue
+                    if line == "":
+                        past_fallback = True
+                        continue
+                    past_fallback = True
+                stripped.append(line)
+            body = "\n".join(stripped) if stripped else body
+
+            if reply_to_author_id:
+                reply_to_author_name = await self._get_display_name(
+                    room_id, reply_to_author_id
+                )
+
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
 
@@ -3701,6 +3731,12 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=event_id,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=reply_to,
+            reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_author_name=reply_to_author_name,
+            user_id=sender,
+            user_name=display_name,
         )
 
         await self.handle_message(msg_event)

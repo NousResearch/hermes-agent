@@ -14,6 +14,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageType
+from plugins.platforms.whatsapp import adapter as whatsapp_adapter
 from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
 
@@ -67,6 +68,67 @@ def test_animated_gif_classifies_as_photo():
 
     assert event is not None
     assert event.message_type == MessageType.PHOTO
+
+
+def test_gifplayback_mp4_keeps_truthful_local_container(monkeypatch, tmp_path):
+    """Baileys gifPlayback media is an MP4, not a GIF-named image."""
+    monkeypatch.setattr(whatsapp_adapter, "_is_allowed_bridge_path", lambda _url: True)
+    path = str(tmp_path / "vid_abc123.mp4")
+    adapter = _make_adapter()
+
+    event = asyncio.run(
+        adapter._build_message_event(
+            _media_payload("gif", mime="video/mp4", mediaUrls=[path])
+        )
+    )
+
+    assert event is not None
+    assert event.message_type == MessageType.PHOTO
+    assert event.media_urls == [path]
+    assert event.media_types == ["video/mp4"]
+
+
+def test_gifplayback_mp4_does_not_enter_image_cache(monkeypatch):
+    """A remote MP4 must not be cached with a misleading .gif suffix."""
+    cache_image = AsyncMock()
+    monkeypatch.setattr(whatsapp_adapter, "cache_image_from_url", cache_image)
+    url = "https://cdn.example.test/inbound-gif"
+    adapter = _make_adapter()
+
+    event = asyncio.run(
+        adapter._build_message_event(
+            _media_payload("gif", mime="video/mp4", mediaUrls=[url])
+        )
+    )
+
+    assert event is not None
+    assert event.message_type == MessageType.PHOTO
+    assert event.media_urls == [url]
+    assert event.media_types == ["video/mp4"]
+    cache_image.assert_not_awaited()
+
+
+def test_real_gif_url_uses_gif_image_cache(monkeypatch):
+    """Only an actual image/gif payload gets the .gif image-cache path."""
+    cache_image = AsyncMock(return_value="/cache/img_abc123.gif")
+    monkeypatch.setattr(whatsapp_adapter, "cache_image_from_url", cache_image)
+    adapter = _make_adapter()
+
+    event = asyncio.run(
+        adapter._build_message_event(
+            _media_payload(
+                "gif",
+                mime="image/gif",
+                mediaUrls=["https://cdn.example.test/inbound.gif"],
+            )
+        )
+    )
+
+    assert event is not None
+    assert event.message_type == MessageType.PHOTO
+    assert event.media_urls == ["/cache/img_abc123.gif"]
+    assert event.media_types == ["image/gif"]
+    cache_image.assert_awaited_once_with("https://cdn.example.test/inbound.gif", ext=".gif")
 
 
 def test_real_video_still_classifies_as_video():

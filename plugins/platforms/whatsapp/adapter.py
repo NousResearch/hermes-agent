@@ -1486,8 +1486,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             media_types = []
             for url in raw_urls:
                 bridge_mime = str(data.get("mime") or "").strip()
+                is_gif = media_type == "gif"
+                gif_video_container = is_gif and bridge_mime.lower().startswith("video/")
                 if msg_type == MessageType.PHOTO and url.startswith(("http://", "https://")):
-                    is_gif = media_type == "gif"
+                    # Baileys reports gifPlayback video messages as ``gif`` but
+                    # the downloaded bytes are normally an MP4 (mime
+                    # ``video/mp4``). Do not send those bytes through the image
+                    # cache or give them a misleading ``.gif`` extension. The
+                    # bridge normally supplies a local path; if a producer
+                    # supplies a remote video URL, preserve that truthful URL
+                    # and MIME instead of pretending it is an image.
+                    if gif_video_container:
+                        cached_urls.append(url)
+                        media_types.append(bridge_mime)
+                        print(f"[{self.name}] Keeping GIF video container URL: {url}", flush=True)
+                        continue
                     img_ext = ".gif" if is_gif else ".jpg"
                     img_mime = bridge_mime or ("image/gif" if is_gif else "image/jpeg")
                     try:
@@ -1503,7 +1516,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     # Local file path — bridge already downloaded the image
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
-                        media_types.append(bridge_mime or ("image/gif" if media_type == "gif" else "image/jpeg"))
+                        if is_gif and not bridge_mime:
+                            suffix = Path(url).suffix.lower()
+                            media_mime = "video/mp4" if suffix in _WA_VIDEO_EXTS else "image/gif"
+                        else:
+                            media_mime = bridge_mime or ("image/gif" if is_gif else "image/jpeg")
+                        media_types.append(media_mime)
                         print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
                     else:
                         print(f"[{self.name}] Rejected bridge image path outside cache dir: {url}", flush=True)

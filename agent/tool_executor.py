@@ -1795,6 +1795,19 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                             tool_call_id=getattr(tool_call, "id", None),
                         ),
                     )
+                # Surface memory-full / consolidation failure to the user.
+                # Without this the user has no idea writes are being silently
+                # dropped (the tool result is only seen by the model).
+                try:
+                    parsed = json.loads(result) if isinstance(result, str) else result
+                    if isinstance(parsed, dict) and not parsed.get("success"):
+                        usage = parsed.get("usage", "unknown")
+                        agent._emit_warning(
+                            f"⚠️ Memory write rejected ({usage}). "
+                            "Consolidate entries or raise memory.memory_char_limit."
+                        )
+                except Exception:
+                    pass
                 return result
             function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                 agent,

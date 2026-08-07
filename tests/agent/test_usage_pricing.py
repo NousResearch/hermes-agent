@@ -72,6 +72,28 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
 
 
 
+def test_normalize_usage_codex_accepts_raw_dict_payload():
+    usage = {
+        "input_tokens": 1000,
+        "output_tokens": 120,
+        "input_tokens_details": {
+            "cached_tokens": 700,
+            "cache_creation_tokens": 50,
+        },
+        "output_tokens_details": {"reasoning_tokens": 33},
+    }
+
+    normalized = normalize_usage(
+        usage,
+        provider="openai-codex",
+        api_mode="codex_responses",
+    )
+
+    assert normalized.input_tokens == 250
+    assert normalized.cache_read_tokens == 700
+    assert normalized.cache_write_tokens == 50
+    assert normalized.output_tokens == 120
+    assert normalized.reasoning_tokens == 33
 
 
 

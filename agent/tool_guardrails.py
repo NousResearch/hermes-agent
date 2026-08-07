@@ -27,14 +27,14 @@ IDEMPOTENT_TOOL_NAMES = frozenset(
         "browser_snapshot",
         "browser_console",
         "browser_get_images",
-        "mcp_filesystem_read_file",
-        "mcp_filesystem_read_text_file",
-        "mcp_filesystem_read_multiple_files",
-        "mcp_filesystem_list_directory",
-        "mcp_filesystem_list_directory_with_sizes",
-        "mcp_filesystem_directory_tree",
-        "mcp_filesystem_get_file_info",
-        "mcp_filesystem_search_files",
+        "mcp__filesystem__read_file",
+        "mcp__filesystem__read_text_file",
+        "mcp__filesystem__read_multiple_files",
+        "mcp__filesystem__list_directory",
+        "mcp__filesystem__list_directory_with_sizes",
+        "mcp__filesystem__directory_tree",
+        "mcp__filesystem__get_file_info",
+        "mcp__filesystem__search_files",
     }
 )
 

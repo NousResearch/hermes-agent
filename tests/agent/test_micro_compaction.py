@@ -761,6 +761,76 @@ class TestMicroCompaction:
             "splice must not strip _db_persisted from surviving messages"
         )
 
+    def test_sync_to_db_takes_the_compression_lock_batch_compression_uses(self):
+        """_sync_micro_compact_to_db must hold the SAME durable lock the
+        batch compression path (SessionDB.try_acquire_compression_lock)
+        uses before calling archive_and_compact.
+
+        Without this, a micro-compact racing a concurrent batch compression
+        on the same session_id can both soft-archive the active rows and
+        insert their own replacement set — whichever commits second
+        silently discards the other's write (a split session lineage), the
+        exact class of corruption the lock exists to prevent.
+        """
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        class _FakeSessionDB:
+            def __init__(self, *, acquire_returns: bool):
+                self.acquire_returns = acquire_returns
+                self.acquire_calls: list = []
+                self.release_calls: list = []
+                self.archive_calls: list = []
+
+            def try_acquire_compression_lock(self, session_id, holder, ttl_seconds=300.0):
+                self.acquire_calls.append((session_id, holder, ttl_seconds))
+                return self.acquire_returns
+
+            def release_compression_lock(self, session_id, holder):
+                self.release_calls.append((session_id, holder))
+
+            def archive_and_compact(self, session_id, compacted_messages):
+                self.archive_calls.append((session_id, list(compacted_messages)))
+
+        # Lock acquired: archive_and_compact runs, then the lock is released,
+        # and surviving messages are stamped as DB-persisted.
+        cc = _compressor()
+        cc._session_db = _FakeSessionDB(acquire_returns=True)
+        cc._session_id = "sess-1"
+        messages = [{"role": "user", "content": "hi"}]
+
+        cc._sync_micro_compact_to_db(messages)
+
+        db = cc._session_db
+        assert len(db.acquire_calls) == 1
+        assert db.acquire_calls[0][0] == "sess-1"
+        assert len(db.archive_calls) == 1, "archive_and_compact must run once the lock is held"
+        assert db.archive_calls[0] == ("sess-1", messages)
+        assert len(db.release_calls) == 1
+        assert db.release_calls[0] == ("sess-1", db.acquire_calls[0][1]), (
+            "release must use the exact holder token the acquire call used"
+        )
+        assert messages[0].get(_DB_PERSISTED_MARKER) is True
+
+        # Lock busy (another path — e.g. a concurrent batch compression —
+        # already holds it): archive_and_compact must NOT run, and nothing
+        # must be released (this holder never acquired it).
+        cc2 = _compressor()
+        cc2._session_db = _FakeSessionDB(acquire_returns=False)
+        cc2._session_id = "sess-2"
+        messages2 = [{"role": "user", "content": "hi"}]
+
+        cc2._sync_micro_compact_to_db(messages2)
+
+        db2 = cc2._session_db
+        assert len(db2.acquire_calls) == 1
+        assert db2.archive_calls == [], (
+            "archive_and_compact must not run while another path holds the lock"
+        )
+        assert db2.release_calls == [], "must not release a lock this holder never acquired"
+        assert messages2[0].get(_DB_PERSISTED_MARKER) is None, (
+            "messages must not be stamped as DB-persisted when the sync was skipped"
+        )
+
 
 class TestDefragFlushCursorInvalidation:
     """Sibling of the finalize_turn pop site (#75170): defrag pops

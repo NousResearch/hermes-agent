@@ -484,6 +484,14 @@ Complete the user's task step by step."""
                     messages.append({
                         "role": "assistant",
                         "content": assistant_message.content,
+                        # Capture the model's reasoning/thinking so
+                        # _convert_to_hermes_format can wrap it in <think>...</think>.
+                        # Providers expose it as .reasoning_content (DeepSeek/Kimi)
+                        # or .reasoning (OpenRouter); mirror agent/chat_completion_helpers.
+                        "reasoning": (
+                            getattr(assistant_message, "reasoning_content", None)
+                            or getattr(assistant_message, "reasoning", None)
+                        ),
                         "tool_calls": [
                             {
                                 "id": tc.id,
@@ -543,7 +551,12 @@ Complete the user's task step by step."""
                     final_response = assistant_message.content or ""
                     messages.append({
                         "role": "assistant",
-                        "content": final_response
+                        "content": final_response,
+                        # See above: preserve reasoning for the <think> wrapper.
+                        "reasoning": (
+                            getattr(assistant_message, "reasoning_content", None)
+                            or getattr(assistant_message, "reasoning", None)
+                        ),
                     })
                     completed = True
                     print("🎉 Agent finished (no more tool calls)")

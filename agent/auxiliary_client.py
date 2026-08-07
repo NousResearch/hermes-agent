@@ -5845,10 +5845,18 @@ def resolve_provider_client(
             return True
         if api_mode == "codex_responses":
             return True
-        # Auto-detect: api.openai.com + codex model name pattern
+        # Auto-detect: official OpenAI host + codex model name pattern.
+        # Routed through the shared predicate so OpenAI's documented
+        # data-residency hosts (us./eu.api.openai.com) auto-detect exactly
+        # like the canonical one. host_mandated_api_mode() already mandates
+        # codex_responses for them, so exact-hostname equality here left the
+        # auxiliary client unwrapped against an endpoint that requires the
+        # Responses API.
         if api_mode and api_mode != "codex_responses":
             return False  # explicit non-codex mode
-        if base_url_hostname(base_url_str) == "api.openai.com":
+        from hermes_cli.providers import is_official_openai_host
+
+        if is_official_openai_host(base_url_str):
             model_lower = (model_str or "").lower()
             if "codex" in model_lower:
                 return True
@@ -6946,11 +6954,17 @@ def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> di
     or_key = _scoped_key_env("OPENROUTER_API_KEY")
     # Use max_completion_tokens for direct OpenAI-compatible providers that reject
     # max_tokens on newer GPT-4o/o-series/GPT-5-style models.
+    # The OpenAI arm goes through the shared predicate so the documented
+    # data-residency hosts (us./eu.api.openai.com) are recognised too — they
+    # serve the same models, which reject max_tokens. Copilot already
+    # dot-suffix-matches its own family just below.
+    from hermes_cli.providers import is_official_openai_host
+
     _custom_host = base_url_hostname(custom_base) or ""
     if (not or_key
             and _read_nous_auth() is None
             and (
-                _custom_host == "api.openai.com"
+                is_official_openai_host(custom_base)
                 or _custom_host == "api.githubcopilot.com"
                 or _custom_host.endswith(".githubcopilot.com")
             )):

@@ -98,6 +98,80 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_null_chunks_are_ignored(self, mock_close, mock_create):
+        """Literal null items from compatible proxies do not abort the stream."""
+        from run_agent import AIAgent
+
+        chunks = [
+            None,
+            _make_stream_chunk(content="Hello"),
+            None,
+            _make_stream_chunk(content=" world", finish_reason="stop"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://example.com/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._touch_activity = MagicMock()
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "Hello world"
+        assert response.choices[0].finish_reason == "stop"
+        receiving_calls = [
+            call for call in agent._touch_activity.call_args_list
+            if call.args == ("receiving stream response",)
+        ]
+        assert len(receiving_calls) == 2
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_consecutive_null_chunks_abort_as_empty_stream(
+        self,
+        mock_close,
+        mock_create,
+    ):
+        """An endless null stream becomes retryable instead of hanging forever."""
+        from agent.errors import EmptyStreamError
+        from run_agent import AIAgent
+
+        def endless_nulls():
+            while True:
+                yield None
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda **kwargs: endless_nulls()
+        )
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://example.com/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        with pytest.raises(EmptyStreamError, match="consecutive null"):
+            agent._interruptible_streaming_api_call({})
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_chat_stream_closes_original_provider_resource(
         self,
         mock_close,

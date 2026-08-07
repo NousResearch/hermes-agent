@@ -57,6 +57,7 @@ _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 # billing reasons keep their own 60s cooldown (set above); this is the
 # narrower non-rate-limit case.  See issue #24996.
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
+_MAX_CONSECUTIVE_NULL_CHAT_CHUNKS = 32
 
 
 def _context_thread_target(callback):
@@ -3314,7 +3315,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # prevents the stale watchdog from cancelling a live stream while
             # an interceptor or codec is still handling an already-received
             # event.
-            last_chunk_time["t"] = time.time()
+            if _chunk is not None:
+                last_chunk_time["t"] = time.time()
             return True
 
         def _relay_final_response() -> dict[str, Any]:
@@ -3366,29 +3368,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Hermes interrupts the managed stream; Relay retains sole
             # ownership of closing the underlying provider stream.
             _set_request_stream_handle(stream)
+        consecutive_null_chunks = 0
         for chunk in stream:
-            last_chunk_time["t"] = time.time()
-            agent._touch_activity("receiving stream response")
-
-            # Update per-attempt diagnostic counters.  Best-effort —
-            # failures are swallowed so the streaming hot path is never
-            # interrupted by diagnostic accounting.
-            try:
-                _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
-                if _diag.get("first_chunk_at") is None:
-                    _diag["first_chunk_at"] = last_chunk_time["t"]
-                # Approximate byte size from the chunk's delta payload —
-                # exact wire bytes aren't exposed by the SDK. A full
-                # repr() per chunk was 5.5-8.8 µs of pure CPU on the
-                # hottest loop in the agent; the delta-length estimate
-                # is ~3x cheaper and stays proportional to traffic.
-                try:
-                    _diag["bytes"] = int(_diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
-                except Exception:
-                    pass
-            except Exception:
-                pass
-
             if agent._interrupt_requested:
                 # Abandoning a half-read SSE response leaves its connection
                 # permanently checked out of the httpx pool — and the partial
@@ -3415,6 +3396,40 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if not _stream_attempt_is_active(stream_attempt_id):
                 _discard_stale_stream_chunk(stream_attempt_id, chunk)
                 continue
+
+            # Some OpenAI-compatible proxies emit a literal null SSE item,
+            # which the SDK surfaces as None rather than a completion chunk.
+            if chunk is None:
+                consecutive_null_chunks += 1
+                if consecutive_null_chunks >= _MAX_CONSECUTIVE_NULL_CHAT_CHUNKS:
+                    raise EmptyStreamError(
+                        "Provider returned too many consecutive null chat-completion "
+                        "chunks (possible malformed SSE response)."
+                    )
+                continue
+            consecutive_null_chunks = 0
+
+            last_chunk_time["t"] = time.time()
+            agent._touch_activity("receiving stream response")
+
+            # Update per-attempt diagnostic counters.  Best-effort —
+            # failures are swallowed so the streaming hot path is never
+            # interrupted by diagnostic accounting.
+            try:
+                _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
+                if _diag.get("first_chunk_at") is None:
+                    _diag["first_chunk_at"] = last_chunk_time["t"]
+                # Approximate byte size from the chunk's delta payload —
+                # exact wire bytes aren't exposed by the SDK. A full
+                # repr() per chunk was 5.5-8.8 µs of pure CPU on the
+                # hottest loop in the agent; the delta-length estimate
+                # is ~3x cheaper and stays proportional to traffic.
+                try:
+                    _diag["bytes"] = int(_diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
             if not chunk.choices:
                 if hasattr(chunk, "model") and chunk.model:

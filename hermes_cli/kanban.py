@@ -692,6 +692,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_archive.add_argument("task_ids", nargs="*",
                            help="Task ids to archive (default mode)")
     p_archive.add_argument(
+        "--force",
+        action="store_true",
+        help="Archive even if the task is running with a live worker "
+             "(terminates the worker first)",
+    )
+    p_archive.add_argument(
         "--rm",
         dest="purge_ids",
         nargs="+",
@@ -2407,11 +2413,22 @@ def _cmd_archive(args: argparse.Namespace) -> int:
                     print(f"Deleted {tid}")
             return 0 if not failed else 1
         for tid in ids:
-            if not kb.archive_task(conn, tid):
-                failed.append(tid)
-                print(f"cannot archive {tid}", file=sys.stderr)
-            else:
+            if kb.archive_task(conn, tid, force=bool(args.force)):
                 print(f"Archived {tid}")
+            else:
+                failed.append(tid)
+                # Distinguish the live-worker refusal from a generic
+                # failure so the operator knows the --force escape hatch
+                # exists (#76196).
+                t = kb.get_task(conn, tid)
+                if t is not None and t.status == "running":
+                    print(
+                        f"cannot archive {tid}: task is running with a live "
+                        f"worker (use --force to terminate it and archive)",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(f"cannot archive {tid}", file=sys.stderr)
     return 0 if not failed else 1
 
 

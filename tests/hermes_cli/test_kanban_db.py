@@ -236,6 +236,112 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
+def test_archive_refuses_running_task_with_live_worker(kanban_home, monkeypatch):
+    """Archiving a task whose worker process is still alive must be refused
+    unless ``--force`` is given; with force the worker is terminated first
+    and an ``archived_while_running`` event is recorded (#76196)."""
+    import json
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="live", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, tid, 99999)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+
+        # Without force the archive is refused and the task stays running.
+        assert kb.archive_task(conn, tid) is False
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (tid,)
+        ).fetchone()
+        assert row["status"] == "running"
+
+        # With force the worker is terminated (signal_fn captures the kill)
+        # and the task is archived with an auditable event.
+        killed: list[int] = []
+        alive = {"state": True}
+
+        def fake_kill(pid: int, _sig: int) -> None:
+            killed.append(int(pid))
+            alive["state"] = False  # the signal killed the worker
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: alive["state"])
+        assert kb.archive_task(conn, tid, force=True, signal_fn=fake_kill) is True
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (tid,)
+        ).fetchone()
+        assert row["status"] == "archived"
+        assert killed == [99999]
+        events = kb.list_events(conn, tid)
+        awr = [e for e in events if e.kind == "archived_while_running"]
+        assert len(awr) == 1
+        payload = awr[0].payload
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        assert payload["worker_pid"] == 99999
+        assert payload["forced"] is True
+
+
+def test_archive_force_refuses_when_worker_survives_termination(
+    kanban_home, monkeypatch,
+):
+    """Even with ``--force``, archiving must be refused when a host-local
+    worker survives termination — otherwise the archive would orphan a
+    still-running process (mirrors the reclaim guard, #76196)."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="survivor", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, tid, 77777)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(
+            _kb,
+            "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "prev_pid": 77777,
+                "host_local": True,
+                "termination_attempted": True,
+                "terminated": False,
+            },
+        )
+        assert kb.archive_task(conn, tid, force=True) is False
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (tid,)
+        ).fetchone()
+        assert row["status"] == "running"
+
+
+def test_heartbeat_claim_skips_already_closed_run(kanban_home):
+    """``heartbeat_claim`` must not write a new expiry onto a run row that
+    has already been closed (``ended_at IS NULL`` guard, #76196)."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="hb", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host}:worker"
+        kb.claim_task(conn, tid, claimer=lock)
+        kb._set_worker_pid(conn, tid, 321)
+        run_id = _kb._current_run_id(conn, tid)
+        assert run_id is not None
+        # Close the run row as if it had already ended (reclaimed/crashed).
+        conn.execute(
+            "UPDATE task_runs SET ended_at = ?, status = 'done' WHERE id = ?",
+            (int(time.time()), run_id),
+        )
+        old_expires = conn.execute(
+            "SELECT claim_expires FROM task_runs WHERE id = ?", (run_id,)
+        ).fetchone()[0]
+        assert kb.heartbeat_claim(conn, tid, claimer=lock) is True
+        new_expires = conn.execute(
+            "SELECT claim_expires FROM task_runs WHERE id = ?", (run_id,)
+        ).fetchone()[0]
+        assert new_expires == old_expires
+
+
 
 
 

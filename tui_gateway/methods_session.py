@@ -176,7 +176,20 @@ def _(rid, params: dict) -> dict:
             # their own source.
             deny = frozenset({"kanban", "tool"})
 
-            limit = int(params.get("limit", 200) or 200)
+            try:
+                raw_limit = params.get("limit", 200)
+                # Don't use ``or 200`` — falsy ``0`` must clamp to 1, not
+                # silently jump back to the default page size.
+                if raw_limit is None or raw_limit == "":
+                    limit = 200
+                else:
+                    limit = int(raw_limit)
+            except (TypeError, ValueError):
+                limit = 200
+            # Cap so a hostile/buggy client can't force unbounded SQL work,
+            # and so negative limits can't flip Python ``rows[:limit]`` into
+            # "return almost everything" slice semantics.
+            limit = max(1, min(limit, 500))
             # Over-fetch modestly so per-source filtering doesn't leave us
             # short; the compression-tip projection in ``list_sessions_rich``
             # can also merge rows.

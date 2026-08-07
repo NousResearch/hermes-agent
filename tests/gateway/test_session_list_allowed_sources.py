@@ -69,3 +69,48 @@ def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
     assert "tool-1" not in ids
 
 
+def test_session_list_clamps_excessive_limit(monkeypatch):
+    """Huge limits must not become unbounded SQL fetch sizes."""
+    rows = [{"id": f"s-{i}", "source": "cli", "started_at": i} for i in range(20)]
+    db = _StubDB(rows)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    resp = _call(limit=10_000_000)
+
+    assert resp["result"]["sessions"]
+    assert len(resp["result"]["sessions"]) <= 500
+    assert db.calls[0]["limit"] == 1000  # max(500 * 2, 200)
+
+
+def test_session_list_clamps_negative_limit(monkeypatch):
+    """Negative limits must not flip ``rows[:limit]`` into nearly-all rows."""
+    rows = [{"id": f"s-{i}", "source": "cli", "started_at": i} for i in range(20)]
+    db = _StubDB(rows)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    resp = _call(limit=-5)
+
+    assert len(resp["result"]["sessions"]) == 1
+    assert db.calls[0]["limit"] == 200  # max(1 * 2, 200)
+
+
+def test_session_list_clamps_zero_limit(monkeypatch):
+    rows = [{"id": f"s-{i}", "source": "cli", "started_at": i} for i in range(5)]
+    db = _StubDB(rows)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    resp = _call(limit=0)
+
+    assert len(resp["result"]["sessions"]) == 1
+    assert db.calls[0]["limit"] == 200
+
+
+def test_session_list_default_fetch_limit(monkeypatch):
+    rows = [{"id": "s-1", "source": "cli", "started_at": 1}]
+    db = _StubDB(rows)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    _call()
+
+    assert db.calls[0]["limit"] == 400  # max(200 * 2, 200)
+

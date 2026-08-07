@@ -230,12 +230,89 @@ def _annotate_rebuild_status(db, payload: Dict[str, Any]) -> None:
     }
 
 
-def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+def _origin_from_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Return compact, non-secret session-origin metadata for tool output."""
+    return {
+        "display_name": meta.get("display_name") or None,
+        "chat_type": meta.get("chat_type") or None,
+        "source": meta.get("source") or None,
+    }
+
+
+def _current_origin(db, current_session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Look up the active gateway chat origin, if this turn has one."""
+    meta: Dict[str, Any] = {}
+    if current_session_id:
+        try:
+            meta = db.get_session(current_session_id) or {}
+        except Exception:
+            logging.debug("current origin lookup failed for %s", current_session_id, exc_info=True)
+            meta = {}
+    chat_id = meta.get("chat_id")
+    session_key = meta.get("session_key")
+    if not chat_id or not session_key:
+        try:
+            from gateway.session_context import get_session_env
+            chat_id = chat_id or get_session_env("HERMES_SESSION_CHAT_ID", "") or None
+            session_key = session_key or get_session_env("HERMES_SESSION_KEY", "") or None
+            meta = {
+                **meta,
+                "chat_id": chat_id,
+                "session_key": session_key,
+                "chat_type": meta.get("chat_type") or None,
+                "display_name": meta.get("display_name") or get_session_env("HERMES_SESSION_CHAT_NAME", "") or None,
+                "source": meta.get("source") or get_session_env("HERMES_SESSION_PLATFORM", "") or None,
+            }
+        except Exception:
+            pass
+    if not chat_id and not session_key:
+        return None
+    return {
+        "chat_id": chat_id,
+        "session_key": session_key,
+        "chat_type": meta.get("chat_type"),
+        "display_name": meta.get("display_name"),
+        "source": meta.get("source"),
+    }
+
+
+def _is_groupish_origin(origin: Optional[Dict[str, Any]]) -> bool:
+    return (origin or {}).get("chat_type") in {"group", "forum", "channel"}
+
+
+def _origin_payload(meta: Dict[str, Any], current_origin: Optional[Dict[str, Any]]) -> tuple[Dict[str, Any], Optional[bool]]:
+    origin = _origin_from_meta(meta)
+    same_origin = None
+    if current_origin and (current_origin.get("session_key") or current_origin.get("chat_id")):
+        current_source = current_origin.get("source")
+        meta_source = meta.get("source")
+        same_source = bool(meta_source and meta_source == current_source) if current_source else True
+        if current_origin.get("session_key"):
+            same_scope = bool(meta.get("session_key") and meta.get("session_key") == current_origin.get("session_key"))
+        else:
+            same_scope = bool(meta.get("chat_id") and meta.get("chat_id") == current_origin.get("chat_id"))
+        same_origin = same_scope and same_source
+    return origin, same_origin
+
+
+def _add_cross_context_notice(payload: Dict[str, Any], current_origin: Optional[Dict[str, Any]]) -> None:
+    if not current_origin:
+        return
+    entries = payload.get("results") or []
+    if any(e.get("same_origin") is False for e in entries):
+        payload["notice"] = (
+            "Some results are from a different conversation. Treat same_origin=false "
+            "content as cross-chat history; in group contexts, ask before relaying it."
+        )
+
+def _order_for_recall(raw_results: List[Dict[str, Any]], current_origin: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """Stable-sort FTS rows so interactive sessions rank above automation.
 
-    Within each class (interactive vs demoted) the original BM25 ``rank``
-    order is preserved — Python's sort is stable, and rows arrive already
-    ranked by relevance. This only changes cross-class ordering: a cron hit
+    When current-origin metadata is available, same-origin rows rank before
+    foreign-origin rows. Within each class (same-origin vs foreign, interactive
+    vs demoted) the original BM25 ``rank`` order is preserved — Python's sort is
+    stable, and rows arrive already ranked by relevance. This only changes cross-class ordering: a cron hit
     never displaces an interactive hit during lineage dedup, so the user's
     own conversations surface first even when cron rows out-rank them under
     bare BM25 (#19434). Demoted rows still appear when they're the only
@@ -243,7 +320,10 @@ def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     """
     return sorted(
         raw_results,
-        key=lambda r: 1 if (r.get("source") or "") in _DEMOTED_SESSION_SOURCES else 0,
+        key=lambda r: (
+            1 if (current_origin and (r.get("chat_id") != current_origin.get("chat_id") or (current_origin.get("source") and r.get("source") != current_origin.get("source")))) else 0,
+            1 if (r.get("source") or "") in _DEMOTED_SESSION_SOURCES else 0,
+        ),
     )
 
 
@@ -384,7 +464,14 @@ def _locate_session_db(session_id: str):
     return None, None
 
 
-def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
+def _read_session(
+    db,
+    session_id: str,
+    head: int = 20,
+    tail: int = 10,
+    link_profile: str = None,
+    current_origin: Optional[Dict[str, Any]] = None,
+) -> str:
     """Read shape: dump a whole session by id (head + tail when large).
 
     Serves the linked-session case — the user dropped an @session reference and
@@ -421,11 +508,21 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
             "source": meta.get("source"),
             "model": meta.get("model"),
             "title": meta.get("title"),
+            "origin": _origin_from_meta(meta),
         },
         "message_count": total,
         "truncated": truncated,
         "messages": window,
     }
+    origin, same_origin = _origin_payload(meta, current_origin)
+    response["session_meta"]["origin"] = origin
+    if same_origin is not None:
+        response["same_origin"] = same_origin
+        if same_origin is False:
+            response["cross_context_warning"] = (
+                "This session belongs to a different conversation from the active chat. "
+                "Do not present it as this chat's history without confirmation."
+            )
     if truncated:
         response["message"] = (
             f"Session has {total} messages; showing first {head} + last {tail}. "
@@ -434,10 +531,24 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
+def _list_recent_sessions(
+    db,
+    limit: int,
+    current_session_id: str = None,
+    link_profile: str = None,
+    current_origin: Optional[Dict[str, Any]] = None,
+    scope: str = "all",
+) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
+            source=current_origin.get("source") if (scope == "chat" and current_origin) else None,
+            session_key=current_origin.get("session_key") if (scope == "chat" and current_origin) else None,
+            chat_id=(
+                current_origin.get("chat_id")
+                if (scope == "chat" and current_origin and not current_origin.get("session_key"))
+                else None
+            ),
             limit=limit + 5,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
@@ -453,7 +564,10 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
             # Skip child / delegation sessions
             if s.get("parent_session_id"):
                 continue
-            results.append({
+            origin, same_origin = _origin_payload(s, current_origin)
+            if scope == "chat" and same_origin is False:
+                continue
+            entry = {
                 "session_id": sid,
                 "link": _session_link(sid, link_profile),
                 "title": s.get("title") or None,
@@ -462,17 +576,26 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
                 "last_active": s.get("last_active", ""),
                 "message_count": s.get("message_count", 0),
                 "preview": s.get("preview", ""),
-            })
+                "origin": origin,
+            }
+            if same_origin is not None:
+                entry["same_origin"] = same_origin
+            results.append(entry)
             if len(results) >= limit:
                 break
 
-        return json.dumps({
+        payload = {
             "success": True,
             "mode": "browse",
+            "scope": scope,
             "results": results,
             "count": len(results),
             "message": f"Showing {len(results)} most recent sessions. Pass a query= to search, or session_id+around_message_id to scroll.",
-        }, ensure_ascii=False)
+        }
+        if scope == "chat" and not results:
+            payload["message"] = "No recent sessions found in this chat. Pass scope='all' to browse other conversations."
+        _add_cross_context_notice(payload, current_origin)
+        return json.dumps(payload, ensure_ascii=False)
     except Exception as e:
         logging.error("Error listing recent sessions: %s", e, exc_info=True)
         return tool_error(f"Failed to list recent sessions: {e}", success=False)
@@ -484,6 +607,7 @@ def _scroll(
     around_message_id: int,
     window: int = 5,
     current_session_id: str = None,
+    current_origin: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
 
@@ -604,12 +728,21 @@ def _scroll(
             "source": session_meta.get("source"),
             "model": session_meta.get("model"),
             "title": session_meta.get("title"),
+            "origin": _origin_from_meta(session_meta),
         },
         "window": window,
         "messages": [_shape_message(m, anchor_id=around_message_id) for m in messages],
         "messages_before": view.get("messages_before", 0),
         "messages_after": view.get("messages_after", 0),
     }
+    _origin, same_origin = _origin_payload(session_meta, current_origin)
+    if same_origin is not None:
+        response["same_origin"] = same_origin
+        if same_origin is False:
+            response["cross_context_warning"] = (
+                "This scroll window belongs to a different conversation from the active chat. "
+                "Do not present it as this chat's history without confirmation."
+            )
     if rebind_warning:
         response["warning"] = rebind_warning
     return json.dumps(response, ensure_ascii=False)
@@ -624,6 +757,8 @@ def _title_match_result(
     db,
     query: str,
     current_lineage_root: Optional[str],
+    current_origin: Optional[Dict[str, Any]] = None,
+    scope: str = "all",
 ) -> Optional[Dict[str, Any]]:
     """Return a discovery-shaped result when the query matches a session title."""
     title_query = _normalize_title_query(query)
@@ -648,6 +783,9 @@ def _title_match_result(
         logging.debug("get_session failed for title match %s", session_id, exc_info=True)
         session_meta = {}
     if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
+        return None
+    origin, same_origin = _origin_payload(session_meta, current_origin)
+    if scope == "chat" and same_origin is False:
         return None
 
     try:
@@ -680,8 +818,11 @@ def _title_match_result(
         "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or messages[-3:])],
         "messages_before": view.get("messages_before", 0),
         "messages_after": view.get("messages_after", max(len(messages) - 5, 0)),
+        "origin": origin,
         "_lineage_root": lineage_root,
     }
+    if same_origin is not None:
+        entry["same_origin"] = same_origin
     if lineage_root and lineage_root != session_id:
         entry["parent_session_id"] = lineage_root
     return entry
@@ -695,16 +836,26 @@ def _discover(
     sort: Optional[str],
     current_session_id: str = None,
     link_profile: str = None,
+    current_origin: Optional[Dict[str, Any]] = None,
+    scope: str = "all",
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root)
+    title_result = _title_match_result(db, query, current_lineage_root, current_origin, scope)
+    scoped_session_key = current_origin.get("session_key") if (scope == "chat" and current_origin) else None
+    scoped_chat_id = (
+        current_origin.get("chat_id")
+        if (scope == "chat" and current_origin and not scoped_session_key)
+        else None
+    )
+    scoped_source_filter = [current_origin.get("source")] if (scope == "chat" and current_origin and current_origin.get("source")) else None
 
     try:
         raw_results = db.search_messages(
             query=query,
             role_filter=role_list,
+            source_filter=scoped_source_filter,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             limit=_DISCOVER_SCAN_LIMIT,  # widen so dedup-by-lineage can find
             # distinct sessions AND so interactive matches buried under a wall
@@ -712,6 +863,8 @@ def _discover(
             offset=0,
             sort=sort,
             fields=_DISCOVER_SEARCH_FIELDS,
+            chat_id=scoped_chat_id,
+            session_key=scoped_session_key,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
@@ -721,7 +874,7 @@ def _discover(
     # high-volume cron corpus can't starve the user's own sessions out of the
     # top `limit` results (#19434). Stable — preserves BM25/recency order
     # within each class.
-    raw_results = _order_for_recall(raw_results)
+    raw_results = _order_for_recall(raw_results, current_origin)
 
     if not raw_results and not title_result:
         _empty_payload = {
@@ -730,7 +883,8 @@ def _discover(
             "query": query,
             "results": [],
             "count": 0,
-            "message": "No matching sessions found.",
+            "scope": scope,
+            "message": "No matching sessions found." if scope != "chat" else "No matching sessions found in this chat. Pass scope='all' to search other conversations.",
         }
         _annotate_rebuild_status(db, _empty_payload)
         return json.dumps(_empty_payload, ensure_ascii=False)
@@ -825,7 +979,11 @@ def _discover(
             ],
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
+            "origin": _origin_from_meta(session_meta or match_info),
         }
+        _origin, same_origin = _origin_payload({**match_info, **session_meta}, current_origin)
+        if same_origin is not None:
+            entry["same_origin"] = same_origin
         if lineage_root and lineage_root != hit_sid:
             entry["parent_session_id"] = lineage_root
         results.append(entry)
@@ -837,10 +995,12 @@ def _discover(
         "success": True,
         "mode": "discover",
         "query": query,
+        "scope": scope,
         "results": results,
         "count": len(results),
         "sessions_searched": len(seen_sessions),
     }
+    _add_cross_context_notice(_final_payload, current_origin)
     _annotate_rebuild_status(db, _final_payload)
     return json.dumps(_final_payload, ensure_ascii=False)
 
@@ -857,6 +1017,7 @@ def session_search(
     window: int = 5,
     # Discovery shape
     sort: str = None,
+    scope: Optional[str] = None,
     # Cross-profile (any shape)
     profile: str = None,
 ) -> str:
@@ -904,6 +1065,11 @@ def session_search(
             db = profile_db
             current_session_id = None
 
+    current_origin = _current_origin(db, current_session_id)
+    scope_norm = str(scope).strip().lower() if isinstance(scope, str) else ""
+    if scope_norm not in {"chat", "all"}:
+        scope_norm = "chat" if _is_groupish_origin(current_origin) else "all"
+
     # Scroll shape takes precedence — explicit anchor beats any query.
     if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
         return _scroll(
@@ -912,12 +1078,18 @@ def session_search(
             around_message_id=around_message_id,
             window=window,
             current_session_id=current_session_id,
+            current_origin=current_origin,
         )
 
     # Read shape: a session_id with no anchor → dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
         sid = session_id.strip()
-        result = _read_session(db, sid, link_profile=profile)
+        result = _read_session(
+            db,
+            sid,
+            link_profile=profile,
+            current_origin=current_origin,
+        )
         if json.loads(result).get("success"):
             return result
 
@@ -927,7 +1099,14 @@ def session_search(
         located, owner = _locate_session_db(sid)
         if located is not None:
             try:
-                found = json.loads(_read_session(located, sid, link_profile=owner))
+                found = json.loads(
+                    _read_session(
+                        located,
+                        sid,
+                        link_profile=owner,
+                        current_origin=current_origin,
+                    )
+                )
             finally:
                 located.close()
             if found.get("success"):
@@ -943,9 +1122,28 @@ def session_search(
             limit = 3
     limit = max(1, min(limit, 10))
 
+    if scope_norm == "chat" and current_origin is None:
+        mode = "browse" if (not query or not isinstance(query, str) or not query.strip()) else "discover"
+        return json.dumps({
+            "success": True,
+            "mode": mode,
+            "scope": scope_norm,
+            "query": query.strip() if isinstance(query, str) and query.strip() else None,
+            "results": [],
+            "count": 0,
+            "message": "No active chat origin is available for scope='chat'. Pass scope='all' to search other conversations.",
+        }, ensure_ascii=False)
+
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
+        return _list_recent_sessions(
+            db,
+            limit,
+            current_session_id,
+            link_profile=profile,
+            current_origin=current_origin,
+            scope=scope_norm,
+        )
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -967,6 +1165,8 @@ def session_search(
         sort=sort_norm,
         current_session_id=current_session_id,
         link_profile=profile,
+        current_origin=current_origin,
+        scope=scope_norm,
     )
 
 
@@ -1053,7 +1253,7 @@ SESSION_SEARCH_SCHEMA = {
         "session where Z\". If the user provided a direct source identifier, inspect "
         "that source first when accessible; session_search can then supply historical "
         "context. The session DB carries what was said when; external tools show "
-        "current source/world state."
+        "current source/world state. In group/forum/channel contexts, discovery and browse default to the current chat's history; pass scope='all' to search other conversations, and treat same_origin=false results as cross-chat history that needs confirmation before sharing. Legacy rows with no chat_id are excluded from scope='chat' results and remain reachable via scope='all'."
     ),
     "parameters": {
         "type": "object",
@@ -1087,6 +1287,11 @@ SESSION_SEARCH_SCHEMA = {
                     "origin-shaped questions (\"how did X start\"). Ignored in scroll "
                     "and browse shapes."
                 ),
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["chat", "all"],
+                "description": "Optional recall scope. In group/forum/channel contexts, defaults to 'chat' to avoid cross-chat leaks. Pass 'all' only for explicit cross-conversation recall; foreign results are labeled same_origin=false.",
             },
             "session_id": {
                 "type": "string",
@@ -1152,6 +1357,7 @@ registry.register(
         around_message_id=args.get("around_message_id"),
         window=args.get("window", 5),
         sort=args.get("sort"),
+        scope=args.get("scope"),
         profile=args.get("profile"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),

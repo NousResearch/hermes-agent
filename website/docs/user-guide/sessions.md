@@ -548,9 +548,11 @@ For deeper analytics — token usage, cost estimates, tool breakdown, and activi
 
 ## Session Search Tool
 
-The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. No LLM calls, no summarization, no truncation. Every shape returns actual messages from the DB.
+The agent has a built-in `session_search` tool that performs full-text search across saved conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. No LLM calls, no summarization, no truncation. Every shape returns actual messages from the DB.
 
-### Three calling shapes
+In group, forum, or channel contexts, discovery and browse default to the current chat's history to avoid leaking cross-chat recall into a shared room. Pass `scope="all"` only when you explicitly want cross-conversation recall. Results outside the current origin are labeled with `same_origin=false`; treat them as cross-chat history that needs confirmation before sharing.
+
+### Four calling shapes
 
 The tool infers what you want from which arguments you set. There's no `mode` parameter.
 
@@ -586,13 +588,21 @@ Returns a window of ±`window` messages centered on the anchor. No FTS5, no book
 
 Typical wall time: 1–2ms per scroll call.
 
-**3. Browse — no args:**
+**3. Read — pass `session_id` only:**
+
+```python
+session_search(session_id="20260510_174648_805cc2")
+```
+
+Dumps that session directly. If the user gives an `@session:<profile>/<id>` link, split the value into `profile` and `session_id` and pass both fields.
+
+**4. Browse — no args:**
 
 ```python
 session_search()
 ```
 
-Returns recent sessions chronologically (titles, previews, timestamps). Useful when the user asks "what was I working on" without naming a topic.
+Returns recent sessions chronologically (titles, previews, timestamps). In group, forum, and channel contexts this defaults to the current chat unless you pass `scope="all"`. Useful when the user asks "what was I working on" without naming a topic.
 
 ### FTS5 query syntax
 
@@ -606,6 +616,7 @@ The keyword mode supports standard FTS5 query syntax:
 ### Optional parameters
 
 - `sort` — `newest` or `oldest`, on top of FTS5 ranking. Omit for relevance-only ordering (the default; suitable for exploratory recall). Use `newest` for "where did we leave X" questions, `oldest` for "how did X start" questions.
+- `scope` — `chat` or `all`. In group, forum, and channel contexts, discovery and browse default to `chat`; direct reads by `session_id` are explicit and are not narrowed. Use `scope="all"` only when the user asks for broader cross-conversation recall.
 - `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
 
 ### When It's Used

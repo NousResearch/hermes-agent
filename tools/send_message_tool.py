@@ -1297,6 +1297,23 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             text_chunks = BasePlatformAdapter.truncate_message(
                 formatted, 4096, len_fn=utf16_len
             )
+            # Escape MarkdownV2-reserved parentheses in the chunk-indicator
+            # suffix that truncate_message() appends (e.g. " (1/2)").  These
+            # parens are added *after* format_message() has already escaped
+            # the text, so without this they reach Telegram unescaped and cause
+            # a parse rejection that silently falls back to plain text (#74004).
+            # The live gateway adapter applies this same transformation; see
+            # plugins/platforms/telegram/adapter.py.
+            if send_parse_mode == ParseMode.MARKDOWN_V2 and len(text_chunks) > 1:
+                from plugins.platforms.telegram.adapter import (
+                    _separate_chunk_indicator_from_fence,
+                )
+                text_chunks = [
+                    _separate_chunk_indicator_from_fence(
+                        re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                    )
+                    for chunk in text_chunks
+                ]
             for chunk in text_chunks:
                 try:
                     last_msg = await _send_telegram_message_with_retry(

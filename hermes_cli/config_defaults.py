@@ -1537,7 +1537,7 @@ DEFAULT_CONFIG = {
             "vad_min_silence_ms": 500,  # min silence (ms) that splits speech chunks when vad is on
             "no_speech_prob_threshold": 0.6,  # drop a segment only if no_speech_prob is ABOVE this...
             "logprob_threshold": -1.0,  # ...AND its avg_logprob is BELOW this (both must hit)
-            "unload_after_idle_seconds": 0,  # 0=never (default); 300=frees RAM/VRAM after 5min idle
+            "unload_after_idle_seconds": 0,  # 0=never (default); e.g. 300 releases the model after 5min idle
         },
         "groq": {
             "model": "whisper-large-v3-turbo",  # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en

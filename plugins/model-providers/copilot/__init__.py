@@ -12,6 +12,7 @@ Key quirks for the chat_completions subset:
 
 from typing import Any
 
+from hermes_constants import degrade_reasoning_effort
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -30,30 +31,30 @@ class CopilotProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         if supports_reasoning and model:
             try:
-                from hermes_cli.models import github_model_reasoning_efforts
+                # The agent resolves the catalog's effort list once per
+                # (model, base_url) with the route's key in hand and forwards
+                # it here. Re-resolving locally would repeat that work without
+                # the key, and a keyless lookup only recognizes o-series and
+                # GPT-5 IDs — every Claude slot would come back empty (#74295).
+                supported_efforts = ctx.get("copilot_reasoning_efforts")
+                if supported_efforts is None:
+                    from hermes_cli.models import github_model_reasoning_efforts
 
-                supported_efforts = github_model_reasoning_efforts(model)
+                    supported_efforts = github_model_reasoning_efforts(model)
                 if supported_efforts and reasoning_config:
                     effort = reasoning_config.get("effort", "medium")
                     # Honor the requested level when the live Copilot catalog
                     # lists it as supported: gpt-5.5/gpt-5.4 DO support
                     # ``xhigh``. Only downgrade levels the catalog does NOT
                     # list (e.g. ``xhigh``/``max`` on models capped lower, or
-                    # ``minimal`` where unsupported), choosing the nearest
-                    # weaker supported level rather than forwarding verbatim.
+                    # ``minimal`` where unsupported), stepping down Hermes'
+                    # canonical ladder so the mapping stays monotonic.
                     #
                     # (Previously this unconditionally mapped xhigh->high, a
                     #  stale guard that silently capped models which do support
                     #  the higher level.)
                     if effort not in supported_efforts:
-                        if effort == "xhigh" and "high" in supported_efforts:
-                            effort = "high"
-                        elif effort == "minimal" and "low" in supported_efforts:
-                            effort = "low"
-                        elif "medium" in supported_efforts:
-                            effort = "medium"
-                        else:
-                            effort = supported_efforts[0]
+                        effort = degrade_reasoning_effort(effort, supported_efforts)
                     if effort in supported_efforts:
                         extra_body["reasoning"] = {"effort": effort}
                 elif supported_efforts:

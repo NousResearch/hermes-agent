@@ -400,6 +400,7 @@ class ChatCompletionsTransport(ProviderTransport):
             supports_reasoning: bool
             github_reasoning_extra: dict | None
             lmstudio_reasoning_options: list[str] | None  # raw allowed_options from /api/v1/models
+            copilot_reasoning_efforts: list[str] | None  # catalog effort levels, resolved agent-side
             # Claude on OpenRouter/Nous max output
             anthropic_max_output: int | None
             extra_body_additions: dict | None
@@ -675,6 +676,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 base_url=params.get("base_url"),
                 ollama_num_ctx=params.get("ollama_num_ctx"),
                 session_id=params.get("session_id"),
+                copilot_reasoning_efforts=params.get("copilot_reasoning_efforts"),
             )
         )
         api_kwargs.update(top_level_from_profile)

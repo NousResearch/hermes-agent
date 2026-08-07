@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import sys
+from collections.abc import Sequence
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -969,6 +970,37 @@ def parse_reasoning_effort(effort) -> dict | None:
     if effort in VALID_REASONING_EFFORTS:
         return {"enabled": True, "effort": effort}
     return None
+
+
+def degrade_reasoning_effort(requested: str, supported: Sequence[str]) -> str:
+    """Map *requested* onto the closest level in a provider's *supported* set.
+
+    Providers advertise narrower effort vocabularies than
+    ``VALID_REASONING_EFFORTS`` — the Copilot catalog tops out at ``max`` and
+    lists no ``ultra`` for any model. Degradation walks Hermes' canonical
+    ladder rather than the provider's own ordering so the mapping stays
+    monotonic: a stronger request never resolves to a weaker level than a
+    lower request would. Clamping unsupported levels to a fixed ``medium``
+    inverts the ladder, which is what made ``ultra`` send less thinking than
+    ``high`` (#74295).
+
+    Levels outside the canonical ladder (e.g. ``none``, which disables
+    reasoning) are never selected as a degradation target. A request with
+    nothing weaker available takes the weakest supported level, since the
+    caller has already decided to send the field. Callers are expected to
+    skip the field entirely when *supported* is empty; that degenerate case
+    falls back to Hermes' own ``medium`` default rather than raising.
+    """
+    if not supported:
+        return "medium"
+    ladder = [effort for effort in VALID_REASONING_EFFORTS if effort in supported]
+    if requested not in VALID_REASONING_EFFORTS or not ladder:
+        return "medium" if "medium" in supported else supported[0]
+    rank = VALID_REASONING_EFFORTS.index(requested)
+    weaker_or_equal = [
+        effort for effort in ladder if VALID_REASONING_EFFORTS.index(effort) <= rank
+    ]
+    return weaker_or_equal[-1] if weaker_or_equal else ladder[0]
 
 
 def _canonical_model_variants(model: str) -> list[str]:

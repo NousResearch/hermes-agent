@@ -63,7 +63,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_constants import get_hermes_home
+from hermes_constants import degrade_reasoning_effort, get_hermes_home
 
 
 def _launch_cwd_for_session(source: str) -> Optional[str]:
@@ -7049,12 +7049,7 @@ class AIAgent:
             base_url_host_matches(self._base_url_lower, "models.github.ai")
             or base_url_host_matches(self._base_url_lower, "githubcopilot.com")
         ):
-            try:
-                from hermes_cli.models import github_model_reasoning_efforts
-
-                return bool(github_model_reasoning_efforts(self.model))
-            except Exception:
-                return False
+            return bool(self._copilot_reasoning_efforts_cached())
         if (self.provider or "").strip().lower() == "lmstudio":
             opts = self._lmstudio_reasoning_options_cached()
             # "off-only" (or absent) means no real reasoning capability.
@@ -7149,6 +7144,57 @@ class AIAgent:
         cache[key] = (supported, _time.monotonic())
         return bool(supported)
 
+    def _copilot_reasoning_efforts_cached(self) -> list[str]:
+        """Resolve Copilot's advertised effort levels once per (model, base_url).
+
+        ``github_model_reasoning_efforts`` reads catalog capabilities only when
+        handed a catalog or an API key; without either, its fallback recognizes
+        just the o-series and GPT-5 IDs, so every Claude slot resolves to ``[]``
+        — the supports-reasoning gate goes False and the payload is dropped
+        before any effort mapping runs (#74295). Pass the route's key so the
+        live catalog is consulted.
+
+        The catalog is fetched here rather than handed down as an API key so
+        the lookup costs exactly one fetch: passing ``api_key`` instead makes
+        ``normalize_copilot_model_id`` and the capability read fetch it twice.
+        Only Copilot-hosted routes are worth a fetch — anything else keeps the
+        keyless heuristics, as does a failed fetch.
+
+        Caching mirrors the LM Studio / Ollama probes: a non-empty list is
+        permanent (catalog capabilities don't change mid-session), an empty one
+        carries a 60-second TTL so a transient catalog outage doesn't suppress
+        reasoning for the whole session yet also doesn't fetch every turn.
+        """
+        import time as _time
+
+        cache = getattr(self, "_copilot_efforts_cache", None)
+        if cache is None:
+            cache = self._copilot_efforts_cache = {}
+        key = (self.model, self.base_url)
+        cached = cache.get(key)
+        if cached is not None:
+            efforts, ts = cached
+            # Non-empty → permanent. Empty → 60s TTL.
+            if efforts or (_time.monotonic() - ts) < 60:
+                return efforts
+        try:
+            from hermes_cli.models import (
+                fetch_github_model_catalog,
+                github_model_reasoning_efforts,
+            )
+            catalog = None
+            if base_url_host_matches(
+                self._base_url_lower, "githubcopilot.com"
+            ) or base_url_host_matches(self._base_url_lower, "models.github.ai"):
+                catalog = fetch_github_model_catalog(
+                    api_key=getattr(self, "api_key", "") or None
+                )
+            efforts = github_model_reasoning_efforts(self.model, catalog=catalog)
+        except Exception:
+            efforts = []
+        cache[key] = (efforts, _time.monotonic())
+        return efforts
+
     def _resolve_lmstudio_summary_reasoning_effort(self) -> Optional[str]:
         """Resolve a safe top-level ``reasoning_effort`` for LM Studio.
 
@@ -7164,12 +7210,7 @@ class AIAgent:
 
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
-        try:
-            from hermes_cli.models import github_model_reasoning_efforts
-        except Exception:
-            return None
-
-        supported_efforts = github_model_reasoning_efforts(self.model)
+        supported_efforts = self._copilot_reasoning_efforts_cached()
         if not supported_efforts:
             return None
 
@@ -7182,15 +7223,8 @@ class AIAgent:
         else:
             requested_effort = "medium"
 
-        if requested_effort == "xhigh" and "xhigh" not in supported_efforts and "high" in supported_efforts:
-            requested_effort = "high"
-        elif requested_effort not in supported_efforts:
-            if requested_effort == "minimal" and "low" in supported_efforts:
-                requested_effort = "low"
-            elif "medium" in supported_efforts:
-                requested_effort = "medium"
-            else:
-                requested_effort = supported_efforts[0]
+        if requested_effort not in supported_efforts:
+            requested_effort = degrade_reasoning_effort(requested_effort, supported_efforts)
 
         return {"effort": requested_effort}
 

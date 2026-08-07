@@ -10,6 +10,7 @@ import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     agent_browser_runnable,
+    degrade_reasoning_effort,
     find_hermes_node_executable,
     find_node_executable,
     find_node_executable_on_path,
@@ -344,6 +345,76 @@ class TestParseReasoningEffort:
         """
         documented = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
+
+
+# Live Copilot catalog entries from #74295, weakest to strongest.
+_OPUS_5_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+_OPUS_46_EFFORTS = ["low", "medium", "high", "max"]
+
+
+class TestDegradeReasoningEffort:
+    """Tests for degrade_reasoning_effort() — mapping Hermes' canonical effort
+    ladder onto the narrower set a provider actually advertises.
+
+    Contract: the mapping stays monotonic. A stronger requested level may
+    resolve to an equal-or-stronger supported level, never a weaker one. The
+    effort picker is monotonic in the UI, so what lands on the wire must be
+    too. Mirrors the LM Studio contract in tests/agent/test_lmstudio_reasoning.
+    """
+
+    @pytest.mark.parametrize(
+        "supported", [_OPUS_5_EFFORTS, _OPUS_46_EFFORTS], ids=["opus-5", "opus-4.6"]
+    )
+    def test_ultra_degrades_to_nearest_weaker_level(self, supported):
+        """`ultra` steps down the ladder instead of clamping to `medium`.
+
+        Regression for #74295: `ultra` is in no Copilot catalog, so it fell
+        through to a hardcoded `medium`, making the strongest picker entry
+        send less thinking than `high`.
+        """
+        assert degrade_reasoning_effort("ultra", supported) == "max"
+
+    def test_xhigh_degrades_to_high_when_unsupported(self):
+        """Models capped below xhigh still step down to high."""
+        assert degrade_reasoning_effort("xhigh", _OPUS_46_EFFORTS) == "high"
+
+    def test_minimal_steps_up_when_nothing_weaker_is_supported(self):
+        """`minimal` has nothing below it, so it takes the weakest supported."""
+        assert degrade_reasoning_effort("minimal", _OPUS_5_EFFORTS) == "low"
+
+    @pytest.mark.parametrize(
+        "supported",
+        [_OPUS_5_EFFORTS, _OPUS_46_EFFORTS, ["medium"], ["low", "max"], ["high"]],
+    )
+    def test_ladder_is_monotonic(self, supported):
+        """Walking the canonical ladder never produces an inversion."""
+        resolved = [
+            degrade_reasoning_effort(effort, supported)
+            for effort in VALID_REASONING_EFFORTS
+        ]
+        ranks = [VALID_REASONING_EFFORTS.index(value) for value in resolved]
+        assert ranks == sorted(ranks), dict(zip(VALID_REASONING_EFFORTS, resolved))
+
+    @pytest.mark.parametrize("supported", [_OPUS_5_EFFORTS, ["medium"], ["high"]])
+    def test_result_is_always_a_supported_level(self, supported):
+        """Never invent a level the provider did not advertise."""
+        for effort in VALID_REASONING_EFFORTS:
+            assert degrade_reasoning_effort(effort, supported) in supported
+
+    def test_supported_level_is_returned_unchanged(self):
+        """A level the catalog lists is forwarded verbatim."""
+        for effort in _OPUS_5_EFFORTS:
+            assert degrade_reasoning_effort(effort, _OPUS_5_EFFORTS) == effort
+
+    def test_unknown_request_keeps_the_medium_default(self):
+        """An effort outside the canonical ladder falls back as before."""
+        assert degrade_reasoning_effort("bogus", _OPUS_5_EFFORTS) == "medium"
+        assert degrade_reasoning_effort("bogus", ["low", "high"]) == "low"
+
+    def test_non_canonical_supported_levels_are_never_selected(self):
+        """`none` disables reasoning, so degrading must not land on it."""
+        assert degrade_reasoning_effort("ultra", ["none", "low", "medium"]) == "medium"
+        assert degrade_reasoning_effort("minimal", ["none", "low"]) == "low"
 
 
 class TestResolvePerModelReasoningEffort:

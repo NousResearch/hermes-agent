@@ -1544,6 +1544,13 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             openrouter_min_coding_score=agent.openrouter_min_coding_score,
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
+            # Resolved agent-side: only the agent holds the route's API key,
+            # and without it the catalog lookup can't see a Claude slot's
+            # effort list at all (#74295). Mirrors the LM Studio options the
+            # legacy path forwards below.
+            copilot_reasoning_efforts=(
+                agent._copilot_reasoning_efforts_cached() if _is_gh else None
+            ),
             qwen_session_metadata=_qwen_meta,
         )
 

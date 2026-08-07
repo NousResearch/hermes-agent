@@ -37,7 +37,7 @@ def _patch_efforts(monkeypatch, efforts):
     """Stub the catalog lookup the profile calls for supported efforts."""
     import hermes_cli.models as models_mod
     monkeypatch.setattr(
-        models_mod, "github_model_reasoning_efforts", lambda model: list(efforts)
+        models_mod, "github_model_reasoning_efforts", lambda model, **_kw: list(efforts)
     )
 
 
@@ -61,6 +61,40 @@ class TestCopilotReasoningEffortClamp:
             supports_reasoning=True,
         )
         assert extra_body["reasoning"] == {"effort": "high"}
+
+    def test_ultra_downgrades_to_max_not_medium(self, copilot_profile, monkeypatch):
+        """`ultra` steps down to `max` instead of collapsing to `medium`.
+
+        Regression for #74295: no Copilot catalog lists `ultra`, so the
+        strongest entry in the picker used to send `medium` — less thinking
+        than picking `high`.
+        """
+        _patch_efforts(monkeypatch, ["low", "medium", "high", "xhigh", "max"])
+        extra_body, _ = copilot_profile.build_api_kwargs_extras(
+            model="claude-opus-5",
+            reasoning_config={"effort": "ultra"},
+            supports_reasoning=True,
+        )
+        assert extra_body["reasoning"] == {"effort": "max"}
+
+    def test_effort_ladder_is_monotonic(self, copilot_profile, monkeypatch):
+        """Requesting a stronger effort never sends a weaker one (#74295)."""
+        from hermes_constants import VALID_REASONING_EFFORTS
+
+        supported = ["low", "medium", "high", "max"]
+        _patch_efforts(monkeypatch, supported)
+
+        sent = []
+        for effort in VALID_REASONING_EFFORTS:
+            extra_body, _ = copilot_profile.build_api_kwargs_extras(
+                model="claude-opus-4.6",
+                reasoning_config={"effort": effort},
+                supports_reasoning=True,
+            )
+            sent.append(extra_body["reasoning"]["effort"])
+
+        ranks = [supported.index(value) for value in sent]
+        assert ranks == sorted(ranks), dict(zip(VALID_REASONING_EFFORTS, sent))
 
     def test_minimal_downgrades_to_low_when_unsupported(self, copilot_profile, monkeypatch):
         _patch_efforts(monkeypatch, ["low", "medium", "high"])

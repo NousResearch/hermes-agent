@@ -362,10 +362,11 @@ class TestSteerInjection:
         assert STEER_MARKER_OPEN in content
         assert "stop after next step" in content
 
-    def test_multimodal_content_list_preserved(self):
+    def test_multimodal_content_list_preserved_for_anthropic_messages(self):
         """Anthropic-style list content should be preserved, with the steer
         appended as a text block."""
         agent = _bare_agent()
+        setattr(agent, "api_mode", "anthropic_messages")
         agent.steer("extra note")
         original_blocks = [{"type": "text", "text": "existing output"}]
         messages = [
@@ -378,6 +379,29 @@ class TestSteerInjection:
         assert new_content[0] == {"type": "text", "text": "existing output"}
         assert new_content[1]["type"] == "text"
         assert "extra note" in new_content[1]["text"]
+
+    def test_multimodal_content_is_string_for_chat_completions(self):
+        """Chat-completions tool messages must not receive Anthropic blocks."""
+        agent = _bare_agent()
+        agent.steer("extra note")
+        messages = [
+            {
+                "role": "tool",
+                "content": [
+                    {"type": "text", "text": "existing output"},
+                    {"type": "image", "source": {"type": "base64"}},
+                ],
+                "tool_call_id": "1",
+            }
+        ]
+
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+
+        content = messages[-1]["content"]
+        assert isinstance(content, str)
+        assert "existing output" in content
+        assert STEER_MARKER_OPEN in content
+        assert "extra note" in content
 
 
 

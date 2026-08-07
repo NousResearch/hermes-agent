@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import _FULL_ARGS_LOG_BOUND
 from agent.prompt_builder import format_steer_marker
+from agent.message_content import flatten_message_text
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED, credential_pool_matches_provider
@@ -3935,7 +3936,9 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     The steer is appended to the last ``role:"tool"`` message's content
     with a clear marker so the model understands it came from the user
     and NOT from the tool itself. Role alternation is preserved —
-    nothing new is inserted, we only modify existing content.
+    nothing new is inserted, we only modify existing content. Anthropic block
+    content is preserved only for the Anthropic Messages wire format; other
+    providers receive plain-string tool content.
 
     Args:
         messages: The running messages list.
@@ -3973,7 +3976,10 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         return
     marker = format_steer_marker(steer_text)
     existing_content = messages[target_idx].get("content", "")
-    if not isinstance(existing_content, str):
+    if (
+        not isinstance(existing_content, str)
+        and getattr(agent, "api_mode", "") == "anthropic_messages"
+    ):
         # Anthropic multimodal content blocks — preserve them and append
         # a text block at the end.
         try:
@@ -3983,6 +3989,10 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         except Exception:
             # Fall back to string replacement if content shape is unexpected.
             messages[target_idx]["content"] = f"{existing_content}{marker}"
+    elif not isinstance(existing_content, str):
+        # Chat-completions tool messages require a plain string. Flatten any
+        # provider content blocks instead of leaking Anthropic wire format.
+        messages[target_idx]["content"] = flatten_message_text(existing_content) + marker
     else:
         messages[target_idx]["content"] = existing_content + marker
     _ra().logger.info(

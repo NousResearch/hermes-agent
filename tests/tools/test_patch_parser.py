@@ -788,6 +788,109 @@ class TestMoveThenUpdateSameFile:
         assert "already exists" in (result.error or "")
 
 
+class TestAddThenOpSameFile:
+    """A create-then-touch patch must validate and apply (was rejected).
+
+    Sibling of TestMoveThenUpdateSameFile: _validate_operations reflected a
+    MOVE's destination into its overlay but never an ADD's, so an
+    `Add b` + `Update b` (or `Add b` + `Move b -> c`) failed validation with
+    'b: file not found' even though the two-phase apply — which writes the ADD
+    before reading it back — would have succeeded. ADD was the missed overlay
+    producer.
+    """
+
+    def test_add_then_update_same_file(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: src/m.py\n"
+            "+def greet():\n"
+            '+    return "hi"\n'
+            "*** Update File: src/m.py\n"
+            "@@ def greet @@\n"
+            '-    return "hi"\n'
+            '+    return "hello"\n'
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _DictFileOps({})  # src/m.py does not exist on disk yet
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is True, getattr(result, "error", None)
+        assert fo.files["src/m.py"] == 'def greet():\n    return "hello"'
+
+    def test_add_then_move_same_file(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: src/a.py\n"
+            "+x = 1\n"
+            "*** Move File: src/a.py -> src/b.py\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _DictFileOps({})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is True, getattr(result, "error", None)
+        assert "src/a.py" not in fo.files
+        assert fo.files["src/b.py"] == "x = 1"
+
+    def test_delete_then_add_then_update_same_file(self):
+        """Recreating a deleted path must read as present for a later hunk."""
+        patch = (
+            "*** Begin Patch\n"
+            "*** Delete File: src/c.py\n"
+            "*** Add File: src/c.py\n"
+            "+y = 1\n"
+            "*** Update File: src/c.py\n"
+            "@@\n"
+            "-y = 1\n"
+            "+y = 2\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _DictFileOps({"src/c.py": "old = 0\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is True, getattr(result, "error", None)
+        assert fo.files["src/c.py"] == "y = 2"
+
+    def test_add_then_update_mismatch_still_rejected(self):
+        """The overlay must not blind a genuine hunk mismatch on the new file."""
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: src/m.py\n"
+            "+alpha = 1\n"
+            "*** Update File: src/m.py\n"
+            "@@\n"
+            "-DOES_NOT_EXIST\n"
+            "+z\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _DictFileOps({})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is False
+        assert "src/m.py" not in fo.files  # atomic: nothing written
+
+    def test_update_missing_file_without_add_still_rejected(self):
+        """A bare Update of a path no prior op created is still 'file not found'."""
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: ghost.py\n"
+            "@@\n"
+            "-a\n"
+            "+b\n"
+            "*** End Patch\n"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _DictFileOps({})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is False
+        assert "file not found" in (result.error or "")
+
+
 class TestCrlfPatchBody:
     """A CRLF-encoded patch body must not inject stray carriage returns."""
 

@@ -5,11 +5,11 @@ from cli import HermesCLI
 from hermes_cli.moa_config import decode_moa_turn
 
 
-def _make_cli():
+def _make_cli(default_preset="default"):
     cli = HermesCLI.__new__(HermesCLI)
     cli.config = {
         "moa": {
-            "default_preset": "default",
+            "default_preset": default_preset,
             "presets": {
                 "default": {
                     "reference_models": [{"provider": "openai-codex", "model": "gpt-5.5"}],
@@ -88,6 +88,17 @@ class TestNormalizeMoaModel:
         assert _normalize_moa_model("moa:strategy") == ("moa", "strategy")
 
 
+    def test_bare_moa_maps_to_default_preset(self):
+        from cli import _normalize_moa_model
+
+        config = _make_cli(default_preset="review").config
+        with patch("hermes_cli.config.load_config", return_value=config):
+            assert _normalize_moa_model("  MOA  ") == ("moa", "review")
+
+    def test_empty_moa_prefix_is_not_treated_as_virtual(self):
+        from cli import _normalize_moa_model
+        # No preset after the colon → leave untouched (no provider override).
+        assert _normalize_moa_model("moa:") == (None, "moa:")
 
 
     def test_none_model_unchanged(self):
@@ -113,3 +124,64 @@ class TestNormalizeMoaModel:
         assert requested_provider == "moa"
         assert model == "strategy"
 
+
+class TestBareMoaModelSwitch:
+    def test_bare_moa_reuses_default_preset_when_already_on_moa(self):
+        from hermes_cli.model_switch import switch_model
+
+        config = _make_cli(default_preset="review").config
+        with (
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={
+                    "api_key": "moa-virtual-provider",
+                    "base_url": "moa://local",
+                    "api_mode": "chat_completions",
+                },
+            ),
+            patch("hermes_cli.model_switch.get_model_info", return_value=None),
+            patch("hermes_cli.model_switch.get_model_capabilities", return_value=None),
+        ):
+            result = switch_model(
+                "moa",
+                "moa",
+                "default",
+                current_base_url="moa://local",
+                current_api_key="moa-virtual-provider",
+                is_global=True,
+            )
+
+        assert result.success is True, result.error_message
+        assert result.target_provider == "moa"
+        assert result.new_model == "review"
+        assert result.is_global is True
+
+    def test_prefixed_moa_preset_uses_virtual_provider_in_session(self):
+        from hermes_cli.model_switch import switch_model
+
+        config = _make_cli(default_preset="review").config
+        with (
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={
+                    "api_key": "moa-virtual-provider",
+                    "base_url": "moa://local",
+                    "api_mode": "chat_completions",
+                },
+            ),
+            patch("hermes_cli.model_switch.get_model_info", return_value=None),
+            patch("hermes_cli.model_switch.get_model_capabilities", return_value=None),
+        ):
+            result = switch_model(
+                "moa:review",
+                "openrouter",
+                "anthropic/claude-opus-4.8",
+                current_base_url="https://openrouter.ai/api/v1",
+                current_api_key="test-key",
+            )
+
+        assert result.success is True, result.error_message
+        assert result.target_provider == "moa"
+        assert result.new_model == "review"

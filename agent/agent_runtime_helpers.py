@@ -2713,7 +2713,12 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         from hermes_cli.config import load_config as _sm_load_config
 
         _reasoning_cfg = _sm_load_config() or {}
-        agent.reasoning_config = resolve_reasoning_config(_reasoning_cfg, agent.model)
+        _resolved = resolve_reasoning_config(_reasoning_cfg, agent.model)
+        # Only overwrite when config returns a real value (#72856).
+        # This preserves session-level reasoning_effort set via /reasoning
+        # while still applying per-model reasoning_overrides (non-None).
+        if _resolved is not None:
+            agent.reasoning_config = _resolved
         logger.info(
             "switch_model: reasoning_config resolved for %s: %s",
             agent.model, agent.reasoning_config,

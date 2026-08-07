@@ -12,11 +12,13 @@ import { compactNumber } from '@/lib/format'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $activeSessionId } from '@/store/session'
+import { $focusedRuntimeId } from '@/store/session-states'
 import {
   $subagentsBySession,
-  allSubagents,
   buildSubagentTree,
   type SubagentNode,
+  subagentsForPanel,
   type SubagentStatus,
   type SubagentStreamEntry
 } from '@/store/subagents'
@@ -81,11 +83,16 @@ interface AgentsViewProps {
 export function AgentsView({ onClose }: AgentsViewProps) {
   const { t } = useI18n()
   const subagentsBySession = useStore($subagentsBySession)
+  const activeSessionId = useStore($activeSessionId)
+  const focusedRuntimeId = useStore($focusedRuntimeId)
 
-  // Aggregate every session, matching the status-bar indicator — a subagent
-  // running in a background session must still be visible here, or the two
-  // desync ("Agents N running" vs an empty tree).
-  const tree = useMemo(() => buildSubagentTree(allSubagents(subagentsBySession)), [subagentsBySession])
+  // Keep complete context for the focused session and any background session
+  // that still has live work. Once an inactive session is wholly terminal its
+  // historical rows no longer belong in the live Spawn tree.
+  const tree = useMemo(
+    () => buildSubagentTree(subagentsForPanel(subagentsBySession, focusedRuntimeId ?? activeSessionId)),
+    [activeSessionId, focusedRuntimeId, subagentsBySession]
+  )
 
   return (
     <Panel closeLabel={t.agents.close} onClose={onClose}>

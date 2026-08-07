@@ -105,14 +105,14 @@ const PlainCode: FC<{ code: string }> = ({ code }) => {
   const chunks = useMemo(() => chunkByLines(code, CHUNK_LINES), [code])
 
   if (chunks.length === 1) {
-    return <code className="block whitespace-pre">{code}</code>
+    return <code className="block whitespace-pre-wrap wrap-anywhere">{code}</code>
   }
 
   return (
     <>
       {chunks.map((chunk, index) => (
         <code
-          className="block whitespace-pre [content-visibility:auto]"
+          className="block whitespace-pre-wrap wrap-anywhere [content-visibility:auto]"
           key={index}
           style={{ containIntrinsicSize: `auto ${chunk.lines * EST_LINE_PX}px` }}
         >
@@ -156,7 +156,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
       />
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>
-          <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">
+          <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0 whitespace-pre-wrap wrap-anywhere [&_code]:whitespace-pre-wrap [&_pre]:whitespace-pre-wrap">
             {plain ? (
               <PlainCode code={trimmed} />
             ) : (

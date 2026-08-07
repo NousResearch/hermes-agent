@@ -761,6 +761,24 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, content, profile: profile || undefined }),
     }),
+  getPendingSkillWrites: (profile?: string) =>
+    fetchJSON<{ pending: SkillPendingWrite[] }>(
+      `/api/skills/pending${profileQuery(profile)}`,
+    ).then(({ pending }) => pending),
+  getPendingSkillDiff: (id: string, profile?: string) =>
+    fetchJSON<SkillPendingDiff>(
+      `/api/skills/pending/${encodeURIComponent(id)}/diff${profileQuery(profile)}`,
+    ),
+  approvePendingSkillWrite: (id: string, profile?: string) =>
+    fetchJSON<{ ok: boolean; id: string }>(
+      `/api/skills/pending/${encodeURIComponent(id)}/approve${profileQuery(profile)}`,
+      { method: "POST" },
+    ),
+  rejectPendingSkillWrite: (id: string, profile?: string) =>
+    fetchJSON<{ ok: boolean; id: string }>(
+      `/api/skills/pending/${encodeURIComponent(id)}${profileQuery(profile)}`,
+      { method: "DELETE" },
+    ),
   getToolsets: (profile?: string) =>
     fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
   toggleToolset: (name: string, enabled: boolean, profile?: string) =>
@@ -2273,6 +2291,22 @@ export interface SkillWriteResult {
   message?: string;
   path?: string;
   error?: string;
+}
+
+export interface SkillPendingWrite {
+  id: string;
+  action: string;
+  summary: string;
+  origin: string;
+  created_at: number;
+  name: string;
+  file_path: string;
+}
+
+export interface SkillPendingDiff {
+  id: string;
+  summary: string;
+  diff: string;
 }
 
 export interface ToolsetInfo {

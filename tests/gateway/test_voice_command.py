@@ -466,8 +466,9 @@ class TestVoiceChannelCommands:
 
 
     @pytest.mark.asyncio
-    async def test_join_success(self, runner):
-        """Successful join sets voice_mode and returns confirmation."""
+    @pytest.mark.parametrize("saved_mode", [None, "all", "voice_only", "off"])
+    async def test_join_success(self, runner, saved_mode):
+        """Joining preserves the selected reply policy and expires it with the call."""
         mock_channel = MagicMock()
         mock_channel.name = "General"
         mock_adapter = AsyncMock()
@@ -475,6 +476,8 @@ class TestVoiceChannelCommands:
         mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
         mock_adapter._voice_text_channels = {}
         mock_adapter._voice_sources = {}
+        mock_adapter._auto_tts_enabled_chats = set()
+        mock_adapter._auto_tts_disabled_chats = set()
         async def join(channel, *, text_channel_id, source):
             mock_adapter._voice_text_channels[111] = text_channel_id
             mock_adapter._voice_sources[111] = source
@@ -485,11 +488,27 @@ class TestVoiceChannelCommands:
         event.source.chat_type = "group"
         event.source.chat_name = "Hermes Server / #general"
         runner.adapters[event.source.platform] = mock_adapter
+        if saved_mode is not None:
+            runner._voice_mode["discord:123"] = saved_mode
         result = await runner._handle_voice_channel_join(event)
-        assert "General" in result
-        assert runner._voice_mode["discord:123"] == "all"
-        assert mock_adapter._voice_sources[111]["chat_id"] == "123"
-        assert mock_adapter._voice_sources[111]["chat_type"] == "group"
+        effective_mode = saved_mode or "all"
+        reply_key = {
+            "voice_only": "gateway.voice.channel_joined_voice_only",
+            "off": "gateway.voice.channel_joined_off",
+        }.get(effective_mode, "gateway.voice.channel_joined")
+        from agent.i18n import t
+
+        assert (
+            result, runner._voice_mode, runner._voice_call_keys,
+            json.loads(runner._VOICE_MODE_PATH.read_text()),
+            mock_adapter._voice_sources[111], mock_adapter._auto_tts_enabled_chats,
+            mock_adapter._auto_tts_disabled_chats,
+        ) == (
+            t(reply_key, name="General"), {"discord:123": effective_mode},
+            {"discord:123"}, {"discord:123": "off"}, event.source.to_dict(),
+            {"123"} if effective_mode != "off" else set(),
+            {"123"} if effective_mode == "off" else set(),
+        )
 
 
     @pytest.mark.asyncio

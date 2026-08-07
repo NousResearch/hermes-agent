@@ -2078,6 +2078,7 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         max_tokens: int | None = None,
+        default_threshold_percent: float | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
         runtime_changed = any((
@@ -2093,15 +2094,22 @@ class ContextCompressor(ContextEngine):
         self.api_mode = api_mode
         self.context_length = context_length
         # Re-resolve per-model threshold for the NEW model, then re-apply the
-        # small-context threshold floor. Starting from _config_threshold_percent
-        # (the raw config value) so a switch from a model with an override to
-        # one without correctly falls back to the global threshold.
+        # small-context threshold floor. Callers may provide a route-specific
+        # default for this update; the immutable _config_threshold_percent
+        # remains the fallback on later switches. Explicit model_thresholds
+        # still win because resolve_model_threshold applies them last.
         _config_pct = getattr(
             self, "_config_threshold_percent", self.threshold_percent,
         )
-        _new_base = resolve_model_threshold(
-            model, self.model_thresholds, _config_pct,
+        _default_pct = (
+            _config_pct
+            if default_threshold_percent is None
+            else default_threshold_percent
         )
+        _new_base = resolve_model_threshold(
+            model, self.model_thresholds, _default_pct,
+        )
+        self._configured_threshold_percent = _new_base
         self._base_threshold_percent = _new_base
         self.threshold_percent = self._effective_threshold_percent(
             context_length, _new_base,
@@ -2311,6 +2319,7 @@ class ContextCompressor(ContextEngine):
         proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096,
         min_tail_user_messages: int = 1,
+        default_threshold_percent: float | None = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -2321,13 +2330,18 @@ class ContextCompressor(ContextEngine):
         # Stored as a plain dict; resolved in _resolve_threshold(), then the
         # small-context floor is applied on top.
         self.model_thresholds = model_thresholds or {}
-        # _config_threshold_percent is the raw config value (before per-model
-        # override or small-context floor). Used as the fallback when switching
-        # to a model with no matching override.
+        # _config_threshold_percent is the immutable raw config value. A
+        # route-specific default affects only this model; explicit
+        # model_thresholds still take precedence and later switches without an
+        # override return to the raw baseline.
         self._config_threshold_percent = threshold_percent
-        # Resolve per-model override first, then apply the small-context floor.
+        _default_pct = (
+            threshold_percent
+            if default_threshold_percent is None
+            else default_threshold_percent
+        )
         self._base_threshold_percent = resolve_model_threshold(
-            model, self.model_thresholds, threshold_percent,
+            model, self.model_thresholds, _default_pct,
         )
         self.threshold_percent = self._base_threshold_percent
         # Absolute token cap from config (compression.threshold_tokens). When

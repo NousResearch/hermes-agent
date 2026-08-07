@@ -64,7 +64,9 @@ def _make_direct_start_agent(
         )
 
 
-def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
+def _make_agent_with_compressor(
+    config_context_length=None, global_threshold=0.50,
+) -> AIAgent:
     """Build a minimal AIAgent with a context_compressor, skipping __init__."""
     agent = AIAgent.__new__(AIAgent)
 
@@ -83,7 +85,7 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
     # Context compressor with primary model values
     compressor = ContextCompressor(
         model="primary-model",
-        threshold_percent=0.50,
+        threshold_percent=global_threshold,
         base_url="https://openrouter.ai/api/v1",
         api_key="sk-primary",
         provider="openrouter",
@@ -94,7 +96,50 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
 
     # For switch_model
     agent._primary_runtime = {}
+    return agent
 
+
+
+
+def _make_initialized_agent(
+    *,
+    model: str,
+    provider: str,
+    api_mode: str,
+    context_length: int,
+    threshold: float,
+) -> AIAgent:
+    config = {
+        "agent": {},
+        "compression": {
+            "enabled": True,
+            "threshold": threshold,
+            "codex_gpt55_autoraise": True,
+        },
+    }
+    with (
+        patch("hermes_cli.config.load_config", return_value=config),
+        patch("hermes_cli.config.load_config_readonly", return_value=config),
+        patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=context_length,
+        ),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            model=model,
+            provider=provider,
+            api_mode=api_mode,
+            api_key="test-key-1234567890",
+            base_url="https://custom.example/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
     return agent
 
 
@@ -284,3 +329,98 @@ def test_lmstudio_switch_uses_destination_context_and_verified_runtime(monkeypat
     assert call_kwargs.get("config_context_length") == 100_000
     assert agent._config_context_length == 120_000
     assert agent.context_compressor.context_length == 100_000
+
+
+@patch("agent.model_metadata.get_model_context_length")
+def test_switch_model_custom_codex_threshold_uses_resolved_window(mock_ctx_len):
+    """Custom Codex routes raise, then restore the preserved baseline."""
+    mock_ctx_len.side_effect = [410_000, 1_050_000]
+    agent = _make_agent_with_compressor(config_context_length=None)
+
+    agent.switch_model(
+        "gpt-5.6-sol",
+        "custom",
+        api_key="sk-custom",
+        base_url="https://custom.example/v1",
+        api_mode="codex_responses",
+    )
+
+    compressor = agent.context_compressor
+    assert compressor.context_length == 410_000
+    assert compressor._config_threshold_percent == 0.50
+    assert compressor._configured_threshold_percent == 0.85
+    assert compressor.threshold_percent == 0.85
+    assert compressor.threshold_tokens == int(410_000 * 0.85)
+
+    agent.switch_model(
+        "glm-5.2-heavy",
+        "custom",
+        api_key="sk-custom",
+        base_url="https://custom.example/v1",
+        api_mode="chat_completions",
+    )
+
+    assert compressor.context_length == 1_050_000
+    assert compressor._config_threshold_percent == 0.50
+    assert compressor._configured_threshold_percent == 0.50
+    assert compressor.threshold_percent == 0.50
+    assert compressor.threshold_tokens == int(1_050_000 * 0.50)
+    assert mock_ctx_len.call_count == 2
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=1_050_000)
+def test_initialized_custom_codex_switch_restores_configured_threshold(
+    mock_ctx_len,
+):
+    agent = _make_initialized_agent(
+        model="gpt-5.6-sol",
+        provider="custom",
+        api_mode="codex_responses",
+        context_length=410_000,
+        threshold=0.42,
+    )
+    compressor = agent.context_compressor
+
+    assert agent._compression_global_threshold == 0.42
+    assert compressor._config_threshold_percent == 0.42
+    assert compressor._configured_threshold_percent == 0.85
+    assert compressor.threshold_percent == 0.85
+
+    agent.switch_model(
+        "glm-5.2-heavy",
+        "custom",
+        api_key="test-key-1234567890",
+        base_url="https://custom.example/v1",
+        api_mode="chat_completions",
+    )
+
+    assert compressor.context_length == 1_050_000
+    assert compressor._config_threshold_percent == 0.42
+    assert compressor._configured_threshold_percent == 0.42
+    assert compressor.threshold_percent == 0.42
+    assert compressor.threshold_tokens == int(1_050_000 * 0.42)
+    mock_ctx_len.assert_called_once()
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=410_000)
+def test_switch_model_custom_codex_autoraise_respects_opt_out(mock_ctx_len):
+    agent = _make_agent_with_compressor(
+        config_context_length=None,
+        global_threshold=0.42,
+    )
+    agent._codex_gpt55_autoraise = False
+
+    agent.switch_model(
+        "gpt-5.6-sol",
+        "custom",
+        api_key="sk-custom",
+        base_url="https://custom.example/v1",
+        api_mode="codex_responses",
+    )
+
+    compressor = agent.context_compressor
+    assert compressor._config_threshold_percent == 0.42
+    assert compressor._configured_threshold_percent == 0.42
+    assert compressor.threshold_percent == 0.75
+    assert compressor.threshold_tokens == int(410_000 * 0.75)
+    mock_ctx_len.assert_called_once()

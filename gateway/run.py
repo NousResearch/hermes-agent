@@ -10975,22 +10975,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # point at one active session. Load and prune the durable routing index
         # first, then fail closed with a redacted operator error before any
         # platform can receive a message.
-        try:
-            await self.async_session_store.assert_no_cross_profile_session_aliases()
-        except MultiplexSessionCollisionError as exc:
-            reason = str(exc)
-            logger.error("Gateway multiplex session collision: %s", reason)
+        if getattr(self.config, "multiplex_profiles", False):
             try:
-                from gateway.status import write_runtime_status
-                write_runtime_status(
-                    gateway_state="startup_failed",
-                    exit_reason="multiplex_session_collision",
+                await (
+                    self.async_session_store
+                    .assert_no_cross_profile_session_aliases()
                 )
-            except Exception:
-                pass
-            self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
-            self._request_clean_exit(reason)
-            return True
+            except MultiplexSessionCollisionError as exc:
+                reason = str(exc)
+                logger.error("Gateway multiplex session collision: %s", reason)
+                try:
+                    from gateway.status import write_runtime_status
+                    write_runtime_status(
+                        gateway_state="startup_failed",
+                        exit_reason="multiplex_session_collision",
+                    )
+                except Exception:
+                    pass
+                self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
+                self._request_clean_exit(reason)
+                return True
         
         # Warn if no user allowlists are configured and open access is not opted in
         _builtin_allowed_vars = (

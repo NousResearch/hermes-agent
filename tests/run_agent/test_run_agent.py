@@ -138,9 +138,9 @@ def test_flush_forwards_deferred_adoption_ids_to_sessiondb(agent):
         [],
     )
 
-    assert agent._session_db.append_message.call_args.kwargs[
-        "deferred_notification_ids"
-    ] == [event_id]
+    assert agent._session_db.append_messages_batch.call_args.kwargs[
+        "messages"
+    ][0]["deferred_notification_ids"] == [event_id]
 
 
 def test_direct_session_db_flushes_share_marker_claim(agent):

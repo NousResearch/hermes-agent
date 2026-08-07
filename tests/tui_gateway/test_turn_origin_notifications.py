@@ -974,7 +974,7 @@ def test_deferred_durable_completion_survives_session_recreation_and_consumes_on
     )
 
     assert len(calls) == 2
-    assert calls[1] == ("Later request", None)
+    assert calls[1] == ("Later request", "Later request")
     assert sum("durable result" in prompt for prompt, _persisted in calls) == 1
 
 
@@ -1195,8 +1195,12 @@ def test_compression_between_claim_and_ack_migrates_owner_and_delivers_once(
                     "ids": list(deferred_notification_ids or ()),
                 }
             )
-            db.append_message(parent, "user", persist_user_message)
             self.session_id = child
+            db.append_message(
+                child,
+                "user",
+                persist_user_message,
+            )
             db.append_message(
                 child,
                 "assistant",

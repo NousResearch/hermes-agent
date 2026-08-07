@@ -130,6 +130,7 @@ class TestBuildChildAgentWiring(unittest.TestCase):
     """End-to-end through _build_child_agent: the resolver is actually wired."""
 
     def _spawn(self, parent, cfg, **overrides):
+        model = overrides.pop("model", None)
         with (
             patch("tools.delegate_tool._load_config", return_value=cfg),
             patch("run_agent.AIAgent") as MockAgent,
@@ -140,7 +141,7 @@ class TestBuildChildAgentWiring(unittest.TestCase):
                 goal="matrix wiring",
                 context=None,
                 toolsets=None,
-                model=None,
+                model=model,
                 max_iterations=10,
                 parent_agent=parent,
                 task_count=1,
@@ -170,6 +171,25 @@ class TestBuildChildAgentWiring(unittest.TestCase):
             override_provider="deepseek",
             override_base_url="https://api.deepseek.example/v1",
             override_api_key="sk-ds",
+        )
+        providers = {e.get("provider") for e in (kwargs["fallback_model"] or [])}
+        self.assertIn("deepseek", providers)
+        self.assertNotIn("openrouter", providers)
+
+    def test_model_only_pin_gets_no_parent_chain(self):
+        """The model arm of #80450: delegation.model without delegation.provider
+        must not inherit the parent chain — a mid-run failure would silently
+        swap the pinned model."""
+        kwargs = self._spawn(
+            _parent(list(PARENT_CHAIN)), {}, model="deepseek-chat",
+        )
+        self.assertIsNone(kwargs["fallback_model"])
+
+    def test_model_only_pin_with_declared_chain_uses_declared(self):
+        kwargs = self._spawn(
+            _parent(list(PARENT_CHAIN)),
+            {"fallback_providers": list(DECLARED_CHAIN)},
+            model="deepseek-chat",
         )
         providers = {e.get("provider") for e in (kwargs["fallback_model"] or [])}
         self.assertIn("deepseek", providers)

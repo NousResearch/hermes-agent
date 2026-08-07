@@ -2220,8 +2220,14 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
     try:
         # mode=ro refuses to create the file and refuses every write; a
         # short timeout keeps doctor snappy when a writer holds the lock.
-        conn = sqlite3.connect(
-            f"file:{Path(db_path)}?mode=ro", uri=True, timeout=2.0
+        # Route through the tracked connect so byte-probe helpers
+        # (read_header_bytes_preopen) see this connection and refuse raw
+        # opens that could cancel our POSIX locks mid-read.
+        conn = _connect_tracked_db(
+            f"file:{Path(db_path)}?mode=ro",
+            tracking_path=Path(db_path),
+            uri=True,
+            timeout=2.0,
         )
     except Exception as exc:
         logger.debug("collect_state_db_stats: cannot open %s read-only: %s",

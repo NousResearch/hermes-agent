@@ -3719,8 +3719,8 @@ class AIAgent:
                     prefix
                     + "the turn was stopped because session storage was busy "
                     "(another Hermes process was writing to the state "
-                    "database). Your message was saved — please send it "
-                    "again in a moment."
+                    "database). Your message should already be saved — "
+                    "please send it again in a moment."
                 )
             if cause == "disk":
                 return (

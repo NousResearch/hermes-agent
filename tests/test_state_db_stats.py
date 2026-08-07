@@ -208,14 +208,18 @@ def test_render_large_db_legacy_trigram_suggests_optimize():
     assert "optimize-storage" in blob
 
 
-def test_render_warns_on_large_wal():
+def test_render_does_not_duplicate_legacy_wal_warning():
+    """A large WAL must NOT warn here: doctor's pre-existing WAL check
+    (50 MB threshold, with a --fix checkpoint) already covers it, and a
+    second warning at a higher threshold would duplicate the output."""
     from hermes_cli.doctor import STATE_DB_WAL_WARN_BYTES, _render_state_db_stats
 
     lines = _render_state_db_stats(
         _base_stats(wal_size_bytes=STATE_DB_WAL_WARN_BYTES + 1), holders=None
     )
-    blob = " ".join(" ".join(str(p) for p in line) for line in lines).lower()
-    assert "checkpoint" in blob
+    warns = [line for line in lines if line[0] == "warn"]
+    blob = " ".join(" ".join(str(p) for p in line) for line in warns).lower()
+    assert "wal" not in blob
 
 
 def test_render_handles_all_none_stats():

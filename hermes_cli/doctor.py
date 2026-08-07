@@ -309,14 +309,11 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
             f"({detail})",
         ))
 
-    # Advisory: WAL runaway — checkpoints are not landing.
-    if wal is not None and wal > STATE_DB_WAL_WARN_BYTES:
-        lines.append((
-            "warn",
-            f"state.db WAL is very large ({_human_bytes(wal)})",
-            "(checkpoints may not be completing — a long-lived reader or "
-            "stuck process can block them; see 'hermes doctor --fix')",
-        ))
+    # WAL runaway is deliberately NOT warned here: the pre-existing WAL
+    # check later in the state.db section already warns above 50 MB and
+    # offers a checkpoint via --fix; a second warning at a higher threshold
+    # would only duplicate it. STATE_DB_WAL_WARN_BYTES remains for callers
+    # (dashboards) that consume the stats dict without that legacy check.
 
     return lines
 

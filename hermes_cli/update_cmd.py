@@ -4084,6 +4084,48 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # marker survives and the next ``hermes`` launch finishes the install
         # via ``_recover_from_interrupted_install``. Cleared after the core
         # ``.[all]`` install completes — lazy refresh uses a separate marker.
+
+        # Second venv-holder re-check: the guard at the top of this function
+        # runs BEFORE git operations (which can take 30+ seconds). A gateway
+        # supervisor (Scheduled Task, login watchdog) can respawn its gateway
+        # in that window, re-locking .pyd files and causing the dependency
+        # sync to fail with "os error 5" on rename. Re-check now and kill
+        # any respawned gateways before touching the venv. (#77394)
+        if (
+            _m()._is_windows()
+            and _windows_gateway_resume is not None
+            and not getattr(args, "force_venv", False)
+        ):
+            _venv_holders_recheck = _m()._detect_venv_python_processes()
+            if _venv_holders_recheck:
+                _gateway_holders_recheck = _m()._leftover_pausable_gateway_pids(
+                    _venv_holders_recheck
+                )
+                if _gateway_holders_recheck is not None:
+                    from gateway.status import terminate_pid
+
+                    print(
+                        f"  ⚠ {len(_gateway_holders_recheck)} gateway process(es)"
+                        " respawned during update; stopping them"
+                    )
+                    for _pid in _gateway_holders_recheck:
+                        try:
+                            terminate_pid(int(_pid), force=True)
+                        except Exception as exc:
+                            logger.debug(
+                                "Could not stop respawned gateway %s: %s",
+                                _pid,
+                                exc,
+                            )
+                    _time.sleep(2.0)
+                    _venv_holders_recheck = _m()._detect_venv_python_processes()
+                if _venv_holders_recheck:
+                    print(_format_venv_python_holders_message(_venv_holders_recheck))
+                    _m()._resume_windows_gateways_after_update(
+                        _windows_gateway_resume
+                    )
+                    sys.exit(2)
+
         _write_update_incomplete_marker()
         print("→ Updating Python dependencies...")
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv

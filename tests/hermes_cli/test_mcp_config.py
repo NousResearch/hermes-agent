@@ -302,6 +302,67 @@ class TestMcpTest:
         assert "Connected" in out
         assert "Tools discovered: 2" in out
 
+    def test_test_reports_stdio_env_credential_without_value(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        _seed_config(tmp_path, {
+            "github": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-github"],
+                "env": {
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}",
+                },
+            },
+        })
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", lambda *a, **kw: []
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="github"))
+        out = capsys.readouterr().out
+
+        assert "Auth: stdio env (GITHUB_PERSONAL_ACCESS_TOKEN)" in out
+        assert "${GITHUB_TOKEN}" not in out
+
+    def test_test_does_not_treat_noncredential_stdio_env_as_auth(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        _seed_config(tmp_path, {
+            "local": {
+                "command": "uvx",
+                "args": ["local-mcp"],
+                "env": {"LOG_LEVEL": "debug"},
+            },
+        })
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", lambda *a, **kw: []
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="local"))
+        out = capsys.readouterr().out
+
+        assert "Auth: none" in out
+
+    def test_test_tolerates_null_stdio_env(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "local": {
+                "command": "uvx",
+                "args": ["local-mcp"],
+                "env": None,
+            },
+        })
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", lambda *a, **kw: []
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="local"))
+        out = capsys.readouterr().out
+
+        assert "Auth: none" in out
+
     def test_probe_uses_configured_connect_timeout(self, monkeypatch):
         """OAuth-capable probes must not hard-code a short 30s timeout."""
         import asyncio

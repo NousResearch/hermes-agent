@@ -237,6 +237,90 @@ async def test_list_channels_returns_none_on_contacts_timeout():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_send_dm():
+    """DMs use the structured ``/_send @<id> json [...]`` form.
+
+    The bare ``@<id> text`` shorthand resolves ``<id>`` as a display-name
+    lookup in the daemon, so numeric contact IDs fail with
+    ``chatCmdError { contactNotFound }``. The structured ``/_send`` form
+    addresses by numeric contact ID and survives newlines/quoting through
+    ``json.dumps``.
+    """
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    mock_ws = AsyncMock()
+    adapter._ws = mock_ws
+
+    result = await adapter.send("42", "Hello, DM!")
+    payload = json.loads(mock_ws.send.call_args[0][0])
+    assert payload["cmd"].startswith("/_send @42 json ")
+    msg_content = json.loads(payload["cmd"].split(" json ", 1)[1])[0][
+        "msgContent"
+    ]
+    assert msg_content == {"type": "text", "text": "Hello, DM!"}
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_send_dm_multiline():
+    """Multiline DM content is preserved through json.dumps escaping."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    mock_ws = AsyncMock()
+    adapter._ws = mock_ws
+
+    text = "Line one\nLine two\n\"quoted\""
+    result = await adapter.send("6", text)
+    payload = json.loads(mock_ws.send.call_args[0][0])
+    msg_content = json.loads(payload["cmd"].split(" json ", 1)[1])[0][
+        "msgContent"
+    ]
+    assert msg_content == {"type": "text", "text": text}
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_dm_uses_structured_form(monkeypatch):
+    """Standalone send (cron path) uses /_send @<id> json, not bare @<id>."""
+    try:
+        import websockets  # noqa: F401
+    except ImportError:
+        pytest.skip("websockets not installed")
+
+    sent_payload = {}
+
+    class FakeWS:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def send(self, data):
+            sent_payload["data"] = data
+
+    # The standalone send path does ``import websockets as _wsclient``
+    # inside the function body, so patch the connect on the real module.
+    monkeypatch.setattr(websockets, "connect", lambda *a, **kw: FakeWS())
+
+    pconfig = MagicMock()
+    pconfig.extra = {"ws_url": "ws://localhost:5225"}
+    result = await _standalone_send(pconfig, "42", "hello from cron")
+
+    assert result["success"] is True
+    payload = json.loads(sent_payload["data"])
+    assert payload["cmd"].startswith("/_send @42 json ")
+    msg_content = json.loads(payload["cmd"].split(" json ", 1)[1])[0][
+        "msgContent"
+    ]
+    assert msg_content == {"type": "text", "text": "hello from cron"}
+
+
+@pytest.mark.asyncio
 async def test_standalone_send_missing_websockets(monkeypatch):
     """When websockets is unimportable, return a clean error dict.
 

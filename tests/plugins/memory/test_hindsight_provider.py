@@ -334,8 +334,10 @@ class TestConfig:
 
         class FakeHindsightEmbedded:
             def __init__(self, **kwargs):
+                self.config = {}
                 captured.update(kwargs)
-
+                
+        monkeypatch.setattr("tools.lazy_deps.ensure", lambda feature, prompt=True: None)
         monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
 
@@ -347,13 +349,20 @@ class TestConfig:
             "llm_api_key": "test-key",
             "llm_model": "test-model",
             "idle_timeout": 0,
+            "embeddings_provider": "google",
+            "embeddings_gemini_model": "gemini-embedding-001",
+            "embeddings_gemini_output_dimensionality": 384,
+            "reranker_provider": "rrf",
         }
         p._llm_base_url = "http://localhost:8060/v1"
 
-        p._get_client()
+        client = p._get_client()
 
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
+        assert client.config["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "google"
+        assert client.config["HINDSIGHT_API_EMBEDDINGS_GEMINI_MODEL"] == "gemini-embedding-001"
+        assert client.config["HINDSIGHT_API_RERANKER_PROVIDER"] == "rrf"
 
 
 class TestPostSetup:
@@ -464,17 +473,28 @@ class TestToolHandlers:
 
 
     def test_local_embedded_recall_reconnects_after_idle_shutdown(self, provider, monkeypatch):
-        first_client = _make_mock_client()
-        first_client.arecall.side_effect = RuntimeError("Cannot connect to host 127.0.0.1:8888")
-        second_client = _make_mock_client()
-        second_client.arecall.return_value = SimpleNamespace(
-            results=[SimpleNamespace(text="Recovered memory")]
+        first_inner = _make_mock_client()
+        first_client = MagicMock()
+        first_client._client = first_inner
+        first_client.arecall = AsyncMock(
+            side_effect=RuntimeError("Cannot connect to host 127.0.0.1:8888")
         )
-        clients = iter([first_client, second_client])
+        first_client.close = MagicMock()
+
+        second_inner = _make_mock_client()
+        second_client = MagicMock()
+        second_client._client = second_inner
+        second_client.arecall = AsyncMock(return_value=SimpleNamespace(
+            results=[SimpleNamespace(text="Recovered memory")]
+        ))
 
         provider._mode = "local_embedded"
         provider._client = first_client
-        monkeypatch.setattr(provider, "_get_client", lambda: next(clients))
+        monkeypatch.setattr(
+            provider,
+            "_get_client",
+            lambda: provider._client if provider._client is not None else second_client,
+        )
 
         result = json.loads(provider.handle_tool_call(
             "hindsight_recall", {"query": "test"}
@@ -482,6 +502,8 @@ class TestToolHandlers:
 
         assert result["result"] == "1. Recovered memory"
         assert provider._client is second_client
+        first_inner.aclose.assert_awaited_once()
+        first_client.close.assert_called_once()
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()
 
@@ -683,7 +705,18 @@ class TestPrefetchServerRetainVisibility:
 
     def test_operation_notfound_treated_as_complete(self, provider):
         """A NotFound (completed+evicted) op is treated as done, not pending."""
-        from hindsight_client_api.exceptions import NotFoundException
+        class MockNotFoundException(Exception):
+            def __init__(self, **kwargs):
+                pass
+        
+        try:
+            from hindsight_client_api.exceptions import NotFoundException
+        except Exception:
+            NotFoundException = MockNotFoundException
+            import sys
+            if "hindsight_client_api.exceptions" not in sys.modules:
+                sys.modules["hindsight_client_api"] = SimpleNamespace(exceptions=SimpleNamespace(NotFoundException=MockNotFoundException))
+                sys.modules["hindsight_client_api.exceptions"] = sys.modules["hindsight_client_api"].exceptions
 
         client = _make_mock_client()
         client.operations = MagicMock()

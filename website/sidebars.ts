@@ -153,6 +153,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/apple/apple-apple-notes',
                     'user-guide/skills/bundled/apple/apple-apple-reminders',
+                    'user-guide/skills/bundled/apple/apple-apple-shortcuts',
                     'user-guide/skills/bundled/apple/apple-findmy',
                     'user-guide/skills/bundled/apple/apple-imessage',
                   ],

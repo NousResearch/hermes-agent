@@ -27,6 +27,7 @@ class FakeClient:
         self.add_calls = []
         self.search_results = []
         self.profile_response = {"static": [], "dynamic": [], "search_results": []}
+        self.profile_calls = []
         self.ingest_calls = []
         self.forgotten_ids = []
         self.forget_by_query_response = {"success": True, "message": "Forgot"}
@@ -46,6 +47,7 @@ class FakeClient:
         return self.search_results
 
     def get_profile(self, query=None, *, container_tag=None):
+        self.profile_calls.append({"query": query, "container_tag": container_tag})
         return self.profile_response
 
     def forget_memory(self, memory_id, *, container_tag=None):
@@ -110,6 +112,61 @@ def test_prefetch_includes_profile_on_first_turn(provider):
     assert "User Profile (Persistent)" in result
     assert "Recent Context" in result
     assert "Relevant Memories" in result
+
+
+def test_prefetch_throttles_recall_but_keeps_first_turn(provider, tmp_path):
+    _save_supermemory_config({"recall_frequency": 3}, str(tmp_path))
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+    provider._client.profile_response = {
+        "static": [],
+        "dynamic": [],
+        "search_results": [{"memory": "Working on Hermes memory quota", "similarity": 0.9}],
+    }
+    calls = []
+    original_get_profile = provider._client.get_profile
+
+    def counted_get_profile(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_get_profile(*args, **kwargs)
+
+    provider._client.get_profile = counted_get_profile
+    provider.on_turn_start(1, "first turn")
+    first = provider.prefetch("first turn")
+    provider.on_turn_start(2, "second turn")
+    second = provider.prefetch("second turn")
+    provider.on_turn_start(3, "third turn")
+    third = provider.prefetch("third turn")
+
+    assert "Working on Hermes memory quota" in first
+    assert second == ""
+    assert "Working on Hermes memory quota" in third
+    assert len(calls) == 2
+
+
+def test_prefetch_always_recalls_first_turn_of_resumed_session(provider, tmp_path):
+    _save_supermemory_config({"recall_frequency": 3}, str(tmp_path))
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+    provider._client.profile_response = {"static": [], "dynamic": [], "search_results": []}
+    provider.on_turn_start(38, "resumed turn")
+
+    provider.prefetch("resumed turn")
+
+    assert provider._client.profile_calls == [{"query": "resumed turn", "container_tag": None}]
+
+
+def test_prefetch_throttle_preserves_profile_refresh_turn(provider, tmp_path):
+    _save_supermemory_config({"recall_frequency": 3, "profile_frequency": 50}, str(tmp_path))
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+    provider._client.profile_response = {
+        "static": ["Jordan prefers concise docs"],
+        "dynamic": [],
+        "search_results": [],
+    }
+    provider.on_turn_start(50, "profile refresh")
+
+    result = provider.prefetch("profile refresh")
+
+    assert "Jordan prefers concise docs" in result
 
 
 def test_sync_turn_buffers_short_messages(provider):

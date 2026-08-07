@@ -1650,6 +1650,17 @@ def test_interim_commentary_precedes_content_from_real_codex_normalization(monke
 
 
 
+def test_stream_delta_replaces_surrogates_before_callbacks(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    observed = []
+    agent.stream_delta_callback = observed.append
+
+    agent._fire_stream_delta("bad \udce7 chunk")
+
+    assert observed == ["bad � chunk"]
+    observed[0].encode("utf-8")
+
+
 def test_stream_delta_strips_leaked_memory_context(monkeypatch):
     agent = _build_agent(monkeypatch)
     observed = []

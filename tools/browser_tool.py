@@ -3415,9 +3415,26 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
+def _get_current_url(task_id: str) -> Optional[str]:
+    """Return the current page URL via ``agent-browser get url``, or None on failure.
+
+    Used by :func:`browser_back` to detect a no-op back — an unchanged URL
+    after back means there is no history to go back to.
+    """
+    result = _run_browser_command(task_id, "get", ["url"])
+    if not result.get("success"):
+        return None
+    url = result.get("data", {}).get("url")
+    return url if isinstance(url, str) and url else None
+
+
 def browser_back(task_id: Optional[str] = None) -> str:
     """
     Navigate back in browser history.
+
+    If back succeeds but the page URL is unchanged (no history to go back
+    to), the current tab is closed so the agent isn't left stuck on a
+    dead-end page. 
 
     Args:
         task_id: Task identifier for session isolation
@@ -3430,6 +3447,12 @@ def browser_back(task_id: Optional[str] = None) -> str:
         return camofox_back(task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+
+    # Probe URL before back so we can detect a no-op. When back is a no-op
+    # the page URL stays the same; closing the tab leaves the agent on the
+    # next tab (or a blank state) instead of a dead-end page.
+    url_before = _get_current_url(effective_task_id)
+
     result = _run_browser_command(effective_task_id, "back", [])
 
     if result.get("success"):
@@ -3453,9 +3476,14 @@ def browser_back(task_id: Optional[str] = None) -> str:
                     ),
                 }, ensure_ascii=False)
         data = result.get("data", {})
+        url_after = data.get("url", "")
+        if url_before and url_after and url_before == url_after:
+            close_result = _run_browser_command(effective_task_id, "tab", ["close"])
+            if close_result.get("success"):
+                url_after = close_result.get("data", {}).get("url", "")
         response = {
             "success": True,
-            "url": data.get("url", "")
+            "url": url_after
         }
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
     else:

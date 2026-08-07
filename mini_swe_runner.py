@@ -343,7 +343,10 @@ class MiniSWERunner:
                     if msg.get("content"):
                         content += msg["content"] + "\n"
                     
-                    # Add tool calls in XML format
+                    # Add tool calls in XML format. Build a tool_call_id -> name
+                    # map from the valid calls so responses can be matched by id
+                    # rather than by position (see tool-response handling below).
+                    id_to_name = {}
                     for tool_call in msg["tool_calls"]:
                         if not tool_call or not isinstance(tool_call, dict): continue
                         try:
@@ -352,11 +355,13 @@ class MiniSWERunner:
                                 else tool_call["function"]["arguments"]
                         except json.JSONDecodeError:
                             arguments = {}
-                        
+
                         tool_call_json = {
                             "name": tool_call["function"]["name"],
                             "arguments": arguments
                         }
+                        if tool_call.get("id"):
+                            id_to_name[tool_call["id"]] = tool_call["function"]["name"]
                         content += f"<tool_call>\n{json.dumps(tool_call_json, ensure_ascii=False)}\n</tool_call>\n"
                     
                     trajectory.append({"from": "gpt", "value": content.rstrip()})
@@ -375,11 +380,16 @@ class MiniSWERunner:
                         except (json.JSONDecodeError, AttributeError):
                             pass
                         
+                        # Match the response back to its call by id, not by
+                        # position: msg["tool_calls"] may contain skipped
+                        # None/non-dict entries and responses can arrive out of
+                        # order, so positional indexing both crashes on a None
+                        # entry and mislabels the response name.
+                        tool_call_id = tool_msg.get("tool_call_id", "")
                         tool_response = "<tool_response>\n"
                         tool_response += json.dumps({
-                            "tool_call_id": tool_msg.get("tool_call_id", ""),
-                            "name": msg["tool_calls"][len(tool_responses)]["function"]["name"] \
-                                if len(tool_responses) < len(msg["tool_calls"]) else "unknown",
+                            "tool_call_id": tool_call_id,
+                            "name": id_to_name.get(tool_call_id, "unknown"),
                             "content": tool_content
                         }, ensure_ascii=False)
                         tool_response += "\n</tool_response>"

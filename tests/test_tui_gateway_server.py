@@ -3589,6 +3589,74 @@ def _session(agent=None, **extra):
     }
 
 
+class _SoftRewindDB:
+    """Small durable-row fake for TUI rewind handler tests."""
+
+    def __init__(self, history):
+        self.active = [
+            {**message, "_row_id": index + 1}
+            for index, message in enumerate(history)
+        ]
+        self.rewinds = []
+
+    def get_messages_as_conversation(
+        self, _session_id, repair_alternation=False, include_row_ids=False
+    ):
+        return [dict(message) for message in self.active]
+
+    def _active_revision(self):
+        return repr(self.active)
+
+    def get_active_conversation_snapshot(
+        self, _session_id, *, repair_alternation=False, include_row_ids=False
+    ):
+        return [dict(message) for message in self.active], self._active_revision()
+
+    def rewind_to_message(
+        self,
+        session_id,
+        target_message_id,
+        *,
+        preserve_compaction_handoff=False,
+        expected_active_revision=None,
+    ):
+        if (
+            expected_active_revision is not None
+            and expected_active_revision != self._active_revision()
+        ):
+            raise RuntimeError(
+                "session history changed before the rewind could be persisted"
+            )
+        target_index = next(
+            index
+            for index, message in enumerate(self.active)
+            if message["_row_id"] == target_message_id
+        )
+        target = dict(self.active[target_index])
+        rewound_count = len(self.active) - target_index
+        self.active = [dict(message) for message in self.active[:target_index]]
+        result = {
+            "rewound_count": rewound_count,
+            "target_message": target,
+            "new_head_id": self.active[-1]["_row_id"] if self.active else None,
+        }
+        if preserve_compaction_handoff:
+            from agent.context_compressor import split_user_originated_turn
+
+            scaffold, live_view = split_user_originated_turn(target)
+            assert scaffold is not None and live_view is not None
+            replacement_id = max(
+                [message["_row_id"] for message in self.active] + [target_message_id]
+            ) + 1
+            self.active.append({**scaffold, "_row_id": replacement_id})
+            result["replacement_message_id"] = replacement_id
+            result["new_head_id"] = replacement_id
+        self.rewinds.append(
+            (session_id, target_message_id, preserve_compaction_handoff)
+        )
+        return result
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 
@@ -4426,7 +4494,6 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
     """Intentional restore/regenerate of the first user turn may wipe history."""
 
     seen = {}
-    replaced = []
 
     class _Agent:
         def run_conversation(
@@ -4450,10 +4517,6 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
         def start(self):
             self._target()
 
-    class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False):
-            replaced.append((key, list(messages)))
-
     history = [
         {"role": "user", "content": "first"},
         {"role": "assistant", "content": "ok"},
@@ -4463,13 +4526,14 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
     server._sessions["confirm-empty-sid"] = _session(
         agent=_Agent(), history=list(history)
     )
+    stub_db = _SoftRewindDB(history)
 
     try:
         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
         monkeypatch.setattr(server, "_get_usage", lambda _a: {})
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_emit", lambda *a: None)
-        monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
 
         resp = server.handle_request(
             {
@@ -4487,7 +4551,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert seen["prompt"] == "first"
         assert seen["history"] == []
-        assert replaced == [("session-key", [])]
+        assert stub_db.rewinds == [("session-key", 1, False)]
         assert server._sessions["confirm-empty-sid"]["history"] == [
             {"role": "user", "content": "first"},
             {"role": "assistant", "content": "regenerated"},
@@ -8634,6 +8698,7 @@ def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()),
         history=list(history),
+        session_key="",
     )
     try:
         resp = server.handle_request(
@@ -8694,6 +8759,7 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()),
         history=list(history),
+        session_key="",
     )
     try:
         resp = server.handle_request(
@@ -8996,6 +9062,7 @@ def test_session_undo_allowed_when_idle():
     """Regression guard: when not running, /undo still works."""
     server._sessions["sid"] = _session(
         running=False,
+        session_key="",
         history=[
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "hello"},
@@ -9400,14 +9467,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
     ]
     server._sessions["sid"] = _session(agent=_Agent(), history=original_history)
 
-    class _StubDb:
-        def __init__(self):
-            self.replaced = []
-
-        def replace_messages(self, session_id, messages, active_only=False):
-            self.replaced.append((session_id, list(messages)))
-
-    stub_db = _StubDb()
+    stub_db = _SoftRewindDB(original_history)
 
     try:
         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -9431,14 +9491,20 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         assert resp.get("result"), f"got error: {resp.get('error')}"
 
         assert seen["prompt"] == "edited second"
-        assert seen["history"] == original_history[:2]
-        assert server._sessions["sid"]["history"] == [
+        assert [
+            {"role": message["role"], "content": message["content"]}
+            for message in seen["history"]
+        ] == original_history[:2]
+        assert [
+            {"role": message["role"], "content": message["content"]}
+            for message in server._sessions["sid"]["history"]
+        ] == [
             *original_history[:2],
             {"role": "user", "content": "edited second"},
             {"role": "assistant", "content": "edited reply"},
         ]
         assert server._sessions["sid"]["history_version"] == 2
-        assert stub_db.replaced == [("session-key", original_history[:2])]
+        assert stub_db.rewinds == [("session-key", 3, False)]
     finally:
         server._sessions.pop("sid", None)
 
@@ -9460,11 +9526,19 @@ def test_prompt_submit_refuses_turn_when_truncate_persist_fails(monkeypatch):
     sess = _session(history=list(original_history))
     server._sessions["trunc-fail-sid"] = sess
 
-    class _FailDb:
-        def replace_messages(self, session_id, messages, active_only=False):
+    class _FailDb(_SoftRewindDB):
+        def rewind_to_message(
+            self,
+            session_id,
+            target_message_id,
+            *,
+            preserve_compaction_handoff=False,
+            expected_active_revision=None,
+        ):
             raise OSError("disk full")
 
-    monkeypatch.setattr(server, "_get_db", lambda: _FailDb())
+    fail_db = _FailDb(original_history)
+    monkeypatch.setattr(server, "_get_db", lambda: fail_db)
     monkeypatch.setattr(
         server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
     )
@@ -9549,14 +9623,7 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
     ]
     server._sessions["sid"] = _session(agent=_Agent(), history=original_history)
 
-    class _StubDb:
-        def __init__(self):
-            self.replaced = []
-
-        def replace_messages(self, session_id, messages, active_only=False):
-            self.replaced.append((session_id, list(messages)))
-
-    stub_db = _StubDb()
+    stub_db = _SoftRewindDB(original_history)
 
     try:
         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -9586,12 +9653,14 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         # Without the filter: user_indices = [0, 2, 4] (includes the marker),
         # ordinal=1 → user_indices[1] = 2, same result by luck — but ordinal=0
         # would truncate to history[:0] vs history[:0], and higher ordinals shift.
-        assert seen["history"] == original_history[:2], (
+        projected_history = [
+            {"role": message["role"], "content": message["content"]}
+            for message in seen["history"]
+        ]
+        assert projected_history == original_history[:2], (
             f"Expected truncation to first 2 messages, got {seen['history']}"
         )
-        assert stub_db.replaced == [("session-key", original_history[:2])], (
-            f"Expected DB replace with first 2 messages, got {stub_db.replaced}"
-        )
+        assert stub_db.rewinds == [("session-key", 3, False)]
     finally:
         server._sessions.pop("sid", None)
 

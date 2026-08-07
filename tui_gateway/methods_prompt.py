@@ -162,7 +162,9 @@ def _(rid, params: dict) -> dict:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
-            history = session.get("history", [])
+            history = _history_without_ephemeral_scaffolding(
+                session.get("history", [])
+            )
             # An ordinal alone is not consent. A client that carries a leftover
             # ordinal into an ORDINARY submit sends a request that is
             # indistinguishable, field by field, from a real rewind — same
@@ -188,9 +190,15 @@ def _(rid, params: dict) -> dict:
                     "an ordinary prompt.submit must not drop session history "
                     "(update your Hermes client if a rewind was intended)",
                 )
+            from agent.context_compressor import (
+                history_before_user_originated_turn,
+                user_originated_turn_view,
+            )
+
             user_indices = [
-                i for i, m in enumerate(history)
-                if m.get("role") == "user" and not m.get("display_kind")
+                i
+                for i, m in enumerate(history)
+                if user_originated_turn_view(m) is not None
             ]
             # Reject out-of-range ordinals on BOTH ends. A negative value would
             # otherwise sail past the upper-bound check and hit Python's negative
@@ -199,7 +207,9 @@ def _(rid, params: dict) -> dict:
             # via replace_messages — an unrecoverable overwrite of the session DB.
             if ordinal < 0 or ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
-            truncated = history[: user_indices[ordinal]]
+            truncated, _live_view = history_before_user_originated_turn(
+                history, user_indices[ordinal]
+            )
             # Second gate, on top of confirm_truncate: ordinal 0 resolves to
             # history[:0] == [] and replace_messages() DELETEs every durable
             # row. A confirmed rewind that happens to erase the whole
@@ -242,36 +252,23 @@ def _(rid, params: dict) -> dict:
             # new exchange is appended on top of the "undone" turns — durable
             # zombie history on resume, and the edit/regenerate never sticks.
             # Fail closed: refuse the turn and leave memory/DB unchanged.
-            if (db := _get_db()) is not None:
-                try:
-                    # active_only=True: replace only the live (active=1) rows.
-                    # In-place compaction (#38763) keeps the pre-compaction
-                    # transcript as active=0/compacted=1 rows under this same
-                    # session key; a bare replace_messages() would DELETE that
-                    # durable archive on every edit/regenerate — the same bug
-                    # class #80216 fixed for /retry. On an uncompacted session
-                    # all rows are active=1, so this is behaviorally identical
-                    # to the full replace.
-                    db.replace_messages(
-                        session["session_key"], truncated, active_only=True
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "prompt.submit: replace_messages failed for session %s "
-                        "(ordinal=%d); refusing turn so memory and DB stay "
-                        "aligned: %s",
-                        sid,
-                        ordinal,
-                        exc,
-                        exc_info=True,
-                    )
-                    return _err(
-                        rid,
-                        5008,
-                        f"failed to persist history truncation: {exc}",
-                    )
-            session["history"] = truncated
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+            try:
+                _rewind_active_session_history(session, ordinal)
+            except Exception as exc:
+                logger.error(
+                    "prompt.submit: soft rewind failed for session %s "
+                    "(ordinal=%d); refusing turn so memory and DB stay "
+                    "aligned: %s",
+                    sid,
+                    ordinal,
+                    exc,
+                    exc_info=True,
+                )
+                return _err(
+                    rid,
+                    5008,
+                    f"failed to persist history truncation: {exc}",
+                )
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()

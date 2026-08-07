@@ -4706,8 +4706,17 @@ This compaction should PRIORITISE preserving all information related to the focu
             # only genuinely orphaned calls in the *discarded* region are
             # stripped.
             trailing_inflight: Optional[Dict[str, Any]] = None
-            if messages and messages[-1].get("role") == "assistant":
-                trailing_inflight = messages[-1]
+            # Walk back over any trailing tool results first: with a
+            # multi-call batch the executor appends results one at a time, so
+            # a snapshot taken between appends looks like
+            # ``[..., assistant(c1,c2,c3), tool(c1)]`` — the chain is still
+            # in flight even though the last message is a tool result. The
+            # last NON-tool message is the live request in both shapes.
+            idx = len(messages) - 1
+            while idx >= 0 and messages[idx].get("role") == "tool":
+                idx -= 1
+            if idx >= 0 and messages[idx].get("role") == "assistant":
+                trailing_inflight = messages[idx]
             # -----------------------------------------------------------------
             for msg in messages:
                 if msg.get("role") != "assistant":

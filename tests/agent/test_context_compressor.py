@@ -2150,8 +2150,16 @@ class TestSanitizerStripsOrphanedToolCalls:
         assert asst.get("content") == "(tool call removed)"
 
     def test_sanitizer_strips_orphaned_keeps_valid(self, compressor):
-        """When an assistant has both valid and orphaned tool_calls, only
-        the orphans are stripped.  #51218"""
+        """When a MID-LIST assistant has both valid and orphaned tool_calls,
+        only the orphans are stripped.  #51218
+
+        The shape must sit mid-list: the same shape at the TAIL is
+        indistinguishable from a partial multi-call batch whose remaining
+        results are still in flight, and the sanitizer now presumes in-flight
+        there (#79278) — preserving is safe because the pre-API chokepoint
+        injects stub results for genuinely unanswered calls, while stripping
+        a live call silently loses its late result.
+        """
         msgs = [
             {
                 "role": "assistant",
@@ -2162,6 +2170,8 @@ class TestSanitizerStripsOrphanedToolCalls:
                 ],
             },
             {"role": "tool", "tool_call_id": "tc_valid", "content": "file content"},
+            # Later turn: the chain above is settled history, not in flight.
+            {"role": "assistant", "content": "done"},
         ]
 
         sanitized = compressor._sanitize_tool_pairs(msgs)
@@ -2395,6 +2405,34 @@ class TestSanitizerPreservesInFlightToolChain:
                    if m["role"] == "tool" and m.get("tool_call_id") == "call_2"]
         assert len(results) == 1
         assert "42" in results[0]["content"]
+
+    def test_partial_batch_inflight_calls_preserved(self, compressor):
+        """Multi-call batch snapshotted BETWEEN result appends: the executor
+        has appended tool(c1) but not yet tool(c2)/tool(c3), so the last
+        message is a tool result while c2/c3 are still pending.  The walk-back
+        must find the assistant behind the trailing results and preserve the
+        whole batch — stripping c2/c3 there loses their late results exactly
+        like the tail-is-assistant shape.  #79278 follow-up."""
+        msgs = [
+            {"role": "user", "content": "run the batch"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "function": {"name": "a", "arguments": "{}"}},
+                {"id": "c2", "function": {"name": "b", "arguments": "{}"}},
+                {"id": "c3", "function": {"name": "c", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "done 1"},
+            # snapshot taken here: c2/c3 results not yet appended
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        batch = [m for m in sanitized if m.get("role") == "assistant"][-1]
+        assert [tc["id"] for tc in batch["tool_calls"]] == ["c1", "c2", "c3"]
+        # And the already-arrived result survives too.
+        assert any(
+            m.get("role") == "tool" and m.get("tool_call_id") == "c1"
+            for m in sanitized
+        )
 
 
 class TestCooldownReentryAbort:

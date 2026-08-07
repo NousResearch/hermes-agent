@@ -1804,13 +1804,33 @@ class _AnthropicCompletionsAdapter:
 
         usage = None
         if hasattr(response, "usage") and response.usage:
-            prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
+            fresh_input_tokens = getattr(response.usage, "input_tokens", 0) or 0
+            cache_read_tokens = (
+                getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            )
+            cache_write_tokens = (
+                getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            )
+            # Keep both usage shapes because this adapter feeds two normalizers:
+            # native Anthropic accounting reads input/output/cache_* fields,
+            # while MoA's OpenAI-compatible path reads an inclusive
+            # prompt_tokens total and subtracts prompt_tokens_details.
+            prompt_tokens = (
+                fresh_input_tokens + cache_read_tokens + cache_write_tokens
+            )
             completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
             total_tokens = getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
             usage = SimpleNamespace(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=cache_read_tokens,
+                ),
+                input_tokens=fresh_input_tokens,
+                output_tokens=completion_tokens,
+                cache_read_input_tokens=cache_read_tokens,
+                cache_creation_input_tokens=cache_write_tokens,
             )
 
         choice = SimpleNamespace(

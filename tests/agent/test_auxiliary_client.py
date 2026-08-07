@@ -2693,6 +2693,79 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         assert captured["output_config"] == {"effort": "medium"}
         assert "extra_body" not in captured
 
+    @pytest.mark.parametrize(
+        ("cache_read_tokens", "cache_write_tokens"),
+        [
+            (57_335, 194),
+            (0, 4_211),
+        ],
+    )
+    def test_usage_preserves_anthropic_cache_buckets(
+        self,
+        cache_read_tokens,
+        cache_write_tokens,
+    ):
+        """The dual-shaped shim must normalize like the native response."""
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+        from agent.usage_pricing import normalize_usage
+
+        raw_usage = SimpleNamespace(
+            input_tokens=597,
+            output_tokens=17,
+            cache_read_input_tokens=cache_read_tokens,
+            cache_creation_input_tokens=cache_write_tokens,
+        )
+        adapter = _AnthropicCompletionsAdapter(
+            MagicMock(), "claude-fable-5", is_oauth=False
+        )
+
+        with (
+            patch(
+                "agent.anthropic_adapter.build_anthropic_kwargs",
+                return_value={
+                    "model": "claude-fable-5",
+                    "messages": [],
+                    "max_tokens": 64,
+                },
+            ),
+            patch(
+                "agent.anthropic_adapter.create_anthropic_message",
+                return_value=SimpleNamespace(usage=raw_usage),
+            ),
+            patch("agent.transports.get_transport") as mock_get_transport,
+        ):
+            mock_get_transport.return_value.normalize_response.return_value = (
+                SimpleNamespace(
+                    content="ok",
+                    tool_calls=None,
+                    reasoning=None,
+                    finish_reason="stop",
+                )
+            )
+            response = adapter.create(
+                model="claude-fable-5",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=64,
+            )
+
+        native = normalize_usage(
+            raw_usage,
+            provider="anthropic",
+            api_mode="anthropic_messages",
+        )
+        adapted_chat = normalize_usage(
+            response.usage,
+            provider="moa",
+            api_mode="chat_completions",
+        )
+        adapted_native = normalize_usage(
+            response.usage,
+            provider="anthropic",
+        )
+
+        assert adapted_chat == native
+        assert adapted_native == native
+
     def test_build_call_kwargs_private_reasoning_only_for_anthropic_messages(self):
         anthropic_kwargs = _build_call_kwargs(
             "anthropic",

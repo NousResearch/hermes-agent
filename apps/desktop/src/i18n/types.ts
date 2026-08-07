@@ -1008,6 +1008,14 @@ export interface Translations {
     tokens: (value: number | string) => string
   }
 
+  projectSwitcher: {
+    title: string
+    openLabel: string
+    searchPlaceholder: string
+    empty: string
+    openFolder: string
+  }
+
   commandCenter: {
     close: string
     paletteTitle: string

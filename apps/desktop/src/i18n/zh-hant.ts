@@ -1083,6 +1083,14 @@ export const zhHant = defineLocale({
     tokens: value => `${value} 詞元`
   },
 
+  projectSwitcher: {
+    title: '切換專案',
+    openLabel: '切換專案…',
+    searchPlaceholder: '搜尋專案…',
+    empty: '尚無專案。',
+    openFolder: '將資料夾開啟為專案…'
+  },
+
   commandCenter: {
     close: '關閉命令中心',
     paletteTitle: '命令面板',

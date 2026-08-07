@@ -1151,6 +1151,14 @@ export const en: Translations = {
     tokens: value => `${value} tok`
   },
 
+  projectSwitcher: {
+    title: 'Switch project',
+    openLabel: 'Switch project…',
+    searchPlaceholder: 'Search projects…',
+    empty: 'No projects yet.',
+    openFolder: 'Open folder as project…'
+  },
+
   commandCenter: {
     close: 'Close command center',
     paletteTitle: 'Command palette',

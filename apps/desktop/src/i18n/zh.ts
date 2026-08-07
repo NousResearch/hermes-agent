@@ -1348,6 +1348,14 @@ export const zh: Translations = {
     tokens: value => `${value} 词元`
   },
 
+  projectSwitcher: {
+    title: '切换项目',
+    openLabel: '切换项目…',
+    searchPlaceholder: '搜索项目…',
+    empty: '暂无项目。',
+    openFolder: '打开文件夹为项目…'
+  },
+
   commandCenter: {
     close: '关闭命令中心',
     paletteTitle: '命令面板',

@@ -277,6 +277,49 @@ class TestParseFrontmatterBOM:
         assert fm["platforms"] == ["macos"]
 
 
+# ── _normalize_string_set — multiline block scalar (#48333) ────────────────
+
+
+class TestNormalizeStringSetMultiline:
+    """_normalize_string_set must handle YAML block scalars produced by
+    ``hermes config set`` that embed the whole list as a multi-line string
+    with ``\\n`` separators and ``- `` prefixes (e.g.
+    ``"- airtable\\n- architecture\\n- ascii-art"``)."""
+
+    def test_multiline_block_scalar(self):
+        from agent.skill_utils import _normalize_string_set
+        result = _normalize_string_set(
+            "- airtable\n- architecture\n- ascii-art"
+        )
+        assert result == {"airtable", "architecture", "ascii-art"}
+
+    def test_single_line_scalar_unchanged(self):
+        from agent.skill_utils import _normalize_string_set
+        assert _normalize_string_set("my-skill") == {"my-skill"}
+
+    def test_yaml_list_unchanged(self):
+        from agent.skill_utils import _normalize_string_set
+        assert _normalize_string_set(["a", "b"]) == {"a", "b"}
+
+    def test_none_is_empty(self):
+        from agent.skill_utils import _normalize_string_set
+        assert _normalize_string_set(None) == set()
+
+    def test_multiline_no_dash_prefix(self):
+        """Lines without ``- `` prefix are treated as bare names."""
+        from agent.skill_utils import _normalize_string_set
+        assert _normalize_string_set("airtable\narchitecture") == {
+            "airtable", "architecture"
+        }
+
+    def test_multiline_with_blank_lines(self):
+        from agent.skill_utils import _normalize_string_set
+        result = _normalize_string_set(
+            "- airtable\n\n- architecture\n\n\n"
+        )
+        assert result == {"airtable", "architecture"}
+
+
 class TestBOMToleranceSiblingSites:
     """The BOM fix must cover every independent frontmatter parser, not just
     the canonical ``parse_frontmatter`` — several modules reimplement the

@@ -250,13 +250,21 @@ class MemoryStore:
         the placeholder enters the snapshot, the original entry stays in
         live state for the user to inspect and delete.
 
-        Empty or already-block-marker entries pass through unchanged.
+        Empty entries pass through unchanged.  Entries that merely LOOK
+        already-blocked do not: the ``[BLOCKED:`` marker is unauthenticated
+        text living in the very file this scan treats as untrusted, so
+        skipping it would let anyone who can write that file — precisely the
+        supply-chain / compromised-tool / sister-session attacker named in
+        ``load_from_disk`` — prefix a payload with the marker and land it in
+        the system prompt verbatim.  The placeholder this function emits
+        contains no threat patterns, so a genuine one survives a re-scan
+        unchanged and needs no exemption.
         """
         from tools.threat_patterns import scan_for_threats
 
         sanitized: List[str] = []
         for entry in entries:
-            if not entry or entry.startswith("[BLOCKED:"):
+            if not entry:
                 sanitized.append(entry)
                 continue
             findings = scan_for_threats(entry, scope="strict")

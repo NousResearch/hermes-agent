@@ -367,17 +367,26 @@ async function remotePidAlive(ssh, pid) {
 }
 
 // A pid is "provably ours" only if its remote cmdline carries our dashboard
-// args — never kill a pid we can't positively identify as our dashboard.
-async function pidIsOurDashboard(ssh, pid, spawnNonce, hermesPath = '') {
-  if (!pid || !/^[0-9a-f]{16}$/.test(String(spawnNonce || '')) || !hermesPath) {
+// args — never kill a pid we can't positively identify as our dashboard.  The
+// proof is the installation/profile-scoped token path plus its matching random
+// nonce, not argv[0]: executable wrappers legitimately replace themselves with
+// Python or a venv entrypoint.
+async function pidIsOurDashboard(ssh, pid, ownershipId, spawnNonce) {
+  if (
+    !pid ||
+    !/^[0-9a-f]{32}$/.test(String(ownershipId || '')) ||
+    !/^[0-9a-f]{16}$/.test(String(spawnNonce || ''))
+  ) {
     return false
   }
 
   try {
+    const expectedTokenPath = `${ownershipDirectory(ownershipId)}/${validateSpawnNonce(spawnNonce)}.token`
+
     const script =
       'import os,shlex,subprocess,sys\n' +
       `pid=${Number(pid)}\n` +
-      `expected=os.path.expanduser(${shq(hermesPath)})\n` +
+      `expected_token=os.path.expanduser(${shq(expectedTokenPath)})\n` +
       `nonce=${shq(spawnNonce)}\n` +
       'try:\n' +
       ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
@@ -389,9 +398,8 @@ async function pidIsOurDashboard(ssh, pid, spawnNonce, hermesPath = '') {
       'try:\n' +
       ' serve=args.index("serve")\n' +
       ' owner=args.index("--ssh-owner-nonce",serve+1)\n' +
-      ' direct=args[0]==expected\n' +
-      ' python_entry=len(args)>1 and args[1]==expected and os.path.basename(args[0]).startswith("python")\n' +
-      ' ok=(direct or python_entry) and "--isolated" in args[serve+1:] and args[owner+1]==nonce\n' +
+      ' token=args.index("--ssh-session-token-file",serve+1)\n' +
+      ' ok=("--isolated" in args[serve+1:] and args[owner+1]==nonce and args[token+1]==expected_token)\n' +
       'except (ValueError,IndexError):pass\n' +
       'print("OWNED" if ok else "FOREIGN")'
 
@@ -406,9 +414,19 @@ async function pidIsOurDashboard(ssh, pid, spawnNonce, hermesPath = '') {
   }
 }
 
-// Kill the stale dashboard ONLY if provably ours, then drop the lockfile.
+// Kill the stale dashboard ONLY if provably ours, then drop the lockfile.  A
+// live but unverified pid is indeterminate: preserve its ownership record and
+// fail closed instead of forgetting it and spawning an unbounded replacement.
 async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
-  if (pidAlive && lock && (await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath))) {
+  if (pidAlive && lock) {
+    const owned = await pidIsOurDashboard(ssh, lock.pid, ownershipId, lock.spawnNonce)
+
+    if (!owned) {
+      const error: any = new Error('Could not prove that the stale SSH backend belongs to this Desktop installation.')
+      error.kind = 'ownership-mismatch'
+      throw error
+    }
+
     try {
       const result = (
         await ssh.exec(
@@ -707,7 +725,7 @@ async function connect(deps) {
 
   if (lock) {
     const pidAlive = await remotePidAlive(ssh, lock.pid)
-    const owned = pidAlive && (await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath))
+    const owned = pidAlive && (await pidIsOurDashboard(ssh, lock.pid, ownershipId, lock.spawnNonce))
 
     const reusable =
       pidAlive &&
@@ -866,7 +884,7 @@ async function connect(deps) {
       void 0
     }
 
-    await cleanupStale(ssh, ownershipId, ownedSpawn)
+    await cleanupStale(ssh, ownershipId, ownedSpawn, await remotePidAlive(ssh, pid))
     throw error
   }
 }

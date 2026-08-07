@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { exec as execCommand, spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { promisify } from 'node:util'
 
 import { test } from 'vitest'
 
@@ -31,6 +34,7 @@ import {
 
 const OWNERSHIP_ID = '0123456789abcdef0123456789abcdef'
 const SPAWN_NONCE = '0123456789abcdef'
+const execLocal = promisify(execCommand)
 
 function ownedLock(over: any = {}) {
   return {
@@ -224,37 +228,42 @@ test('metadata and process proof transport failures remain indeterminate', async
     (error: any) => error.kind === 'transient-transport-error'
   )
   await assert.rejects(
-    () => pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, failure]]), 5, SPAWN_NONCE, '/x/hermes'),
+    () => pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, failure]]), 5, OWNERSHIP_ID, SPAWN_NONCE),
     (error: any) => error.kind === 'transient-transport-error'
   )
 })
 
 test('pidIsOurDashboard requires the exact serve ownership nonce', async () => {
-  const ours = `/x/hermes serve --isolated --ssh-owner-nonce ${SPAWN_NONCE}`
-  assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'OWNED\n']]), 5, SPAWN_NONCE, '/x/hermes'), true)
+  assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'OWNED\n']]), 5, OWNERSHIP_ID, SPAWN_NONCE), true)
   assert.equal(
     await pidIsOurDashboard(
       fakeSsh([[/print\("OWNED"/, command => (command.includes('fedcba9876543210') ? 'FOREIGN\n' : 'OWNED\n')]]),
       5,
-      'fedcba9876543210',
-      '/x/hermes'
+      OWNERSHIP_ID,
+      'fedcba9876543210'
     ),
     false
   )
-  assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']]), 5, SPAWN_NONCE, '/x/hermes'), false)
+  assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']]), 5, OWNERSHIP_ID, SPAWN_NONCE), false)
 })
 
-test('cleanupStale kills ONLY a provably-ours pid, always drops the lockfile', async () => {
+test('cleanupStale preserves the lock when a live pid cannot be proven owned', async () => {
   const notOurs = fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']])
-  await cleanupStale(notOurs, OWNERSHIP_ID, {
-    pid: 5,
-    spawnNonce: SPAWN_NONCE,
-    hermesPath: '/x/hermes',
-    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
-  })
+  await assert.rejects(
+    () =>
+      cleanupStale(notOurs, OWNERSHIP_ID, {
+        pid: 5,
+        spawnNonce: SPAWN_NONCE,
+        hermesPath: '/x/hermes',
+        logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+      }),
+    (error: any) => error.kind === 'ownership-mismatch'
+  )
   assert.ok(!notOurs.calls.some(c => /kill 5\b/.test(c)), 'must not kill a pid that is not our dashboard')
-  assert.ok(notOurs.calls.some(c => /rm -f/.test(c)))
+  assert.ok(!notOurs.calls.some(c => /rm -f/.test(c)), 'must retain ownership metadata for an indeterminate pid')
+})
 
+test('cleanupStale kills a provably-owned pid before dropping the lockfile', async () => {
   const ours = fakeSsh([[/print\("OWNED"/, 'OWNED\n']])
   await cleanupStale(ours, OWNERSHIP_ID, {
     pid: 9,
@@ -265,6 +274,52 @@ test('cleanupStale kills ONLY a provably-ours pid, always drops the lockfile', a
   assert.ok(ours.calls.some(c => /kill 9\b/.test(c)))
   assert.ok(ours.calls.some(c => /rm -f/.test(c)))
 })
+
+test('pidIsOurDashboard keys ownership to token path, not executable path', async () => {
+  const ssh = fakeSsh([[/print\("OWNED"/, 'OWNED\n']])
+  assert.equal(await pidIsOurDashboard(ssh, 5, OWNERSHIP_ID, SPAWN_NONCE), true)
+  const proof = ssh.calls.find(command => /print\("OWNED"/.test(command)) || ''
+  assert.ok(proof.includes(`${OWNERSHIP_ID}/${SPAWN_NONCE}.token`))
+  assert.doesNotMatch(proof, /expected=.*hermes/)
+})
+
+test.skipIf(process.platform === 'win32')(
+  'pidIsOurDashboard recognizes a wrapper-replaced process through its real local cmdline',
+  async () => {
+    const tokenPath = `${process.env.HOME}/.hermes/desktop-ssh/${OWNERSHIP_ID}/${SPAWN_NONCE}.token`
+
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        'setInterval(()=>{},1000)',
+        'serve',
+        '--isolated',
+        '--ssh-session-token-file',
+        tokenPath,
+        '--ssh-owner-nonce',
+        SPAWN_NONCE
+      ],
+      { stdio: 'ignore' }
+    )
+
+    await once(child, 'spawn')
+
+    const ssh = {
+      async exec(command) {
+        return (await execLocal(command)).stdout
+      }
+    }
+
+    try {
+      assert.equal(await pidIsOurDashboard(ssh, child.pid, OWNERSHIP_ID, SPAWN_NONCE), true)
+      assert.equal(await pidIsOurDashboard(ssh, child.pid, 'f'.repeat(32), SPAWN_NONCE), false)
+    } finally {
+      child.kill('SIGTERM')
+      await once(child, 'exit')
+    }
+  }
+)
 
 test('buildSpawnCommand is headless serve, detached, token not in argv', () => {
   const cmd = buildSpawnCommand('/x/hermes', 'work', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
@@ -525,7 +580,7 @@ test('connect() respawns when the lockfile hermesPath differs from the resolved 
     [/\[ -x/, 'OK'],
     [/cat .*lock\.json/, JSON.stringify(lock)],
     [/kill -0/, 'ALIVE'],
-    [/print\("OWNED"/, 'FOREIGN\n'],
+    [/print\("OWNED"/, 'OWNED\n'],
     [/--version/, 'Hermes Agent v0.18.2\n'],
     [/grep -q ssh-session-token-file/, 'YES\n'],
     [/python3 -c/, ''],
@@ -987,10 +1042,8 @@ test('cleanupStale never deletes a lock-supplied unexpected log path', async () 
 })
 
 test('pidIsOurDashboard requires an exact nonce option value', async () => {
-  const prefix = `/x/hermes serve --isolated --ssh-owner-nonce ${SPAWN_NONCE}ff`
-  const suffix = `/x/hermes serve --isolated --ssh-owner-nonce xx${SPAWN_NONCE}`
-  assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']]), 5, SPAWN_NONCE, '/x/hermes'), false)
-  assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']]), 5, SPAWN_NONCE, '/x/hermes'), false)
+  assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']]), 5, OWNERSHIP_ID, SPAWN_NONCE), false)
+  assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']]), 5, OWNERSHIP_ID, SPAWN_NONCE), false)
 })
 
 test('connect removes the token file when a fresh backend fails after returning a pid', async () => {

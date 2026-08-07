@@ -1895,7 +1895,7 @@ class TestWebServerEndpoints:
         original_get_messages = SessionDB.get_messages
 
         def tracked_get_messages(self, session_id, *args, **kwargs):
-            calls.append((kwargs.get("limit"), kwargs.get("offset")))
+            calls.append((kwargs.get("limit"), kwargs.get("after_id")))
             return original_get_messages(self, session_id, *args, **kwargs)
 
         monkeypatch.setattr(SessionDB, "get_messages", tracked_get_messages)

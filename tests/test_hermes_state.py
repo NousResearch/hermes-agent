@@ -3775,6 +3775,19 @@ class TestGetMessagesPagination:
         assert [m["content"] for m in page2] == ["msg-2", "msg-3", "msg-4", "msg-5"]
         assert [m["content"] for m in page3] == ["msg-0", "msg-1"]
 
+    def test_after_id_keyset_pages_forward_in_insertion_order(self, db):
+        self._seed(db)
+        page1 = db.get_messages("s1", limit=4, after_id=0)
+        assert [m["content"] for m in page1] == ["msg-0", "msg-1", "msg-2", "msg-3"]
+        page2 = db.get_messages("s1", limit=4, after_id=page1[-1]["id"])
+        assert [m["content"] for m in page2] == ["msg-4", "msg-5", "msg-6", "msg-7"]
+        page3 = db.get_messages("s1", limit=4, after_id=page2[-1]["id"])
+        assert [m["content"] for m in page3] == ["msg-8", "msg-9"]
+        with pytest.raises(ValueError):
+            db.get_messages("s1", limit=4, after_id=0, latest=True)
+        with pytest.raises(ValueError):
+            db.get_messages("s1", limit=4, after_id=0, offset=2)
+
     def test_resume_safety_counts_active_rows_across_lineage(self, db):
         db.create_session(session_id="root", source="cli")
         db.append_messages_batch(

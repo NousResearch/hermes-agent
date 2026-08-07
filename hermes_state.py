@@ -7421,6 +7421,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         limit: Optional[int] = None,
         offset: int = 0,
         latest: bool = False,
+        after_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -7440,13 +7441,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         order. ``offset`` alone (without ``limit``) also pages — SQLite
         requires a LIMIT clause for OFFSET, so it's emitted as ``LIMIT -1``
         (unbounded).
+
+        ``after_id`` enables keyset pagination (``id > after_id``): O(1)
+        page seeks on huge transcripts where OFFSET degrades to O(n) per
+        page. Ascending order only (incompatible with ``latest``/``offset``).
         """
+        if after_id is not None and (latest or offset):
+            raise ValueError("after_id is incompatible with latest/offset paging")
         active_clause = "" if include_inactive else " AND active = 1"
+        keyset_clause = " AND id > ?" if after_id is not None else ""
         sql = (
             "SELECT * FROM messages WHERE session_id = ?"
-            f"{active_clause} ORDER BY id {'DESC' if latest else 'ASC'}"
+            f"{active_clause}{keyset_clause} ORDER BY id {'DESC' if latest else 'ASC'}"
         )
         params: list = [session_id]
+        if after_id is not None:
+            params.append(after_id)
         if limit is not None or offset:
             # SQLite's OFFSET requires LIMIT; -1 means "no limit".
             sql += " LIMIT ? OFFSET ?"

@@ -746,13 +746,15 @@ async def export_session_endpoint(session_id: str, profile: Optional[str] = None
             )
             yield metadata[:-1] + ',"messages":['
 
-            offset = 0
+            # Keyset pagination (id > last_seen): O(n) total over the
+            # transcript, vs OFFSET's O(n²) on huge sessions.
+            last_id = None
             first = True
             while True:
                 messages = db.get_messages(
                     sid,
                     limit=500,
-                    offset=offset,
+                    after_id=last_id if last_id is not None else 0,
                 )
                 for message in messages:
                     if not first:
@@ -765,7 +767,9 @@ async def export_session_endpoint(session_id: str, profile: Optional[str] = None
                     first = False
                 if len(messages) < 500:
                     break
-                offset += len(messages)
+                last_id = messages[-1].get("id")
+                if last_id is None:
+                    break  # defensive: cannot keyset without row ids
 
             yield "]}"
         finally:

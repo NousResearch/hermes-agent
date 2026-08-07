@@ -129,6 +129,76 @@ class TestProvider:
         p = self._make(basic)
         p.revoke_session(refresh_token="anything")  # must not raise
 
+    def test_revoke_session_invalidates_prior_access_token(self, basic):
+        """RAH-01: revoke_session() must not be a pure no-op — a token minted
+        before the call must stop verifying after it, on the same instance."""
+        p = self._make(basic)
+        s = p.complete_password_login(username="admin", password="hunter2")
+        assert p.verify_session(access_token=s.access_token) is not None
+        p.revoke_session(refresh_token=s.refresh_token)
+        assert p.verify_session(access_token=s.access_token) is None
+        with pytest.raises(RefreshExpiredError):
+            p.refresh_session(refresh_token=s.refresh_token)
+
+    def test_password_rotation_invalidates_prior_session_across_restart(
+        self, basic, tmp_path
+    ):
+        """RAH-01: rotating the password (same explicit secret, simulating a
+        process restart via a fresh provider instance) must invalidate
+        sessions minted under the old password — not just the process that
+        revoked. credential_fingerprint + a shared epoch_store_path model
+        what register() does across two real process starts."""
+        store = tmp_path / "epoch.json"
+        secret = secrets.token_bytes(32)
+        old_hash = basic.hash_password("old-password")
+        p_old = basic.BasicAuthProvider(
+            username="admin",
+            password_hash=old_hash,
+            secret=secret,
+            credential_fingerprint="fp-old-password",
+            epoch_store_path=store,
+        )
+        s = p_old.complete_password_login(username="admin", password="old-password")
+        assert p_old.verify_session(access_token=s.access_token) is not None
+
+        # Simulate a restart after rotating the password: a brand-new
+        # provider instance, same secret + epoch store, different fingerprint.
+        new_hash = basic.hash_password("new-password")
+        p_new = basic.BasicAuthProvider(
+            username="admin",
+            password_hash=new_hash,
+            secret=secret,
+            credential_fingerprint="fp-new-password",
+            epoch_store_path=store,
+        )
+        assert p_new.verify_session(access_token=s.access_token) is None
+
+    def test_same_password_across_restart_keeps_session_valid(self, basic, tmp_path):
+        """A restart with the SAME credential fingerprint (nothing rotated)
+        must NOT bump the epoch — otherwise every restart would silently log
+        everyone out, breaking the documented explicit-secret portability
+        contract."""
+        store = tmp_path / "epoch.json"
+        secret = secrets.token_bytes(32)
+        h = basic.hash_password("hunter2")
+        p1 = basic.BasicAuthProvider(
+            username="admin",
+            password_hash=h,
+            secret=secret,
+            credential_fingerprint="fp-stable",
+            epoch_store_path=store,
+        )
+        s = p1.complete_password_login(username="admin", password="hunter2")
+
+        p2 = basic.BasicAuthProvider(
+            username="admin",
+            password_hash=h,
+            secret=secret,
+            credential_fingerprint="fp-stable",
+            epoch_store_path=store,
+        )
+        assert p2.verify_session(access_token=s.access_token) is not None
+
     def test_oauth_methods_raise_not_implemented(self, basic):
         p = self._make(basic)
         with pytest.raises(NotImplementedError):

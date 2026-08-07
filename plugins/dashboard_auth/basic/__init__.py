@@ -64,7 +64,9 @@ import json
 import logging
 import os
 import secrets
+import tempfile
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli.dashboard_auth import (
@@ -105,6 +107,59 @@ _SIG_LEN = hashlib.sha256().digest_size
 
 
 LAST_SKIP_REASON: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Session epoch (RAH-01: revoke_session()/password rotation invalidation)
+# ---------------------------------------------------------------------------
+#
+# Access/refresh tokens are stateless HMAC blobs — verify_session() has no
+# server-side session to check. revoke_session() alone therefore cannot
+# invalidate anything already issued. To make "logout" and "password
+# changed" actually reject prior tokens without turning this into a stateful
+# session store, every minted token carries an "epoch" claim; verification
+# rejects any token whose epoch doesn't match the provider's current one.
+# The epoch is persisted (JSON, atomic replace) so it survives process
+# restarts and is shared across multi-worker deployments that already share
+# an explicit `secret` — the same file both workers' registrations read.
+
+
+def _epoch_store_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "dashboard_auth_basic_session_epoch.json"
+
+
+def _load_epoch_state(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {
+                "epoch": int(data.get("epoch", 0)),
+                "fingerprint": str(data.get("fingerprint", "")),
+            }
+    except (OSError, ValueError, TypeError):
+        pass
+    return {"epoch": 0, "fingerprint": ""}
+
+
+def _save_epoch_state(path: Path, epoch: int, fingerprint: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), suffix=".tmp", prefix=".epoch_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"epoch": epoch, "fingerprint": fingerprint}, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +267,8 @@ class BasicAuthProvider(DashboardAuthProvider):
         password_hash: str,
         secret: bytes,
         ttl_seconds: int = _DEFAULT_TTL_SECONDS,
+        credential_fingerprint: Optional[str] = None,
+        epoch_store_path: Optional[Path] = None,
     ) -> None:
         if not username:
             raise ValueError("username must be non-empty")
@@ -223,6 +280,36 @@ class BasicAuthProvider(DashboardAuthProvider):
         self._password_hash = password_hash
         self._secret = secret
         self._ttl = max(60, int(ttl_seconds))
+
+        # credential_fingerprint is None for direct/test construction — the
+        # provider then behaves exactly as before (in-memory-only epoch,
+        # no disk state). register() always passes a real fingerprint
+        # derived from the credential source material (see module docstring
+        # above _epoch_store_path), so production instances get persisted,
+        # cross-restart/cross-worker session-epoch invalidation.
+        self._credential_fingerprint = credential_fingerprint
+        self._epoch_store_path = epoch_store_path or _epoch_store_path()
+        if credential_fingerprint is not None:
+            state = _load_epoch_state(self._epoch_store_path)
+            if state["fingerprint"] and state["fingerprint"] != credential_fingerprint:
+                # Credential source changed since the epoch file was last
+                # written — rotate the epoch so every previously issued
+                # token (signed under the old epoch) stops verifying.
+                self._epoch = state["epoch"] + 1
+                _save_epoch_state(
+                    self._epoch_store_path, self._epoch, credential_fingerprint
+                )
+            elif state["fingerprint"] != credential_fingerprint:
+                # First time this credential is recorded (empty fingerprint
+                # on disk) — keep the existing epoch, just record it.
+                self._epoch = state["epoch"]
+                _save_epoch_state(
+                    self._epoch_store_path, self._epoch, credential_fingerprint
+                )
+            else:
+                self._epoch = state["epoch"]
+        else:
+            self._epoch = 0
 
     # ---- OAuth methods: not used (pure-password provider) ------------------
 
@@ -266,6 +353,7 @@ class BasicAuthProvider(DashboardAuthProvider):
             payload is None
             or payload.get("kind") != "access"
             or payload.get("exp", 0) <= int(time.time())
+            or payload.get("epoch", -1) != self._epoch
         ):
             return None
         return self._session_from_payload(access_token, "", payload)
@@ -278,14 +366,27 @@ class BasicAuthProvider(DashboardAuthProvider):
             payload is None
             or payload.get("kind") != "refresh"
             or payload.get("exp", 0) <= int(time.time())
+            or payload.get("epoch", -1) != self._epoch
         ):
             raise RefreshExpiredError("refresh token expired or invalid")
         return self._mint_session(str(payload.get("sub", self._username)))
 
     def revoke_session(self, *, refresh_token: str) -> None:
-        # Stateless tokens — nothing to revoke server-side. The session
-        # expires within its TTL. Best-effort no-op, must not raise.
+        # Stateless tokens: there is no per-session server state to delete.
+        # Instead, bump the session epoch — every access/refresh token
+        # already issued (signed under the old epoch) stops verifying
+        # immediately, in this instance and (once persisted) in every other
+        # worker/process that shares this provider's epoch store. This is a
+        # "logout everywhere" operation; BasicAuthProvider has exactly one
+        # identity (single configured username), so that is the correct
+        # granularity — there is no per-session/per-device state to target
+        # more narrowly without turning this into a stateful session store.
         _ = refresh_token
+        self._epoch += 1
+        if self._credential_fingerprint is not None:
+            _save_epoch_state(
+                self._epoch_store_path, self._epoch, self._credential_fingerprint
+            )
         return None
 
     # ---- internals ---------------------------------------------------------
@@ -294,10 +395,16 @@ class BasicAuthProvider(DashboardAuthProvider):
         now = int(time.time())
         exp = now + self._ttl
         access_token = _sign(
-            {"sub": user_id, "kind": "access", "exp": exp}, self._secret
+            {"sub": user_id, "kind": "access", "exp": exp, "epoch": self._epoch},
+            self._secret,
         )
         refresh_token = _sign(
-            {"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS},
+            {
+                "sub": user_id,
+                "kind": "refresh",
+                "exp": now + _REFRESH_TTL_SECONDS,
+                "epoch": self._epoch,
+            },
             self._secret,
         )
         return Session(
@@ -451,19 +558,30 @@ def register(ctx) -> None:
         "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", ""
     ).strip()
     if plaintext_from_env:
+        # Fingerprint the plaintext itself, not the hash: hash_password()
+        # salts randomly, so the hash differs on every restart even when the
+        # password hasn't changed — hashing that would falsely look like a
+        # rotation and invalidate every session on every restart (RAH-01).
+        credential_source = plaintext_from_env
         password_hash = hash_password(plaintext_from_env)
         logger.info(
             "dashboard-auth-basic: hashed env-supplied password in-memory "
             "(overrides any config password_hash)."
         )
     elif not password_hash:
-        # config-only plaintext password.
+        # config-only plaintext password — same salting concern as above.
+        credential_source = plaintext
         password_hash = hash_password(plaintext)
         logger.info(
             "dashboard-auth-basic: hashed plaintext password in-memory. "
             "For production, precompute dashboard.basic_auth.password_hash "
             "and remove the plaintext password from config."
         )
+    else:
+        # A precomputed password_hash from config/env is stable across
+        # restarts already (the operator sets it once), so it's safe to
+        # fingerprint directly.
+        credential_source = password_hash
 
     secret = _resolve_secret(section)
 
@@ -472,12 +590,20 @@ def register(ctx) -> None:
     except ValueError:
         ttl = _DEFAULT_TTL_SECONDS
 
+    # Binds the epoch-rotation fingerprint to *this* username too, so
+    # changing the configured username (a distinct identity) also
+    # invalidates prior sessions, not just a password change.
+    credential_fingerprint = hashlib.sha256(
+        f"{username}\x00{credential_source}".encode("utf-8")
+    ).hexdigest()
+
     try:
         provider = BasicAuthProvider(
             username=username,
             password_hash=password_hash,
             secret=secret,
             ttl_seconds=ttl,
+            credential_fingerprint=credential_fingerprint,
         )
     except ValueError as exc:
         LAST_SKIP_REASON = f"BasicAuthProvider construction failed: {exc}"

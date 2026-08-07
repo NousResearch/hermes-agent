@@ -25,6 +25,13 @@ Not using OpenAI Codex? `hermes setup --portal` configures a non-Codex backend w
 
 This is the part most users want to know up front. When this runtime is on, the model running your turn has three independent sources of tools:
 
+At startup Hermes resolves `CODEX_HOME` explicitly and supplies the resolved
+directory to the child process, so app-server reads the same Codex config,
+authentication, plugins, and MCP servers as a direct Codex launch. Hermes also
+retains bounded handshake diagnostics: binary, configured/reported Codex home,
+working directory, app-server user agent/platform, and thread ID. Credentials
+and secret values are not included. A home mismatch is logged.
+
 ### 1. Codex's built-in toolset (always on)
 
 These ship with `codex app-server` itself — no Hermes involvement, no MCP, no plugins. All five are available the moment the runtime starts:

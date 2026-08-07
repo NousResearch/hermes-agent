@@ -93,7 +93,22 @@ class TestCodexAppServerModule:
     """Module-surface tests for the JSON-RPC speaker. Don't require codex CLI."""
 
 
+    def test_resolve_codex_home_explicit_wins(self, tmp_path, monkeypatch) -> None:
+        from agent.transports.codex_app_server import resolve_codex_home
 
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "environment"))
+
+        assert resolve_codex_home(str(tmp_path / "explicit")) == str(
+            tmp_path / "explicit"
+        )
+
+    def test_resolve_codex_home_uses_environment(self, tmp_path, monkeypatch) -> None:
+        from agent.transports.codex_app_server import resolve_codex_home
+
+        expected = tmp_path / "codex-home"
+        monkeypatch.setenv("CODEX_HOME", str(expected))
+
+        assert resolve_codex_home() == str(expected)
 
     def test_check_binary_handles_missing_executable(self) -> None:
         from agent.transports.codex_app_server import check_codex_binary
@@ -167,6 +182,7 @@ class TestSpawnEnvIsolation:
             f"{captured['env'].get('HOME')!r}. Codex's shell tool's "
             "subprocesses (gh, git, aws, npm) need the user's real HOME."
         )
+        assert captured["env"].get("CODEX_HOME") == "/users/alice/.codex"
 
     def test_spawn_env_sets_CODEX_HOME_when_provided(self, monkeypatch):
         """CODEX_HOME isolation must still work — that's the whole point
@@ -201,13 +217,55 @@ class TestSpawnEnvIsolation:
         monkeypatch.setenv("HOME", "/users/alice")
 
         client = cas.CodexAppServerClient(
-            codex_bin="codex", codex_home="/tmp/profile/codex"
+            codex_bin="codex",
+            codex_home="/tmp/profile/codex",
+            env={"CODEX_HOME": "/tmp/wrapper/codex"},
         )
         client._closed = True
 
         assert captured["env"].get("CODEX_HOME") == "/tmp/profile/codex"
         # And HOME still passes through unchanged
         assert captured["env"].get("HOME") == "/users/alice"
+
+    def test_spawn_env_preserves_caller_CODEX_HOME(self, monkeypatch):
+        """A child-specific CODEX_HOME wins over the inherited environment
+        when the explicit codex_home argument is unset."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["env"] = kwargs.get("env", {}).copy()
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("CODEX_HOME", "/users/alice/.codex")
+
+        client = cas.CodexAppServerClient(
+            codex_bin="codex", env={"CODEX_HOME": "/tmp/wrapper/codex"}
+        )
+        client._closed = True
+
+        assert client.codex_home == "/tmp/wrapper/codex"
+        assert captured["env"].get("CODEX_HOME") == "/tmp/wrapper/codex"
 
     def test_kanban_worker_adds_only_kanban_writable_root(self, monkeypatch):
         """Codex-runtime Kanban workers need to write board state outside
@@ -339,4 +397,3 @@ class TestSpawnEnvSecretStripping:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-codex-needs-this")
         env = self._capture_spawn_env(monkeypatch)
         assert env.get("OPENAI_API_KEY") == "sk-codex-needs-this"
-

@@ -38,6 +38,7 @@ import yaml
 
 from hermes_constants import get_hermes_home, get_optional_mcps_dir
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from utils import is_truthy_value
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import (
     load_config,
@@ -367,15 +368,26 @@ def is_installed(name: str) -> bool:
     return name in installed_servers()
 
 
+def parse_mcp_enabled_flag(value: Any, *, default: bool = True) -> bool:
+    """Coerce an MCP server ``enabled`` field with the shared truthy contract.
+
+    ``config.yaml`` authors often write ``enabled: on``; the previous
+    allowlist (true/1/yes) treated that as disabled and hid the server from
+    the picker/catalog while tools_config still loaded it.
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return is_truthy_value(value)
+    return bool(value)
+
+
 def is_enabled(name: str) -> bool:
     servers = installed_servers()
     cfg = servers.get(name)
     if not cfg:
         return False
-    enabled = cfg.get("enabled", True)
-    if isinstance(enabled, str):
-        return enabled.lower() in {"true", "1", "yes"}
-    return bool(enabled)
+    return parse_mcp_enabled_flag(cfg.get("enabled", True))
 
 
 # ─── Install ─────────────────────────────────────────────────────────────────

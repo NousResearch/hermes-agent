@@ -26,6 +26,7 @@ from hermes_cli.config import (
 from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
+from hermes_cli.mcp_catalog import parse_mcp_enabled_flag
 from tools.mcp_tool import _ENV_VAR_PATTERN, _env_ref_name
 
 logger = logging.getLogger(__name__)
@@ -707,10 +708,8 @@ def cmd_mcp_list(args=None):
         else:
             tools_str = "all"
 
-        # Enabled status
-        enabled = cfg.get("enabled", True)
-        if isinstance(enabled, str):
-            enabled = enabled.lower() in {"true", "1", "yes"}
+        # Enabled status — shared truthy contract (true/1/yes/on).
+        enabled = parse_mcp_enabled_flag(cfg.get("enabled", True))
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
 
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")

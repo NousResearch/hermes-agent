@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.status import read_runtime_status
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
@@ -42,6 +43,10 @@ class _ControlledRequest:
 
 def _make_adapter() -> TelegramAdapter:
     return TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+
+def _telegram_runtime_state() -> str:
+    return read_runtime_status()["platforms"]["telegram"]["state"]
 
 
 def _mock_polling_app(*, get_me=None):
@@ -232,6 +237,55 @@ async def test_current_polling_generation_success_records_progress():
     assert adapter._polling_network_error_count == 0
     assert adapter._send_path_degraded is False
     assert generation > 0
+
+
+@pytest.mark.asyncio
+async def test_polling_recovery_runtime_state_tracks_current_generation():
+    adapter = _make_adapter()
+    adapter._mark_connected()
+
+    previous_generation = adapter._polling_generation
+    generation, _ = adapter._begin_polling_generation()
+
+    assert adapter._send_path_degraded is True
+    assert _telegram_runtime_state() == "retrying"
+
+    adapter._mark_connected()
+
+    assert adapter._send_path_degraded is True
+    assert _telegram_runtime_state() == "retrying"
+
+    adapter._record_polling_progress(previous_generation)
+
+    assert adapter._send_path_degraded is True
+    assert _telegram_runtime_state() == "retrying"
+
+    adapter._record_polling_progress(generation)
+
+    assert adapter._send_path_degraded is False
+    assert _telegram_runtime_state() == "connected"
+
+    status_write = MagicMock()
+    adapter._write_runtime_status_safe = status_write
+    adapter._record_polling_progress(generation)
+    status_write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_late_polling_progress_does_not_overwrite_fatal_runtime_state():
+    adapter = _make_adapter()
+    adapter._mark_connected()
+    generation, _ = adapter._begin_polling_generation()
+    adapter._set_fatal_error(
+        "telegram_polling_conflict",
+        "polling retries exhausted",
+        retryable=False,
+    )
+
+    adapter._record_polling_progress(generation)
+
+    assert adapter._send_path_degraded is True
+    assert _telegram_runtime_state() == "fatal"
 
 
 @pytest.mark.asyncio

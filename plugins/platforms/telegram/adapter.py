@@ -906,6 +906,13 @@ class TelegramAdapter(BasePlatformAdapter):
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
         super()._mark_connected()
+        if not self._webhook_mode and self._send_path_degraded:
+            self._write_runtime_status_safe(
+                "polling_retrying",
+                platform_state="retrying",
+                error_code=None,
+                error_message=None,
+            )
 
     def _mark_disconnected(self) -> None:
         self._drop_delayed_deliveries = True
@@ -2165,16 +2172,26 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting = True
         self._send_path_degraded = True
+        if not self.has_fatal_error:
+            self._write_runtime_status_safe(
+                "polling_retrying",
+                platform_state="retrying",
+                error_code=None,
+                error_message=None,
+            )
         return self._polling_generation, self._polling_progress_event
 
     def _record_polling_progress(self, generation: int) -> None:
         """Record successful getUpdates I/O for the current generation only."""
         if getattr(self, "_polling_teardown_started", False):
             return
+        if self.has_fatal_error:
+            return
         if not self._polling_progress_accepting:
             return
         if generation != self._polling_generation:
             return
+        was_degraded = self._send_path_degraded
         self._polling_progress_event.set()
         self._polling_network_error_count = 0
         if generation == self._polling_conflict_recovery_generation:
@@ -2182,6 +2199,13 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             self._polling_conflict_count = 0
         self._send_path_degraded = False
+        if was_degraded:
+            self._write_runtime_status_safe(
+                "polling_progress",
+                platform_state="connected",
+                error_code=None,
+                error_message=None,
+            )
 
     def _observe_polling_request_result(self, request, generation, result):
         """Record getUpdates progress from an observed do_request result.

@@ -252,6 +252,97 @@ def test_flush_guard_clamps_overshooting_cursor():
 # ── Pass 0: merge consecutive assistant messages (issue #29148, #49147) ─────
 
 
+def test_repair_merges_chat_prefill_incomplete_assistant_tail_before_empty_heal():
+    """Thinking-only prefill scaffolding must not leave two assistant tail turns.
+
+    The raw thinking-only assistant is already in history. Older prefill
+    recovery appended a second assistant turn with ``finish_reason=incomplete``;
+    the pre-send empty-message healer then padded the raw non-final turn, so
+    the thinking-only drop pass could no longer remove it and Ollama rejected
+    the request with "Cannot have 2 or more assistant messages at the end".
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "", "reasoning": "hidden thought"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "hidden thought",
+            "finish_reason": "incomplete",
+            "_thinking_prefill": True,
+        },
+    ]
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+    api_messages = sanitize_api_messages([dict(m) for m in messages])
+    api_messages = AIAgent._drop_thinking_only_and_merge_users(api_messages)
+
+    assert repairs == 1
+    assert [m["role"] for m in api_messages] == ["user"]
+    assert len(messages) == 2
+
+
+def test_repair_merges_second_chat_prefill_attempt_tail():
+    """A second thinking-only prefill attempt must also be collapsed."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "", "reasoning": "first thought"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "first thought",
+            "finish_reason": "incomplete",
+            "_thinking_prefill": True,
+        },
+        {"role": "assistant", "content": "", "reasoning": "second thought"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "second thought",
+            "finish_reason": "incomplete",
+            "_thinking_prefill": True,
+        },
+    ]
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+    api_messages = sanitize_api_messages([dict(m) for m in messages])
+    api_messages = AIAgent._drop_thinking_only_and_merge_users(api_messages)
+
+    assert repairs == 3
+    assert [m["role"] for m in api_messages] == ["user"]
+    assert len(messages) == 2
+
+
+def test_repair_preserves_codex_incomplete_interims_with_continuation_items():
+    """Codex Responses interims carry replay state and must not be merged."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "continue"},
+        {
+            "role": "assistant",
+            "content": "",
+            "finish_reason": "incomplete",
+            "codex_reasoning_items": [{"id": "rs_1"}],
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "finish_reason": "incomplete",
+            "codex_message_items": [{"id": "msg_1"}],
+        },
+    ]
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    assert repairs == 0
+    assert len(messages) == 3
+
 
 
 
@@ -368,8 +459,6 @@ def test_sanitize_drops_empty_tool_calls_array():
 # "all messages must have non-empty content except for the optional final
 # assistant message" (INVALID_REQUEST_BODY). sanitize_api_messages now heals
 # such turns on the per-call copy so the session recovers itself in memory.
-
-
 
 
 

@@ -609,11 +609,7 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     # Responses replay chain (the duplicate-detection logic at
     # conversation_loop.py already de-dups identical codex interims).
     def _is_codex_interim(m: Dict) -> bool:
-        return bool(
-            m.get("codex_reasoning_items")
-            or m.get("codex_message_items")
-            or m.get("finish_reason") == "incomplete"
-        )
+        return bool(m.get("codex_reasoning_items") or m.get("codex_message_items"))
 
     def _is_verification_candidate(m: Dict) -> bool:
         return m.get("finish_reason") in {

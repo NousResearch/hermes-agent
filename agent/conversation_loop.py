@@ -6900,9 +6900,14 @@ def run_conversation(
                     # ── Thinking-only prefill continuation ──────────
                     # The model produced structured reasoning (via API
                     # fields) but no visible text content.  Rather than
-                    # giving up, append the assistant message as-is and
-                    # continue — the model will see its own reasoning
-                    # on the next turn and produce the text portion.
+                    # giving up, continue once with that reasoning in the
+                    # tail so the model can produce the text portion.
+                    # Some transports/logging paths have already appended
+                    # the raw thinking-only assistant turn by the time this
+                    # branch runs; in that case, do not append a duplicate
+                    # incomplete assistant message, because strict
+                    # OpenAI-compatible endpoints such as Ollama reject a
+                    # request ending in two assistant turns.
                     # Inspired by clawdbot's "incomplete-text" recovery.
                     # Also covers Qwen3/Ollama in-content <think> blocks
                     # (detected above as _has_inline_thinking).
@@ -6923,11 +6928,28 @@ def run_conversation(
                             f"↻ Thinking-only response — prefilling to continue "
                             f"({agent._thinking_prefill_retries}/2)"
                         )
-                        interim_msg = agent._build_assistant_message(
-                            assistant_message, "incomplete"
+                        previous_msg = messages[-1] if messages else None
+                        previous_is_thinking_tail = (
+                            isinstance(previous_msg, dict)
+                            and previous_msg.get("role") == "assistant"
+                            and not previous_msg.get("tool_calls")
+                            and not agent._has_content_after_think_block(
+                                previous_msg.get("content") or ""
+                            )
+                            and (
+                                agent._is_thinking_only_assistant(
+                                    previous_msg,
+                                    drop_codex_reasoning_items=False,
+                                )
+                                or previous_msg.get("finish_reason") == "incomplete"
+                            )
                         )
-                        interim_msg["_thinking_prefill"] = True
-                        messages.append(interim_msg)
+                        if not previous_is_thinking_tail:
+                            interim_msg = agent._build_assistant_message(
+                                assistant_message, "incomplete"
+                            )
+                            interim_msg["_thinking_prefill"] = True
+                            messages.append(interim_msg)
                         agent._session_messages = messages
                         continue
 

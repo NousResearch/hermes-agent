@@ -165,6 +165,27 @@ class TestUnknownExitCode:
         assert "exit code 99" in result["summary"]
 
 
+class TestVerdictExitBreakerAccounting:
+    @pytest.mark.parametrize("returncode", [1, 2])
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_verdict_exit_resets_crash_streak(
+        self, mock_cfg, mock_run, returncode
+    ):
+        mock_cfg.return_value = {
+            "tirith_enabled": True, "tirith_path": "tirith",
+            "tirith_timeout": 5, "tirith_fail_open": True,
+        }
+        _tirith_mod._crash_count = _tirith_mod._CRASH_LIMIT - 1
+        mock_run.return_value = _mock_run(returncode, _json_stdout())
+
+        result = check_command_security("echo hi")
+
+        assert result["action"] in {"block", "warn"}
+        assert _tirith_mod._crash_count == 0
+        assert _tirith_mod._circuit_open is False
+
+
 # ---------------------------------------------------------------------------
 # Disabled
 # ---------------------------------------------------------------------------

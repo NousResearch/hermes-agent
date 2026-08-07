@@ -596,6 +596,10 @@ export const en: Translations = {
       tapCheck: 'Tap "Check now" to look for updates.',
       updateReady: count => `A new update is ready (${count} change${count === 1 ? '' : 's'} included).`,
       updateReadyUnknown: 'A new update is ready.',
+      backendUpdateReady: count => `A backend update is ready (${count} change${count === 1 ? '' : 's'} included).`,
+      updateReadyBoth: (backendCount, appCount) =>
+        `Updates ready: backend (${backendCount} change${backendCount === 1 ? '' : 's'}) and this app (${appCount} change${appCount === 1 ? '' : 's'}).`,
+      backendVersion: value => `Connected backend · ${value}`,
       lastChecked: age => `Last checked ${age}`,
       justNowSuffix: ' · just now',
       automaticUpdates: 'Automatic updates',
@@ -2468,6 +2472,7 @@ export const en: Translations = {
       preparing: 'Updating backend…',
       pulling: 'Backend updating…',
       restarting: 'Backend restarting to load the update…',
+      verifying: 'Confirming the update finished…',
       notAvailable: 'Update not available for this backend.',
       failed: 'Backend update failed.',
       noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.'

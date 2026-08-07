@@ -489,6 +489,9 @@ export interface Translations {
       tapCheck: string
       updateReady: (count: number) => string
       updateReadyUnknown: string
+      backendUpdateReady: (count: number) => string
+      updateReadyBoth: (backendCount: number, appCount: number) => string
+      backendVersion: (value: string) => string
       lastChecked: (age: string) => string
       justNowSuffix: string
       automaticUpdates: string
@@ -2077,6 +2080,7 @@ export interface Translations {
       preparing: string
       pulling: string
       restarting: string
+      verifying: string
       notAvailable: string
       failed: string
       noReturn: string

@@ -556,14 +556,16 @@ _terminal_cwd_lock = _ReadWriteLock()
 
 # Ceiling on how long a cron job waits for the TERMINAL_CWD lock before
 # FAILING (fail-closed, #79768). Derived from the cron inactivity limit
-# (HERMES_CRON_TIMEOUT, default 600s): a *wedged* lock holder stops touching
-# its activity clock, so the inactivity monitor kills it and the lock is
-# released within roughly that limit — a waiter that outlasts it plus margin
-# is facing a holder even the monitor could not reap, and must not run:
-# proceeding without the lock lets the holder's process-global TERMINAL_CWD
-# override leak into this job's shell/file/code-exec commands (wrong-directory
-# execution — the exact corruption _ReadWriteLock exists to prevent, see
-# test_reader_never_observes_writer_override). A *healthy* long-running
+# (HERMES_CRON_TIMEOUT, default 600s): a wedged lock holder stops touching
+# its activity clock, so the inactivity monitor usually reaps it and the
+# lock is released within roughly that limit. The bound is measured from
+# the WAITER's arrival, so a holder that wedges late (or hangs in pre-agent
+# setup before the monitor arms) can still outlive it — waiters then fail
+# loudly rather than run: proceeding without the lock lets the holder's
+# process-global TERMINAL_CWD override leak into this job's shell/file/
+# code-exec commands (wrong-directory execution — the exact corruption
+# _ReadWriteLock exists to prevent, see
+# test_reader_never_observes_writer_override). A healthy long-running
 # workdir job past the bound also fails its waiters loudly rather than
 # corrupting them silently; the failure names the holder pattern so the fix
 # (stagger schedules / drop the workdir) is actionable.
@@ -571,13 +573,27 @@ _CWD_LOCK_TIMEOUT_FLOOR_SECONDS = 120.0
 _CWD_LOCK_TIMEOUT_MARGIN_SECONDS = 60.0
 
 
+def _cron_inactivity_seconds() -> float:
+    """Parse HERMES_CRON_TIMEOUT (seconds). 0 = unlimited; bad input = 600.
+
+    Shared by run_job's inactivity monitor (which maps 0 to "no limit") and
+    the cwd-lock bound below (which keeps the wait bounded regardless) so
+    the two sites cannot drift apart — the lock bound must stay at or above
+    the inactivity limit or waiters would fail while a healthy holder runs.
+    """
+    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    if not raw:
+        return 600.0
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        logger.warning("Invalid HERMES_CRON_TIMEOUT=%r; using default 600s", raw)
+        return 600.0
+
+
 def _cwd_lock_timeout_seconds() -> float:
     """Bound for the TERMINAL_CWD lock wait: inactivity limit + margin."""
-    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-    try:
-        inactivity = float(raw) if raw else 600.0
-    except (ValueError, TypeError):
-        inactivity = 600.0
+    inactivity = _cron_inactivity_seconds()
     if inactivity <= 0:  # 0 = unlimited job runtime; keep the wait bounded.
         inactivity = 600.0
     return (
@@ -3236,12 +3252,13 @@ def run_job(
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
 
     _holds_cwd_write = _job_workdir is not None
+    _cwd_lock_timeout = _cwd_lock_timeout_seconds()
     _cwd_lock_acquired = True
     if _holds_cwd_write:
-        if not _terminal_cwd_lock.acquire_write(timeout=_cwd_lock_timeout_seconds()):
+        if not _terminal_cwd_lock.acquire_write(timeout=_cwd_lock_timeout):
             _cwd_lock_acquired = False
     else:
-        if not _terminal_cwd_lock.acquire_read(timeout=_cwd_lock_timeout_seconds()):
+        if not _terminal_cwd_lock.acquire_read(timeout=_cwd_lock_timeout):
             _cwd_lock_acquired = False
 
     # Everything after the acquire MUST live inside this try, so the finally
@@ -3263,11 +3280,11 @@ def run_job(
             raise TimeoutError(
                 f"Timed out waiting for the TERMINAL_CWD "
                 f"{'write' if _holds_cwd_write else 'read'} lock after "
-                f"{_cwd_lock_timeout_seconds():.0f}s — another workdir cron "
-                f"job has held it for longer than the cron inactivity limit "
-                f"(wedged, or legitimately long-running). Stagger its "
-                f"schedule or remove its workdir to unblock this job "
-                f"(#79768)."
+                f"{_cwd_lock_timeout:.0f}s — another cron job (a workdir "
+                f"writer, or long-running readers) has held it for longer "
+                f"than the cron inactivity limit. If a workdir job is the "
+                f"holder, stagger its schedule or remove its workdir to "
+                f"unblock this job (#79768)."
             )
         # Scope cron approval policy to this job. Keep the token so the finally
         # restores the pre-job state instead of pinning an explicit empty value,
@@ -3693,18 +3710,7 @@ def run_job(
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
-        _raw_cron_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-        if _raw_cron_timeout:
-            try:
-                _cron_timeout = float(_raw_cron_timeout)
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Invalid HERMES_CRON_TIMEOUT=%r; using default 600s",
-                    _raw_cron_timeout,
-                )
-                _cron_timeout = 600.0
-        else:
-            _cron_timeout = 600.0
+        _cron_timeout = _cron_inactivity_seconds()
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
         # Keep the one-shot run_claim fresh while the run is alive (#62002):
@@ -3923,9 +3929,11 @@ def run_job(
 
     finally:
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
-        # only ever mutate it when the job has a workdir; see the setup block
-        # at the top of run_job for the serialization guarantee.
-        if _job_workdir:
+        # only ever mutate it when the job has a workdir AND actually held
+        # the write lock — a fail-closed timeout raised before the env-set,
+        # so restoring there would replay a pre-wait snapshot over the
+        # ACTIVE holder's live override.
+        if _job_workdir and _cwd_lock_acquired:
             if _prior_terminal_cwd == "_UNSET_":
                 os.environ.pop("TERMINAL_CWD", None)
             else:

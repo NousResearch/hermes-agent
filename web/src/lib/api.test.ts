@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, fetchJSON } from "./api";
+import { api, fetchJSON, setManagementProfile } from "./api";
 
 const reloadMocks = vi.hoisted(() => ({
   attemptDashboardTokenReloadOnce: vi.fn(() => false),
@@ -119,6 +119,31 @@ describe("api.getModelOptions", () => {
 });
 
 describe("api OAuth helpers", () => {
+  it("scopes Provider Logins to the active management profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ providers: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    setManagementProfile("coder");
+    try {
+      await api.getOAuthProviders();
+      await api.startOAuthLogin("openai-codex");
+      await api.disconnectOAuthProvider("anthropic");
+      await api.cancelOAuthSession("oauth-session");
+    } finally {
+      // Module-level state; reset so later tests see the default scope.
+      setManagementProfile("");
+    }
+
+    const urls = fetchMock.mock.calls.map((call) => call[0] as string);
+    expect(urls).toEqual([
+      "/api/providers/oauth?profile=coder",
+      "/api/providers/oauth/openai-codex/start?profile=coder",
+      "/api/providers/oauth/anthropic?profile=coder",
+      "/api/providers/oauth/sessions/oauth-session?profile=coder",
+    ]);
+  });
+
   it("starts OAuth login in gated mode without requiring an injected session token", async () => {
     vi.stubGlobal("window", { __HERMES_AUTH_REQUIRED__: true });
     const fetchMock = jsonFetchMock({

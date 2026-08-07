@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.prompt_builder import KANBAN_GUIDANCE
 from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
 
@@ -80,6 +81,25 @@ def _prompt_parts(agent):
         patch("run_agent.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)
+
+
+def test_autonomous_ownership_policy_is_worker_effective_only():
+    worker_prompt = _stable_prompt(
+        _make_agent(
+            valid_tool_names=["kanban_show"],
+            _kanban_worker_guidance=KANBAN_GUIDANCE,
+        )
+    )
+    ordinary_prompt = _stable_prompt(_make_agent())
+
+    for instruction in (
+        "Define the exit predicate",
+        "Own relevant, reversible discoveries",
+        "Never merge or deploy changes",
+        "Include the exit predicate and whether it passed",
+    ):
+        assert instruction in worker_prompt
+        assert instruction not in ordinary_prompt
 
 
 def _init_code_repo(path):

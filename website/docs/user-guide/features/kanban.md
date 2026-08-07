@@ -982,6 +982,34 @@ Runs are exposed on the dashboard (Run History section in the drawer, one colour
 
 **Live drawer refresh.** When the dashboard's WebSocket event stream reports new events for the task the user is currently viewing, the drawer reloads itself (via a per-task event counter threaded into its `useEffect` dependency list). Closing and reopening is no longer required to see a run's new row or updated outcome.
 
+### Autonomous coding-run ownership
+
+Kanban workers receive this policy automatically in their system prompt. Cron
+jobs and `delegate_task` children do not: for those run types, include this
+policy (or the `autonomous-ai-agents/hermes-agent` skill that contains it) in
+the job prompt or delegated goal when you want the same operating convention.
+
+For autonomous Kanban coding work, define a checkable exit predicate before
+moving the card into progress. Keep the implementation isolated on its own
+branch or worktree, make the smallest coherent change, run the repository's
+real verification commands, and record important decisions on the card.
+
+During the run, the agent owns fixable discoveries that block or materially
+improve the original task, such as broken skills, verifier drift, closely
+related bugs, tooling failures, review noise, or orphaned follow-ups. If a
+discovery is useful but outside the original scope, handle it on a separate
+issue-linked branch or pull request and then return to the original exit
+predicate. Do not mix unrelated fixes into the primary change.
+
+Escalate discoveries that are irreversible, require a product or preference
+decision, or need authority the run was not given. An autonomous side fix must
+never merge or deploy changes, rotate secrets, or widen authentication,
+payments, or storage behavior without explicit approval.
+
+The final handoff should state the exit predicate and whether it passed, the
+iterations and verification performed, changes kept or discarded, any side-fix
+pull requests, and the final blocker when the predicate did not pass.
+
 ### Forward compatibility
 
 Two nullable columns on `tasks` are reserved for v2 workflow routing: `workflow_template_id` (which template this task belongs to) and `current_step_key` (which step in that template is active). The v1 kernel ignores them for routing but lets clients write them, so a v2 release can add the routing machinery without another schema migration.

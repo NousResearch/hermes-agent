@@ -99,3 +99,41 @@ sessions still have zero `kanban_*` schema footprint unless configured.
   within a board for workspace-path + memory-key isolation.
 
 User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban
+
+### Autonomous coding-run ownership
+
+This section is an operating convention, not a globally injected prompt.
+Kanban workers receive the equivalent policy automatically through
+`KANBAN_GUIDANCE`. Cron jobs and `delegate_task` children receive it only when
+their job prompt or delegated goal explicitly includes this reference (or an
+equivalent policy).
+
+For unattended coding work, define the run before dispatch:
+
+- Write a checkable exit predicate (for example, a focused test passes and the
+  issue reproduction no longer fails).
+- Use an isolated branch or worktree.
+- Make the smallest coherent change, run real verification, and record the
+  result of each iteration.
+- Keep a short decision log of accepted and discarded attempts.
+
+The running agent owns reversible, fixable discoveries it encounters. Broken
+skills, verifier drift, related bugs, review noise, tooling failures, and
+orphaned follow-ups should be repaired rather than parked for a human. When a
+discovery is outside the original change boundary, put it in a separate
+issue-linked branch or pull request, then return to the original exit
+predicate. Do not mix an unrelated side fix into the primary diff.
+
+Escalate instead of acting when the discovery requires an irreversible action,
+a product or preference decision, or authority the run does not already have.
+In particular, autonomous side fixes do not authorize merges, deployments,
+secret rotation, or expansion into risky authentication, payment, or storage
+work.
+
+The final handoff should report:
+
+- the exit predicate and whether it passed;
+- iterations and verification performed;
+- landed changes and discarded attempts;
+- separate side-fix issues or pull requests opened;
+- the final predicate state and any genuine blocker.

@@ -1868,8 +1868,65 @@ function Install-Repository {
                     }
                     $stashName = "hermes-install-autostash-" + (Get-Date -Format "yyyyMMdd-HHmmss")
                     Write-Info "Local changes detected, stashing before update..."
+
+                    # -- Windows reserved-device-name guard ----------------------------------
+                    # git stash cannot handle files whose basename matches a Windows reserved
+                    # device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9). Rename them temporarily
+                    # so the stash can proceed; restore after stash apply.
+                    $reservedDeviceNames = @(
+                        "CON","PRN","AUX","NUL",
+                        "COM1","COM2","COM3","COM4","COM5",
+                        "COM6","COM7","COM8","COM9",
+                        "LPT1","LPT2","LPT3","LPT4","LPT5",
+                        "LPT6","LPT7","LPT8","LPT9"
+                    )
+                    $reservedRenameMapFile = Join-Path $pwd ".hermes_autostash_reserved_rename_map"
+                    $reservedRenameMap = @{}
+                    $untrackedFiles = @(git -c windows.appendAtomically=false ls-files --others --exclude-standard 2>$null) | Where-Object { $_ }
+                    foreach ($f in $untrackedFiles) {
+                        $base = [System.IO.Path]::GetFileNameWithoutExtension($f).ToUpper()
+                        if ($reservedDeviceNames -contains $base) {
+                            $src = Join-Path $pwd $f
+                            $dstName = ".hermes_reserved_name_$([System.IO.Path]::GetFileName($f))"
+                            $dst = Join-Path $pwd $dstName
+                            if (Test-Path $src) {
+                                try {
+                                    Rename-Item -LiteralPath $src -NewName $dstName -ErrorAction Stop
+                                    $reservedRenameMap[$f] = $dstName
+                                    Write-Warn "Temporarily renamed Windows reserved-device-name file: $f -> $dstName"
+                                } catch {
+                                    Write-Warn "Could not rename reserved file ${f}: $_"
+                                }
+                            }
+                        }
+                    }
+                    if ($reservedRenameMap.Count -gt 0) {
+                        $reservedRenameMap | ConvertTo-Json | Set-Content $reservedRenameMapFile -Encoding UTF8
+                    }
+
                     git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"
-                    if ($LASTEXITCODE -eq 0) { $autostashRef = "stash@{0}" }
+                    $stashPushExit = $LASTEXITCODE
+                    if ($stashPushExit -eq 0) {
+                        $autostashRef = "stash@{0}"
+                    } else {
+                        # Stash push failed - restore temporarily-renamed files so user data is not lost.
+                        if ($reservedRenameMap.Count -gt 0) {
+                            foreach ($entry in $reservedRenameMap.GetEnumerator()) {
+                                $src = Join-Path $pwd $entry.Value
+                                $dst = Join-Path $pwd $entry.Key
+                                if ((Test-Path $src) -and -not (Test-Path $dst)) {
+                                    try {
+                                        Rename-Item -LiteralPath $src -NewName $entry.Key -ErrorAction Stop
+                                    } catch {
+                                        Write-Warn "Could not restore reserved file name: $($entry.Value) -> $($entry.Key)"
+                                    }
+                                }
+                            }
+                            if (Test-Path $reservedRenameMapFile) {
+                                Remove-Item $reservedRenameMapFile -ErrorAction SilentlyContinue
+                            }
+                        }
+                    }
                 }
                 git -c windows.appendAtomically=false fetch origin $Branch
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
@@ -1959,6 +2016,30 @@ function Install-Repository {
                         ) | Where-Object { $_ -and $_.ToString().Trim() }
                         if (($restoreExit -eq 0) -and ($conflictedFiles.Count -eq 0)) {
                             git -c windows.appendAtomically=false stash drop $autostashRef 2>$null
+
+                            # -- Windows reserved-device-name restore --------------------------------
+                            $reservedRenameMapFileRestore = Join-Path $pwd ".hermes_autostash_reserved_rename_map"
+                            if (Test-Path $reservedRenameMapFileRestore) {
+                                try {
+                                    $mapData = Get-Content $reservedRenameMapFileRestore -Raw | ConvertFrom-Json
+                                    foreach ($entry in $mapData.PSObject.Properties) {
+                                        $src = Join-Path $pwd $entry.Value
+                                        $dst = Join-Path $pwd $entry.Name
+                                        if ((Test-Path $src) -and -not (Test-Path $dst)) {
+                                            try {
+                                                Rename-Item -LiteralPath $src -NewName $entry.Name -ErrorAction Stop
+                                                Write-Warn "Restored reserved file name: $($entry.Name)"
+                                            } catch {
+                                                Write-Warn "Could not restore reserved file name: $($entry.Value) -> $($entry.Name)"
+                                            }
+                                        }
+                                    }
+                                    Remove-Item $reservedRenameMapFileRestore -ErrorAction SilentlyContinue
+                                } catch {
+                                    Write-Warn "Could not process reserved rename map: $_"
+                                }
+                            }
+
                             Write-Warn "Local changes were restored on top of the updated codebase."
                             Write-Warn "Review git diff / git status if Hermes behaves unexpectedly."
                         } else {

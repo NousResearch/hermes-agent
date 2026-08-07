@@ -1082,7 +1082,122 @@ def _update_via_zip(args):
     # git-update path for rationale (#30271).
     _finish_dashboard_update_cleanup(node_failures)
 
-def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
+# ---------------------------------------------------------------------------
+# Windows reserved-device-name guard
+# ---------------------------------------------------------------------------
+# git stash cannot handle files whose basename matches a Windows reserved
+# device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9).  On Windows these names
+# are special at the OS level and git errors out when trying to stage them.
+# We temporarily rename matching untracked files before stash, then restore
+# the original names after the stash is applied.
+# ---------------------------------------------------------------------------
+
+_RESERVED_DEVICE_NAMES = frozenset({
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5",
+    "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+    "LPT6", "LPT7", "LPT8", "LPT9",
+})
+
+_RESERVED_RENAME_PREFIX = ".hermes_reserved_name_"
+
+
+_RESERVED_RENAME_MAP_FILE = ".hermes_autostash_reserved_rename_map"
+
+
+def _is_reserved_device_name(name: str) -> bool:
+    """True if *name* (without extension) matches a Windows reserved device name."""
+    base = name.split(".")[0].upper()
+    return base in _RESERVED_DEVICE_NAMES
+
+
+def _rename_reserved_untracked(cwd: Path, ls_files_output: str) -> list[tuple[Path, Path]]:
+    """Rename untracked files with reserved names so git stash can handle them.
+
+    Returns list of (original_path, renamed_path) pairs for later restore.
+    """
+    renames: list[tuple[Path, Path]] = []
+    if not ls_files_output or not _m()._is_windows():
+        return renames
+
+    for path_str in ls_files_output.splitlines():
+        if not path_str:
+            continue
+        path = cwd / path_str
+        if not path.exists():
+            continue
+        name = path.name
+        if _is_reserved_device_name(name):
+            renamed = path.with_name(f"{_RESERVED_RENAME_PREFIX}{name}")
+            try:
+                path.rename(renamed)
+                renames.append((path, renamed))
+                print(
+                    f"  ⚠ Temporarily renamed Windows reserved-device-name file: "
+                    f"{path_str} → {renamed.name}"
+                )
+            except OSError as exc:
+                print(f"  ✗ Could not rename reserved file {path_str}: {exc}")
+    return renames
+
+
+def _save_reserved_rename_map(cwd: Path, renames: list[tuple[Path, Path]]) -> None:
+    """Persist rename pairs so manual ``git stash apply`` can recover them."""
+    if not renames:
+        return
+    map_file = cwd / _RESERVED_RENAME_MAP_FILE
+    data = {
+        str(orig.relative_to(cwd)): str(renamed.relative_to(cwd))
+        for orig, renamed in renames
+    }
+    map_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _load_and_clear_reserved_rename_map(cwd: Path) -> list[tuple[Path, Path]]:
+    """Load rename pairs from the sidecar file and remove it."""
+    map_file = cwd / _RESERVED_RENAME_MAP_FILE
+    if not map_file.exists():
+        return []
+    try:
+        data = json.loads(map_file.read_text(encoding="utf-8"))
+        renames = [(cwd / k, cwd / v) for k, v in data.items()]
+    except (json.JSONDecodeError, OSError):
+        renames = []
+    try:
+        map_file.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return renames
+
+
+def _restore_reserved_renames(
+    cwd: Path, renames: list[tuple[Path, Path]] | None = None
+) -> None:
+    """Undo the temporary renames done by _rename_reserved_untracked.
+
+    If *renames* is not provided, reads the sidecar map written by
+    _save_reserved_rename_map (for manual ``git stash apply`` recovery).
+    """
+    if renames is None:
+        renames = _load_and_clear_reserved_rename_map(cwd)
+    if not renames:
+        return
+    for original, renamed in renames:
+        if renamed.exists() and not original.exists():
+            try:
+                renamed.rename(original)
+                print(f"  ✓ Restored reserved file name: {original.name}")
+            except OSError as exc:
+                print(
+                    f"  ⚠ Could not restore reserved file name: {renamed.name} → "
+                    f"{original.name}: {exc}"
+                )
+
+
+def _stash_local_changes_if_needed(
+    git_cmd: list[str], cwd: Path
+) -> tuple[Optional[str], list[tuple[Path, Path]]]:
     status = subprocess.run(
         git_cmd + ["status", "--porcelain"],
         cwd=cwd,
@@ -1091,7 +1206,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         check=True,
     )
     if not status.stdout.strip():
-        return None
+        return None, []
 
     # If the index has unmerged entries (e.g. from an interrupted merge/rebase),
     # git stash will fail with "needs merge / could not write index".  Clear the
@@ -1113,6 +1228,27 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         "hermes-update-autostash-%Y%m%d-%H%M%S"
     )
     print("→ Local changes detected — stashing before update...")
+
+    # ── Windows reserved-device-name guard ───────────────────────────────
+    # git stash cannot handle files whose basename matches a Windows reserved
+    # device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9). Rename them temporarily
+    # so the stash can proceed; _restore_stashed_changes will rename them back.
+    _reserved_name_backups: list[tuple[Path, Path]] = []
+    if _m()._is_windows():
+        try:
+            untracked = subprocess.run(
+                git_cmd + ["ls-files", "--others", "--exclude-standard"],
+                cwd=cwd,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                check=True,
+            )
+            _reserved_name_backups = _rename_reserved_untracked(cwd, untracked.stdout)
+            if _reserved_name_backups:
+                _save_reserved_rename_map(cwd, _reserved_name_backups)
+        except subprocess.CalledProcessError:
+            pass
+
     prev_stash = subprocess.run(
         git_cmd + ["rev-parse", "--verify", "refs/stash"],
         cwd=cwd,
@@ -1168,6 +1304,11 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         else:
             # No stash entry was created: the changes were NOT saved.  This
             # is a real failure — bail out before the update touches HEAD.
+            # Restore any temporarily-renamed reserved files first so the
+            # user doesn't lose data.
+            if _reserved_name_backups:
+                _restore_reserved_renames(cwd, _reserved_name_backups)
+                _load_and_clear_reserved_rename_map(cwd)
             print("✗ Could not stash local changes — update aborted.")
             if push.stderr.strip():
                 print(f"  {push.stderr.strip().splitlines()[0]}")
@@ -1179,7 +1320,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
                 push.returncode, push.args, output=push.stdout, stderr=push.stderr
             )
 
-    return stash_ref
+    return stash_ref, _reserved_name_backups
 
 def _resolve_stash_selector(
     git_cmd: list[str], cwd: Path, stash_ref: str
@@ -1246,6 +1387,7 @@ def _restore_stashed_changes(
     stash_ref: str,
     prompt_user: bool = False,
     input_fn=None,
+    reserved_renames: list[tuple[Path, Path]] | None = None,
 ) -> bool:
     if prompt_user:
         print()
@@ -1263,6 +1405,15 @@ def _restore_stashed_changes(
             print("Skipped restoring local changes.")
             print("Your changes are still preserved in git stash.")
             print(f"Restore manually with: git stash apply {stash_ref}")
+            # If reserved files were renamed, remind the user to recover them.
+            map_file = cwd / _RESERVED_RENAME_MAP_FILE
+            if map_file.exists():
+                print(
+                    "  ⚠ Reserved-device-name files were renamed before stash. "
+                    "After manual `git stash apply`, delete the sidecar file "
+                    f"`{_RESERVED_RENAME_MAP_FILE}` to keep the prefixed names, "
+                    "or rename `.hermes_reserved_name_*` files back manually."
+                )
             return False
 
     print("→ Restoring local changes...")
@@ -1272,6 +1423,12 @@ def _restore_stashed_changes(
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
     )
+
+    # Restore any files that were renamed before stash due to Windows reserved names
+    if reserved_renames is not None:
+        _restore_reserved_renames(cwd, reserved_renames)
+    else:
+        _restore_reserved_renames(cwd)
 
     # Check for unmerged (conflicted) files — can happen even when returncode is 0
     unmerged = subprocess.run(
@@ -3791,7 +3948,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
             # Stash before checkout so uncommitted work isn't lost
-            auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
+            auto_stash_ref, reserved_renames = _m()._stash_local_changes_if_needed(
+                git_cmd, _m().PROJECT_ROOT
+            )
             checkout_result = subprocess.run(
                 git_cmd + ["checkout", branch],
                 cwd=_m().PROJECT_ROOT,
@@ -3819,13 +3978,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             auto_stash_ref,
                             prompt_user=False,
                             input_fn=gw_input_fn,
+                            reserved_renames=reserved_renames,
                         )
                     print(f"✗ Branch '{branch}' does not exist locally or on origin.")
                     if track_result.stderr.strip():
                         print(f"  {track_result.stderr.strip().splitlines()[0]}")
                     sys.exit(1)
         else:
-            auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
+            auto_stash_ref, reserved_renames = _m()._stash_local_changes_if_needed(
+                git_cmd, _m().PROJECT_ROOT
+            )
 
         prompt_for_restore = (
             auto_stash_ref is not None
@@ -3858,6 +4020,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     auto_stash_ref,
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
+                    reserved_renames=reserved_renames,
                 )
             if current_branch not in {branch, "HEAD"}:
                 subprocess.run(
@@ -4033,6 +4196,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             update_succeeded = True
         finally:
+            # Always restore temporarily-renamed reserved files, regardless of
+            # whether the update succeeded — the rename is purely temporary and
+            # has no bearing on the stash contents.
+            if reserved_renames:
+                _restore_reserved_renames(_m().PROJECT_ROOT, reserved_renames)
+                _load_and_clear_reserved_rename_map(_m().PROJECT_ROOT)
+
             if auto_stash_ref is not None:
                 # Don't attempt stash restore if the code update itself failed —
                 # working tree is in an unknown state.
@@ -4057,6 +4227,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         auto_stash_ref,
                         prompt_user=prompt_for_restore,
                         input_fn=gw_input_fn,
+                        reserved_renames=reserved_renames,
                     )
 
         _invalidate_update_cache()

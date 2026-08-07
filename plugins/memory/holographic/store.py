@@ -217,6 +217,11 @@ class MemoryStore:
                 row = self._conn.execute(
                     "SELECT fact_id FROM facts WHERE content = ?", (content,)
                 ).fetchone()
+                if row is None:
+                    raise RuntimeError(
+                        f"Concurrent delete: fact with content '{content[:80]}' "
+                        "was removed between duplicate INSERT and SELECT"
+                    )
                 return int(row["fact_id"])
 
             # Entity extraction and linking
@@ -345,9 +350,12 @@ class MemoryStore:
             if content is not None:
                 self._compute_hrr_vector(fact_id, content)
             # Rebuild bank for relevant category
-            cat = category or self._conn.execute(
-                "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
-            ).fetchone()["category"]
+            cat = category
+            if cat is None:
+                row = self._conn.execute(
+                    "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
+                ).fetchone()
+                cat = row["category"] if row is not None else "general"
             self._rebuild_bank(cat)
 
             return True

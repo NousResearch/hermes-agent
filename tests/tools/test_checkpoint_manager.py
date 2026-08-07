@@ -1044,3 +1044,466 @@ class TestSessionDiff:
         assert result["success"] is True
         assert "feature.py" in result["diff"]
         assert "+x = 1" in result["diff"]
+
+
+# =========================================================================
+# Abandoned index lock recovery (#74108)
+# =========================================================================
+
+class TestAbandonedIndexLockRecovery:
+    """A killed git leaves ``<index>.lock`` behind and never reclaims it.
+
+    Git creates the lock with O_EXCL and renames it into place on success.
+    The file records no owner, so after a kill (readily triggered by our
+    subprocess timeout on a WSL2 drvfs/9p work tree such as /mnt/c) every
+    later ``git add`` against that index fails instantly with
+    "Unable to create ... File exists" — for the rest of the session and
+    every future session, until a human deletes it.
+
+    These exercise the real ``_run_git`` against real git, not mocks.
+    """
+
+    @staticmethod
+    def _prepare_store(work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr(
+            "tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base,
+        )
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        dir_hash = _project_hash(str(work_dir))
+        from tools.checkpoint_manager import _index_path
+
+        index_file = _index_path(store, dir_hash)
+        index_file.parent.mkdir(parents=True, exist_ok=True)
+        return store, index_file
+
+    def test_stale_lock_is_reclaimed_and_the_call_retried(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """The healing path: an install already wedged by an earlier timeout."""
+        from tools.checkpoint_manager import (
+            _MAX_GIT_CALL_SECONDS, _index_lock_path,
+        )
+
+        store, index_file = self._prepare_store(
+            work_dir, checkpoint_base, monkeypatch,
+        )
+        lock = _index_lock_path(index_file, store)
+        lock.write_text("")
+        # Age it past the widest possible git-call window so it is provably
+        # owned by nobody.
+        old = time.time() - (_MAX_GIT_CALL_SECONDS + 60)
+        os.utime(lock, (old, old))
+
+        ok, _out, err = _run_git(
+            ["add", "-A"], store, str(work_dir), index_file=index_file,
+        )
+
+        assert ok, f"git add should succeed after reclaiming the lock: {err}"
+        assert not lock.exists()
+
+    def test_fresh_lock_is_left_alone(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """A lock young enough to belong to a live call must not be stolen."""
+        from tools.checkpoint_manager import _index_lock_path
+
+        store, index_file = self._prepare_store(
+            work_dir, checkpoint_base, monkeypatch,
+        )
+        lock = _index_lock_path(index_file, store)
+        lock.write_text("")  # mtime = now
+
+        ok, _out, err = _run_git(
+            ["add", "-A"], store, str(work_dir), index_file=index_file,
+        )
+
+        assert not ok
+        assert lock.exists(), "a concurrent call's lock must survive"
+        assert "unable to create" in err.lower()
+
+    def test_timeout_reclaims_its_own_lock_without_an_age_check(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """The prevention path: our child was killed, so its lock is ours.
+
+        The lock is brand new here — an age check would refuse it — but the
+        timeout handler knows subprocess.run already reaped the owner.
+        """
+        from tools.checkpoint_manager import _index_lock_path
+
+        store, index_file = self._prepare_store(
+            work_dir, checkpoint_base, monkeypatch,
+        )
+        lock = _index_lock_path(index_file, store)
+
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            # Simulate git creating its lock and then being killed.
+            lock.write_text("")
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 30))
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        ok, _out, err = _run_git(
+            ["add", "-A"], store, str(work_dir), index_file=index_file,
+        )
+        monkeypatch.setattr(subprocess, "run", real_run)
+
+        assert not ok
+        assert "timed out" in err
+        assert not lock.exists(), (
+            "the timeout handler must reclaim the lock its own child "
+            "abandoned, or every later checkpoint fails with 'File exists'"
+        )
+
+    def test_recovery_retries_only_once(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """A permanently failing call must not recurse."""
+        from tools.checkpoint_manager import (
+            _MAX_GIT_CALL_SECONDS, _index_lock_path,
+        )
+
+        store, index_file = self._prepare_store(
+            work_dir, checkpoint_base, monkeypatch,
+        )
+        lock = _index_lock_path(index_file, store)
+        calls = []
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            # Always re-plant a stale lock and always fail with git's message.
+            lock.write_text("")
+            old = time.time() - (_MAX_GIT_CALL_SECONDS + 60)
+            os.utime(lock, (old, old))
+            return subprocess.CompletedProcess(
+                cmd, 128, "",
+                f"fatal: Unable to create '{lock}': File exists.",
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        ok, _out, _err = _run_git(
+            ["add", "-A"], store, str(work_dir), index_file=index_file,
+        )
+        monkeypatch.setattr(subprocess, "run", real_run)
+
+        assert not ok
+        assert len(calls) == 2, f"expected one retry, got {len(calls)} calls"
+
+    def test_unrelated_failures_do_not_touch_the_lock(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        from tools.checkpoint_manager import (
+            _MAX_GIT_CALL_SECONDS, _index_lock_path,
+        )
+
+        store, index_file = self._prepare_store(
+            work_dir, checkpoint_base, monkeypatch,
+        )
+        lock = _index_lock_path(index_file, store)
+        lock.write_text("")
+        old = time.time() - (_MAX_GIT_CALL_SECONDS + 60)
+        os.utime(lock, (old, old))
+
+        # A failure whose stderr is not the lock message leaves it in place.
+        ok, _out, _err = _run_git(
+            ["rev-parse", "--verify", "refs/heads/does-not-exist"],
+            store, str(work_dir), index_file=index_file,
+        )
+
+        assert not ok
+        assert lock.exists()
+
+
+class TestLockReclaimCoversEveryLockClass:
+    """The wedge is not specific to the per-project index (#74108).
+
+    Any git lock left by a killed process blocks its operation forever, and
+    the checkpoint store takes several: the per-project index for ``add``,
+    the store-root index for calls that pass no ``index_file``, and ref locks
+    for ``update-ref``/maintenance. Reclaiming the path git *itself* names
+    covers all of them with one mechanism and no guessing.
+    """
+
+    @staticmethod
+    def _prepare_store(work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr(
+            "tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base,
+        )
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        return store
+
+    def test_store_root_index_lock_is_the_target_without_index_file(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """#52887 cleans this one; it is real, but it is not the add path."""
+        from tools.checkpoint_manager import _index_lock_path
+
+        store = self._prepare_store(work_dir, checkpoint_base, monkeypatch)
+        assert _index_lock_path(None, store) == store / "index.lock"
+
+    def test_per_project_index_lock_is_the_target_for_add(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """...and this is the one `git add -A` actually takes."""
+        from tools.checkpoint_manager import _index_path, _index_lock_path
+
+        store = self._prepare_store(work_dir, checkpoint_base, monkeypatch)
+        index_file = _index_path(store, _project_hash(str(work_dir)))
+        assert _index_lock_path(index_file, store) == index_file.with_name(
+            index_file.name + ".lock"
+        )
+        assert (store / "index.lock") != _index_lock_path(index_file, store)
+
+    def test_ref_lock_named_by_git_is_reclaimed(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """A killed update-ref wedges that ref, not the index."""
+        from tools.checkpoint_manager import (
+            _MAX_GIT_CALL_SECONDS, _reclaimable_locks_from_stderr,
+        )
+
+        store = self._prepare_store(work_dir, checkpoint_base, monkeypatch)
+        ref_lock = store / "refs" / "heads" / "hermes-checkpoint.lock"
+        ref_lock.parent.mkdir(parents=True, exist_ok=True)
+        ref_lock.write_text("")
+        old = time.time() - (_MAX_GIT_CALL_SECONDS + 60)
+        os.utime(ref_lock, (old, old))
+
+        stderr = (
+            "error: cannot lock ref 'refs/heads/hermes-checkpoint': "
+            f"Unable to create '{ref_lock}': File exists."
+        )
+        assert _reclaimable_locks_from_stderr(stderr, store) == [ref_lock.resolve()]
+
+    def test_detection_survives_a_localized_git(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """git translates the prose but never the path.
+
+        Matching on the English "unable to create" would silently stop
+        recovering for every non-English locale.
+        """
+        from tools.checkpoint_manager import _reclaimable_locks_from_stderr
+
+        store = self._prepare_store(work_dir, checkpoint_base, monkeypatch)
+        lock = store / "index.lock"
+        lock.write_text("")
+        turkish = f"onulmaz: '{lock}' oluşturulamıyor: File exists."
+
+        assert _reclaimable_locks_from_stderr(turkish, store) == [lock.resolve()]
+
+    def test_paths_outside_the_store_are_never_reclaimed(
+        self, work_dir, checkpoint_base, monkeypatch, tmp_path,
+    ):
+        """A message must not be able to point the cleanup at someone else."""
+        from tools.checkpoint_manager import _reclaimable_locks_from_stderr
+
+        store = self._prepare_store(work_dir, checkpoint_base, monkeypatch)
+        outsider = tmp_path / "not-ours.lock"
+        outsider.write_text("")
+        stderr = f"fatal: Unable to create '{outsider}': File exists."
+
+        assert _reclaimable_locks_from_stderr(stderr, store) == []
+        assert outsider.exists()
+
+    def test_relative_paths_in_stderr_are_ignored(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        from tools.checkpoint_manager import _reclaimable_locks_from_stderr
+
+        store = self._prepare_store(work_dir, checkpoint_base, monkeypatch)
+        assert _reclaimable_locks_from_stderr(
+            "fatal: Unable to create 'index.lock': File exists.", store,
+        ) == []
+
+    def test_end_to_end_ref_lock_recovery_through_run_git(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """Real git, real ref lock: the retry clears it and the call succeeds."""
+        from tools.checkpoint_manager import _MAX_GIT_CALL_SECONDS, _index_path
+
+        store = self._prepare_store(work_dir, checkpoint_base, monkeypatch)
+        index_file = _index_path(store, _project_hash(str(work_dir)))
+        index_file.parent.mkdir(parents=True, exist_ok=True)
+        assert _run_git(["add", "-A"], store, str(work_dir), index_file=index_file)[0]
+        ok, sha, err = _run_git(
+            ["commit", "-m", "snap"], store, str(work_dir), index_file=index_file,
+        )
+        assert ok, err
+
+        ref = "refs/heads/hermes-test-ref"
+        assert _run_git(["update-ref", ref, "HEAD"], store, str(work_dir))[0]
+
+        ref_lock = store / (ref + ".lock")
+        ref_lock.parent.mkdir(parents=True, exist_ok=True)
+        ref_lock.write_text("")
+        old = time.time() - (_MAX_GIT_CALL_SECONDS + 60)
+        os.utime(ref_lock, (old, old))
+
+        ok, _out, err = _run_git(["update-ref", ref, "HEAD"], store, str(work_dir))
+
+        assert ok, f"update-ref should succeed after reclaiming the ref lock: {err}"
+        assert not ref_lock.exists()
+
+
+class TestTimeoutCleanupIsCommandSpecific:
+    """The timeout handler must not guess which lock a command held (#74737 review).
+
+    ``update-ref`` takes a ref lock and passes no ``index_file``. Assuming the
+    index there would both miss the ref lock the killed call actually left and
+    put an unrelated, possibly *live*, root-index lock at risk.
+    """
+
+    @staticmethod
+    def _prepare_store(work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr(
+            "tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base,
+        )
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        return store
+
+    def test_update_ref_timeout_clears_its_ref_lock_not_the_index(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        store = self._prepare_store(work_dir, checkpoint_base, monkeypatch)
+        ref = "refs/hermes-checkpoints/abc123"
+        ref_lock = store / f"{ref}.lock"
+        ref_lock.parent.mkdir(parents=True, exist_ok=True)
+        root_index_lock = store / "index.lock"
+        root_index_lock.write_text("")  # an unrelated, live lock
+
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            ref_lock.write_text("")
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 30))
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        ok, _out, err = _run_git(["update-ref", ref, "HEAD"], store, str(work_dir))
+        monkeypatch.setattr(subprocess, "run", real_run)
+
+        assert not ok and "timed out" in err
+        assert not ref_lock.exists(), "the ref lock this call held must be cleared"
+        assert root_index_lock.exists(), (
+            "an unrelated root-index lock must never be collateral damage"
+        )
+
+    def test_unmappable_command_clears_nothing_on_timeout(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """gc/reflog take locks we do not predict — defer to recovery."""
+        store = self._prepare_store(work_dir, checkpoint_base, monkeypatch)
+        root_index_lock = store / "index.lock"
+        root_index_lock.write_text("")
+
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 30))
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _run_git(["gc", "--prune=now", "--quiet"], store, str(work_dir))
+        monkeypatch.setattr(subprocess, "run", real_run)
+
+        assert root_index_lock.exists()
+
+    def test_lock_predating_the_call_is_not_ours(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """Our child died, but this lock was already there — somebody else's."""
+        from tools.checkpoint_manager import _index_path, _index_lock_path
+
+        store = self._prepare_store(work_dir, checkpoint_base, monkeypatch)
+        index_file = _index_path(store, _project_hash(str(work_dir)))
+        index_file.parent.mkdir(parents=True, exist_ok=True)
+        lock = _index_lock_path(index_file, store)
+        lock.write_text("")
+        old = time.time() - 5  # before this call starts, but recent = live
+        os.utime(lock, (old, old))
+
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 30))
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _run_git(["add", "-A"], store, str(work_dir), index_file=index_file)
+        monkeypatch.setattr(subprocess, "run", real_run)
+
+        assert lock.exists(), "a lock older than our launch belongs to another call"
+
+
+class TestReclaimSurvivesTheReplacementRace:
+    """Judging and deleting a lock by name is not atomic (#74737 review).
+
+    Between the staleness check and the unlink, another session can finish its
+    own recovery and a fresh git can create a new lock at the same pathname.
+    Unlinking by name would delete that live lock, so the removal claims the
+    lock with an atomic rename and verifies it got the inode it judged.
+    """
+
+    @staticmethod
+    def _prepare_store(work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr(
+            "tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base,
+        )
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        return store
+
+    def test_a_lock_replaced_mid_reclaim_is_put_back(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        from tools.checkpoint_manager import (
+            _MAX_GIT_CALL_SECONDS, _clear_abandoned_lock,
+        )
+
+        store = self._prepare_store(work_dir, checkpoint_base, monkeypatch)
+        lock = store / "index.lock"
+        lock.write_text("stale")
+        old = time.time() - (_MAX_GIT_CALL_SECONDS + 60)
+        os.utime(lock, (old, old))
+
+        real_rename = os.rename
+
+        def racing_rename(src, dst, *a, **k):
+            # Fire inside the window between our staleness judgement and our
+            # claim: another session reclaims the stale inode and a fresh git
+            # creates a NEW lock at the same pathname. Our rename must then
+            # claim the replacement, and the identity check must catch it.
+            if str(src) == str(lock):
+                lock.unlink()
+                lock.write_text("fresh-and-live")
+            return real_rename(src, dst, *a, **k)
+
+        monkeypatch.setattr(os, "rename", racing_rename)
+        removed = _clear_abandoned_lock(lock, "test")
+        monkeypatch.setattr(os, "rename", real_rename)
+
+        assert removed is False
+        assert lock.exists(), "the replacement lock must survive"
+        assert lock.read_text() == "fresh-and-live"
+        leftovers = list(store.glob("index.lock.reclaim-*"))
+        assert not leftovers, f"claim files must not be left behind: {leftovers}"
+
+    def test_an_unreplaced_stale_lock_is_still_removed(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        from tools.checkpoint_manager import (
+            _MAX_GIT_CALL_SECONDS, _clear_abandoned_lock,
+        )
+
+        store = self._prepare_store(work_dir, checkpoint_base, monkeypatch)
+        lock = store / "index.lock"
+        lock.write_text("stale")
+        old = time.time() - (_MAX_GIT_CALL_SECONDS + 60)
+        os.utime(lock, (old, old))
+
+        assert _clear_abandoned_lock(lock, "test") is True
+        assert not lock.exists()
+        assert not list(store.glob("index.lock.reclaim-*"))

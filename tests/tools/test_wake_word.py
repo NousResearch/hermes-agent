@@ -482,6 +482,7 @@ def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch)
             time.sleep(0.01)
         assert reads[0] == 12
         assert len(processed[0]) == 4
+        assert processed[0].tolist() == [500] * 4
         assert det.input_device_details == {
             "selector": "Microphone Array",
             "name": "Microphone Array",

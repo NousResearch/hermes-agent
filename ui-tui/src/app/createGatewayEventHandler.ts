@@ -759,7 +759,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const value = String(text)
           scheduleThinkingStatus(value || statusFromBusy())
 
-          if (value) {
+          // A current gateway marks this event status_only: thinking_callback
+          // carries a kaomoji + verb spinner caption, never model reasoning,
+          // so recording it would paste "(=^..^=) pondering..." into the
+          // reasoning block. A LEGACY gateway (before reasoning.delta existed,
+          // see 7d68ea9501 "stream legacy thinking deltas visibly") sends real
+          // reasoning here and no marker — keep replaying that, or old
+          // gateways lose their reasoning entirely.
+          if (value && !ev.payload?.status_only) {
             turnController.recordReasoningDelta(value)
           }
         }

@@ -380,6 +380,49 @@ describe('createGatewayEventHandler', () => {
     }
   })
 
+  it('does not record a status_only thinking.delta as reasoning', () => {
+    // A current gateway sends the spinner caption here and marks it. Without
+    // the marker check this pasted '(=^..^=) pondering...' into the reasoning
+    // block (#68600).
+    vi.useFakeTimers()
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    try {
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({
+        payload: { status_only: true, text: '(=^..^=) pondering...' },
+        type: 'thinking.delta',
+      } as any)
+      vi.runOnlyPendingTimers()
+
+      expect(getTurnState().reasoning).toBe('')
+      expect(getTurnState().reasoningTokens).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still shows a status_only thinking.delta on the status line', () => {
+    // Suppressing the reasoning record must not suppress the spinner itself.
+    vi.useFakeTimers()
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    try {
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({
+        payload: { status_only: true, text: '(=^..^=) pondering...' },
+        type: 'thinking.delta',
+      } as any)
+      vi.runOnlyPendingTimers()
+
+      expect(getUiState().status).toContain('pondering')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('ignores late thinking.delta after the turn has already completed', () => {
     vi.useFakeTimers()
     const appended: Msg[] = []

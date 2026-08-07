@@ -7247,17 +7247,36 @@ def run_conversation(
                         getattr(agent, "_verification_stop_nudges", 0) + 1
                     )
                     final_msg["finish_reason"] = "verification_required"
-                    # The assistant response is real content — persist it and
-                    # emit to the UI as an interim message so the user sees the
-                    # attempted final answer before the verification loop runs.
-                    # Only the nudge is flagged synthetic so it gets stripped
-                    # from the durable transcript (#65919 §7).
-                    agent._emit_interim_assistant_message(final_msg)
+                    # A UI must never observe an assistant row that is still
+                    # only an ephemeral in-memory projection — persist first,
+                    # then emit the interim message so the user sees the
+                    # attempted final answer before the verification loop
+                    # runs. Only the nudge is flagged synthetic so it gets
+                    # stripped from the durable transcript (#65919 §7).
                     messages.append(final_msg)
+                    _verify_turn_persisted = None
                     try:
-                        agent._flush_messages_to_session_db(messages, conversation_history)
-                    except Exception:
-                        logger.debug("verify-on-stop interim flush failed", exc_info=True)
+                        _verify_turn_persisted = agent._flush_messages_to_session_db(
+                            messages, conversation_history
+                        )
+                    except Exception as exc:
+                        _verify_turn_persisted = False
+                        logger.warning(
+                            "verify-on-stop interim flush failed (session=%s): %s",
+                            agent.session_id or "none",
+                            exc,
+                        )
+
+                    if _verify_turn_persisted is False:
+                        # The canonical append failed. Do not project the row
+                        # or continue the verification loop from state that
+                        # exists only in this process.
+                        _turn_exit_reason = "session_persistence_failed"
+                        final_response = ""
+                        failed = True
+                        break
+
+                    agent._emit_interim_assistant_message(final_msg)
                     messages.append({
                         "role": "user",
                         "content": _verify_nudge,
@@ -7319,17 +7338,36 @@ def run_conversation(
                 if _verify_nudge2:
                     agent._pre_verify_nudges = _attempt + 1
                     final_msg["finish_reason"] = "verify_hook_continue"
-                    # The assistant response is real content — persist it and
-                    # emit to the UI as an interim message so the user sees the
+                    # A UI must never observe an assistant row that is still
+                    # only an ephemeral in-memory projection — persist first,
+                    # then emit the interim message so the user sees the
                     # attempted final answer before the pre_verify loop runs.
                     # Only the nudge is flagged synthetic so it gets stripped
                     # from the durable transcript (#65919 §7).
-                    agent._emit_interim_assistant_message(final_msg)
                     messages.append(final_msg)
+                    _pre_verify_turn_persisted = None
                     try:
-                        agent._flush_messages_to_session_db(messages, conversation_history)
-                    except Exception:
-                        logger.debug("pre_verify interim flush failed", exc_info=True)
+                        _pre_verify_turn_persisted = agent._flush_messages_to_session_db(
+                            messages, conversation_history
+                        )
+                    except Exception as exc:
+                        _pre_verify_turn_persisted = False
+                        logger.warning(
+                            "pre_verify interim flush failed (session=%s): %s",
+                            agent.session_id or "none",
+                            exc,
+                        )
+
+                    if _pre_verify_turn_persisted is False:
+                        # The canonical append failed. Do not project the row
+                        # or continue the pre_verify loop from state that
+                        # exists only in this process.
+                        _turn_exit_reason = "session_persistence_failed"
+                        final_response = ""
+                        failed = True
+                        break
+
+                    agent._emit_interim_assistant_message(final_msg)
                     messages.append({
                         "role": "user",
                         "content": _verify_nudge2,

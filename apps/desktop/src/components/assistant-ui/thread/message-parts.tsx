@@ -19,6 +19,8 @@ import { generatedImageFromResult } from '@/lib/generated-images'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 
+import { ReasoningRenderBoundary } from './reasoning-render-boundary'
+
 const ImageGenerateTool: FC<ToolCallMessagePartProps> = props => {
   const { args, result } = props
   const aspectRatio = typeof args?.aspect_ratio === 'string' ? args.aspect_ratio : undefined
@@ -242,15 +244,18 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
 const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   const { status, text } = useMessagePartReasoning()
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  const displayText = text.trimStart()
 
   return (
-    <MarkdownTextContent
-      containerClassName="text-xs leading-snug text-muted-foreground/85"
-      containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
-      disableArtifacts
-      isRunning={status.type === 'running' || messageRunning}
-      text={text.trimStart()}
-    />
+    <ReasoningRenderBoundary text={displayText}>
+      <MarkdownTextContent
+        containerClassName="text-xs leading-snug text-muted-foreground/85"
+        containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
+        disableArtifacts
+        isRunning={status.type === 'running' || messageRunning}
+        text={displayText}
+      />
+    </ReasoningRenderBoundary>
   )
 }
 

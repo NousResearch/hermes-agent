@@ -683,6 +683,22 @@ class TestSameOriginChatGroupScoping:
         assert runner._same_origin_chat(a, b) is False
 
 
+    def test_dm_with_thread_ids_requires_equality(self):
+        """DM sessions with differing thread_ids on both sides do NOT match
+        (Telegram DM topic lanes are independent sessions)."""
+        runner = _make_runner()
+        a = self._src("alice", chat_type="dm", chat_id="dm-1", thread_id="thread-A")
+        b = self._src("alice", chat_type="dm", chat_id="dm-1", thread_id="thread-B")
+        assert runner._same_origin_chat(a, b) is False
+
+    def test_dm_missing_thread_id_cross_matches(self):
+        """DM sessions where at least one side lacks thread_id match even when
+        the other side carries one (Feishu/Signal DMs, legacy sessions)."""
+        runner = _make_runner()
+        a = self._src("alice", chat_type="dm", chat_id="dm-1", thread_id="")
+        b = self._src("alice", chat_type="dm", chat_id="dm-1", thread_id="thread-A")
+        assert runner._same_origin_chat(a, b) is True
+
     @pytest.mark.asyncio
     async def test_resume_target_allowed_blocks_cross_user_live_group(self):
         """End-to-end via the live-origin branch: Alice cannot resume Bob's

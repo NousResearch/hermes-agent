@@ -2871,6 +2871,16 @@ def _run_single_child(
         except Exception:
             logger.debug("Failed to close child agent after delegation")
 
+        # Drop the child's per-task file-tool trackers. They key on
+        # child_task_id (unique per delegation), which close() can't see —
+        # it clears by the child's session_id.
+        try:
+            from tools.file_tools import clear_task_trackers
+
+            clear_task_trackers(child_task_id)
+        except Exception:
+            logger.debug("Failed to clear child file trackers", exc_info=True)
+
         # The AIAgent turn boundary normally closes the child scope itself. This
         # fallback covers failures before that boundary starts, but must not pop
         # a scope while a timed-out child worker is still unwinding.

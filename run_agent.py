@@ -4262,6 +4262,20 @@ class AIAgent:
         except Exception:
             pass
 
+        # 3b. Drop per-task file-tool trackers (read/dedup history,
+        # patch-failure counts, cwd anchors, cached file-ops handles).
+        # Nothing else pops a finished task's entries, and tool calls may
+        # have keyed them on the conversation task_id rather than the
+        # session_id, so clear both.
+        try:
+            from tools.file_tools import clear_task_trackers
+
+            for _tid in {task_id, getattr(self, "_current_task_id", None)}:
+                if _tid:
+                    clear_task_trackers(_tid)
+        except Exception:
+            pass
+
         # 4. Release the session-owned computer-use backend.  This ends the
         # exact cua-driver session, drops typed-browser refs/grants, and stops
         # a private embedded daemon when Hermes YOLO selected unrestricted

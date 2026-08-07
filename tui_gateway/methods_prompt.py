@@ -791,6 +791,14 @@ def _(rid, params: dict) -> dict:
                 {"task_id": task_id, "text": f"error: {e}"},
             )
         finally:
+            # Ephemeral agent: nothing else clears this unique task_id's
+            # file-tool trackers (ordinary turn cleanup frees only VM/browser).
+            try:
+                from tools.file_tools import clear_task_trackers
+
+                clear_task_trackers(task_id)
+            except Exception:
+                pass
             _clear_session_context(session_tokens)
 
     threading.Thread(target=run, daemon=True).start()
@@ -902,6 +910,14 @@ def _(rid, params: dict) -> dict:
                 from tools.terminal_tool import clear_task_env_overrides
 
                 clear_task_env_overrides(task_id)
+            except Exception:
+                pass
+            # Ephemeral agent: clear this unique task_id's file-tool trackers
+            # (ordinary turn cleanup frees only VM/browser).
+            try:
+                from tools.file_tools import clear_task_trackers
+
+                clear_task_trackers(task_id)
             except Exception:
                 pass
             _clear_session_context(session_tokens)

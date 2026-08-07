@@ -4697,7 +4697,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             # In that window `messages[-1]` is an assistant tool_call whose id
             # is (not yet) in result_call_ids.  Any tool result would be
             # appended *after* this message (tool_executor.py), so if it is the
-            # final message its calls are, by construction, all still pending.
+            # last non-tool message its calls are presumed still pending.
             # Stripping it as an orphan would delete the live request; when the
             # executor later appends the real result, repair_message_sequence
             # would drop it as an unmatched orphan and the completed side
@@ -4711,7 +4711,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             # a snapshot taken between appends looks like
             # ``[..., assistant(c1,c2,c3), tool(c1)]`` — the chain is still
             # in flight even though the last message is a tool result. The
-            # last NON-tool message is the live request in both shapes.
+            # last NON-tool message is presumed the live request in both
+            # shapes; a genuinely unanswered call preserved here is stubbed
+            # pre-API by sanitize_api_messages step 2, so preserving is safe
+            # while stripping a live call silently loses its late result.
             idx = len(messages) - 1
             while idx >= 0 and messages[idx].get("role") == "tool":
                 idx -= 1

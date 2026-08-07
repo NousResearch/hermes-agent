@@ -23,10 +23,12 @@ transport:
   # Pinned per catalog dependency policy: exact version, and the release must
   # be at least 2 weeks old at pin time (supply-chain cooldown — same rule as
   # pyproject.toml dependencies). 1.6.4 released 2026-06-11. The catalog never
-  # auto-updates; bumping the pin is a PR to this manifest.
+  # auto-updates; bumping the pin is a PR to this manifest. This has been
+  # modified by allowing agnostic versioning for the uvx package, which is 
+  # a Hermes dependency. i recommend to also look at `hermes mcp install 
+  # blender' because that has the 1.6.4 reference.
   args:
-    - "blender-mcp==1.6.4"
-  version: "1.6.4"
+    - "blender-mcp"
   env:
     # Upstream ships anonymous telemetry, on by default. Hermes policy is
     # no outbound telemetry without explicit opt-in, so the catalog entry

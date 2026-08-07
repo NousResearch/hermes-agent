@@ -18,6 +18,7 @@ import {
 import {
   applyAutoSpeakFromConfig,
   applyThinkingSoundFromConfig,
+  applyVoiceConversationIdleTimeoutFromConfig,
   applyVoiceStopPhraseFromConfig
 } from '@/store/voice-prefs'
 
@@ -113,6 +114,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         applyAutoSpeakFromConfig(config)
         applyVoiceStopPhraseFromConfig(config)
         applyThinkingSoundFromConfig(config)
+        applyVoiceConversationIdleTimeoutFromConfig(config)
       } catch {
         // Config is nice-to-have; chat still works without it.
       }

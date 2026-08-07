@@ -27,7 +27,9 @@ interface PendingVoiceResponse {
 interface VoiceConversationOptions {
   busy: boolean
   enabled: boolean
+  idleTimeoutMs?: number
   onFatalError?: () => void
+  onIdleTimeout?: () => void
   /** Interrupt the in-flight agent turn (the same seam as the Stop button).
    *  Fired when the user speaks while the model is still generating. */
   onInterrupt?: () => Promise<void> | void
@@ -48,7 +50,9 @@ const INTERRUPT_SETTLE_TIMEOUT_MS = 5_000
 export function useVoiceConversation({
   busy,
   enabled,
+  idleTimeoutMs = 0,
   onFatalError,
+  onIdleTimeout,
   onInterrupt,
   onStopWord,
   onSubmit,
@@ -62,7 +66,13 @@ export function useVoiceConversation({
   const { handle, level } = useMicRecorder(voiceCopy)
   const [status, setStatus] = useState<ConversationStatus>('idle')
   const [muted, setMuted] = useState(false)
+  const idleTimeoutRef = useRef<number | null>(null)
   const turnTimeoutRef = useRef<number | null>(null)
+  const lifecycleGenerationRef = useRef(0)
+  const conversationActiveRef = useRef(false)
+  const micStartAttemptRef = useRef(0)
+  const micStartControllersRef = useRef(new Set<AbortController>())
+  const handleRef = useRef(handle)
   const pendingStartRef = useRef(false)
   const turnClosingRef = useRef(false)
   const awaitingSpokenResponseRef = useRef(false)
@@ -80,6 +90,11 @@ export function useVoiceConversation({
   const wasEnabledRef = useRef(enabled)
   const onStopWordRef = useRef(onStopWord)
   const onInterruptRef = useRef(onInterrupt)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    handleRef.current = handle
+  }, [handle])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -125,6 +140,13 @@ export function useVoiceConversation({
     }
   }
 
+  const clearIdleTimeout = () => {
+    if (idleTimeoutRef.current) {
+      window.clearTimeout(idleTimeoutRef.current)
+      idleTimeoutRef.current = null
+    }
+  }
+
   const dropSpeechSession = () => {
     stopBargeMonitorRef.current?.()
     stopBargeMonitorRef.current = null
@@ -135,8 +157,49 @@ export function useVoiceConversation({
     spokenSourceLengthRef.current = 0
   }
 
+  const end = useCallback(async () => {
+    lifecycleGenerationRef.current += 1
+    conversationActiveRef.current = false
+    pendingStartRef.current = false
+    clearIdleTimeout()
+    clearTurnTimeout()
+    stopVoicePlayback()
+
+    for (const controller of micStartControllersRef.current) {
+      controller.abort()
+    }
+
+    handle.cancel()
+    turnClosingRef.current = false
+    awaitingSpokenResponseRef.current = false
+    dropSpeechSession()
+    consumePendingResponse()
+    mutedRef.current = false
+    setMuted(false)
+    setStatus('idle')
+  }, [consumePendingResponse, handle])
+
+  const armIdleTimeout = useCallback((generation = lifecycleGenerationRef.current) => {
+    clearIdleTimeout()
+
+    if (idleTimeoutMs <= 0) {
+      return
+    }
+
+    idleTimeoutRef.current = window.setTimeout(() => {
+      if (lifecycleGenerationRef.current !== generation) {
+        return
+      }
+
+      void end()
+      onIdleTimeout?.()
+    }, idleTimeoutMs)
+  }, [end, idleTimeoutMs, onIdleTimeout])
+
   const handleTurn = useCallback(
     async (forceTranscribe = false) => {
+      const generation = lifecycleGenerationRef.current
+
       if (turnClosingRef.current) {
         return
       }
@@ -147,6 +210,10 @@ export function useVoiceConversation({
 
       try {
         const result = await handle.stop()
+
+        if (lifecycleGenerationRef.current !== generation) {
+          return
+        }
 
         if (!result || (!result.heardSpeech && !forceTranscribe) || !onTranscribeAudio) {
           if (enabledRef.current && !mutedRef.current && !busyRef.current && statusRef.current !== 'speaking') {
@@ -161,6 +228,10 @@ export function useVoiceConversation({
         try {
           const transcript = (await onTranscribeAudio(result.audio)).trim()
 
+          if (lifecycleGenerationRef.current !== generation) {
+            return
+          }
+
           if (!transcript) {
             if (enabledRef.current) {
               pendingStartRef.current = true
@@ -170,6 +241,8 @@ export function useVoiceConversation({
 
             return
           }
+
+          armIdleTimeout(generation)
 
           // A spoken "stop" (or "never mind", "goodbye", …) ends the
           // conversation instead of being submitted as a turn. Only whole-
@@ -186,8 +259,17 @@ export function useVoiceConversation({
           awaitingSpokenResponseRef.current = true
           dropSpeechSession()
           await onSubmit(transcript)
+
+          if (lifecycleGenerationRef.current !== generation) {
+            return
+          }
+
           setStatus('thinking')
         } catch (error) {
+          if (lifecycleGenerationRef.current !== generation) {
+            return
+          }
+
           notifyError(error, voiceCopy.transcriptionFailed)
 
           if (enabledRef.current && !mutedRef.current && !busyRef.current) {
@@ -197,13 +279,16 @@ export function useVoiceConversation({
           setStatus('idle')
         }
       } finally {
-        turnClosingRef.current = false
+        if (lifecycleGenerationRef.current === generation) {
+          turnClosingRef.current = false
+        }
       }
     },
-    [handle, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [armIdleTimeout, handle, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
   )
 
   const startListening = useCallback(async () => {
+    const generation = lifecycleGenerationRef.current
     pendingStartRef.current = false
 
     if (!enabledRef.current || mutedRef.current || busyRef.current) {
@@ -218,6 +303,17 @@ export function useVoiceConversation({
       return
     }
 
+    const attempt = micStartAttemptRef.current + 1
+    micStartAttemptRef.current = attempt
+
+    for (const controller of micStartControllersRef.current) {
+      controller.abort()
+    }
+
+    // A newer attempt owns microphone startup. Release pending acquisition and
+    // any recorder that an older attempt activated before its continuation ran.
+    handle.cancel()
+
     // Let the wake-word listener fully release the capture device before we
     // open ours — opening the mic while wake still holds it makes getUserMedia
     // fail (the "clicked voice but it never starts listening" bug).
@@ -227,6 +323,10 @@ export function useVoiceConversation({
       // A pause failure shouldn't block the user's explicit start.
     }
 
+    if (lifecycleGenerationRef.current !== generation || micStartAttemptRef.current !== attempt) {
+      return
+    }
+
     // enabled/muted/busy or an interleaved turn may have changed while we waited.
     if (!enabledRef.current || mutedRef.current || busyRef.current || statusRef.current !== 'idle') {
       return
@@ -234,17 +334,44 @@ export function useVoiceConversation({
 
     try {
       // VAD tuning mirrors `tools.voice_mode` defaults so the browser loop matches the CLI.
-      await handle.start({
-        silenceLevel: 0.075,
-        silenceMs: 1_250,
-        idleSilenceMs: 12_000,
-        onError: error => {
-          notifyError(error, voiceCopy.microphoneFailed)
-          pendingStartRef.current = false
-          onFatalError?.()
-        },
-        onSilence: () => void handleTurn()
-      })
+      const micStartController = new AbortController()
+      micStartControllersRef.current.add(micStartController)
+
+      try {
+        await handle.start({
+          signal: micStartController.signal,
+          silenceLevel: 0.075,
+          silenceMs: 1_250,
+          idleSilenceMs: 12_000,
+          onError: error => {
+            if (lifecycleGenerationRef.current !== generation || micStartAttemptRef.current !== attempt) {
+              return
+            }
+
+            notifyError(error, voiceCopy.microphoneFailed)
+            pendingStartRef.current = false
+            onFatalError?.()
+          },
+          onSilence: () => {
+            if (lifecycleGenerationRef.current === generation && micStartAttemptRef.current === attempt) {
+              void handleTurn()
+            }
+          }
+        })
+      } finally {
+        micStartControllersRef.current.delete(micStartController)
+      }
+
+      if (lifecycleGenerationRef.current !== generation || micStartAttemptRef.current !== attempt) {
+        return
+      }
+
+      if (!enabledRef.current || mutedRef.current || busyRef.current || statusRef.current !== 'idle') {
+        handle.cancel()
+
+        return
+      }
+
       setStatus('listening')
       // Clear any prior turn-timeout before arming a fresh one. Each listen
       // cycle reassigns turnTimeoutRef; without clearing first, a stale 60s
@@ -254,6 +381,10 @@ export function useVoiceConversation({
       clearTurnTimeout()
       turnTimeoutRef.current = window.setTimeout(() => void handleTurn(), 60_000)
     } catch (error) {
+      if (lifecycleGenerationRef.current !== generation || micStartAttemptRef.current !== attempt) {
+        return
+      }
+
       notifyError(error, voiceCopy.couldNotStartSession)
       pendingStartRef.current = false
       setStatus('idle')
@@ -307,7 +438,13 @@ export function useVoiceConversation({
    */
   const submitCapturedUtterance = useCallback(
     async (audio: Blob | null) => {
+      const generation = lifecycleGenerationRef.current
+
       const resumeListening = () => {
+        if (lifecycleGenerationRef.current !== generation) {
+          return
+        }
+
         if (enabledRef.current && !mutedRef.current) {
           pendingStartRef.current = true
         }
@@ -326,11 +463,17 @@ export function useVoiceConversation({
       try {
         const transcript = (await onTranscribeAudio(audio)).trim()
 
+        if (lifecycleGenerationRef.current !== generation) {
+          return
+        }
+
         if (!transcript) {
           resumeListening()
 
           return
         }
+
+        armIdleTimeout(generation)
 
         // A spoken stop command while barging means "stop everything" — the
         // turn/playback was already cut at trip time; now end the conversation
@@ -349,19 +492,36 @@ export function useVoiceConversation({
 
         while (busyRef.current && Date.now() < deadline) {
           await new Promise(resolve => window.setTimeout(resolve, 100))
+
+          if (lifecycleGenerationRef.current !== generation) {
+            return
+          }
+        }
+
+        if (lifecycleGenerationRef.current !== generation) {
+          return
         }
 
         awaitingSpokenResponseRef.current = true
         dropSpeechSession()
         consumePendingResponse()
         await onSubmit(transcript)
+
+        if (lifecycleGenerationRef.current !== generation) {
+          return
+        }
+
         setStatus('thinking')
       } catch (error) {
+        if (lifecycleGenerationRef.current !== generation) {
+          return
+        }
+
         notifyError(error, voiceCopy.transcriptionFailed)
         resumeListening()
       }
     },
-    [consumePendingResponse, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [armIdleTimeout, consumePendingResponse, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
   )
 
   /**
@@ -379,6 +539,8 @@ export function useVoiceConversation({
    * all call this).
    */
   const ensureBargeMonitor = useCallback(() => {
+    const generation = lifecycleGenerationRef.current
+
     if (stopBargeMonitorRef.current) {
       return
     }
@@ -386,6 +548,10 @@ export function useVoiceConversation({
     stopBargeMonitorRef.current = monitorSpeechDuringPlayback({
       isPlaying: () => $voicePlayback.get().status === 'speaking',
       onSpeech: () => {
+        if (lifecycleGenerationRef.current !== generation) {
+          return
+        }
+
         bargeCapturePendingRef.current = true
         bargedRef.current = true
         markVoicePlaybackInterrupted()
@@ -398,6 +564,10 @@ export function useVoiceConversation({
         }
       },
       onUtterance: audio => {
+        if (lifecycleGenerationRef.current !== generation) {
+          return
+        }
+
         bargeCapturePendingRef.current = false
         stopBargeMonitorRef.current = null
         void submitCapturedUtterance(audio)
@@ -573,6 +743,14 @@ export function useVoiceConversation({
   )
 
   const start = useCallback(async () => {
+    if (conversationActiveRef.current) {
+      return
+    }
+
+    const generation = lifecycleGenerationRef.current + 1
+    lifecycleGenerationRef.current = generation
+    conversationActiveRef.current = true
+
     if (!onTranscribeAudio) {
       notify({
         kind: 'warning',
@@ -584,13 +762,20 @@ export function useVoiceConversation({
       return
     }
 
+    mutedRef.current = false
     setMuted(false)
     awaitingSpokenResponseRef.current = false
     dropSpeechSession()
     consumePendingResponse()
     pendingStartRef.current = true
+    armIdleTimeout(generation)
     await startListening()
+
+    if (lifecycleGenerationRef.current !== generation) {
+      return
+    }
   }, [
+    armIdleTimeout,
     consumePendingResponse,
     onFatalError,
     onTranscribeAudio,
@@ -599,19 +784,6 @@ export function useVoiceConversation({
     voiceCopy.unavailable
   ])
 
-  const end = useCallback(async () => {
-    pendingStartRef.current = false
-    clearTurnTimeout()
-    stopVoicePlayback()
-    handle.cancel()
-    turnClosingRef.current = false
-    awaitingSpokenResponseRef.current = false
-    dropSpeechSession()
-    consumePendingResponse()
-    setMuted(false)
-    setStatus('idle')
-  }, [consumePendingResponse, handle])
-
   const stopTurn = useCallback(() => {
     if (statusRef.current === 'listening') {
       void handleTurn(true)
@@ -619,19 +791,24 @@ export function useVoiceConversation({
   }, [handleTurn])
 
   const toggleMute = useCallback(() => {
-    setMuted(value => {
-      const next = !value
+    const next = !mutedRef.current
 
-      if (next) {
-        clearTurnTimeout()
-        handle.cancel()
-        setStatus('idle')
-      } else if (enabledRef.current && !busyRef.current && statusRef.current === 'idle') {
-        pendingStartRef.current = true
+    mutedRef.current = next
+    setMuted(next)
+
+    if (next) {
+      micStartAttemptRef.current += 1
+
+      for (const controller of micStartControllersRef.current) {
+        controller.abort()
       }
 
-      return next
-    })
+      clearTurnTimeout()
+      handle.cancel()
+      setStatus('idle')
+    } else if (enabledRef.current && !busyRef.current && statusRef.current === 'idle') {
+      pendingStartRef.current = true
+    }
   }, [handle])
 
   useEffect(() => {
@@ -731,6 +908,42 @@ export function useVoiceConversation({
 
     wasEnabledRef.current = enabled
   }, [enabled, end, start])
+
+  useEffect(
+    () => () => {
+      lifecycleGenerationRef.current += 1
+      conversationActiveRef.current = false
+      pendingStartRef.current = false
+
+      if (idleTimeoutRef.current) {
+        window.clearTimeout(idleTimeoutRef.current)
+        idleTimeoutRef.current = null
+      }
+
+      if (turnTimeoutRef.current) {
+        window.clearTimeout(turnTimeoutRef.current)
+        turnTimeoutRef.current = null
+      }
+
+      stopVoicePlayback()
+
+      for (const controller of micStartControllersRef.current) {
+        controller.abort()
+      }
+
+      handleRef.current.cancel()
+      turnClosingRef.current = false
+      awaitingSpokenResponseRef.current = false
+      stopBargeMonitorRef.current?.()
+      stopBargeMonitorRef.current = null
+      bargeCapturePendingRef.current = false
+      bargedRef.current = false
+      speechSessionRef.current = null
+      responseIdRef.current = null
+      spokenSourceLengthRef.current = 0
+    },
+    []
+  )
 
   return { end, level, muted, start, status, stopTurn, toggleMute }
 }

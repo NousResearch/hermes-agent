@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { BargeMonitorCallbacks } from '@/lib/voice-barge-in'
 
-import type { MicRecording } from './use-mic-recorder'
+import type { MicRecorderOptions, MicRecording } from './use-mic-recorder'
 import { useVoiceConversation } from './use-voice-conversation'
 
 // The full-duplex contract: the barge monitor is live across the WHOLE agent
@@ -41,12 +41,13 @@ vi.mock('@/lib/thinking-sound', () => ({
 
 const micHandle = {
   cancel: vi.fn(),
-  start: vi.fn(async () => undefined),
+  start: vi.fn<(options?: MicRecorderOptions) => Promise<void>>(async () => undefined),
   stop: vi.fn<() => Promise<MicRecording | null>>(async () => null)
 }
 
 vi.mock('./use-mic-recorder', () => ({
-  useMicRecorder: () => ({ handle: micHandle, level: 0, recording: false })
+  // The real hook returns a fresh handle object on every render.
+  useMicRecorder: () => ({ handle: { ...micHandle }, level: 0, recording: false })
 }))
 
 vi.mock('@/i18n', () => ({
@@ -73,6 +74,16 @@ vi.mock('@/store/notifications', () => ({
 
 interface HookProps {
   busy: boolean
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(next => {
+    resolve = next
+  })
+
+  return { promise, resolve }
 }
 
 function renderConversation(overrides: { onInterrupt?: () => void; transcript?: string } = {}) {
@@ -143,6 +154,72 @@ describe('useVoiceConversation full-duplex barge-in', () => {
   })
 
   afterEach(cleanup)
+
+  it.each(['stale-first', 'replacement-first'] as const)(
+    'keeps a stale cancelled start inert when unmuting starts its replacement (%s)',
+    async resolveOrder => {
+      const staleStart = deferred<void>()
+      const replacementStart = deferred<void>()
+      const startSignals: AbortSignal[] = []
+
+      micHandle.start
+        .mockImplementationOnce(options => {
+          startSignals.push(options?.signal as AbortSignal)
+
+          return staleStart.promise
+        })
+        .mockImplementationOnce(options => {
+          startSignals.push(options?.signal as AbortSignal)
+
+          return replacementStart.promise
+        })
+
+      const hook = renderHook(() =>
+        useVoiceConversation({
+          busy: false,
+          consumePendingResponse: vi.fn(),
+          enabled: true,
+          onSubmit: vi.fn(),
+          onTranscribeAudio: vi.fn(async () => ''),
+          pendingResponse: () => null
+        })
+      )
+
+      let starting!: Promise<void>
+
+      act(() => {
+        starting = hook.result.current.start()
+      })
+      await waitFor(() => expect(micHandle.start).toHaveBeenCalledTimes(1))
+
+      act(() => hook.result.current.toggleMute())
+      expect(hook.result.current).toMatchObject({ muted: true, status: 'idle' })
+      expect(micHandle.cancel).toHaveBeenCalled()
+
+      act(() => hook.result.current.toggleMute())
+      await waitFor(() => expect(micHandle.start).toHaveBeenCalledTimes(2))
+      expect(startSignals[0]?.aborted).toBe(true)
+      expect(startSignals[1]?.aborted).toBe(false)
+
+      await act(async () => {
+        if (resolveOrder === 'stale-first') {
+          staleStart.resolve()
+          await starting
+          expect(hook.result.current).toMatchObject({ muted: false, status: 'idle' })
+          replacementStart.resolve()
+          await replacementStart.promise
+        } else {
+          replacementStart.resolve()
+          await replacementStart.promise
+          staleStart.resolve()
+          await starting
+        }
+      })
+
+      expect(startSignals[1]?.aborted).toBe(false)
+      await waitFor(() => expect(hook.result.current).toMatchObject({ muted: false, status: 'listening' }))
+    }
+  )
 
   it('arms the barge monitor during generation (before any reply audio exists)', async () => {
     const { hook } = renderConversation()
@@ -262,5 +339,443 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     hook.rerender({ busy: true })
 
     expect(monitorCalls.length).toBe(armed)
+  })
+
+  it('ends the conversation after the configured interval without user speech', async () => {
+    vi.useFakeTimers()
+    const onIdleTimeout = vi.fn()
+
+    const hook = renderHook(() =>
+      useVoiceConversation({
+        busy: false,
+        consumePendingResponse: vi.fn(),
+        enabled: true,
+        idleTimeoutMs: 1_000,
+        onIdleTimeout,
+        onSubmit: vi.fn(),
+        onTranscribeAudio: vi.fn(async () => ''),
+        pendingResponse: () => null
+      })
+    )
+
+    try {
+      await act(async () => {
+        await hook.result.current.start()
+      })
+      expect(hook.result.current.status).toBe('listening')
+
+      await act(async () => {
+        vi.advanceTimersByTime(999)
+      })
+      expect(onIdleTimeout).not.toHaveBeenCalled()
+
+      await act(async () => {
+        vi.advanceTimersByTime(1)
+      })
+      expect(onIdleTimeout).toHaveBeenCalledTimes(1)
+      expect(micHandle.cancel).toHaveBeenCalled()
+      expect(hook.result.current.status).toBe('idle')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('restarts the inactivity interval after transcribed user speech', async () => {
+    vi.useFakeTimers()
+    const onIdleTimeout = vi.fn()
+    const onSubmit = vi.fn()
+
+    const hook = renderHook(() =>
+      useVoiceConversation({
+        busy: false,
+        consumePendingResponse: vi.fn(),
+        enabled: true,
+        idleTimeoutMs: 1_000,
+        onIdleTimeout,
+        onSubmit,
+        onTranscribeAudio: vi.fn(async () => 'still here'),
+        pendingResponse: () => null
+      })
+    )
+
+    try {
+      await act(async () => {
+        await hook.result.current.start()
+        vi.advanceTimersByTime(600)
+      })
+      micHandle.stop.mockResolvedValueOnce({
+        audio: new Blob(['speech'], { type: 'audio/webm' }),
+        durationMs: 400,
+        heardSpeech: true
+      })
+
+      await act(async () => {
+        hook.result.current.stopTurn()
+        await Promise.resolve()
+      })
+      expect(onSubmit).toHaveBeenCalledWith('still here')
+
+      await act(async () => {
+        vi.advanceTimersByTime(400)
+      })
+      expect(onIdleTimeout).not.toHaveBeenCalled()
+
+      await act(async () => {
+        vi.advanceTimersByTime(600)
+      })
+      expect(onIdleTimeout).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears the inactivity interval on unmount without later callbacks or resource actions', async () => {
+    vi.useFakeTimers()
+    const onIdleTimeout = vi.fn()
+
+    const hook = renderHook(() =>
+      useVoiceConversation({
+        busy: false,
+        consumePendingResponse: vi.fn(),
+        enabled: true,
+        idleTimeoutMs: 1_000,
+        onIdleTimeout,
+        onSubmit: vi.fn(),
+        onTranscribeAudio: vi.fn(async () => ''),
+        pendingResponse: () => null
+      })
+    )
+
+    try {
+      await act(async () => {
+        await hook.result.current.start()
+      })
+      hook.unmount()
+      const cancelCallsAfterUnmount = micHandle.cancel.mock.calls.length
+      const playbackStopsAfterUnmount = stopVoicePlayback.mock.calls.length
+
+      await act(async () => {
+        vi.advanceTimersByTime(1_000)
+      })
+
+      expect(onIdleTimeout).not.toHaveBeenCalled()
+      expect(micHandle.cancel).toHaveBeenCalledTimes(cancelCallsAfterUnmount)
+      expect(stopVoicePlayback).toHaveBeenCalledTimes(playbackStopsAfterUnmount)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['stale-first', 'current-first'] as const)(
+    'scopes overlapping lifecycle microphone starts when they resolve %s',
+    async resolveOrder => {
+      const microphoneA = deferred<undefined>()
+      const microphoneB = deferred<undefined>()
+      const startSignals: AbortSignal[] = []
+      micHandle.start
+        .mockImplementationOnce(options => {
+          startSignals.push(options?.signal as AbortSignal)
+
+          return microphoneA.promise
+        })
+        .mockImplementationOnce(options => {
+          startSignals.push(options?.signal as AbortSignal)
+
+          return microphoneB.promise
+        })
+
+      const hook = renderHook(() =>
+        useVoiceConversation({
+          busy: false,
+          consumePendingResponse: vi.fn(),
+          enabled: true,
+          onSubmit: vi.fn(),
+          onTranscribeAudio: vi.fn(async () => ''),
+          pendingResponse: () => null
+        })
+      )
+
+      let startA!: Promise<void>
+      let startB!: Promise<void>
+      act(() => {
+        startA = hook.result.current.start()
+      })
+      await waitFor(() => expect(micHandle.start).toHaveBeenCalledTimes(1))
+
+      await act(async () => hook.result.current.end())
+      act(() => {
+        startB = hook.result.current.start()
+      })
+      await waitFor(() => expect(micHandle.start).toHaveBeenCalledTimes(2))
+
+      expect(startSignals[0]?.aborted).toBe(true)
+      expect(startSignals[1]?.aborted).toBe(false)
+
+      await act(async () => {
+        if (resolveOrder === 'stale-first') {
+          microphoneA.resolve(undefined)
+          await startA
+          microphoneB.resolve(undefined)
+          await startB
+        } else {
+          microphoneB.resolve(undefined)
+          await startB
+          microphoneA.resolve(undefined)
+          await startA
+        }
+      })
+
+      expect(startSignals[1]?.aborted).toBe(false)
+      expect(hook.result.current.status).toBe('listening')
+    }
+  )
+
+  it('releases a microphone acquired after the conversation becomes busy', async () => {
+    const microphoneStarted = deferred<undefined>()
+    micHandle.start.mockImplementationOnce(() => microphoneStarted.promise)
+
+    const hook = renderHook(
+      ({ busy }: HookProps) =>
+        useVoiceConversation({
+          busy,
+          consumePendingResponse: vi.fn(),
+          enabled: true,
+          onSubmit: vi.fn(),
+          onTranscribeAudio: vi.fn(async () => ''),
+          pendingResponse: () => null
+        }),
+      { initialProps: { busy: false } }
+    )
+
+    let starting!: Promise<void>
+
+    act(() => {
+      starting = hook.result.current.start()
+    })
+    await waitFor(() => expect(micHandle.start).toHaveBeenCalledTimes(1))
+
+    hook.rerender({ busy: true })
+    const cancelCallsBeforeAcquisition = micHandle.cancel.mock.calls.length
+
+    await act(async () => {
+      microphoneStarted.resolve(undefined)
+      await starting
+    })
+
+    expect(hook.result.current.status).toBe('idle')
+    expect(micHandle.cancel).toHaveBeenCalledTimes(cancelCallsBeforeAcquisition + 1)
+  })
+
+  it('aborts a pending microphone start on unmount', async () => {
+    const microphoneStarted = deferred<undefined>()
+    let startSignal: AbortSignal | undefined
+    micHandle.start.mockImplementationOnce(options => {
+      startSignal = options?.signal
+
+      return microphoneStarted.promise
+    })
+
+    const hook = renderHook(() =>
+      useVoiceConversation({
+        busy: false,
+        consumePendingResponse: vi.fn(),
+        enabled: true,
+        onSubmit: vi.fn(),
+        onTranscribeAudio: vi.fn(async () => ''),
+        pendingResponse: () => null
+      })
+    )
+
+    let startPromise!: Promise<void>
+    act(() => {
+      startPromise = hook.result.current.start()
+    })
+    await waitFor(() => expect(startSignal).toBeDefined())
+
+    hook.unmount()
+    expect(startSignal?.aborted).toBe(true)
+
+    await act(async () => {
+      microphoneStarted.resolve(undefined)
+      await startPromise
+    })
+  })
+
+  it('expires while microphone startup is pending without reviving listening or arming a stale timer', async () => {
+    vi.useFakeTimers()
+    const microphoneStarted = deferred<undefined>()
+    const onIdleTimeout = vi.fn()
+    micHandle.start.mockImplementationOnce(() => microphoneStarted.promise)
+
+    const hook = renderHook(() =>
+      useVoiceConversation({
+        busy: false,
+        consumePendingResponse: vi.fn(),
+        enabled: true,
+        idleTimeoutMs: 1_000,
+        onIdleTimeout,
+        onSubmit: vi.fn(),
+        onTranscribeAudio: vi.fn(async () => ''),
+        pendingResponse: () => null
+      })
+    )
+
+    try {
+      let startPromise!: Promise<void>
+      act(() => {
+        startPromise = hook.result.current.start()
+      })
+
+      await act(async () => {
+        vi.advanceTimersByTime(1_000)
+      })
+      expect(onIdleTimeout).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        microphoneStarted.resolve(undefined)
+        await startPromise
+      })
+
+      expect(hook.result.current.status).toBe('idle')
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores normal transcription that resolves after inactivity expiry', async () => {
+    vi.useFakeTimers()
+    const transcription = deferred<string>()
+    const onIdleTimeout = vi.fn()
+    const onSubmit = vi.fn()
+
+    const hook = renderHook(() =>
+      useVoiceConversation({
+        busy: false,
+        consumePendingResponse: vi.fn(),
+        enabled: true,
+        idleTimeoutMs: 1_000,
+        onIdleTimeout,
+        onSubmit,
+        onTranscribeAudio: vi.fn(() => transcription.promise),
+        pendingResponse: () => null
+      })
+    )
+
+    try {
+      await act(async () => {
+        await hook.result.current.start()
+      })
+      micHandle.stop.mockResolvedValueOnce({
+        audio: new Blob(['speech'], { type: 'audio/webm' }),
+        durationMs: 400,
+        heardSpeech: true
+      })
+      act(() => hook.result.current.stopTurn())
+      expect(hook.result.current.status).toBe('transcribing')
+
+      await act(async () => {
+        vi.advanceTimersByTime(1_000)
+      })
+      expect(onIdleTimeout).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        transcription.resolve('too late')
+        await transcription.promise
+      })
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(hook.result.current.status).toBe('idle')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores barge-in transcription that resolves after inactivity expiry', async () => {
+    const bargeTranscription = deferred<string>()
+    const onIdleTimeout = vi.fn()
+    const busyChange: { current: (busy: boolean) => void } = { current: () => undefined }
+    const onSubmit = vi.fn(async () => busyChange.current(true))
+    let transcriptions = 0
+
+    const hook = renderHook(
+      ({ busy }: HookProps) =>
+        useVoiceConversation({
+          busy,
+          consumePendingResponse: vi.fn(),
+          enabled: true,
+          idleTimeoutMs: 200,
+          onIdleTimeout,
+          onSubmit,
+          onTranscribeAudio: vi.fn(() =>
+            transcriptions++ === 0 ? Promise.resolve('start the task') : bargeTranscription.promise
+          ),
+          pendingResponse: () => null
+        }),
+      { initialProps: { busy: false } }
+    )
+
+    busyChange.current = busy => hook.rerender({ busy })
+
+    try {
+      await act(async () => {
+        await hook.result.current.start()
+      })
+      micHandle.stop.mockResolvedValueOnce({
+        audio: new Blob(['first'], { type: 'audio/webm' }),
+        durationMs: 400,
+        heardSpeech: true
+      })
+      await act(async () => hook.result.current.stopTurn())
+      await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+
+      const monitor = monitorCalls.at(-1)
+      act(() => monitor?.onSpeech())
+      hook.rerender({ busy: false })
+      act(() => monitor?.onUtterance?.(new Blob(['barge'], { type: 'audio/webm' })))
+      expect(hook.result.current.status).toBe('transcribing')
+
+      await waitFor(() => expect(onIdleTimeout).toHaveBeenCalledTimes(1))
+
+      await act(async () => {
+        bargeTranscription.resolve('too late')
+        await bargeTranscription.promise
+      })
+
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+      expect(hook.result.current.status).toBe('idle')
+      expect(micHandle.start).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not arm the inactivity interval when configured with zero', async () => {
+    vi.useFakeTimers()
+    const onIdleTimeout = vi.fn()
+
+    const hook = renderHook(() =>
+      useVoiceConversation({
+        busy: false,
+        consumePendingResponse: vi.fn(),
+        enabled: true,
+        idleTimeoutMs: 0,
+        onIdleTimeout,
+        onSubmit: vi.fn(),
+        onTranscribeAudio: vi.fn(async () => ''),
+        pendingResponse: () => null
+      })
+    )
+
+    try {
+      await act(async () => {
+        await hook.result.current.start()
+        vi.advanceTimersByTime(60_001)
+      })
+
+      expect(onIdleTimeout).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

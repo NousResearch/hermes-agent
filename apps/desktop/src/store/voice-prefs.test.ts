@@ -5,7 +5,12 @@ vi.mock('@/hermes', () => ({
   saveHermesConfig: vi.fn(async () => undefined)
 }))
 
-import { $voiceStopPhrase, applyVoiceStopPhraseFromConfig } from './voice-prefs'
+import {
+  $voiceConversationIdleTimeoutMs,
+  $voiceStopPhrase,
+  applyVoiceConversationIdleTimeoutFromConfig,
+  applyVoiceStopPhraseFromConfig
+} from './voice-prefs'
 
 describe('applyVoiceStopPhraseFromConfig', () => {
   it('defaults to "stop" when the key is absent (backend default applies)', () => {
@@ -34,5 +39,33 @@ describe('applyVoiceStopPhraseFromConfig', () => {
   it('malformed entries are skipped; all-blank list disables', () => {
     applyVoiceStopPhraseFromConfig({ voice: { stop_phrases: ['  ', ''] } })
     expect($voiceStopPhrase.get()).toBeNull()
+  })
+})
+
+describe('applyVoiceConversationIdleTimeoutFromConfig', () => {
+  it('converts the configured inactivity limit from seconds to milliseconds', () => {
+    applyVoiceConversationIdleTimeoutFromConfig({ voice: { conversation_idle_timeout_seconds: 600 } })
+    expect($voiceConversationIdleTimeoutMs.get()).toBe(600_000)
+  })
+
+  it.each([undefined, null, {}, { voice: {} }])('uses the backend default when absent (%j)', config => {
+    applyVoiceConversationIdleTimeoutFromConfig(config)
+    expect($voiceConversationIdleTimeoutMs.get()).toBe(600_000)
+  })
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, '30', null])(
+    'uses the backend default for malformed values (%j)',
+    value => {
+      applyVoiceConversationIdleTimeoutFromConfig({ voice: { conversation_idle_timeout_seconds: value } })
+      expect($voiceConversationIdleTimeoutMs.get()).toBe(600_000)
+    }
+  )
+
+  it('uses the backend default when the configured delay exceeds the browser timer range', () => {
+    applyVoiceConversationIdleTimeoutFromConfig({
+      voice: { conversation_idle_timeout_seconds: Number.MAX_SAFE_INTEGER }
+    })
+
+    expect($voiceConversationIdleTimeoutMs.get()).toBe(600_000)
   })
 })

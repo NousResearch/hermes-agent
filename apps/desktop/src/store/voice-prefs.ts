@@ -41,6 +41,28 @@ export function applyVoiceStopPhraseFromConfig(
 // voice conversation (default on, matching the backend default).
 export const $thinkingSoundEnabled = atom<boolean>(true)
 
+const DEFAULT_VOICE_CONVERSATION_IDLE_TIMEOUT_SECONDS = 600
+const MAX_BROWSER_TIMEOUT_MS = 2_147_483_647
+
+// Continuous Desktop voice mode closes its microphone after this much time
+// without a successfully transcribed user utterance. Zero disables the limit.
+export const $voiceConversationIdleTimeoutMs = atom<number>(
+  DEFAULT_VOICE_CONVERSATION_IDLE_TIMEOUT_SECONDS * 1_000
+)
+
+export function applyVoiceConversationIdleTimeoutFromConfig(
+  config: { voice?: { conversation_idle_timeout_seconds?: unknown } | null } | null | undefined
+) {
+  const raw = config?.voice?.conversation_idle_timeout_seconds
+
+  const seconds =
+    typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= MAX_BROWSER_TIMEOUT_MS / 1_000
+      ? raw
+      : DEFAULT_VOICE_CONVERSATION_IDLE_TIMEOUT_SECONDS
+
+  $voiceConversationIdleTimeoutMs.set(seconds * 1_000)
+}
+
 /** Seed the thinking-sound gate from a loaded config payload. */
 export function applyThinkingSoundFromConfig(
   config: { voice?: { thinking_sound?: unknown } | null } | null | undefined

@@ -9,7 +9,12 @@ import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/st
 import { resetBrowseState } from '@/store/composer-input-history'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
+import {
+  $autoSpeakReplies,
+  $voiceConversationIdleTimeoutMs,
+  $voiceStopPhrase,
+  setAutoSpeakReplies
+} from '@/store/voice-prefs'
 import { resumeWakeAfterVoice } from '@/store/wake-word'
 
 import type { ComposerTarget } from '../focus'
@@ -62,6 +67,7 @@ export function useComposerVoice({
   // A tile's composer speaks ITS transcript, not the primary chat's.
   const { $messages } = useComposerScope()
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
+  const voiceConversationIdleTimeoutMs = useStore($voiceConversationIdleTimeoutMs)
   const lastSpokenIdRef = useRef<string | null>(null)
   const ownsWakeIndicatorRef = useRef(false)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
@@ -134,7 +140,9 @@ export function useComposerVoice({
     busy,
     consumePendingResponse,
     enabled: voiceConversationActive,
+    idleTimeoutMs: voiceConversationIdleTimeoutMs,
     onFatalError: () => setVoiceConversationActive(false),
+    onIdleTimeout: () => setVoiceConversationActive(false),
     // Speaking over the model mid-generation interrupts the in-flight turn —
     // the same seam as the Stop button — so the interjection becomes the next
     // turn instead of waiting behind a reply the user already rejected.

@@ -9,6 +9,7 @@ export interface MicRecorderOptions {
   silenceLevel?: number
   silenceMs?: number
   idleSilenceMs?: number
+  signal?: AbortSignal
 }
 
 export interface MicRecording {
@@ -31,6 +32,10 @@ interface MicRecorderHandle {
   start: (options?: MicRecorderOptions) => Promise<void>
   stop: () => Promise<MicRecording | null>
   cancel: () => void
+}
+
+interface MicStartAttempt {
+  cancelled: boolean
 }
 
 function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
@@ -77,6 +82,13 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const silenceTriggeredRef = useRef(false)
   const silenceStartedAtRef = useRef<number | null>(null)
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
+  const pendingStartAttemptsRef = useRef(new Set<MicStartAttempt>())
+
+  const cancelPendingStarts = () => {
+    for (const attempt of pendingStartAttemptsRef.current) {
+      attempt.cancelled = true
+    }
+  }
 
   const cleanup = () => {
     if (animationRef.current) {
@@ -94,7 +106,13 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     silenceTriggeredRef.current = false
   }
 
-  useEffect(() => () => cleanup(), [])
+  useEffect(
+    () => () => {
+      cancelPendingStarts()
+      cleanup()
+    },
+    []
+  )
 
   const startMeter = (stream: MediaStream, options: MicRecorderOptions) => {
     const audioWindow = window as Window & { webkitAudioContext?: BrowserAudioContext }
@@ -175,87 +193,140 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       throw new Error(copy.microphoneUnsupported)
     }
 
-    const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
+    const attempt: MicStartAttempt = { cancelled: options.signal?.aborted ?? false }
 
-    if (permitted === false) {
-      throw new Error(copy.microphoneAccessDenied)
+    const cancelAttempt = () => {
+      attempt.cancelled = true
     }
 
-    let stream: MediaStream
+    pendingStartAttemptsRef.current.add(attempt)
+    options.signal?.addEventListener('abort', cancelAttempt, { once: true })
 
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true }
-      })
-    } catch (error) {
-      throw micError(error, copy)
-    }
-
-    const mimeType =
-      ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg', 'audio/wav'].find(
-        type => MediaRecorder.isTypeSupported(type)
-      ) ?? ''
-
-    let recorder: MediaRecorder
-
-    try {
-      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
-    } catch (error) {
-      stream.getTracks().forEach(track => track.stop())
-      throw micError(error, copy)
-    }
-
-    chunksRef.current = []
-    streamRef.current = stream
-    recorderRef.current = recorder
-    heardSpeechRef.current = false
-    silenceTriggeredRef.current = false
-    silenceStartedAtRef.current = null
-    startedAtRef.current = Date.now()
-
-    recorder.ondataavailable = event => {
-      if (event.data.size > 0) {
-        chunksRef.current.push(event.data)
+      if (attempt.cancelled) {
+        return
       }
-    }
 
-    recorder.onstop = () => {
-      const chunks = chunksRef.current
-      const recordingType = recorder.mimeType || mimeType || 'audio/webm'
-      const durationMs = Date.now() - startedAtRef.current
-      const heardSpeech = heardSpeechRef.current
+      const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
 
-      chunksRef.current = []
-      cleanup()
+      if (attempt.cancelled) {
+        return
+      }
 
-      const resolver = stopResolverRef.current
-      stopResolverRef.current = null
+      if (permitted === false) {
+        throw new Error(copy.microphoneAccessDenied)
+      }
 
-      if (!chunks.length) {
-        resolver?.(null)
+      let stream: MediaStream
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true }
+        })
+      } catch (error) {
+        if (attempt.cancelled) {
+          return
+        }
+
+        throw micError(error, copy)
+      }
+
+      // This acquisition belongs only to this start attempt. A cancel/end may
+      // have happened while permission or getUserMedia was pending, and a
+      // newer attempt may already own the recorder by the time this resolves.
+      if (attempt.cancelled || recorderRef.current) {
+        stream.getTracks().forEach(track => track.stop())
 
         return
       }
 
-      resolver?.({
-        audio: new Blob(chunks, { type: recordingType }),
-        durationMs,
-        heardSpeech
-      })
-    }
+      const mimeType =
+        ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg', 'audio/wav'].find(
+          type => MediaRecorder.isTypeSupported(type)
+        ) ?? ''
 
-    recorder.onerror = event => {
-      const error = micError((event as Event & { error?: unknown }).error, copy)
-      const resolver = stopResolverRef.current
-      stopResolverRef.current = null
-      cleanup()
-      options.onError?.(error)
-      resolver?.(null)
-    }
+      let recorder: MediaRecorder
 
-    recorder.start()
-    setRecording(true)
-    startMeter(stream, options)
+      try {
+        recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      } catch (error) {
+        stream.getTracks().forEach(track => track.stop())
+        throw micError(error, copy)
+      }
+
+      chunksRef.current = []
+      streamRef.current = stream
+      recorderRef.current = recorder
+      heardSpeechRef.current = false
+      silenceTriggeredRef.current = false
+      silenceStartedAtRef.current = null
+      startedAtRef.current = Date.now()
+
+      recorder.ondataavailable = event => {
+        if (recorderRef.current !== recorder) {
+          return
+        }
+
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.onstop = () => {
+        if (recorderRef.current !== recorder) {
+          return
+        }
+
+        const chunks = chunksRef.current
+        const recordingType = recorder.mimeType || mimeType || 'audio/webm'
+        const durationMs = Date.now() - startedAtRef.current
+        const heardSpeech = heardSpeechRef.current
+
+        chunksRef.current = []
+        cleanup()
+
+        const resolver = stopResolverRef.current
+        stopResolverRef.current = null
+
+        if (!chunks.length) {
+          resolver?.(null)
+
+          return
+        }
+
+        resolver?.({
+          audio: new Blob(chunks, { type: recordingType }),
+          durationMs,
+          heardSpeech
+        })
+      }
+
+      recorder.onerror = event => {
+        if (recorderRef.current !== recorder) {
+          return
+        }
+
+        const error = micError((event as Event & { error?: unknown }).error, copy)
+        const resolver = stopResolverRef.current
+        stopResolverRef.current = null
+        cleanup()
+        options.onError?.(error)
+        resolver?.(null)
+      }
+
+      try {
+        recorder.start()
+      } catch (error) {
+        cleanup()
+        throw micError(error, copy)
+      }
+
+      setRecording(true)
+      startMeter(stream, options)
+    } finally {
+      pendingStartAttemptsRef.current.delete(attempt)
+      options.signal?.removeEventListener('abort', cancelAttempt)
+    }
   }
 
   const stop: MicRecorderHandle['stop'] = () =>
@@ -274,15 +345,19 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     })
 
   const cancel: MicRecorderHandle['cancel'] = () => {
+    cancelPendingStarts()
     const recorder = recorderRef.current
     const resolver = stopResolverRef.current
     stopResolverRef.current = null
 
-    if (recorder && recorder.state !== 'inactive') {
+    if (recorder) {
       recorder.ondataavailable = null
       recorder.onerror = null
       recorder.onstop = null
-      recorder.stop()
+
+      if (recorder.state !== 'inactive') {
+        recorder.stop()
+      }
     }
 
     cleanup()

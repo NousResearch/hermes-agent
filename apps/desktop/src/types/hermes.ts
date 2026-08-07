@@ -346,6 +346,7 @@ export interface HermesConfig {
   }
   voice?: {
     max_recording_seconds?: number
+    conversation_idle_timeout_seconds?: number
     auto_tts?: boolean
     stop_phrases?: unknown
     thinking_sound?: unknown

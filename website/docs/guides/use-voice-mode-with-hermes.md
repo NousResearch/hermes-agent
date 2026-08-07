@@ -167,6 +167,7 @@ If you skip that install or it fails, the wizard falls back to Edge TTS.
 voice:
   record_key: "ctrl+b"
   max_recording_seconds: 120
+  conversation_idle_timeout_seconds: 600 # Desktop continuous voice inactivity limit; 0 disables
   auto_tts: false
   beep_enabled: true
   silence_threshold: 200

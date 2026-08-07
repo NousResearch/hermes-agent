@@ -35,7 +35,6 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
-import shlex
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -1764,9 +1763,18 @@ def _is_path_like_video_source(value: str) -> bool:
     return not lowered.startswith(("http://", "https://", "data:"))
 
 
-def _materialize_video_from_terminal_backend(video_source: str, task_id: Optional[str]) -> Path:
-    """Read a path from the active terminal backend into a local temp video file."""
-    from tools.file_tools import _get_file_ops
+async def _materialize_video_from_terminal_backend(video_source: str, task_id: Optional[str]) -> Path:
+    """Read a path via the shared media resolver into a local temp video file.
+
+    Routes through :func:`tools.image_source.resolve_image_source` with
+    ``permitted=("video",)`` so terminal-backend video reads get the exact
+    pipeline vision_analyze uses: media-cache host reads (gateway-downloaded
+    videos live on the host, not in the sandbox), bounded in-sandbox exec-read
+    (``head -c`` cap — no unbounded base64 stream, no python3 dependency in
+    the sandbox image), lazy env bring-up (#62825), the credential-read
+    guard, and the 50MB ingest cap.
+    """
+    from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
 
     source = video_source
     if source.startswith("file://"):
@@ -1778,31 +1786,17 @@ def _materialize_video_from_terminal_backend(video_source: str, task_id: Optiona
             f"Supported: {', '.join(sorted(_VIDEO_MIME_TYPES.keys()))}"
         )
 
-    command = (
-        "python3 -c "
-        + shlex.quote(
-            "import base64, pathlib, sys; "
-            "p = pathlib.Path(sys.argv[1]).expanduser(); "
-            "sys.stdout.write(base64.b64encode(p.read_bytes()).decode('ascii'))"
-        )
-        + f" {shlex.quote(source)}"
-    )
-    file_ops = _get_file_ops(task_id or "default")
-    result = file_ops._exec(command, timeout=300)
-    if result.exit_code != 0:
-        details = result.stdout.strip() or f"exit code {result.exit_code}"
-        raise ValueError(f"Could not read video from terminal backend: {details}")
-
-    encoded = "".join(result.stdout.split())
     try:
-        data = base64.b64decode(encoded, validate=True)
-    except Exception as exc:
-        raise ValueError(f"Terminal backend returned invalid video data: {exc}") from exc
+        resolved = await resolve_image_source(
+            video_source, ResolveContext(task_id=task_id), permitted=("video",)
+        )
+    except ImageResolutionError as exc:
+        raise ValueError(f"Could not read video from terminal backend: {exc}") from exc
 
     temp_dir = get_hermes_dir("cache/video", "temp_video_files")
     temp_dir.mkdir(parents=True, exist_ok=True)
     temp_path = temp_dir / f"terminal_video_{uuid.uuid4()}{suffix}"
-    temp_path.write_bytes(data)
+    temp_path.write_bytes(resolved.data)
     return temp_path
 
 
@@ -1907,7 +1901,7 @@ async def video_analyze_tool(
 
         if not _terminal_backend_is_local() and _is_path_like_video_source(video_url):
             logger.info("Reading video source via terminal backend: %s", video_url)
-            temp_video_path = _materialize_video_from_terminal_backend(video_url, task_id)
+            temp_video_path = await _materialize_video_from_terminal_backend(video_url, task_id)
             should_cleanup = True
         elif local_path.is_file():
             from agent.file_safety import raise_if_read_blocked

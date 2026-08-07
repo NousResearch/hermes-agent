@@ -208,7 +208,13 @@ class TestVideoAnalyzeTool:
         assert content[1]["video_url"]["url"].startswith("data:video/mp4;base64,")
 
     def test_non_local_backend_reads_video_from_terminal_backend(self, tmp_path, monkeypatch):
-        """Non-local terminal backends must not read local host video paths."""
+        """Non-local terminal backends must not read local host video paths.
+
+        The read routes through the shared media resolver
+        (tools.image_source, ``permitted=("video",)``) which exec-reads the
+        bytes inside the sandbox — so the analyzed video is the container's
+        file, never the host's.
+        """
         host_video = tmp_path / "clip.mp4"
         host_video.write_bytes(b"HOST-VIDEO")
         remote_bytes = b"REMOTE-SANDBOX-VIDEO"
@@ -216,11 +222,19 @@ class TestVideoAnalyzeTool:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
 
-        class FakeFileOps:
-            def _exec(self, command, timeout=None):
-                assert str(host_video) in command
-                assert timeout == 300
-                return SimpleNamespace(stdout=remote_b64, exit_code=0)
+        import tools.image_source as isrc
+        import tools.terminal_tool as tt
+
+        env_lookups = []
+
+        def fake_get_active(task_id):
+            env_lookups.append(task_id)
+            return SimpleNamespace(
+                execute=lambda cmd, **kw: {"returncode": 0, "output": remote_b64}
+            )
+
+        monkeypatch.setattr(tt, "ensure_task_env", lambda *a, **k: None)
+        monkeypatch.setattr(isrc, "_get_active_env", fake_get_active)
 
         captured_kwargs = {}
 
@@ -232,7 +246,6 @@ class TestVideoAnalyzeTool:
             return mock_response
 
         with (
-            patch("tools.file_tools._get_file_ops", return_value=FakeFileOps()) as get_ops,
             patch("tools.vision_tools.async_call_llm", side_effect=capture_llm),
             patch("tools.vision_tools.extract_content_or_reasoning", return_value="sandbox video"),
         ):
@@ -242,7 +255,7 @@ class TestVideoAnalyzeTool:
 
         data = json.loads(result)
         assert data["success"] is True
-        get_ops.assert_called_once_with("task-123")
+        assert env_lookups == ["task-123"]
         video_url = captured_kwargs["messages"][0]["content"][1]["video_url"]["url"]
         uploaded_bytes = base64.b64decode(video_url.split(",", 1)[1])
         assert uploaded_bytes == remote_bytes

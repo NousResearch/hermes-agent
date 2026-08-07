@@ -32,6 +32,53 @@ from hermes_state_common import (
 # keep that logger identity so log filtering/capture behavior is unchanged.
 logger = logging.getLogger("hermes_state")
 
+# Cache for schema_read_probe_statements() — parsing SCHEMA_SQL spins up an
+# in-memory SQLite database, so derive the statements once per process.
+_READ_PROBE_STATEMENTS: Optional[tuple] = None
+
+
+def schema_read_probe_statements() -> tuple:
+    """SELECT statements that fail iff a live store is behind SCHEMA_SQL.
+
+    Read-only opens skip ``_reconcile_columns()`` by design (no DDL against
+    another profile's live DB), so a store created before a schema addition
+    keeps 500ing on read paths until something opens it writable. Callers
+    that heal on staleness (see ``_open_session_db_at_path`` in
+    ``hermes_cli/web_server.py``) run these probes right after a read-only
+    open: any missing table raises "no such table" and any missing column
+    raises "no such column", both at prepare time.
+
+    Derived from SCHEMA_SQL — the same source of truth the writable
+    reconciler diffs against — so a column added there is covered here
+    automatically. A hand-maintained probe list went stale within days of
+    shipping (it never learned ``sessions.last_activity_at``, so the sidebar
+    served an empty session list after `hermes update` until the user's
+    first message forced a writable open).
+
+    Each statement is ``LIMIT 0``: column resolution happens at prepare
+    time, so the probe reads zero rows. Column references are qualified
+    with the table name — an unqualified double-quoted identifier that
+    fails to resolve silently degrades to a string literal (SQLite's
+    double-quoted-string misfeature), which would make the probe pass on
+    exactly the stale store it exists to catch.
+    """
+    global _READ_PROBE_STATEMENTS
+    if _READ_PROBE_STATEMENTS is None:
+        tables = SessionSchemaMixin._parse_schema_columns(SCHEMA_SQL)
+        _READ_PROBE_STATEMENTS = tuple(
+            'SELECT {} FROM "{}" LIMIT 0'.format(
+                ", ".join(
+                    '"{}"."{}"'.format(
+                        table.replace('"', '""'), col.replace('"', '""')
+                    )
+                    for col in cols
+                ),
+                table.replace('"', '""'),
+            )
+            for table, cols in sorted(tables.items())
+        )
+    return _READ_PROBE_STATEMENTS
+
 
 class SessionSchemaMixin:
     """See module docstring — mixin for SessionDB (Schema cluster)."""

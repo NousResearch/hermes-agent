@@ -2765,6 +2765,7 @@ def cmd_whatsapp(args):
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value
     from hermes_constants import find_node_executable, with_hermes_node_path
+    from utils import is_truthy_value
 
     print()
     print("⚕ WhatsApp Setup")
@@ -2830,7 +2831,7 @@ def cmd_whatsapp(args):
     # Re-runs that already have WHATSAPP_ENABLED=true (from a prior
     # successful pairing) stay enabled — we just don't write it pre-emptively.
     print()
-    if (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true":
+    if is_truthy_value(get_env_value("WHATSAPP_ENABLED")):
         print("✓ WhatsApp is already enabled")
 
     # ── Step 3: Allowed users ────────────────────────────────────────────
@@ -2928,7 +2929,7 @@ def cmd_whatsapp(args):
             # (Older installs may have lost the env var; covers re-runs
             # where the user picked "no, keep my session" but the var
             # was never set or got removed.)
-            if (get_env_value("WHATSAPP_ENABLED") or "").lower() != "true":
+            if not is_truthy_value(get_env_value("WHATSAPP_ENABLED")):
                 save_env_value("WHATSAPP_ENABLED", "true")
             print("\n✓ WhatsApp is configured and paired!")
             print("  Start the gateway with: hermes gateway")

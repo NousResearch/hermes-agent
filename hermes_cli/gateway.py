@@ -51,6 +51,7 @@ from hermes_cli.config import (
     save_env_value,
     write_platform_config_field,
 )
+from utils import is_truthy_value
 
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
@@ -5542,7 +5543,9 @@ def _platform_status(platform: dict) -> str:
         return "not configured"
     val = get_env_value(token_var)
     if token_var == "WHATSAPP_ENABLED":
-        if val and val.lower() == "true":
+        # Match gateway/config.py runtime enablement (is_truthy_value) so
+        # WHATSAPP_ENABLED=1|on|yes is not reported as "not configured".
+        if is_truthy_value(val):
             session_file = get_hermes_home() / "whatsapp" / "session" / "creds.json"
             if session_file.exists():
                 return "configured + paired"

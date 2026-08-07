@@ -355,6 +355,35 @@ git push -u origin HEAD
 # 8. Merge when green (see Section 6)
 ```
 
+## AI Disclosure Guidelines
+
+When including AI-agent attribution in PR descriptions, issue comments, or
+review comments, always use a **generic username placeholder** — never
+substitute a real account name or handle.
+
+**Correct:**
+```markdown
+Filed by an AI agent on behalf of `<username>`.
+
+This PR was prepared with assistance from an AI agent
+on behalf of `${GITHUB_USERNAME}`.
+```
+
+**Incorrect (hardcoded personal identity):**
+```markdown
+Filed by Jasper.
+
+Authored by AI agent on behalf of realaccount.
+```
+
+See [`references/pr-disclosure-examples.md`](references/pr-disclosure-examples.md)
+for full disclosure templates.
+
+See [`scripts/check-pr-template-compliance.py`](scripts/check-pr-template-compliance.py)
+for a tool that validates PR bodies against hardcoded identity leaks.
+
+---
+
 ## Useful PR Commands Reference
 
 | Action | gh | git + curl |

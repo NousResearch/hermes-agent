@@ -173,7 +173,37 @@ class TestGenerate:
 
         assert result["success"] is False
         assert result["error_type"] == "invalid_image_input"
-        assert "not a supported image" in result["error"]
+        assert "not a recognised image file" in result["error"]
+        assert str(text_path) in result["error"]
+
+    def test_rejects_source_above_the_size_cap(self, provider, monkeypatch, tmp_path):
+        """gpt-image-2 caps input_image at 25MB; oversized input must fail here
+        rather than as an opaque server-side error."""
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_MAX_INPUT_IMAGE_BYTES", 1024)
+        big = tmp_path / "big.png"
+        big.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096)
+
+        result = provider.generate("edit this", image_url=str(big))
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_image_input"
+        assert "limit" in result["error"]
+
+    def test_rejects_image_type_the_api_does_not_accept(
+        self, provider, monkeypatch, tmp_path
+    ):
+        """The shared sniffer recognises BMP, but gpt-image-2's input_image does
+        not accept it, so it must be refused locally."""
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        bmp = tmp_path / "logo.bmp"
+        bmp.write_bytes(b"BM" + b"\x00" * 24)
+
+        result = provider.generate("edit this", image_url=str(bmp))
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_image_input"
+        assert "not supported here" in result["error"]
 
 
     def test_partial_image_event_used_when_done_missing(self):

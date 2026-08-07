@@ -125,36 +125,28 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
 
 
 def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
-    """Load image bytes from a URL or local file path.
+    """Load image bytes from a URL, local file path, or data URI.
 
-    Returns ``(data, filename)``. Raises on any network / IO error so the
-    caller can surface a clean error_response.
+    Remote URLs are downloaded here — gpt-image-2's ``images.edit`` endpoint
+    needs the raw bytes as a multipart file. Local files and ``data:`` URIs go
+    through the shared resolver so they get the read denylist and magic-byte
+    validation every backend applies. Returns ``(data, filename)``; raises on
+    any network / IO / validation error so the caller surfaces a clean
+    error_response.
     """
-    ref = ref.strip()
-    lower = ref.lower()
-    if lower.startswith(("http://", "https://")):
+    from agent.image_source import SourceKind, resolve_image_source
+
+    source = resolve_image_source(ref)
+
+    if source.kind is SourceKind.REMOTE:
         import requests
 
-        resp = requests.get(ref, timeout=60)
+        resp = requests.get(source.value, timeout=60)
         resp.raise_for_status()
-        name = ref.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
+        name = source.value.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
         return resp.content, name
-    if lower.startswith("data:"):
-        import base64
 
-        header, _, b64 = ref.partition(",")
-        ext = "png"
-        if "image/" in header:
-            ext = header.split("image/", 1)[1].split(";", 1)[0] or "png"
-        return base64.b64decode(b64), f"image.{ext}"
-    # Local file path — enforce the shared credential-read guard before reading.
-    from agent.file_safety import raise_if_read_blocked
-
-    raise_if_read_blocked(ref)
-    with open(ref, "rb") as fh:
-        data = fh.read()
-    name = os.path.basename(ref) or "image.png"
-    return data, name
+    return source.read_bytes(), source.filename()
 
 
 # ---------------------------------------------------------------------------

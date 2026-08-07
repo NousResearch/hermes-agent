@@ -996,8 +996,43 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _uses_native_windows_search_paths(self) -> bool:
+        """True when search/lint commands run against the LOCAL Git Bash
+        backend on Windows.
+
+        Native Windows binaries (rg, node, go, rustfmt) need drive-qualified
+        paths because ``MSYS2_ARG_CONV_EXCL=*`` disables MSYS argument
+        conversion in this environment. Remote/container backends must keep
+        their own POSIX path semantics even when the Hermes host itself is
+        Windows — ``/c/Users/x`` may be a real path there.
+        """
+        try:
+            from tools.environments.local import LocalEnvironment, _IS_WINDOWS
+            return _IS_WINDOWS and isinstance(self.env, LocalEnvironment)
+        except Exception:
+            return False
+
+    def _escape_shell_arg_native(self, arg: str) -> str:
+        """Quote *arg* for shell use WITHOUT the Git Bash ``/c/`` rewrite.
+
+        ``_escape_shell_arg`` rewrites ``C:\\...`` to ``/c/...`` for bash
+        builtins and MSYS/Cygwin binaries. Native Windows executables (e.g.
+        rg installed via WinGet/MSVC builds) cannot resolve ``/c/...`` when
+        ``MSYS2_ARG_CONV_EXCL=*`` disables MSYS argument auto-conversion:
+        they treat it as a root-relative path (``C:\\c\\...``) and fail with
+        "os error 3: The system cannot find the path specified". Single
+        quotes preserve backslashes verbatim, so the native ``C:\\...``
+        form survives bash untouched and works with both native and
+        MSYS binaries. Only applies on the local Windows backend; remote
+        backends keep POSIX path semantics.
+        """
+        if self._uses_native_windows_search_paths():
+            from tools.environments.local import _msys_to_windows_path
+            arg = _msys_to_windows_path(arg)  # /c/Users/x -> C:\Users\x; no-op otherwise
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
+
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
-        """Write ``content`` to ``path`` atomically via temp-file + rename.
+        """Write ``content`` to ``path`` atomically via tempfile + rename.
 
         Streams ``content`` over stdin into a temp file in the SAME
         directory as ``path`` (so the final ``mv`` is a real rename on the
@@ -1892,8 +1927,11 @@ class ShellFileOperations(FileOperations):
         if not self._has_command(base_cmd):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
 
-        # Run linter
-        cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
+        # Run linter. Use the native-Windows path form (C:/...) for the
+        # file argument: linters like node/go/rustfmt are NATIVE Windows
+        # binaries that reject the MSYS /c/... spelling (_bash_safe_path
+        # would produce), while python/npx (MSYS) also accept C:/...
+        cmd = linter_cmd.replace("{file}", self._escape_shell_arg_native(path))
         result = self._exec(cmd, timeout=30)
 
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
@@ -2409,7 +2447,11 @@ class ShellFileOperations(FileOperations):
         if not has_hidden_path_ancestor:
             pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
 
-        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+        # LC_ALL=C forces a locale-independent '%T@' mtime format: on
+        # non-C locales (e.g. hu_HU) Cygwin find emits NBSP thousands
+        # separators (byte 0xa0) and a comma decimal separator, which both
+        # break UTF-8 decoding and the 'mtime path' parse below.
+        cmd = f"LC_ALL=C find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
@@ -2417,7 +2459,7 @@ class ShellFileOperations(FileOperations):
 
         if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+            cmd_simple = f"LC_ALL=C find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
@@ -2431,6 +2473,12 @@ class ShellFileOperations(FileOperations):
                 files.append(parts[1])
             else:
                 files.append(line)
+
+        # find emits MSYS-form paths (/c/Users/x) on Windows; normalize to
+        # the native drive form so results match the rg path and resolve
+        # correctly in the hidden-root filtering below.
+        from tools.environments.local import _msys_to_windows_path
+        files = [_msys_to_windows_path(f) for f in files]
 
         # For explicit hidden roots, find's path-based filtering excludes every
         # file under the hidden path. Apply descendant filtering after command
@@ -2475,7 +2523,7 @@ class ShellFileOperations(FileOperations):
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
+            f"{self._escape_shell_arg_native(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
@@ -2486,7 +2534,7 @@ class ShellFileOperations(FileOperations):
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"{self._escape_shell_arg_native(path)} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
@@ -2570,7 +2618,10 @@ class ShellFileOperations(FileOperations):
         
         # Add pattern and path
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        # Path must stay in native Windows form (no /c/ rewrite): native
+        # rg.exe cannot resolve /c/... when MSYS2_ARG_CONV_EXCL=* disables
+        # MSYS argument auto-conversion.
+        cmd_parts.append(self._escape_shell_arg_native(path))
         
         # Fetch extra rows so we can report the true total before slicing.
         # For context mode, rg emits separator lines ("--") between groups,
@@ -2706,7 +2757,9 @@ class ShellFileOperations(FileOperations):
         
         # Add pattern and path
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        # Same native-path treatment as the rg variant: keep the Windows
+        # form so the path resolves regardless of which grep is on PATH.
+        cmd_parts.append(self._escape_shell_arg_native(path))
         
         # Fetch generously so we can compute total before slicing
         fetch_limit = limit + offset + (200 if context > 0 else 0)

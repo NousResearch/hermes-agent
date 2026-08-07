@@ -2,6 +2,8 @@
 
 import os
 import re
+import shutil
+import sys
 import pytest
 import subprocess
 from pathlib import Path
@@ -255,9 +257,11 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
     env.cwd = cwd
 
     def execute(command, **kwargs):
+        # Explicit bash -c: on Windows, subprocess.run(shell=True) invokes
+        # cmd.exe (or mangles args as "<exe> /c ..."), which cannot run the
+        # POSIX find/sort/tail pipelines these tests drive.
         completed = subprocess.run(
-            command,
-            shell=True,
+            [shutil.which("bash") or "/bin/bash", "-c", command],
             text=True,
             capture_output=True,
             input=kwargs.get("stdin_data"),
@@ -293,6 +297,128 @@ class TestShellFileOpsHelpers:
         assert file_ops._escape_shell_arg(
             "C:/Users/alice/notes.txt"
         ) == "'/c/Users/alice/notes.txt'"
+
+    def test_escape_shell_arg_native_keeps_windows_drive_path(self, monkeypatch, file_ops):
+        # Native Windows binaries (rg via WinGet/MSVC) cannot resolve the
+        # /c/... form when MSYS2_ARG_CONV_EXCL=* disables MSYS conversion.
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(
+            file_ops, "_uses_native_windows_search_paths", lambda: True
+        )
+        assert file_ops._escape_shell_arg_native(
+            r"C:\Users\alice\notes.txt"
+        ) == r"'C:\Users\alice\notes.txt'"
+
+    def test_escape_shell_arg_native_converts_msys_back_to_native(self, monkeypatch, file_ops):
+        # MSYS-form input (e.g. from ~ expansion) is converted back to the
+        # native form before quoting.
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(
+            file_ops, "_uses_native_windows_search_paths", lambda: True
+        )
+        assert file_ops._escape_shell_arg_native(
+            "/c/Users/alice/notes.txt"
+        ) == r"'C:\Users\alice\notes.txt'"
+
+    def test_escape_shell_arg_native_relative_path_unchanged(self, monkeypatch, file_ops):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(
+            file_ops, "_uses_native_windows_search_paths", lambda: True
+        )
+        assert file_ops._escape_shell_arg_native("notes.txt") == "'notes.txt'"
+
+    def test_escape_shell_arg_native_noop_off_windows(self, monkeypatch, file_ops):
+        # Non-Windows hosts keep POSIX paths untouched (CI runs Linux).
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert file_ops._escape_shell_arg_native(
+            "/c/Users/alice/notes.txt"
+        ) == "'/c/Users/alice/notes.txt'"
+        assert file_ops._escape_shell_arg_native(
+            "/home/alice/notes.txt"
+        ) == "'/home/alice/notes.txt'"
+
+    def test_search_files_rg_emits_native_windows_path(self, mock_env, monkeypatch):
+        # The sorted rg --files command AND its unsorted fallback must both
+        # carry the native drive path, not the /c/... rewrite (which native
+        # rg cannot resolve when MSYS2_ARG_CONV_EXCL=* disables conversion).
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        ops = ShellFileOperations(mock_env)
+        monkeypatch.setattr(ops, "_uses_native_windows_search_paths", lambda: True)
+        ops._search_files_rg("notes.txt", r"C:\Users\alice", 10, 0)
+
+        commands = [c.args[0] for c in mock_env.execute.call_args_list]
+        assert len(commands) >= 2  # sorted attempt + fallback (empty output)
+        assert commands[0] == (
+            "rg --files --sortr=modified -g '*notes.txt' "
+            r"'C:\Users\alice' 2>/dev/null | head -n 10"
+        )
+        assert commands[1] == (
+            "rg --files -g '*notes.txt' "
+            r"'C:\Users\alice' 2>/dev/null | head -n 10"
+        )
+        assert "/c/Users" not in commands[0]
+        assert "/c/Users" not in commands[1]
+
+    def test_search_with_rg_emits_native_windows_path(self, mock_env, monkeypatch):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        ops = ShellFileOperations(mock_env)
+        monkeypatch.setattr(ops, "_uses_native_windows_search_paths", lambda: True)
+        ops._search_with_rg("pattern", r"C:\Users\alice", None, 10, 0, "content", 0)
+
+        cmd = mock_env.execute.call_args.args[0]
+        assert cmd == (
+            "set -o pipefail; rg --line-number --no-heading --with-filename "
+            r"'pattern' 'C:\Users\alice' | head -n 10"
+        )
+        assert "/c/Users" not in cmd
+
+    def test_search_with_grep_emits_native_windows_path(self, mock_env, monkeypatch):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        ops = ShellFileOperations(mock_env)
+        monkeypatch.setattr(ops, "_uses_native_windows_search_paths", lambda: True)
+        ops._search_with_grep("pattern", r"C:\Users\alice", None, 10, 0, "content", 0)
+
+        cmd = mock_env.execute.call_args.args[0]
+        assert cmd == (
+            "set -o pipefail; grep -rnH --exclude-dir='.*' "
+            r"'pattern' 'C:\Users\alice' | head -n 10"
+        )
+        assert "/c/Users" not in cmd
+
+    def test_lint_uses_native_windows_path(self, mock_env, monkeypatch):
+        # Linters (node/go/rustfmt) are native Windows binaries too; the
+        # {file} placeholder must carry the drive-qualified path.
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        ops = ShellFileOperations(mock_env)
+        monkeypatch.setattr(ops, "_uses_native_windows_search_paths", lambda: True)
+
+        def side_effect(command, **kwargs):
+            if "command -v" in command:
+                return {"output": "yes", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops._check_lint(r"C:\Users\alice\file.js")
+
+        cmd = mock_env.execute.call_args_list[-1].args[0]
+        assert "node --check 'C:\\Users\\alice\\file.js'" in cmd
+        assert "/c/Users" not in cmd
 
     def test_read_file_uses_bash_safe_windows_paths(self, mock_env, monkeypatch):
         import tools.environments.local as local_mod
@@ -577,6 +703,10 @@ class _DeletedTestGitBaselineCheck:
 class TestAtomicWriteNewFilePermissions:
     """_atomic_write should apply umask-default perms to new files (not 0600)."""
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX umask permission semantics don't apply on Windows",
+    )
     @pytest.mark.parametrize("test_umask", [0o022, 0o002, 0o077])
     def test_new_file_gets_umask_default_permissions(self, tmp_path, test_umask):
         """Newly created file should get umask-computed perms, not mktemp's 0600.
@@ -602,6 +732,10 @@ class TestAtomicWriteNewFilePermissions:
             f"got {actual_mode:04o}"
         )
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX chmod mode bits don't apply on Windows",
+    )
     def test_overwrite_still_preserves_existing_mode(self, tmp_path):
         """The new-file branch must not disturb the overwrite path's
         mode preservation (e.g. an executable script stays 0755)."""

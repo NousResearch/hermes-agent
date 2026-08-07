@@ -214,6 +214,32 @@ def _find_free_port() -> int:
 _reserved_sockets: "dict[int, socket.socket]" = {}
 _MAX_RESERVED_SOCKETS = 8
 
+# In-process callback waiters may run on different event loops/threads, so an
+# asyncio.Lock cannot safely coordinate them. Track ownership under a short
+# threading lock and let waiters poll asynchronously before they bind. Port 0
+# is excluded because the OS assigns each such listener its own ephemeral port.
+_active_callback_ports: set[int] = set()
+_active_callback_ports_guard = threading.Lock()
+_CALLBACK_PORT_CLAIM_POLL_SECONDS = 0.05
+
+
+def _try_claim_callback_port(port: int) -> bool:
+    """Claim a fixed callback port for one in-process waiter."""
+    if port == 0:
+        return True
+    with _active_callback_ports_guard:
+        if port in _active_callback_ports:
+            return False
+        _active_callback_ports.add(port)
+        return True
+
+
+def _release_callback_port(port: int) -> None:
+    if port == 0:
+        return
+    with _active_callback_ports_guard:
+        _active_callback_ports.discard(port)
+
 
 def _reserve_callback_port() -> int:
     """Pick an ephemeral callback port and keep its socket bound.
@@ -831,30 +857,7 @@ def _make_callback_waiter(port: int):
             to complete the browser auth), or in non-interactive contexts.
     """
 
-    async def _wait() -> tuple[str, str | None]:
-        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
-
-        dashboard_flow = get_dashboard_oauth_flow()
-        if dashboard_flow is not None:
-            return await dashboard_flow.wait_for_callback()
-
-        # Reject before binding the callback listener in non-interactive
-        # contexts. Reaching here means the SDK entered the authorization-code
-        # flow (a valid or refreshable token would never call the callback
-        # handler), so a cached token file is present but unusable. Binding the
-        # listener here would block for the full 300s timeout and — on the next
-        # connection retry — collide with the still-bound/TIME_WAIT port,
-        # surfacing as ``OSError: [Errno 98] Address already in use``. Failing
-        # fast keeps gateway startup independent of an unusable optional MCP
-        # server. This guard holds "regardless of whether a token file exists"
-        # — the point the build_oauth_auth token-file guard cannot cover.
-        # See #57836.
-        _raise_if_non_interactive(
-            "OAuth callback requires an interactive session but none is "
-            "available (non-interactive/background context); skipping browser "
-            "authorization without binding a callback listener."
-        )
-
+    async def _wait_with_claimed_port() -> tuple[str, str | None]:
         handler_cls, result = _make_callback_handler()
 
         # Start a temporary server on this flow's port, adopting the socket
@@ -892,7 +895,12 @@ def _make_callback_waiter(port: int):
                 "in the server config, then retry."
             ) from exc
 
-        server_thread = threading.Thread(target=server.handle_request, daemon=True)
+        server_thread = threading.Thread(
+            target=server.serve_forever,
+            kwargs={"poll_interval": 0.1},
+            daemon=True,
+            name=f"mcp-oauth-callback-{port}",
+        )
         server_thread.start()
 
         # Optional paste-fallback thread: only on interactive TTYs. Reads one
@@ -923,7 +931,14 @@ def _make_callback_waiter(port: int):
                 await asyncio.sleep(poll_interval)
                 elapsed += poll_interval
         finally:
-            server.server_close()
+            # server_close() alone does not reliably wake a listener blocked in
+            # accept() on another thread. Stop serve_forever first and wait for
+            # the thread to exit so an immediate retry can reuse a pinned port.
+            try:
+                server.shutdown()
+                server_thread.join(timeout=1.0)
+            finally:
+                server.server_close()
 
         if result["error"] == _USER_SKIPPED_SENTINEL:
             raise OAuthNonInteractiveError("user_skipped")
@@ -936,6 +951,41 @@ def _make_callback_waiter(port: int):
             )
 
         return result["auth_code"], result["state"]
+
+    async def _wait() -> tuple[str, str | None]:
+        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
+
+        dashboard_flow = get_dashboard_oauth_flow()
+        if dashboard_flow is not None:
+            return await dashboard_flow.wait_for_callback()
+
+        # Reject before binding the callback listener in non-interactive
+        # contexts. Reaching here means the SDK entered the authorization-code
+        # flow (a valid or refreshable token would never call the callback
+        # handler), so a cached token file is present but unusable. Binding the
+        # listener here would block for the full 300s timeout and — on the next
+        # connection retry — collide with the still-bound/TIME_WAIT port,
+        # surfacing as ``OSError: [Errno 98] Address already in use``. Failing
+        # fast keeps gateway startup independent of an unusable optional MCP
+        # server. This guard holds "regardless of whether a token file exists"
+        # — the point the build_oauth_auth token-file guard cannot cover.
+        # See #57836.
+        _raise_if_non_interactive(
+            "OAuth callback requires an interactive session but none is "
+            "available (non-interactive/background context); skipping browser "
+            "authorization without binding a callback listener."
+        )
+
+        port_claimed = False
+        try:
+            while not port_claimed:
+                port_claimed = _try_claim_callback_port(port)
+                if not port_claimed:
+                    await asyncio.sleep(_CALLBACK_PORT_CLAIM_POLL_SECONDS)
+            return await _wait_with_claimed_port()
+        finally:
+            if port_claimed:
+                _release_callback_port(port)
 
     return _wait
 

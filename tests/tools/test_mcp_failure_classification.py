@@ -37,6 +37,13 @@ class TestUnwrapExceptionGroup:
         inner = BrokenPipeError()
         assert _unwrap_exception_group(_group(inner)) is inner
 
+    def test_prefers_oauth_error_over_socket_teardown(self):
+        from mcp.client.auth import OAuthTokenError
+
+        auth_error = OAuthTokenError("invalid_client: bad secret")
+        group = _group(OSError("address already in use"), _group(auth_error))
+
+        assert _unwrap_exception_group(group) is auth_error
 
     def test_system_exit_reraises(self):
         with pytest.raises(SystemExit):

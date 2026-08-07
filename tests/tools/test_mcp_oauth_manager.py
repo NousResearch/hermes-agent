@@ -243,6 +243,7 @@ def _fake_response(status, url, body):
     resp = MagicMock()
     resp.status_code = status
     resp.request = SimpleNamespace(url=url)
+    resp.text = body.decode("utf-8", errors="replace")
 
     async def _aread():
         return body
@@ -285,6 +286,46 @@ def test_invalid_client_at_token_endpoint_poisons(tmp_path, monkeypatch):
     assert (d / "srv.client.json.bak").exists()
     assert provider._initialized is False
     assert provider.context.client_info is None
+    assert provider._hermes_terminal_token_error is None
+
+
+def test_preregistered_invalid_client_is_latched_not_poisoned(tmp_path, monkeypatch):
+    """A config-supplied credential fails terminally; re-registration cannot help."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path, {"client_id": "from-config"}, "https://idp.example.com/oauth/token", monkeypatch
+    )
+    d = tmp_path / "mcp-tokens"
+    # _maybe_preregister_client wrote client.json from config during build.
+    assert (d / "srv.client.json").exists()
+    resp = _fake_response(
+        400, "https://idp.example.com/oauth/token", b'{"error":"invalid_client"}'
+    )
+
+    asyncio.run(provider._maybe_flag_poisoned_client(resp))
+
+    assert (d / "srv.client.json").exists()
+    assert provider._initialized is True
+    assert provider._hermes_terminal_token_error == (
+        'Token exchange failed (400): {"error":"invalid_client"}'
+    )
+
+
+def test_configured_client_secret_alone_makes_invalid_client_terminal(
+    tmp_path, monkeypatch
+):
+    """A user-supplied secret must not be mistaken for dynamic registration."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    token_ep = "https://idp.example.com/oauth/token"
+    provider = _provider_with_token_endpoint(
+        tmp_path, {"client_secret": "wrong"}, token_ep, monkeypatch
+    )
+    resp = _fake_response(400, token_ep, b'{"error":"invalid_client"}')
+
+    asyncio.run(provider._maybe_flag_poisoned_client(resp))
+
+    assert provider._hermes_terminal_token_error is not None
+    assert provider._initialized is True
 
 
 def test_invalid_client_metadata_does_not_trip(tmp_path, monkeypatch):
@@ -364,3 +405,116 @@ def test_bridge_forwards_requests_and_poisons_on_token_endpoint_400(
     assert not (d / "srv.client.json").exists()
     assert provider._initialized is False
     assert provider.context.client_info is None
+
+
+def test_preregistered_token_error_stops_subsequent_auth_flows(tmp_path, monkeypatch):
+    """Concurrent requests must preserve invalid_client instead of opening a new flow."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    token_ep = "https://idp.example.com/oauth/token"
+    provider = _provider_with_token_endpoint(
+        tmp_path,
+        {"client_id": "configured", "client_secret": "wrong"},
+        token_ep,
+        monkeypatch,
+    )
+
+    from mcp.client.auth import OAuthTokenError
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+
+    flow_starts = 0
+
+    async def fake_base_flow(self, request):
+        nonlocal flow_starts
+        flow_starts += 1
+        response = yield request
+        raise OAuthTokenError(
+            f"Token exchange failed ({response.status_code}): {response.text}"
+        )
+
+    monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_base_flow)
+    body = b'{"error":"invalid_client","error_description":"bad secret"}'
+    response = _fake_response(400, token_ep, body)
+    expected = f"Token exchange failed (400): {body.decode()}"
+
+    async def drive():
+        first = provider.async_auth_flow(object())
+        await first.__anext__()
+        with pytest.raises(OAuthTokenError) as first_error:
+            await first.asend(response)
+
+        second = provider.async_auth_flow(object())
+        with pytest.raises(OAuthTokenError) as second_error:
+            await second.__anext__()
+
+        return str(first_error.value), str(second_error.value)
+
+    first_message, second_message = asyncio.run(drive())
+
+    assert first_message == expected
+    assert second_message == expected
+    assert flow_starts == 1
+
+
+def test_queued_auth_flow_checks_terminal_error_before_yield(tmp_path, monkeypatch):
+    """A flow already queued on the SDK lock must not emit another OAuth request."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_with_token_endpoint(
+        tmp_path,
+        {"client_id": "configured", "client_secret": "wrong"},
+        "https://idp.example.com/oauth/token",
+        monkeypatch,
+    )
+
+    from mcp.client.auth import OAuthTokenError
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+
+    async def fake_queued_flow(self, request):
+        self._hermes_terminal_token_error = "terminal credential failure"
+        yield request
+
+    monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_queued_flow)
+
+    async def drive():
+        flow = provider.async_auth_flow(object())
+        with pytest.raises(OAuthTokenError, match="terminal credential failure"):
+            await flow.__anext__()
+
+    asyncio.run(drive())
+
+
+def test_refresh_invalid_client_stops_before_browser_reauthorization(
+    tmp_path, monkeypatch
+):
+    """A rejected configured refresh must not advance into a browser flow."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    token_ep = "https://idp.example.com/oauth/token"
+    provider = _provider_with_token_endpoint(
+        tmp_path,
+        {"client_id": "configured", "client_secret": "wrong"},
+        token_ep,
+        monkeypatch,
+    )
+
+    from mcp.client.auth import OAuthTokenError
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+
+    browser_request = object()
+
+    async def fake_refresh_flow(self, request):
+        yield object()  # refresh request
+        yield browser_request  # what the SDK would emit after refresh fails
+
+    monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_refresh_flow)
+    response = _fake_response(
+        400,
+        token_ep,
+        b'{"error":"invalid_client","error_description":"bad secret"}',
+    )
+
+    async def drive():
+        flow = provider.async_auth_flow(object())
+        await flow.__anext__()
+        with pytest.raises(OAuthTokenError, match="invalid_client"):
+            await flow.asend(response)
+
+    asyncio.run(drive())

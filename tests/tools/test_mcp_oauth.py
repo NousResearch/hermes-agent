@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 import stat
 import sys
 from io import BytesIO
@@ -382,6 +383,56 @@ class TestCallbackPortReservation:
         assert code == "flowA"
         assert state == "sA"
 
+    def test_same_pinned_port_waiters_are_serialized(self, monkeypatch):
+        """A second active flow waits instead of binding an owned pinned port."""
+        import asyncio
+        import threading
+        import tools.mcp_oauth as mod
+
+        port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
+
+        async def drive():
+            real_http_server = mod.HTTPServer
+            first_active = asyncio.Event()
+            second_active = asyncio.Event()
+            activation_count = 0
+
+            class RecordingHTTPServer(real_http_server):
+                def server_activate(self):
+                    nonlocal activation_count
+                    super().server_activate()
+                    activation_count += 1
+                    (first_active if activation_count == 1 else second_active).set()
+
+            monkeypatch.setattr(mod, "HTTPServer", RecordingHTTPServer)
+
+            first = asyncio.create_task(mod._make_callback_waiter(port)())
+            await asyncio.wait_for(first_active.wait(), timeout=2)
+
+            second = asyncio.create_task(mod._make_callback_waiter(port)())
+            await asyncio.sleep(0)
+            assert not second.done()
+            assert activation_count == 1
+
+            threading.Thread(
+                target=_hit_callback_when_ready,
+                args=(f"http://127.0.0.1:{port}/callback?code=first&state=s1",),
+                daemon=True,
+            ).start()
+            assert await asyncio.wait_for(first, timeout=2) == ("first", "s1")
+
+            await asyncio.wait_for(second_active.wait(), timeout=2)
+            threading.Thread(
+                target=_hit_callback_when_ready,
+                args=(f"http://127.0.0.1:{port}/callback?code=second&state=s2",),
+                daemon=True,
+            ).start()
+            assert await asyncio.wait_for(second, timeout=2) == ("second", "s2")
+
+        asyncio.run(drive())
+
 
 # ---------------------------------------------------------------------------
 # remove_oauth_tokens
@@ -676,6 +727,38 @@ class TestPasteCallbackReader:
 class TestWaitForCallbackPasteIntegration:
     """_wait_for_callback offers the paste prompt only when interactive."""
 
+    def test_paste_callback_stops_http_listener_and_releases_port(self, monkeypatch):
+        """The paste winner must not leave the loopback listener blocked in accept."""
+        import tools.mcp_oauth as mod
+
+        port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr(
+            mod.sys.stdin,
+            "readline",
+            lambda: "code=from_paste&state=paste_state\n",
+        )
+
+        real_thread = mod.threading.Thread
+        created_threads = []
+
+        def recording_thread(*args, **kwargs):
+            thread = real_thread(*args, **kwargs)
+            created_threads.append(thread)
+            return thread
+
+        monkeypatch.setattr(mod.threading, "Thread", recording_thread)
+
+        result = asyncio.run(mod._make_callback_waiter(port)())
+
+        assert result == ("from_paste", "paste_state")
+        listener_thread = created_threads[0]
+        listener_thread.join(timeout=1.0)
+        assert not listener_thread.is_alive()
+
+        with socket.socket() as rebound:
+            rebound.bind(("127.0.0.1", port))
+
     def test_paste_prompt_shown_on_tty(self, monkeypatch, capsys):
         import tools.mcp_oauth as mod
         mod._oauth_port = _find_free_port()
@@ -800,6 +883,7 @@ def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):
     assert "54321" in msg
     assert "already in use" in msg
     assert "timed out" not in msg
+    assert 54321 not in mo._active_callback_ports
 
 
 # ---------------------------------------------------------------------------

@@ -992,9 +992,12 @@ def _unwrap_exception_group(exc: BaseException) -> BaseException:
     - **Fatal leaves re-raise.** A ``KeyboardInterrupt`` / ``SystemExit``
       anywhere in the (possibly nested) group must propagate to the
       interpreter, never be flattened into a loggable error.
-    - **Prefer non-cancellation leaves.** When a group carries both a real
-      error and the ``CancelledError``s that anyio cancellation sprays across
-      sibling tasks, the real error is the root cause worth logging.
+    - **Prefer auth leaves.** A token error must not be masked by a sibling
+      socket/teardown failure from the same transport TaskGroup.
+    - **Prefer non-cancellation leaves.** When no auth error exists and a group
+      carries both a real error and the ``CancelledError``s that anyio
+      cancellation sprays across sibling tasks, the real error is the root
+      cause worth logging.
     """
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         fatal, _rest = exc.split((KeyboardInterrupt, SystemExit))
@@ -1004,6 +1007,9 @@ def _unwrap_exception_group(exc: BaseException) -> BaseException:
             while isinstance(leaf, BaseExceptionGroup) and leaf.exceptions:
                 leaf = leaf.exceptions[0]
             raise leaf
+        auth_leaf = _find_exception_leaf(exc, _is_auth_error)
+        if auth_leaf is not None:
+            return auth_leaf
         # Prefer a non-cancellation leaf when one exists: cancellation
         # noise from sibling tasks should not mask the real error.
         chosen = exc.exceptions[0]
@@ -1013,6 +1019,17 @@ def _unwrap_exception_group(exc: BaseException) -> BaseException:
                 break
         exc = chosen
     return exc
+
+
+def _find_exception_leaf(exc: BaseException, predicate) -> BaseException | None:
+    """Return the first depth-first leaf matching ``predicate``."""
+    if isinstance(exc, BaseExceptionGroup):
+        for sub in exc.exceptions:
+            match = _find_exception_leaf(sub, predicate)
+            if match is not None:
+                return match
+        return None
+    return exc if predicate(exc) else None
 
 
 def _contains_only_cancellation(exc: BaseException) -> bool:

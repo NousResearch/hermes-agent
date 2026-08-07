@@ -26,7 +26,11 @@ from hermes_cli.config import (
 from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
-from tools.mcp_tool import _ENV_VAR_PATTERN, _env_ref_name
+from tools.mcp_tool import (
+    _ENV_VAR_PATTERN,
+    _env_ref_name,
+    _unwrap_exception_group as _unwrap_mcp_exception_group,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -402,8 +406,7 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
     messages opaque ("unhandled errors in a TaskGroup").  We unwrap
     to surface the real cause (e.g. "401 Unauthorized").
     """
-    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
-        exc = exc.exceptions[0]
+    exc = _unwrap_mcp_exception_group(exc)
     # Return a plain Exception so callers can catch normally
     if isinstance(exc, Exception):
         return exc

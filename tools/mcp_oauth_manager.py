@@ -35,6 +35,7 @@ Design reference:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import threading
@@ -139,12 +140,13 @@ def _make_hermes_provider_class() -> Optional[type]:
             super().__init__(*args, **kwargs)
             self._hermes_server_name = server_name
             self._hermes_home = ""
-            # When the client_id comes from config.yaml (pre-registered), an
+            # When either client credential comes from config.yaml, an
             # invalid_client rejection means the *config* is wrong — deleting
-            # client.json would just be re-seeded from config and re-running
-            # registration can't help. Only auto-heal dynamically-registered
-            # clients. See _maybe_flag_poisoned_client.
+            # client.json or repeating browser authorization cannot help. Only
+            # auto-heal clients whose credentials are entirely dynamic. See
+            # _maybe_flag_poisoned_client.
             self._hermes_preregistered = preregistered
+            self._hermes_terminal_token_error: str | None = None
 
         async def _initialize(self) -> None:
             """Load stored tokens + client info AND seed token_expiry_time.
@@ -320,26 +322,26 @@ def _make_hermes_provider_class() -> Optional[type]:
                 storage.save_oauth_metadata(meta)
 
         async def _maybe_flag_poisoned_client(self, response: Any) -> None:
-            """Detect a dead client registration and force re-registration.
+            """Handle deterministic client errors from the token endpoint.
 
             When the IdP rejects our ``client_id`` with ``invalid_client`` on
             the token endpoint (token exchange or refresh), the cached client
-            registration is provably dead server-side. We delete ``client.json``
-            (+ stale metadata) so the SDK's next ``async_auth_flow`` takes the
-            ``if not client_info`` branch and re-runs RFC 7591 dynamic client
-            registration. This addresses the recurring manual-reset ritual in
-            GH#36767 for the auto-detectable subset (token-endpoint rejection);
-            the browser-side "Redirect URI Mismatch" case has no HTTP signal
-            and is handled by ``hermes mcp reauth``.
+            registration is either stale dynamic state or bad configured
+            credentials. Dynamic registrations delete ``client.json`` (+ stale
+            metadata) so the next flow re-runs RFC 7591 registration (GH#36767).
+            Configured credentials instead latch the error because neither
+            registration nor another browser round-trip can repair them.
 
             Conservative by construction — acts ONLY when all hold:
               * status is 400/401,
               * the request hit the discovered ``token_endpoint`` (the only
                 request carrying our ``client_id``), and
-              * the body carries the ``invalid_client`` error code
-                (word-boundary match, so RFC 7591's ``invalid_client_metadata``
-                registration error does not trip it).
-            Pre-registered (config-supplied) clients are never poisoned.
+              * the body carries ``invalid_client`` or ``unauthorized_client``
+                as its OAuth error code (with a word-boundary fallback for
+                non-JSON servers, so ``invalid_client_metadata`` does not trip).
+            Config-supplied clients are never poisoned. Their deterministic
+            error is latched instead so sibling transport requests cannot
+            start another browser flow after the first token exchange fails.
             Fully best-effort: any failure here is swallowed so a detection
             miss never breaks the live auth flow.
 
@@ -350,8 +352,6 @@ def _make_hermes_provider_class() -> Optional[type]:
             back to ``hermes mcp reauth``.
             """
             try:
-                if self._hermes_preregistered:
-                    return
                 status = getattr(response, "status_code", None)
                 if status not in (400, 401):
                     return
@@ -368,10 +368,33 @@ def _make_hermes_provider_class() -> Optional[type]:
                 if not _same_endpoint(req_url, token_endpoint):
                     return
                 body = await response.aread()
-                # Word-boundary match: matches `"error":"invalid_client"` but
-                # not the RFC 7591 registration error `invalid_client_metadata`
-                # (the trailing `_metadata` removes the right-hand boundary).
-                if not re.search(rb"\binvalid_client\b", body.lower()):
+                try:
+                    payload = json.loads(body)
+                    error_code = (
+                        str(payload.get("error", "")).lower()
+                        if isinstance(payload, dict)
+                        else ""
+                    )
+                except (TypeError, ValueError):
+                    # Keep compatibility with non-JSON OAuth servers while
+                    # retaining the old word-boundary protection against
+                    # invalid_client_metadata.
+                    match = re.search(
+                        rb"\b(invalid_client|unauthorized_client)\b", body.lower()
+                    )
+                    error_code = match.group(1).decode() if match else ""
+                if error_code not in {"invalid_client", "unauthorized_client"}:
+                    return
+
+                if self._hermes_preregistered or error_code == "unauthorized_client":
+                    # A configured credential cannot be repaired by repeating
+                    # browser authorization. Latch the SDK-equivalent error so
+                    # concurrent transport requests queued on context.lock do
+                    # not start a second flow with a new state value.
+                    body_text = body.decode("utf-8", errors="replace")
+                    self._hermes_terminal_token_error = (
+                        f"Token exchange failed ({status}): {body_text}"
+                    )
                     return
 
                 storage = self.context.storage
@@ -388,6 +411,11 @@ def _make_hermes_provider_class() -> Optional[type]:
                 )
 
         async def async_auth_flow(self, request):  # type: ignore[override]
+            from mcp.client.auth import OAuthTokenError
+
+            if self._hermes_terminal_token_error is not None:
+                raise OAuthTokenError(self._hermes_terminal_token_error)
+
             # Pre-flow hook: ask the manager to refresh from disk if needed.
             # Any failure here is non-fatal — we just log and proceed with
             # whatever state the SDK already has.
@@ -420,6 +448,13 @@ def _make_hermes_provider_class() -> Optional[type]:
             try:
                 outgoing = await inner.__anext__()
                 while True:
+                    if self._hermes_terminal_token_error is not None:
+                        # The flow may have queued behind the failing request,
+                        # or the SDK may be continuing from a rejected refresh.
+                        # Close it before yielding another request so neither
+                        # path can start a second browser authorization.
+                        await inner.aclose()
+                        raise OAuthTokenError(self._hermes_terminal_token_error)
                     incoming = yield outgoing
                     # Sniff the response for a dead-client-registration signal
                     # before handing it back to the SDK (best-effort, GH#36767).
@@ -578,7 +613,7 @@ class MCPOAuthManager:
 
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
-            preregistered=bool(cfg.get("client_id")),
+            preregistered=bool(cfg.get("client_id") or cfg.get("client_secret")),
             server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,

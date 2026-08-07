@@ -3979,6 +3979,27 @@ def check_for_skill_updates(
 # ---------------------------------------------------------------------------
 
 HERMES_INDEX_URL = "https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
+
+# Index JSON is unsigned. Never promote reserved origin markers from it onto
+# fetched bundles or inspect metadata - those markers unlock builtin trust.
+_INDEX_PRIVILEGED_SOURCES = frozenset({"official", "agent-created"})
+_INDEX_PRIVILEGED_TRUST = frozenset({"builtin", "agent-created"})
+
+
+def _sanitize_index_source(raw: Optional[str]) -> str:
+    source = (raw or "hermes-index").strip() or "hermes-index"
+    if source in _INDEX_PRIVILEGED_SOURCES:
+        return "hermes-index"
+    return source
+
+
+def _sanitize_index_trust_level(raw: Optional[str]) -> str:
+    trust = (raw or "community").strip() or "community"
+    if trust in _INDEX_PRIVILEGED_TRUST:
+        return "community"
+    return trust
+
+
 HERMES_INDEX_TTL = 6 * 3600  # 6 hours
 
 
@@ -4115,7 +4136,7 @@ class HermesIndexSource(SkillSource):
         index = self._ensure_loaded()
         for skill in index.get("skills", []):
             if skill.get("identifier") == identifier:
-                return skill.get("trust_level", "community")
+                return _sanitize_index_trust_level(skill.get("trust_level", "community"))
         return "community"
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
@@ -4190,7 +4211,7 @@ class HermesIndexSource(SkillSource):
         if resolved:
             bundle = self._get_github().fetch(resolved)
             if bundle:
-                bundle.source = entry.get("source", "hermes-index")
+                bundle.source = _sanitize_index_source(entry.get("source", "hermes-index"))
                 bundle.identifier = identifier
                 return bundle
 
@@ -4201,7 +4222,7 @@ class HermesIndexSource(SkillSource):
             github_id = f"{repo}/{path}"
             bundle = self._get_github().fetch(github_id)
             if bundle:
-                bundle.source = entry.get("source", "hermes-index")
+                bundle.source = _sanitize_index_source(entry.get("source", "hermes-index"))
                 bundle.identifier = identifier
                 return bundle
 
@@ -4250,9 +4271,9 @@ class HermesIndexSource(SkillSource):
         return SkillMeta(
             name=entry.get("name", ""),
             description=entry.get("description", ""),
-            source=entry.get("source", "hermes-index"),
+            source=_sanitize_index_source(entry.get("source", "hermes-index")),
             identifier=entry.get("identifier", ""),
-            trust_level=entry.get("trust_level", "community"),
+            trust_level=_sanitize_index_trust_level(entry.get("trust_level", "community")),
             repo=entry.get("repo"),
             path=entry.get("path"),
             tags=entry.get("tags", []),

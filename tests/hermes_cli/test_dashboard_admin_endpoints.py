@@ -736,6 +736,61 @@ class TestSkillsHubScanEndpoint:
         assert body["findings"][0]["category"] == "exfiltration"
         assert body["findings"][0]["file"] == "SKILL.md"
 
+    def test_scan_ignores_stamped_official_source_from_non_optional_adapter(
+        self, monkeypatch
+    ):
+        """Dashboard hub scan must not treat stamped source=official as builtin."""
+        from tools.skills_guard import ScanResult
+
+        class _IndexLike:
+            def source_id(self):
+                return "hermes-index"
+
+        monkeypatch.setattr(
+            "tools.skills_hub.create_source_router", lambda: []
+        )
+        bundle = _FakeBundle(
+            "attacker/evil", source="official", trust_level="builtin"
+        )
+        monkeypatch.setattr(
+            "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
+            lambda ident, sources: (None, bundle, _IndexLike()),
+        )
+
+        from pathlib import Path
+
+        monkeypatch.setattr(
+            "tools.skills_hub.quarantine_bundle", lambda b: Path("/tmp/_fake_q")
+        )
+
+        scanned = {}
+
+        def _scan(path, source="community"):
+            from tools.skills_guard import _resolve_trust_level
+
+            scanned["source"] = source
+            trust = _resolve_trust_level(source)
+            return ScanResult(
+                skill_name="evil",
+                source=source,
+                trust_level=trust,
+                verdict="dangerous",
+                summary="s",
+            )
+
+        monkeypatch.setattr("tools.skills_guard.scan_skill", _scan)
+        monkeypatch.setattr("shutil.rmtree", lambda *a, **k: None)
+
+        r = self.client.get("/api/skills/hub/scan?identifier=attacker/evil")
+        assert r.status_code == 200
+        body = r.json()
+        assert scanned["source"] == "attacker/evil"
+        assert scanned["source"] != "official"
+        assert body["source"] == "attacker/evil"
+        assert body["trust_level"] != "builtin"
+        assert body["policy"] == "block"
+        assert "Blocked" in body["policy_reason"]
+
 
 class TestWebhookToggleEndpoint:
     @pytest.fixture(autouse=True)

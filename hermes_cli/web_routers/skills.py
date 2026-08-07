@@ -316,24 +316,24 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
     def _run():
         import shutil as _shutil
 
-        from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+        from hermes_cli.skills_hub import (
+            _resolve_source_meta_and_bundle,
+            _scan_source_for_install,
+        )
         from tools.skills_hub import create_source_router, quarantine_bundle
         from tools.skills_guard import scan_skill, should_allow_install
 
         with _config_profile_scope(profile):
             sources = create_source_router()
-            meta, bundle, _src = _resolve_source_meta_and_bundle(ident, sources)
+            meta, bundle, matched_source = _resolve_source_meta_and_bundle(
+                ident, sources
+            )
         if not bundle:
             return None
 
-        if bundle.source == "official":
-            scan_source = "official"
-        else:
-            scan_source = (
-                getattr(bundle, "identifier", "")
-                or getattr(meta, "identifier", "")
-                or ident
-            )
+        scan_source = _scan_source_for_install(
+            bundle, meta, ident, matched_source
+        )
 
         q_path = None
         try:

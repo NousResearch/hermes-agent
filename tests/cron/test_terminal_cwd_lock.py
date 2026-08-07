@@ -11,6 +11,7 @@ These tests assert that contract.
 """
 
 import threading
+import time
 
 
 def _lock():
@@ -82,6 +83,30 @@ def test_writer_waits_for_active_reader():
     assert not rt.is_alive() and not wt.is_alive()
     # The writer only ran after the reader released — never alongside it.
     assert order == ["reader-release", "writer-acquire"]
+
+
+def test_writer_acquire_times_out_behind_active_reader():
+    """Bounded acquire prevents a stuck reader from blocking a writer forever."""
+    lock = _lock()
+    lock.acquire_read()
+    started = time.monotonic()
+    try:
+        assert lock.acquire_write(timeout=0.01) is False
+    finally:
+        lock.release_read()
+    assert time.monotonic() - started < 1.0
+
+
+def test_reader_acquire_times_out_behind_active_writer():
+    """Bounded acquire prevents a stuck writer from blocking readers forever."""
+    lock = _lock()
+    lock.acquire_write()
+    started = time.monotonic()
+    try:
+        assert lock.acquire_read(timeout=0.01) is False
+    finally:
+        lock.release_write()
+    assert time.monotonic() - started < 1.0
 
 
 def test_reader_never_observes_writer_override():

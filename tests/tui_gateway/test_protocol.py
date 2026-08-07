@@ -665,3 +665,203 @@ def test_unregister_live_transport_stops_delivery(capture):
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
 
 
+def test_usage_live_and_session_output_include_provider_limits(server, monkeypatch):
+    from agent import account_usage
+
+    class Agent:
+        provider = "openai-codex"
+        base_url = "https://example.invalid/v1"
+        api_key = "secret"
+        model = "gpt-test"
+        session_input_tokens = 123
+        session_output_tokens = 45
+        session_total_tokens = 168
+        session_api_calls = 2
+        session_reasoning_tokens = 0
+        session_prompt_tokens = 123
+        session_completion_tokens = 45
+        context_compressor = None
+
+        def get_rate_limit_state(self):
+            return types.SimpleNamespace(has_data=True)
+
+    fetch = MagicMock(return_value=object())
+    monkeypatch.setattr(account_usage, "fetch_account_usage", fetch)
+    monkeypatch.setattr(
+        account_usage,
+        "render_account_usage_lines",
+        lambda _: ["Account limits", "Session: 93% remaining"],
+    )
+    monkeypatch.setattr(account_usage, "nous_credits_lines", lambda: [])
+    monkeypatch.setattr(
+        "agent.rate_limit_tracker.format_rate_limit_display",
+        lambda _: "Requests: 50% remaining",
+    )
+    server._sessions["usage-live"] = {
+        "session_key": "usage-live",
+        "agent": Agent(),
+        "history": [],
+        "history_lock": threading.Lock(),
+    }
+    desktop = server.handle_request(
+        {
+            "id": 1,
+            "method": "slash.exec",
+            "params": {"session_id": "usage-live", "command": "usage"},
+        }
+    )
+    tui = server.handle_request(
+        {
+            "id": 2,
+            "method": "session.usage",
+            "params": {"session_id": "usage-live"},
+        }
+    )
+    assert "Session Token Usage" in desktop["result"]["output"]
+    assert "Session: 93% remaining" in desktop["result"]["output"]
+    assert "Requests: 50% remaining" in desktop["result"]["output"]
+    assert "secret" not in desktop["result"]["output"]
+    assert tui["result"]["account_lines"] == ["Account limits", "Session: 93% remaining"]
+    assert tui["result"]["rate_limit_lines"] == ["Requests: 50% remaining"]
+    assert fetch.call_args.args == ("openai-codex",)
+
+
+def test_usage_no_agent_uses_metadata_and_codex_pool_fallback(server, monkeypatch):
+    from agent import account_usage
+
+    seen = []
+
+    def fetch(provider, **kwargs):
+        seen.append({"provider": provider, **kwargs})
+        return object()
+
+    monkeypatch.setattr(account_usage, "fetch_account_usage", fetch)
+    monkeypatch.setattr(
+        account_usage,
+        "render_account_usage_lines",
+        lambda _: ["Weekly: 80% remaining"],
+    )
+    monkeypatch.setattr(account_usage, "nous_credits_lines", lambda: [])
+    server._sessions["usage-mirror"] = {
+        "session_key": "usage-mirror",
+        "agent": None,
+        "_metadata_mirror": {
+            "provider": "openai-codex",
+            "usage": {"calls": 1},
+        },
+        "history": [],
+        "history_lock": threading.Lock(),
+    }
+    desktop = server.handle_request(
+        {
+            "id": 1,
+            "method": "slash.exec",
+            "params": {"session_id": "usage-mirror", "command": "usage"},
+        }
+    )
+    tui = server.handle_request(
+        {
+            "id": 2,
+            "method": "session.usage",
+            "params": {"session_id": "usage-mirror"},
+        }
+    )
+    assert "Session Token Usage" in desktop["result"]["output"]
+    assert "Weekly: 80% remaining" in desktop["result"]["output"]
+    assert tui["result"]["account_lines"] == ["Weekly: 80% remaining"]
+    assert seen == [
+        {"provider": "openai-codex", "base_url": None, "api_key": None},
+        {"provider": "openai-codex", "base_url": None, "api_key": None},
+    ]
+
+
+def test_usage_provider_failure_is_fail_open(server, monkeypatch):
+    from agent import account_usage
+
+    monkeypatch.setattr(
+        account_usage,
+        "fetch_account_usage",
+        MagicMock(side_effect=RuntimeError("offline")),
+    )
+    monkeypatch.setattr(account_usage, "nous_credits_lines", lambda: [])
+    server._sessions["usage-fail"] = {
+        "session_key": "usage-fail",
+        "agent": None,
+        "_metadata_mirror": {
+            "provider": "openai-codex",
+            "usage": {"calls": 0},
+        },
+        "history": [],
+        "history_lock": threading.Lock(),
+    }
+    response = server.handle_request(
+        {
+            "id": 1,
+            "method": "session.usage",
+            "params": {"session_id": "usage-fail"},
+        }
+    )
+    assert "error" not in response and "account_lines" not in response["result"]
+
+
+def test_usage_provider_timeout_is_prompt_and_fail_open(server, monkeypatch):
+    from agent import account_usage
+
+    release_fetch = threading.Event()
+    fetch_started = threading.Event()
+
+    def fetch(*args, **kwargs):
+        fetch_started.set()
+        release_fetch.wait()
+        return object()
+
+    monkeypatch.setattr(server, "_ACCOUNT_USAGE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(account_usage, "fetch_account_usage", fetch)
+    monkeypatch.setattr(account_usage, "nous_credits_lines", lambda: [])
+    server._sessions["usage-timeout"] = {
+        "session_key": "usage-timeout",
+        "agent": None,
+        "_metadata_mirror": {
+            "provider": "openai-codex",
+            "usage": {"calls": 0},
+        },
+        "history": [],
+        "history_lock": threading.Lock(),
+    }
+
+    started = time.monotonic()
+    try:
+        response = server.handle_request(
+            {
+                "id": 1,
+                "method": "session.usage",
+                "params": {"session_id": "usage-timeout"},
+            }
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        release_fetch.set()
+
+    assert fetch_started.is_set()
+    assert elapsed < 0.5
+    assert "error" not in response
+    assert "account_lines" not in response["result"]
+
+
+@pytest.mark.parametrize("command", ["usage reset --force", "usage unexpected"])
+def test_usage_subcommands_fall_through_to_worker(server, command):
+    worker = MagicMock(run=MagicMock(return_value="worker result"))
+    server._sessions["usage-worker"] = {
+        "session_key": "usage-worker",
+        "agent": None,
+        "slash_worker": worker,
+    }
+    response = server.handle_request(
+        {
+            "id": 1,
+            "method": "slash.exec",
+            "params": {"session_id": "usage-worker", "command": command},
+        }
+    )
+    assert response["result"] == {"output": "worker result"}
+    worker.run.assert_called_once_with(command)

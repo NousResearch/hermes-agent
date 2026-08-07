@@ -121,4 +121,22 @@ describe('/usage slash command', () => {
     expect(body).toContain('free models only')
     expect(body).toContain('/subscription')
   })
+
+  it('renders provider account and rate-limit lines before balance and token usage', async () => {
+    const { panel, run, sys } = buildCtx({
+      'session.usage': baseUsage({
+        calls: 2,
+        account_lines: ['Account limits', 'Weekly: 80% remaining'],
+        rate_limit_lines: ['Requests: 50% remaining'],
+        usage: { available: true, status: 'free', plan_name: null }
+      })
+    })
+
+    await run('')
+
+    expect(printed(sys)).toContain('Weekly: 80% remaining')
+    expect(printed(sys)).toContain('Requests: 50% remaining')
+    expect(panel.mock.calls.map(call => call[0])).toEqual(['Balance', 'Usage'])
+    expect(sys.mock.invocationCallOrder[0]).toBeLessThan(panel.mock.invocationCallOrder[0])
+  })
 })

@@ -613,6 +613,81 @@ class TestInstallUvInternals:
             assert call_env["UV_UNMANAGED_INSTALL"] == str(tmp_path / "bin")
 
 
+class TestWindowsPowershellHostResolution:
+    """Managed-uv Windows bootstrap must not spawn a bare ``powershell`` name.
+
+    CreateProcess resolves extension-less names via PATHEXT and searches the
+    process cwd before PATH, so a planted host in an untrusted directory would
+    win under ``-ExecutionPolicy Bypass``.
+    """
+
+    @staticmethod
+    def _fake_system_powershell(tmp_path: Path) -> Path:
+        host = (
+            tmp_path
+            / "Windows"
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
+        host.parent.mkdir(parents=True, exist_ok=True)
+        host.write_bytes(b"MZ")
+        return host
+
+    def test_resolve_uses_systemroot_absolute_path(self, tmp_path, monkeypatch):
+        from hermes_cli.managed_uv import _resolve_windows_powershell_host
+
+        host = self._fake_system_powershell(tmp_path)
+        monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+        monkeypatch.delenv("WINDIR", raising=False)
+
+        assert _resolve_windows_powershell_host() == str(host)
+
+    def test_resolve_falls_back_to_windir(self, tmp_path, monkeypatch):
+        from hermes_cli.managed_uv import _resolve_windows_powershell_host
+
+        host = self._fake_system_powershell(tmp_path)
+        monkeypatch.delenv("SystemRoot", raising=False)
+        monkeypatch.setenv("WINDIR", str(tmp_path / "Windows"))
+
+        assert _resolve_windows_powershell_host() == str(host)
+
+    def test_resolve_missing_host_fails_closed(self, tmp_path, monkeypatch):
+        from hermes_cli.managed_uv import _resolve_windows_powershell_host
+
+        monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+        monkeypatch.delenv("WINDIR", raising=False)
+
+        with pytest.raises(FileNotFoundError, match="Windows PowerShell host"):
+            _resolve_windows_powershell_host()
+
+    def test_install_uv_windows_uses_absolute_host_not_bare_name(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import managed_uv
+
+        host = self._fake_system_powershell(tmp_path)
+        monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+        # Plant a cwd decoy that CreateProcess would prefer for a bare name.
+        decoy = tmp_path / "cwd" / "powershell.exe"
+        decoy.parent.mkdir(parents=True, exist_ok=True)
+        decoy.write_bytes(b"MZ")
+        monkeypatch.chdir(decoy.parent)
+
+        with patch.object(managed_uv.subprocess, "run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode=0)
+            managed_uv._install_uv_windows({"UV_INSTALL_DIR": str(tmp_path / "bin")})
+
+        mock_run.assert_called_once()
+        argv = mock_run.call_args[0][0]
+        assert argv[0] == str(host)
+        assert argv[0] != "powershell"
+        assert Path(argv[0]).is_absolute()
+        assert argv[1:4] == ["-ExecutionPolicy", "Bypass", "-c"]
+        assert "astral.sh/uv/install.ps1" in argv[4]
+
+
 class TestRuntimeRequestMinorLine:
     """The repair must request the CPython minor line, not the exact patch.
 

@@ -526,6 +526,14 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    # Local server aliases — keep in sync with hermes_cli/auth.py so the
+    # fallback router normalizes bare 'ollama' / 'vllm' / 'llamacpp' to the
+    # generic custom provider and honors explicit_base_url (#74280).
+    "ollama": "custom",
+    "vllm": "custom",
+    "llamacpp": "custom",
+    "llama.cpp": "custom",
+    "llama-cpp": "custom",
 }
 
 

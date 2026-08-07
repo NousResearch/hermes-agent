@@ -270,7 +270,13 @@ class TestDelegateTask(unittest.TestCase):
         parent.provider = "openai-codex"
         parent.api_mode = "codex_responses"
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        # Isolate this parent-inheritance test from the operator's live
+        # delegation.provider setting; an explicit configured provider is
+        # intentionally authoritative and is covered by integration tests.
+        with (
+            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
             mock_child = MagicMock()
             mock_child.run_conversation.return_value = {
                 "final_response": "ok",
@@ -1718,6 +1724,31 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertEqual(kwargs["fallback_model"], [fallback_entry])
+
+    def test_pinned_provider_does_not_inherit_parent_fallback_chain(self):
+        """An explicit delegated provider is a strict provider boundary."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [
+            {"provider": "openrouter", "model": "deepseek/deepseek-v4-flash"}
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test strict delegated provider",
+                context=None,
+                toolsets=None,
+                model="gpt-5.6-terra",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="openai-codex",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["provider"], "openai-codex")
+        self.assertIsNone(kwargs["fallback_model"])
 
     def test_child_gets_no_fallback_when_parent_chain_empty(self):
         """When parent._fallback_chain is empty, fallback_model is None."""

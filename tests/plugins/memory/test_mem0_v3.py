@@ -25,7 +25,7 @@ class FakeBackend:
         self.captured.append(("get_all", {"filters": filters, "page": page, "page_size": page_size}))
         return self._all_results
 
-    def add(self, messages, *, user_id, agent_id, infer=False, metadata=None):
+    def add(self, messages, *, user_id, agent_id, infer=False, metadata=None, run_id=None):
         self.captured.append((
             "add",
             messages,

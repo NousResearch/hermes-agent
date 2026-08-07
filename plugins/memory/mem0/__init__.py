@@ -61,7 +61,6 @@ _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # through instead of silently overriding them with the placeholder.
 _DEFAULT_USER_ID = "hermes-user"
 
-
 def _is_client_error(exc: Exception) -> bool:
     """True for user-caused errors (bad ID, not found) that should NOT trip circuit breaker."""
     etype = type(exc).__name__
@@ -458,7 +457,7 @@ class Mem0MemoryProvider(MemoryProvider):
         t = threading.Thread(target=_run, daemon=True, name="mem0-prefetch")
         with self._prefetch_lock:
             self._prefetch_thread = t
-        t.start()
+            t.start()
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall memories for the CURRENT question with a short hot-path wait."""

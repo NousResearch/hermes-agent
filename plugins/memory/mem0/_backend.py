@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class Mem0Backend(ABC):
@@ -149,8 +152,8 @@ class SelfHostedBackend(Mem0Backend):
     def close(self) -> None:
         try:
             self._client.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("SelfHostedBackend.close error: %s", exc)
 
 
 class OSSBackend(Mem0Backend):
@@ -235,8 +238,11 @@ class OSSBackend(Mem0Backend):
                         client.delete_collection(collection_name)
                 finally:
                     client.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "_recreate_collection_if_dims_changed(%s): failed to check/recreate %s: %s",
+                    provider, collection_name, exc,
+                )
         elif provider == "pgvector":
             try:
                 import psycopg2
@@ -266,8 +272,11 @@ class OSSBackend(Mem0Backend):
                         cur.close()
                 finally:
                     conn.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "_recreate_collection_if_dims_changed(%s): failed to check/recreate %s: %s",
+                    provider, collection_name, exc,
+                )
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         response = self._memory.search(query, filters=filters, top_k=top_k)
@@ -296,20 +305,27 @@ class OSSBackend(Mem0Backend):
         return {"result": "Memory deleted.", "memory_id": memory_id}
 
     def close(self):
-        try:
-            telemetry = getattr(self._memory, "telemetry", None)
-            if telemetry and hasattr(telemetry, "posthog"):
-                try:
-                    telemetry.posthog.shutdown()
-                except Exception:
-                    pass
-            if hasattr(self._memory, "close"):
+        telemetry = getattr(self._memory, "telemetry", None)
+        if telemetry and hasattr(telemetry, "posthog"):
+            try:
+                telemetry.posthog.shutdown()
+            except Exception as exc:
+                logger.debug("OSSBackend.close: telemetry shutdown error: %s", exc)
+        if hasattr(self._memory, "close"):
+            try:
                 self._memory.close()
-            vs = getattr(self._memory, "vector_store", None)
-            if vs and hasattr(vs, "close"):
-                vs.close()
+            except Exception as exc:
+                logger.warning("OSSBackend.close: memory close error: %s", exc)
+        vs = getattr(self._memory, "vector_store", None)
+        if vs:
+            if hasattr(vs, "close"):
+                try:
+                    vs.close()
+                except Exception as exc:
+                    logger.warning("OSSBackend.close: vector store close error: %s", exc)
             client = getattr(vs, "client", None)
             if client and hasattr(client, "close"):
-                client.close()
-        except Exception:
-            pass
+                try:
+                    client.close()
+                except Exception as exc:
+                    logger.warning("OSSBackend.close: vector store client close error: %s", exc)

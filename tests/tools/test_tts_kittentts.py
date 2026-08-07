@@ -79,6 +79,23 @@ class TestGenerateKittenTts:
         assert call_kwargs["speed"] == 1.25
         assert call_kwargs["clean_text"] is False
 
+    def test_ogg_generation_forces_opus(
+        self, tmp_path, mock_kittentts_module, monkeypatch
+    ):
+        from tools import tts_tool
+
+        run = MagicMock()
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(tts_tool.subprocess, "run", run)
+
+        output_path = str(tmp_path / "voice.ogg")
+        assert tts_tool._generate_kittentts("Hello", output_path, {}) == output_path
+
+        command = run.call_args.args[0]
+        assert command[0] == "/usr/bin/ffmpeg"
+        assert command[command.index("-c:a") + 1] == "libopus"
+        assert command[-1] == output_path
+
 
     def test_missing_kittentts_raises_import_error(self, tmp_path, monkeypatch):
         """When kittentts package is not installed, _import_kittentts raises."""
@@ -129,3 +146,34 @@ class TestDispatcherBranch:
         assert result["success"] is False
         assert "kittentts" in result["error"].lower()
         assert "hermes setup tts" in result["error"].lower()
+
+    def test_existing_ogg_is_marked_voice_compatible(self, monkeypatch, tmp_path):
+        from tools import tts_tool
+
+        output_path = tmp_path / "voice.ogg"
+        convert = MagicMock()
+
+        def fake_generate(_text, path, _config):
+            assert path == str(output_path)
+            output_path.write_bytes(b"OggS-opus")
+            return path
+
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setattr(
+            tts_tool, "_load_tts_config", lambda: {"provider": "kittentts"}
+        )
+        monkeypatch.setattr(tts_tool, "_import_kittentts", lambda: object())
+        monkeypatch.setattr(tts_tool, "_generate_kittentts", fake_generate)
+        monkeypatch.setattr(tts_tool, "_repair_ogg_container", lambda path: path)
+        monkeypatch.setattr(tts_tool, "_convert_to_opus", convert)
+
+        result = json.loads(
+            tts_tool.text_to_speech_tool("Hello", output_path=str(output_path))
+        )
+
+        assert result["success"] is True
+        assert result["voice_compatible"] is True
+        assert result["media_tag"] == (
+            f"[[audio_as_voice]]\nMEDIA:{output_path}"
+        )
+        convert.assert_not_called()

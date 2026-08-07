@@ -16,6 +16,7 @@ import importlib
 import json
 import os
 import posixpath
+import re
 import shutil
 import subprocess
 import tempfile
@@ -386,6 +387,118 @@ def _source_text(source) -> str:
     return ""
 
 
+def _human_size(n_bytes: int) -> str:
+    return f"{round(n_bytes / 1024)} KB" if n_bytes >= 1024 else f"{n_bytes} B"
+
+
+def _base64_bytes(payload: str) -> int:
+    """Approximate decoded size of a base64 payload (whitespace ignored)."""
+    clean = re.sub(r"[^0-9+/=A-Za-z]", "", payload)
+    padding = min(2, len(clean) - len(clean.rstrip("=")))
+    return max(0, (len(clean) * 3) // 4 - padding)
+
+
+def _clean_stream_text(text: str) -> str:
+    """Strip ANSI escapes and collapse ``\\r`` progress-bar rewrites.
+
+    tqdm and friends redraw the same line via carriage returns; Jupyter
+    renders only the final frame, so keeping the text after the last ``\\r``
+    of each line reproduces what the notebook displays without the invisible
+    intermediate frames.
+    """
+    from tools.ansi_strip import strip_ansi
+
+    cleaned = strip_ansi(text).replace("\r\n", "\n")
+    lines = []
+    for line in cleaned.split("\n"):
+        frames = [frame for frame in line.split("\r") if frame]
+        lines.append(frames[-1] if frames else "")
+    return "\n".join(lines)
+
+
+# Notebook outputs longer than this are tail-truncated per output block so a
+# single runaway training log cannot flood the extracted text.
+_MAX_OUTPUT_CHARS = 20_000
+
+
+def _notebook_output_text(output: Any) -> str:
+    """Render one notebook output as compact text.
+
+    Keeps stream text, error tracebacks, and textual results; replaces
+    token-heavy payloads (base64 images, HTML, widget state) with short
+    sized placeholders. Handles both nbformat v4 output shapes and the
+    legacy v3 ones (``pyout``/``pyerr``; data flat on the output dict).
+    """
+    if not isinstance(output, dict):
+        return ""
+    otype = output.get("output_type")
+
+    if otype == "stream":
+        body = _clean_stream_text(_source_text(output.get("text", "")))
+        return body if body.strip() else ""
+
+    if otype in {"error", "pyerr"}:
+        traceback = output.get("traceback")
+        tb_text = ""
+        if isinstance(traceback, list):
+            tb_text = _clean_stream_text(
+                "\n".join(line for line in traceback if isinstance(line, str))
+            )
+        header = f"Error: {output.get('ename', '')}: {output.get('evalue', '')}".rstrip(": ")
+        return f"{header}\n{tb_text}".rstrip()
+
+    if otype in {"execute_result", "display_data", "pyout"}:
+        data = output.get("data")
+        if not isinstance(data, dict):
+            # nbformat v3 stores mime data flat on the output dict.
+            data = {}
+            if isinstance(output.get("text"), (str, list)):
+                data["text/plain"] = output["text"]
+            for v3_key, mime in (("png", "image/png"), ("jpeg", "image/jpeg"),
+                                 ("svg", "image/svg+xml"), ("html", "text/html")):
+                if v3_key in output:
+                    data[mime] = output[v3_key]
+
+        if "application/vnd.jupyter.widget-view+json" in data:
+            return "[interactive widget — omitted]"
+
+        # Prefer readable text: models consume text/plain (e.g. the pandas
+        # twin of an HTML table) far better than markup.
+        for mime in ("text/plain", "text/markdown"):
+            if mime in data:
+                body = _clean_stream_text(_source_text(data[mime]))
+                if body.strip():
+                    return body
+
+        for mime, value in data.items():
+            if isinstance(mime, str) and mime.startswith("image/"):
+                size = _base64_bytes(_source_text(value))
+                return f"[{mime} output — {_human_size(size)}, omitted]"
+
+        if "text/html" in data:
+            html = _source_text(data["text/html"])
+            return f"[text/html output — {len(html):,} chars, omitted]"
+
+        mimes = ", ".join(str(m) for m in data) or "unknown"
+        return f"[{mimes} output — omitted]"
+
+    return ""
+
+
+def _notebook_outputs(cell: dict) -> str:
+    outputs = cell.get("outputs")
+    if not isinstance(outputs, list):
+        return ""
+    blocks = [text for text in (_notebook_output_text(o) for o in outputs) if text]
+    if not blocks:
+        return ""
+    joined = "\n".join(blocks)
+    if len(joined) > _MAX_OUTPUT_CHARS:
+        omitted = len(joined) - _MAX_OUTPUT_CHARS
+        joined = joined[:_MAX_OUTPUT_CHARS] + f"\n… [{omitted:,} output chars truncated]"
+    return joined
+
+
 def _extract_notebook(path: str) -> str:
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -418,6 +531,10 @@ def _extract_notebook(path: str) -> str:
         counts[typ] += 1
         suffix = f" {counts[typ]}" if typ != "raw" else ""
         out.extend((f"# ── {labels[typ]} cell{suffix} ──", _source_text(cell.get("source", "")).rstrip("\n"), ""))
+        if typ == "code":
+            rendered = _notebook_outputs(cell)
+            if rendered:
+                out.extend((f"# ── Output (cell {counts[typ]}) ──", rendered.rstrip("\n"), ""))
     if not out:
         raise ExtractionError("Notebook contains no readable cells")
     return "\n".join(out).rstrip("\n") + "\n"

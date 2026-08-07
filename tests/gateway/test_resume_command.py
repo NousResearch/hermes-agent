@@ -694,6 +694,88 @@ class TestSameOriginChatGroupScoping:
             self._src("alice"), "bobs_live_sid", allow_override=False
         ) is False
 
+    @staticmethod
+    def _configure_qq_group_override(runner, *, global_value, platform_value):
+        runner.config.group_sessions_per_user = global_value
+        runner.config.thread_sessions_per_user = False
+        runner.config.platforms = {
+            Platform.QQBOT: SimpleNamespace(
+                extra={"group_sessions_per_user": platform_value}
+            )
+        }
+
+    def test_qq_override_isolates_live_group_when_global_is_shared(self):
+        runner = _make_runner()
+        self._configure_qq_group_override(
+            runner, global_value=False, platform_value=True
+        )
+        alice = self._src("alice", platform=Platform.QQBOT, chat_id="qq-group")
+        bob = self._src("bob", platform=Platform.QQBOT, chat_id="qq-group")
+
+        assert runner._same_origin_chat(alice, bob) is False
+
+    def test_qq_override_shares_live_group_when_global_is_per_user(self):
+        runner = _make_runner()
+        self._configure_qq_group_override(
+            runner, global_value=True, platform_value=False
+        )
+        alice = self._src("alice", platform=Platform.QQBOT, chat_id="qq-group")
+        bob = self._src("bob", platform=Platform.QQBOT, chat_id="qq-group")
+
+        assert runner._same_origin_chat(alice, bob) is True
+
+    @pytest.mark.asyncio
+    async def test_qq_override_isolates_persisted_group_when_global_is_shared(
+        self, tmp_path
+    ):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "bobs_group",
+            "qqbot",
+            user_id="bob",
+            chat_id="qq-group",
+            chat_type="group",
+        )
+        runner = _make_runner(session_db=db)
+        runner._gateway_session_origin_for_id = lambda _sid: None
+        self._configure_qq_group_override(
+            runner, global_value=False, platform_value=True
+        )
+        alice = self._src("alice", platform=Platform.QQBOT, chat_id="qq-group")
+
+        assert await runner._resume_target_allowed(
+            alice, "bobs_group", allow_override=False
+        ) is False
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_qq_override_shares_persisted_group_when_global_is_per_user(
+        self, tmp_path
+    ):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "bobs_group",
+            "qqbot",
+            user_id="bob",
+            chat_id="qq-group",
+            chat_type="group",
+        )
+        runner = _make_runner(session_db=db)
+        runner._gateway_session_origin_for_id = lambda _sid: None
+        self._configure_qq_group_override(
+            runner, global_value=True, platform_value=False
+        )
+        alice = self._src("alice", platform=Platform.QQBOT, chat_id="qq-group")
+
+        assert await runner._resume_target_allowed(
+            alice, "bobs_group", allow_override=False
+        ) is True
+        db.close()
+
     # --- thread scoping: thread_id is part of the session key, so a session in
     # one thread must never match a caller in another thread of the same chat,
     # even when threads are shared among participants by default. ---

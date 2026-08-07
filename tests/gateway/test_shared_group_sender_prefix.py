@@ -16,6 +16,39 @@ def _make_runner(config: GatewayConfig) -> GatewayRunner:
 
 
 @pytest.mark.asyncio
+async def test_preprocess_uses_qq_platform_group_override():
+    runner = _make_runner(
+        GatewayConfig(
+            platforms={
+                Platform.QQBOT: PlatformConfig(
+                    enabled=True,
+                    extra={"group_sessions_per_user": False},
+                ),
+            },
+            group_sessions_per_user=True,
+        )
+    )
+    source = SessionSource(
+        platform=Platform.QQBOT,
+        chat_id="qq-group",
+        chat_type="group",
+        user_id="member-1",
+        user_name="QQ sender id=abc12345 | 群昵称=Alice Group",
+    )
+    event = MessageEvent(text="hello", source=source)
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == (
+        "[QQ sender id=abc12345 | 群昵称=Alice Group] hello"
+    )
+
+
+@pytest.mark.asyncio
 async def test_preprocess_includes_slack_author_mention_for_shared_thread():
     """Shared Slack threads expose the current author's verifiable user ID
     next to the display name so 'mention me again' requests can bind the

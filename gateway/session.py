@@ -1064,6 +1064,27 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
+def resolve_session_isolation(
+    config: GatewayConfig,
+    source: SessionSource,
+) -> tuple[bool, bool]:
+    """Resolve group/thread isolation with optional per-platform overrides."""
+    group_per_user = getattr(config, "group_sessions_per_user", True)
+    thread_per_user = getattr(config, "thread_sessions_per_user", False)
+
+    platform_cfg = getattr(config, "platforms", {}).get(source.platform)
+    extra = getattr(platform_cfg, "extra", None)
+    if isinstance(extra, dict):
+        group_override = extra.get("group_sessions_per_user")
+        thread_override = extra.get("thread_sessions_per_user")
+        if isinstance(group_override, bool):
+            group_per_user = group_override
+        if isinstance(thread_override, bool):
+            thread_per_user = thread_override
+
+    return group_per_user, thread_per_user
+
+
 def _session_key_namespace(profile: Optional[str]) -> str:
     """Return the ``agent:<ns>`` namespace prefix for a session key.
 
@@ -1818,10 +1839,14 @@ class SessionStore:
 
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
+        group_per_user, thread_per_user = resolve_session_isolation(
+            self.config,
+            source,
+        )
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
             profile=self._resolve_profile_for_key(source),
         )
 
@@ -1836,14 +1861,14 @@ class SessionStore:
         if source.platform != Platform.SLACK or not source.scope_id:
             return None
         legacy_source = replace(source, scope_id=None, guild_id=None)
+        group_per_user, thread_per_user = resolve_session_isolation(
+            self.config,
+            source,
+        )
         return build_session_key(
             legacy_source,
-            group_sessions_per_user=getattr(
-                self.config, "group_sessions_per_user", True
-            ),
-            thread_sessions_per_user=getattr(
-                self.config, "thread_sessions_per_user", False
-            ),
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
             profile=self._resolve_profile_for_key(source),
         )
 
@@ -3713,14 +3738,15 @@ def build_session_context(
         if home:
             home_channels[platform] = home
     
+    group_per_user, thread_per_user = resolve_session_isolation(config, source)
     context = SessionContext(
         source=source,
         connected_platforms=connected,
         home_channels=home_channels,
         shared_multi_user_session=is_shared_multi_user_session(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
         ),
     )
     

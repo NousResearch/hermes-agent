@@ -65,6 +65,7 @@ def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monk
     codex_home.mkdir()
     (hermes_home / "auth.json").write_text(json.dumps({
         "version": 1,
+        "active_provider": "openrouter",
         "providers": {
             "openai-codex": {
                 "tokens": {"refresh_token": "stale-refresh"},
@@ -90,5 +91,6 @@ def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monk
     tokens = stored["providers"]["openai-codex"]["tokens"]
     assert tokens["access_token"] == "fresh-access"
     assert tokens["refresh_token"] == "fresh-refresh"
+    assert stored["active_provider"] == "openrouter"
 
 

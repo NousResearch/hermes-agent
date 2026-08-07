@@ -3,7 +3,8 @@
 When ``HERMES_HOME`` points to a named profile, ``read_credential_pool()``
 and ``get_provider_auth_state()`` fall back to the global-root
 ``auth.json`` per-provider when the profile has no entries for that
-provider.  Writes still target the profile only.
+provider. Ordinary writes still target the profile; refreshes persist rotating
+credentials back to the store that supplied them.
 
 See the #18594 follow-up report: profile workers couldn't see providers
 authenticated only at the global root.
@@ -50,6 +51,41 @@ def profile_env(tmp_path, monkeypatch):
 
 def _write(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2))
+
+
+def _codex_auth_store(
+    access_token: str,
+    refresh_token: str,
+    *,
+    marker: str,
+    active_provider: str = "openai-codex",
+) -> dict:
+    return {
+        "version": 1,
+        "active_provider": active_provider,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                },
+                "last_refresh": "2026-08-01T00:00:00Z",
+                "auth_mode": "chatgpt",
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": f"{marker}-codex",
+                    "source": "device_code",
+                    "auth_type": "oauth",
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                },
+            ],
+        },
+        "marker": marker,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +170,228 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
     _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
 
     assert get_provider_auth_state("nous") is None
+
+
+def test_codex_refresh_persists_to_root_fallback_without_profile_shadow(
+    profile_env, monkeypatch
+):
+    import hermes_cli.auth as auth
+
+    root_path = profile_env["global"] / "auth.json"
+    profile_path = profile_env["profile"] / "auth.json"
+    _write(
+        root_path,
+        _codex_auth_store(
+            "root-old-at",
+            "root-old-rt",
+            marker="root",
+            active_provider="openrouter",
+        ),
+    )
+    _write(
+        profile_path,
+        {
+            **_make_auth_store(
+                pool={"anthropic": [{"id": "profile-unrelated"}]},
+                providers={"anthropic": {"api_key": "profile-unrelated"}},
+            ),
+            "active_provider": "anthropic",
+        },
+    )
+    profile_before = profile_path.read_bytes()
+
+    def fake_refresh(access_token, refresh_token, **_kwargs):
+        assert access_token == "root-old-at"
+        assert refresh_token == "root-old-rt"
+        return {
+            "access_token": "root-new-at",
+            "refresh_token": "root-new-rt",
+        }
+
+    monkeypatch.setattr(auth, "refresh_codex_oauth_pure", fake_refresh)
+
+    resolved = auth.resolve_codex_runtime_credentials(force_refresh=True)
+
+    assert resolved["api_key"] == "root-new-at"
+    root = json.loads(root_path.read_text())
+    assert root["providers"]["openai-codex"]["tokens"] == {
+        "access_token": "root-new-at",
+        "refresh_token": "root-new-rt",
+    }
+    assert root["credential_pool"]["openai-codex"][0]["access_token"] == "root-new-at"
+    assert root["credential_pool"]["openai-codex"][0]["refresh_token"] == "root-new-rt"
+    assert root["active_provider"] == "openrouter"
+    assert root["marker"] == "root"
+    assert profile_path.read_bytes() == profile_before
+
+
+def test_codex_refresh_keeps_profile_owned_auth_local(profile_env, monkeypatch):
+    import hermes_cli.auth as auth
+
+    root_path = profile_env["global"] / "auth.json"
+    profile_path = profile_env["profile"] / "auth.json"
+    _write(root_path, _codex_auth_store("root-at", "root-rt", marker="root"))
+    _write(
+        profile_path,
+        _codex_auth_store(
+            "profile-old-at",
+            "profile-old-rt",
+            marker="profile",
+            active_provider="openrouter",
+        ),
+    )
+    root_before = root_path.read_bytes()
+
+    def fake_refresh(access_token, refresh_token, **_kwargs):
+        assert access_token == "profile-old-at"
+        assert refresh_token == "profile-old-rt"
+        return {
+            "access_token": "profile-new-at",
+            "refresh_token": "profile-new-rt",
+        }
+
+    monkeypatch.setattr(auth, "refresh_codex_oauth_pure", fake_refresh)
+
+    resolved = auth.resolve_codex_runtime_credentials(force_refresh=True)
+
+    assert resolved["api_key"] == "profile-new-at"
+    profile = json.loads(profile_path.read_text())
+    assert profile["providers"]["openai-codex"]["tokens"] == {
+        "access_token": "profile-new-at",
+        "refresh_token": "profile-new-rt",
+    }
+    assert profile["credential_pool"]["openai-codex"][0]["access_token"] == "profile-new-at"
+    assert profile["credential_pool"]["openai-codex"][0]["refresh_token"] == "profile-new-rt"
+    assert profile["active_provider"] == "openrouter"
+    assert profile["marker"] == "profile"
+    assert root_path.read_bytes() == root_before
+
+
+def test_codex_cli_recovery_persists_to_root_fallback_without_profile_shadow(
+    profile_env, monkeypatch
+):
+    import hermes_cli.auth as auth
+
+    root_path = profile_env["global"] / "auth.json"
+    profile_path = profile_env["profile"] / "auth.json"
+    _write(
+        root_path,
+        _codex_auth_store(
+            "root-old-at",
+            "root-rejected-rt",
+            marker="root",
+            active_provider="openrouter",
+        ),
+    )
+    _write(
+        profile_path,
+        {
+            **_make_auth_store(pool={}, providers={}),
+            "active_provider": "anthropic",
+            "profile_marker": "preserve",
+        },
+    )
+    profile_before = profile_path.read_bytes()
+
+    def reject_refresh(*_args, **_kwargs):
+        raise auth.AuthError(
+            "refresh token rejected",
+            provider="openai-codex",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth, "refresh_codex_oauth_pure", reject_refresh)
+    monkeypatch.setattr(
+        auth,
+        "_import_codex_cli_tokens",
+        lambda: {
+            "access_token": "recovered-at",
+            "refresh_token": "recovered-rt",
+        },
+    )
+
+    resolved = auth.resolve_codex_runtime_credentials(force_refresh=True)
+
+    assert resolved["api_key"] == "recovered-at"
+    root = json.loads(root_path.read_text())
+    assert root["providers"]["openai-codex"]["tokens"] == {
+        "access_token": "recovered-at",
+        "refresh_token": "recovered-rt",
+    }
+    assert root["credential_pool"]["openai-codex"][0]["access_token"] == "recovered-at"
+    assert root["credential_pool"]["openai-codex"][0]["refresh_token"] == "recovered-rt"
+    assert root["active_provider"] == "openrouter"
+    assert root["marker"] == "root"
+    assert profile_path.read_bytes() == profile_before
+
+
+def test_codex_malformed_root_recovery_rechecks_concurrent_in_lock_repair(
+    profile_env, monkeypatch
+):
+    """A fresh root repair must win over a stale pre-transaction read error."""
+    import hermes_cli.auth as auth
+
+    root_path = profile_env["global"] / "auth.json"
+    profile_path = profile_env["profile"] / "auth.json"
+    malformed = _codex_auth_store(
+        "root-malformed-access",
+        "root-malformed-refresh",
+        marker="root",
+        active_provider="openrouter",
+    )
+    malformed["providers"]["openai-codex"]["tokens"].pop("access_token")
+    _write(root_path, malformed)
+    _write(
+        profile_path,
+        {
+            **_make_auth_store(
+                pool={"anthropic": [{"id": "profile-unrelated"}]},
+                providers={"anthropic": {"api_key": "profile-unrelated"}},
+            ),
+            "active_provider": "anthropic",
+            "profile_marker": "preserve",
+        },
+    )
+    profile_before = profile_path.read_bytes()
+
+    repaired = _codex_auth_store(
+        "root-repaired-access",
+        "root-repaired-refresh",
+        marker="root",
+        active_provider="openrouter",
+    )
+    repaired["providers"]["anthropic"] = {
+        "api_key": "root-unrelated-provider"
+    }
+    repaired["root_marker"] = {"preserve": True}
+    real_transaction = auth._provider_state_transaction
+    repair_bytes = []
+
+    @contextmanager
+    def repair_before_source_transaction(*args, **kwargs):
+        # This wrapper is reached only after the first malformed read raised.
+        # Install the competing writer's valid chain before this reader gets
+        # the real active-profile -> source-store transaction.
+        _write(root_path, repaired)
+        repair_bytes.append(root_path.read_bytes())
+        with real_transaction(*args, **kwargs) as transaction:
+            yield transaction
+
+    def fail_if_cli_imported():
+        pytest.fail("CLI import must not overwrite a valid concurrent root repair")
+
+    monkeypatch.setattr(
+        auth, "_provider_state_transaction", repair_before_source_transaction
+    )
+    monkeypatch.setattr(auth, "_import_codex_cli_tokens", fail_if_cli_imported)
+
+    resolved = auth.resolve_codex_runtime_credentials()
+
+    assert resolved["api_key"] == "root-repaired-access"
+    assert repair_bytes
+    assert root_path.read_bytes() == repair_bytes[-1]
+    assert profile_path.read_bytes() == profile_before
 
 
 # ---------------------------------------------------------------------------

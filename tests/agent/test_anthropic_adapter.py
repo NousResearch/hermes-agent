@@ -388,15 +388,17 @@ class TestRefreshOauthToken:
 
     def test_successful_refresh(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
-        )
 
         creds = {
             "accessToken": "old-token",
             "refreshToken": "refresh-123",
             "expiresAt": int(time.time() * 1000) - 3600_000,
         }
+        _write_claude_code_credentials(
+            creds["accessToken"],
+            creds["refreshToken"],
+            creds["expiresAt"],
+        )
 
         mock_response = json.dumps({
             "access_token": "new-token-abc",
@@ -424,14 +426,16 @@ class TestRefreshOauthToken:
 
     def test_failed_refresh_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
-        )
         creds = {
             "accessToken": "old",
             "refreshToken": "refresh-123",
             "expiresAt": 0,
         }
+        _write_claude_code_credentials(
+            creds["accessToken"],
+            creds["refreshToken"],
+            creds["expiresAt"],
+        )
 
         with patch("urllib.request.urlopen", side_effect=Exception("network error")):
             assert _refresh_oauth_token(creds) is None

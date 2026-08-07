@@ -361,6 +361,7 @@ def test_nous_inference_auth_logs_do_not_include_secret_values(
         expires_in=3600,
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
 
     def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
         del client, portal_base_url, client_id, refresh_token
@@ -1030,6 +1031,7 @@ class TestStalePortalBaseUrlMigration:
 
         hermes_home = tmp_path / "hermes"
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
         _setup_nous_auth(
             hermes_home,
             access_token=_invoke_jwt(seconds=-60),

@@ -28,13 +28,11 @@ from hermes_cli.auth import (
     _auth_store_lock,
     _codex_access_token_is_expiring,
     _decode_jwt_claims,
-    _global_auth_file_path,
     _load_auth_store,
     _load_provider_state,
     _load_provider_state_with_source,
     _resolve_kimi_base_url,
     _resolve_zai_base_url,
-    _same_path,
     _save_auth_store,
     _save_provider_state,
     _store_provider_state,
@@ -207,6 +205,10 @@ class PooledCredential:
     agent_key_expires_at: Optional[str] = None
     request_count: int = 0
     extra: Dict[str, Any] = None  # type: ignore[assignment]
+    # Runtime-only owner for a singleton borrowed from another auth store.
+    # Never hydrate or serialize this path: it is process-local routing state,
+    # not part of the public credential-pool schema.
+    source_store_path: Optional[Path] = None
 
     def __post_init__(self):
         if self.extra is None:
@@ -224,7 +226,11 @@ class PooledCredential:
 
     @classmethod
     def from_dict(cls, provider: str, payload: Dict[str, Any]) -> "PooledCredential":
-        field_names = {f.name for f in fields(cls) if f.name != "provider"}
+        field_names = {
+            f.name
+            for f in fields(cls)
+            if f.name not in {"provider", "source_store_path"}
+        }
         data = {k: payload.get(k) for k in field_names if k in payload}
         # Rehydrated last_status_at may be an ISO string from to_dict() — normalize to float epoch
         if "last_status_at" in data and isinstance(data["last_status_at"], str):
@@ -250,7 +256,7 @@ class PooledCredential:
         }
         result: Dict[str, Any] = {}
         for field_def in fields(self):
-            if field_def.name in {"provider", "extra"}:
+            if field_def.name in {"provider", "extra", "source_store_path"}:
                 continue
             value = getattr(self, field_def.name)
             if value is not None or field_def.name in _ALWAYS_EMIT:
@@ -289,6 +295,16 @@ class PooledCredential:
         return self.base_url
 
 
+@dataclass(frozen=True)
+class _TrustedCodexSourceOwner:
+    """Pool-private provenance for a root-fallback Codex row."""
+
+    source_path: Path
+    owner_kind: str
+    entry_id: str
+    source: str
+
+
 def label_from_token(token: str, fallback: str) -> str:
     claims = _decode_jwt_claims(token)
     for key in ("email", "preferred_username", "upn"):
@@ -305,6 +321,11 @@ def _next_priority(entries: List[PooledCredential]) -> int:
 def _is_manual_source(source: str) -> bool:
     normalized = (source or "").strip().lower()
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
+
+
+def _is_source_owned_elsewhere(entry: PooledCredential) -> bool:
+    """Return whether an entry is a read-only alias owned by another store."""
+    return entry.source_store_path is not None
 
 
 def _exhausted_ttl(
@@ -577,10 +598,10 @@ DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL = 1
 
 def _write_through_provider_state_to_global_root(
     provider_id: str, state: Dict[str, Any]
-) -> None:
+) -> bool:
     """Persist a rotated OAuth ``state`` into the global-root auth.json.
 
-    Best-effort write-through for the multi-profile rotation hazard
+    Observable write-through for the multi-profile rotation hazard
     (#48415 / #43589): nous, openai-codex, and xai-oauth rotate the
     refresh_token on refresh, so when a profile pool refresh rotates a grant
     it resolved from the root fallback, the rotated chain must land back in
@@ -598,10 +619,10 @@ def _write_through_provider_state_to_global_root(
     try:
         global_path = auth_mod._global_auth_file_path()
     except Exception:
-        return
+        return False
     if global_path is None:
         # Classic mode (profile == root); the profile save already hit root.
-        return
+        return True
     # Seat belt: under pytest, refuse to write the real user's
     # ~/.hermes/auth.json even when HERMES_HOME points at a profile path
     # (mirrors the read-side guard in _load_global_auth_store). Uses the
@@ -612,9 +633,9 @@ def _write_through_provider_state_to_global_root(
             real_root = Path(real_home_env) / ".hermes" / "auth.json"
             try:
                 if global_path.resolve(strict=False) == real_root.resolve(strict=False):
-                    return
+                    return False
             except Exception:
-                return
+                return False
     try:
         auth_mod._persist_provider_state_to_store(
             provider_id,
@@ -622,12 +643,14 @@ def _write_through_provider_state_to_global_root(
             global_path,
             set_active=False,
         )
-    except Exception as exc:  # pragma: no cover - best effort
+        return True
+    except Exception as exc:  # pragma: no cover - defensive I/O boundary
         logger.debug(
             "%s pool refresh: write-through to global root failed: %s",
             provider_id,
             exc,
         )
+        return False
 
 
 class CredentialPool:
@@ -636,12 +659,28 @@ class CredentialPool:
         self._entries = sorted(entries, key=lambda entry: entry.priority)
         self._current_id: Optional[str] = None
         self._strategy = get_pool_strategy(provider)
-        # RLock: the mutation primitives below (_replace_entry/_persist)
-        # self-acquire this lock so the DEFERRED single-use-token refresh
-        # path (which runs network I/O outside the lock by design) still
-        # serializes its pool mutations. In-lock callers re-acquire
-        # reentrantly at negligible cost.
+        # RLock: mutation primitives self-acquire this lock so refresh and
+        # status-sync work performed outside the lock still serializes its
+        # in-memory updates. Persistence is always drained after releasing it.
         self._lock = threading.RLock()
+        # External provider state is serialized separately from in-memory pool
+        # mutation. Lock order is always external_state -> pool (brief CAS only):
+        # callers must acquire this lock without holding self._lock, may perform
+        # provider/file I/O, and only then take self._lock to validate or commit.
+        # The reverse order is forbidden so auth-store/file waits cannot form an
+        # ABBA pair with pool persistence.
+        self._external_state_lock = threading.RLock()
+        self._persist_lock = threading.Lock()
+        # Persist only entries changed by this pool instance. Borrowed rows are
+        # snapshots of another auth store; rewriting every snapshot on an
+        # unrelated local change can erase a newer owner cooldown/quarantine.
+        self._dirty_entry_ids: Set[str] = set()
+        self._dirty_entry_generations: Dict[str, int] = {}
+        self._entry_mutation_generation = 0
+        self._pending_removed_entries: List[PooledCredential] = []
+        self._pending_removed_entry_generations: Dict[int, int] = {}
+        self._trusted_codex_source_owners: Dict[int, _TrustedCodexSourceOwner] = {}
+        self._source_status_reset_ids: Set[str] = set()
         self._active_leases: Dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
         # Monotonic timestamp of the last "no available entries" log, used to
@@ -659,6 +698,108 @@ class CredentialPool:
         # entry is identified or an escape path returns None.
         self._unmatched_rotation_streak: int = 0
 
+    @staticmethod
+    def _same_store_path(left: Path, right: Path) -> bool:
+        try:
+            return left.expanduser().resolve() == right.expanduser().resolve()
+        except (OSError, RuntimeError):
+            return left.expanduser() == right.expanduser()
+
+    def _trust_codex_source_owner(
+        self,
+        entry: PooledCredential,
+        *,
+        owner_kind: str,
+    ) -> bool:
+        """Register trusted root-fallback provenance issued during loading."""
+        if self.provider != "openai-codex" or owner_kind not in {"singleton", "pool"}:
+            return False
+        source_path = entry.source_store_path
+        if source_path is None:
+            return False
+        try:
+            global_path = auth_mod._global_auth_file_path()
+            active_path = auth_mod._auth_file_path()
+        except Exception:
+            return False
+        if global_path is None:
+            return False
+        if not self._same_store_path(source_path, global_path):
+            return False
+        if self._same_store_path(source_path, active_path):
+            return False
+        self._trusted_codex_source_owners[id(entry)] = _TrustedCodexSourceOwner(
+            source_path=source_path,
+            owner_kind=owner_kind,
+            entry_id=entry.id,
+            source=entry.source,
+        )
+        return True
+
+    def _trusted_codex_source_owner(
+        self, entry: PooledCredential
+    ) -> Optional[_TrustedCodexSourceOwner]:
+        owner = self._trusted_codex_source_owners.get(id(entry))
+        if owner is None:
+            return None
+        source_path = entry.source_store_path
+        if (
+            source_path is None
+            or owner.entry_id != entry.id
+            or owner.source != entry.source
+            or not self._same_store_path(owner.source_path, source_path)
+        ):
+            return None
+        try:
+            global_path = auth_mod._global_auth_file_path()
+            active_path = auth_mod._auth_file_path()
+        except Exception:
+            return None
+        if global_path is None:
+            return None
+        if not self._same_store_path(owner.source_path, global_path):
+            return None
+        if self._same_store_path(owner.source_path, active_path):
+            return None
+        return owner
+
+    def _is_trusted_codex_source_owned(self, entry: PooledCredential) -> bool:
+        return self._trusted_codex_source_owner(entry) is not None
+
+    @staticmethod
+    def _entry_tokens_match(
+        current: PooledCredential, expected: PooledCredential
+    ) -> bool:
+        return (
+            current.id == expected.id
+            and current.source == expected.source
+            and current.access_token == expected.access_token
+            and current.refresh_token == expected.refresh_token
+        )
+
+    def _forget_trusted_codex_source_owner(self, entry: PooledCredential) -> None:
+        self._trusted_codex_source_owners.pop(id(entry), None)
+
+    def _validate_source_owned_codex_entries(
+        self,
+        entry_ids: Optional[Set[str]] = None,
+    ) -> Set[str]:
+        """Validate borrowed snapshots without holding the pool lock."""
+        if self.provider != "openai-codex":
+            return set()
+        with self._lock:
+            snapshots = [
+                entry
+                for entry in self._entries
+                if (entry_ids is None or entry.id in entry_ids)
+                and self._is_trusted_codex_source_owned(entry)
+            ]
+        failed: Set[str] = set()
+        for entry in snapshots:
+            if self._sync_source_owned_codex_entry(entry) is None:
+                failed.add(entry.id)
+        return failed
+
     def has_credentials(self) -> bool:
         with self._lock:
             return bool(self._entries)
@@ -670,9 +811,15 @@ class CredentialPool:
         # run under ``self._lock`` like every other caller (``select`` etc.),
         # otherwise a status probe here can race a concurrent ``select`` /
         # rotation and tear ``self._entries`` or double-write auth.json.
+        failed_source_ids = self._validate_source_owned_codex_entries()
+        self._sync_external_status_entries()
         with self._lock:
-            available, _pending = self._available_entries()
-            return bool(available)
+            available, _pending = self._available_entries(
+                excluded_source_ids=failed_source_ids,
+            )
+            result = bool(available)
+        self._persist_pending_changes()
+        return result
 
     def next_available_at(self) -> Optional[float]:
         """Earliest epoch time (seconds) any entry re-enters rotation.
@@ -689,25 +836,35 @@ class CredentialPool:
         is exactly why this must run under ``self._lock`` like every other
         ``_available_entries`` caller (see the comment on ``has_available``).
         """
+        failed_source_ids = self._validate_source_owned_codex_entries()
+        self._sync_external_status_entries()
         with self._lock:
-            available, _pending = self._available_entries()
+            available, _pending = self._available_entries(
+                excluded_source_ids=failed_source_ids,
+            )
             if available:
-                return None
-            # Mirror _available_entries: if the pool has no other credential
-            # to rotate to, the sole entry's transient throttle cools down in
-            # seconds — next_available_at must report that shorter window too,
-            # or the fallback restore gate waits an hour for a 60s cooldown.
-            sole_credential = sum(
-                1 for e in self._entries if e.last_status != STATUS_DEAD
-            ) <= 1
-            candidates: List[float] = []
-            for entry in self._entries:
-                if entry.last_status != STATUS_EXHAUSTED:
-                    continue
-                until = _exhausted_until(entry, sole_credential=sole_credential)
-                if until is not None:
-                    candidates.append(until)
-            return min(candidates) if candidates else None
+                result = None
+            else:
+                # Mirror _available_entries: if the pool has no other credential
+                # to rotate to, the sole entry's transient throttle cools down in
+                # seconds — next_available_at must report that shorter window too,
+                # or the fallback restore gate waits an hour for a 60s cooldown.
+                sole_credential = sum(
+                    1 for e in self._entries if e.last_status != STATUS_DEAD
+                ) <= 1
+                candidates: List[float] = []
+                for entry in self._entries:
+                    if entry.last_status != STATUS_EXHAUSTED:
+                        continue
+                    until = _exhausted_until(
+                        entry,
+                        sole_credential=sole_credential,
+                    )
+                    if until is not None:
+                        candidates.append(until)
+                result = min(candidates) if candidates else None
+        self._persist_pending_changes()
+        return result
 
     def entries(self) -> List[PooledCredential]:
         with self._lock:
@@ -719,6 +876,17 @@ class CredentialPool:
         return next((entry for entry in self._entries if entry.id == self._current_id), None)
 
     def current(self) -> Optional[PooledCredential]:
+        with self._lock:
+            current = self._current_unlocked()
+        if current is not None and self._is_trusted_codex_source_owned(current):
+            synced = self._sync_source_owned_codex_entry(current)
+            if synced is None:
+                return None
+            with self._lock:
+                latest = self._current_unlocked()
+                if latest is None or not self._entry_tokens_match(latest, synced):
+                    return None
+                return latest
         with self._lock:
             return self._current_unlocked()
 
@@ -744,8 +912,65 @@ class CredentialPool:
             ]
             return matches[0].id if len(matches) == 1 else None
 
-    def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
-        """Swap an entry in-place by id, preserving sort order.
+    def _record_entry_mutation_unlocked(
+        self,
+        entry_id: str,
+        *,
+        dirty: bool,
+    ) -> int:
+        """Version one entry mutation while ``self._lock`` is held."""
+        self._entry_mutation_generation += 1
+        generation = self._entry_mutation_generation
+        self._dirty_entry_generations[entry_id] = generation
+        self._source_status_reset_ids.discard(entry_id)
+        if dirty:
+            self._dirty_entry_ids.add(entry_id)
+        else:
+            self._dirty_entry_ids.discard(entry_id)
+        return generation
+
+    def _queue_removed_entry_unlocked(self, entry: PooledCredential) -> None:
+        """Record a versioned removal while ``self._lock`` is held."""
+        generation = self._record_entry_mutation_unlocked(entry.id, dirty=False)
+        self._pending_removed_entries.append(entry)
+        self._pending_removed_entry_generations[id(entry)] = generation
+
+    def _dirty_generation_for_snapshot_unlocked(
+        self,
+        entry: PooledCredential,
+    ) -> Optional[int]:
+        current = next(
+            (candidate for candidate in self._entries if candidate.id == entry.id),
+            None,
+        )
+        if current != entry:
+            return None
+        return self._dirty_entry_generations.get(entry.id)
+
+    def _clear_dirty_generation_unlocked(
+        self,
+        entry_id: str,
+        generation: Optional[int],
+    ) -> bool:
+        if (
+            generation is None
+            or self._dirty_entry_generations.get(entry_id) != generation
+        ):
+            return False
+        self._dirty_entry_ids.discard(entry_id)
+        self._source_status_reset_ids.discard(entry_id)
+        self._dirty_entry_generations.pop(entry_id, None)
+        return True
+
+    def _replace_entry(
+        self,
+        old: PooledCredential,
+        new: PooledCredential,
+        *,
+        mark_dirty: bool = True,
+        preserve_routing: bool = False,
+    ) -> Optional[PooledCredential]:
+        """Swap an entry only while its id and credential chain still match.
 
         Self-locking (RLock) so the deferred refresh path — which
         deliberately runs outside the pool lock — cannot tear
@@ -754,18 +979,168 @@ class CredentialPool:
         with self._lock:
             for idx, entry in enumerate(self._entries):
                 if entry.id == old.id:
-                    self._entries[idx] = new
-                    return
+                    if not self._entry_tokens_match(entry, old):
+                        return entry
+                    replacement = (
+                        replace(
+                            new,
+                            priority=entry.priority,
+                            request_count=entry.request_count,
+                        )
+                        if preserve_routing
+                        else new
+                    )
+                    owner = self._trusted_codex_source_owner(entry)
+                    self._entries[idx] = replacement
+                    if owner is not None:
+                        self._trusted_codex_source_owners.pop(id(entry), None)
+                        if (
+                            replacement.id == owner.entry_id
+                            and replacement.source == owner.source
+                            and replacement.source_store_path is not None
+                            and self._same_store_path(
+                                replacement.source_store_path,
+                                owner.source_path,
+                            )
+                        ):
+                            self._trusted_codex_source_owners[id(replacement)] = owner
+                    if mark_dirty and entry != replacement:
+                        self._record_entry_mutation_unlocked(
+                            replacement.id,
+                            dirty=True,
+                        )
+                    return replacement
+            return None
 
-    def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
-        # Self-locking (RLock): snapshotting self._entries must not race a
-        # concurrent rotation when called from the deferred refresh path.
-        with self._lock:
-            write_credential_pool(
-                self.provider,
-                [entry.to_dict() for entry in self._entries],
-                removed_ids=removed_ids,
+    def _persist(
+        self,
+        *,
+        removed_ids: Optional[List[str]] = None,
+        removed_entries: Optional[List[PooledCredential]] = None,
+    ) -> None:
+        is_owned = getattr(self._lock, "_is_owned", None)
+        if callable(is_owned) and is_owned():
+            raise RuntimeError(
+                "credential pool persistence cannot run while the pool lock is held"
             )
+        # Auth transactions and file writes deliberately happen without the
+        # pool lock. Source refresh takes auth locks first and then replaces an
+        # in-memory row; holding the pool lock here would invert that order.
+        with self._persist_lock:
+            with self._lock:
+                validate_ids = {
+                    entry.id
+                    for entry in self._entries
+                    if self._is_trusted_codex_source_owned(entry)
+                    and entry.id not in self._dirty_entry_ids
+                }
+            if validate_ids:
+                self._validate_source_owned_codex_entries(validate_ids)
+
+            with self._lock:
+                pending_removed = list(self._pending_removed_entries)
+                pending_removed_generations = {
+                    id(entry): self._pending_removed_entry_generations.get(id(entry))
+                    for entry in pending_removed
+                }
+                all_removed = pending_removed + list(removed_entries or [])
+                entries_snapshot = list(self._entries)
+                entries_by_id = {entry.id: entry for entry in entries_snapshot}
+                dirty_entries = [
+                    (
+                        entries_by_id[entry_id],
+                        self._dirty_entry_generations.get(entry_id),
+                    )
+                    for entry_id in self._dirty_entry_ids
+                    if entry_id in entries_by_id
+                ]
+                orphan_dirty_generations = {
+                    entry_id: self._dirty_entry_generations.get(entry_id)
+                    for entry_id in self._dirty_entry_ids
+                    if entry_id not in entries_by_id
+                }
+                source_dirty = [
+                    entry
+                    for entry, _generation in dirty_entries
+                    if self._is_trusted_codex_source_owned(entry)
+                ]
+                local_dirty = any(
+                    not self._is_trusted_codex_source_owned(entry)
+                    for entry, _generation in dirty_entries
+                )
+                source_removed = [
+                    entry
+                    for entry in all_removed
+                    if self._is_trusted_codex_source_owned(entry)
+                ]
+                local_removed_ids = list(removed_ids or [])
+                local_removed_ids.extend(
+                    entry.id
+                    for entry in all_removed
+                    if not self._is_trusted_codex_source_owned(entry)
+                )
+                local_entries = [
+                    entry
+                    for entry in entries_snapshot
+                    if not self._is_trusted_codex_source_owned(entry)
+                ]
+                status_reset_ids = set(self._source_status_reset_ids)
+
+            if local_dirty or local_removed_ids:
+                write_credential_pool(
+                    self.provider,
+                    [entry.to_dict() for entry in local_entries],
+                    removed_ids=local_removed_ids,
+                )
+            for entry in source_dirty:
+                self._persist_source_owned_alias(
+                    entry,
+                    allow_status_reset=entry.id in status_reset_ids,
+                )
+            for entry in source_removed:
+                self._remove_source_owned_alias(entry)
+
+            with self._lock:
+                for entry, generation in dirty_entries:
+                    self._clear_dirty_generation_unlocked(entry.id, generation)
+                current_ids = {entry.id for entry in self._entries}
+                for entry_id, generation in orphan_dirty_generations.items():
+                    if entry_id not in current_ids:
+                        self._clear_dirty_generation_unlocked(entry_id, generation)
+                retained_removals: List[PooledCredential] = []
+                for entry in self._pending_removed_entries:
+                    snapshot_generation = pending_removed_generations.get(id(entry))
+                    current_generation = self._pending_removed_entry_generations.get(
+                        id(entry)
+                    )
+                    if (
+                        snapshot_generation is not None
+                        and current_generation == snapshot_generation
+                    ):
+                        self._pending_removed_entry_generations.pop(id(entry), None)
+                    else:
+                        retained_removals.append(entry)
+                self._pending_removed_entries = retained_removals
+                for entry in all_removed:
+                    self._forget_trusted_codex_source_owner(entry)
+                pending_entry_ids = {
+                    entry.id for entry in self._pending_removed_entries
+                }
+                for entry_id in list(self._dirty_entry_generations):
+                    if (
+                        entry_id not in self._dirty_entry_ids
+                        and entry_id not in pending_entry_ids
+                    ):
+                        self._dirty_entry_generations.pop(entry_id, None)
+
+    def _persist_pending_changes(self) -> None:
+        with self._lock:
+            pending = bool(
+                getattr(self, "_dirty_entry_ids", set())
+                or getattr(self, "_pending_removed_entries", [])
+            )
+        if pending:
+            self._persist()
 
     def _is_terminal_auth_failure(
         self,
@@ -798,7 +1173,16 @@ class CredentialPool:
         *,
         persist: bool = True,
         failure_reason: Optional[str] = None,
+        source_validated: bool = False,
     ) -> PooledCredential:
+        if (
+            not source_validated
+            and self._is_trusted_codex_source_owned(entry)
+        ):
+            synced = self._sync_source_owned_codex_entry(entry)
+            if synced is None:
+                return entry
+            entry = synced
         normalized_error = _normalize_error_context(error_context)
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
         # transition to STATUS_DEAD instead of STATUS_EXHAUSTED.  Without this,
@@ -830,12 +1214,19 @@ class CredentialPool:
             last_error_reset_at=normalized_error.get("reset_at"),
             extra=updated_extra,
         )
-        self._replace_entry(entry, updated)
+        replaced = self._replace_entry(entry, updated)
+        if replaced is None or replaced != updated:
+            return replaced or entry
         if persist:
             self._persist()
-        return updated
+        return replaced
 
-    def _sync_anthropic_entry_from_credentials_file(self, entry: PooledCredential) -> PooledCredential:
+    def _sync_anthropic_entry_from_credentials_file(
+        self,
+        entry: PooledCredential,
+        *,
+        persist: bool = True,
+    ) -> PooledCredential:
         """Sync a claude_code pool entry from ~/.claude/.credentials.json if tokens differ.
 
         OAuth refresh tokens are single-use. When something external (e.g.
@@ -879,103 +1270,640 @@ class CredentialPool:
                     last_error_reason=None,
                     last_error_message=None,
                     last_error_reset_at=None,
+                    extra={
+                        **entry.extra,
+                        "credential_source": creds.get("source"),
+                    },
                 )
-                self._replace_entry(entry, updated)
-                self._persist()
-                return updated
+                current = self._replace_entry(
+                    entry,
+                    updated,
+                    preserve_routing=True,
+                )
+                if persist:
+                    self._persist_pending_changes()
+                return current or entry
         except Exception as exc:
             logger.debug("Failed to sync from credentials file: %s", exc)
         return entry
 
-    def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
-        """Sync a Codex device_code pool entry from auth.json if tokens differ.
-
-        When a Codex OAuth access token expires (or the ChatGPT account hits
-        its 5h/weekly quota), the pool entry gets marked ``STATUS_EXHAUSTED``
-        with a ``last_error_reset_at`` that can be many hours in the future.
-        Meanwhile the user may run ``hermes model`` / ``hermes auth`` which
-        performs a fresh device-code login and writes new tokens to
-        ``auth.json`` under ``_auth_store_lock``.  Without this sync the pool
-        entry stays frozen until ``last_error_reset_at`` elapses — even
-        though fresh credentials are sitting on disk — and every request
-        fails with "no available entries (all exhausted or empty)".
-
-        Mirrors the Nous/Anthropic resync paths above.  Only applies to
-        device_code-sourced entries; env/API-key-sourced entries have no
-        auth.json shadow to sync from.
-        """
-        if self.provider != "openai-codex" or entry.source not in ("device_code", "manual:device_code"):
+    def _codex_entry_from_provider_state(
+        self,
+        entry: PooledCredential,
+        state: Optional[Dict[str, Any]],
+    ) -> PooledCredential:
+        """Return ``entry`` updated from its singleton state, without I/O."""
+        if (
+            self.provider != "openai-codex"
+            or entry.source != "device_code"
+            or not isinstance(state, dict)
+        ):
             return entry
-        try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                state = _load_provider_state(auth_store, "openai-codex")
-            if not isinstance(state, dict):
-                return entry
-            tokens = state.get("tokens")
-            if not isinstance(tokens, dict):
-                return entry
-            store_access = tokens.get("access_token", "")
-            store_refresh = tokens.get("refresh_token", "")
-            # Adopt auth.json tokens when either side differs.  Codex refresh
-            # tokens are single-use too, so a fresh refresh_token from
-            # another process means our entry's pair is consumed/stale.
-            #
-            # Also adopt when the store has a refresh_token but no
-            # access_token — another process may have rotated the pair
-            # and the store entry's access_token was already consumed;
-            # the important signal is the refresh_token difference.
-            entry_access = entry.access_token or ""
-            entry_refresh = entry.refresh_token or ""
-            should_adopt = False
-            if store_access and (
+        tokens = state.get("tokens")
+        if not isinstance(tokens, dict):
+            return entry
+        store_access = tokens.get("access_token", "")
+        store_refresh = tokens.get("refresh_token", "")
+        entry_access = entry.access_token or ""
+        entry_refresh = entry.refresh_token or ""
+        should_adopt = bool(
+            store_access
+            and (
                 store_access != entry_access
                 or (store_refresh and store_refresh != entry_refresh)
-            ):
-                should_adopt = True
-            elif (
-                store_refresh
-                and store_refresh != entry_refresh
-                and not store_access
-            ):
-                # Store has only a refresh_token (no access_token) —
-                # another process rotated the pair.  Adopt the
-                # refresh_token so we don't replay the consumed one.
-                logger.info(
-                    "Pool entry %s: auth.json has newer refresh_token "
-                    "but no access_token; adopting refresh_token to "
-                    "avoid replaying consumed token",
-                    entry.id,
-                )
-                should_adopt = True
+            )
+        )
+        if store_refresh and store_refresh != entry_refresh and not store_access:
+            logger.info(
+                "Pool entry %s: auth.json has newer refresh_token but no "
+                "access_token; adopting refresh_token to avoid replaying "
+                "consumed token",
+                entry.id,
+            )
+            should_adopt = True
+        if not should_adopt:
+            return entry
 
-            if should_adopt:
-                logger.debug(
-                    "Pool entry %s: syncing Codex tokens from auth.json "
-                    "(refreshed by another process)",
-                    entry.id,
+        logger.debug(
+            "Pool entry %s: syncing Codex tokens from auth.json "
+            "(refreshed by another process)",
+            entry.id,
+        )
+        field_updates: Dict[str, Any] = {
+            "access_token": store_access or entry.access_token,
+            "refresh_token": store_refresh or entry.refresh_token,
+            "last_status": None,
+            "last_status_at": None,
+            "last_error_code": None,
+            "last_error_reason": None,
+            "last_error_message": None,
+            "last_error_reset_at": None,
+        }
+        if state.get("last_refresh"):
+            field_updates["last_refresh"] = state["last_refresh"]
+        return replace(entry, **field_updates)
+
+    @staticmethod
+    def _codex_provider_state_has_refresh_chain(
+        state: Optional[Dict[str, Any]],
+    ) -> bool:
+        if not isinstance(state, dict):
+            return False
+        tokens = state.get("tokens")
+        if not isinstance(tokens, dict):
+            return False
+        return bool(
+            str(tokens.get("access_token") or "").strip()
+            and str(tokens.get("refresh_token") or "").strip()
+        )
+
+    @staticmethod
+    def _codex_exact_pool_alias(
+        source_store: Dict[str, Any],
+        entry: PooledCredential,
+    ) -> Tuple[Optional[List[Any]], Optional[int], Optional[Dict[str, Any]]]:
+        pool = source_store.get("credential_pool")
+        persisted = pool.get("openai-codex") if isinstance(pool, dict) else None
+        if not isinstance(persisted, list):
+            return None, None, None
+        for index, item in enumerate(persisted):
+            if (
+                isinstance(item, dict)
+                and item.get("id") == entry.id
+                and item.get("source") == entry.source
+            ):
+                return persisted, index, item
+        return persisted, None, None
+
+    @staticmethod
+    def _codex_pool_alias_has_complete_credentials(
+        payload: Optional[Dict[str, Any]],
+    ) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        if not str(payload.get("access_token") or "").strip():
+            return False
+        if (
+            payload.get("auth_type") == AUTH_TYPE_OAUTH
+            or payload.get("source") in {"device_code", SOURCE_MANUAL_DEVICE_CODE}
+        ):
+            return bool(str(payload.get("refresh_token") or "").strip())
+        return True
+
+    @staticmethod
+    def _codex_tokens_changed(
+        left: PooledCredential,
+        right: PooledCredential,
+    ) -> bool:
+        return (
+            left.access_token != right.access_token
+            or left.refresh_token != right.refresh_token
+        )
+
+    def _codex_alias_is_singleton(
+        self,
+        entry: PooledCredential,
+        state: Optional[Dict[str, Any]],
+        source_path: Path,
+        *,
+        owner_kind: Optional[str] = None,
+    ) -> bool:
+        owner = self._trusted_codex_source_owner(entry)
+        trusted_kind = owner.owner_kind if owner is not None else owner_kind
+        if trusted_kind is not None:
+            return trusted_kind == "singleton"
+        if (
+            entry.source != "device_code"
+            or not self._codex_provider_state_has_refresh_chain(state)
+        ):
+            return False
+        assert isinstance(state, dict)
+        alias = _codex_source_pool_alias(source_path, state)
+        return bool(alias is not None and alias.get("id") == entry.id)
+
+    def _codex_write_path_is_authorized(
+        self,
+        entry: PooledCredential,
+        source_path: Path,
+    ) -> bool:
+        owner = self._trusted_codex_source_owner(entry)
+        if owner is not None:
+            return self._same_store_path(owner.source_path, source_path)
+        try:
+            active_path = auth_mod._auth_file_path()
+        except Exception:
+            return False
+        return (
+            entry.source_store_path is None
+            and self._same_store_path(active_path, source_path)
+        )
+
+    def _drop_source_owned_entry(self, entry: PooledCredential) -> bool:
+        with self._lock:
+            current = next(
+                (item for item in self._entries if item.id == entry.id),
+                None,
+            )
+            if current is None:
+                self._forget_trusted_codex_source_owner(entry)
+                return True
+            if not self._entry_tokens_match(current, entry):
+                return False
+            self._entries = [item for item in self._entries if item.id != entry.id]
+            self._record_entry_mutation_unlocked(entry.id, dirty=False)
+            if self._current_id == entry.id:
+                self._current_id = None
+            self._forget_trusted_codex_source_owner(current)
+            return True
+
+    def _revoke_missing_codex_source(
+        self,
+        entry: PooledCredential,
+        source_path: Path,
+        *,
+        source_store: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Drop stale memory and remove an incomplete exact owner alias."""
+        store = source_store if source_store is not None else _load_auth_store(source_path)
+        persisted, index, item = self._codex_exact_pool_alias(store, entry)
+        if (
+            persisted is not None
+            and index is not None
+            and not self._codex_pool_alias_has_complete_credentials(item)
+        ):
+            persisted.pop(index)
+            _save_auth_store(store, target_path=source_path)
+        self._drop_source_owned_entry(entry)
+
+    def _revoke_missing_codex_device_code_source(
+        self,
+        entry: PooledCredential,
+        source_path: Path,
+    ) -> None:
+        """Compatibility wrapper for the pre-provenance singleton path."""
+        self._revoke_missing_codex_source(entry, source_path)
+
+    def _sync_source_owned_codex_entry(
+        self,
+        entry: PooledCredential,
+    ) -> Optional[PooledCredential]:
+        """Re-read one borrowed row by stable id, or revoke it if owner vanished."""
+        owner = self._trusted_codex_source_owner(entry)
+        if self.provider != "openai-codex" or owner is None:
+            return entry
+        try:
+            with auth_mod._provider_state_transaction(
+                "openai-codex",
+                expected_source_path=owner.source_path,
+            ) as (_active_store, state, source_path):
+                if source_path is None:
+                    self._drop_source_owned_entry(entry)
+                    return None
+                source_store = _load_auth_store(source_path)
+                _persisted, _index, item = self._codex_exact_pool_alias(
+                    source_store,
+                    entry,
                 )
-                field_updates: Dict[str, Any] = {
-                    "access_token": store_access or entry.access_token,
-                    "refresh_token": store_refresh or entry.refresh_token,
-                    "last_status": None,
-                    "last_status_at": None,
-                    "last_error_code": None,
-                    "last_error_reason": None,
-                    "last_error_message": None,
-                    "last_error_reset_at": None,
-                }
-                if state.get("last_refresh"):
-                    field_updates["last_refresh"] = state["last_refresh"]
-                updated = replace(entry, **field_updates)
-                self._replace_entry(entry, updated)
-                self._persist()
-                return updated
+                if not self._codex_pool_alias_has_complete_credentials(item):
+                    self._revoke_missing_codex_source(
+                        entry,
+                        source_path,
+                        source_store=source_store,
+                    )
+                    return None
+                assert isinstance(item, dict)
+                stored = replace(
+                    PooledCredential.from_dict("openai-codex", item),
+                    source_store_path=source_path,
+                )
+                if self._codex_alias_is_singleton(
+                    stored,
+                    state,
+                    source_path,
+                    owner_kind=owner.owner_kind,
+                ):
+                    if not self._codex_provider_state_has_refresh_chain(state):
+                        self._revoke_missing_codex_source(
+                            entry,
+                            source_path,
+                            source_store=source_store,
+                        )
+                        return None
+                    synced = self._codex_entry_from_provider_state(stored, state)
+                    if self._codex_tokens_changed(synced, stored):
+                        self._persist_codex_device_code_refresh(synced, source_path)
+                    stored = synced
+                if stored != entry:
+                    replaced = self._replace_entry(entry, stored, mark_dirty=False)
+                    if replaced is None:
+                        return None
+                    if not self._entry_tokens_match(replaced, stored):
+                        return None
+                    return replaced
+                return entry
+        except Exception as exc:
+            logger.debug("Failed to validate borrowed Codex entry: %s", exc)
+            return None
+
+    def _persist_source_owned_alias(
+        self,
+        entry: PooledCredential,
+        *,
+        allow_status_reset: bool = False,
+    ) -> None:
+        """Route one changed borrowed Codex row to its exact owning alias."""
+        owner = self._trusted_codex_source_owner(entry)
+        if self.provider != "openai-codex" or owner is None:
+            return
+
+        with auth_mod._provider_state_transaction(
+            "openai-codex",
+            expected_source_path=owner.source_path,
+        ) as (_active_store, state, source_path):
+            if source_path is None:
+                self._drop_source_owned_entry(entry)
+                return
+            source_store = _load_auth_store(source_path)
+            persisted, index, item = self._codex_exact_pool_alias(source_store, entry)
+            if not self._codex_pool_alias_has_complete_credentials(item):
+                self._revoke_missing_codex_source(
+                    entry,
+                    source_path,
+                    source_store=source_store,
+                )
+                return
+            assert isinstance(item, dict)
+            stored = replace(
+                PooledCredential.from_dict("openai-codex", item),
+                source_store_path=source_path,
+            )
+            if self._codex_alias_is_singleton(
+                stored,
+                state,
+                source_path,
+                owner_kind=owner.owner_kind,
+            ):
+                if not self._codex_provider_state_has_refresh_chain(state):
+                    self._revoke_missing_codex_source(
+                        entry,
+                        source_path,
+                        source_store=source_store,
+                    )
+                    return
+                synced = self._codex_entry_from_provider_state(stored, state)
+                if self._codex_tokens_changed(synced, stored):
+                    self._persist_codex_device_code_refresh(
+                        synced,
+                        source_path,
+                        provenance_entry=entry,
+                    )
+                stored = synced
+            if self._codex_tokens_changed(stored, entry):
+                self._replace_entry(entry, stored, mark_dirty=False)
+                return
+
+            assert persisted is not None and index is not None and item is not None
+            serialized = entry.to_dict()
+            updated = dict(item)
+            updated.update(serialized)
+            if not allow_status_reset:
+                updated = auth_mod._merge_disk_cooldown_state(
+                    updated,
+                    item,
+                    "openai-codex",
+                )
+            if updated != item:
+                persisted[index] = updated
+                _save_auth_store(source_store, target_path=source_path)
+            final_entry = replace(
+                PooledCredential.from_dict("openai-codex", updated),
+                source_store_path=source_path,
+            )
+            if final_entry != entry:
+                self._replace_entry(entry, final_entry, mark_dirty=False)
+
+    def _remove_source_owned_alias(self, entry: PooledCredential) -> None:
+        owner = self._trusted_codex_source_owner(entry)
+        if self.provider != "openai-codex" or owner is None:
+            return
+        with auth_mod._provider_state_transaction(
+            "openai-codex",
+            expected_source_path=owner.source_path,
+        ) as (_active_store, state, source_path):
+            if source_path is None:
+                return
+            source_store = _load_auth_store(source_path)
+            persisted, index, item = self._codex_exact_pool_alias(source_store, entry)
+            if persisted is None or index is None or not isinstance(item, dict):
+                return
+            stored = replace(
+                PooledCredential.from_dict("openai-codex", item),
+                source_store_path=source_path,
+            )
+            if self._codex_alias_is_singleton(
+                stored,
+                state,
+                source_path,
+                owner_kind=owner.owner_kind,
+            ):
+                refresh_token = str(item.get("refresh_token") or "").strip()
+                persisted[:] = [
+                    candidate
+                    for candidate in persisted
+                    if not (
+                        isinstance(candidate, dict)
+                        and candidate.get("source") == "device_code"
+                        and (
+                            candidate.get("id") == entry.id
+                            or (
+                                refresh_token
+                                and str(
+                                    candidate.get("refresh_token") or ""
+                                ).strip()
+                                == refresh_token
+                            )
+                        )
+                    )
+                ]
+                providers = source_store.get("providers")
+                persisted_state = (
+                    providers.get("openai-codex")
+                    if isinstance(providers, dict)
+                    else None
+                )
+                if isinstance(persisted_state, dict):
+                    tokens = persisted_state.get("tokens")
+                    if isinstance(tokens, dict):
+                        tokens.pop("access_token", None)
+                        tokens.pop("refresh_token", None)
+                        persisted_state["tokens"] = tokens
+            else:
+                persisted.pop(index)
+            _save_auth_store(source_store, target_path=source_path)
+
+    def _persist_codex_device_code_refresh(
+        self,
+        entry: PooledCredential,
+        source_path: Path,
+        *,
+        provenance_entry: Optional[PooledCredential] = None,
+    ) -> None:
+        """Persist one singleton-owned Codex chain to its exact source store.
+
+        The caller holds the active-profile -> source-store transaction. Only
+        the matching ``device_code`` pool alias and singleton are updated;
+        independent manual accounts and unrelated store data remain untouched.
+        """
+        if not self._codex_write_path_is_authorized(
+            provenance_entry or entry,
+            source_path,
+        ):
+            return
+        with self._lock:
+            dirty_generation = self._dirty_generation_for_snapshot_unlocked(entry)
+        auth_store = _load_auth_store(source_path)
+        changed = False
+
+        providers = auth_store.get("providers")
+        state = providers.get("openai-codex") if isinstance(providers, dict) else None
+        if isinstance(state, dict):
+            tokens = state.get("tokens")
+            if isinstance(tokens, dict):
+                next_tokens = dict(tokens)
+                next_tokens["access_token"] = entry.access_token
+                if entry.refresh_token:
+                    next_tokens["refresh_token"] = entry.refresh_token
+                if next_tokens != tokens:
+                    state["tokens"] = next_tokens
+                    changed = True
+                if entry.last_refresh and state.get("last_refresh") != entry.last_refresh:
+                    state["last_refresh"] = entry.last_refresh
+                    changed = True
+
+        pool = auth_store.get("credential_pool")
+        entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+        if isinstance(entries, list):
+            serialized = entry.to_dict()
+            for persisted in entries:
+                if not isinstance(persisted, dict):
+                    continue
+                if (
+                    persisted.get("id") != entry.id
+                    or persisted.get("source") != "device_code"
+                ):
+                    continue
+                updated_persisted = dict(persisted)
+                updated_persisted.update(serialized)
+                if updated_persisted != persisted:
+                    persisted.clear()
+                    persisted.update(updated_persisted)
+                    changed = True
+                break
+
+        if changed:
+            _save_auth_store(auth_store, target_path=source_path)
+        with self._lock:
+            self._clear_dirty_generation_unlocked(entry.id, dirty_generation)
+
+    def _persist_codex_exact_alias_refresh(
+        self,
+        entry: PooledCredential,
+        source_path: Path,
+    ) -> bool:
+        """Persist a non-singleton Codex refresh to one exact owning row."""
+        if not self._codex_write_path_is_authorized(entry, source_path):
+            return False
+        with self._lock:
+            dirty_generation = self._dirty_generation_for_snapshot_unlocked(entry)
+        auth_store = _load_auth_store(source_path)
+        persisted, index, item = self._codex_exact_pool_alias(auth_store, entry)
+        if not self._codex_pool_alias_has_complete_credentials(item):
+            self._revoke_missing_codex_source(
+                entry,
+                source_path,
+                source_store=auth_store,
+            )
+            return False
+        assert persisted is not None and index is not None and item is not None
+        updated = dict(item)
+        updated.update(entry.to_dict())
+        if updated != item:
+            persisted[index] = updated
+            _save_auth_store(auth_store, target_path=source_path)
+        with self._lock:
+            self._clear_dirty_generation_unlocked(entry.id, dirty_generation)
+        return True
+
+    def _quarantine_codex_exact_alias_refresh(
+        self,
+        entry: PooledCredential,
+        source_path: Path,
+    ) -> None:
+        """Remove one terminal non-singleton chain without touching singleton."""
+        if not self._codex_write_path_is_authorized(entry, source_path):
+            return
+        auth_store = _load_auth_store(source_path)
+        persisted, index, _item = self._codex_exact_pool_alias(auth_store, entry)
+        if persisted is not None and index is not None:
+            persisted.pop(index)
+            _save_auth_store(auth_store, target_path=source_path)
+
+    def _quarantine_codex_device_code_refresh(
+        self,
+        entry: PooledCredential,
+        source_path: Path,
+        exc: Exception,
+    ) -> Set[str]:
+        """Clear every device alias on one terminal singleton chain."""
+        if not self._codex_write_path_is_authorized(entry, source_path):
+            return set()
+        auth_store = _load_auth_store(source_path)
+        removed_ids: Set[str] = {entry.id}
+        providers = auth_store.get("providers")
+        state = providers.get("openai-codex") if isinstance(providers, dict) else None
+        if isinstance(state, dict):
+            tokens = state.get("tokens")
+            if isinstance(tokens, dict):
+                store_refresh = str(tokens.get("refresh_token") or "").strip()
+                entry_refresh = str(entry.refresh_token or "").strip()
+                if not store_refresh or store_refresh == entry_refresh:
+                    tokens.pop("access_token", None)
+                    tokens.pop("refresh_token", None)
+                    state["tokens"] = tokens
+                    state["last_auth_error"] = {
+                        "provider": "openai-codex",
+                        "code": getattr(exc, "code", "unknown"),
+                        "message": str(exc),
+                        "reason": "credential_pool_refresh_failure",
+                        "relogin_required": True,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    }
+
+        pool = auth_store.get("credential_pool")
+        if isinstance(pool, dict) and isinstance(
+            pool.get("openai-codex"), list
+        ):
+            entries = pool["openai-codex"]
+            entry_refresh = str(entry.refresh_token or "").strip()
+            removed_ids.update(
+                str(persisted.get("id"))
+                for persisted in entries
+                if (
+                    isinstance(persisted, dict)
+                    and persisted.get("source") == "device_code"
+                    and (
+                        persisted.get("id") == entry.id
+                        or (
+                            entry_refresh
+                            and str(persisted.get("refresh_token") or "").strip()
+                            == entry_refresh
+                        )
+                    )
+                    and persisted.get("id")
+                )
+            )
+            pool["openai-codex"] = [
+                persisted
+                for persisted in entries
+                if not (
+                    isinstance(persisted, dict)
+                    and persisted.get("source") == "device_code"
+                    and (
+                        persisted.get("id") == entry.id
+                        or (
+                            entry_refresh
+                            and str(persisted.get("refresh_token") or "").strip()
+                            == entry_refresh
+                        )
+                    )
+                )
+            ]
+        _save_auth_store(auth_store, target_path=source_path)
+        return removed_ids
+
+    def _sync_codex_entry_from_auth_store(
+        self, entry: PooledCredential
+    ) -> PooledCredential:
+        """Sync a singleton-seeded Codex entry from its owning auth store."""
+        if self.provider != "openai-codex" or entry.source != "device_code":
+            return entry
+        owner = self._trusted_codex_source_owner(entry)
+        try:
+            with auth_mod._provider_state_transaction(
+                "openai-codex",
+                expected_source_path=(
+                    owner.source_path
+                    if owner is not None
+                    else auth_mod._auth_file_path()
+                ),
+            ) as (
+                _auth_store,
+                state,
+                source_path,
+            ):
+                source_path = source_path or auth_mod._auth_file_path()
+                updated = self._codex_entry_from_provider_state(entry, state)
+                if updated is entry:
+                    return entry
+                replaced = self._replace_entry(
+                    entry,
+                    updated,
+                    preserve_routing=True,
+                )
+                if replaced is None or not self._entry_tokens_match(replaced, updated):
+                    return replaced or entry
+                self._persist_codex_device_code_refresh(replaced, source_path)
+                return replaced
         except Exception as exc:
             logger.debug("Failed to sync Codex entry from auth.json: %s", exc)
-        return entry
+            return entry
 
-    def _sync_xai_oauth_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
+    def _sync_xai_oauth_entry_from_auth_store(
+        self,
+        entry: PooledCredential,
+        *,
+        persist: bool = True,
+    ) -> PooledCredential:
         """Sync an xAI OAuth pool entry from auth.json if tokens differ.
 
         xAI OAuth refresh tokens are single-use.  When another Hermes process
@@ -1026,9 +1954,14 @@ class CredentialPool:
                 if state.get("last_refresh"):
                     field_updates["last_refresh"] = state["last_refresh"]
                 updated = replace(entry, **field_updates)
-                self._replace_entry(entry, updated)
-                self._persist()
-                return updated
+                current = self._replace_entry(
+                    entry,
+                    updated,
+                    preserve_routing=True,
+                )
+                if persist:
+                    self._persist_pending_changes()
+                return current or entry
         except Exception as exc:
             logger.debug("Failed to sync xAI OAuth entry from auth.json: %s", exc)
         return entry
@@ -1066,13 +1999,22 @@ class CredentialPool:
                     "Pool entry %s: adopting xAI OAuth tokens rotated by another pool instance",
                     entry.id,
                 )
-                self._replace_entry(entry, stored)
-                return stored
+                current = self._replace_entry(
+                    entry,
+                    stored,
+                    preserve_routing=True,
+                )
+                return current or entry
         except Exception as exc:
             logger.debug("Failed to sync xAI OAuth entry from credential pool: %s", exc)
         return entry
 
-    def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
+    def _sync_nous_entry_from_auth_store(
+        self,
+        entry: PooledCredential,
+        *,
+        persist: bool = True,
+    ) -> PooledCredential:
         """Sync a Nous pool entry from auth.json if tokens differ.
 
         Nous OAuth refresh tokens are single-use.  When another process
@@ -1137,14 +2079,19 @@ class CredentialPool:
                     if val is not None:
                         extra_updates[extra_key] = val
                 updated = replace(entry, extra=extra_updates, **field_updates)
-                self._replace_entry(entry, updated)
-                self._persist()
-                return updated
+                current = self._replace_entry(
+                    entry,
+                    updated,
+                    preserve_routing=True,
+                )
+                if persist:
+                    self._persist_pending_changes()
+                return current or entry
         except Exception as exc:
             logger.debug("Failed to sync Nous entry from auth.json: %s", exc)
         return entry
 
-    def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> None:
+    def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> bool:
         """Write refreshed pool entry tokens back to auth.json providers.
 
         After a pool-level refresh, the pool entry has fresh tokens but
@@ -1171,7 +2118,7 @@ class CredentialPool:
         # and must not write back to the singleton.  All singleton-seeded
         # device-code sources (nous, openai-codex, xAI) use ``device_code``.
         if entry.source != "device_code":
-            return
+            return True
         try:
             with _auth_store_lock():
                 auth_store = _load_auth_store()
@@ -1203,27 +2150,27 @@ class CredentialPool:
                         auth_store, "nous"
                     )
                     if state is None:
-                        return
+                        return False
                 elif self.provider == "openai-codex":
                     state, source_path = _load_provider_state_with_source(
                         auth_store, "openai-codex"
                     )
                     if not isinstance(state, dict):
-                        return
+                        return False
                 elif self.provider == "xai-oauth":
                     state, source_path = _load_provider_state_with_source(
                         auth_store, "xai-oauth"
                     )
                     if not isinstance(state, dict):
-                        return
+                        return False
                 else:
-                    return
+                    return False
 
-                global_root = _global_auth_file_path()
+                global_root = auth_mod._global_auth_file_path()
                 is_from_root = bool(
                     source_path is not None
                     and global_root is not None
-                    and _same_path(source_path, global_root)
+                    and auth_mod._same_path(source_path, global_root)
                 )
 
                 if self.provider == "nous":
@@ -1248,7 +2195,7 @@ class CredentialPool:
                 elif self.provider == "openai-codex":
                     tokens = state.get("tokens")
                     if not isinstance(tokens, dict):
-                        return
+                        return False
                     tokens["access_token"] = entry.access_token
                     if entry.refresh_token:
                         tokens["refresh_token"] = entry.refresh_token
@@ -1258,7 +2205,7 @@ class CredentialPool:
                 elif self.provider == "xai-oauth":
                     tokens = state.get("tokens")
                     if not isinstance(tokens, dict):
-                        return
+                        return False
                     tokens["access_token"] = entry.access_token
                     if entry.refresh_token:
                         tokens["refresh_token"] = entry.refresh_token
@@ -1274,7 +2221,7 @@ class CredentialPool:
                     # _load_provider_state has root fallback, so the
                     # profile can always read fresh tokens from root
                     # without needing its own providers block.
-                    _write_through_provider_state_to_global_root(
+                    return _write_through_provider_state_to_global_root(
                         _wt_provider_id, state
                     )
                 else:
@@ -1284,14 +2231,72 @@ class CredentialPool:
                         auth_store, self.provider, state, set_active=False
                     )
                     _save_auth_store(auth_store)
+                    return True
         except Exception as exc:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
+            return False
 
-    def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
+    def _refresh_entry(
+        self,
+        entry: PooledCredential,
+        *,
+        force: bool,
+    ) -> Optional[PooledCredential]:
+        """Serialize provider refresh and reject superseded token lineages."""
+        self._assert_external_state_lock_order()
+
+        def refresh_current() -> Optional[PooledCredential]:
+            with self._lock:
+                current = next(
+                    (item for item in self._entries if item.id == entry.id),
+                    None,
+                )
+            if current is None:
+                return None
+            if (
+                current.source != entry.source
+                or not self._entry_tokens_match(current, entry)
+            ):
+                return current
+            return self._refresh_entry_serialized(current, force=force)
+
+        source_owned = (
+            self.provider == "anthropic" and entry.source == "claude_code"
+        ) or (
+            self.provider in {"openai-codex", "xai-oauth"}
+        ) or (
+            self.provider == "nous"
+            and entry.source == "device_code"
+        )
+        if source_owned:
+            refreshed = refresh_current()
+        else:
+            with self._external_state_lock:
+                refreshed = refresh_current()
+
+        # Source transactions release their auth/provider locks before pool
+        # persistence.  Normal persistence acquires _persist_lock first and may
+        # then acquire the auth-store lock, so draining here keeps one order.
+        self._persist_pending_changes()
+        if refreshed is None:
+            return None
+        current = self._revalidate_refreshed_entry(refreshed)
+        self._persist_pending_changes()
+        return current
+
+    def _refresh_entry_serialized(
+        self,
+        entry: PooledCredential,
+        *,
+        force: bool,
+    ) -> Optional[PooledCredential]:
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
                 self._mark_exhausted(entry, None)
             return None
+
+        if self.provider == "anthropic" and entry.source == "claude_code":
+            return self._refresh_anthropic_source_entry(entry, force=force)
 
         # Codex and xAI OAuth refresh tokens are single-use.  The
         # sync→POST→write-back sequence below must run atomically across Hermes
@@ -1302,29 +2307,474 @@ class CredentialPool:
         # resolve_codex_runtime_credentials()).  When a waiter finally acquires
         # the lock, the in-lock re-sync below picks up the rotated token the
         # winner persisted and skips the POST.
-        if self.provider in ("openai-codex", "xai-oauth"):
-            sync_entry = (
-                self._sync_codex_entry_from_auth_store
-                if self.provider == "openai-codex"
-                else self._sync_xai_oauth_entry_from_pool_store
-            )
+        codex_owner = self._trusted_codex_source_owner(entry)
+        if self.provider == "openai-codex" and codex_owner is not None:
+            with auth_mod._provider_state_transaction(
+                "openai-codex",
+                timeout_seconds=self._single_use_refresh_lock_timeout(),
+                expected_source_path=codex_owner.source_path,
+            ) as (_auth_store, state, source_path):
+                if source_path is None:
+                    self._drop_source_owned_entry(entry)
+                    return None
+                source_store = _load_auth_store(source_path)
+                _persisted, _index, item = self._codex_exact_pool_alias(
+                    source_store,
+                    entry,
+                )
+                if not self._codex_pool_alias_has_complete_credentials(item):
+                    self._revoke_missing_codex_source(
+                        entry,
+                        source_path,
+                        source_store=source_store,
+                    )
+                    return None
+                assert isinstance(item, dict)
+                stored = replace(
+                    PooledCredential.from_dict("openai-codex", item),
+                    source_store_path=source_path,
+                )
+                singleton_owned = self._codex_alias_is_singleton(
+                    stored,
+                    state,
+                    source_path,
+                    owner_kind=codex_owner.owner_kind,
+                )
+                if singleton_owned:
+                    if not self._codex_provider_state_has_refresh_chain(state):
+                        self._revoke_missing_codex_source(
+                            entry,
+                            source_path,
+                            source_store=source_store,
+                        )
+                        return None
+                    stored = self._codex_entry_from_provider_state(stored, state)
+                if self._codex_tokens_changed(stored, entry):
+                    # A waiter that observed the winner's rotated exact row
+                    # adopts it even for force=True; replay would consume a
+                    # single-use refresh token twice.
+                    replaced = self._replace_entry(
+                        entry,
+                        stored,
+                        mark_dirty=False,
+                        preserve_routing=True,
+                    )
+                    if replaced is None or not self._entry_tokens_match(replaced, stored):
+                        return None
+                    if singleton_owned:
+                        self._persist_codex_device_code_refresh(replaced, source_path)
+                    return replaced
+                replaced = self._replace_entry(
+                    entry,
+                    stored,
+                    mark_dirty=False,
+                    preserve_routing=True,
+                )
+                if replaced is None or not self._entry_tokens_match(replaced, stored):
+                    return None
+                return self._refresh_entry_impl(
+                    replaced,
+                    force=force,
+                    codex_source_path=source_path,
+                    codex_singleton_owned=singleton_owned,
+                )
+        if self.provider == "openai-codex" and entry.source == "device_code":
+            with auth_mod._provider_state_transaction(
+                "openai-codex",
+                timeout_seconds=self._single_use_refresh_lock_timeout(),
+                expected_source_path=auth_mod._auth_file_path(),
+            ) as (_auth_store, state, source_path):
+                source_path = source_path or auth_mod._auth_file_path()
+                if not self._codex_provider_state_has_refresh_chain(state):
+                    self._revoke_missing_codex_device_code_source(
+                        entry,
+                        source_path,
+                    )
+                    return None
+                synced = self._codex_entry_from_provider_state(entry, state)
+                if synced is not entry:
+                    # A waiter that observed the winner's rotated chain adopts
+                    # it even when its caller requested force=True. Replaying
+                    # the consumed refresh token would invalidate the chain.
+                    replaced = self._replace_entry(
+                        entry,
+                        synced,
+                        preserve_routing=True,
+                    )
+                    if replaced is None or not self._entry_tokens_match(
+                        replaced,
+                        synced,
+                    ):
+                        return replaced
+                    self._persist_codex_device_code_refresh(
+                        replaced,
+                        source_path,
+                    )
+                    return replaced
+                return self._refresh_entry_impl(
+                    entry,
+                    force=force,
+                    codex_source_path=source_path,
+                    codex_singleton_owned=True,
+                )
+        if self.provider == "openai-codex":
+            # Manual Codex accounts are profile-owned and independent of the
+            # singleton, but their own single-use refresh still needs the
+            # active profile's pool-store lock.
             with _auth_store_lock(
                 timeout_seconds=self._single_use_refresh_lock_timeout()
             ):
-                synced = sync_entry(entry)
-                if self.provider == "openai-codex":
-                    if synced is not entry:
-                        entry = synced
-                        if not force and not self._entry_needs_refresh(entry):
-                            return entry
-                    return self._refresh_entry_impl(entry, force=force)
-                if (
-                    synced.access_token != entry.access_token
-                    or synced.refresh_token != entry.refresh_token
+                return self._refresh_entry_impl(entry, force=force)
+        if self.provider == "xai-oauth":
+            if entry.source != "device_code":
+                with _auth_store_lock(
+                    timeout_seconds=self._single_use_refresh_lock_timeout()
                 ):
-                    return synced
-                return self._refresh_entry_impl(synced, force=force)
+                    return self._refresh_entry_impl(entry, force=force)
+            return self._refresh_xai_source_entry(entry, force=force)
+        if self.provider == "nous" and entry.source == "device_code":
+            # The real resolver owns the complete provider-state transaction.
+            # Do not nest a second source lock around its network operation.
+            return self._refresh_entry_impl(entry, force=force)
         return self._refresh_entry_impl(entry, force=force)
+
+    def _mark_source_persistence_dead(
+        self,
+        entry: PooledCredential,
+        *,
+        persist: bool = True,
+    ) -> None:
+        updated = replace(
+            entry,
+            last_status=STATUS_DEAD,
+            last_status_at=time.time(),
+            last_error_reason="source_persistence_failed",
+            last_error_message=(
+                "Refreshed credentials were not persisted to their owning source."
+            ),
+        )
+        self._replace_entry(
+            entry,
+            updated,
+            preserve_routing=True,
+            mark_dirty=persist,
+        )
+
+    def _quarantine_terminal_xai_lineage(
+        self,
+        entry: PooledCredential,
+        source_path: Optional[Path],
+        exc: Exception,
+    ) -> None:
+        """Remove one terminal singleton lineage without pool-lock I/O."""
+        if source_path is not None:
+            try:
+                with auth_mod._provider_state_transaction(
+                    "xai-oauth",
+                    timeout_seconds=self._single_use_refresh_lock_timeout(),
+                    expected_source_path=source_path,
+                ) as (_auth_store, state, locked_source_path):
+                    tokens = state.get("tokens") if isinstance(state, dict) else None
+                    if (
+                        locked_source_path is not None
+                        and isinstance(tokens, dict)
+                        and str(tokens.get("refresh_token") or "").strip()
+                        == str(entry.refresh_token or "").strip()
+                    ):
+                        source_store = _load_auth_store(Path(locked_source_path))
+                        providers = source_store.get("providers")
+                        if isinstance(providers, dict):
+                            providers.pop("xai-oauth", None)
+                        pool = source_store.get("credential_pool")
+                        if isinstance(pool, dict) and isinstance(
+                            pool.get("xai-oauth"), list
+                        ):
+                            pool["xai-oauth"] = [
+                                item
+                                for item in pool["xai-oauth"]
+                                if not (
+                                    isinstance(item, dict)
+                                    and item.get("source") == "device_code"
+                                )
+                            ]
+                        _save_auth_store(
+                            source_store,
+                            target_path=Path(locked_source_path),
+                        )
+            except Exception as clear_exc:
+                logger.debug(
+                    "Failed to clear terminal xAI OAuth state after %s: %s",
+                    exc,
+                    clear_exc,
+                )
+
+        singleton_sources = {"device_code"}
+        with self._lock:
+            removed_entries = [
+                item for item in self._entries if item.source in singleton_sources
+            ]
+            for removed in removed_entries:
+                self._queue_removed_entry_unlocked(removed)
+            self._entries = [
+                item for item in self._entries if item.source not in singleton_sources
+            ]
+            if self._current_id == entry.id:
+                self._current_id = None
+
+    def _anthropic_entry_from_locked_credentials(
+        self,
+        entry: PooledCredential,
+        creds: Dict[str, Any],
+    ) -> PooledCredential:
+        access_token = str(creds.get("accessToken", "") or "")
+        refresh_token = str(creds.get("refreshToken", "") or "")
+        changed = (
+            access_token != entry.access_token
+            or refresh_token != (entry.refresh_token or "")
+        )
+        return replace(
+            entry,
+            access_token=access_token or entry.access_token,
+            refresh_token=refresh_token or entry.refresh_token,
+            expires_at_ms=creds.get("expiresAt", 0) or entry.expires_at_ms,
+            last_status=STATUS_OK if changed else entry.last_status,
+            last_status_at=None if changed else entry.last_status_at,
+            last_error_code=None if changed else entry.last_error_code,
+            last_error_reason=None if changed else entry.last_error_reason,
+            last_error_message=None if changed else entry.last_error_message,
+            last_error_reset_at=None if changed else entry.last_error_reset_at,
+            extra={
+                **entry.extra,
+                "credential_source": creds.get("source"),
+            },
+        )
+
+    def _refresh_anthropic_source_entry(
+        self,
+        entry: PooledCredential,
+        *,
+        force: bool,
+    ) -> Optional[PooledCredential]:
+        from agent.anthropic_adapter import (
+            _refresh_claude_code_source_credentials,
+        )
+
+        del force  # A source-owned explicit refresh always reaches this method.
+        observed = {
+            "accessToken": entry.access_token,
+            "refreshToken": entry.refresh_token or "",
+            "expiresAt": entry.expires_at_ms or 0,
+            "source": entry.extra.get("credential_source")
+            or "claude_code_credentials_file",
+        }
+        try:
+            winner = _refresh_claude_code_source_credentials(observed)
+        except auth_mod.SourceCredentialPersistenceError:
+            self._mark_source_persistence_dead(entry, persist=False)
+            return None
+        if not winner:
+            self._mark_source_persistence_dead(entry, persist=False)
+            return None
+        current = self._current_refresh_candidate(entry) or entry
+        updated = self._anthropic_entry_from_locked_credentials(
+            current,
+            winner,
+        )
+        return self._replace_entry(
+            current,
+            updated,
+            preserve_routing=True,
+        )
+
+    def _xai_entry_from_locked_state(
+        self,
+        entry: PooledCredential,
+        state: Dict[str, Any],
+        source_path: Path,
+    ) -> Optional[PooledCredential]:
+        tokens = state.get("tokens")
+        if not isinstance(tokens, dict):
+            return None
+        access_token = str(tokens.get("access_token", "") or "")
+        refresh_token = str(tokens.get("refresh_token", "") or "")
+        if not access_token or not refresh_token:
+            return None
+        changed = (
+            access_token != entry.access_token
+            or refresh_token != (entry.refresh_token or "")
+        )
+        return replace(
+            entry,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            last_refresh=state.get("last_refresh") or entry.last_refresh,
+            source_store_path=source_path,
+            last_status=None if changed else entry.last_status,
+            last_status_at=None if changed else entry.last_status_at,
+            last_error_code=None if changed else entry.last_error_code,
+            last_error_reason=None if changed else entry.last_error_reason,
+            last_error_message=None if changed else entry.last_error_message,
+            last_error_reset_at=None if changed else entry.last_error_reset_at,
+        )
+
+    def _refresh_xai_source_entry(
+        self,
+        entry: PooledCredential,
+        *,
+        force: bool,
+    ) -> Optional[PooledCredential]:
+        observed_source_path, observed_refresh_fingerprint = (
+            auth_mod._observe_provider_refresh_source("xai-oauth")
+        )
+        expected_source_path = observed_source_path
+        winner: Optional[PooledCredential] = None
+        refresh_failed = False
+        for _attempt in range(3):
+            with auth_mod._provider_state_transaction(
+                "xai-oauth",
+                timeout_seconds=self._single_use_refresh_lock_timeout(),
+                expected_source_path=expected_source_path,
+            ) as (transaction_store, state, source_path):
+                if source_path is None or state is None:
+                    expected_source_path = None
+                    continue
+                resolved_state, resolved_source_path = (
+                    auth_mod._load_provider_state_with_source(
+                        transaction_store,
+                        "xai-oauth",
+                    )
+                )
+                if (
+                    resolved_state is not None
+                    and resolved_source_path is not None
+                    and not auth_mod._same_path(resolved_source_path, Path(source_path))
+                ):
+                    state = resolved_state
+                    source_path = resolved_source_path
+                if auth_mod._source_state_is_reserved(state):
+                    refresh_failed = True
+                    break
+                authoritative = self._xai_entry_from_locked_state(
+                    entry,
+                    state,
+                    Path(source_path),
+                )
+                if authoritative is None:
+                    refresh_failed = True
+                    break
+                current_refresh_fingerprint = auth_mod._refresh_lineage_fingerprint(
+                    authoritative.refresh_token
+                )
+                owner_changed = bool(
+                    observed_source_path is not None
+                    and not auth_mod._same_path(observed_source_path, Path(source_path))
+                )
+                lineage_changed = bool(
+                    observed_refresh_fingerprint is not None
+                    and current_refresh_fingerprint != observed_refresh_fingerprint
+                )
+                if (
+                    (
+                        owner_changed
+                        or lineage_changed
+                        or not self._entry_tokens_match(authoritative, entry)
+                    )
+                    and not auth_mod._xai_access_token_is_expiring(
+                        authoritative.access_token,
+                        0,
+                    )
+                ):
+                    winner = authoritative
+                    break
+                if not force and not self._entry_needs_refresh(authoritative):
+                    winner = authoritative
+                    break
+                discovery = dict(state.get("discovery") or {})
+                token_endpoint = str(
+                    discovery.get("token_endpoint", "") or ""
+                ).strip()
+                if not token_endpoint:
+                    token_endpoint = auth_mod._xai_oauth_discovery(
+                        auth_mod.env_float("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20)
+                    )["token_endpoint"]
+                consumed_refresh_token = authoritative.refresh_token or ""
+                reservation = auth_mod._reserve_provider_refresh_source(
+                    "xai-oauth",
+                    state,
+                    source_path,
+                    expected_refresh_token=consumed_refresh_token,
+                )
+                try:
+                    refreshed = auth_mod.refresh_xai_oauth_pure(
+                        authoritative.access_token,
+                        consumed_refresh_token,
+                        token_endpoint=token_endpoint,
+                        timeout_seconds=auth_mod.env_float(
+                            "HERMES_XAI_REFRESH_TIMEOUT_SECONDS",
+                            20,
+                        ),
+                    )
+                except Exception:
+                    refresh_failed = True
+                    break
+                updated_state = auth_mod._xai_oauth_state_with_refreshed_tokens(
+                    state,
+                    refreshed,
+                    token_endpoint=token_endpoint,
+                )
+                try:
+                    auth_mod._finalize_provider_refresh_reservation(
+                        reservation,
+                        updated_state,
+                    )
+                except auth_mod.SourceCredentialLineageChanged:
+                    continue
+                except OSError:
+                    refresh_failed = True
+                    break
+                winner = replace(
+                    entry,
+                    access_token=refreshed["access_token"],
+                    refresh_token=refreshed["refresh_token"],
+                    last_refresh=refreshed.get("last_refresh"),
+                    source_store_path=Path(source_path),
+                    last_status=STATUS_OK,
+                    last_status_at=None,
+                    last_error_code=None,
+                    last_error_reason=None,
+                    last_error_message=None,
+                    last_error_reset_at=None,
+                )
+                break
+        if refresh_failed:
+            self._mark_source_persistence_dead(entry, persist=False)
+            return None
+        if winner is None:
+            return None
+        return self._replace_entry(
+            entry,
+            winner,
+            preserve_routing=True,
+        )
+
+    def _current_refresh_candidate(
+        self,
+        expected: PooledCredential,
+    ) -> Optional[PooledCredential]:
+        """Return the current row only when its refresh lineage still matches."""
+        with self._lock:
+            current = next(
+                (item for item in self._entries if item.id == expected.id),
+                None,
+            )
+        if current is None:
+            return None
+        if (
+            current.source != expected.source
+            or not self._entry_tokens_match(current, expected)
+        ):
+            return None
+        return current
 
     def _single_use_refresh_lock_timeout(self) -> float:
         """Lock timeout for single-use-refresh-token providers.
@@ -1345,9 +2795,201 @@ class CredentialPool:
             float(refresh_timeout_seconds) + 5.0,
         )
 
-    def _refresh_entry_impl(
-        self, entry: PooledCredential, *, force: bool
+    def _commit_refreshed_entry(
+        self,
+        expected: PooledCredential,
+        refreshed: PooledCredential,
+        *,
+        codex_source_path: Optional[Path] = None,
+        codex_singleton_owned: bool = False,
     ) -> Optional[PooledCredential]:
+        """Commit refreshed tokens only while their source lineage is current."""
+        if (
+            self.provider == "anthropic" and expected.source == "claude_code"
+        ) or (
+            self.provider == "xai-oauth" and expected.source == "device_code"
+        ):
+            # These rotating owners must use their dedicated pre-POST source
+            # transaction. Refuse the legacy post-POST source commit path.
+            return None
+
+        committed = self._replace_entry(
+            expected,
+            refreshed,
+            preserve_routing=True,
+        )
+        if committed is None:
+            return None
+        if not self._entry_tokens_match(committed, refreshed):
+            return committed
+
+        if self.provider == "openai-codex" and codex_source_path is not None:
+            with self._external_state_lock:
+                current = self._current_refresh_candidate(committed)
+                if current is None:
+                    return None
+                if codex_singleton_owned:
+                    self._persist_codex_device_code_refresh(
+                        current,
+                        codex_source_path,
+                    )
+                elif not self._persist_codex_exact_alias_refresh(
+                    current,
+                    codex_source_path,
+                ):
+                    return None
+                return current
+
+        with self._external_state_lock:
+            return self._current_refresh_candidate(committed)
+
+    def _revalidate_refreshed_entry(
+        self,
+        refreshed: PooledCredential,
+    ) -> Optional[PooledCredential]:
+        """Return only a current row that still matches its owning source."""
+
+        if self.provider == "anthropic" and refreshed.source == "claude_code":
+            from agent.anthropic_adapter import claude_code_credentials_transaction
+
+            with claude_code_credentials_transaction(
+                timeout_seconds=self._single_use_refresh_lock_timeout(),
+            ) as (_source_path, creds):
+                if not creds:
+                    return None
+                source_snapshot = dict(creds)
+            with self._external_state_lock:
+                with self._lock:
+                    current = next(
+                        (
+                            item
+                            for item in self._entries
+                            if item.id == refreshed.id
+                        ),
+                        None,
+                    )
+                if current is None or current.source != refreshed.source:
+                    return None
+                authoritative = self._anthropic_entry_from_locked_credentials(
+                    current,
+                    source_snapshot,
+                )
+                if not self._entry_tokens_match(authoritative, current):
+                    return self._replace_entry(
+                        current,
+                        authoritative,
+                        preserve_routing=True,
+                    )
+                return current
+
+        if self.provider == "xai-oauth" and refreshed.source == "device_code":
+            expected_source_path = (
+                refreshed.source_store_path or auth_mod._auth_file_path()
+            )
+            with auth_mod._provider_state_transaction(
+                "xai-oauth",
+                timeout_seconds=self._single_use_refresh_lock_timeout(),
+                expected_source_path=expected_source_path,
+            ) as (_auth_store, state, source_path):
+                if state is None or source_path is None:
+                    return None
+                source_snapshot = dict(state)
+                snapshot_path = Path(source_path)
+            with self._external_state_lock:
+                with self._lock:
+                    current = next(
+                        (
+                            item
+                            for item in self._entries
+                            if item.id == refreshed.id
+                        ),
+                        None,
+                    )
+                if current is None or current.source != refreshed.source:
+                    return None
+                authoritative = self._xai_entry_from_locked_state(
+                    current,
+                    source_snapshot,
+                    snapshot_path,
+                )
+                if authoritative is None:
+                    return None
+                if not self._entry_tokens_match(authoritative, current):
+                    return self._replace_entry(
+                        current,
+                        authoritative,
+                        preserve_routing=True,
+                    )
+                return current
+
+        if self.provider == "nous" and refreshed.source == "device_code":
+            auth_store = _load_auth_store()
+            _state, source_path = _load_provider_state_with_source(
+                auth_store,
+                self.provider,
+            )
+            with auth_mod._provider_state_transaction(
+                self.provider,
+                timeout_seconds=self._single_use_refresh_lock_timeout(),
+                expected_source_path=source_path,
+            ) as (_auth_store, state, _locked_source_path):
+                if not isinstance(state, dict) or not state.get("access_token"):
+                    return None
+                source_snapshot = dict(state)
+            with self._external_state_lock:
+                with self._lock:
+                    current = next(
+                        (
+                            item
+                            for item in self._entries
+                            if item.id == refreshed.id
+                        ),
+                        None,
+                    )
+                if current is None or current.source != refreshed.source:
+                    return None
+                authoritative = replace(
+                    current,
+                    access_token=str(source_snapshot.get("access_token") or ""),
+                    refresh_token=str(source_snapshot.get("refresh_token") or ""),
+                    expires_at=source_snapshot.get("expires_at"),
+                    agent_key=source_snapshot.get("agent_key"),
+                    agent_key_expires_at=source_snapshot.get("agent_key_expires_at"),
+                    inference_base_url=source_snapshot.get("inference_base_url"),
+                )
+                if not self._entry_tokens_match(authoritative, current):
+                    return self._replace_entry(
+                        current,
+                        authoritative,
+                        preserve_routing=True,
+                    )
+                return current
+
+        with self._external_state_lock:
+            with self._lock:
+                return next(
+                    (
+                        item
+                        for item in self._entries
+                        if item.id == refreshed.id
+                        and item.source == refreshed.source
+                        and self._entry_tokens_match(item, refreshed)
+                    ),
+                    None,
+                )
+
+    def _refresh_entry_impl(
+        self,
+        entry: PooledCredential,
+        *,
+        force: bool,
+        codex_source_path: Optional[Path] = None,
+        codex_singleton_owned: bool = False,
+    ) -> Optional[PooledCredential]:
+        current = self._current_refresh_candidate(entry)
+        if current is None:
+            return None
+        entry = current
         try:
             if self.provider == "anthropic":
                 from agent.anthropic_adapter import refresh_anthropic_oauth_pure
@@ -1362,27 +3004,19 @@ class CredentialPool:
                     refresh_token=refreshed["refresh_token"],
                     expires_at_ms=refreshed["expires_at_ms"],
                 )
-                # Keep ~/.claude/.credentials.json in sync so that the
-                # fallback path (resolve_anthropic_token) and other profiles
-                # see the latest tokens.
-                if entry.source == "claude_code":
-                    try:
-                        from agent.anthropic_adapter import _write_claude_code_credentials
-                        _write_claude_code_credentials(
-                            refreshed["access_token"],
-                            refreshed["refresh_token"],
-                            refreshed["expires_at_ms"],
-                        )
-                    except Exception as wexc:
-                        logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
             elif self.provider == "openai-codex":
                 # Adopt fresher tokens from auth.json before spending the
                 # refresh_token — single-use tokens consumed by another Hermes
                 # process sharing the same auth.json singleton would otherwise
                 # trigger ``refresh_token_reused`` on the next POST.
-                synced = self._sync_codex_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
+                if codex_source_path is None:
+                    synced = self._sync_codex_entry_from_auth_store(entry)
+                    if synced is not entry:
+                        entry = synced
+                current = self._current_refresh_candidate(entry)
+                if current is None:
+                    return None
+                entry = current
                 refreshed = auth_mod.refresh_codex_oauth_pure(
                     entry.access_token,
                     entry.refresh_token,
@@ -1399,9 +3033,16 @@ class CredentialPool:
                 # process (or another profile sharing the singleton) would
                 # otherwise trigger ``refresh_token_reused`` on the next
                 # POST.  Only meaningful for singleton-seeded entries.
-                synced = self._sync_xai_oauth_entry_from_auth_store(entry)
+                synced = self._sync_xai_oauth_entry_from_auth_store(
+                    entry,
+                    persist=False,
+                )
                 if synced is not entry:
                     entry = synced
+                current = self._current_refresh_candidate(entry)
+                if current is None:
+                    return None
+                entry = current
                 refreshed = auth_mod.refresh_xai_oauth_pure(
                     entry.access_token,
                     entry.refresh_token,
@@ -1413,22 +3054,49 @@ class CredentialPool:
                     last_refresh=refreshed.get("last_refresh"),
                 )
             elif self.provider == "nous":
-                synced = self._sync_nous_entry_from_auth_store(entry)
+                observed_refresh_token = entry.refresh_token
+                synced = self._sync_nous_entry_from_auth_store(
+                    entry,
+                    persist=False,
+                )
                 if synced is not entry:
                     entry = synced
+                if (
+                    entry.refresh_token != observed_refresh_token
+                    and not self._entry_needs_refresh(entry)
+                ):
+                    return entry
+                current = self._current_refresh_candidate(entry)
+                if current is None:
+                    return None
+                entry = current
                 auth_mod.resolve_nous_runtime_credentials(
                     force_refresh=force,
                 )
-                updated = self._sync_nous_entry_from_auth_store(entry)
+                updated = self._sync_nous_entry_from_auth_store(
+                    entry,
+                    persist=False,
+                )
             else:
                 return entry
         except Exception as exc:
             logger.debug("Credential refresh failed for %s/%s: %s", self.provider, entry.id, exc)
+            if (
+                self.provider == "nous"
+                and isinstance(exc, auth_mod.SourceCredentialPersistenceError)
+            ):
+                # The exact owner is already durably reserved. Keep this pool
+                # instance unavailable without creating a borrower-local copy.
+                self._mark_source_persistence_dead(entry, persist=False)
+                return None
             # For anthropic claude_code entries: the refresh token may have been
             # consumed by another process. Check if ~/.claude/.credentials.json
             # has a newer token pair and retry once.
             if self.provider == "anthropic" and entry.source == "claude_code":
-                synced = self._sync_anthropic_entry_from_credentials_file(entry)
+                synced = self._sync_anthropic_entry_from_credentials_file(
+                    entry,
+                    persist=False,
+                )
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug("Retrying refresh with synced token from credentials file")
                     try:
@@ -1446,18 +3114,7 @@ class CredentialPool:
                             last_status_at=None,
                             last_error_code=None,
                         )
-                        self._replace_entry(synced, updated)
-                        self._persist()
-                        try:
-                            from agent.anthropic_adapter import _write_claude_code_credentials
-                            _write_claude_code_credentials(
-                                refreshed["access_token"],
-                                refreshed["refresh_token"],
-                                refreshed["expires_at_ms"],
-                            )
-                        except Exception as wexc:
-                            logger.debug("Failed to write refreshed token to credentials file (retry path): %s", wexc)
-                        return updated
+                        return self._commit_refreshed_entry(synced, updated)
                     except Exception as retry_exc:
                         logger.debug("Retry refresh also failed: %s", retry_exc)
                 elif not self._entry_needs_refresh(synced):
@@ -1471,7 +3128,10 @@ class CredentialPool:
             # (device_code) entries; manual entries don't share
             # state with the singleton.
             if self.provider == "xai-oauth":
-                synced = self._sync_xai_oauth_entry_from_auth_store(entry)
+                synced = self._sync_xai_oauth_entry_from_auth_store(
+                    entry,
+                    persist=False,
+                )
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug(
                         "xAI OAuth refresh failed but auth.json has newer tokens — adopting"
@@ -1485,9 +3145,16 @@ class CredentialPool:
                         last_error_message=None,
                         last_error_reset_at=None,
                     )
-                    self._replace_entry(synced, updated)
-                    self._persist()
-                    return updated
+                    committed = self._replace_entry(
+                        synced,
+                        updated,
+                        preserve_routing=True,
+                    )
+                    if committed is None:
+                        return None
+                    if not self._entry_tokens_match(committed, updated):
+                        return committed
+                    return committed
                 # Terminal error: auth.json has no newer tokens — the stored
                 # refresh_token is dead.  Clear it from auth.json so the next
                 # session does not re-seed the same revoked credentials, and
@@ -1529,24 +3196,54 @@ class CredentialPool:
                     # pool lock), so take it here. self._lock is an RLock,
                     # so the still-locked callers re-enter safely.
                     with self._lock:
-                        removed_ids = [
-                            item.id for item in self._entries
+                        removed_entries = [
+                            item for item in self._entries
                             if item.source == "device_code"
                         ]
+                        for removed in removed_entries:
+                            self._queue_removed_entry_unlocked(removed)
                         self._entries = [
                             item for item in self._entries
                             if item.source != "device_code"
                         ]
                         if self._current_id == entry.id:
                             self._current_id = None
-                        self._persist(removed_ids=removed_ids)
                     return None
             # For openai-codex: same race as xAI/nous — another Hermes process
             # may have consumed the refresh token between our proactive sync
             # and the HTTP call.  Re-check auth.json and adopt the fresh tokens
             # if they have rotated since.
             if self.provider == "openai-codex":
-                synced = self._sync_codex_entry_from_auth_store(entry)
+                if codex_source_path is not None:
+                    source_store = _load_auth_store(codex_source_path)
+                    if codex_singleton_owned:
+                        providers = source_store.get("providers")
+                        state = (
+                            providers.get("openai-codex")
+                            if isinstance(providers, dict)
+                            else None
+                        )
+                        synced = self._codex_entry_from_provider_state(entry, state)
+                    else:
+                        _persisted, _index, item = self._codex_exact_pool_alias(
+                            source_store,
+                            entry,
+                        )
+                        if self._codex_pool_alias_has_complete_credentials(item):
+                            assert isinstance(item, dict)
+                            synced = replace(
+                                PooledCredential.from_dict("openai-codex", item),
+                                source_store_path=codex_source_path,
+                            )
+                        else:
+                            self._revoke_missing_codex_source(
+                                entry,
+                                codex_source_path,
+                                source_store=source_store,
+                            )
+                            return None
+                else:
+                    synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug(
                         "Codex OAuth refresh failed but auth.json has newer tokens — adopting"
@@ -1560,9 +3257,25 @@ class CredentialPool:
                         last_error_message=None,
                         last_error_reset_at=None,
                     )
-                    self._replace_entry(synced, updated)
-                    self._persist()
-                    return updated
+                    committed = self._replace_entry(
+                        synced,
+                        updated,
+                        preserve_routing=True,
+                    )
+                    if committed is None:
+                        return None
+                    if not self._entry_tokens_match(committed, updated):
+                        return committed
+                    if codex_source_path is not None:
+                        if codex_singleton_owned:
+                            self._persist_codex_device_code_refresh(
+                                committed, codex_source_path
+                            )
+                        else:
+                            self._persist_codex_exact_alias_refresh(
+                                committed, codex_source_path
+                            )
+                    return committed
                 # Terminal error: auth.json has no newer tokens — the stored
                 # refresh_token is dead.  Clear it from auth.json so the next
                 # session does not re-seed the same revoked credentials, and
@@ -1572,29 +3285,64 @@ class CredentialPool:
                     logger.debug(
                         "Codex OAuth refresh token is terminally invalid; clearing local token state"
                     )
+                    removed_ids = {entry.id}
                     try:
-                        with _auth_store_lock():
-                            auth_store = _load_auth_store()
-                            state = _load_provider_state(auth_store, "openai-codex") or {}
-                            if isinstance(state, dict):
-                                tokens = state.get("tokens") or {}
-                                if isinstance(tokens, dict):
-                                    store_refresh = str(tokens.get("refresh_token") or "").strip()
-                                    entry_refresh = str(entry.refresh_token or "").strip()
-                                    if not store_refresh or store_refresh == entry_refresh:
-                                        tokens.pop("access_token", None)
-                                        tokens.pop("refresh_token", None)
-                                        state["tokens"] = tokens
-                                        state["last_auth_error"] = {
-                                            "provider": "openai-codex",
-                                            "code": getattr(exc, "code", "unknown"),
-                                            "message": str(exc),
-                                            "reason": "credential_pool_refresh_failure",
-                                            "relogin_required": True,
-                                            "at": datetime.now(timezone.utc).isoformat(),
-                                        }
-                                        _save_provider_state(auth_store, "openai-codex", state)
-                                        _save_auth_store(auth_store)
+                        if codex_source_path is not None:
+                            if codex_singleton_owned:
+                                removed_ids = (
+                                    self._quarantine_codex_device_code_refresh(
+                                        entry, codex_source_path, exc
+                                    )
+                                )
+                            else:
+                                self._quarantine_codex_exact_alias_refresh(
+                                    entry, codex_source_path
+                                )
+                                removed_ids = {entry.id}
+                        else:
+                            removed_ids = {entry.id}
+                            with _auth_store_lock():
+                                auth_store = _load_auth_store()
+                                state = (
+                                    _load_provider_state(auth_store, "openai-codex")
+                                    or {}
+                                )
+                                if isinstance(state, dict):
+                                    tokens = state.get("tokens") or {}
+                                    if isinstance(tokens, dict):
+                                        store_refresh = str(
+                                            tokens.get("refresh_token") or ""
+                                        ).strip()
+                                        entry_refresh = str(
+                                            entry.refresh_token or ""
+                                        ).strip()
+                                        if (
+                                            not store_refresh
+                                            or store_refresh == entry_refresh
+                                        ):
+                                            tokens.pop("access_token", None)
+                                            tokens.pop("refresh_token", None)
+                                            state["tokens"] = tokens
+                                            state["last_auth_error"] = {
+                                                "provider": "openai-codex",
+                                                "code": getattr(
+                                                    exc, "code", "unknown"
+                                                ),
+                                                "message": str(exc),
+                                                "reason": (
+                                                    "credential_pool_refresh_failure"
+                                                ),
+                                                "relogin_required": True,
+                                                "at": datetime.now(
+                                                    timezone.utc
+                                                ).isoformat(),
+                                            }
+                                            _save_provider_state(
+                                                auth_store,
+                                                "openai-codex",
+                                                state,
+                                            )
+                                            _save_auth_store(auth_store)
                     except Exception as clear_exc:
                         logger.debug(
                             "Failed to clear terminal Codex OAuth state: %s", clear_exc
@@ -1604,23 +3352,25 @@ class CredentialPool:
                     # pool lock), so take it here. self._lock is an RLock,
                     # so the still-locked callers re-enter safely.
                     with self._lock:
-                        removed_ids = [
-                            item.id for item in self._entries
-                            if item.source == "device_code"
+                        removed_entries = [
+                            item for item in self._entries if item.id in removed_ids
                         ]
+                        for removed in removed_entries:
+                            self._queue_removed_entry_unlocked(removed)
                         self._entries = [
-                            item for item in self._entries
-                            if item.source != "device_code"
+                            item for item in self._entries if item.id not in removed_ids
                         ]
-                        if self._current_id == entry.id:
+                        if self._current_id in removed_ids:
                             self._current_id = None
-                        self._persist(removed_ids=removed_ids)
                     return None
             # For nous: another process may have consumed the refresh token
             # between our proactive sync and the HTTP call.  Re-sync from
             # auth.json and adopt the fresh tokens if available.
             if self.provider == "nous":
-                synced = self._sync_nous_entry_from_auth_store(entry)
+                synced = self._sync_nous_entry_from_auth_store(
+                    entry,
+                    persist=False,
+                )
                 if synced.refresh_token != entry.refresh_token:
                     logger.debug("Nous refresh failed but auth.json has newer tokens — adopting")
                     updated = replace(
@@ -1632,12 +3382,19 @@ class CredentialPool:
                         last_error_message=None,
                         last_error_reset_at=None,
                     )
-                    self._replace_entry(synced, updated)
-                    self._persist()
-                    self._sync_device_code_entry_to_auth_store(updated)
-                    return updated
+                    committed = self._replace_entry(
+                        synced,
+                        updated,
+                        preserve_routing=True,
+                    )
+                    if committed is None:
+                        return None
+                    if not self._entry_tokens_match(committed, updated):
+                        return committed
+                    return committed
                 if auth_mod._is_terminal_nous_refresh_error(exc):
-                    logger.debug("Nous refresh token is terminally invalid; clearing local token state")
+                    logger.debug("Nous refresh token is terminally invalid; reconciling source state")
+                    reserved_owner = False
                     try:
                         with _auth_store_lock():
                             auth_store = _load_auth_store()
@@ -1649,9 +3406,13 @@ class CredentialPool:
                                 "scope": entry.scope,
                                 "tls": entry.tls,
                             }
+                            reserved_owner = auth_mod._source_state_is_reserved(state)
                             store_refresh = str(state.get("refresh_token") or "").strip()
                             entry_refresh = str(entry.refresh_token or "").strip()
-                            if not store_refresh or store_refresh == entry_refresh:
+                            if (
+                                not reserved_owner
+                                and (not store_refresh or store_refresh == entry_refresh)
+                            ):
                                 auth_mod._quarantine_nous_oauth_state(
                                     state,
                                     exc,
@@ -1667,25 +3428,41 @@ class CredentialPool:
                     except Exception as clear_exc:
                         logger.debug("Failed to clear terminal Nous OAuth state: %s", clear_exc)
 
+                    if reserved_owner:
+                        self._mark_source_persistence_dead(entry, persist=False)
+                        return None
+
                     singleton_sources = {
                         auth_mod.NOUS_DEVICE_CODE_SOURCE,
                         f"manual:{auth_mod.NOUS_DEVICE_CODE_SOURCE}",
                     }
                     # Atomic read-modify-write; see the note above.
                     with self._lock:
-                        removed_ids = [
-                            item.id for item in self._entries
+                        removed_entries = [
+                            item for item in self._entries
                             if item.source in singleton_sources
                         ]
+                        for removed in removed_entries:
+                            self._queue_removed_entry_unlocked(removed)
                         self._entries = [
                             item for item in self._entries
                             if item.source not in singleton_sources
                         ]
                         if self._current_id == entry.id:
                             self._current_id = None
-                        self._persist(removed_ids=removed_ids)
                     return None
-            self._mark_exhausted(entry, None)
+            if self.provider == "openai-codex" and codex_source_path is not None:
+                exhausted = self._mark_exhausted(entry, None, persist=False)
+                if codex_singleton_owned:
+                    self._persist_codex_device_code_refresh(
+                        exhausted, codex_source_path
+                    )
+                else:
+                    self._persist_codex_exact_alias_refresh(
+                        exhausted, codex_source_path
+                    )
+            else:
+                self._mark_exhausted(entry, None, persist=False)
             return None
 
         updated = replace(
@@ -1697,13 +3474,12 @@ class CredentialPool:
             last_error_message=None,
             last_error_reset_at=None,
         )
-        self._replace_entry(entry, updated)
-        self._persist()
-        # Sync refreshed tokens back to auth.json providers so that
-        # _seed_from_singletons() on the next load_pool() sees fresh state
-        # instead of re-seeding stale/consumed tokens.
-        self._sync_device_code_entry_to_auth_store(updated)
-        return updated
+        return self._commit_refreshed_entry(
+            entry,
+            updated,
+            codex_source_path=codex_source_path,
+            codex_singleton_owned=codex_singleton_owned,
+        )
 
     def _codex_quota_restored_upstream(self, entry: PooledCredential) -> bool:
         """Live-check whether an exhausted Codex entry's quota reset early.
@@ -1766,8 +3542,182 @@ class CredentialPool:
             return False
         return False
 
+    def _assert_external_state_lock_order(self) -> None:
+        """Reject external synchronization while the pool lock is held."""
+        is_owned = getattr(self._lock, "_is_owned", None)
+        if callable(is_owned) and is_owned():
+            raise RuntimeError(
+                "External credential state cannot be synchronized while the "
+                "credential-pool lock is held"
+            )
+
+    def _sync_external_status_entries(self, *, probe_quota: bool = False) -> None:
+        """Refresh external status sources without holding the pool lock."""
+        self._assert_external_state_lock_order()
+        self._sync_external_status_entries_locked(probe_quota=probe_quota)
+
+    def _sync_external_status_entries_locked(
+        self,
+        *,
+        probe_quota: bool = False,
+    ) -> None:
+        with self._lock:
+            status_entries = [
+                entry
+                for entry in self._entries
+                if entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}
+            ]
+
+        for entry in status_entries:
+            if self.provider == "anthropic" and entry.source == "claude_code":
+                self._sync_anthropic_entry_from_credentials_file(
+                    entry,
+                    persist=False,
+                )
+            elif self.provider == "nous" and entry.source == "device_code":
+                self._sync_nous_entry_from_auth_store(entry, persist=False)
+            elif (
+                self.provider == "openai-codex"
+                and entry.source == "device_code"
+                and entry.source_store_path is None
+            ):
+                self._sync_codex_entry_from_auth_store(entry)
+            elif self.provider == "xai-oauth" and entry.source == "device_code":
+                self._sync_xai_oauth_entry_from_auth_store(entry, persist=False)
+
+        if not probe_quota:
+            return
+        with self._lock:
+            quota_entries = [
+                entry
+                for entry in self._entries
+                if entry.last_status == STATUS_EXHAUSTED
+            ]
+        for entry in quota_entries:
+            if not self._codex_quota_restored_upstream(entry):
+                continue
+            cleared = replace(
+                entry,
+                last_status=STATUS_OK,
+                last_status_at=None,
+                last_error_code=None,
+                last_error_reason=None,
+                last_error_message=None,
+                last_error_reset_at=None,
+            )
+            self._replace_entry(entry, cleared)
+
+    def _converge_empty_xai_source_selection(self) -> bool:
+        """Adopt a durable xAI singleton winner after an in-flight reservation.
+
+        A pool loaded while another process owns the source refresh transaction
+        sees the deliberately secret-free reservation row and therefore has no
+        selectable entry. Wait for that exact source transaction, snapshot its
+        finalized row while still locked, then hydrate this pool only after the
+        source lock is released. A stranded reservation remains fail-closed.
+        """
+        if self.provider != "xai-oauth":
+            return False
+
+        try:
+            with auth_mod._provider_state_transaction(
+                "xai-oauth",
+                timeout_seconds=self._single_use_refresh_lock_timeout(),
+            ) as (_auth_store, state, source_path):
+                if (
+                    source_path is None
+                    or not isinstance(state, dict)
+                    or auth_mod._source_state_is_reserved(state)
+                ):
+                    return False
+                tokens = state.get("tokens")
+                if not isinstance(tokens, dict):
+                    return False
+                access_token = str(tokens.get("access_token") or "").strip()
+                if not access_token:
+                    return False
+
+                source_path = Path(source_path)
+                source_store = _load_auth_store(source_path)
+                source_pool = source_store.get("credential_pool")
+                source_rows = (
+                    source_pool.get("xai-oauth")
+                    if isinstance(source_pool, dict)
+                    else None
+                )
+                candidates = [
+                    PooledCredential.from_dict("xai-oauth", row)
+                    for row in source_rows or []
+                    if isinstance(row, dict)
+                ]
+                _upsert_entry(
+                    candidates,
+                    "xai-oauth",
+                    "device_code",
+                    {
+                        "source": "device_code",
+                        "auth_type": AUTH_TYPE_OAUTH,
+                        "access_token": access_token,
+                        "refresh_token": tokens.get("refresh_token"),
+                        "base_url": auth_mod.DEFAULT_XAI_OAUTH_BASE_URL,
+                        "last_refresh": state.get("last_refresh"),
+                        "label": label_from_token(access_token, "device_code"),
+                    },
+                )
+                winner = next(
+                    (
+                        candidate
+                        for candidate in candidates
+                        if candidate.source == "device_code"
+                    ),
+                    None,
+                )
+                if winner is None:
+                    return False
+                winner = replace(winner, source_store_path=source_path)
+        except Exception as exc:
+            logger.debug("Failed to converge empty xAI OAuth pool: %s", exc)
+            return False
+
+        # The source transaction is intentionally over before pool mutation.
+        # Another selector may already have converged this instance; preserve
+        # its complete entry instead of replacing a newer in-memory snapshot.
+        with self._external_state_lock:
+            with self._lock:
+                if any(
+                    entry.source == "device_code" and entry.access_token
+                    for entry in self._entries
+                ):
+                    return True
+                stale_ids = {
+                    entry.id
+                    for entry in self._entries
+                    if entry.source == "device_code"
+                }
+                self._entries = [
+                    entry
+                    for entry in self._entries
+                    if entry.source != "device_code"
+                ]
+                self._entries.append(winner)
+                if self._current_id in stale_ids:
+                    self._current_id = None
+        return True
+
     def select(self) -> Optional[PooledCredential]:
-        entry, pending_refresh = self._select_under_lock()
+        failed_source_ids = self._validate_source_owned_codex_entries()
+        self._sync_external_status_entries(probe_quota=True)
+        entry, pending_refresh = self._select_under_lock(failed_source_ids)
+        self._persist_pending_changes()
+        if (
+            entry is None
+            and not pending_refresh
+            and self._converge_empty_xai_source_selection()
+        ):
+            failed_source_ids = self._validate_source_owned_codex_entries()
+            self._sync_external_status_entries(probe_quota=True)
+            entry, pending_refresh = self._select_under_lock(failed_source_ids)
+            self._persist_pending_changes()
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
         if entry is not None:
@@ -1776,24 +3726,32 @@ class CredentialPool:
         # If no entry was available but we just refreshed some, re-select
         # now that the refreshed entries are back in the pool.
         if pending_refresh:
-            entry, _ = self._select_under_lock()
+            failed_source_ids = self._validate_source_owned_codex_entries()
+            self._sync_external_status_entries(probe_quota=True)
+            entry, _ = self._select_under_lock(failed_source_ids)
+            self._persist_pending_changes()
             if entry is not None:
                 self._unmatched_rotation_streak = 0
         return entry
 
-    def _select_under_lock(self) -> Tuple[Optional[PooledCredential], List[tuple]]:
+    def _select_under_lock(
+        self,
+        excluded_source_ids: Optional[Set[str]] = None,
+    ) -> Tuple[Optional[PooledCredential], List[tuple]]:
         """Run selection under the lock, returning entry + pending refreshes."""
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(
+                excluded_source_ids=excluded_source_ids,
+            )
 
     def _refresh_pending_entries(self, pending: List[tuple]) -> None:
-        """Refresh deferred single-use-token entries outside the lock.
+        """Refresh deferred OAuth entries outside the lock.
 
         Each entry is refreshed under the cross-process ``_auth_store_lock``
         (which can block for 20+ seconds) and then merged into the pool.
         On failure the entry is silently skipped.
         """
-        for entry, sync_fn in pending:
+        for entry, _sync_fn in pending:
             # _refresh_entry merges the refreshed entry into the pool
             # internally. Its mutation primitives (_replace_entry, _persist)
             # are self-locking, and the quarantine paths inside
@@ -1803,27 +3761,24 @@ class CredentialPool:
             self._refresh_entry(entry, force=False)
 
     def _available_entries(
-        self, *, clear_expired: bool = False, refresh: bool = False,
+        self,
+        *,
+        clear_expired: bool = False,
+        refresh: bool = False,
+        excluded_source_ids: Optional[Set[str]] = None,
     ) -> Tuple[List[PooledCredential], List[tuple]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
         When *clear_expired* is True, entries whose cooldown has elapsed are
-        reset to STATUS_OK and persisted.  When *refresh* is True, entries
-        that need a token refresh are refreshed (skipped on failure).
-
-        Single-use-token refreshes (openai-codex, xai-oauth) are returned as
-        *pending_refresh* tuples so the caller can execute them outside the
-        lock, avoiding stalling all pool consumers during cross-process flock
-        acquisition + OAuth network I/O.
+        reset to STATUS_OK and persisted. When *refresh* is True, entries that
+        need a token refresh are returned to the caller for refresh after the
+        lock is released.
         """
         now = time.time()
-        cleared_any = False
         entries_to_prune: List[str] = []
         available: List[PooledCredential] = []
-        # Entries that need an OAuth refresh via a single-use token provider
-        # (openai-codex, xai-oauth).  These require a cross-process file lock
-        # that can block for 20+ seconds.  We collect them under self._lock
-        # and refresh outside the lock to avoid stalling all pool consumers.
+        # Refresh can perform network and auth-store I/O for every OAuth
+        # provider, so collect candidates here and execute them after unlock.
         pending_refresh: List[tuple] = []  # (entry, sync_entry_fn)
         # DEAD entries never re-enter rotation, so if at most one non-DEAD entry
         # exists there is nothing to rotate to: an exhausted sole credential
@@ -1831,55 +3786,14 @@ class CredentialPool:
         sole_credential = sum(
             1 for e in self._entries if e.last_status != STATUS_DEAD
         ) <= 1
-        for entry in self._entries:
+        for entry in list(self._entries):
+            if excluded_source_ids and entry.id in excluded_source_ids:
+                continue
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load.  A stale duplicate row
             # can remain unhydrated; never lease or select it as an empty key.
             if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
                 continue
-            # For anthropic claude_code entries, sync from the credentials file
-            # before any status/refresh checks. This picks up tokens refreshed
-            # by other processes (Claude Code CLI, other Hermes profiles).
-            if (self.provider == "anthropic" and entry.source == "claude_code"
-                    and entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}):
-                synced = self._sync_anthropic_entry_from_credentials_file(entry)
-                if synced is not entry:
-                    entry = synced
-                    cleared_any = True
-            # For nous entries, sync from auth.json before status checks.
-            # Another process may have successfully refreshed via
-            # resolve_nous_runtime_credentials(), making this entry's
-            # exhausted status stale.
-            if (self.provider == "nous"
-                    and entry.source == "device_code"
-                    and entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}):
-                synced = self._sync_nous_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                    cleared_any = True
-            # For openai-codex entries, same pattern: the user may have
-            # re-authed via `hermes model` / `hermes auth` after a 429/401,
-            # leaving fresh tokens on disk while the pool entry is still
-            # frozen behind last_error_reset_at (can be hours in the
-            # future for ChatGPT weekly windows).
-            if (self.provider == "openai-codex"
-                    and entry.source == "device_code"
-                    and entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}):
-                synced = self._sync_codex_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                    cleared_any = True
-            # For xai-oauth singleton-seeded entries, identical pattern:
-            # an entry frozen as exhausted may simply be holding stale
-            # tokens that another process (or a fresh `hermes model` ->
-            # xAI Grok OAuth login) has since rotated in auth.json.
-            if (self.provider == "xai-oauth"
-                    and entry.source == "device_code"
-                    and entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}):
-                synced = self._sync_xai_oauth_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                    cleared_any = True
             if entry.last_status == STATUS_DEAD:
                 # Manual DEAD credentials get pruned after a 24h quiet window
                 # so the pool doesn't accumulate dead entries forever.  The
@@ -1903,7 +3817,6 @@ class CredentialPool:
                         # Mark for removal after the loop completes; we can't
                         # mutate self._entries while iterating.
                         entries_to_prune.append(entry.id)
-                        cleared_any = True
                 # Permanently failed credentials never re-enter rotation via
                 # TTL.  They only clear when a write-side re-auth sync rewrites
                 # the tokens (e.g. ``_save_codex_tokens`` after a fresh
@@ -1913,18 +3826,7 @@ class CredentialPool:
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
                 if exhausted_until is not None and now < exhausted_until:
-                    # Codex quota windows can reopen EARLY: the user redeems a
-                    # banked rate-limit reset (Codex CLI / ChatGPT UI), upgrades
-                    # their plan, or OpenAI resets the window.  The persisted
-                    # ``last_error_reset_at`` can then be days in the future
-                    # while the account is already usable again — a throttled
-                    # live probe of the Codex usage endpoint detects that and
-                    # lifts the stale cooldown (issue #43747).
-                    if not (
-                        clear_expired
-                        and self._codex_quota_restored_upstream(entry)
-                    ):
-                        continue
+                    continue
                 if clear_expired:
                     cleared = replace(
                         entry,
@@ -1937,28 +3839,21 @@ class CredentialPool:
                     )
                     self._replace_entry(entry, cleared)
                     entry = cleared
-                    cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
-                if self.provider in ("openai-codex", "xai-oauth"):
-                    # Defer single-use-token refresh to avoid holding the
-                    # threading lock during cross-process flock + network I/O.
-                    sync_fn = (
-                        self._sync_codex_entry_from_auth_store
-                        if self.provider == "openai-codex"
-                        else self._sync_xai_oauth_entry_from_pool_store
-                    )
-                    pending_refresh.append((entry, sync_fn))
-                    continue
-                refreshed = self._refresh_entry(entry, force=False)
-                if refreshed is None:
-                    continue
-                entry = refreshed
+                pending_refresh.append((entry, None))
+                continue
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)
+            pruned_entries = [
+                entry for entry in self._entries if entry.id in pruned_ids
+            ]
             self._entries = [e for e in self._entries if e.id not in pruned_ids]
-        if cleared_any:
-            self._persist(removed_ids=entries_to_prune)
+        else:
+            pruned_entries = []
+        if pruned_entries:
+            for pruned_entry in pruned_entries:
+                self._queue_removed_entry_unlocked(pruned_entry)
         return available, pending_refresh
 
     def _log_no_available_entries(self) -> None:
@@ -1975,13 +3870,27 @@ class CredentialPool:
         self._last_no_entries_log_at = now
         logger.info("credential pool: no available entries (all exhausted or empty)")
 
-    def _select_unlocked(self, *, refresh: bool = True) -> Tuple[Optional[PooledCredential], List[tuple]]:
+    def _select_unlocked(
+        self,
+        *,
+        refresh: bool = True,
+        excluded_source_ids: Optional[Set[str]] = None,
+    ) -> Tuple[Optional[PooledCredential], List[tuple]]:
         """Select the best available credential entry.
 
         Returns ``(entry, pending_refresh)`` where *pending_refresh* contains
         single-use-token entries that must be refreshed outside the lock.
         """
-        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh)
+        available, pending_refresh = self._available_entries(
+            clear_expired=True,
+            refresh=refresh,
+            excluded_source_ids=excluded_source_ids,
+        )
+        if pending_refresh:
+            # Do not select, rotate, or increment counters from a partial view
+            # that excludes refreshable entries. The caller refreshes outside
+            # the lock and performs one selection against the current pool.
+            return None, pending_refresh
         if not available:
             self._current_id = None
             self._log_no_available_entries()
@@ -2007,10 +3916,36 @@ class CredentialPool:
 
         if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
             entry = available[0]
+            previous_by_id = {candidate.id: candidate for candidate in self._entries}
+            previous_owners = {
+                candidate.id: self._trusted_codex_source_owner(candidate)
+                for candidate in self._entries
+            }
             rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
             rotated.append(replace(entry, priority=len(self._entries) - 1))
             self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
-            self._persist()
+            for previous in previous_by_id.values():
+                self._trusted_codex_source_owners.pop(id(previous), None)
+            for candidate in self._entries:
+                owner = previous_owners.get(candidate.id)
+                previous = previous_by_id.get(candidate.id)
+                if (
+                    owner is not None
+                    and previous is not None
+                    and self._entry_tokens_match(candidate, previous)
+                    and candidate.source_store_path is not None
+                    and self._same_store_path(
+                        candidate.source_store_path,
+                        owner.source_path,
+                    )
+                ):
+                    self._trusted_codex_source_owners[id(candidate)] = owner
+            for candidate in self._entries:
+                if previous_by_id.get(candidate.id) != candidate:
+                    self._record_entry_mutation_unlocked(
+                        candidate.id,
+                        dirty=True,
+                    )
             self._current_id = entry.id
             return self._current_unlocked() or entry, pending_refresh
 
@@ -2021,12 +3956,24 @@ class CredentialPool:
     def peek(self) -> Optional[PooledCredential]:
         # Single lock acquisition for the whole read; call the unlocked
         # helpers so we don't re-enter the non-reentrant ``self._lock``.
+        failed_source_ids = self._validate_source_owned_codex_entries()
+        self._sync_external_status_entries()
         with self._lock:
+            available, _pending = self._available_entries(
+                excluded_source_ids=failed_source_ids,
+            )
             current = self._current_unlocked()
             if current is not None:
-                return current
-            available, _pending = self._available_entries()
-            return available[0] if available else None
+                for entry in available:
+                    if entry.id == current.id:
+                        result = entry
+                        break
+                else:
+                    result = available[0] if available else None
+            else:
+                result = available[0] if available else None
+        self._persist_pending_changes()
+        return result
 
     def mark_exhausted_and_rotate(
         self,
@@ -2037,10 +3984,39 @@ class CredentialPool:
         credential_id: Optional[str] = None,
         failure_reason: Optional[str] = None,
     ) -> Optional[PooledCredential]:
+        failed_source_ids = self._validate_source_owned_codex_entries()
+        self._sync_external_status_entries(probe_quota=True)
+        try:
+            return self._mark_exhausted_and_rotate_locked(
+                status_code=status_code,
+                error_context=error_context,
+                api_key_hint=api_key_hint,
+                credential_id=credential_id,
+                failure_reason=failure_reason,
+                failed_source_ids=failed_source_ids,
+            )
+        finally:
+            self._persist_pending_changes()
+
+    def _mark_exhausted_and_rotate_locked(
+        self,
+        *,
+        status_code: Optional[int],
+        error_context: Optional[Dict[str, Any]],
+        api_key_hint: Optional[str],
+        credential_id: Optional[str],
+        failure_reason: Optional[str],
+        failed_source_ids: Set[str],
+    ) -> Optional[PooledCredential]:
         with self._lock:
+            if credential_id and credential_id in failed_source_ids:
+                self._unmatched_rotation_streak = 0
+                if self._current_id == credential_id:
+                    self._current_id = None
+                return None
             entry = None
             identity_supplied = bool(credential_id or api_key_hint)
-            if credential_id:
+            if credential_id and credential_id not in failed_source_ids:
                 entry = next(
                     (e for e in self._entries if e.id == credential_id),
                     None,
@@ -2051,7 +4027,12 @@ class CredentialPool:
                 # (another process already rotated), current() is None and
                 # _select_unlocked() would return the NEXT key — the wrong one.
                 entry = next(
-                    (e for e in self._entries if e.runtime_api_key == api_key_hint),
+                    (
+                        e
+                        for e in self._entries
+                        if e.id not in failed_source_ids
+                        and e.runtime_api_key == api_key_hint
+                    ),
                     None,
                 )
             if entry is None and identity_supplied:
@@ -2075,7 +4056,9 @@ class CredentialPool:
                 # guessing and surface the error (no cooldown is written for
                 # anybody — healthy keys stay available for the next turn).
                 self._unmatched_rotation_streak += 1
-                available_count, _ = self._available_entries()
+                available_count, _ = self._available_entries(
+                    excluded_source_ids=failed_source_ids,
+                )
                 available_count = len(available_count)
                 if self._unmatched_rotation_streak > max(available_count, 1):
                     logger.warning(
@@ -2095,9 +4078,21 @@ class CredentialPool:
                     self.provider,
                 )
                 self._current_id = None
-                next_entry, _pending = self._select_unlocked(refresh=False)
-                avail, _ = self._available_entries()
-                if next_entry is not None and len(avail) == 1:
+                next_entry, _pending = self._select_unlocked(
+                    refresh=False,
+                    excluded_source_ids=failed_source_ids,
+                )
+                avail, _ = self._available_entries(
+                    excluded_source_ids=failed_source_ids,
+                )
+                if (
+                    next_entry is not None
+                    and len(avail) == 1
+                    and not (
+                        credential_id in failed_source_ids
+                        and next_entry.id != credential_id
+                    )
+                ):
                     # A single-entry pool cannot rotate. Returning its only
                     # entry reports a successful recovery without changing
                     # the credential, so the caller retries the same 401
@@ -2110,12 +4105,23 @@ class CredentialPool:
             # streak is stale (this mark WILL advance pool state).
             self._unmatched_rotation_streak = 0
             if entry is None:
-                entry = self._current_unlocked() or self._select_unlocked(refresh=False)[0]
+                current = self._current_unlocked()
+                if current is not None and current.id in failed_source_ids:
+                    current = None
+                entry = current or self._select_unlocked(
+                    refresh=False,
+                    excluded_source_ids=failed_source_ids,
+                )[0]
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
             self._mark_exhausted(
-                entry, status_code, error_context, failure_reason=failure_reason
+                entry,
+                status_code,
+                error_context,
+                persist=False,
+                failure_reason=failure_reason,
+                source_validated=True,
             )
             # A 402/429/401 is an API-key–level failure: the account is out of
             # balance, rate-limited, or its key is rejected.  The same key can
@@ -2130,7 +4136,6 @@ class CredentialPool:
             # "no available entries" state and let the error propagate.
             failed_runtime_key = getattr(entry, "runtime_api_key", None)
             if identity_supplied and failed_runtime_key:
-                siblings_marked = False
                 for sibling in self._entries:
                     if sibling.id == entry.id:
                         continue
@@ -2141,10 +4146,8 @@ class CredentialPool:
                             error_context,
                             persist=False,
                             failure_reason=failure_reason,
+                            source_validated=True,
                         )
-                        siblings_marked = True
-                if siblings_marked:
-                    self._persist()
             # Re-read the updated entry to log the correct terminal state.
             updated_entry = next(
                 (e for e in self._entries if e.id == entry.id), entry,
@@ -2161,7 +4164,10 @@ class CredentialPool:
                     _label, status_code,
                 )
             self._current_id = None
-            next_entry, _pending = self._select_unlocked(refresh=False)
+            next_entry, _pending = self._select_unlocked(
+                refresh=False,
+                excluded_source_ids=failed_source_ids,
+            )
             if next_entry:
                 _next_label = next_entry.label or next_entry.id[:8]
                 logger.info("credential pool: rotated to %s", _next_label)
@@ -2175,30 +4181,77 @@ class CredentialPool:
         a stable tie-breaker. When every credential is already at the soft cap,
         still return the least-leased one instead of blocking.
         """
-        chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id)
+        entry_ids = {credential_id} if credential_id is not None else None
+        failed_source_ids = self._validate_source_owned_codex_entries(entry_ids)
+        self._sync_external_status_entries(probe_quota=True)
+        if failed_source_ids:
+            chosen_id, pending_refresh = self._acquire_lease_under_lock(
+                credential_id,
+                excluded_source_ids=failed_source_ids,
+            )
+        else:
+            chosen_id, pending_refresh = self._acquire_lease_under_lock(
+                credential_id,
+            )
+        self._persist_pending_changes()
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
-            # Mirror select(): if nothing was leasable but we just refreshed
-            # deferred single-use-token entries, retry now that they are back
-            # in rotation. Without this, a pool whose only entries all needed
-            # a refresh returns None even though the refresh succeeded — the
-            # caller sees "no credentials available" and fails a request that
-            # should have gone through.
-            if chosen_id is None:
-                chosen_id, _ = self._acquire_lease_under_lock(credential_id)
+            # The first pass never leases from a partial view when refreshes
+            # are pending. Re-read and choose once from the current pool.
+            failed_source_ids = self._validate_source_owned_codex_entries(
+                entry_ids,
+            )
+            self._sync_external_status_entries(probe_quota=True)
+            if failed_source_ids:
+                chosen_id, _ = self._acquire_lease_under_lock(
+                    credential_id,
+                    excluded_source_ids=failed_source_ids,
+                )
+            else:
+                chosen_id, _ = self._acquire_lease_under_lock(
+                    credential_id,
+                )
+            self._persist_pending_changes()
         return chosen_id
 
     def _acquire_lease_under_lock(
-        self, credential_id: Optional[str],
+        self,
+        credential_id: Optional[str],
+        *,
+        excluded_source_ids: Optional[Set[str]] = None,
     ) -> Tuple[Optional[str], List[tuple]]:
         """Run lease acquisition under the lock, returning id + pending refreshes."""
         with self._lock:
             if credential_id:
+                if excluded_source_ids and credential_id in excluded_source_ids:
+                    return None, []
+                candidate = next(
+                    (
+                        entry
+                        for entry in self._entries
+                        if entry.id == credential_id
+                    ),
+                    None,
+                )
+                if candidate is None:
+                    return None, []
                 self._active_leases[credential_id] = self._active_leases.get(credential_id, 0) + 1
                 self._current_id = credential_id
                 return credential_id, []
 
-            available, pending_refresh = self._available_entries(clear_expired=True, refresh=True)
+            if excluded_source_ids:
+                available, pending_refresh = self._available_entries(
+                    clear_expired=True,
+                    refresh=True,
+                    excluded_source_ids=excluded_source_ids,
+                )
+            else:
+                available, pending_refresh = self._available_entries(
+                    clear_expired=True,
+                    refresh=True,
+                )
+            if pending_refresh:
+                return None, pending_refresh
             if not available:
                 return None, pending_refresh
 
@@ -2226,7 +4279,14 @@ class CredentialPool:
 
     def try_refresh_current(self) -> Optional[PooledCredential]:
         with self._lock:
-            return self._try_refresh_current_unlocked()
+            entry = self._current_unlocked()
+        if entry is None:
+            return None
+        refreshed = self._refresh_entry(entry, force=True)
+        if refreshed is not None:
+            with self._lock:
+                self._current_id = refreshed.id
+        return refreshed
 
     def try_refresh_matching(
         self,
@@ -2241,87 +4301,103 @@ class CredentialPool:
         the normal proactive refresh; the forced refresh below must consume a
         rotating refresh token exactly once.
         """
-        with self._lock:
-            entry = None
-            if credential_id:
-                entry = next(
-                    (
-                        candidate
-                        for candidate in self._entries
-                        if candidate.id == credential_id
-                    ),
-                    None,
-                )
-            if entry is None:
-                if api_key_hint:
+        failed_source_ids = self._validate_source_owned_codex_entries()
+        self._sync_external_status_entries(probe_quota=True)
+        try:
+            with self._lock:
+                if credential_id and credential_id in failed_source_ids:
+                    if self._current_id == credential_id:
+                        self._current_id = None
+                    return None
+                entry = None
+                if credential_id and credential_id not in failed_source_ids:
                     entry = next(
                         (
                             candidate
                             for candidate in self._entries
-                            if candidate.runtime_api_key == api_key_hint
+                            if candidate.id == credential_id
                         ),
                         None,
                     )
-                else:
-                    entry = self._current_unlocked() or self._select_unlocked(
-                        refresh=False
-                    )[0]
-            if entry is None:
-                return None
-            self._current_id = entry.id
-            return self._try_refresh_current_unlocked()
-
-    def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:
-        entry = self._current_unlocked()
-        if entry is None:
-            return None
+                if entry is None:
+                    if api_key_hint:
+                        entry = next(
+                            (
+                                candidate
+                                for candidate in self._entries
+                                if candidate.id not in failed_source_ids
+                                and candidate.runtime_api_key == api_key_hint
+                            ),
+                            None,
+                        )
+                    else:
+                        current = self._current_unlocked()
+                        if current is not None and current.id in failed_source_ids:
+                            current = None
+                        entry = current or self._select_unlocked(
+                            refresh=False,
+                            excluded_source_ids=failed_source_ids,
+                        )[0]
+                if entry is None:
+                    return None
+                self._current_id = entry.id
+        finally:
+            self._persist_pending_changes()
         refreshed = self._refresh_entry(entry, force=True)
         if refreshed is not None:
-            self._current_id = refreshed.id
+            with self._lock:
+                self._current_id = refreshed.id
         return refreshed
 
     def reset_statuses(self) -> int:
+        failed_source_ids = self._validate_source_owned_codex_entries()
         with self._lock:
             count = 0
-            new_entries = []
-            for entry in self._entries:
+            reset_ids: Set[str] = set()
+            for entry in list(self._entries):
+                if entry.id in failed_source_ids:
+                    continue
                 if entry.last_status or entry.last_status_at or entry.last_error_code:
-                    new_entries.append(
-                        replace(
-                            entry,
-                            last_status=None,
-                            last_status_at=None,
-                            last_error_code=None,
-                            last_error_reason=None,
-                            last_error_message=None,
-                            last_error_reset_at=None,
-                        )
+                    updated = replace(
+                        entry,
+                        last_status=None,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
                     )
+                    self._replace_entry(entry, updated)
+                    reset_ids.add(entry.id)
                     count += 1
-                else:
-                    new_entries.append(entry)
             if count:
-                self._entries = new_entries
-                self._persist()
-            return count
+                self._source_status_reset_ids.update(
+                    entry.id
+                    for entry in self._entries
+                    if entry.id in reset_ids
+                    and self._is_trusted_codex_source_owned(entry)
+                )
+        self._persist_pending_changes()
+        return count
 
     def remove_index(self, index: int) -> Optional[PooledCredential]:
-        with self._lock:
-            if index < 1 or index > len(self._entries):
-                return None
-            removed = self._entries.pop(index - 1)
-            self._entries = [
-                replace(entry, priority=new_priority)
-                for new_priority, entry in enumerate(self._entries)
-            ]
-            write_credential_pool(
-                self.provider,
-                [entry.to_dict() for entry in self._entries],
-                removed_ids=[removed.id],
-            )
-            if self._current_id == removed.id:
-                self._current_id = None
-            return removed
+        self._validate_source_owned_codex_entries()
+        with self._external_state_lock:
+            with self._lock:
+                if index < 1 or index > len(self._entries):
+                    return None
+                removed = self._entries.pop(index - 1)
+                for new_priority, entry in enumerate(list(self._entries)):
+                    if entry.priority != new_priority:
+                        self._replace_entry(
+                            entry,
+                            replace(entry, priority=new_priority),
+                        )
+                self._queue_removed_entry_unlocked(removed)
+                if self._current_id == removed.id:
+                    self._current_id = None
+        self._persist_pending_changes()
+        return removed
 
     def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
         raw = str(target or "").strip()
@@ -2350,11 +4426,14 @@ class CredentialPool:
             return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
-        with self._lock:
-            entry = replace(entry, priority=_next_priority(self._entries))
-            self._entries.append(entry)
-            self._persist()
-            return entry
+        self._validate_source_owned_codex_entries()
+        with self._external_state_lock:
+            with self._lock:
+                entry = replace(entry, priority=_next_priority(self._entries))
+                self._entries.append(entry)
+                self._record_entry_mutation_unlocked(entry.id, dirty=True)
+        self._persist_pending_changes()
+        return entry
 
 
 def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, payload: Dict[str, Any]) -> bool:
@@ -2379,10 +4458,21 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
     field_updates = {}
     extra_updates = {}
     _field_names = {f.name for f in fields(existing)}
+    payload_fingerprint = sanitize_borrowed_credential_payload(
+        {**payload, "source": source},
+        provider,
+    ).get("secret_fingerprint")
+    same_redacted_lineage = bool(
+        provider == "anthropic"
+        and source == "claude_code"
+        and payload_fingerprint
+        and payload_fingerprint == existing.extra.get("secret_fingerprint")
+    )
     token_changed = (
         "access_token" in payload
         and payload["access_token"] is not None
         and payload["access_token"] != existing.access_token
+        and not same_redacted_lineage
     )
     for key, value in payload.items():
         if key in {"id", "priority"} or value is None:
@@ -2396,7 +4486,9 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
             if existing.extra.get(key) != value:
                 extra_updates[key] = value
     # When the credential token itself changes (key rotation), clear any
-    # exhaustion/error state — the old status is stale for the new key.
+    # exhaustion/error state — the old status is stale for the new key. Claude
+    # Code secrets are redacted on disk, so their persisted fingerprint, not the
+    # empty runtime value loaded from that row, determines whether its lineage changed.
     if token_changed and existing.last_status is not None:
         field_updates["last_status"] = None
         field_updates["last_status_at"] = None
@@ -2450,10 +4542,65 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
     return changed
 
 
-def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
+def _codex_source_pool_alias(
+    source_path: Path,
+    state: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Return the owning Codex ``device_code`` alias for a singleton state."""
+    source_store = auth_mod._load_auth_store(source_path)
+    pool = source_store.get("credential_pool")
+    persisted = pool.get("openai-codex") if isinstance(pool, dict) else None
+    if not isinstance(persisted, list):
+        return None
+
+    aliases = [
+        item
+        for item in persisted
+        if isinstance(item, dict) and item.get("source") == "device_code"
+    ]
+    if not aliases:
+        return None
+
+    tokens = state.get("tokens")
+    if isinstance(tokens, dict):
+        access_token = str(tokens.get("access_token") or "")
+        refresh_token = str(tokens.get("refresh_token") or "")
+        for alias in aliases:
+            if (
+                str(alias.get("access_token") or "") == access_token
+                and str(alias.get("refresh_token") or "") == refresh_token
+            ):
+                return dict(alias)
+    return dict(aliases[0])
+
+
+def _loaded_codex_source_owner_kind(entry: PooledCredential) -> str:
+    """Classify trusted fallback ownership from the hydrated row snapshot.
+
+    Codex singleton aliases use the canonical ``device_code`` source. Explicit
+    independent accounts are written as ``manual:device_code``. Binding owner
+    kind to that trusted row category avoids a later unlocked provider reread;
+    an uncertain canonical row therefore fails closed as singleton-owned.
+    """
+    return "singleton" if entry.source == "device_code" else "pool"
+
+
+def _seed_from_singletons(
+    provider: str,
+    entries: List[PooledCredential],
+) -> Tuple[bool, Set[str]]:
     changed = False
     active_sources: Set[str] = set()
     auth_store = _load_auth_store()
+    active_pool = auth_store.get("credential_pool")
+    local_entries = (
+        active_pool.get(provider) if isinstance(active_pool, dict) else None
+    )
+    local_entry_ids = {
+        str(entry.get("id"))
+        for entry in local_entries or []
+        if isinstance(entry, dict) and entry.get("id")
+    }
 
     # Shared suppression gate — used at every upsert site so
     # `hermes auth remove <provider> <N>` is stable across all source types.
@@ -2519,9 +4666,17 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
 
         from agent.anthropic_adapter import read_claude_code_credentials, read_hermes_oauth_credentials
 
+        hermes_creds = read_hermes_oauth_credentials()
+        claude_creds = read_claude_code_credentials()
+        if not claude_creds or not claude_creds.get("accessToken"):
+            retained = [entry for entry in entries if entry.source != "claude_code"]
+            if len(retained) != len(entries):
+                entries[:] = retained
+                changed = True
+
         for source_name, creds in (
-            ("hermes_pkce", read_hermes_oauth_credentials()),
-            ("claude_code", read_claude_code_credentials()),
+            ("hermes_pkce", hermes_creds),
+            ("claude_code", claude_creds),
         ):
             if creds and creds.get("accessToken"):
                 if _is_suppressed(provider, source_name):
@@ -2538,6 +4693,11 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                         "refresh_token": creds.get("refreshToken"),
                         "expires_at_ms": creds.get("expiresAt"),
                         "label": label_from_token(creds.get("accessToken", ""), source_name),
+                        **(
+                            {"credential_source": creds.get("source")}
+                            if source_name == "claude_code"
+                            else {}
+                        ),
                     },
                 )
 
@@ -2759,7 +4919,10 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         if _is_suppressed(provider, "device_code"):
             return changed, active_sources
 
-        state = _load_provider_state(auth_store, "openai-codex")
+        state, source_path = auth_mod._load_provider_state_with_source(
+            auth_store,
+            "openai-codex",
+        )
         tokens = state.get("tokens") if isinstance(state, dict) else None
         # Hermes owns its own Codex auth state — we do NOT auto-import from
         # ~/.codex/auth.json at pool-load time.  OAuth refresh tokens are
@@ -2767,23 +4930,80 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # refresh_token_reused race failures.  Users who want to adopt
         # existing Codex CLI credentials get a one-time, explicit prompt
         # via `hermes auth openai-codex`.
-        if isinstance(tokens, dict) and tokens.get("access_token"):
+        if (
+            isinstance(state, dict)
+            and isinstance(tokens, dict)
+            and tokens.get("access_token")
+        ):
             active_sources.add("device_code")
             custom_label = str(state.get("label") or "").strip()
-            changed |= _upsert_entry(
-                entries,
-                provider,
-                "device_code",
-                {
-                    "source": "device_code",
-                    "auth_type": AUTH_TYPE_OAUTH,
-                    "access_token": tokens.get("access_token", ""),
-                    "refresh_token": tokens.get("refresh_token"),
-                    "base_url": "https://chatgpt.com/backend-api/codex",
-                    "last_refresh": state.get("last_refresh"),
-                    "label": custom_label or label_from_token(tokens.get("access_token", ""), "device_code"),
-                },
+            payload = {
+                "source": "device_code",
+                "auth_type": AUTH_TYPE_OAUTH,
+                "access_token": tokens.get("access_token", ""),
+                "refresh_token": tokens.get("refresh_token"),
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "last_refresh": state.get("last_refresh"),
+                "label": custom_label
+                or label_from_token(tokens.get("access_token", ""), "device_code"),
+            }
+            active_path = auth_mod._auth_file_path()
+            borrowed = bool(
+                source_path is not None
+                and not auth_mod._same_path(source_path, active_path)
             )
+            if borrowed and source_path is not None:
+                alias = _codex_source_pool_alias(source_path, state)
+                if alias is not None:
+                    token_changed = (
+                        alias.get("access_token") != payload["access_token"]
+                        or alias.get("refresh_token") != payload["refresh_token"]
+                    )
+                    alias_payload = dict(alias)
+                    alias_payload.update(
+                        {
+                            key: value
+                            for key, value in payload.items()
+                            if key != "label"
+                        }
+                    )
+                    if not alias_payload.get("label"):
+                        alias_payload["label"] = payload["label"]
+                    if token_changed:
+                        for status_field in (
+                            "last_status",
+                            "last_status_at",
+                            "last_error_code",
+                            "last_error_reason",
+                            "last_error_message",
+                            "last_error_reset_at",
+                        ):
+                            alias_payload[status_field] = None
+                    payload = alias_payload
+
+                local_shadow_present = any(
+                    entry.source == "device_code" and entry.id in local_entry_ids
+                    for entry in entries
+                )
+                entries[:] = [
+                    entry for entry in entries if entry.source != "device_code"
+                ]
+                payload.setdefault("id", uuid.uuid4().hex[:6])
+                payload.setdefault("priority", _next_priority(entries))
+                borrowed_entry = PooledCredential.from_dict(provider, payload)
+                entries.append(
+                    replace(borrowed_entry, source_store_path=source_path)
+                )
+                # Adding a runtime-only borrowed alias is not a profile write.
+                # Only pre-existing copied profile rows require cleanup.
+                changed |= local_shadow_present
+            else:
+                changed |= _upsert_entry(
+                    entries,
+                    provider,
+                    "device_code",
+                    payload,
+                )
 
     elif provider == "xai-oauth":
         # When the user logs in via ``hermes model`` -> xAI Grok OAuth,
@@ -2988,6 +5208,12 @@ def _prune_stale_seeded_entries(
         # (e.g. an `hermes auth` command that confirmed the source is gone).
         if entry.source.startswith("env:"):
             return prune_env_sources
+        # Codex may retain independent device-code rows on chains other than
+        # the current singleton. Terminal quarantine removes only aliases that
+        # share the rejected singleton chain; absence of singleton state alone
+        # is not authority to delete the unrelated rows that remain in pool.
+        if entry.provider == "openai-codex" and entry.source == "device_code":
+            return False
         # File-backed singletons (device-code OAuth, claude_code) and Hermes
         # PKCE should disappear from the pool when their backing file is gone.
         return (
@@ -3083,9 +5309,20 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
+    active_store = _load_auth_store()
+    active_pool = active_store.get("credential_pool")
+    active_entries = (
+        active_pool.get(provider) if isinstance(active_pool, dict) else None
+    )
+    local_raw_entries = list(active_entries) if isinstance(active_entries, list) else []
+    local_entry_ids = {
+        str(entry.get("id"))
+        for entry in local_raw_entries
+        if isinstance(entry, dict) and entry.get("id")
+    }
     raw_entries = read_credential_pool(provider)
     disk_ids = {
-        entry.get("id")
+        str(entry.get("id"))
         for entry in raw_entries
         if isinstance(entry, dict) and entry.get("id")
     }
@@ -3094,7 +5331,14 @@ def load_pool(provider: str) -> CredentialPool:
         and sanitize_borrowed_credential_payload(payload, provider) != payload
         for payload in raw_entries
     )
-    entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
+    entries = []
+    for payload in raw_entries:
+        entry = PooledCredential.from_dict(provider, payload)
+        if provider == "openai-codex":
+            source_path = auth_mod._credential_pool_row_source_path(payload)
+            if source_path is not None:
+                entry = replace(entry, source_store_path=source_path)
+        entries.append(entry)
     raw_needs_auth_normalization = any(
         isinstance(payload, dict)
         and _normalize_pool_auth_type(
@@ -3108,8 +5352,6 @@ def load_pool(provider: str) -> CredentialPool:
         # A profile may be reading this provider from the global-root fallback.
         # Keep that fallback read-only: only the store that owns these rows may
         # rewrite them. Loading the default/root profile will heal global rows.
-        active_pool = _load_auth_store().get("credential_pool")
-        active_entries = active_pool.get(provider) if isinstance(active_pool, dict) else None
         raw_needs_auth_normalization = bool(active_entries)
 
     if provider.startswith(CUSTOM_POOL_PREFIX):
@@ -3138,10 +5380,34 @@ def load_pool(provider: str) -> CredentialPool:
         changed |= _normalize_pool_priorities(provider, entries)
 
     if changed:
-        new_ids = {entry.id for entry in entries}
+        persisted_entries = [
+            entry
+            for entry in entries
+            if not _is_source_owned_elsewhere(entry)
+        ]
+        new_ids = {entry.id for entry in persisted_entries}
+        persisted_disk_ids = (
+            local_entry_ids
+            if any(_is_source_owned_elsewhere(entry) for entry in entries)
+            else disk_ids
+        )
         write_credential_pool(
             provider,
-            [entry.to_dict() for entry in sorted(entries, key=lambda item: item.priority)],
-            removed_ids=disk_ids - new_ids,
+            [
+                entry.to_dict()
+                for entry in sorted(
+                    persisted_entries,
+                    key=lambda item: item.priority,
+                )
+            ],
+            removed_ids=persisted_disk_ids - new_ids,
         )
-    return CredentialPool(provider, entries)
+    pool = CredentialPool(provider, entries)
+    if provider == "openai-codex":
+        for entry in pool.entries():
+            if entry.source_store_path is not None:
+                pool._trust_codex_source_owner(
+                    entry,
+                    owner_kind=_loaded_codex_source_owner_kind(entry),
+                )
+    return pool

@@ -888,6 +888,35 @@ class AuthError(RuntimeError):
         self.relogin_required = relogin_required
 
 
+class SourceCredentialLineageChanged(RuntimeError):
+    """The authoritative rotating credential changed before its write."""
+
+    def __init__(self, provider: str) -> None:
+        super().__init__(f"{provider} credential lineage changed during refresh")
+        self.provider = provider
+
+
+class SourceCredentialPersistenceError(AuthError):
+    """A refresh succeeded upstream but its authoritative write did not."""
+
+    def __init__(
+        self,
+        provider: str,
+        *,
+        source_path: Optional[Path],
+        consumed_refresh_token: Any,
+    ) -> None:
+        super().__init__(
+            f"Failed to persist refreshed {provider} credentials",
+            provider=provider,
+            code="source_persistence_failed",
+            relogin_required=False,
+        )
+        self.provider = provider
+        self.source_path = source_path
+        self.consumed_lineage = _token_fingerprint(consumed_refresh_token)
+
+
 def is_rate_limited_auth_error(error: Exception) -> bool:
     """True when an :class:`AuthError` represents upstream rate-limiting / quota
     exhaustion rather than missing or invalid credentials.
@@ -1366,26 +1395,49 @@ def _load_provider_state_with_source(
 
 
 @contextmanager
-def _provider_state_transaction(provider_id: str):
+def _provider_state_transaction(
+    provider_id: str,
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+    *,
+    expected_source_path: Optional[Path] = None,
+):
     """Lock the active auth store and any global fallback source in order.
 
-    Profile-backed refresh paths must take the global auth-store lock before
-    any provider-specific shared-store lock. Re-reading the source after the
-    target lock is acquired prevents both stale refreshes and whole-file lost
-    updates without inverting the documented auth -> shared lock order.
+    Profile-backed refresh paths must take the active auth-store lock before
+    any fallback source-store lock. Re-reading the source after the target
+    lock is acquired prevents both stale refreshes and whole-file lost updates
+    without inverting the documented active -> source lock order. A caller
+    that already knows an entry's owner may pin ``expected_source_path`` so a
+    removed or newly shadowed singleton cannot silently change ownership.
     """
-    with _auth_store_lock():
+    with _auth_store_lock(timeout_seconds=timeout_seconds):
         auth_store = _load_auth_store()
-        state, source_path = _load_provider_state_with_source(
-            auth_store,
-            provider_id,
-        )
         active_path = _auth_file_path()
+        if expected_source_path is not None:
+            source_path = Path(expected_source_path)
+            if _same_path(source_path, active_path):
+                providers = auth_store.get("providers")
+                raw_state = (
+                    providers.get(provider_id)
+                    if isinstance(providers, dict)
+                    else None
+                )
+                state = dict(raw_state) if isinstance(raw_state, dict) else None
+            else:
+                state = None
+        else:
+            state, source_path = _load_provider_state_with_source(
+                auth_store,
+                provider_id,
+            )
         if source_path is None or _same_path(source_path, active_path):
             yield auth_store, state, source_path
             return
 
-        with _auth_store_lock(target_path=source_path):
+        with _auth_store_lock(
+            timeout_seconds=timeout_seconds,
+            target_path=source_path,
+        ):
             source_store = _load_auth_store(source_path)
             source_providers = source_store.get("providers")
             source_state = None
@@ -1394,6 +1446,440 @@ def _provider_state_transaction(provider_id: str):
                 if isinstance(raw_state, dict):
                     source_state = dict(raw_state)
             yield auth_store, source_state, source_path
+
+
+_EXPECTED_REFRESH_LINEAGE_UNSET = object()
+
+
+def _provider_refresh_lineage(
+    provider_id: str,
+    state: Optional[Dict[str, Any]],
+) -> Any:
+    """Return the rotating refresh-token lineage for a provider state."""
+    if not isinstance(state, dict):
+        return None
+    if provider_id == "xai-oauth":
+        tokens = state.get("tokens")
+        return tokens.get("refresh_token") if isinstance(tokens, dict) else None
+    return state.get("refresh_token")
+
+
+def _provider_oauth_lineage(
+    provider_id: str,
+    state: Optional[Dict[str, Any]],
+) -> tuple[Any, Any]:
+    """Return the access and refresh lineage used for post-write validation."""
+    if not isinstance(state, dict):
+        return None, None
+    if provider_id == "xai-oauth":
+        tokens = state.get("tokens")
+        if not isinstance(tokens, dict):
+            return None, None
+        return tokens.get("access_token"), tokens.get("refresh_token")
+    return state.get("access_token"), state.get("refresh_token")
+
+
+def _provider_state_from_exact_store(
+    auth_store: Dict[str, Any],
+    provider_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Read a provider block from one store without global fallback."""
+    providers = auth_store.get("providers")
+    if not isinstance(providers, dict):
+        return None
+    state = providers.get(provider_id)
+    return dict(state) if isinstance(state, dict) else None
+
+
+SOURCE_REFRESH_RESERVATION_KEY = "_oauth_refresh_reservation"
+_SOURCE_REFRESH_RESERVATION_VERSION = 1
+_SOURCE_SECRET_FIELDS = frozenset(
+    {
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "agent_key",
+        "api_key",
+        "token",
+    }
+)
+
+
+@dataclass(frozen=True)
+class SourceRefreshReservation:
+    """In-memory handle for one durable source-owned token reservation."""
+
+    provider: str
+    source_path: Path
+    owner_fingerprint: str
+    refresh_fingerprint: str
+    nonce: str
+
+    def metadata(self) -> Dict[str, Any]:
+        return {
+            "version": _SOURCE_REFRESH_RESERVATION_VERSION,
+            "status": "reserved",
+            "provider": self.provider,
+            "owner_fingerprint": self.owner_fingerprint,
+            "refresh_fingerprint": self.refresh_fingerprint,
+            "nonce": self.nonce,
+        }
+
+
+def _refresh_lineage_fingerprint(refresh_token: Any) -> Optional[str]:
+    """Return a full one-way identifier for a rotating refresh lineage."""
+    if not isinstance(refresh_token, str):
+        return None
+    cleaned = refresh_token.strip()
+    if not cleaned:
+        return None
+    return f"sha256:{hashlib.sha256(cleaned.encode('utf-8')).hexdigest()}"
+
+
+def _source_owner_fingerprint(provider_id: str, source_path: Path) -> str:
+    owner = f"{provider_id}\0{source_path.resolve(strict=False)}"
+    return f"sha256:{hashlib.sha256(owner.encode('utf-8')).hexdigest()}"
+
+
+def _source_reservation_metadata(
+    state: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(state, dict):
+        return None
+    metadata = state.get(SOURCE_REFRESH_RESERVATION_KEY)
+    if not isinstance(metadata, dict):
+        return None
+    if metadata.get("status") != "reserved":
+        return None
+    return dict(metadata)
+
+
+def _source_state_is_reserved(state: Optional[Dict[str, Any]]) -> bool:
+    return _source_reservation_metadata(state) is not None
+
+
+def _scrub_source_secret_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
+    scrubbed = dict(payload)
+    for key in _SOURCE_SECRET_FIELDS:
+        scrubbed.pop(key, None)
+    return scrubbed
+
+
+def _reserved_provider_state(
+    provider_id: str,
+    state: Dict[str, Any],
+    metadata: Dict[str, Any],
+) -> Dict[str, Any]:
+    reserved = dict(state)
+    if provider_id == "xai-oauth":
+        tokens = reserved.get("tokens")
+        reserved["tokens"] = (
+            _scrub_source_secret_fields(tokens) if isinstance(tokens, dict) else {}
+        )
+    else:
+        reserved = _scrub_source_secret_fields(reserved)
+    reserved[SOURCE_REFRESH_RESERVATION_KEY] = dict(metadata)
+    return reserved
+
+
+def _reserve_matching_pool_rows(
+    auth_store: Dict[str, Any],
+    provider_id: str,
+    refresh_fingerprint: str,
+    metadata: Dict[str, Any],
+) -> None:
+    credential_pool = auth_store.get("credential_pool")
+    entries = (
+        credential_pool.get(provider_id)
+        if isinstance(credential_pool, dict)
+        else None
+    )
+    if not isinstance(entries, list):
+        return
+    for item in entries:
+        if (
+            not isinstance(item, dict)
+            or _refresh_lineage_fingerprint(item.get("refresh_token"))
+            != refresh_fingerprint
+        ):
+            continue
+        for key in _SOURCE_SECRET_FIELDS:
+            item.pop(key, None)
+        item[SOURCE_REFRESH_RESERVATION_KEY] = dict(metadata)
+        item["last_status"] = "dead"
+        item["last_error_code"] = "refresh_reserved"
+        item["last_error_reason"] = "refresh_reserved"
+        item["last_error_message"] = "Rotating credential refresh is reserved"
+
+
+def _finalize_reserved_pool_rows(
+    auth_store: Dict[str, Any],
+    reservation: SourceRefreshReservation,
+    state: Dict[str, Any],
+) -> None:
+    credential_pool = auth_store.get("credential_pool")
+    entries = (
+        credential_pool.get(reservation.provider)
+        if isinstance(credential_pool, dict)
+        else None
+    )
+    if not isinstance(entries, list):
+        return
+    expected = reservation.metadata()
+    for item in entries:
+        if (
+            not isinstance(item, dict)
+            or item.get(SOURCE_REFRESH_RESERVATION_KEY) != expected
+        ):
+            continue
+        if reservation.provider == "xai-oauth":
+            tokens = state.get("tokens")
+            if isinstance(tokens, dict):
+                item["access_token"] = tokens.get("access_token", "")
+                item["refresh_token"] = tokens.get("refresh_token", "")
+            if state.get("last_refresh") is not None:
+                item["last_refresh"] = state["last_refresh"]
+        else:
+            for key in (
+                "access_token",
+                "refresh_token",
+                "expires_at",
+                "agent_key",
+                "agent_key_expires_at",
+                "inference_base_url",
+            ):
+                if state.get(key) is not None:
+                    item[key] = state[key]
+        item.pop(SOURCE_REFRESH_RESERVATION_KEY, None)
+        for key in (
+            "last_status",
+            "last_status_at",
+            "last_error_code",
+            "last_error_reason",
+            "last_error_message",
+            "last_error_reset_at",
+        ):
+            item.pop(key, None)
+
+
+def _reserve_provider_refresh_source(
+    provider_id: str,
+    state: Dict[str, Any],
+    source_path: Optional[Path],
+    *,
+    expected_refresh_token: Any,
+) -> SourceRefreshReservation:
+    """Durably remove one rotating lineage from its exact auth-store owner.
+
+    The caller must hold the transaction lock yielded for ``source_path``.
+    No network operation may begin until this function returns successfully.
+    """
+    target_path = Path(source_path or _auth_file_path())
+    current_store = _load_auth_store(target_path)
+    current_state = _provider_state_from_exact_store(current_store, provider_id)
+    current_refresh = _provider_refresh_lineage(provider_id, current_state)
+    if current_refresh != expected_refresh_token:
+        raise SourceCredentialLineageChanged(provider_id)
+    refresh_fingerprint = _refresh_lineage_fingerprint(current_refresh)
+    if refresh_fingerprint is None:
+        raise AuthError(
+            f"No usable {provider_id} refresh token is available",
+            provider=provider_id,
+            code="refresh_unavailable",
+            relogin_required=True,
+        )
+    if _source_state_is_reserved(current_state):
+        raise AuthError(
+            f"The {provider_id} refresh credential is already reserved",
+            provider=provider_id,
+            code="refresh_reserved",
+            relogin_required=True,
+        )
+
+    reservation = SourceRefreshReservation(
+        provider=provider_id,
+        source_path=target_path,
+        owner_fingerprint=_source_owner_fingerprint(provider_id, target_path),
+        refresh_fingerprint=refresh_fingerprint,
+        nonce=uuid.uuid4().hex,
+    )
+    metadata = reservation.metadata()
+    providers = current_store.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        raise AuthError(
+            f"The {provider_id} credential owner is malformed",
+            provider=provider_id,
+            code="source_malformed",
+            relogin_required=True,
+        )
+    providers[provider_id] = _reserved_provider_state(
+        provider_id,
+        current_state or state,
+        metadata,
+    )
+    _reserve_matching_pool_rows(
+        current_store,
+        provider_id,
+        refresh_fingerprint,
+        metadata,
+    )
+    _save_auth_store(current_store, target_path=target_path)
+
+    persisted = _provider_state_from_exact_store(
+        _load_auth_store(target_path),
+        provider_id,
+    )
+    if _source_reservation_metadata(persisted) != metadata:
+        raise SourceCredentialLineageChanged(provider_id)
+    if _provider_refresh_lineage(provider_id, persisted) is not None:
+        raise SourceCredentialLineageChanged(provider_id)
+    return reservation
+
+
+def _finalize_provider_refresh_reservation(
+    reservation: SourceRefreshReservation,
+    state: Dict[str, Any],
+) -> None:
+    """Replace an authoritative reservation with its rotated provider state."""
+    target_store = _load_auth_store(reservation.source_path)
+    current_state = _provider_state_from_exact_store(
+        target_store,
+        reservation.provider,
+    )
+    if _source_reservation_metadata(current_state) != reservation.metadata():
+        raise SourceCredentialLineageChanged(reservation.provider)
+
+    finalized = dict(state)
+    finalized.pop(SOURCE_REFRESH_RESERVATION_KEY, None)
+    providers = target_store.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        raise SourceCredentialLineageChanged(reservation.provider)
+    providers[reservation.provider] = finalized
+    _finalize_reserved_pool_rows(target_store, reservation, finalized)
+    _save_auth_store(target_store, target_path=reservation.source_path)
+
+    persisted = _provider_state_from_exact_store(
+        _load_auth_store(reservation.source_path),
+        reservation.provider,
+    )
+    if _provider_oauth_lineage(
+        reservation.provider,
+        persisted,
+    ) != _provider_oauth_lineage(reservation.provider, finalized):
+        raise SourceCredentialLineageChanged(reservation.provider)
+
+
+def _observe_provider_refresh_source(
+    provider_id: str,
+) -> tuple[Optional[Path], Optional[str]]:
+    """Capture the request's source owner and refresh lineage before waiting."""
+    auth_store = _load_auth_store()
+    state, source_path = _load_provider_state_with_source(auth_store, provider_id)
+    refresh_fingerprint = _refresh_lineage_fingerprint(
+        _provider_refresh_lineage(provider_id, state)
+    )
+    if refresh_fingerprint is None and isinstance(state, dict):
+        reservation = state.get(SOURCE_REFRESH_RESERVATION_KEY)
+        if isinstance(reservation, dict):
+            reserved_fingerprint = reservation.get("refresh_fingerprint")
+            if isinstance(reserved_fingerprint, str) and reserved_fingerprint:
+                refresh_fingerprint = reserved_fingerprint
+    return source_path, refresh_fingerprint
+
+
+def _save_provider_state_to_locked_source(
+    auth_store: Dict[str, Any],
+    provider_id: str,
+    state: Dict[str, Any],
+    source_path: Optional[Path],
+    *,
+    expected_refresh_token: Any = _EXPECTED_REFRESH_LINEAGE_UNSET,
+    merge_credential_pool: bool = False,
+    set_active: bool = True,
+) -> None:
+    """Conditionally write one provider while its exact source lock is held.
+
+    This helper never acquires a lock. Callers must own the lock for
+    ``source_path`` through :func:`_provider_state_transaction` and must pass
+    the transaction's yielded path and state rather than performing a fallback
+    read of their own.
+    """
+    target_path = Path(source_path or _auth_file_path())
+    target_store = _load_auth_store(target_path)
+    current_state = _provider_state_from_exact_store(target_store, provider_id)
+    if (
+        expected_refresh_token is not _EXPECTED_REFRESH_LINEAGE_UNSET
+        and _provider_refresh_lineage(provider_id, current_state)
+        != expected_refresh_token
+    ):
+        raise SourceCredentialLineageChanged(provider_id)
+
+    if merge_credential_pool:
+        credential_pool = auth_store.get("credential_pool")
+        if isinstance(credential_pool, dict):
+            target_store["credential_pool"] = credential_pool
+
+    if expected_refresh_token is not _EXPECTED_REFRESH_LINEAGE_UNSET:
+        credential_pool = target_store.get("credential_pool")
+        provider_entries = (
+            credential_pool.get(provider_id)
+            if isinstance(credential_pool, dict)
+            else None
+        )
+        if isinstance(provider_entries, list):
+            for item in provider_entries:
+                if (
+                    not isinstance(item, dict)
+                    or item.get("source") != "device_code"
+                    or item.get("refresh_token") != expected_refresh_token
+                ):
+                    continue
+                if provider_id == "xai-oauth":
+                    tokens = state.get("tokens")
+                    if isinstance(tokens, dict):
+                        item["access_token"] = tokens.get("access_token", "")
+                        item["refresh_token"] = tokens.get("refresh_token", "")
+                    if state.get("last_refresh"):
+                        item["last_refresh"] = state["last_refresh"]
+                elif provider_id == "nous":
+                    for key in (
+                        "access_token",
+                        "refresh_token",
+                        "expires_at",
+                        "agent_key",
+                        "agent_key_expires_at",
+                        "inference_base_url",
+                    ):
+                        if state.get(key) is not None:
+                            item[key] = state[key]
+                item.pop("last_status", None)
+                item.pop("last_status_at", None)
+                item.pop("last_error_code", None)
+                item.pop("last_error_reason", None)
+                item.pop("last_error_message", None)
+                item.pop("last_error_reset_at", None)
+    _store_provider_state(
+        target_store,
+        provider_id,
+        dict(state),
+        set_active=set_active,
+    )
+    _save_auth_store(target_store, target_path=target_path)
+
+    persisted_store = _load_auth_store(target_path)
+    persisted_state = _provider_state_from_exact_store(
+        persisted_store,
+        provider_id,
+    )
+    if _provider_oauth_lineage(provider_id, persisted_state) != _provider_oauth_lineage(
+        provider_id,
+        state,
+    ):
+        raise SourceCredentialPersistenceError(
+            provider_id,
+            source_path=target_path,
+            consumed_refresh_token=expected_refresh_token,
+        )
 
 
 def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
@@ -1533,7 +2019,47 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
     return True
 
 
-def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
+class _SourceOwnedCredentialPoolRow(dict):
+    """Dictionary payload with trusted, runtime-only owner provenance."""
+
+    _source_store_path: Path
+
+
+def _source_owned_pool_rows(
+    provider_id: str,
+    entries: List[Any],
+    source_path: Optional[Path],
+) -> List[Any]:
+    """Annotate trusted global Codex fallback rows without changing JSON data."""
+    if provider_id != "openai-codex" or source_path is None:
+        return list(entries)
+    annotated: List[Any] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            annotated.append(entry)
+            continue
+        row = _SourceOwnedCredentialPoolRow(entry)
+        row._source_store_path = source_path
+        annotated.append(row)
+    return annotated
+
+
+def _credential_pool_row_source_path(payload: Any) -> Optional[Path]:
+    """Return provenance only for rows created by the trusted fallback reader."""
+    if not isinstance(payload, _SourceOwnedCredentialPoolRow):
+        return None
+    source_path = getattr(payload, "_source_store_path", None)
+    global_path = _global_auth_file_path()
+    if (
+        not isinstance(source_path, Path)
+        or global_path is None
+        or not _same_path(source_path, global_path)
+    ):
+        return None
+    return global_path
+
+
+def read_credential_pool(provider_id: Optional[str] = None) -> Any:
     """Return the persisted credential pool, or one provider slice.
 
     In profile mode, the profile's credential pool is authoritative. If a
@@ -1555,6 +2081,7 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
         pool = {}
 
     global_pool: Dict[str, Any] = {}
+    global_path = _global_auth_file_path()
     global_store = _load_global_auth_store()
     maybe_global_pool = global_store.get("credential_pool") if global_store else None
     if isinstance(maybe_global_pool, dict):
@@ -1569,7 +2096,11 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
             existing = merged.get(gp_key)
             if isinstance(existing, list) and existing:
                 continue
-            merged[gp_key] = list(gp_entries)
+            merged[gp_key] = _source_owned_pool_rows(
+                gp_key,
+                gp_entries,
+                global_path,
+            )
         return merged
 
     provider_entries = pool.get(provider_id)
@@ -1577,7 +2108,11 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return list(provider_entries)
     # Profile has no entries for this provider — fall back to global.
     global_entries = global_pool.get(provider_id)
-    return list(global_entries) if isinstance(global_entries, list) else []
+    return (
+        _source_owned_pool_rows(provider_id, global_entries, global_path)
+        if isinstance(global_entries, list)
+        else []
+    )
 
 
 _POOL_STATUS_FIELDS = (
@@ -1601,11 +2136,12 @@ def _merge_disk_cooldown_state(
     predate another process marking the same credential exhausted or dead
     (last-writer-wins lost update).  Without this merge, process B's later
     rewrite resurrects a rate-limited key as healthy and both processes
-    resume hammering it.  Adopt the on-disk status fields only when they are
-    strictly more recent (by ``last_status_at``) AND still binding — a DEAD
-    marker, or an EXHAUSTED cooldown that has not yet expired.  Expired
-    cooldowns are not resurrected, so the pool's own expiry-clear (which
-    resets ``last_status_at`` to None) is never overridden.
+    resume hammering it. Adopt on-disk status fields when they are still
+    binding and either newer (by ``last_status_at``) or terminal for the same
+    token chain: a DEAD marker, or an EXHAUSTED cooldown that has not yet
+    expired. Expired cooldowns are not
+    resurrected, so the pool's own expiry-clear (which resets
+    ``last_status_at`` to None) is never overridden.
     """
     if not isinstance(disk_entry, dict):
         return entry
@@ -1629,9 +2165,23 @@ def _merge_disk_cooldown_state(
         disk_access = disk_entry.get("access_token") or ""
         if mem_access and disk_access and mem_access != disk_access:
             return entry
+        mem_refresh = entry.get("refresh_token") or ""
+        disk_refresh = disk_entry.get("refresh_token") or ""
+        if mem_refresh and disk_refresh and mem_refresh != disk_refresh:
+            return entry
         disk_ts = _parse_absolute_timestamp(disk_entry.get("last_status_at")) or 0.0
         mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0
-        if disk_ts <= mem_ts:
+        mem_status = entry.get("last_status")
+        # DEAD is terminal for one token chain. A later non-terminal snapshot
+        # cannot downgrade it; only fresh credentials (handled above) or an
+        # explicit reset path may clear it.
+        if disk_status == STATUS_DEAD and mem_status != STATUS_DEAD:
+            keep_disk = True
+        elif mem_status == STATUS_DEAD and disk_status != STATUS_DEAD:
+            return entry
+        else:
+            keep_disk = disk_ts > mem_ts
+        if not keep_disk:
             return entry
         if disk_status == STATUS_EXHAUSTED:
             until = _exhausted_until(
@@ -3715,12 +4265,24 @@ def _sync_codex_pool_entries(
         entry["last_error_reset_at"] = None
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
-    """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
+def _save_codex_tokens(
+    tokens: Dict[str, str],
+    last_refresh: Optional[str] = None,
+    label: Optional[str] = None,
+    *,
+    source_path: Optional[Path] = None,
+    set_active: bool = True,
+) -> None:
+    """Save Codex tokens locally, or back to an explicit credential source.
+
+    Interactive login/add callers keep ``set_active=True``. Runtime refresh
+    and recovery callers pass ``False`` because token maintenance is not a
+    provider-selection action.
+    """
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+    with _auth_store_lock(target_path=source_path):
+        auth_store = _load_auth_store(source_path)
         state = _load_provider_state(auth_store, "openai-codex") or {}
         # Capture the previous singleton tokens BEFORE overwriting them.  The
         # pool-sync step uses this to distinguish legacy singleton-aliases
@@ -3733,17 +4295,26 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         state["auth_mode"] = "chatgpt"
         if label and str(label).strip():
             state["label"] = str(label).strip()
-        _save_provider_state(auth_store, "openai-codex", state)
+        _store_provider_state(
+            auth_store,
+            "openai-codex",
+            state,
+            set_active=set_active,
+        )
         _sync_codex_pool_entries(
             auth_store,
             tokens,
             last_refresh,
             previous_singleton_tokens=previous_singleton_tokens,
         )
-        _save_auth_store(auth_store)
+        _save_auth_store(auth_store, target_path=source_path)
 
 
-def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
+def _recover_codex_tokens_from_cli(
+    reason: str,
+    *,
+    source_path: Optional[Path] = None,
+) -> Optional[Dict[str, str]]:
     """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
     imported = _import_codex_cli_tokens()
     # Require BOTH tokens before adopting: persisting a payload without a
@@ -3755,7 +4326,7 @@ def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
     ):
         return None
     logger.info("Codex auth recovered from Codex CLI auth.json (%s).", reason)
-    _save_codex_tokens(imported)
+    _save_codex_tokens(imported, source_path=source_path, set_active=False)
     return dict(imported)
 
 
@@ -3896,6 +4467,8 @@ def refresh_codex_oauth_pure(
 def _refresh_codex_auth_tokens(
     tokens: Dict[str, str],
     timeout_seconds: float,
+    *,
+    source_path: Optional[Path] = None,
 ) -> Dict[str, str]:
     """Refresh Codex access token using the refresh token.
     
@@ -3923,7 +4496,8 @@ def _refresh_codex_auth_tokens(
         if not getattr(exc, "relogin_required", False):
             raise
         imported = _recover_codex_tokens_from_cli(
-            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
+            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}",
+            source_path=source_path,
         )
         if not imported:
             raise
@@ -3933,7 +4507,11 @@ def _refresh_codex_auth_tokens(
     updated_tokens["access_token"] = refreshed["access_token"]
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
-    _save_codex_tokens(updated_tokens)
+    _save_codex_tokens(
+        updated_tokens,
+        source_path=source_path,
+        set_active=False,
+    )
     return updated_tokens
 
 
@@ -3998,11 +4576,45 @@ def resolve_codex_runtime_credentials(
             "codex_auth_missing_refresh_token",
             "codex_auth_invalid_shape",
         }:
-            imported = _recover_codex_tokens_from_cli(str(getattr(exc, "code", None) or "auth_error"))
-            if imported:
-                data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
-            else:
-                data = None
+            with _provider_state_transaction("openai-codex") as (
+                _auth_store,
+                _state,
+                state_source_path,
+            ):
+                # The pre-lock error is only a hint. Another writer may have
+                # repaired the owning store before this transaction acquired
+                # its source lock, so re-read and revalidate before importing
+                # CLI tokens over the top of that fresh chain.
+                try:
+                    data = _read_codex_tokens(_lock=False)
+                except AuthError as locked_exc:
+                    read_error = locked_exc
+                    if (
+                        getattr(locked_exc, "relogin_required", False)
+                        and getattr(locked_exc, "code", None)
+                        in {
+                            "codex_auth_missing_access_token",
+                            "codex_auth_missing_refresh_token",
+                            "codex_auth_invalid_shape",
+                        }
+                    ):
+                        imported = _recover_codex_tokens_from_cli(
+                            str(
+                                getattr(locked_exc, "code", None)
+                                or "auth_error"
+                            ),
+                            source_path=state_source_path,
+                        )
+                        data = (
+                            {
+                                "tokens": imported,
+                                "last_refresh": imported.get("last_refresh"),
+                            }
+                            if imported
+                            else None
+                        )
+                    else:
+                        data = None
         else:
             data = None
 
@@ -4086,8 +4698,19 @@ def resolve_codex_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
-        # Re-read under lock to avoid racing with other Hermes processes
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+        # Re-read under the owning store's lock to avoid racing with other
+        # Hermes processes and persist rotating refresh tokens to that source.
+        with _provider_state_transaction(
+            "openai-codex",
+            timeout_seconds=max(
+                float(AUTH_LOCK_TIMEOUT_SECONDS),
+                refresh_timeout_seconds + 5.0,
+            ),
+        ) as (
+            _auth_store,
+            _state,
+            state_source_path,
+        ):
             data = _read_codex_tokens(_lock=False)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()
@@ -4097,7 +4720,11 @@ def resolve_codex_runtime_credentials(
                 should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
 
             if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                tokens = _refresh_codex_auth_tokens(
+                    tokens,
+                    refresh_timeout_seconds,
+                    source_path=state_source_path,
+                )
                 access_token = str(tokens.get("access_token", "") or "").strip()
 
     base_url = (
@@ -4971,82 +5598,219 @@ def _refresh_xai_oauth_tokens(
     return updated_tokens
 
 
+def _xai_oauth_data_from_provider_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate one exact xAI provider block without fallback reads."""
+    tokens = state.get("tokens")
+    if not isinstance(tokens, dict):
+        raise AuthError(
+            "xAI OAuth credentials are missing.",
+            provider="xai-oauth",
+            code="xai_auth_missing",
+            relogin_required=True,
+        )
+    access_token = str(tokens.get("access_token", "") or "").strip()
+    if not access_token:
+        raise AuthError(
+            "xAI OAuth access token is missing.",
+            provider="xai-oauth",
+            code="xai_auth_missing",
+            relogin_required=True,
+        )
+    data = dict(state)
+    data["tokens"] = dict(tokens)
+    return data
+
+
+def _xai_oauth_state_with_refreshed_tokens(
+    state: Dict[str, Any],
+    refreshed: Dict[str, Any],
+    *,
+    token_endpoint: str,
+) -> Dict[str, Any]:
+    updated_state = dict(state)
+    updated_tokens = dict(state.get("tokens") or {})
+    updated_tokens["access_token"] = refreshed["access_token"]
+    updated_tokens["refresh_token"] = refreshed["refresh_token"]
+    for key in ("id_token", "expires_in", "token_type"):
+        if refreshed.get(key) is not None:
+            updated_tokens[key] = refreshed[key]
+    updated_state["tokens"] = updated_tokens
+    discovery = dict(updated_state.get("discovery") or {})
+    discovery["token_endpoint"] = token_endpoint
+    updated_state["discovery"] = discovery
+    updated_state["last_refresh"] = refreshed.get("last_refresh")
+    return updated_state
+
+
 def resolve_xai_oauth_runtime_credentials(
     *,
     force_refresh: bool = False,
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
-    data = _read_xai_oauth_tokens()
-    tokens = dict(data["tokens"])
-    access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = env_float("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20)
-    discovery = dict(data.get("discovery") or {})
-    token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
-    redirect_uri = str(data.get("redirect_uri", "") or "").strip()
-
-    effective_skew = (
-        int(refresh_skew_seconds)
-        if refresh_skew_seconds is not None
-        else _xai_proactive_refresh_skew_seconds(access_token)
+    lock_timeout = max(
+        float(AUTH_LOCK_TIMEOUT_SECONDS),
+        refresh_timeout_seconds + 5.0,
     )
-    should_refresh = bool(force_refresh)
-    if (not should_refresh) and refresh_if_expiring:
-        should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
-    if should_refresh:
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
-            data = _read_xai_oauth_tokens(_lock=False)
+    observed_source_path, observed_refresh_fingerprint = (
+        _observe_provider_refresh_source("xai-oauth")
+    )
+    expected_source_path = observed_source_path
+    data: Optional[Dict[str, Any]] = None
+    access_token = ""
+
+    for _attempt in range(3):
+        with _provider_state_transaction(
+            "xai-oauth",
+            timeout_seconds=lock_timeout,
+            expected_source_path=expected_source_path,
+        ) as (transaction_store, state, state_source_path):
+            if state is None:
+                if expected_source_path is None:
+                    break
+                expected_source_path = None
+                continue
+            resolved_state, resolved_source_path = _load_provider_state_with_source(
+                transaction_store,
+                "xai-oauth",
+            )
+            if (
+                resolved_state is not None
+                and resolved_source_path is not None
+                and state_source_path is not None
+                and not _same_path(resolved_source_path, state_source_path)
+            ):
+                state = resolved_state
+                state_source_path = resolved_source_path
+            if _source_state_is_reserved(state):
+                raise AuthError(
+                    "The xAI OAuth refresh credential is reserved and unavailable",
+                    provider="xai-oauth",
+                    code="refresh_reserved",
+                    relogin_required=True,
+                )
+            data = _xai_oauth_data_from_provider_state(state)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()
+            current_refresh_fingerprint = _refresh_lineage_fingerprint(
+                tokens.get("refresh_token")
+            )
+            owner_changed = bool(
+                observed_source_path is not None
+                and state_source_path is not None
+                and not _same_path(observed_source_path, state_source_path)
+            )
+            lineage_changed = bool(
+                observed_refresh_fingerprint is not None
+                and current_refresh_fingerprint != observed_refresh_fingerprint
+            )
+            competing_winner = bool(
+                access_token and (owner_changed or lineage_changed)
+            )
             discovery = dict(data.get("discovery") or {})
-            token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
-            redirect_uri = str(data.get("redirect_uri", "") or "").strip()
+            token_endpoint = str(
+                discovery.get("token_endpoint", "") or ""
+            ).strip()
             effective_skew = (
                 int(refresh_skew_seconds)
                 if refresh_skew_seconds is not None
                 else _xai_proactive_refresh_skew_seconds(access_token)
             )
+            competing_winner_valid = bool(
+                competing_winner
+                and not _xai_access_token_is_expiring(access_token, 0)
+            )
+            should_refresh = bool(force_refresh and not competing_winner_valid)
+            if (
+                not competing_winner_valid
+                and not should_refresh
+                and refresh_if_expiring
+            ):
+                should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
+            if not should_refresh:
+                break
+            if not token_endpoint:
+                token_endpoint = _xai_oauth_discovery(refresh_timeout_seconds)[
+                    "token_endpoint"
+                ]
+            consumed_refresh_token = str(
+                tokens.get("refresh_token", "") or ""
+            ).strip()
+            reservation = _reserve_provider_refresh_source(
+                "xai-oauth",
+                state,
+                state_source_path,
+                expected_refresh_token=consumed_refresh_token,
+            )
+            try:
+                refreshed = refresh_xai_oauth_pure(
+                    access_token,
+                    consumed_refresh_token,
+                    token_endpoint=token_endpoint,
+                    timeout_seconds=refresh_timeout_seconds,
+                )
+            except AuthError:
+                # The reservation is already the durable fail-closed state.
+                raise
+
+            updated_state = _xai_oauth_state_with_refreshed_tokens(
+                state,
+                refreshed,
+                token_endpoint=token_endpoint,
+            )
+            try:
+                _finalize_provider_refresh_reservation(reservation, updated_state)
+            except SourceCredentialLineageChanged:
+                continue
+            except OSError as exc:
+                raise SourceCredentialPersistenceError(
+                    "xai-oauth",
+                    source_path=reservation.source_path,
+                    consumed_refresh_token=consumed_refresh_token,
+                ) from exc
+            data = dict(updated_state)
+            access_token = str(
+                updated_state.get("tokens", {}).get("access_token", "") or ""
+            ).strip()
+            break
+    else:
+        raise SourceCredentialLineageChanged("xai-oauth")
+
+    if data is None:
+        # Pool-only/manual credentials have no providers.xai-oauth singleton.
+        # Delegate their refresh to CredentialPool so the pool row remains the
+        # authoritative transaction owner.
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("xai-oauth")
+        selected = pool.peek()
+        if selected is not None:
+            selected_access_token = str(selected.access_token or "").strip()
+            effective_skew = (
+                int(refresh_skew_seconds)
+                if refresh_skew_seconds is not None
+                else _xai_proactive_refresh_skew_seconds(selected_access_token)
+            )
             should_refresh = bool(force_refresh)
             if (not should_refresh) and refresh_if_expiring:
-                should_refresh = _xai_access_token_is_expiring(access_token, effective_skew)
+                should_refresh = _xai_access_token_is_expiring(
+                    selected_access_token,
+                    effective_skew,
+                )
             if should_refresh:
-                if not token_endpoint:
-                    token_endpoint = _xai_oauth_discovery(refresh_timeout_seconds)["token_endpoint"]
-                try:
-                    tokens = _refresh_xai_oauth_tokens(
-                        tokens,
-                        token_endpoint=token_endpoint,
-                        redirect_uri=redirect_uri,
-                        timeout_seconds=refresh_timeout_seconds,
-                    )
-                    access_token = str(tokens.get("access_token", "") or "").strip()
-                except AuthError as exc:
-                    if _is_terminal_xai_oauth_refresh_error(exc):
-                        # Terminal failure (HTTP 400/401/403 — invalid_grant, token revoked).
-                        # Clear dead tokens from auth.json so subsequent sessions fail fast
-                        # without a network retry. Mirrors credential_pool.py quarantine.
-                        try:
-                            _q_store = _load_auth_store()
-                            _q_state = _load_provider_state(_q_store, "xai-oauth") or {}
-                            _q_tokens = dict(_q_state.get("tokens") or {})
-                            _q_tokens.pop("access_token", None)
-                            _q_tokens.pop("refresh_token", None)
-                            _q_state["tokens"] = _q_tokens
-                            _q_state["last_auth_error"] = {
-                                "provider": "xai-oauth",
-                                "code": exc.code or "xai_refresh_failed",
-                                "message": str(exc),
-                                "reason": "runtime_refresh_failure",
-                                "relogin_required": True,
-                                "at": datetime.now(timezone.utc).isoformat(),
-                            }
-                            _store_provider_state(_q_store, "xai-oauth", _q_state, set_active=False)
-                            _save_auth_store(_q_store)
-                        except Exception as _save_exc:
-                            logger.debug(
-                                "xAI OAuth: failed to persist quarantined state: %s", _save_exc,
-                            )
-                    raise
+                selected = pool.try_refresh_matching(credential_id=selected.id)
+        if selected is None or not selected.access_token:
+            raise AuthError(
+                "xAI OAuth credentials are missing.",
+                provider="xai-oauth",
+                code="xai_auth_missing",
+                relogin_required=True,
+            )
+        access_token = selected.access_token
+        data = {
+            "last_refresh": selected.last_refresh,
+        }
 
     base_url = _xai_validate_inference_base_url(
         os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
@@ -5455,6 +6219,40 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
     if not (isinstance(access_token, str) and access_token.strip()):
         return None
     return payload
+
+
+def _reserve_shared_nous_lineage(refresh_token: str) -> None:
+    """Remove the matching convenience-store lineage before a refresh POST.
+
+    The caller owns ``_nous_shared_store_lock``. Any persistence failure is
+    fatal to the refresh attempt; the per-profile/root source is not reserved
+    until this auxiliary copy has been made unavailable.
+    """
+    path = _nous_shared_store_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise OSError("Shared Nous credential store is malformed")
+    shared_refresh = payload.get("refresh_token")
+    if not isinstance(shared_refresh, str) or not shared_refresh.strip():
+        path.unlink()
+    elif _refresh_lineage_fingerprint(shared_refresh) != _refresh_lineage_fingerprint(
+        refresh_token
+    ):
+        raise SourceCredentialLineageChanged("nous")
+    else:
+        path.unlink()
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _clear_shared_nous_state(reason: str) -> None:
@@ -6212,6 +7010,9 @@ def resolve_nous_runtime_credentials(
     expires_in, source ("invoke_jwt"), and auth_path.
     """
     sequence_id = uuid.uuid4().hex[:12]
+    observed_source_path, observed_refresh_fingerprint = (
+        _observe_provider_refresh_source("nous")
+    )
 
     with _provider_state_transaction("nous") as (
         auth_store,
@@ -6222,9 +7023,32 @@ def resolve_nous_runtime_credentials(
         if not state:
             raise AuthError("Hermes is not logged into Nous Portal.",
                             provider="nous", relogin_required=True)
+        if _source_state_is_reserved(state):
+            raise AuthError(
+                "The Nous refresh credential is reserved and unavailable",
+                provider="nous",
+                code="refresh_reserved",
+                relogin_required=True,
+            )
 
         persisted_state = dict(state)
         state_persisted = False
+        effective_force_refresh = bool(force_refresh)
+        current_refresh_fingerprint = _refresh_lineage_fingerprint(
+            state.get("refresh_token")
+        )
+        if (
+            (
+                observed_source_path is not None
+                and state_source_path is not None
+                and not _same_path(observed_source_path, state_source_path)
+            )
+            or (
+                observed_refresh_fingerprint is not None
+                and current_refresh_fingerprint != observed_refresh_fingerprint
+            )
+        ):
+            effective_force_refresh = False
 
         def _resolve_effective_routing_metadata() -> tuple[str, str, str, str]:
             """Resolve every routing value that shared OAuth state can replace."""
@@ -6308,7 +7132,17 @@ def resolve_nous_runtime_credentials(
                 )
                 return
             try:
-                _save_provider_state_to_source(auth_store, "nous", state, state_source_path)
+                _save_provider_state_to_locked_source(
+                    auth_store,
+                    "nous",
+                    state,
+                    state_source_path,
+                    expected_refresh_token=_provider_refresh_lineage(
+                        "nous",
+                        persisted_state,
+                    ),
+                    merge_credential_pool=reason.startswith("terminal_"),
+                )
             except Exception as exc:
                 _oauth_trace(
                     "nous_state_persist_failed",
@@ -6326,11 +7160,6 @@ def resolve_nous_runtime_credentials(
             )
             persisted_state = dict(state)
             state_persisted = True
-            # Mirror post-refresh state to the shared store so sibling
-            # profiles don't hold stale refresh_tokens after rotation.
-            # Best-effort — any failure is logged and swallowed inside
-            # _write_shared_nous_state.
-            _write_shared_nous_state(state)
 
         verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
         timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
@@ -6368,11 +7197,17 @@ def resolve_nous_runtime_credentials(
                 scope=state.get("scope"),
                 expires_at=state.get("expires_at"),
             )
-            if force_refresh or invoke_jwt_status is not None:
+            if effective_force_refresh or invoke_jwt_status is not None:
                 with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):
                     if _merge_shared_nous_oauth_state(state):
                         access_token = state.get("access_token")
                         refresh_token = state.get("refresh_token")
+                        if (
+                            observed_refresh_fingerprint is not None
+                            and _refresh_lineage_fingerprint(refresh_token)
+                            != observed_refresh_fingerprint
+                        ):
+                            effective_force_refresh = False
                         (
                             portal_base_url,
                             stored_inference_base_url,
@@ -6386,7 +7221,7 @@ def resolve_nous_runtime_credentials(
                         )
                         _persist_state("post_shared_merge_access_unusable")
 
-                    if force_refresh or invoke_jwt_status is not None:
+                    if effective_force_refresh or invoke_jwt_status is not None:
                         if not isinstance(refresh_token, str) or not refresh_token:
                             reason = invoke_jwt_status or "force_refresh"
                             raise AuthError(
@@ -6398,31 +7233,31 @@ def resolve_nous_runtime_credentials(
                                 relogin_required=True,
                             )
 
-                        refresh_reason = "force_refresh" if force_refresh else (invoke_jwt_status or "access_unusable")
+                        refresh_reason = (
+                            "force_refresh"
+                            if effective_force_refresh
+                            else (invoke_jwt_status or "access_unusable")
+                        )
                         _oauth_trace(
                             "refresh_start",
                             sequence_id=sequence_id,
                             reason=refresh_reason,
                             refresh_token_fp=_token_fingerprint(refresh_token),
                         )
+                        _reserve_shared_nous_lineage(refresh_token)
+                        reservation = _reserve_provider_refresh_source(
+                            "nous",
+                            state,
+                            state_source_path,
+                            expected_refresh_token=refresh_token,
+                        )
                         try:
                             refreshed = _refresh_access_token(
                                 client=client, portal_base_url=portal_base_url,
                                 client_id=client_id, refresh_token=refresh_token,
                             )
-                        except AuthError as exc:
-                            if _is_terminal_nous_refresh_error(exc):
-                                _quarantine_nous_oauth_state(
-                                    state,
-                                    exc,
-                                    reason="runtime_access_refresh_failure",
-                                )
-                                _quarantine_nous_pool_entries(
-                                    auth_store,
-                                    exc,
-                                    reason="runtime_access_refresh_failure",
-                                )
-                                _persist_state("terminal_runtime_access_refresh_failure")
+                        except AuthError:
+                            # The owner reservation remains the fail-closed state.
                             raise
                         now = datetime.now(timezone.utc)
                         access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
@@ -6462,8 +7297,42 @@ def resolve_nous_runtime_credentials(
                             previous_refresh_token_fp=_token_fingerprint(previous_refresh_token),
                             new_refresh_token_fp=_token_fingerprint(refresh_token),
                         )
-                        # Persist immediately so validation failures cannot drop rotated refresh tokens.
-                        _persist_state("post_refresh_access_token")
+                        try:
+                            _finalize_provider_refresh_reservation(
+                                reservation,
+                                state,
+                            )
+                        except SourceCredentialLineageChanged:
+                            latest_store = _load_auth_store()
+                            latest_state, latest_source_path = (
+                                _load_provider_state_with_source(latest_store, "nous")
+                            )
+                            if (
+                                not latest_state
+                                or _source_state_is_reserved(latest_state)
+                                or not latest_state.get("access_token")
+                            ):
+                                raise
+                            auth_store = latest_store
+                            state.clear()
+                            state.update(latest_state)
+                            state_source_path = latest_source_path
+                            access_token = state.get("access_token")
+                            refresh_token = state.get("refresh_token")
+                            (
+                                portal_base_url,
+                                stored_inference_base_url,
+                                inference_base_url,
+                                client_id,
+                            ) = _resolve_effective_routing_metadata()
+                        except OSError as exc:
+                            raise SourceCredentialPersistenceError(
+                                "nous",
+                                source_path=reservation.source_path,
+                                consumed_refresh_token=previous_refresh_token,
+                            ) from exc
+                        persisted_state = dict(state)
+                        state_persisted = True
 
             _assert_nous_inference_jwt_usable(
                 state,
@@ -6490,6 +7359,7 @@ def resolve_nous_runtime_credentials(
         _persist_state("resolve_nous_runtime_credentials_final")
 
     if state_persisted:
+        _write_shared_nous_state(state)
         _sync_nous_pool_from_auth_store()
 
     api_key = state.get("agent_key")

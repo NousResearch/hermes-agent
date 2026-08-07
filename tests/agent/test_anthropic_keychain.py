@@ -9,6 +9,7 @@ from agent.anthropic_adapter import (
     _read_claude_code_credentials_from_keychain,
     read_claude_code_credentials,
     _refresh_oauth_token,
+    _write_claude_code_credentials,
 )
 
 
@@ -227,15 +228,16 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
         result = _refresh_oauth_token({"refreshToken": "stale", "expiresAt": 1})
         assert result == "already-refreshed-token"
 
-    def test_falls_back_to_network_refresh_when_no_fresh_credential(self, monkeypatch):
+    def test_falls_back_to_network_refresh_when_no_fresh_credential(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
         """When no live source has a valid token, fall back to refreshing
         ourselves using the freshest available refresh token.
         """
-        # Live read returns an expired credential carrying a refresh token.
-        monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials",
-            lambda: {"accessToken": "expired", "refreshToken": "live-refresh", "expiresAt": 1},
-        )
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        _write_claude_code_credentials("expired", "live-refresh", 1)
         captured = {}
 
         def _fake_refresh(refresh_token, **kwargs):

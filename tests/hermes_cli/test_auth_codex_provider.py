@@ -118,6 +118,7 @@ def test_save_codex_tokens_syncs_credential_pool(tmp_path, monkeypatch):
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps({
         "version": 1,
+        "active_provider": "openrouter",
         "providers": {
             "openai-codex": {
                 "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
@@ -171,6 +172,9 @@ def test_save_codex_tokens_syncs_credential_pool(tmp_path, monkeypatch):
 
     # Provider singleton is updated too.
     assert auth["providers"]["openai-codex"]["tokens"]["access_token"] == "new-at"
+    # This direct save is the explicit login/add boundary, so it still selects
+    # Codex. Automatic refresh/recovery callers opt out separately.
+    assert auth["active_provider"] == "openai-codex"
 
 
 def test_save_codex_tokens_syncs_manual_device_code_entries(tmp_path, monkeypatch):

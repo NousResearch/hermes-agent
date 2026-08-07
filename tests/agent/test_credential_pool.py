@@ -738,6 +738,34 @@ def test_pooled_credential_to_dict_strips_borrowed_secret_fields():
 
 
 
+@pytest.mark.parametrize("source", ["device_code", "manual:device_code"])
+def test_codex_source_store_provenance_is_runtime_only(source, tmp_path):
+    from agent.credential_pool import PooledCredential
+
+    trusted_source = tmp_path / "trusted-root" / "auth.json"
+    credential = PooledCredential(
+        provider="openai-codex",
+        id=f"runtime-{source}",
+        label="runtime provenance",
+        auth_type="oauth",
+        priority=0,
+        source=source,
+        access_token="fake-access",
+        refresh_token="fake-refresh",
+        source_store_path=trusted_source,
+    )
+
+    payload = credential.to_dict()
+    assert "source_store_path" not in payload
+    assert str(trusted_source) not in json.dumps(payload)
+
+    untrusted = dict(payload)
+    untrusted["source_store_path"] = str(tmp_path / "untrusted" / "auth.json")
+    restored = PooledCredential.from_dict("openai-codex", untrusted)
+    assert restored.source_store_path is None
+
+
+
 @pytest.mark.parametrize("source", [
     "age://openrouter/api-key",
     "systemd",

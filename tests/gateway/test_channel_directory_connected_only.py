@@ -33,3 +33,40 @@ def test_does_not_resurrect_disconnected_platforms_from_session_history(tmp_path
     assert set(calls) <= {"telegram"}
 
 
+def test_connected_platform_still_uses_session_discovery(tmp_path):
+    cache_file = tmp_path / "channel_directory.json"
+
+    with patch(
+        "gateway.channel_directory._build_from_sessions",
+        return_value={"channels": []},
+    ) as mock_sessions, patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+        directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: object()}))
+
+    assert "telegram" in directory["platforms"]
+    mock_sessions.assert_any_call("telegram")
+
+
+def test_aliases_do_not_resurrect_disconnected_platforms(tmp_path):
+    """channel_aliases.json must not invent keys for platforms without adapters."""
+    import json
+
+    cache_file = tmp_path / "channel_directory.json"
+    alias_file = tmp_path / "channel_aliases.json"
+    alias_file.write_text(json.dumps({
+        "whatsapp": {"family@g.us": "family"},
+        "signal": {"+15551234567": "Mom"},
+    }))
+
+    with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+         patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", alias_file), \
+         patch(
+             "gateway.channel_directory._build_from_sessions",
+             return_value=[{"id": "tg1", "name": "Alice", "type": "dm",
+                            "thread_id": None}],
+         ):
+        directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: object()}))
+
+    plats = directory["platforms"]
+    assert "telegram" in plats
+    for stale in ("whatsapp", "signal", "matrix"):
+        assert stale not in plats, f"{stale} resurrected via channel aliases"

@@ -3027,6 +3027,61 @@ def run_job(
         return True, doc, output, None
 
     # ---------------------------------------------------------------
+    # Monitor gate — hash-suppressed change detection (see cron/monitor.py).
+    # Runs BEFORE any agent machinery is constructed so an unchanged tick
+    # costs one cheap source run + one hash, no LLM, no delivery.
+    # ---------------------------------------------------------------
+    from cron.monitor import check_monitor, job_has_monitor
+
+    _monitor_context: Optional[str] = None
+    if job_has_monitor(job):
+        _mon = check_monitor(job)
+        _mon_now = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+        if not _mon.ok:
+            # Source failure is an ERROR, never a change: alert the user so
+            # a broken monitor can't silently stop watching. Stored hash is
+            # untouched (check_monitor persists nothing on failure).
+            logger.error("Job '%s': monitor source failed: %s", job_id, _mon.error)
+            _mon_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_mon_now}\n"
+                f"**Mode:** monitor\n"
+                f"**Status:** monitor source failed\n\n"
+                f"{_mon.error}\n"
+            )
+            _mon_alert = (
+                f"⚠ Cron monitor '{job_name}' source failed\n\n"
+                f"{_mon.error}\n\n"
+                f"Time: {_mon_now}"
+            )
+            return False, _mon_doc, _mon_alert, _mon.error
+        if not _mon.changed:
+            # Unchanged output — suppress the agent run entirely. Recorded
+            # as a silent no_change tick (visible in the executions ledger
+            # via this doc; SILENT_MARKER blocks delivery).
+            logger.info(
+                "Job '%s': monitor output unchanged — suppressing agent run",
+                job_id,
+            )
+            _mon_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_mon_now}\n"
+                f"**Mode:** monitor\n"
+                f"**Status:** no_change (agent run suppressed)\n"
+            )
+            return True, _mon_doc, SILENT_MARKER, None
+        # Changed (or first run): inject the monitor context into the prompt
+        # through the existing per-run context seam and fall through to a
+        # normal agent run.
+        _monitor_context = _mon.context_block
+        if _monitor_context:
+            extra_prompt = (
+                f"{_monitor_context}\n\n{extra_prompt}" if extra_prompt else _monitor_context
+            )
+
+    # ---------------------------------------------------------------
     # Default (LLM) path — import and construct the agent machinery now
     # that we know we actually need it. Doing these imports here instead of
     # at module top keeps no_agent ticks from paying for AIAgent / SessionDB

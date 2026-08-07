@@ -579,6 +579,12 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     if job.get("script"):
         result["script"] = job["script"]
+    if job.get("monitor_script"):
+        result["monitor_script"] = job["monitor_script"]
+    if job.get("monitor_url"):
+        result["monitor_url"] = job["monitor_url"]
+    if job.get("monitor_state"):
+        result["monitor_state"] = job["monitor_state"]
     if job.get("no_agent"):
         result["no_agent"] = True
     if job.get("enabled_toolsets"):
@@ -1041,6 +1047,8 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    monitor_script: Optional[str] = None,
+    monitor_url: Optional[str] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1079,6 +1087,12 @@ def cronjob(
                 script_error = _validate_cron_script_path(script)
                 if script_error:
                     return tool_error(script_error, success=False)
+
+            # Validate monitor source (same containment rules as script).
+            if monitor_script:
+                monitor_error = _validate_cron_script_path(monitor_script)
+                if monitor_error:
+                    return tool_error(monitor_error, success=False)
 
             # Reject a model-supplied base_url that would route a named
             # provider's stored credential to an attacker endpoint (F8).
@@ -1121,6 +1135,8 @@ def cronjob(
                     workdir=_normalize_optional_job_value(workdir),
                     no_agent=_no_agent,
                     attach_to_session=attach_to_session,
+                    monitor_script=_normalize_optional_job_value(monitor_script),
+                    monitor_url=_normalize_optional_job_value(monitor_url),
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -1327,6 +1343,33 @@ def cronjob(
                     if script_error:
                         return tool_error(script_error, success=False)
                 updates["script"] = _normalize_optional_job_value(script) if script else None
+            if monitor_script is not None:
+                # Pass empty string to clear an existing monitor_script
+                if monitor_script:
+                    monitor_error = _validate_cron_script_path(monitor_script)
+                    if monitor_error:
+                        return tool_error(monitor_error, success=False)
+                updates["monitor_script"] = (
+                    _normalize_optional_job_value(monitor_script) if monitor_script else None
+                )
+            if monitor_url is not None:
+                # Pass empty string to clear an existing monitor_url
+                updates["monitor_url"] = (
+                    _normalize_optional_job_value(monitor_url) if monitor_url else None
+                )
+            if monitor_script is not None or monitor_url is not None:
+                eff_mon_script = (
+                    updates["monitor_script"] if "monitor_script" in updates else job.get("monitor_script")
+                )
+                eff_mon_url = (
+                    updates["monitor_url"] if "monitor_url" in updates else job.get("monitor_url")
+                )
+                if eff_mon_script and eff_mon_url:
+                    return tool_error(
+                        "monitor_script and monitor_url are mutually exclusive — "
+                        "clear one before setting the other.",
+                        success=False,
+                    )
             if context_from is not None:
                 # Empty string / empty list clears the field; otherwise validate
                 # each referenced job exists before storing. Normalized to a list
@@ -1454,6 +1497,14 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
             },
+            "monitor_script": {
+                "type": "string",
+                "description": f"Optional monitor-mode source script (same rules as `script`: relative to {display_hermes_home()}/scripts/, .sh/.bash via bash, else Python). Each tick it runs FIRST and its output is hashed as exact bytes: UNCHANGED output suppresses the agent run entirely (no LLM, no delivery, recorded as a silent no_change tick); CHANGED output injects a MONITOR CHANGE DETECTED block (unified diff + new output) into the prompt before a normal agent run. The first tick always runs the agent (baseline). Scripts must emit STABLE output — no timestamps or random ordering — or every tick looks changed. Mutually exclusive with monitor_url; incompatible with no_agent=True. On update, pass empty string to clear."
+            },
+            "monitor_url": {
+                "type": "string",
+                "description": "Optional http(s) URL used as the monitor source instead of a script — fetched with a bounded GET (30s timeout, 256KB cap) each tick. Same hash-suppression semantics as monitor_script. Mutually exclusive with monitor_script. On update, pass empty string to clear."
+            },
             "no_agent": {
                 "type": "boolean",
                 "default": False,
@@ -1555,6 +1606,8 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        monitor_script=args.get("monitor_script"),
+        monitor_url=args.get("monitor_url"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
     ),

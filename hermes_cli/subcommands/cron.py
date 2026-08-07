@@ -67,6 +67,28 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         ),
     )
     cron_create.add_argument(
+        "--monitor-script",
+        dest="monitor_script",
+        help=(
+            "Monitor mode: path to a cheap source script under "
+            "~/.hermes/scripts/ that runs each tick BEFORE the agent. "
+            "Unchanged output (exact-bytes hash) suppresses the agent run "
+            "entirely; changed output injects a MONITOR CHANGE DETECTED "
+            "diff into the prompt. Script output must be stable (no "
+            "timestamps). Mutually exclusive with --monitor-url; "
+            "incompatible with --no-agent."
+        ),
+    )
+    cron_create.add_argument(
+        "--monitor-url",
+        dest="monitor_url",
+        help=(
+            "Monitor mode: http(s) URL fetched with a bounded GET each tick "
+            "instead of a script. Same hash-suppression semantics as "
+            "--monitor-script."
+        ),
+    )
+    cron_create.add_argument(
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
@@ -142,6 +164,21 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         action="store_const",
         const=False,
         help="Disable no-agent mode on this job (reverts to LLM-driven execution).",
+    )
+    cron_edit.add_argument(
+        "--monitor-script",
+        dest="monitor_script",
+        help=(
+            "Set/replace the monitor source script (see `hermes cron create "
+            "--monitor-script`). Pass empty string to clear."
+        ),
+    )
+    cron_edit.add_argument(
+        "--monitor-url",
+        dest="monitor_url",
+        help=(
+            "Set/replace the monitor source URL. Pass empty string to clear."
+        ),
     )
     cron_edit.add_argument(
         "--workdir",

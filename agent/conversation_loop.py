@@ -16,6 +16,7 @@ resolved through :func:`_ra` so those patches keep working.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -1432,6 +1433,29 @@ def run_conversation(
     # ``build_turn_context``.  It mutates ``agent`` exactly as the inline code
     # did and returns the locals the loop below reads back.  See
     # ``agent/turn_context.py``.
+    # A dashboard can stay alive while an in-place source update lands. If it
+    # imported ``turn_context`` before that update but lazily imports this
+    # module afterwards, the loaded builder still has the previous signature.
+    # Feature-detect newly-added optional fields at this internal API seam so
+    # an ordinary turn does not die before reaching the model. A fresh process
+    # still passes both fields and retains turn-start display typing.
+    try:
+        _builder_params = inspect.signature(build_turn_context).parameters
+    except (TypeError, ValueError):
+        _builder_params = {}
+    _builder_accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in _builder_params.values()
+    )
+    _display_kwargs = {
+        name: value
+        for name, value in (
+            ("persist_user_display_kind", persist_user_display_kind),
+            ("persist_user_display_metadata", persist_user_display_metadata),
+        )
+        if _builder_accepts_kwargs or name in _builder_params
+    }
+
     _ctx = build_turn_context(
         agent,
         user_message,
@@ -1441,8 +1465,6 @@ def run_conversation(
         stream_callback,
         persist_user_message,
         persist_user_timestamp,
-        persist_user_display_kind=persist_user_display_kind,
-        persist_user_display_metadata=persist_user_display_metadata,
         restore_or_build_system_prompt=_restore_or_build_system_prompt,
         install_safe_stdio=_install_safe_stdio,
         sanitize_surrogates=_sanitize_surrogates,
@@ -1453,6 +1475,7 @@ def run_conversation(
         # MoA turns append per-call aggregated context to the API copy of the
         # user message, so no byte-stable api_content sidecar can be stamped.
         moa_active=bool(moa_config),
+        **_display_kwargs,
     )
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message

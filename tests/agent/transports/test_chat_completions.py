@@ -162,6 +162,77 @@ class TestChatCompletionsBuildKwargs:
 
 
 
+    def test_anthropic_chat_completions_appends_user_tail_after_assistant(self, transport):
+        """Claude Chat Completions rejects trailing assistant prefill.
+
+        Hermes can persist streamed preamble/status text as the current tail;
+        append a tiny synthetic user turn for Anthropic/Claude endpoints instead
+        of sending a request that hard-400s before the model can recover.
+        """
+        msgs = [
+            {"role": "user", "content": "diagnose this"},
+            {"role": "assistant", "content": "Smoking gun: ..."},
+        ]
+        kw = transport.build_kwargs(
+            model="claude-sonnet-4-6",
+            messages=msgs,
+            base_url="https://api.anthropic.com/chat/completions",
+            provider_name="anthropic",
+        )
+        assert kw["messages"][-2]["role"] == "assistant"
+        assert kw["messages"][-1]["role"] == "user"
+        assert kw["messages"][-1]["content"] == "Continue from the previous assistant message."
+        assert not any(k.startswith("_") for k in kw["messages"][-1])
+        assert msgs[-1]["role"] == "assistant"  # original untouched
+
+    def test_anthropic_profile_path_appends_user_tail_after_assistant(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("anthropic")
+        msgs = [
+            {"role": "user", "content": "run cron"},
+            {"role": "assistant", "content": "Checking logs."},
+        ]
+        kw = transport.build_kwargs(
+            model="claude-sonnet-4-6",
+            messages=msgs,
+            base_url="https://api.anthropic.com/chat/completions",
+            provider_profile=profile,
+        )
+        assert [m["role"] for m in kw["messages"][-2:]] == ["assistant", "user"]
+
+    def test_openai_style_provider_keeps_trailing_assistant_prefill(self, transport):
+        msgs = [
+            {"role": "user", "content": "diagnose this"},
+            {"role": "assistant", "content": "Partial prefill"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=msgs,
+            base_url="https://api.openai.com/v1",
+            provider_name="openai",
+        )
+        assert kw["messages"] is msgs
+        assert kw["messages"][-1]["role"] == "assistant"
+
+    def test_anthropic_tail_repair_does_not_fake_tool_results(self, transport):
+        msgs = [
+            {"role": "user", "content": "run tool"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}],
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="claude-sonnet-4-6",
+            messages=msgs,
+            base_url="https://api.anthropic.com/chat/completions",
+            provider_name="anthropic",
+        )
+        assert kw["messages"][-1]["role"] == "assistant"
+        assert kw["messages"][-1]["tool_calls"]
+
     def test_tools_included(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]

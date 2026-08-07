@@ -3040,6 +3040,12 @@ class _StreamingCall(StreamingWaitMonitor):
             if not self._stream_attempt_is_active(stream_attempt_id):
                 self._discard_stale_stream_chunk(stream_attempt_id, chunk)
                 continue
+
+            if chunk is None:
+                # Some upstreams (e.g. agentrouter via New-API) emit bare
+                # `data: null` keep-alive events mid-stream; skip them.
+                continue
+
             if hasattr(chunk, "model") and chunk.model:
                 model_name = chunk.model
             if response_id is None and isinstance(getattr(chunk, "id", None), str) and chunk.id:

@@ -7,6 +7,7 @@ same key. The fix prefixes keys with platform value: 'telegram:123' vs
 """
 
 import json
+import logging
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -58,7 +59,7 @@ class TestVoiceModePlatformIsolation:
 class TestLegacyKeyMigration:
     """Test migration of legacy unprefixed keys in _load_voice_modes."""
 
-    def test_load_voice_modes_skips_legacy_keys(self):
+    def test_load_voice_modes_skips_legacy_keys(self, caplog):
         """_load_voice_modes skips keys without ':' prefix and logs a warning."""
         runner = _make_runner()
 
@@ -75,7 +76,10 @@ class TestLegacyKeyMigration:
             voice_path.write_text(json.dumps(legacy_data))
 
             with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
-                with patch("gateway.run.logger") as mock_logger:
+                # Assert on the emitted records rather than patching a module
+                # global, so the test tracks the warning itself and not which
+                # module object happens to hold the logger.
+                with caplog.at_level(logging.WARNING, logger="gateway.run"):
                     result = runner._load_voice_modes()
 
             # Legacy keys without ':' should be skipped
@@ -84,9 +88,12 @@ class TestLegacyKeyMigration:
             # Prefixed key should be preserved
             assert result.get("telegram:789") == "off"
             # Warning should be logged for each legacy key
-            assert mock_logger.warning.called
-            warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
-            assert any("Skipping legacy unprefixed voice mode key" in str(c) for c in warning_calls)
+            warnings = [
+                r.getMessage()
+                for r in caplog.records
+                if r.levelno >= logging.WARNING and r.name == "gateway.run"
+            ]
+            assert any("Skipping legacy unprefixed voice mode key" in m for m in warnings)
 
 
 class TestSyncVoiceModeStateToAdapter:

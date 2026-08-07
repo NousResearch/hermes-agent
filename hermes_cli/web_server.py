@@ -3480,6 +3480,44 @@ async def get_system_stats():
     return info
 
 
+@app.get("/api/jarvis/overview")
+async def get_jarvis_overview():
+    """Read-only Jarvis cockpit aggregate for the dashboard.
+
+    This endpoint composes safe status/count sources for the dashboard page. It
+    intentionally returns only status enums, counts, task titles/ids, sanitized
+    source availability, and documented product summaries — no env values,
+    credential-pool content, raw logs, session message bodies, or mutation
+    affordances.
+    """
+    from hermes_cli.jarvis_dashboard import build_jarvis_overview
+
+    status_payload = await get_status()
+    system_payload = await get_system_stats()
+    cron_jobs = None
+    try:
+        cron_jobs = await list_cron_jobs("all")
+    except Exception:
+        _log.debug("Jarvis overview cron summary unavailable", exc_info=True)
+
+    try:
+        return await asyncio.get_running_loop().run_in_executor(
+            None,
+            functools.partial(
+                build_jarvis_overview,
+                status_payload,
+                system_payload,
+                cron_jobs,
+            ),
+        )
+    except ValueError as exc:
+        _log.warning("Jarvis overview blocked unsafe payload: %s", exc)
+        raise HTTPException(status_code=500, detail="Jarvis overview failed safety validation")
+    except Exception:
+        _log.exception("GET /api/jarvis/overview failed")
+        raise HTTPException(status_code=500, detail="Jarvis overview unavailable")
+
+
 # ---------------------------------------------------------------------------
 # Curator endpoints — background skill-maintenance status + controls.
 #

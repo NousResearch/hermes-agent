@@ -201,7 +201,7 @@ class TestProviderListFlag:
     def test_password_provider_html_redirects_to_login_form(self, gated_app):
         resp = gated_app.get("/", follow_redirects=False)
         assert resp.status_code == 302
-        assert resp.headers["location"] == "/login?next=%2F"
+        assert resp.headers["location"] == "/login?next=%2Fjarvis"
 
         login = gated_app.get(resp.headers["location"])
         assert login.status_code == 200

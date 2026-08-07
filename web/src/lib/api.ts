@@ -337,6 +337,7 @@ function appendSessionFilters(url: string, options: SessionQueryOptions): string
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getJarvisOverview: () => fetchJSON<JarvisOverview>("/api/jarvis/overview"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -1905,6 +1906,183 @@ export interface SessionLatestDescendantResponse {
   session_id: string;
   path: string[];
   changed: boolean;
+}
+
+export interface JarvisTask {
+  id: string;
+  title: string;
+  status: string;
+  assignee: string | null;
+  priority: number;
+  board: string;
+  created_at: number;
+  started_at: number | null;
+  completed_at: number | null;
+  block_kind: string | null;
+  attention_reason: string | null;
+  attention_action: string;
+  attention_since: number | null;
+  task_href: string;
+  last_failure_error: string | null;
+}
+
+export interface JarvisProfile {
+  name: string;
+  product: string;
+  role: string;
+  state: string;
+  task_counts: Record<string, number>;
+  blocked_count: number;
+  open_count: number;
+  blocked_tasks: JarvisTask[];
+  open_tasks: JarvisTask[];
+  needs_attention: boolean;
+}
+
+export interface JarvisSource {
+  label: string;
+  kind: string;
+  path?: string | null;
+  endpoint?: string | null;
+  status: "ok" | "unavailable";
+  error?: string;
+}
+
+export interface JarvisMemoryVault {
+  obsidian: {
+    configured: boolean;
+    status: "available" | "setup_needed" | "unavailable";
+    label: "Obsidian Memory";
+    path: string | null;
+    source: "OBSIDIAN_VAULT_PATH" | "fallback" | "not_configured";
+    href: string;
+    message: string;
+    note_count: number;
+    decision_count: number;
+    product_note_count: number;
+    recent_notes: Array<{ title: string; relative_path: string; href: string; updated_at: string }>;
+    quick_links: Array<{ label: string; href: string }>;
+  };
+}
+
+export interface JarvisProductAction {
+  kind: "approval" | "blocker" | "access" | "retry" | "ready" | "next_work" | "monitor";
+  label: string;
+  task_id?: string | null;
+  title: string;
+  reason?: string | null;
+  age_label?: string | null;
+  href?: string | null;
+  source: "kanban" | "status_doc";
+}
+
+export interface JarvisProductCta {
+  label: "Open approval task" | "Open source doc" | "Open blocked board" | "Open board";
+  href: string;
+  kind: "approval_task" | "source_doc" | "blocked_board" | "board";
+}
+
+export interface JarvisProductFreshness {
+  status: "fresh" | "aging" | "stale" | "unknown" | "unavailable";
+  last_updated: string | null;
+  age_days: number | null;
+  message: string;
+  sources: Array<{ label: string; status: string; href?: string | null; message?: string | null }>;
+}
+
+export interface JarvisProductSummary {
+  total: number;
+  examples: JarvisTask[];
+}
+
+export interface JarvisProductBlockerSummary extends JarvisProductSummary {
+  needs_input: number;
+  capability: number;
+  transient: number;
+  unknown: number;
+}
+
+export interface JarvisProductApprovalSummary extends JarvisProductSummary {
+  review: number;
+  ready: number;
+  approval_note: string;
+}
+
+export interface JarvisProduct {
+  slug: string;
+  name: string;
+  health: "ok" | "attention" | "blocked" | "unknown";
+  summary: string;
+  phase: string;
+  last_updated: string | null;
+  priorities: string[];
+  next_actions: string[];
+  safety_notes: string[];
+  blockers: string[];
+  approval_note: string;
+  trust_rule?: string | null;
+  owner_action: JarvisProductAction;
+  primary_cta: JarvisProductCta;
+  freshness: JarvisProductFreshness;
+  blocker_summary: JarvisProductBlockerSummary;
+  approval_summary: JarvisProductApprovalSummary;
+  status_path: string;
+  charter_path: string;
+  board: {
+    slug: string;
+    available: boolean;
+    counts: Record<string, number>;
+    blocked_count: number;
+    review_count: number;
+    open_tasks: JarvisTask[];
+    blocked_tasks: JarvisTask[];
+    review_tasks: JarvisTask[];
+    blocked_kind_counts?: Record<string, number>;
+    review_status_counts?: Record<string, number>;
+  };
+  links: Array<{ label: string; href: string }>;
+}
+
+export interface JarvisOverview {
+  generated_at: string;
+  refresh_after_seconds: number;
+  agent_status: {
+    overall: string;
+    gateway_state: string;
+    active_agents: number;
+    active_sessions: number;
+    auth_required: boolean;
+    connected_platforms: number;
+    configured_platforms: number;
+    profiles: JarvisProfile[];
+    components: Record<string, { status?: string; state?: string; [key: string]: unknown }>;
+  };
+  todos: JarvisTask[];
+  products: JarvisProduct[];
+  memory_vault: JarvisMemoryVault;
+  service_health: {
+    overall: string;
+    gateway: { status?: string; state?: string; [key: string]: unknown };
+    dashboard: { status?: string; state?: string; [key: string]: unknown };
+    storage: { status?: string; state?: string; [key: string]: unknown };
+    platforms: { status?: string; configured?: number; connected?: number; [key: string]: unknown };
+    system: {
+      cpu_percent?: number | null;
+      memory_percent?: number | null;
+      disk_percent?: number | null;
+      uptime_seconds?: number | null;
+      psutil?: boolean | null;
+    };
+    cron: {
+      available: boolean;
+      total: number;
+      enabled: number;
+      paused: number;
+      recent_failures: number;
+      local_only: number;
+    };
+  };
+  sources: JarvisSource[];
 }
 
 export interface PaginatedSessions {

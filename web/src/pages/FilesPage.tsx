@@ -16,6 +16,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
@@ -34,6 +35,7 @@ import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { api } from "@/lib/api";
+import { filesPathFromSearchParams } from "@/lib/files-route";
 import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 
@@ -78,9 +80,11 @@ function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
 export default function FilesPage() {
   const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
+  const [searchParams] = useSearchParams();
+  const requestedPath = filesPathFromSearchParams(searchParams);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
-  const [currentPath, setCurrentPath] = useState<string | undefined>(undefined);
+  const [currentPath, setCurrentPath] = useState<string | undefined>(() => requestedPath);
   const [pathInput, setPathInput] = useState("");
   const [listing, setListing] = useState<ManagedFilesResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -122,6 +126,13 @@ export default function FilesPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load(currentPath);
   }, [currentPath]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (requestedPath && requestedPath !== currentPath) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setCurrentPath(requestedPath);
+    }
+  }, [currentPath, requestedPath]);
 
   useEffect(() => {
     setAfterTitle(

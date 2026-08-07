@@ -132,3 +132,82 @@ class TestParseVllmTokenBasedOutputCap:
         assert available is not None
         assert available + 65537 <= 131072
 
+
+class TestParseAzureOutputCap:
+    """Azure OpenAI rejects an over-cap output request by naming the OUTPUT
+    parameter and the model's advertised completion-token ceiling:
+
+        "max_tokens is too large: 65536. This model supports at most
+         32768 completion tokens."
+
+    The input itself fits — this is purely an output-cap error.  Until this
+    phrasing was parsed, the recovery path classified it as context overflow
+    (the bare ``max_tokens`` substring) and looped through compression on a
+    tiny conversation, ending in "cannot compress further" (issue #78405).
+    """
+
+    # Verbatim Azure OpenAI 400 from issue #78405 (gpt-4.1-mini, 32k ceiling).
+    _AZURE_MSG = (
+        "Error: max_tokens is too large: 65536. This model supports at most "
+        "32768 completion tokens."
+    )
+
+    def test_azure_supports_at_most_format(self):
+        # The advertised completion-token ceiling is the available output cap.
+        assert parse_available_output_tokens_from_error(self._AZURE_MSG) == 32768
+
+    def test_azure_arbitrary_bound(self):
+        msg = ("Error: max_tokens is too large: 65536. This model supports "
+               "at most 16384 completion tokens.")
+        assert parse_available_output_tokens_from_error(msg) == 16384
+
+    def test_azure_without_completion_word(self):
+        # Variant without the "completion" qualifier — the regex allows it.
+        msg = ("Error: max_tokens is too large: 65536. This model supports "
+               "at most 32768 tokens.")
+        assert parse_available_output_tokens_from_error(msg) == 32768
+        assert is_output_cap_error(msg) is True
+
+    def test_azure_case_insensitive(self):
+        msg = ("ERROR: Max_Tokens Is Too Large: 65536. THIS MODEL SUPPORTS "
+               "AT MOST 32768 COMPLETION TOKENS.")
+        assert parse_available_output_tokens_from_error(msg) == 32768
+        assert is_output_cap_error(msg) is True
+
+    def test_azure_is_output_cap(self):
+        assert is_output_cap_error(self._AZURE_MSG) is True
+
+    def test_azure_retry_fits_inside_window(self):
+        # The retried cap (cap - 64 margin, applied by the caller) plus the
+        # tiny input must fit inside the advertised ceiling.
+        available = parse_available_output_tokens_from_error(self._AZURE_MSG)
+        assert available is not None
+        assert available - 64 >= 1
+
+    def test_input_overflow_mentioning_ceiling_is_not_output_cap(self):
+        # An input-overflow that happens to cite the completion-token ceiling
+        # must stay on the compression path: no "max_tokens is too large".
+        msg = ("Error: input tokens (80000) exceed the model's context "
+               "window; the model supports at most 32768 completion tokens.")
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False
+
+    def test_input_overflow_mentioning_max_tokens_is_not_output_cap(self):
+        # Genuine input overflow that also names max_tokens (no "is too
+        # large" phrasing) must not be flagged as an output-cap error.
+        msg = ("This model's maximum context length is 32768 tokens. However, "
+               "your messages resulted in 35000 tokens. Please reduce the "
+               "length of the messages or max_tokens.")
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False
+
+    def test_input_overflow_with_too_large_phrase_is_not_output_cap(self):
+        # Even with the "max_tokens is too large" phrase, a message that
+        # clearly describes oversized INPUT must stay on the compression
+        # path (input-overflow signals win in both functions).
+        msg = ("Error: max_tokens is too large for this request: input tokens "
+               "(80000) exceed the model's context window; this model "
+               "supports at most 32768 completion tokens.")
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False
+

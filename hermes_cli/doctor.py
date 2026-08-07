@@ -216,6 +216,111 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+# ── state.db health/stats thresholds (advisory only — module constants,
+# deliberately NOT config: doctor warnings are guidance, not policy) ──
+STATE_DB_SIZE_WARN_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB logical size
+STATE_DB_WAL_WARN_BYTES = 256 * 1024 * 1024          # 256 MiB WAL
+
+
+def _human_bytes(n) -> str:
+    """1234567 → '1.2 MB' (GB/MB/KB/B)."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "?"
+    if n >= 1024 ** 3:
+        return f"{n / (1024 ** 3):.1f} GB"
+    if n >= 1024 ** 2:
+        return f"{n / (1024 ** 2):.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n} B"
+
+
+def _render_state_db_stats(stats: dict, holders=None) -> list:
+    """Turn a collect_state_db_stats() dict into doctor output lines.
+
+    Returns a list of ``(kind, text, detail)`` tuples where kind is one of
+    'info' / 'warn'. Pure formatting — no I/O — so it is unit-testable
+    without spawning the doctor CLI. Tolerates None in every field.
+    """
+    lines: list = []
+    stats = stats or {}
+
+    logical = stats.get("logical_size_bytes")
+    wal = stats.get("wal_size_bytes")
+    freelist = stats.get("freelist_count")
+
+    size_bits = []
+    if logical is not None:
+        size_bits.append(f"logical size {_human_bytes(logical)}")
+    if stats.get("page_count") is not None:
+        size_bits.append(f"{stats['page_count']:,} pages")
+    if freelist is not None:
+        size_bits.append(f"{freelist:,} free")
+    if wal is not None:
+        size_bits.append(f"WAL {_human_bytes(wal)}")
+    if size_bits:
+        lines.append(("info", "state.db " + ", ".join(size_bits), ""))
+
+    row_bits = []
+    if stats.get("messages") is not None:
+        row_bits.append(f"{stats['messages']:,} messages")
+    if stats.get("sessions") is not None:
+        row_bits.append(f"{stats['sessions']:,} sessions")
+    if stats.get("journal_mode"):
+        row_bits.append(f"journal_mode={stats['journal_mode']}")
+    if holders is not None:
+        row_bits.append(f"{holders} process(es) holding the DB open")
+    if row_bits:
+        lines.append(("info", ", ".join(row_bits), ""))
+
+    fts = stats.get("fts_tables")
+    if fts:
+        present = [t for t, ok in fts.items() if ok]
+        lines.append((
+            "info",
+            "FTS tables: " + (", ".join(present) if present else "none"),
+            "",
+        ))
+
+    # Advisory: oversized database. Suggest auto_prune, and — when the v23
+    # FTS rebuild is pending OR the DB still carries the legacy inline
+    # trigram layout (fts_storage_version marker absent) — the offline
+    # optimize-storage pass that migrates/compacts the FTS indexes.
+    if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
+        detail = (
+            "consider enabling sessions.auto_prune in config.yaml "
+            "to bound growth"
+        )
+        legacy_trigram = (
+            fts is not None
+            and fts.get("messages_fts_trigram")
+            and stats.get("fts_storage_version") is None
+        )
+        if stats.get("fts_rebuild_pending") or legacy_trigram:
+            detail += (
+                "; run 'hermes sessions optimize-storage' offline "
+                "(with the gateway stopped) to compact FTS storage"
+            )
+        lines.append((
+            "warn",
+            f"state.db is large ({_human_bytes(logical)})",
+            f"({detail})",
+        ))
+
+    # Advisory: WAL runaway — checkpoints are not landing.
+    if wal is not None and wal > STATE_DB_WAL_WARN_BYTES:
+        lines.append((
+            "warn",
+            f"state.db WAL is very large ({_human_bytes(wal)})",
+            "(checkpoints may not be completing — a long-lived reader or "
+            "stuck process can block them; see 'hermes doctor --fix')",
+        ))
+
+    return lines
+
+
 def _section(title: str) -> None:
     """Print a doctor section banner: blank line + bold cyan ◆ title."""
     print()
@@ -1594,6 +1699,36 @@ def run_doctor(args):
                     )
             else:
                 check_warn(f"{_DHH}/state.db exists but has issues: {e}")
+
+        # Health/stats snapshot (#statedb-visibility): a multi-GB state.db
+        # with a runaway WAL was previously invisible to every Hermes
+        # surface. Strictly read-only (mode=ro) so it is safe against a
+        # live DB held by the gateway; any failure degrades to one info
+        # line rather than failing doctor.
+        try:
+            from hermes_state import collect_state_db_stats, count_db_holders
+
+            _db_stats = collect_state_db_stats(state_db_path)
+            _db_holders = count_db_holders(state_db_path)
+            for _kind, _text, _detail in _render_state_db_stats(
+                _db_stats, holders=_db_holders
+            ):
+                if _kind == "warn":
+                    check_warn(_text, _detail)
+                    if "auto_prune" in _detail:
+                        issues.append(
+                            "state.db is large — enable sessions.auto_prune "
+                            "in config.yaml"
+                            + (
+                                " and run 'hermes sessions optimize-storage' "
+                                "offline (gateway stopped)"
+                                if "optimize-storage" in _detail else ""
+                            )
+                        )
+                else:
+                    check_info(_text + (f" {_detail}" if _detail else ""))
+        except Exception as _stats_exc:
+            check_info(f"state.db stats unavailable ({_stats_exc})")
     else:
         check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
 

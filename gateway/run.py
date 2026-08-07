@@ -15101,6 +15101,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "debug":
             return await self._handle_debug_command(event)
 
+        if canonical == "localgen":
+            return await self._handle_localgen_command(event)
+
         if canonical == "title":
             return await self._handle_title_command(event)
 

@@ -6135,3 +6135,147 @@ class GatewaySlashCommandsMixin:
             f"output: {output_path}\n"
             f"sha256: {sha}"
         )
+
+    # /localgen — gateway-side local video generation via ComfyUI (Wan2.2)
+    # ------------------------------------------------------------------
+
+    # Offered model ids, kept inline so the mixin never imports the backend at
+    # module load time. Mirrors the CLI handler's _MODEL_CHOICES.
+    _LG_MODEL_CHOICES: tuple[str, ...] = ("fast-video", "animate")
+
+    async def _handle_localgen_command(self, event: "MessageEvent") -> Union[str, "EphemeralReply", None]:
+        """Handle /localgen on the gateway.
+
+        Single-shot flow (no multi-step interaction, unlike /generate-image):
+        parse ``key=value|key=value`` inline args; if the core required values
+        are present, validate and route to a confirmation prompt; otherwise
+        return a plain-text usage hint so the user can supply them. We do not
+        open the guided state-machine because the surface is tiny and the user
+        is a ComfyUI novice.
+
+        Never blocks the event loop: the runner is synchronous, so it runs in a
+        thread executor. The backend (``tools.localgen_runner``) shells out to
+        the Sirvir fleet's ``localgen.py`` and parses its JSON — no ComfyUI
+        imports in the gateway process.
+        """
+        import re as _re
+
+        raw_args = event.get_command_args().strip()
+        fields: dict[str, str] = {}
+        if raw_args:
+            for pair in raw_args.split("|"):
+                pair = pair.strip()
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    fields[k.strip().lower().replace("-", "_")] = v.strip()
+
+        model = fields.get("model", "fast-video").strip()
+        if model not in self._LG_MODEL_CHOICES:
+            return EphemeralReply(
+                "Unknown model. Use model=fast-video (text→video) or "
+                "model=animate (photo→video). Example:\n"
+                "/localgen model=fast-video|prompt=a red car at sunset"
+            )
+
+        prompt = fields.get("prompt", "").strip()
+        if not prompt:
+            return EphemeralReply(
+                "A prompt is required. Example:\n"
+                "/localgen model=fast-video|prompt=a red car at sunset\n"
+                "For animate, also add image=/path/to/photo.png"
+            )
+
+        image = fields.get("image", "").strip() or None
+        if model == "animate" and not image:
+            return EphemeralReply(
+                "model=animate needs image=<path or URL>. Example:\n"
+                "/localgen model=animate|prompt=the car drives forward|image=/path/to/photo.png"
+            )
+
+        seed_raw = fields.get("seed", "").strip()
+        seed = int(seed_raw) if seed_raw.isdigit() else None
+        length_raw = fields.get("length", "").strip()
+        length = int(length_raw) if length_raw.isdigit() else None
+        output_dir = fields.get("output_dir", "").strip() or None
+
+        config_summary = (
+            f"**localgen configuration**\n"
+            f"• model: `{model}`\n"
+            f"• prompt: `{prompt}`\n"
+            f"• image: {image or '(none)'}\n"
+            f"• seed: {seed if seed is not None else '(random)'}\n"
+            f"• length: {length if length is not None else 49} frames\n"
+        )
+
+        async def _on_confirm(choice: str) -> Optional[str]:
+            if choice == "cancel":
+                return "🟡 localgen cancelled. No video generated."
+            return await self._lg_execute(
+                model=model, prompt=prompt, image=image,
+                seed=seed, length=length, output_dir=output_dir,
+            )
+
+        return await self._request_slash_confirm(
+            event=event,
+            command="localgen",
+            title="/localgen — confirm",
+            message=config_summary,
+            handler=_on_confirm,
+        )
+
+    async def _lg_execute(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        image: Optional[str],
+        seed: Optional[int],
+        length: Optional[int],
+        output_dir: Optional[str],
+    ) -> str:
+        """Run the localgen runner in an executor and return a summary string.
+
+        Mirrors ``_gi_execute``: synchronous backend, thread executor, JSON
+        parsed into a plain-text result. Never shells a subprocess directly
+        here — ``tools.localgen_runner`` owns the subprocess.
+        """
+        import asyncio as _asyncio
+        import functools as _functools
+
+        from tools.localgen_runner import (
+            LOCALGEN_ERROR_MESSAGES,
+            LocalGenError,
+            run_localgen,
+        )
+
+        loop = _asyncio.get_running_loop()
+        try:
+            payload = await loop.run_in_executor(
+                None,
+                _functools.partial(
+                    run_localgen,
+                    model=model,
+                    prompt=prompt,
+                    image=image,
+                    seed=seed,
+                    length=length,
+                    output_dir=output_dir,
+                ),
+            )
+        except LocalGenError as exc:
+            msg = LOCALGEN_ERROR_MESSAGES.get(exc.error_code, str(exc.detail))
+            return f"Video generation failed: {msg}"
+
+        if not isinstance(payload, dict) or payload.get("status") != "success":
+            code = (payload or {}).get("error_code", "unknown")
+            detail = LOCALGEN_ERROR_MESSAGES.get(
+                code, (payload or {}).get("error", "Generation failed."))
+            return f"Video generation failed: {detail}"
+
+        outputs = payload.get("outputs", [])
+        files = "\n".join(f"• {o.get('file', '')}" for o in outputs) or "• (no files)"
+        return (
+            f"✅ Video generated (model {payload.get('model', model)})\n"
+            f"elapsed: {payload.get('elapsed_seconds', '?')}s\n"
+            f"outputs:\n{files}"
+        )

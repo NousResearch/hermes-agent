@@ -3551,6 +3551,159 @@ class CLICommandsMixin:
         _cprint(f"  {_DIM}job-id:{_RST}       {payload.get('job_id', '')}")
         _cprint(f"  {_DIM}output-path:{_RST}  {payload.get('output_path', '')}")
         _cprint(f"  {_DIM}sha256:{_RST}       {payload.get('sha256', '')}")
+
+    # /localgen — local video generation via ComfyUI (Wan2.2)
+    # ------------------------------------------------------------------
+
+    def _handle_localgen_command(self, cmd: str):
+        """Handle /localgen — generate video locally via ComfyUI (Wan2.2).
+
+        A simpler, single-shot flow than /generate-image: the only required
+        fields are a model and a prompt; ``animate`` additionally needs a
+        reference image. We deliberately do NOT offer a guided multi-step
+        interaction (unlike /generate-image) because the surface is small and
+        the user is a ComfyUI novice — one line, plain words, done.
+
+        Inline args use the same ``key=value|key=value`` grammar as
+        /generate-image. Unknown models and missing-images are surfaced as
+        plain-English errors, never masked by a VRAM message.
+
+        The backend (``tools/localgen_runner``) shells out to the Sirvir
+        fleet's ``localgen.py`` and parses its JSON — it does not import
+        ComfyUI machinery into the CLI process.
+        """
+        import re as _re
+        from cli import _DIM, _RST, _cprint
+
+        # Offered model ids. Sourced from localgen.py's MODELS keys; kept
+        # inline so the CLI never imports the backend at module load time.
+        _MODEL_CHOICES: tuple[str, ...] = ("fast-video", "animate")
+
+        # Parse inline args: key=value pairs separated by '|'.
+        inline: dict[str, str] = {}
+        raw_args = (cmd.split(None, 1)[1].strip() if " " in cmd else "")
+        if raw_args:
+            for pair in raw_args.split("|"):
+                pair = pair.strip()
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    inline[k.strip().lower().replace("-", "_")] = v.strip()
+
+        def _ask(field: str, label: str, default: str = "") -> str:
+            if field in inline:
+                return inline[field]
+            hint = f" [{default}]" if default else ""
+            try:
+                value = input(f"{label}{hint}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return ""
+            return value or default
+
+        def _menu(field: str, label: str, choices: tuple[str, ...], default: str = "") -> str:
+            if field in inline:
+                return inline[field]
+            _cprint(f"  {_DIM}{label}:{_RST}")
+            for idx, choice in enumerate(choices, start=1):
+                marker = " (default)" if choice == default and default else ""
+                _cprint(f"    {_DIM}{idx}.{_RST} {choice}{marker}")
+            try:
+                raw = input("  Choice [1/2 or press Enter for default]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return default
+            if not raw:
+                return default
+            if raw.isdigit():
+                idx = int(raw)
+                if 1 <= idx <= len(choices):
+                    return choices[idx - 1]
+            for choice in choices:
+                if raw.casefold() == choice.casefold():
+                    return choice
+            return raw
+
+        # 1. Model (required) — numbered menu + custom entry
+        model = _menu("model", "Model", _MODEL_CHOICES, default="fast-video")
+        if model not in _MODEL_CHOICES:
+            _cprint(f"  {_DIM}(._.) Unknown model '{model}'. Use fast-video or animate. Cancelled.{_RST}")
+            return
+
+        # 2. Prompt (required)
+        prompt = _ask("prompt", "Prompt")
+        if not prompt:
+            _cprint("  {_DIM}(._.) A prompt is required. Cancelled.{_RST}")
+            return
+
+        # 3. Image — only needed for animate
+        image: str | None = None
+        if model == "animate":
+            image = _ask("image", "Reference image (path or URL)")
+            if not image:
+                _cprint("  {_DIM}(._.) 'animate' needs a reference image. Cancelled.{_RST}")
+                return
+
+        # 4. Optional knobs
+        seed_raw = _ask("seed", "Seed (empty for random)")
+        seed = int(seed_raw) if seed_raw.isdigit() else None
+        length_raw = _ask("length", "Clip length in frames (empty for default 49)")
+        length = int(length_raw) if length_raw.isdigit() else None
+        output_dir_raw = _ask("output_dir", "Output directory (empty for ~/localgen-output)").strip()
+        output_dir = output_dir_raw or None
+
+        # Display final config, require confirmation.
+        _cprint("")
+        _cprint(f"  {_DIM}── localgen config ──{_RST}")
+        _cprint(f"  {_DIM}model:{_RST}        {model}")
+        _cprint(f"  {_DIM}prompt:{_RST}       {prompt}")
+        _cprint(f"  {_DIM}image:{_RST}        {image or '(none)'}")
+        _cprint(f"  {_DIM}seed:{_RST}         {seed if seed is not None else '(random)'}")
+        _cprint(f"  {_DIM}length:{_RST}       {length if length is not None else 49} frames")
+
+        from tools.localgen_runner import render_localgen_command
+
+        exact_cmd = render_localgen_command(
+            model=model, prompt=prompt, image=image, seed=seed,
+            length=length, output_dir=output_dir,
+        )
+        _cprint(f"  {_DIM}── exact command ──{_RST}")
+        _cprint(f"  {exact_cmd}")
+        _cprint("")
+
+        try:
+            confirm = input("Generate this video? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            confirm = ""
+
+        if confirm != "y":
+            _cprint(f"  {_DIM}🟡 Cancelled. No video generated.{_RST}")
+            return
+
+        _cprint(f"  {_DIM}Generating… (this takes a few minutes){_RST}")
+        from tools.localgen_runner import run_localgen, LOCALGEN_ERROR_MESSAGES, LocalGenError
+
+        try:
+            payload = run_localgen(
+                model=model, prompt=prompt, image=image, seed=seed,
+                length=length, output_dir=output_dir,
+            )
+        except LocalGenError as exc:
+            msg = LOCALGEN_ERROR_MESSAGES.get(exc.error_code, str(exc.detail))
+            _cprint(f"  {_DIM}(x_x) {msg}{_RST}")
+            return
+
+        if payload.get("status") != "success":
+            code = payload.get("error_code", "unknown")
+            _cprint(f"  {_DIM}(x_x) {LOCALGEN_ERROR_MESSAGES.get(code, payload.get('error', 'Generation failed.'))}{_RST}")
+            return
+
+        _cprint("  ✅ Video generated successfully.")
+        _cprint(f"  {_DIM}model:{_RST}        {payload.get('model', '')}")
+        _cprint(f"  {_DIM}elapsed:{_RST}      {payload.get('elapsed_seconds', '')}s")
+        for out in payload.get("outputs", []):
+            _cprint(f"  {_DIM}output:{_RST}       {out.get('file', '')}")
+
     def _handle_wake_command(self, command: str):
         """Handle /wake [on|off|status] — the 'Hey Hermes' hotword listener.
 

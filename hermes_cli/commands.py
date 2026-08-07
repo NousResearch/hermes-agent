@@ -330,6 +330,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="<path>"),
     CommandDef("generate-image", "Generate one private native-Codex image via the content engine", "Tools & Skills",
                args_hint="[prompt|style|backend|stage-root|job-id|aspect-ratio]"),
+    CommandDef("localgen", "Generate video locally via ComfyUI (Wan2.2) — separate from /generate-image", "Tools & Skills",
+               args_hint="[model|prompt|image|seed|length]"),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                busy_policy="dispatch"),
     CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",),
@@ -1261,6 +1263,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "insights", "moa", "debug", "egress", "init", "version", "diff", "update",
     "generate-image",
+    "localgen",
 })
 
 

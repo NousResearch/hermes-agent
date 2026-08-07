@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "1-ana sayfa ne olursa olsun, Mastodon 'a ilişkin takip, sık kullanılan, önem düzeyi ve yer işareti seçeneklerini tıklatın.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "Mastodon yönetim ortamı adınız",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Yardım mı gerekiyor?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Hesabı Bağla",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Hesaplara Dön",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Henüz Mastodon 'da değil mi?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Bu örneği bulunamıyor, lütfen adresi denetleyin ve yeniden deneyin.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Hesaplar"
+  },
+  "add_account": {
+    "message": "+ HESAP EKLE",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "Bildirimleri göster",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Boş ver",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Hesabı Kaldır",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "tarafından"
+  },
+  "or": {
+    "message": "ya da"
+  },
+  "send_feedback": {
+    "message": "Geribildirim Gönder",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Hata Raporla",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Destek Al",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Bağışta",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Mastodon için Graze kullanıma hazır!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Bu etiket şu şekilde kapatılır:",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "saniye",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "ör.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "İzle",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "Sizi takip eder",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "İzlemeyen",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Söz etme",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Doğrudan ileti",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Paylaş",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Sesi Kapat",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Engelle",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Rapor",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Blok etki alanı",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Özgün sayfayı aç",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Postaya bağlantı kopyala",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Yerleştir",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Tanıtıma ilişkin özellik",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Abone olunan dilleri değiştir",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Kaynak göstergelerinden gizle",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Listelerden Ekle ya da Kaldır",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "saat",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "altında",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Bu soruya oy verdiniz",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "Ayarlar",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "tema"
+  },
+  "graze_theme_p": {
+    "message": "Graze otomatik olarak temenizle eşleşir, beğendiğinizde geçersiz kılabilir.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Mastodon Koyu",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Mastodon Işığı",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Mastodon Teması Aksan Rengini Geçersiz Kıl",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "dil"
+  },
+  "Afrikaans": {
+    "message": "Afrikaner"
+  },
+  "Arabic": {
+    "message": "Arapça"
+  },
+  "Bengali": {
+    "message": "Bengal"
+  },
+  "Bulgarian": {
+    "message": "Bulgaristan"
+  },
+  "Chinese_Simplified": {
+    "message": "Basitleştirilmiş Çince"
+  },
+  "Chinese_Traditional": {
+    "message": "Geleneksel Çince"
+  },
+  "Czech": {
+    "message": "Çekçe"
+  },
+  "Danish": {
+    "message": "Danca"
+  },
+  "Dutch": {
+    "message": "Hollanda dili"
+  },
+  "English": {
+    "message": "İngilizce"
+  },
+  "Finnish": {
+    "message": "Fince"
+  },
+  "French": {
+    "message": "Fransızca"
+  },
+  "German": {
+    "message": "Almanca"
+  },
+  "Greek": {
+    "message": "Yunanca"
+  },
+  "Hawaiian": {
+    "message": "Hawai"
+  },
+  "Hebrew": {
+    "message": "İbranice"
+  },
+  "Hindi": {
+    "message": "Hintçe"
+  },
+  "Hungarian": {
+    "message": "Macarca"
+  },
+  "Icelandic": {
+    "message": "İzlandaca"
+  },
+  "Indonesian": {
+    "message": "Endonezya Dili"
+  },
+  "Italian": {
+    "message": "İtalyanca"
+  },
+  "Japanese": {
+    "message": "Japonca"
+  },
+  "Korean": {
+    "message": "Korece"
+  },
+  "Malay": {
+    "message": "Malay"
+  },
+  "Maori": {
+    "message": "Maori"
+  },
+  "Norwegian": {
+    "message": "Norveç"
+  },
+  "Polish": {
+    "message": "Polonya dili"
+  },
+  "Portuguese": {
+    "message": "Portekizce"
+  },
+  "Portuguese_Brazilian": {
+    "message": "Portekizce, Brezilya"
+  },
+  "Romanian": {
+    "message": "Rumence"
+  },
+  "Russian": {
+    "message": "Rusça"
+  },
+  "Serbian_Cyrillic": {
+    "message": "Sırpça (Kiril)"
+  },
+  "Spanish_Modern": {
+    "message": "İspanyolca (Modern)"
+  },
+  "Swedish": {
+    "message": "İsveççe"
+  },
+  "Tamil": {
+    "message": "Tamil"
+  },
+  "Thai": {
+    "message": "Tay Dili"
+  },
+  "Turkish": {
+    "message": "Türkçe"
+  },
+  "Ukrainian": {
+    "message": "Ukrayna dili"
+  },
+  "Urdu_India": {
+    "message": "Urduca (Hindistan)"
+  },
+  "Vietnamese": {
+    "message": "Vietnam Dili"
+  },
+  "Welsh": {
+    "message": "Galce"
+  },
+  "convenience": {
+    "message": "kolaylıklar"
+  },
+  "graze_convenience_p": {
+    "message": "Graze, mastodon kullanıcı adını, web çevresindeki linklere dönüştürebilir.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Linkify Mastodon kullanıcı adları",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Graze, mastodon kullanıcı adını, web çevresindeki linklere dönüştürebilir.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "HAST Kartlarını Görüntüle",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "Hovercard, imleci adlarının üzerine getirdiğinizde kullanıcı hakkında hızlı bilgiler gösterebilirler.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "Federe olmadığınız Örnekler için açılır pencereyi göster",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "Ziyaret ederken federasyon için örnekler önerin",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "Graze'e eklenmemiş bir hesapta oturum açıldığında açılır pencereyi göster",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "Hesap ekle hızlı giriş açılır penceresini göster",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Graze 'de otomatik dili geçersiz kıl",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "Bir uzak sunucuda yanıt düğmesini tıklattığınızda ya da \"bu sayfayı\" tıklattığınızda, Graze hızlı bir yanıt açabilir ya da sizi ana yönetim ortamınıza götürebilir.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Graze 'den Yanıt",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Ana sayfa somut örneğinden yanıtla",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "Uzak yönetim ortamında Yerel zaman çizelgesi, o eşgörünümün kullanıcılarını ve içeriğini daha yakından yansıtır.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "<strong>Explore</strong> - <strong>Local</strong> zaman çizelgesine yeniden yönlendir",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "içerik",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "Uzak eşgörünüm içeriğinin kendi eşleşmesini karşılamanızı ya da karıştırabilmesini sağlar.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "İçerik uyarılarının ardındaki içeriği göster (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "GIF ' leri otomatik olarak oynat",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "NSFW/Hassas Resimleri Görüntüle",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "etkin hesabı ayarla",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Yeniden sıralamak için sürükleyin",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "{username} İçin İletiler",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "{username} Bildirimleri",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "BU HESABıNDAN EYLEMLER",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "İşlemlerin {username} olarak alınması",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "Yuvarlak avatar resimlerini göster",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "Web 'de bağlam menüsünden bağlantı, resim ve metin parçacığı paylaşımını göster",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Graze bağlam menüsünü göster",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Boş (birleşik olmayan) profillerin ana yönetim ortamlarına yeniden yönlendirmesi, bir tıklamanız için",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "Yeniden Yönlendir",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "Zaman çizelgenizdeki Mastodon gönderilerine giden bağlantıları genişlet",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "Genişletilmiş satır içi gönderileri görüntüle",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Gönderi resimlerini ve bağlantı önizlemelerini dedupe edin",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "Varsayılan bağlantı önizlemelerini daha büyük görüntülerle ve tam kod parçacığı metniyle değiştir",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "Zengin bağlantı önizlemelerini görüntüle",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Gri renk, daha kolay okuma için bir araç ipucunda olduğundan, resim tanımlarını \"Alt Metin\" görüntülerinin altında gösterebilir.",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "Resim açıklamalarını görüntülerin altında görüntüle",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Graze, yalnızca Mastodon sürüm 4.0.0 ya da üstü çalışan eşgörünümlerle uyumludur",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "Bu örneği bulunamıyor, lütfen adresi denetleyin ve yeniden deneyin.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "Bir hata oluştu. Lütfen daha sonra yeniden deneyin.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "Gönderiler",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "Takipçiler",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "Takipçiler",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "Hayır Teşekkürler",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "Profil Dizinine Git",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "Yerel Zaman Çizelgesine Git",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "Ana Akışınızda içerik görmeye başlamak için yerel akıştan bir hesabı takip edin.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "$username$adresine bağlı değilsiniz",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "Bu hesaptan herhangi bir Örnek üzerinde işlem yapabileceksiniz.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "Graze 'ye $display_name$ eklensin mi?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Graze 'ye Ekle",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

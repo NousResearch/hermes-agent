@@ -3727,16 +3727,68 @@ def _sanitize_env_lines(lines: list) -> list:
     Content after the first ``=`` is opaque value data. A known variable name
     embedded in that value must never be reinterpreted as another assignment;
     concatenated assignments are ambiguous and therefore remain on one line.
+
+    Multiline quoted values (where the opening quote on the ``KEY=``
+    line is not closed on the same line) are preserved verbatim —
+    stripping whitespace from continuation lines would corrupt the value.
     """
     sanitized: list[str] = []
+    in_multiline = False
+    multiline_quote = None
+
     for line in lines:
         raw = line.rstrip("\r\n")
         stripped = raw.strip()
+
+        if in_multiline:
+            # Inside a multiline quoted value — preserve the line as-is
+            # (after normalizing line endings only).
+            sanitized.append(raw + "\n")
+            # Check if this continuation line closes the quote.  The
+            # closing quote is the first unescaped occurrence of the
+            # same quote character.
+            idx = 0
+            while idx < len(raw):
+                if raw[idx] == "\\" and idx + 1 < len(raw):
+                    idx += 2
+                    continue
+                if raw[idx] == multiline_quote:
+                    in_multiline = False
+                    multiline_quote = None
+                    break
+                idx += 1
+            continue
 
         # Preserve blank lines and comments
         if not stripped or stripped.startswith("#"):
             sanitized.append(raw + "\n")
             continue
+
+        # Detect the start of a multiline quoted value: ``KEY="...`` or
+        # ``KEY='...`` where the opening quote is not closed on the same
+        # line.
+        eq_idx = stripped.find("=")
+        if eq_idx != -1:
+            value_part = stripped[eq_idx + 1:].lstrip()
+            if len(value_part) >= 1 and value_part[0] in {'"', "'"}:
+                q = value_part[0]
+                # Count unescaped occurrences of the quote character in
+                # the value portion.  An odd count means the quote is
+                # not closed on this line.
+                count = 0
+                i = 1
+                while i < len(value_part):
+                    if value_part[i] == "\\" and i + 1 < len(value_part):
+                        i += 2
+                        continue
+                    if value_part[i] == q:
+                        count += 1
+                    i += 1
+                if count % 2 == 0:
+                    # Even count → opening quote has no matching close
+                    # on this line; the value continues on subsequent lines.
+                    in_multiline = True
+                    multiline_quote = q
 
         sanitized.append(stripped + "\n")
 

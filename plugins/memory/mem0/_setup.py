@@ -125,6 +125,19 @@ def parse_flags(argv: list[str] | None = None) -> dict[str, str]:
     return flags
 
 
+def _select_filter_by_agent_id(current: Any = "false") -> str:
+    """Prompt for per-agent read isolation, preserving the current value."""
+    choices = ["true", "false"]
+    current_value = str(current).lower()
+    default = 0 if current_value == "true" else 1
+    selected = _curses_select(
+        "Scope memory search to this agent only (multi-profile isolation)",
+        [(choice, "") for choice in choices],
+        default,
+    )
+    return choices[selected]
+
+
 def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
     """Build OSS config dict + env_writes from parsed flags.
 
@@ -218,15 +231,23 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
+def _load_mem0_json(hermes_home: str) -> dict:
+    """Load mem0.json, returning an empty config when absent or invalid."""
+    config_path = Path(hermes_home) / "mem0.json"
+    if config_path.exists():
+        try:
+            loaded = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                return loaded
+        except Exception:
+            pass
+    return {}
+
+
 def _save_mem0_json(hermes_home: str, data: dict) -> None:
     """Merge-write to mem0.json."""
     config_path = Path(hermes_home) / "mem0.json"
-    existing = {}
-    if config_path.exists():
-        try:
-            existing = json.loads(config_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    existing = _load_mem0_json(hermes_home)
     existing.update(data)
     config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
 
@@ -241,18 +262,11 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
         {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
         {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
+        {"key": "filter_by_agent_id", "description": "Scope memory search to this agent only (multi-profile isolation)", "default": "false", "choices": ["true", "false"]},
         {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
     ]
 
-    existing_config = {}
-    config_path = Path(hermes_home) / "mem0.json"
-    if config_path.exists():
-        try:
-            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-
-    provider_config = dict(existing_config)
+    provider_config = dict(_load_mem0_json(hermes_home))
     env_writes: dict[str, str] = {}
 
     print("\n  Configuring mem0:\n")
@@ -273,9 +287,10 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         if choices and not is_secret:
             choice_items = [(c, "") for c in choices]
             current = provider_config.get(key, default)
+            normalized_current = str(current).lower()
             current_idx = 0
-            if current and str(current).lower() in choices:
-                current_idx = choices.index(str(current).lower())
+            if normalized_current in choices:
+                current_idx = choices.index(normalized_current)
             sel = _curses_select(f"  {desc}", choice_items, default=current_idx)
             provider_config[key] = choices[sel]
         elif is_secret:
@@ -403,9 +418,16 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
         "User identifier", default=provider_config.get("user_id") or "hermes-user"
     )
     agent_id = _prompt("Agent identifier", default=provider_config.get("agent_id") or "hermes")
+    filter_by_agent_id = _select_filter_by_agent_id(
+        provider_config.get("filter_by_agent_id", "false")
+    )
 
     if flags.get("dry_run"):
-        print(f"\n  [dry-run] Would save config: host={host}, user_id={user_id}, agent_id={agent_id}")
+        print(
+            "\n  [dry-run] Would save config: "
+            f"host={host}, user_id={user_id}, agent_id={agent_id}, "
+            f"filter_by_agent_id={filter_by_agent_id}"
+        )
         if env_writes:
             print("  [dry-run] Would write API key to .env")
         _check_selfhosted_server(host)
@@ -416,6 +438,7 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
     provider_config["host"] = host
     provider_config["user_id"] = user_id
     provider_config["agent_id"] = agent_id
+    provider_config["filter_by_agent_id"] = filter_by_agent_id
 
     from hermes_cli.config import save_config
     config["memory"]["provider"] = "mem0"
@@ -799,11 +822,15 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
             if pg_password:
                 pgvector_config["password"] = pg_password
 
+    existing_config = _load_mem0_json(hermes_home)
     user_id = input(f"  User ID [{os.getenv('USER', 'hermes-user')}]: ").strip()
     user_id = user_id or os.getenv("USER", "hermes-user")
 
     agent_id = input("  Agent ID [hermes]: ").strip()
     agent_id = agent_id or "hermes"
+    filter_by_agent_id = _select_filter_by_agent_id(
+        existing_config.get("filter_by_agent_id", "false")
+    )
 
     flags = {
         "oss_llm": llm_id,
@@ -829,7 +856,13 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
 
     if env_writes:
         _write_env(Path(hermes_home) / ".env", env_writes)
-    _save_mem0_json(hermes_home, {"mode": "oss", "user_id": user_id, "agent_id": agent_id, "oss": oss_config})
+    _save_mem0_json(hermes_home, {
+        "mode": "oss",
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "filter_by_agent_id": filter_by_agent_id,
+        "oss": oss_config,
+    })
 
     _install_provider_deps(llm_id, embedder_id, vector_id)
 

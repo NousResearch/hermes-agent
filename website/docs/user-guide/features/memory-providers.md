@@ -397,7 +397,14 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 | `host` | — | Self-hosted Mem0 server URL (Docker dashboard). Routes over HTTP with `X-API-Key`; don't combine with `mode: oss` |
 | `user_id` | `hermes-user` | User identifier |
 | `agent_id` | `hermes` | Agent identifier |
+| `filter_by_agent_id` | `false` | When `true`, scope memory reads to the configured `agent_id` in addition to `user_id` |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
+
+`filter_by_agent_id` is disabled by default, so reads are shared across agents
+that use the same `user_id`. To isolate memories between Hermes profiles, enable
+it in each profile's `mem0.json` and give every profile a distinct `agent_id`.
+The default `agent_id` is `hermes`, so leaving that default unchanged in multiple
+profiles does not provide profile isolation.
 
 **OSS supported providers:**
 

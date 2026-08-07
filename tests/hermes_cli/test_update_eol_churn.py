@@ -190,19 +190,45 @@ def test_autocrlf_input_is_left_alone(tmp_path: Path) -> None:
     assert _autocrlf(repo) == "input"
 
 
+def _argv_stress_files() -> dict[str, bytes]:
+    return {
+        f"pkg/argv_stress_{i:04d}/nested/module_with_long_name_{i:04d}.py": (
+            f"VALUE = {i}\n".encode()
+        )
+        for i in range(1200)
+    }
+
+
 def test_churn_across_more_files_than_fit_in_one_argv(tmp_path: Path) -> None:
     """The pathspec goes over stdin, so a fully renormalized tree fits.
 
     Passing thousands of paths as arguments overflows the Windows command-line
     limit; this asserts the batch is not argv-bound.
     """
-    files = {f"pkg/mod_{i:04d}.py": f"VALUE = {i}\n".encode() for i in range(1200)}
+    files = _argv_stress_files()
     repo = _managed_repo(tmp_path, files)
-    assert len(_dirty(repo)) == len(files)
+    first_path = next(iter(files))
+    assert b"\r\n" in (repo / first_path).read_bytes()
+    assert sum(len(path) + 1 for path in files) > 32767
 
     _normalize_managed_eol(GIT_CMD, repo)
 
     assert _dirty(repo) == set()
+    assert _autocrlf(repo) == "false"
+
+
+def test_large_eol_churn_does_not_discard_real_edit(tmp_path: Path) -> None:
+    files = _argv_stress_files()
+    repo = _managed_repo(tmp_path, files)
+    edited_path = next(iter(files))
+    untouched_path = next(path for path in files if path != edited_path)
+    (repo / edited_path).write_bytes((repo / edited_path).read_bytes() + b"EXTRA = 1\r\n")
+
+    _normalize_managed_eol(GIT_CMD, repo)
+
+    assert _dirty(repo) == {edited_path}
+    assert b"\r\n" in (repo / edited_path).read_bytes()
+    assert b"\r\n" not in (repo / untouched_path).read_bytes()
     assert _autocrlf(repo) == "false"
 
 

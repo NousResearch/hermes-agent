@@ -645,7 +645,21 @@ def _resolve_api_key_provider_secret(
             pass
         return "", ""
 
-    from hermes_cli.config import get_env_value_prefer_dotenv
+    from hermes_cli.config import get_env_value_prefer_dotenv, load_config
+
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+    providers_cfg = config.get("providers") if isinstance(config, dict) else None
+    provider_cfg = providers_cfg.get(provider_id) if isinstance(providers_cfg, dict) else None
+    if isinstance(provider_cfg, dict):
+        key_env = str(provider_cfg.get("key_env") or "").strip()
+        if key_env:
+            val = (get_env_value_prefer_dotenv(key_env) or "").strip()
+            if has_usable_secret(val):
+                return val, key_env
+
     for env_var in pconfig.api_key_env_vars:
         # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation
         # in the user's .env file isn't shadowed by a stale shell export

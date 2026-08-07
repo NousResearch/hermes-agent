@@ -41,6 +41,7 @@ from hermes_cli.auth import (
     normalize_actual_base_url,
 )
 from hermes_cli.config import (
+    get_env_value_prefer_dotenv,
     get_compatible_custom_providers,
     load_config,
     normalize_extra_headers,
@@ -1662,6 +1663,84 @@ def _resolve_explicit_runtime(
     return None
 
 
+def _configured_key_env_for_provider(provider: str) -> str:
+    try:
+        config = load_config()
+    except Exception:
+        return ""
+    providers_cfg = config.get("providers") if isinstance(config, dict) else None
+    provider_cfg = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
+    if not isinstance(provider_cfg, dict):
+        return ""
+    return str(provider_cfg.get("key_env") or "").strip()
+
+
+def _resolve_runtime_from_configured_key_env(
+    *,
+    provider: str,
+    requested_provider: str,
+    model_cfg: Dict[str, Any],
+    target_model: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Prefer providers.<id>.key_env before credential-pool selection."""
+    key_env = _configured_key_env_for_provider(provider)
+    if not key_env:
+        return None
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if not pconfig or pconfig.auth_type != "api_key":
+        return None
+
+    configured_key = (get_env_value_prefer_dotenv(key_env) or "").strip()
+    if not has_usable_secret(configured_key):
+        return None
+
+    creds = resolve_api_key_provider_credentials(provider)
+    if creds.get("source") != key_env or creds.get("api_key") != configured_key:
+        return None
+
+    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+    cfg_base_url = ""
+    if cfg_provider == provider:
+        cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+    base_url = cfg_base_url or str(creds.get("base_url") or "").strip().rstrip("/")
+
+    api_mode = "chat_completions"
+    if provider == "copilot":
+        api_mode = _copilot_runtime_api_mode(
+            model_cfg,
+            configured_key,
+            target_model=target_model,
+        )
+    elif provider == "xai":
+        api_mode = "codex_responses"
+    else:
+        configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+        if provider in {"opencode-zen", "opencode-go"}:
+            from hermes_cli.models import opencode_model_api_mode
+
+            api_mode = opencode_model_api_mode(provider, target_model or model_cfg.get("default", ""))
+        elif configured_mode and _provider_supports_explicit_api_mode(provider, cfg_provider):
+            api_mode = configured_mode
+        else:
+            api_mode = _fallback_api_mode(provider, base_url, target_model or model_cfg.get("default", ""))
+
+    if provider in {"opencode-zen", "opencode-go"}:
+        from hermes_cli.models import normalize_opencode_base_url
+
+        base_url = normalize_opencode_base_url(provider, api_mode, base_url)
+    if provider == "lmstudio":
+        base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
+
+    return {
+        "provider": provider,
+        "api_mode": api_mode,
+        "base_url": base_url.rstrip("/"),
+        "api_key": configured_key,
+        "source": key_env,
+        "requested_provider": requested_provider,
+    }
+
+
 def resolve_runtime_provider(
     *,
     requested: Optional[str] = None,
@@ -1862,6 +1941,15 @@ def resolve_runtime_provider(
             and not has_custom_endpoint
             and not has_runtime_override
         )
+
+    configured_key_runtime = _resolve_runtime_from_configured_key_env(
+        provider=provider,
+        requested_provider=requested_provider,
+        model_cfg=model_cfg,
+        target_model=target_model,
+    )
+    if configured_key_runtime:
+        return configured_key_runtime
 
     try:
         pool = load_pool(provider) if should_use_pool else None

@@ -896,6 +896,7 @@ DEFAULT_CONFIG = {
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
+            "api_mode": "",        # wire protocol: "chat_completions" | "codex_responses" ("codex_responses" routes image input via /v1/responses input_image — required for Responses-only OpenAI-compatible vision backends, e.g. opencode.ai/zen/go/v1)
             "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
             "extra_body": {},      # OpenAI-compatible provider-specific request fields
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)

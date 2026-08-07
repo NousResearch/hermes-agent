@@ -2330,6 +2330,10 @@ def run_conversation(
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
+                            try:
+                                agent.iteration_budget.refund()
+                            except Exception:
+                                pass
                             continue
                         # No fallback available — surface buffered context
                         # so user sees the rate-limit message that led here.
@@ -2772,6 +2776,10 @@ def run_conversation(
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
+                        try:
+                            agent.iteration_budget.refund()
+                        except Exception:
+                            pass
                         continue
 
                     # Check for error field in response (some providers include this)
@@ -2845,6 +2853,10 @@ def run_conversation(
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
+                            try:
+                                agent.iteration_budget.refund()
+                            except Exception:
+                                pass
                             continue
                         # Terminal — flush buffered retry trace so user sees what happened.
                         agent._flush_status_buffer()
@@ -3022,6 +3034,10 @@ def run_conversation(
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
+                        try:
+                            agent.iteration_budget.refund()
+                        except Exception:
+                            pass
                         continue
 
                     agent._flush_status_buffer()
@@ -4653,6 +4669,10 @@ def run_conversation(
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
+                            try:
+                                agent.iteration_budget.refund()
+                            except Exception:
+                                pass
                             continue
 
                 # ── Auth-failure provider failover ───────────────────────
@@ -4686,6 +4706,10 @@ def run_conversation(
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
+                        try:
+                            agent.iteration_budget.refund()
+                        except Exception:
+                            pass
                         continue
 
                 # ── Nous Portal: record rate limit & skip retries ─────
@@ -5293,6 +5317,10 @@ def run_conversation(
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
+                        try:
+                            agent.iteration_budget.refund()
+                        except Exception:
+                            pass
                         continue
                     if api_kwargs is not None:
                         agent._dump_api_request_debug(
@@ -5516,6 +5544,10 @@ def run_conversation(
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
+                        try:
+                            agent.iteration_budget.refund()
+                        except Exception:
+                            pass
                         continue
                     # Terminal — flush buffered retry/fallback trace.
                     agent._flush_status_buffer()
@@ -7022,6 +7054,10 @@ def run_conversation(
                                 "now using %s on %s",
                                 agent.model, agent.provider,
                             )
+                            try:
+                                agent.iteration_budget.refund()
+                            except Exception:
+                                pass
                             continue
 
                     # Exhausted retries and fallback chain (or no

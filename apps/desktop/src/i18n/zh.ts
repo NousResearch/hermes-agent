@@ -1016,6 +1016,14 @@ export const zh: Translations = {
       unsavedConnect: '未保存 — 保存 mcp.json 以连接。',
       enableTool: tool => `启用 ${tool}`,
       disableTool: tool => `禁用 ${tool}`,
+      toolReportsReadOnly: '服务器报告：只读',
+      toolReportsMayModify: '服务器报告：可能修改数据',
+      toolReportsDestructive: '服务器报告：可能执行破坏性更改',
+      toolReportsAdditive: '服务器报告：仅执行增量更新',
+      toolReportsIdempotent: '服务器报告：重复调用不会产生额外影响',
+      toolReportsRepeatEffects: '服务器报告：重复调用可能产生额外影响',
+      toolReportsOpenWorld: '服务器报告：访问外部系统',
+      toolReportsClosedWorld: '服务器报告：仅在封闭环境中交互',
       noOutput: '暂无输出。'
     },
     model: {

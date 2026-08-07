@@ -832,6 +832,14 @@ export const zhHant = defineLocale({
       unsavedConnect: '未儲存 — 儲存 mcp.json 以連線。',
       enableTool: tool => `啟用 ${tool}`,
       disableTool: tool => `停用 ${tool}`,
+      toolReportsReadOnly: '伺服器回報：唯讀',
+      toolReportsMayModify: '伺服器回報：可能修改資料',
+      toolReportsDestructive: '伺服器回報：可能執行破壞性變更',
+      toolReportsAdditive: '伺服器回報：僅執行增量更新',
+      toolReportsIdempotent: '伺服器回報：重複呼叫不會產生額外影響',
+      toolReportsRepeatEffects: '伺服器回報：重複呼叫可能產生額外影響',
+      toolReportsOpenWorld: '伺服器回報：存取外部系統',
+      toolReportsClosedWorld: '伺服器回報：僅在封閉環境中互動',
       noOutput: '尚無輸出。'
     },
     model: {

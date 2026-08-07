@@ -1,10 +1,12 @@
+import type { McpDiscoveredTool } from '@/hermes'
+
 export interface McpOAuthFlow {
   flow_id: string
   server_name: string
   status: 'starting' | 'authorization_required' | 'approved' | 'error'
   authorization_url: string | null
   error: string | null
-  tools?: Array<{ name: string; description: string }>
+  tools?: McpDiscoveredTool[]
 }
 
 interface CompleteOptions {

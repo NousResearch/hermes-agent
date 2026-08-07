@@ -858,6 +858,14 @@ export const ja = defineLocale({
       unsavedConnect: '未保存 — 接続するには mcp.json を保存してください。',
       enableTool: tool => `${tool} を有効化`,
       disableTool: tool => `${tool} を無効化`,
+      toolReportsReadOnly: 'サーバーの申告: 読み取り専用',
+      toolReportsMayModify: 'サーバーの申告: データを変更する可能性があります',
+      toolReportsDestructive: 'サーバーの申告: 破壊的な変更の可能性があります',
+      toolReportsAdditive: 'サーバーの申告: 追加的な更新のみ',
+      toolReportsIdempotent: 'サーバーの申告: 再実行しても追加の影響はありません',
+      toolReportsRepeatEffects: 'サーバーの申告: 再実行により追加の影響が生じる可能性があります',
+      toolReportsOpenWorld: 'サーバーの申告: 外部システムにアクセスします',
+      toolReportsClosedWorld: 'サーバーの申告: 閉じた環境内で動作します',
       noOutput: 'まだ出力がありません。'
     },
     model: {

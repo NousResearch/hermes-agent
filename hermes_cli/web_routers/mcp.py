@@ -141,6 +141,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
         _get_mcp_servers,
         _oauth_tokens_present,
         _probe_single_server,
+        _probe_tools_payload,
     )
 
     with _profile_scope(profile):
@@ -188,7 +189,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
         }
     return {
         "ok": True,
-        "tools": [{"name": t, "description": d} for t, d in tools],
+        "tools": _probe_tools_payload(tools, details),
         "prompts": details.get("prompts", 0),
         "resources": details.get("resources", 0),
     }

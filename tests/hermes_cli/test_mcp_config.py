@@ -436,6 +436,162 @@ class TestProbeEnvResolution:
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
 
+class TestProbeToolMetadata:
+    def test_serializes_real_mcp_sdk_tool(self):
+        import pytest
+
+        from hermes_cli.mcp_config import _serialize_mcp_tool_metadata
+
+        mcp_types = pytest.importorskip("mcp.types")
+        tool = mcp_types.Tool(
+            name="read_page",
+            title="Read a page",
+            description="Read one page",
+            inputSchema={"type": "object", "properties": {}},
+            annotations=mcp_types.ToolAnnotations(
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            ),
+        )
+
+        assert _serialize_mcp_tool_metadata(tool) == {
+            "name": "read_page",
+            "title": "Read a page",
+            "description": "Read one page",
+            "annotations": {
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": True,
+            },
+        }
+
+    def test_legacy_tool_keeps_historical_shape(self):
+        from types import SimpleNamespace
+
+        from hermes_cli.mcp_config import _serialize_mcp_tool_metadata
+
+        tool = SimpleNamespace(name="search_pages", description="Search pages")
+
+        assert _serialize_mcp_tool_metadata(tool) == {
+            "name": "search_pages",
+            "description": "Search pages",
+        }
+
+    def test_preserves_titles_and_explicit_false_annotations(self):
+        from types import SimpleNamespace
+
+        from hermes_cli.mcp_config import _serialize_mcp_tool_metadata
+
+        annotations = SimpleNamespace(
+            title="Legacy title",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+            ignored="not part of ToolAnnotations",
+        )
+        tool = SimpleNamespace(
+            name="create_page",
+            title="Create a page",
+            description="Create a page in the workspace",
+            annotations=annotations,
+        )
+
+        assert _serialize_mcp_tool_metadata(tool) == {
+            "name": "create_page",
+            "title": "Create a page",
+            "description": "Create a page in the workspace",
+            "annotations": {
+                "title": "Legacy title",
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": False,
+            },
+        }
+
+    def test_supports_sdk_v2_snake_case_annotation_attributes(self):
+        from types import SimpleNamespace
+
+        from hermes_cli.mcp_config import _serialize_mcp_tool_metadata
+
+        tool = SimpleNamespace(
+            name="create_page",
+            description="Create a page",
+            annotations=SimpleNamespace(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=True,
+                open_world_hint=True,
+            ),
+        )
+
+        assert _serialize_mcp_tool_metadata(tool)["annotations"] == {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        }
+
+    def test_probe_populates_rich_details_without_changing_tuple_return(
+        self, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        import hermes_cli.mcp_config as mc
+
+        description = "A" * 100
+        tool = SimpleNamespace(
+            name="delete_page",
+            title="Delete a page",
+            description=description,
+            annotations={"destructiveHint": True, "readOnlyHint": False},
+        )
+
+        class _FakeServer:
+            _tools = [tool]
+
+            async def shutdown(self):
+                return None
+
+        async def _fake_connect(name, config):
+            return _FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+        details: dict = {}
+
+        tools = mc._probe_single_server(
+            "notion", {"url": "http://x/mcp"}, details=details
+        )
+
+        assert tools == [("delete_page", f"{'A' * 77}...")]
+        assert details["tools"] == [
+            {
+                "name": "delete_page",
+                "title": "Delete a page",
+                "description": description,
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": True,
+                },
+            }
+        ]
+
+    def test_probe_payload_falls_back_for_legacy_callers(self):
+        from hermes_cli.mcp_config import _probe_tools_payload
+
+        legacy = [("search", "Search pages")]
+        assert _probe_tools_payload(legacy, None) == [
+            {"name": "search", "description": "Search pages"}
+        ]
+        assert _probe_tools_payload(legacy, {}) == [
+            {"name": "search", "description": "Search pages"}
+        ]
+
+
 class TestProbeCapabilityGating:
     """The ``details`` probe must not fire prompts/list or resources/list at
     servers that either disabled them in config or never advertised them.

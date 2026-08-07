@@ -12253,6 +12253,7 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
     from hermes_cli.mcp_config import (
         _oauth_tokens_present,
         _probe_single_server,
+        _probe_tools_payload,
         _save_mcp_server,
     )
     try:
@@ -12280,10 +12281,12 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                         flow.server_name,
                         hermes_home=flow.hermes_home,
                     )
+                    details: dict = {}
                     tools = _probe_single_server(
                         flow.server_name,
                         cfg,
                         connect_timeout=max(float(cfg.get("connect_timeout", 0) or 0), 315),
+                        details=details,
                     )
                     if not _oauth_tokens_present(flow.server_name):
                         raise RuntimeError(
@@ -12291,7 +12294,7 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                             "this provider may require a manually-registered OAuth client."
                         )
                     _save_mcp_server(flow.server_name, cfg)
-                    flow.tools = [{"name": t, "description": d} for t, d in tools]
+                    flow.tools = _probe_tools_payload(tools, details)
                     flow.mark_approved()
                     if flow.reconnect_live:
                         from tools.mcp_tool import reconnect_mcp_server

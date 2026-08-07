@@ -1338,10 +1338,26 @@ export interface McpServerSummary {
   tools: string[] | null
 }
 
+export interface McpToolAnnotations {
+  title?: string
+  readOnlyHint?: boolean
+  destructiveHint?: boolean
+  idempotentHint?: boolean
+  openWorldHint?: boolean
+}
+
+export interface McpDiscoveredTool {
+  name: string
+  description: string
+  title?: string
+  /** Server-reported hints. They are not independently verified by Hermes. */
+  annotations?: McpToolAnnotations
+}
+
 export interface McpServerTestResponse {
   ok: boolean
   error?: string
-  tools: { name: string; description: string }[]
+  tools: McpDiscoveredTool[]
 }
 
 /** One Nous-approved MCP catalog entry from `GET /api/mcp/catalog`. */

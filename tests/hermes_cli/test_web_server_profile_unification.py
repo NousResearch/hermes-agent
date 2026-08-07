@@ -136,11 +136,19 @@ class TestProfileScopedMcp:
             "mcp_servers:\n  oauth-srv:\n    url: http://x/sse\n    auth: oauth\n",
             encoding="utf-8",
         )
-        monkeypatch.setattr(
-            mcp_config,
-            "_probe_single_server",
-            lambda name, config, connect_timeout=30, details=None: [("tool-a", "desc")],
-        )
+        def fake_probe(name, config, connect_timeout=30, details=None):
+            if details is not None:
+                details["tools"] = [
+                    {
+                        "name": "tool-a",
+                        "description": "desc",
+                        "title": "Tool A",
+                        "annotations": {"readOnlyHint": True},
+                    }
+                ]
+            return [("tool-a", "desc")]
+
+        monkeypatch.setattr(mcp_config, "_probe_single_server", fake_probe)
         monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name: False)
 
         resp = client.post(
@@ -156,7 +164,16 @@ class TestProfileScopedMcp:
         resp = client.post(
             "/api/mcp/servers/oauth-srv/test", params={"profile": "worker_beta"}
         )
-        assert resp.json()["ok"] is True
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["tools"] == [
+            {
+                "name": "tool-a",
+                "description": "desc",
+                "title": "Tool A",
+                "annotations": {"readOnlyHint": True},
+            }
+        ]
 
 
 class TestProfileScopedModel:

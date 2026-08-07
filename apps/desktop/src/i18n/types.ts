@@ -695,6 +695,14 @@ export interface Translations {
       unsavedConnect: string
       enableTool: (tool: string) => string
       disableTool: (tool: string) => string
+      toolReportsReadOnly: string
+      toolReportsMayModify: string
+      toolReportsDestructive: string
+      toolReportsAdditive: string
+      toolReportsIdempotent: string
+      toolReportsRepeatEffects: string
+      toolReportsOpenWorld: string
+      toolReportsClosedWorld: string
       noOutput: string
     }
     model: {

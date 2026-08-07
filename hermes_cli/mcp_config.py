@@ -275,6 +275,77 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     return _interpolate_env_vars(config)
 
 
+_MCP_ANNOTATION_FIELDS = (
+    ("title", "title"),
+    ("readOnlyHint", "readOnlyHint", "read_only_hint"),
+    ("destructiveHint", "destructiveHint", "destructive_hint"),
+    ("idempotentHint", "idempotentHint", "idempotent_hint"),
+    ("openWorldHint", "openWorldHint", "open_world_hint"),
+)
+
+
+def _serialize_mcp_tool_metadata(tool: Any) -> Dict[str, Any]:
+    """Return lightweight, JSON-safe display metadata for an MCP tool.
+
+    MCP annotations are server-reported hints, not verified safety facts. Keep
+    them separate from provider-facing function schemas so a remote server
+    cannot smuggle non-provider fields into model tool definitions.
+
+    Attribute access deliberately supports MCP SDK v1's camelCase model fields,
+    SDK v2's snake_case model fields with camelCase wire aliases, and the simple
+    legacy/fake objects used by callers and tests.
+    """
+    payload: Dict[str, Any] = {
+        "name": str(getattr(tool, "name", "")),
+        "description": str(getattr(tool, "description", "") or ""),
+    }
+
+    title = getattr(tool, "title", None)
+    if isinstance(title, str) and title.strip():
+        payload["title"] = title
+
+    raw_annotations = getattr(tool, "annotations", None)
+    annotations: Dict[str, Any] = {}
+    for field, *attribute_names in _MCP_ANNOTATION_FIELDS:
+        if isinstance(raw_annotations, dict):
+            value = raw_annotations.get(field)
+            if value is None:
+                for attribute_name in attribute_names:
+                    value = raw_annotations.get(attribute_name)
+                    if value is not None:
+                        break
+        else:
+            value = None
+            for attribute_name in attribute_names:
+                value = getattr(raw_annotations, attribute_name, None)
+                if value is not None:
+                    break
+
+        if field == "title":
+            if isinstance(value, str) and value.strip():
+                annotations[field] = value
+        elif isinstance(value, bool):
+            # Preserve explicit false values; absence and false have different
+            # meanings in the MCP annotation contract.
+            annotations[field] = value
+
+    if annotations:
+        payload["annotations"] = annotations
+
+    return payload
+
+
+def _probe_tools_payload(
+    tools: List[Tuple[str, str]], details: Optional[dict]
+) -> List[Dict[str, Any]]:
+    """Return rich probe tools when available, otherwise the legacy tuples."""
+    if details:
+        rich_tools = details.get("tools")
+        if isinstance(rich_tools, list):
+            return rich_tools
+    return [{"name": name, "description": description} for name, description in tools]
+
+
 def _probe_single_server(
     name: str, config: dict, connect_timeout: Optional[float] = None, *, details: Optional[dict] = None
 ) -> List[Tuple[str, str]]:
@@ -309,6 +380,7 @@ def _probe_single_server(
 
     _ensure_mcp_loop()
     tools_found: List[Tuple[str, str]] = []
+    tool_metadata: List[Dict[str, Any]] = []
 
     async def _probe():
         server = await asyncio.wait_for(
@@ -316,12 +388,14 @@ def _probe_single_server(
         )
         try:
             for t in server._tools:
+                tool_metadata.append(_serialize_mcp_tool_metadata(t))
                 desc = getattr(t, "description", "") or ""
                 # Truncate long descriptions for display
                 if len(desc) > 80:
                     desc = desc[:77] + "..."
                 tools_found.append((t.name, desc))
             if details is not None:
+                details["tools"] = tool_metadata
                 # Gate the capability probes exactly like runtime utility-tool
                 # registration (tools.mcp_tool._select_utility_schemas):
                 #   1. honour the user's tools.prompts / tools.resources config

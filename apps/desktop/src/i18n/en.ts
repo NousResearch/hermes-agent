@@ -812,6 +812,14 @@ export const en: Translations = {
       unsavedConnect: 'Unsaved — save mcp.json to connect.',
       enableTool: tool => `Enable ${tool}`,
       disableTool: tool => `Disable ${tool}`,
+      toolReportsReadOnly: 'Server reports read-only',
+      toolReportsMayModify: 'Server reports this may modify data',
+      toolReportsDestructive: 'Server reports this may be destructive',
+      toolReportsAdditive: 'Server reports additive updates only',
+      toolReportsIdempotent: 'Server reports repeat calls have no additional effect',
+      toolReportsRepeatEffects: 'Server reports repeat calls may have additional effects',
+      toolReportsOpenWorld: 'Server reports external-system access',
+      toolReportsClosedWorld: 'Server reports closed-world interaction',
       noOutput: 'No output yet.'
     },
     model: {

@@ -34,6 +34,7 @@ import {
   type HermesGateway,
   installMcpCatalogEntry,
   type McpCatalogEntry,
+  type McpDiscoveredTool,
   type McpTestResult,
   saveMcpServers,
   testMcpServer
@@ -41,6 +42,7 @@ import {
 import { type Translations, useI18n } from '@/i18n'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
+import { formatMcpToolDetails } from '@/lib/mcp-tool-metadata'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -53,6 +55,8 @@ import { DetailPane, ICON_BUTTON, MASTER_DETAIL_WIDE_COLS } from '../master-deta
 import { PanelAddButton, PanelEmpty } from '../overlays/panel'
 import { prettyName } from '../settings/helpers'
 import { useDeepLinkHighlight } from '../settings/use-deep-link-highlight'
+
+import { McpToolChip } from './mcp-tool-chip'
 
 type McpServers = Record<string, Record<string, unknown>>
 
@@ -137,6 +141,19 @@ const probeKey = (name: string, server: Record<string, unknown> | undefined): st
 type Probe = McpTestResult | 'probing'
 
 type ServerStatus = 'off' | 'probing' | 'ok' | 'needs-auth' | 'error' | 'unknown'
+
+function toolDetails(m: Translations['settings']['mcp'], tool: McpDiscoveredTool): string {
+  return formatMcpToolDetails(tool, {
+    additive: m.toolReportsAdditive,
+    closedWorld: m.toolReportsClosedWorld,
+    destructive: m.toolReportsDestructive,
+    idempotent: m.toolReportsIdempotent,
+    mayModify: m.toolReportsMayModify,
+    openWorld: m.toolReportsOpenWorld,
+    readOnly: m.toolReportsReadOnly,
+    repeatEffects: m.toolReportsRepeatEffects
+  })
+}
 
 function statusOf(server: Record<string, unknown>, probe: Probe | undefined): ServerStatus {
   if (!serverEnabled(server)) {
@@ -1221,23 +1238,19 @@ function ServerConfig({
               lists every tool regardless of the filter. */}
           {probe.tools.map(tool => {
             const on = isToolEnabled(entry, tool.name)
+            const action = on ? m.disableTool(tool.name) : m.enableTool(tool.name)
+            const details = toolDetails(m, tool)
 
             return (
-              <button
-                aria-pressed={on}
-                className={cn(
-                  'rounded-md px-1.5 py-0.5 font-mono text-[0.65rem] text-(--ui-text-tertiary) hover:text-foreground',
-                  saved ? 'cursor-pointer' : 'cursor-default',
-                  on ? 'bg-(--ui-bg-quinary)' : 'line-through opacity-70'
-                )}
-                disabled={!saved}
+              <McpToolChip
+                action={action}
+                details={details}
+                enabled={on}
                 key={tool.name}
-                onClick={() => onToggleTool(tool.name)}
-                title={on ? m.disableTool(tool.name) : m.enableTool(tool.name)}
-                type="button"
-              >
-                {tool.name}
-              </button>
+                onToggle={() => onToggleTool(tool.name)}
+                saved={saved}
+                toolName={tool.name}
+              />
             )
           })}
         </div>

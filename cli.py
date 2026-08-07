@@ -808,13 +808,6 @@ try:
 except Exception:
     pass
 
-# Initialize the skin engine from config
-try:
-    from hermes_cli.skin_engine import init_skin_from_config
-    init_skin_from_config(CLI_CONFIG)
-except Exception:
-    pass  # Skin engine is optional — default skin used if unavailable
-
 # Initialize tool preview length from config
 try:
     from agent.display import set_tool_preview_max_len
@@ -2714,6 +2707,28 @@ def _detect_light_mode() -> bool:
 # Terminal.app backgrounds.  Used by _SkinAwareAnsi to remap colors
 # at resolution time when light mode is detected.
 #
+# Initialize the skin engine from config. Deliberately placed here, AFTER
+# _detect_light_mode() is defined above, rather than near the top of this
+# module's init sequence: init_skin_from_config() -> set_active_skin("auto")
+# -> resolve_auto_skin() does `from cli import _detect_light_mode` (a lazy,
+# necessarily-circular import back into this same module, since skin_engine
+# is imported by cli.py, not the other way around). Calling it any earlier
+# -- while THIS module is still mid-execution and hasn't reached the def
+# statement above -- hits the classic partially-initialized-module circular
+# import failure: `_detect_light_mode` doesn't exist in cli's namespace yet,
+# resolve_auto_skin()'s own try/except swallows that ImportError and falls
+# back to "default", so display.skin: auto silently never resolves to
+# "daylight" even with HERMES_LIGHT=1 set (review of #68610). No top-level
+# (module-scope) code between the old call site and here reads
+# get_active_skin()/skin_engine state, so moving the call this far down is
+# safe -- every other skin_engine consumer in this file is inside a
+# function/method body, which only runs later at actual invocation time.
+try:
+    from hermes_cli.skin_engine import init_skin_from_config
+    init_skin_from_config(CLI_CONFIG)
+except Exception:
+    pass  # Skin engine is optional — default skin used if unavailable
+
 # IMPORTANT: only remap colors that are used as STANDALONE foregrounds
 # on the terminal's background.  Don't remap colors that are paired
 # with a dark bg (e.g. status bar text on bg:#1a1a2e) — those would

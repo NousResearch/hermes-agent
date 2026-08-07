@@ -88,7 +88,20 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
-      const rows = result.sessions.filter(s => isMessagingSource(s.source))
+      // Honor delete/archive tombstones so an optimistic removal can't flash
+      // back when this refresh races the mutation (#78836).
+      const tombstones = $removedSessionIds.get()
+      const rows = result.sessions.filter(s => {
+        if (!isMessagingSource(s.source)) {
+          return false
+        }
+
+        if (!tombstones.size) {
+          return true
+        }
+
+        return !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id))
+      })
 
       setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
       // Hit the cap → at least one platform may have more on disk than loaded,
@@ -110,7 +123,20 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       source: platform
     })
 
-    const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
+    // Same tombstone filter as refreshSessions — a just-deleted row must not
+    // reappear when the user pages this platform (#78836).
+    const tombstones = $removedSessionIds.get()
+    const incoming = result.sessions.filter(s => {
+      if (normalizeSessionSource(s.source) !== platform) {
+        return false
+      }
+
+      if (!tombstones.size) {
+        return true
+      }
+
+      return !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id))
+    })
 
     setMessagingSessions(prev => [
       ...prev.filter(s => !inPlatform(s)),
@@ -186,12 +212,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // Honoring the optimistic tombstone keeps the removal from flashing back
         // (the tombstone self-clears once projects.tree confirms the delete).
         const tombstones = $removedSessionIds.get()
+        const notTombstoned = (s: SessionInfo) =>
+          !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id))
 
-        const incoming = tombstones.size
-          ? recents.sessions.filter(
-              s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id))
-            )
-          : recents.sessions
+        const incoming = tombstones.size ? recents.sessions.filter(notTombstoned) : recents.sessions
 
         // Signature-gate the swap (same pattern as cron/messaging): a refresh
         // that returns content-identical rows must keep the previous array
@@ -217,13 +241,17 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         })
 
         // Cron section: latest N cron sessions (kept so a pinned cron run still
-        // resolves via sessionByAnyId), signature-gated like above.
-        setCronSessions(prev => (sameCronSignature(prev, result.cron.sessions) ? prev : result.cron.sessions))
+        // resolves via sessionByAnyId), signature-gated like above. Same
+        // tombstone filter as recents so a deleted cron row can't flash back.
+        const cronIncoming = tombstones.size ? result.cron.sessions.filter(notTombstoned) : result.cron.sessions
+        setCronSessions(prev => (sameCronSignature(prev, cronIncoming) ? prev : cronIncoming))
 
         // Messaging sections: drop any non-messaging source the broad exclude
         // didn't catch (custom sources stay in local recents), then split per
-        // platform in the UI.
-        const messagingRows = result.messaging.sessions.filter(s => isMessagingSource(s.source))
+        // platform in the UI. Tombstones apply here too (#78836 flash-back).
+        const messagingRows = result.messaging.sessions
+          .filter(s => isMessagingSource(s.source))
+          .filter(s => !tombstones.size || notTombstoned(s))
 
         setMessagingSessions(prev => (sameCronSignature(prev, messagingRows) ? prev : messagingRows))
         // Hit the cap → at least one platform may have more on disk than loaded.

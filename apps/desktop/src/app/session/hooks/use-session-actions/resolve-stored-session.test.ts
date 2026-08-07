@@ -3,10 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesModule from '@/hermes'
 import { getSession } from '@/hermes'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
-import { $sessions } from '@/store/session'
+import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { resolveSessionProfile, resolveStoredSession } from './utils'
+import {
+  dropListedSession,
+  findListedSession,
+  resolveSessionMutationProfile,
+  resolveSessionProfile,
+  resolveStoredSession,
+  restoreListedSession
+} from './utils'
 
 vi.mock('@/hermes', async importActual => ({
   ...(await importActual<typeof HermesModule>()),
@@ -22,6 +29,8 @@ const profiles = (...names: string[]) => names.map(name => ({ name }) as never)
 describe('resolveStoredSession profile ownership', () => {
   beforeEach(() => {
     $sessions.set([])
+    $messagingSessions.set([])
+    $cronSessions.set([])
     $profiles.set(profiles('default', 'meta'))
     $activeGatewayProfile.set('meta')
     mockGetSession.mockReset()
@@ -29,6 +38,8 @@ describe('resolveStoredSession profile ownership', () => {
 
   afterEach(() => {
     $sessions.set([])
+    $messagingSessions.set([])
+    $cronSessions.set([])
     $profiles.set([])
     $activeGatewayProfile.set('default')
   })
@@ -39,6 +50,24 @@ describe('resolveStoredSession profile ownership', () => {
     const resolved = await resolveStoredSession('s1')
 
     expect(resolved?.profile).toBe('default')
+    expect(mockGetSession).not.toHaveBeenCalled()
+  })
+
+  it('reads owning profile from the messaging sidebar slice (#78836)', async () => {
+    $messagingSessions.set([session({ id: 'tg-1', profile: 'winefox', source: 'telegram' })])
+
+    const resolved = await resolveStoredSession('tg-1')
+
+    expect(resolved?.profile).toBe('winefox')
+    expect(mockGetSession).not.toHaveBeenCalled()
+  })
+
+  it('reads owning profile from the cron sidebar slice', async () => {
+    $cronSessions.set([session({ id: 'cron-1', profile: 'worker', source: 'cron' })])
+
+    const resolved = await resolveStoredSession('cron-1')
+
+    expect(resolved?.profile).toBe('worker')
     expect(mockGetSession).not.toHaveBeenCalled()
   })
 
@@ -105,5 +134,89 @@ describe('resolveStoredSession profile ownership', () => {
     mockGetSession.mockResolvedValueOnce(session({ id: 's1', profile: 'default' }))
 
     await expect(resolveSessionProfile('s1')).resolves.toBe('default')
+  })
+})
+
+describe('findListedSession / drop / restore across sidebar slices', () => {
+  beforeEach(() => {
+    $sessions.set([])
+    $messagingSessions.set([])
+    $cronSessions.set([])
+  })
+
+  afterEach(() => {
+    $sessions.set([])
+    $messagingSessions.set([])
+    $cronSessions.set([])
+  })
+
+  it('finds a messaging-platform session outside $sessions', () => {
+    $messagingSessions.set([session({ id: 'qq-1', profile: 'winefox', source: 'qqbot' })])
+
+    expect(findListedSession('qq-1')).toEqual({
+      session: expect.objectContaining({ id: 'qq-1', profile: 'winefox' }),
+      slice: 'messaging'
+    })
+  })
+
+  it('drops a messaging row from its own slice on optimistic delete', () => {
+    $messagingSessions.set([session({ id: 'tg-1', profile: 'winefox', source: 'telegram' })])
+    $sessions.set([session({ id: 'desk-1', profile: 'default', source: 'desktop' })])
+
+    dropListedSession('tg-1')
+
+    expect($messagingSessions.get()).toEqual([])
+    expect($sessions.get().map(s => s.id)).toEqual(['desk-1'])
+  })
+
+  it('restores a messaging row to the messaging slice on delete failure', () => {
+    const row = session({ id: 'tg-1', profile: 'winefox', source: 'telegram' })
+
+    restoreListedSession(row, 'messaging')
+
+    expect($messagingSessions.get()).toEqual([row])
+    expect($sessions.get()).toEqual([])
+  })
+})
+
+describe('resolveSessionMutationProfile', () => {
+  beforeEach(() => {
+    $sessions.set([])
+    $messagingSessions.set([])
+    $cronSessions.set([])
+    $profiles.set(profiles('default', 'winefox'))
+    $activeGatewayProfile.set('default')
+    mockGetSession.mockReset()
+  })
+
+  afterEach(() => {
+    $sessions.set([])
+    $messagingSessions.set([])
+    $cronSessions.set([])
+    $profiles.set([])
+    $activeGatewayProfile.set('default')
+  })
+
+  it('prefers the listed row profile without probing', async () => {
+    const listed = session({ id: 'tg-1', profile: 'winefox', source: 'telegram' })
+
+    await expect(resolveSessionMutationProfile('tg-1', listed)).resolves.toBe('winefox')
+    expect(mockGetSession).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the ownership ladder when the listed row has no profile', async () => {
+    mockGetSession.mockRejectedValueOnce(new Error('404: Session not found'))
+    mockGetSession.mockResolvedValueOnce(session({ id: 'tg-1', profile: 'winefox', source: 'telegram' }))
+
+    await expect(resolveSessionMutationProfile('tg-1', session({ id: 'tg-1', source: 'telegram' }))).resolves.toBe(
+      'winefox'
+    )
+  })
+
+  it('resolves an uncached messaging id via the cross-profile ladder', async () => {
+    mockGetSession.mockRejectedValueOnce(new Error('404: Session not found'))
+    mockGetSession.mockResolvedValueOnce(session({ id: 'tg-1', profile: 'winefox', source: 'telegram' }))
+
+    await expect(resolveSessionMutationProfile('tg-1')).resolves.toBe('winefox')
   })
 })

@@ -4505,6 +4505,108 @@ class _StopAfterOneNotificationPoll:
         return self._checks > 1
 
 
+def test_notification_poller_backs_off_after_durable_claim_failure(monkeypatch):
+    import queue as _queue_mod
+
+    import tools.process_registry as pr_module
+    from tools import async_delegation
+
+    session = _session(session_key="claim-retry-session")
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_claim_retry",
+        "session_key": "claim-retry-session",
+        "goal": "retry claim",
+        "status": "completed",
+        "summary": "done",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    claim_times = []
+    stop = threading.Event()
+    registry = types.SimpleNamespace(
+        completion_queue=isolated_queue,
+        is_completion_consumed=lambda _session_id: False,
+    )
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    def fail_claim(evt, _consumer):
+        claim_times.append(time.monotonic())
+        evt["_delivery_claim_requeued"] = True
+        isolated_queue.put(evt)
+        if len(claim_times) == 2:
+            evt.pop("_delivery_claim_requeued")
+            stop.set()
+        return None
+
+    monkeypatch.setattr(async_delegation, "claim_event_delivery", fail_claim)
+    server._sessions["sid-claim-retry"] = session
+
+    try:
+        server._notification_poller_loop(stop, "sid-claim-retry", session)
+
+        assert session["running"] is False
+        assert isolated_queue.qsize() == 1
+        assert isolated_queue.get_nowait() is event
+        # Two live attempts plus the function's one-shot shutdown drain.
+        assert len(claim_times) == 3
+        assert claim_times[1] - claim_times[0] >= 0.2
+    finally:
+        server._sessions.pop("sid-claim-retry", None)
+
+
+def test_notification_poller_retries_volatile_dispatch_failure(monkeypatch):
+    import queue as _queue_mod
+
+    import tools.process_registry as pr_module
+    from tools import async_delegation
+
+    session = _session(session_key="volatile-retry-session")
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_volatile_retry",
+        "session_key": "volatile-retry-session",
+        "goal": "preserve result",
+        "status": "completed",
+        "summary": "actual result",
+        "_volatile_delivery": True,
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    registry = types.SimpleNamespace(
+        completion_queue=isolated_queue,
+        is_completion_consumed=lambda _session_id: False,
+    )
+    attempts = []
+    stop = threading.Event()
+
+    def dispatch(_rid, _sid, _session, text, **_kwargs):
+        attempts.append(text)
+        if len(attempts) == 1:
+            stop.set()
+            raise RuntimeError("temporary dispatch failure")
+        _session["running"] = False
+
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", dispatch)
+    monkeypatch.setattr(async_delegation, "complete_event_delivery", lambda *_args: True)
+    server._sessions["sid-volatile-retry"] = session
+
+    try:
+        server._notification_poller_loop(stop, "sid-volatile-retry", session)
+
+        assert len(attempts) == 2
+        assert attempts[0] == attempts[1]
+        assert "actual result" in attempts[1]
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid-volatile-retry", None)
+
+
 def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
     monkeypatch,
 ):

@@ -22436,13 +22436,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             durable_delegation_id = str(evt.get("delegation_id") or "")
             if durable_delegation_id:
                 try:
-                    from tools.async_delegation import claim_completion_delivery
+                    from tools.async_delegation import claim_event_delivery
 
-                    durable_claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
-                    if not claim_completion_delivery(
-                        durable_delegation_id, durable_claim_id,
-                    ):
+                    claim = claim_event_delivery(evt, f"gateway:{id(self)}")
+                    if claim is None:
                         return None
+                    durable_claim_id = claim
                 except Exception as exc:
                     logger.warning(
                         "Could not claim durable async completion %s: %s",
@@ -22461,22 +22460,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if verdict == "terminal":
                     logger.warning(
                         "Async delegation %s targets permanently-gone session %s; "
-                        "terminally dropping delivery (result remains in the "
-                        "delegation records).",
+                        "terminally dropping delivery.",
                         durable_delegation_id or "<legacy>", parent_session_id,
                     )
-                    if durable_claim_id:
+                    if durable_delegation_id:
                         try:
-                            from tools.async_delegation import drop_completion_delivery
+                            from tools.async_delegation import drop_event_delivery
 
-                            drop_completion_delivery(
-                                durable_delegation_id, durable_claim_id,
-                            )
+                            if not drop_event_delivery(evt, durable_claim_id):
+                                return False
                         except Exception:
                             logger.debug(
                                 "Could not drop durable completion claim",
                                 exc_info=True,
                             )
+                            return False
                     return None
                 if verdict == "retry":
                     if durable_claim_id:
@@ -22521,13 +22519,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # If the durable async-delegation producer branch is present, its
             # SQLite row remains the authoritative replay state. Acknowledge it
             # after adapter acceptance; this gateway keeps no parallel ledger.
-            if durable_claim_id:
+            if durable_delegation_id:
                 try:
-                    from tools.async_delegation import complete_completion_delivery
+                    from tools.async_delegation import complete_event_delivery
 
-                    complete_completion_delivery(
-                        durable_delegation_id, durable_claim_id,
-                    )
+                    complete_event_delivery(evt, durable_claim_id)
                 except Exception as exc:
                     logger.warning(
                         "Could not acknowledge durable async completion %s: %s",

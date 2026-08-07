@@ -11166,22 +11166,25 @@ def _prepare_agent_startup(args) -> None:
         return
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))
-    try:
-        from hermes_cli.plugins import start_background_plugin_discovery
+    if not _is_tui_chat_launch(args):
+        # The TUI backend process does its own plugin discovery; the launcher
+        # only spawns Node, so discovery here would be thrown-away work.
+        try:
+            from hermes_cli.plugins import start_background_plugin_discovery
 
-        # Discovery runs in a daemon thread so its ~150ms of manifest
-        # scanning + plugin imports overlaps the rest of startup (cli /
-        # prompt_toolkit imports, worktree git calls). Correctness is
-        # unchanged: every synchronous reader goes through
-        # discover_plugins(), which joins this thread first — including
-        # the discover_plugins() call model_tools makes at import time,
-        # which happens before any tool list is built.
-        start_background_plugin_discovery()
-    except Exception:
-        logger.warning(
-            "plugin discovery failed at CLI startup",
-            exc_info=True,
-        )
+            # Discovery runs in a daemon thread so its ~150ms of manifest
+            # scanning + plugin imports overlaps the rest of startup (cli /
+            # prompt_toolkit imports, worktree git calls). Correctness is
+            # unchanged: every synchronous reader goes through
+            # discover_plugins(), which joins this thread first — including
+            # the discover_plugins() call model_tools makes at import time,
+            # which happens before any tool list is built.
+            start_background_plugin_discovery()
+        except Exception:
+            logger.warning(
+                "plugin discovery failed at CLI startup",
+                exc_info=True,
+            )
     _run_inline_mcp_discovery = True
     if _is_tui_chat_launch(args):
         # The TUI launcher hands off to a dedicated startup path that already

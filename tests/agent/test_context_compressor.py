@@ -99,6 +99,15 @@ class TestSummarizeToolResultClarify:
         assert first_summary.endswith("...[truncated]")
         assert second_summary == first_summary
 
+    def test_unpaired_surrogates_are_safe_for_utf8_persistence(self):
+        content = json.dumps({"user_response": "\ud83d" * 1_000})
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert len(summary) <= 200
+        assert summary.encode("utf-8")
+        assert "\\ud83d" in summary
+
     @pytest.mark.parametrize(
         "content",
         [

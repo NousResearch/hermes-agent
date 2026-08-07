@@ -1342,7 +1342,14 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
             and all(isinstance(item, str) and item for item in response)
         )
         if resolved:
-            summary = response_prefix + json.dumps(response, ensure_ascii=False)
+            # Keep ordinary Unicode intact while escaping lone UTF-16
+            # surrogates so the compacted message remains UTF-8/SQLite safe.
+            serialized_response = (
+                json.dumps(response, ensure_ascii=False)
+                .encode("utf-8", errors="backslashreplace")
+                .decode("utf-8")
+            )
+            summary = response_prefix + serialized_response
             if len(summary) > max_summary_chars:
                 summary = (
                     summary[: max_summary_chars - len(truncation_marker)].rstrip()

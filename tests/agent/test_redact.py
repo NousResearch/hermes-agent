@@ -183,6 +183,17 @@ class TestControlCharSplitTokens:
         assert "button" in result
         assert "ref=e3" in result
 
+    def test_selfmatching_head_esc_split_tail_masked(self):
+        # A split where the HEAD fragment alone already matches _PREFIX_RE
+        # (>= 10 body chars) but the tail doesn't: the join must still run
+        # for non-newline controls, or the tail leaks in cleartext. Only
+        # LINE-crossing spans skip the join (see the annotation test).
+        head = "sk-" + "a" * 15
+        tail = "b" * 25
+        result = redact_sensitive_text(head + "\x1b" + tail, force=True)
+        assert tail not in result
+        assert "a" * 12 not in result
+
     def test_env_dump_lines_not_joined(self):
         # Control-stripping must not join unrelated env lines into one match
         env_dump = (

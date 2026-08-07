@@ -251,7 +251,7 @@ The agent can also create and update skills itself using `skill_manage`. After s
 Control which skills are available on which platforms:
 
 ```bash
-hermes skills
+hermes skills config
 ```
 
 This opens an interactive TUI where you can enable or disable skills per platform (CLI, Telegram, Discord, etc.). Useful when you want certain skills only available in specific contexts — for example, keeping development skills off Telegram.

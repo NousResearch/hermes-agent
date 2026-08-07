@@ -332,6 +332,54 @@ def test_frame_id_route_allowed_when_page_is_not_private(monkeypatch):
     assert len(supervisor_calls) == 1
 
 
+def test_frame_id_rejects_non_dict_params_before_guard(monkeypatch):
+    """frame_id path must reject non-dict params like the stateless path.
+
+    Without this check, a truthy non-dict (e.g. a string) reaches
+    ``_browser_cdp_private_guard``, raises on ``.get``, and the guard's
+    broad except fail-opens — skipping the private-page boundary and
+    never surfacing the clear params validation error.
+    """
+    supervisor_calls = []
+    guard_calls = []
+
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+
+    real_guard = browser_cdp_tool._browser_cdp_private_guard
+
+    def tracking_guard(**kwargs):
+        guard_calls.append(kwargs)
+        return real_guard(**kwargs)
+
+    def fake_supervisor_route(**kwargs):
+        supervisor_calls.append(kwargs)
+        return json.dumps({"success": True, "result": {"value": "leaked"}})
+
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", tracking_guard)
+    monkeypatch.setattr(
+        browser_cdp_tool, "_browser_cdp_via_supervisor", fake_supervisor_route
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params="not-a-dict",
+            frame_id="frame-1",
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert "params" in result["error"].lower()
+    assert "object/dict" in result["error"]
+    assert "str" in result["error"]
+    assert guard_calls == []
+    assert supervisor_calls == []
+
+
 def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
     calls = []
 

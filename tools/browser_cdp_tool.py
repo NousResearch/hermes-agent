@@ -426,6 +426,18 @@ def browser_cdp(
     """
     effective_task_id = task_id or "default"
 
+    # Validate params before any path (including frame_id early-return).
+    # A non-dict would AttributeError inside _browser_cdp_private_guard's
+    # (params or {}).get(...); that probe's broad except fail-opens, so
+    # rejecting here keeps the SSRF/private-page boundary fail-closed and
+    # matches the clear input-validation error the stateless path already
+    # returned.
+    call_params: Dict[str, Any] = params or {}
+    if not isinstance(call_params, dict):
+        return tool_error(
+            f"'params' must be an object/dict, got {type(call_params).__name__}"
+        )
+
     # --- Route iframe-scoped calls through the supervisor ---------------
     if frame_id:
         # Same private-page/SSRF boundary as the stateless path below —
@@ -433,7 +445,7 @@ def browser_cdp(
         blocked = _browser_cdp_private_guard(
             task_id=effective_task_id,
             method=method,
-            params=params or {},
+            params=call_params,
         )
         if blocked:
             return blocked
@@ -441,7 +453,7 @@ def browser_cdp(
             task_id=effective_task_id,
             frame_id=frame_id,
             method=method,
-            params=params,
+            params=call_params,
             timeout=timeout,
         )
 
@@ -473,12 +485,6 @@ def browser_cdp(
             "Expected ws://... or wss://... — the /browser connect "
             "resolver should have rewritten this. Check that a Chromium-family "
             "browser is actually listening on the debug port."
-        )
-
-    call_params: Dict[str, Any] = params or {}
-    if not isinstance(call_params, dict):
-        return tool_error(
-            f"'params' must be an object/dict, got {type(call_params).__name__}"
         )
 
     blocked = _browser_cdp_private_guard(

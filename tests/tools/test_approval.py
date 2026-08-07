@@ -1126,12 +1126,18 @@ class TestApprovalTimeoutIsNotConsent:
 
     def setup_method(self):
         """Reset module state and force a tight approval timeout for fast tests."""
+        from gateway.session_context import _UNSET, _VAR_MAP
         from tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
         mod._session_approved.clear()
         mod._permanent_approved.clear()
         mod._pending.clear()
+        # Full-suite runs can leave gateway ContextVars set from earlier tests.
+        # These tests intentionally exercise the legacy os.environ fallback, so
+        # reset ContextVars to the never-set sentinel before setting env below.
+        for var in _VAR_MAP.values():
+            var.set(_UNSET)
 
         self._saved_env = {
             k: os.environ.get(k)
@@ -1149,6 +1155,7 @@ class TestApprovalTimeoutIsNotConsent:
         os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
 
     def teardown_method(self):
+        from gateway.session_context import _UNSET, _VAR_MAP
         from tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
@@ -1157,12 +1164,14 @@ class TestApprovalTimeoutIsNotConsent:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+        for var in _VAR_MAP.values():
+            var.set(_UNSET)
 
     def _force_short_timeout(self, monkeypatch, seconds=0.05):
         from tools import approval as mod
         monkeypatch.setattr(
             mod, "_get_approval_config",
-            lambda: {"mode": "manual", "timeout": seconds},
+            lambda: {"mode": "manual", "gateway_timeout": seconds, "timeout": seconds},
         )
 
     def test_timeout_blocks_with_no_consent_and_timeout_hook(self, monkeypatch):

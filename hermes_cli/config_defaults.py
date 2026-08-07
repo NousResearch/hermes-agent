@@ -233,6 +233,20 @@ DEFAULT_CONFIG = {
         # matches a key in this dict.
         # Edit directly in config.yaml (no CLI support due to dots in keys).
         "reasoning_overrides": {},
+
+        # Ephemeral system prompt prepended to every agent turn. Read at
+        # runtime by cli.py (CLI_CONFIG["agent"].get("system_prompt", ""))
+        # and gateway paths — see tui_gateway/server.py. Empty string means
+        # no user-supplied prompt; the framework default applies. This is
+        # NOT a secret (secrets go in .env) — it's a behavioral setting.
+        "system_prompt": "",
+
+        # Custom user-defined personality presets. Each entry is either a
+        # string (used directly as a system-prompt fragment) or a dict with
+        # keys like {"system_prompt": ..., "description": ..., "tone": ...}.
+        # Read at runtime from agent.personalities — see cli.py line ~4478
+        # and tui_gateway/server.py. Empty dict means no custom personalities.
+        "personalities": {},
     },
 
     "terminal": {

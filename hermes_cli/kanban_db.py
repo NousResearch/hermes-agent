@@ -1815,9 +1815,18 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     # risk -- so REFUSE rather than warn-and-proceed. Losing a forensic copy
     # is strictly better than corrupting the live database we are trying to
     # rescue.
-    from hermes_cli.sqlite_safe_read import has_live_connection
+    #
+    # The refusal and the raw reads run as one atomic step under
+    # ``offline_file_access``: a bare has_live_connection() check followed by
+    # the fingerprint/copy is a check/use race -- a connection opened in the
+    # gap (connect_tracked blocks on the same lock instead) would have its
+    # POSIX locks cancelled by our close().
+    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 
-    if has_live_connection(resolved):
+    try:
+        with offline_file_access(resolved, what="quarantine"):
+            return _backup_corrupt_db_locked(resolved, parent, base_name)
+    except LiveConnectionError:
         _log.error(
             "refusing to quarantine %s: a connection to it is still open in "
             "this process, and fingerprinting the file would cancel that "
@@ -1825,6 +1834,16 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
             resolved,
         )
         return None
+
+
+def _backup_corrupt_db_locked(
+    resolved: Path, parent: Path, base_name: str
+) -> Optional[Path]:
+    """Fingerprint + copy body of ``_backup_corrupt_db``.
+
+    Must be called inside ``offline_file_access(resolved)`` -- every byte-level
+    read here is only safe while the connection-lifecycle lock is held.
+    """
     digest = hashlib.sha256()
     try:
         with resolved.open("rb") as handle:

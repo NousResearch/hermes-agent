@@ -1326,11 +1326,44 @@ def _backup_db_file(db_path: Path) -> Optional[Path]:
     import shutil
 
     try:
-        from hermes_cli.sqlite_safe_read import has_live_connection
+        from hermes_cli.sqlite_safe_read import (
+            LiveConnectionError,
+            offline_file_access,
+        )
     except ImportError:
-        has_live_connection = None  # type: ignore[assignment]
+        LiveConnectionError = None  # type: ignore[assignment]
+        offline_file_access = None  # type: ignore[assignment]
 
-    if has_live_connection is not None and has_live_connection(db_path):
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = db_path.with_name(f"{db_path.name}.malformed-backup-{stamp}")
+
+    def _copy_all() -> Path:
+        shutil.copy2(db_path, backup_path)
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.with_name(db_path.name + suffix)
+            if sidecar.exists():
+                shutil.copy2(sidecar, backup_path.with_name(backup_path.name + suffix))
+        return backup_path
+
+    if offline_file_access is None:
+        # Constrained embed path: sqlite_safe_read (and with it the whole
+        # live-connection registry) is unavailable, so there is nothing to
+        # guard against — no connection in this process can be tracked.
+        try:
+            return _copy_all()
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.warning("Could not back up malformed DB %s: %s", db_path, exc)
+            return None
+
+    # The registry check and the raw copy must be one atomic step: a bare
+    # has_live_connection() followed by the copy is a check/use race — a
+    # connection opened in the gap has its POSIX locks cancelled by the
+    # copy's close() (see offline_file_access in hermes_cli.sqlite_safe_read,
+    # which exists for exactly this pattern).
+    try:
+        with offline_file_access(db_path, what="back up"):
+            return _copy_all()
+    except LiveConnectionError:
         logger.error(
             "Refusing to raw-copy %s for backup: a connection to it is still "
             "open in this process and the copy would cancel that connection's "
@@ -1338,16 +1371,6 @@ def _backup_db_file(db_path: Path) -> Optional[Path]:
             db_path,
         )
         return None
-
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = db_path.with_name(f"{db_path.name}.malformed-backup-{stamp}")
-    try:
-        shutil.copy2(db_path, backup_path)
-        for suffix in ("-wal", "-shm"):
-            sidecar = db_path.with_name(db_path.name + suffix)
-            if sidecar.exists():
-                shutil.copy2(sidecar, backup_path.with_name(backup_path.name + suffix))
-        return backup_path
     except Exception as exc:  # pragma: no cover - best effort
         logger.warning("Could not back up malformed DB %s: %s", db_path, exc)
         return None

@@ -25,6 +25,7 @@ import ssl
 import time
 from typing import Any, Dict, List, Optional
 
+from agent.cache_shape import capture_request_shape, diagnose_cache_miss
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import (
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
@@ -2290,7 +2291,7 @@ def run_conversation(
             logging.debug(f"API Request - Model: {agent.model}, Messages: {len(messages)}, Tools: {len(agent.tools) if agent.tools else 0}")
             logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
             logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
-        
+
         api_start_time = time.time()
         retry_count = 0
         max_retries = agent._api_max_retries
@@ -2422,6 +2423,36 @@ def run_conversation(
                 except Exception:
                     _original_api_kwargs = dict(api_kwargs)
                     _llm_middleware_trace = []
+
+                # Cache-shape capture (#68489): fingerprint the request prefix
+                # so a poor cache hit rate reported by the provider can be
+                # explained after the response arrives (see the
+                # diagnose_cache_miss call in the usage block).
+                #
+                # Captured *here*, at the bottom of the per-attempt request
+                # build, because everything above still rewrites the payload:
+                # _reapply_reasoning_echo_for_provider,
+                # _redecorate_prompt_cache_for_provider, _build_api_kwargs,
+                # the codex_responses preflight, and request middleware.
+                # Capturing before the retry loop would fingerprint a draft
+                # and then blame the user for differences the loop itself
+                # introduced — and a fallback activation re-enters this block,
+                # so each real provider attempt gets its own shape.
+                #
+                # The scope pins provider/model/base_url so shapes from two
+                # different backends are never compared as if they shared a
+                # cache. Observability only; api_kwargs is not modified.
+                try:
+                    agent._cache_shape_prev = getattr(agent, "_cache_shape_cur", None)
+                    agent._cache_shape_cur = capture_request_shape(
+                        api_kwargs,
+                        provider=agent.provider,
+                        model=agent.model,
+                        base_url=agent.base_url,
+                    )
+                except Exception as _shape_exc:  # noqa: BLE001 — diagnostics must never break the loop
+                    logger.debug("Cache-shape capture failed: %s", _shape_exc)
+                    agent._cache_shape_cur = None
 
                 try:
                     from hermes_cli.lifecycle import (
@@ -3619,6 +3650,32 @@ def run_conversation(
                             f"{cached:,}/{prompt:,} tokens "
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
+
+                    # Cache-shape diagnostics (#68489): once this session has
+                    # proven the provider reports cache metrics, explain poor
+                    # hit rates by comparing the request prefix against the
+                    # previous call's (captured just before each API call).
+                    # Gated on _cache_metrics_seen so providers that never
+                    # report cache usage don't produce a bogus "miss"
+                    # diagnosis every turn.
+                    if cached or written:
+                        agent._cache_metrics_seen = True
+                    if getattr(agent, "_cache_metrics_seen", False):
+                        _shape_reason = diagnose_cache_miss(
+                            getattr(agent, "_cache_shape_prev", None),
+                            getattr(agent, "_cache_shape_cur", None),
+                            cache_read_tokens=cached,
+                            prompt_tokens=prompt,
+                        )
+                        if _shape_reason:
+                            logger.info(
+                                "Prompt-cache miss diagnosis: %s", _shape_reason
+                            )
+                            if not agent.quiet_mode:
+                                agent._vprint(
+                                    f"{agent.log_prefix}   🔍 Cache miss: "
+                                    f"{_shape_reason}"
+                                )
                 
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call

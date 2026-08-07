@@ -8,7 +8,9 @@ import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-
 import { Mail } from '@/lib/icons'
 import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
 import { overlayWindowSize } from '@/store/pet-overlay'
-import { setAwaitingResponse, setBusy } from '@/store/session'
+import { roamWalkRow } from '@/components/pet/pet-sprite'
+import { usePetRoam } from '@/components/pet/use-pet-roam'
+import { $busy, setAwaitingResponse, setBusy } from '@/store/session'
 
 // Fallbacks mirror pet-sprite's defaults; the gateway normally sends real values.
 const DEFAULT_FRAME_W = 192
@@ -58,6 +60,13 @@ interface DragState {
   width: number
   height: number
   moved: boolean
+  /** Last screen X — used for delta-based direction, not start-relative. */
+  lastX: number
+}
+
+interface Point {
+  x: number
+  y: number
 }
 
 export function PetOverlayApp() {
@@ -66,6 +75,12 @@ export function PetOverlayApp() {
   const [draft, setDraft] = useState('')
   // Mirrored from the main renderer: a finish landed while you were away.
   const [unread, setUnread] = useState(false)
+  // Drag direction for the pop-out overlay — drives the run animation row.
+  const [dragDir, setDragDir] = useState<-1 | 0 | 1>(0)
+  // Last absolute position the roam loop committed.
+  const [roamPos, setRoamPos] = useState<Point | null>(null)
+  // Seed roam position once pet dimensions are known.
+  const roamPosSeeded = useRef(false)
 
   const dragRef = useRef<DragState | null>(null)
   // Last Alt+wheel anchor, consumed by the resize effect to zoom toward the
@@ -206,8 +221,10 @@ export function PetOverlayApp() {
     }
 
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
+    setDragDir(0)
     dragRef.current = {
       height: window.outerHeight,
+      lastX: e.screenX,
       moved: false,
       offX: e.screenX - window.screenX,
       offY: e.screenY - window.screenY,
@@ -228,6 +245,13 @@ export function PetOverlayApp() {
       drag.moved = true
     }
 
+    if (drag.moved) {
+      const dx = e.screenX - drag.lastX
+      drag.lastX = e.screenX
+      const dir = dx > 0 ? 1 : dx < 0 ? -1 : 0
+      if (dir !== 0) setDragDir(dir)
+    }
+
     window.hermesDesktop?.petOverlay?.setBounds({
       height: drag.height,
       width: drag.width,
@@ -240,6 +264,9 @@ export function PetOverlayApp() {
     const drag = dragRef.current
     dragRef.current = null
     ;(e.target as Element).releasePointerCapture?.(e.pointerId)
+
+    // Clear drag direction regardless of whether it was a drag or a click.
+    setDragDir(0)
 
     if (!drag) {
       return
@@ -361,6 +388,46 @@ export function PetOverlayApp() {
     window.hermesDesktop?.petOverlay?.control({ bounds, type: 'bounds' })
   }, [info.enabled, info.spritesheetBase64, info.scale, info.frameW, info.frameH])
 
+  // ── roam ──────────────────────────────────────────────────────────────
+
+  const busy = useStore($busy)
+  const petW = (info.frameW ?? DEFAULT_FRAME_W) * (info.scale ?? DEFAULT_SCALE)
+  const petH = (info.frameH ?? DEFAULT_FRAME_H) * (info.scale ?? DEFAULT_SCALE)
+  const active = info.enabled && Boolean(info.spritesheetBase64)
+  // Overlay roams when pet is loaded and agent is idle.
+  const roamActive = active && !busy
+
+  // Seed a centered-bottom starting position once the pet loads.
+  useEffect(() => {
+    if (!roamPosSeeded.current && active) {
+      roamPosSeeded.current = true
+      setRoamPos({
+        x: Math.max(0, (window.innerWidth - petW) / 2),
+        y: Math.max(0, window.innerHeight - petH - 16)
+      })
+    }
+  }, [active, petW, petH])
+
+  // Stable callbacks so the roam loop doesn't re-init every render.
+  const isInteracting = useCallback(() => dragDir !== 0 || dragRef.current !== null, [dragDir])
+  const commitRoam = useCallback((point: Point) => setRoamPos(point), [])
+
+  usePetRoam({
+    enabled: roamActive,
+    containerRef: petRef,
+    isInteracting,
+    petW,
+    petH,
+    loopMs: info.loopMs ?? 1100,
+    overlayOpen: false,
+    commit: commitRoam
+  })
+
+  // ── render ────────────────────────────────────────────────────────────
+
+  // Resolve directional run row while the pet is being dragged.
+  const walkRow = dragDir !== 0 ? roamWalkRow(dragDir, info.stateRows) : null
+
   if (!info.enabled || !info.spritesheetBase64) {
     return null
   }
@@ -420,20 +487,32 @@ export function PetOverlayApp() {
         onPointerMove={onPetPointerMove}
         onPointerUp={onPetPointerUp}
         ref={petRef}
-        style={{
-          alignItems: 'center',
-          cursor: 'grab',
-          display: 'flex',
-          flexDirection: 'column',
-          position: 'relative',
-          touchAction: 'none'
-        }}
+        style={roamPos
+          ? {
+              alignItems: 'center',
+              cursor: 'grab',
+              display: 'flex',
+              flexDirection: 'column',
+              left: roamPos.x,
+              position: 'absolute',
+              top: roamPos.y,
+              touchAction: 'none'
+            }
+          : {
+              alignItems: 'center',
+              cursor: 'grab',
+              display: 'flex',
+              flexDirection: 'column',
+              position: 'relative',
+              touchAction: 'none'
+            }
+        }
       >
         <div style={{ marginBottom: 4 }}>
           <PetBubble />
         </div>
         <div style={{ lineHeight: 0, position: 'relative' }}>
-          <PetSprite info={info} pauseWhenUnfocused={false} />
+          <PetSprite info={info} pauseWhenUnfocused={false} rowOverride={walkRow?.row} />
 
           {/* Hearts on the popped-out pet — identical to in-window. */}
           <PetHeartField

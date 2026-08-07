@@ -44,14 +44,26 @@ export function mediaMime(path: string): string {
   return mediaInfo(path)?.mime ?? 'application/octet-stream'
 }
 
+function decodeMediaName(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
 export function mediaName(path: string): string {
+  let name: string | undefined
+
   try {
     const url = new URL(path)
 
-    return url.pathname.split('/').filter(Boolean).pop() || path
+    name = url.pathname.split(/[\\/]/).filter(Boolean).pop()
   } catch {
-    return path.split(/[\\/]/).filter(Boolean).pop() || path
+    name = path.split(/[\\/]/).filter(Boolean).pop()
   }
+
+  return decodeMediaName(name || path)
 }
 
 export function mediaMarkdownHref(path: string): string {

@@ -1,6 +1,13 @@
 import { atom } from 'nanostores'
 
-export const DEFAULT_TERMINAL_FONT_FAMILY = "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace"
+// Nerd Font fallbacks after JetBrains Mono: xterm renders undefined glyphs
+// (powerline separators, Codicon-range icons some CLI output emits) as tofu
+// boxes unless a Nerd Font patch is present somewhere in the stack. These
+// three cover the common CaskaydiaCove/Hack/FiraCode-family Nerd Font
+// installs so a user who already has one gets working glyphs without
+// needing to type an exact font name into config.
+export const DEFAULT_TERMINAL_FONT_FAMILY =
+  "'JetBrains Mono', 'Hack Nerd Font Mono', 'FiraCode Nerd Font Mono', 'Symbols Nerd Font Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace"
 
 export const TERMINAL_FONT_SUGGESTIONS = [
   'MesloLGS NF',

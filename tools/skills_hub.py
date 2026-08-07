@@ -4402,11 +4402,28 @@ def parallel_search_sources(
 
 def unified_search(query: str, sources: List[SkillSource],
                    source_filter: str = "all", limit: int = 10) -> List[SkillMeta]:
-    """Search all sources (in parallel) and merge results."""
+    """Search all sources (in parallel) and merge results.
+
+    Per-source quota: the hermes-index source carries a large per-source
+    limit (browse already does this), and the merged result set is
+    round-robin interleaved by source before the final ``limit`` cut — so
+    a bulk source (ClawHub makes up ~76% of the index) can never starve
+    smaller sources (GitHub, LobeHub) out of the visible window (#80176).
+    """
+    # Large index limit so the score-ranked index search can return enough
+    # candidates for the per-source interleave below; the external-source
+    # limits only matter when the index is unavailable (offline).
+    _PER_SOURCE_LIMIT = {
+        "hermes-index": 1000000,
+        "official": 200, "skills-sh": 200, "well-known": 50,
+        "github": 200, "clawhub": 500,
+        "lobehub": 500, "browse-sh": 500,
+    }
     all_results, _, _ = parallel_search_sources(
         sources,
         query=query,
         source_filter=source_filter,
+        per_source_limits=_PER_SOURCE_LIMIT,
         overall_timeout=30,
     )
 
@@ -4429,4 +4446,22 @@ def unified_search(query: str, sources: List[SkillSource],
             seen[r.identifier] = r
     deduped = list(seen.values())
 
-    return deduped[:limit]
+    # Round-robin by source so no single source monopolizes the visible
+    # window. Keep the overall score ordering within each source (the index
+    # already score-ranked its candidates), but alternate sources on each
+    # pick so a small source's top hit is never pushed out by a bulk
+    # source's 20th-best match.
+    by_source: Dict[str, List[SkillMeta]] = {}
+    for r in deduped:
+        by_source.setdefault(r.source, []).append(r)
+    interleaved: List[SkillMeta] = []
+    while by_source:
+        for sid in list(by_source.keys()):
+            bucket = by_source[sid]
+            if not bucket:
+                del by_source[sid]
+                continue
+            interleaved.append(bucket.pop(0))
+            if not bucket:
+                del by_source[sid]
+    return interleaved[:limit]

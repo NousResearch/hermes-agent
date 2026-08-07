@@ -957,7 +957,7 @@ class TestVisionCpuBurstCap:
                     enc_inflight -= 1
             return "data:image/jpeg;base64,AAAA"
 
-        async def fake_native(image_url, question, task_id=None):
+        async def fake_native(image_url, question, task_id=None, **_kw):
             nonlocal calls_inflight, calls_peak
             calls_inflight += 1
             calls_peak = max(calls_peak, calls_inflight)

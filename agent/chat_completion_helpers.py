@@ -564,28 +564,62 @@ def should_use_direct_api_call(agent) -> bool:
 _DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS = 15.0
 
 
+def _resolve_direct_stale_timeout(agent, api_kwargs: dict) -> float:
+    """Stale budget for the inline non-streaming call.
+
+    Same derivation the interrupt-worker path uses for its stale-call
+    detector (provider ``stale_timeout_seconds`` →
+    ``HERMES_API_CALL_STALE_TIMEOUT`` → reasoning-model floor → context-size
+    scaling, ``inf`` for a local endpoint on the implicit default), so cron and
+    delegated turns get exactly the patience every other non-streaming request
+    already gets.
+
+    A non-numeric result — an agent stub that never implements the resolver —
+    leaves the watchdog disarmed rather than arming it on a bogus budget.
+    """
+    resolver = getattr(agent, "_compute_non_stream_stale_timeout", None)
+    if not callable(resolver):
+        return float("inf")
+    try:
+        value = resolver(api_kwargs)
+    except Exception:
+        logger.debug("non-stream stale timeout resolution failed", exc_info=True)
+        return float("inf")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return float("inf")
+    return float(value)
+
+
 def direct_api_call(agent, api_kwargs: dict):
     """Run a non-streaming LLM call inline on the conversation thread.
 
     Used when ``should_use_direct_api_call`` is True (cron turns and
     delegated children). Skips the interrupt worker (whose only job is
     interactive-interrupt responsiveness, which these contexts do not have)
-    so the nested-pool deadlock (#62151, #60203) cannot occur. Because the
-    request runs in-flight normally, the per-request OpenAI client's own httpx
-    timeout (provider ``request_timeout_seconds`` / ``HERMES_API_TIMEOUT``) bounds
-    a genuinely hung provider — the same bound interactive calls already rely on.
+    so the nested-pool deadlock (#62151, #60203) cannot occur.
 
     While the inline request blocks, a lightweight activity heartbeat keeps
     ``last_activity_ts`` advancing. Subagents use this path (non-streaming),
     and without mid-call ticks the async stall monitor / sync heartbeat treat
     a slow-but-healthy local model wait as "no progress" and interrupt around
     450s — surfacing as ``Operation interrupted: waiting for model response``.
+
+    A stale-call watchdog bounds the request the same way the interrupt
+    worker's poll loop does (#80759). The httpx read timeout alone is not a
+    usable bound: it defaults to 1800s and a provider that accepts the request
+    and then goes silent (connection held open, zero bytes, no error) never
+    trips it, so a cron run hangs until something external kills it — which
+    also orphans the execution row. The watchdog aborts the in-flight sockets
+    through the already-registered abort hook and surfaces a retryable
+    ``TimeoutError`` so the outer retry loop reconnects with backoff /
+    credential rotation / provider fallback.
     """
     _check_stale_giveup(agent)
     agent._touch_activity("waiting for non-streaming API response")
     request_client_holder = {"client": None}
     request_client_lock = threading.Lock()
     activity_hb_stop = threading.Event()
+    stale_fired = threading.Event()
 
     def _abort_active_request(reason: str) -> None:
         """Abort the inline request from a watchdog/interrupt thread."""
@@ -628,6 +662,52 @@ def direct_api_call(agent, api_kwargs: dict):
     )
     activity_hb.start()
 
+    call_start = time.time()
+    stale_timeout = _resolve_direct_stale_timeout(agent, api_kwargs)
+
+    def _on_stale() -> None:
+        # Runs on the timer thread. It only aborts the in-flight sockets —
+        # it never issues a request — so the inline / no-worker property that
+        # fixes #62151 and #60203 is preserved.
+        if stale_fired.is_set():
+            return
+        stale_fired.set()
+        elapsed = time.time() - call_start
+        model = api_kwargs.get("model", "unknown")
+        logger.warning(
+            "Inline non-streaming API call stale for %.0fs (threshold %.0fs). "
+            "model=%s context=~%s tokens. Killing connection.",
+            elapsed,
+            stale_timeout,
+            model,
+            f"{estimate_request_context_tokens(api_kwargs):,}",
+        )
+        try:
+            agent._buffer_status(
+                f"⚠️ No response from provider for {int(elapsed)}s "
+                f"(non-streaming, model: {model}). Aborting call."
+            )
+        except Exception:
+            logger.debug("stale status buffering failed", exc_info=True)
+        _bump_stale_streak(agent)
+        try:
+            agent._touch_activity(
+                f"stale non-streaming call killed after {int(elapsed)}s"
+            )
+        except Exception:
+            logger.debug("stale activity touch failed", exc_info=True)
+        try:
+            _abort_active_request("stale_call_kill")
+        except Exception:
+            logger.debug("stale abort failed", exc_info=True)
+
+    stale_watchdog = None
+    if math.isfinite(stale_timeout) and stale_timeout > 0:
+        stale_watchdog = threading.Timer(stale_timeout, _on_stale)
+        stale_watchdog.name = "direct-api-stale-watchdog"
+        stale_watchdog.daemon = True
+        stale_watchdog.start()
+
     # Only a clean return may report the reuse reason (request_complete):
     # after an error or interrupt the wire client is really closed so the
     # retry builds a fresh pool (see _REQUEST_CLIENT_REUSE_REASONS).
@@ -639,6 +719,16 @@ def direct_api_call(agent, api_kwargs: dict):
     except Exception:
         if getattr(agent, "_interrupt_requested", False):
             raise InterruptedError("Agent interrupted during API call") from None
+        if stale_fired.is_set():
+            # The transport error is the expected consequence of our own
+            # abort. Raise a retryable TimeoutError (never InterruptedError,
+            # which the outer loop treats as "the user wants to stop") so the
+            # retry loop reconnects on a fresh pool.
+            raise TimeoutError(
+                f"Non-streaming API call timed out after "
+                f"{int(time.time() - call_start)}s with no response "
+                f"(threshold: {int(stale_timeout)}s)"
+            ) from None
         raise
     else:
         if getattr(agent, "_interrupt_requested", False):
@@ -647,6 +737,8 @@ def direct_api_call(agent, api_kwargs: dict):
         succeeded = True
         return response
     finally:
+        if stale_watchdog is not None:
+            stale_watchdog.cancel()
         activity_hb_stop.set()
         activity_hb.join(timeout=2.0)
         if getattr(agent, "_active_request_abort", None) is _abort_active_request:

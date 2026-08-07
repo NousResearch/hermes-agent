@@ -203,3 +203,152 @@ def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeyp
         clear_providers()
 
 
+# ---------------------------------------------------------------------------
+# extra_hosts + headless serve: Host acceptance and auth scoping stay atomic
+# (#75907 review — teknium1: thread headless into the interactive preflight;
+# egilewski: a headless serve must not admit proxy Hosts while the gate is
+# off, or /api/status leaks local-only fields to remote callers)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def extra_hosts(monkeypatch):
+    """Pin the operator extra-hosts allowlist (bypasses env+config+cache)."""
+    def _set(hosts):
+        monkeypatch.setattr(
+            web_server, "_extra_allowed_hosts_cache", frozenset(hosts)
+        )
+    return _set
+
+
+def test_extra_hosts_engage_gate_for_interactive_dashboard(extra_hosts):
+    """The PR's feature: declared proxy hosts re-engage the gate on loopback."""
+    from hermes_cli.web_server import should_require_auth
+    extra_hosts({"proxy.example"})
+    assert should_require_auth("127.0.0.1", headless=False) is True
+
+
+def test_headless_serve_skips_gate_even_with_extra_hosts(extra_hosts):
+    """Headless serve keeps its loopback posture — and (below) rejects the
+    proxy Host at the boundary instead of admitting it unauthenticated."""
+    from hermes_cli.web_server import should_require_auth
+    extra_hosts({"proxy.example"})
+    assert should_require_auth("127.0.0.1", headless=True) is False
+
+
+def test_non_loopback_headless_bind_still_engages_gate(extra_hosts):
+    from hermes_cli.web_server import should_require_auth
+    extra_hosts({"proxy.example"})
+    assert should_require_auth("0.0.0.0", headless=True) is True
+
+
+def test_is_accepted_host_rejects_extra_hosts_when_headless(extra_hosts):
+    from hermes_cli.web_server import _is_accepted_host
+    extra_hosts({"proxy.example"})
+    # Interactive (gated) dashboard: the feature works.
+    assert _is_accepted_host("proxy.example:443", "127.0.0.1", headless=False) is True
+    # Headless serve: the same Host is refused — no unauthenticated exposure.
+    assert _is_accepted_host("proxy.example:443", "127.0.0.1", headless=True) is False
+    # Loopback aliases are unaffected by the headless flag.
+    assert _is_accepted_host("127.0.0.1:9119", "127.0.0.1", headless=True) is True
+    # Unlisted names stay rejected either way (rebinding floor preserved).
+    assert _is_accepted_host("evil.example", "127.0.0.1", headless=False) is False
+
+
+@pytest.fixture
+def client_headless_loopback():
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_headless = getattr(web_server.app.state, "headless", None)
+    web_server.app.state.bound_host = "127.0.0.1"
+    web_server.app.state.headless = True
+    client = TestClient(web_server.app, base_url="http://127.0.0.1:9119")
+    yield client
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.headless = prev_headless
+
+
+def test_headless_serve_rejects_proxy_host_at_http_boundary(
+    client_headless_loopback, extra_hosts
+):
+    """egilewski's split-invariant repro: a proxy-routed request must NOT
+    reach /api/status on a headless serve. The 400 body carries none of the
+    local-only deployment fields."""
+    extra_hosts({"proxy.example"})
+    r = client_headless_loopback.get(
+        "/api/status", headers={"host": "proxy.example:443"}
+    )
+    assert r.status_code == 400
+    for field in (
+        "hermes_home", "config_path", "env_path",
+        "gateway_pid", "gateway_health_url",
+    ):
+        assert field not in r.text
+
+
+def test_interactive_dashboard_accepts_proxy_host_at_http_boundary(
+    client_loopback, extra_hosts, monkeypatch
+):
+    """The feature keeps working where it belongs: the gated interactive
+    dashboard accepts the configured proxy Host (400 is the Host rejection;
+    any other status means the request passed the boundary)."""
+    extra_hosts({"proxy.example"})
+    monkeypatch.setattr(web_server.app.state, "headless", False, raising=False)
+    r = client_loopback.get("/api/status", headers={"host": "proxy.example:443"})
+    assert r.status_code != 400
+
+
+class _FakeWS:
+    def __init__(self, headers):
+        self.headers = headers
+
+
+def test_ws_host_origin_reason_rejects_proxy_host_when_headless(
+    extra_hosts, monkeypatch
+):
+    from hermes_cli.web_server import _ws_host_origin_reason
+    extra_hosts({"proxy.example"})
+    monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(web_server.app.state, "headless", True, raising=False)
+    reason = _ws_host_origin_reason(_FakeWS({"host": "proxy.example:443"}))
+    assert reason is not None and reason.startswith("host_mismatch")
+
+
+def test_ws_host_origin_reason_accepts_proxy_host_when_interactive(
+    extra_hosts, monkeypatch
+):
+    from hermes_cli.web_server import _ws_host_origin_reason
+    extra_hosts({"proxy.example"})
+    monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(web_server.app.state, "headless", False, raising=False)
+    assert _ws_host_origin_reason(_FakeWS({"host": "proxy.example:443"})) is None
+
+
+def test_preflight_threads_headless_into_should_require_auth(monkeypatch):
+    """teknium1: the interactive preflight must evaluate the gate with the
+    same headless value start_server uses, so `hermes serve` doesn't enter
+    auth setup for a gate that will be off, and `hermes dashboard` does."""
+    import types
+    from hermes_cli import main as main_mod
+
+    calls = []
+
+    def _spy(host, allow_public=False, headless=False):
+        calls.append({"host": host, "headless": headless})
+        return False  # gate off → preflight no-ops before any prompt
+
+    monkeypatch.setattr(
+        "hermes_cli.web_server.should_require_auth", _spy
+    )
+
+    main_mod._maybe_setup_dashboard_auth_interactively(
+        types.SimpleNamespace(host="127.0.0.1", headless_backend=True)
+    )
+    assert calls == [{"host": "127.0.0.1", "headless": True}]
+
+    calls.clear()
+    main_mod._maybe_setup_dashboard_auth_interactively(
+        types.SimpleNamespace(host="127.0.0.1", headless_backend=False)
+    )
+    assert calls == [{"host": "127.0.0.1", "headless": False}]
+
+

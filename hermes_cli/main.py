@@ -9974,8 +9974,9 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
     try:
         from hermes_cli.web_server import should_require_auth
-        if not should_require_auth(host):
-            return  # loopback bind — gate never engages
+        headless = bool(getattr(args, "headless_backend", False))
+        if not should_require_auth(host, headless=headless):
+            return  # loopback bind (or headless serve) — gate never engages
     except Exception:
         return  # if we can't tell, defer to start_server's own gate
 

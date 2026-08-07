@@ -468,8 +468,46 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
     "localhost", "127.0.0.1", "::1",
 })
 
+_extra_allowed_hosts_cache: frozenset | None = None
 
-def should_require_auth(host: str, allow_public: bool = False) -> bool:
+
+def _get_extra_allowed_hosts() -> frozenset:
+    """Operator-designated extra Host header values (lowercase, no port).
+
+    Merged from the ``HERMES_DASHBOARD_EXTRA_HOSTS`` env var (comma-separated)
+    and the ``dashboard.extra_hosts`` config list.  Intended for a trusted
+    reverse proxy in front of a loopback bind — e.g. ``tailscale serve``
+    forwarding to 127.0.0.1 — where the browser's Host header carries the
+    proxy hostname, which the loopback allowlist above would reject as a
+    DNS-rebinding attempt.  Only names the operator explicitly listed are
+    accepted, so rebinding protection is preserved for everything else.
+
+    Declaring any host here also re-engages the auth gate (see
+    ``should_require_auth``): a proxied dashboard is remote-reachable even
+    though the bind itself is loopback, so "loopback == trusted operator"
+    no longer holds.  Headless ``hermes serve`` processes are the mirror
+    image: they leave the gate off on loopback, so Host validation rejects
+    these names for them entirely (see ``_is_accepted_host``).
+    """
+    global _extra_allowed_hosts_cache
+    if _extra_allowed_hosts_cache is not None:
+        return _extra_allowed_hosts_cache
+    hosts: set = set()
+    raw = os.environ.get("HERMES_DASHBOARD_EXTRA_HOSTS", "")
+    hosts.update(h.strip().lower() for h in raw.split(",") if h.strip())
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        for h in (cfg.get("dashboard") or {}).get("extra_hosts") or []:
+            if isinstance(h, str) and h.strip():
+                hosts.add(h.strip().lower())
+    except Exception:
+        pass
+    _extra_allowed_hosts_cache = frozenset(hosts)
+    return _extra_allowed_hosts_cache
+
+
+def should_require_auth(host: str, allow_public: bool = False, headless: bool = False) -> bool:
     """Return True iff the dashboard auth gate must be active.
 
     Truth table:
@@ -487,11 +525,25 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     unauthenticated-public-dashboard hole behind the June 2026 ``hermes-0day``
     MCP-persistence campaign, where ``--insecure --host 0.0.0.0`` left the
     config/MCP/agent surface open to internet scanners.
+
+    When the operator declared extra allowed hosts (a reverse proxy such as
+    ``tailscale serve`` in front of a loopback bind), the gate engages even
+    on loopback: proxied visitors reach the dashboard from other machines,
+    so the local-only trust assumption is void.
     """
+    # Headless exception: the desktop app's own serve backend binds an
+    # ephemeral loopback port the reverse proxy never fronts, and gated mode
+    # rejects its legacy ?token= WS credential (see _ws_auth_reason). Host
+    # validation enforces "never fronts": _is_accepted_host rejects extra
+    # hosts for headless processes, so this unauthenticated posture stays
+    # unreachable through a configured proxy. A non-loopback headless bind
+    # still engages the gate via the fallback.
+    if _get_extra_allowed_hosts() and not headless:
+        return True
     return host not in _LOOPBACK_HOST_VALUES
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+def _is_accepted_host(host_header: str, bound_host: str, headless: bool = False) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
@@ -499,6 +551,13 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     - Loopback aliases when bound to loopback
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
+    - Operator-designated extra hosts — but NOT for headless processes
+      (``hermes serve``). Those leave the auth gate off on loopback binds,
+      so accepting a proxy hostname there would expose the unauthenticated
+      server — including the local-only ``/api/status`` fields — to remote
+      callers through the proxy. Rejecting the name keeps Host acceptance
+      and auth scoping atomic: headless serve stays loopback-only, and a
+      proxied deployment runs the gated interactive dashboard instead.
     """
     if not host_header:
         return False
@@ -519,6 +578,15 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
     host_only = host_only.lower()
+
+    # Operator-designated proxy hostnames (see _get_extra_allowed_hosts) are
+    # accepted on any bind by the gated interactive dashboard — this is how a
+    # loopback bind fronted by ``tailscale serve`` passes validation without
+    # weakening rebinding protection for unlisted names. Headless processes
+    # are the exception (see the docstring): the gate is off there, so the
+    # proxy hostname must not pass.
+    if host_only in _get_extra_allowed_hosts():
+        return not headless
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -552,7 +620,11 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        if not _is_accepted_host(
+            host_header,
+            bound_host,
+            headless=bool(getattr(app.state, "headless", False)),
+        ):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -14698,8 +14770,9 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not bound_host:
         return None
 
+    headless = bool(getattr(app.state, "headless", False))
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    if not _is_accepted_host(host_header, bound_host, headless=headless):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
@@ -14716,7 +14789,7 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(parsed.netloc, bound_host, headless=headless):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
@@ -17540,7 +17613,11 @@ def start_server(
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5
     # uses this to decide whether to refuse the bind, log the gate-on
     # banner, and enable uvicorn proxy_headers.
-    app.state.auth_required = should_require_auth(host)
+    app.state.auth_required = should_require_auth(host, headless=headless)
+    # Host/Origin validation reads this to keep acceptance atomic with auth
+    # scoping: headless processes reject extra_hosts at the boundary instead
+    # of admitting them into an unauthenticated server.
+    app.state.headless = headless
 
     # ``--insecure`` no longer disables the auth gate (June 2026 hardening:
     # the hermes-0day MCP-persistence campaign abused unauthenticated public

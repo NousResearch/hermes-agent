@@ -63,7 +63,9 @@ export function isInlineMediaSrc(path: string): boolean {
 }
 
 function isFileMediaPath(path: string): boolean {
-  return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
+  // `MEDIA:…` is a supported local media prefix (bead 676.4.22.167) and must resolve
+  // like the bare path form once the prefix is stripped.
+  return /^(?:file:|media:|\/|~\/|[a-z]:[\\/]|\\\\\\)/i.test(path)
 }
 
 export async function resolveMediaDisplaySrc(path: string): Promise<string> {
@@ -139,14 +141,16 @@ export function mediaPathFromMarkdownHref(href?: string): string | null {
 }
 
 export function filePathFromMediaPath(path: string): string {
-  if (!path.startsWith('file:')) {
-    return path
+  const bare = path.replace(/^media:/i, '')
+
+  if (!bare.startsWith('file:')) {
+    return bare
   }
 
   try {
-    return decodeURIComponent(new URL(path).pathname)
+    return decodeURIComponent(new URL(bare).pathname)
   } catch {
-    return path.replace(/^file:\/\//, '')
+    return bare.replace(/^file:\/\//, '')
   }
 }
 

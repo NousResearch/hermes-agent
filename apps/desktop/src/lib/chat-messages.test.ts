@@ -348,6 +348,19 @@ describe('renderMediaTags', () => {
     expect(renderMediaTags('MEDIA:/tmp/demo.mp4')).toBe('[Video: demo.mp4](#media:%2Ftmp%2Fdemo.mp4)')
   })
 
+  it('leaves markdown image/link MEDIA destinations intact (bead 676.4.22.167)', () => {
+    // The bare tag form still becomes a #media: link…
+    expect(renderMediaTags('MEDIA:/Users/rmohid/code/atlas/a.svg')).toBe(
+      '[Image: a.svg](#media:%2FUsers%2Frmohid%2Fcode%2Fatlas%2Fa.svg)'
+    )
+    // …but the markdown image embed `![alt](MEDIA:…)` / `[link](MEDIA:…)` is left for
+    // the media renderer (MarkdownImage/MarkdownLink), which strips the prefix itself.
+    expect(renderMediaTags('![alt](MEDIA:/Users/rmohid/code/atlas/a.svg)')).toBe(
+      '![alt](MEDIA:/Users/rmohid/code/atlas/a.svg)'
+    )
+    expect(renderMediaTags('[link](MEDIA:/tmp/a.png)')).toBe('[link](MEDIA:/tmp/a.png)')
+  })
+
   it('renders streamed assistant media once the tag is complete', () => {
     const parts = appendAssistantTextPart(appendAssistantTextPart([], 'ok\nMEDIA:'), '/tmp/voice.mp3')
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })

@@ -44,6 +44,13 @@ describe('filePathFromMediaPath', () => {
   it('decodes a file:// URL with encoded characters', () => {
     expect(filePathFromMediaPath('file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
   })
+
+  it('strips a MEDIA: prefix to a plain path (bead 676.4.22.167)', () => {
+    expect(filePathFromMediaPath('MEDIA:/Users/rmohid/code/atlas/a.svg')).toBe(
+      '/Users/rmohid/code/atlas/a.svg'
+    )
+    expect(filePathFromMediaPath('MEDIA:file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
+  })
 })
 
 describe('mediaExternalUrl', () => {
@@ -137,6 +144,19 @@ describe('resolveMediaDisplaySrc', () => {
       'data:image/png;base64,bG9jYWw='
     )
     expect(readFileDataUrl).toHaveBeenCalledWith('/Users/me/project/a b.png')
+  })
+
+  it('resolves a MEDIA:-prefixed local file as an SVG data URL (bead 676.4.22.167)', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/svg+xml;base64,c3Zn')
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+    $connection.set({ mode: 'local' } as never)
+
+    await expect(resolveMediaDisplaySrc('MEDIA:/Users/me/project/a.svg')).resolves.toBe(
+      'data:image/svg+xml;base64,c3Zn'
+    )
+    // The MEDIA: prefix is stripped before the fs bridge reads the file.
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/me/project/a.svg')
   })
 })
 

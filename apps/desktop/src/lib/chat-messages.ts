@@ -151,7 +151,17 @@ function mediaLink(value: string): string {
 }
 
 export function renderMediaTags(text: string): string {
-  return text
+  // Leave markdown image/link destinations (`![…](MEDIA:/path)` / `[…](MEDIA:/path)`)
+  // alone — the media renderer (MarkdownImage/MarkdownLink in markdown-text.tsx) owns that
+  // form and strips the MEDIA: prefix itself (see media.ts). Without this guard,
+  // MEDIA_TAG_RE's `\S+` branch also swallows the `)` that closes the destination,
+  // corrupting `![alt](MEDIA:/abs/file.svg)` into `![alt]([File: …)](#media:…))` and
+  // producing a broken image (bead 676.4.22.167). Protect those forms, rewrite the rest,
+  // restore.
+  const KEEP = '\u0000MEDIA\u0000'
+  const protected_ = text.replace(/(!?\[[^\]]*\]\()MEDIA:(?=[/~]|file:)/gi, `$1${KEEP}`)
+
+  const result = protected_
     .replace(
       MEDIA_LINE_RE,
       (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
@@ -159,6 +169,8 @@ export function renderMediaTags(text: string): string {
     .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
+
+  return result.replace(new RegExp(KEEP, 'g'), 'MEDIA:')
 }
 
 export function assistantTextPart(text: string): ChatMessagePart {

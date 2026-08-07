@@ -136,6 +136,67 @@ def test_find_live_child_returns_continuation_with_foreign_markers(
     assert child["id"] == "inherited-continuation"
 
 
+def test_record_gateway_session_peer_walks_multi_hop_compression_lineage(
+    db: SessionDB,
+) -> None:
+    """Control case: a plain (no foreign markers) two-hop compression chain
+    must have the routing peer propagated to every ancestor."""
+    _compression_parent(db, "peer-root")
+    db.create_session(
+        "peer-mid", source="webui", parent_session_id="peer-root"
+    )
+    db.end_session("peer-mid", "compression")
+    db.create_session(
+        "peer-tip", source="webui", parent_session_id="peer-mid"
+    )
+
+    db.record_gateway_session_peer(
+        "peer-tip",
+        source="webui",
+        session_key="new-routing-key",
+        include_compression_ancestors=True,
+    )
+
+    assert db.get_session("peer-root")["session_key"] == "new-routing-key"
+    assert db.get_session("peer-mid")["session_key"] == "new-routing-key"
+    assert db.get_session("peer-tip")["session_key"] == "new-routing-key"
+
+
+def test_record_gateway_session_peer_walks_past_continuation_with_foreign_marker(
+    db: SessionDB,
+) -> None:
+    """Same bug class as the reopen/find_live tests above, in the recursive
+    ancestor walk ``record_gateway_session_peer(include_compression_ancestors=True)``
+    uses. A REAL continuation can carry ``_delegate_from`` pointing at some
+    OTHER session (the delegate's own original parent, not this parent) —
+    marker-PRESENCE matching stopped the walk one hop too early and left the
+    compression parent on a stale routing peer after an explicit gateway
+    ``/resume`` moved the tip to a new session_key."""
+    _compression_parent(db, "peer-parent-with-foreign-marker")
+    db.create_session(
+        "peer-continuation-foreign-marker",
+        source="subagent",
+        parent_session_id="peer-parent-with-foreign-marker",
+        model_config={"_delegate_from": "some-unrelated-original-parent"},
+    )
+
+    db.record_gateway_session_peer(
+        "peer-continuation-foreign-marker",
+        source="webui",
+        session_key="new-routing-key",
+        include_compression_ancestors=True,
+    )
+
+    assert (
+        db.get_session("peer-parent-with-foreign-marker")["session_key"]
+        == "new-routing-key"
+    )
+    assert (
+        db.get_session("peer-continuation-foreign-marker")["session_key"]
+        == "new-routing-key"
+    )
+
+
 def test_reopen_orphaned_compression_session_fails_closed_with_active_lease(
     db: SessionDB,
 ) -> None:

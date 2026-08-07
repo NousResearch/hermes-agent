@@ -154,7 +154,6 @@ class TestToolProgressScrollback:
         assert len(cli._pending_tool_info.get("terminal", [])) == 1
         assert cli._pending_tool_info["terminal"][0] == {"command": "pwd"}
 
-
 class TestMoAReferenceBlocks:
     """moa.reference renders a labelled thinking-style block; moa.aggregating
     updates the spinner. Both are display-only and must commit regardless of
@@ -195,3 +194,93 @@ class TestMoAReferenceBlocks:
         assert "aggregating" in cli._spinner_text
         # aggregating is a spinner-only transition; no committed scrollback line.
         mock_print.assert_not_called()
+
+class TestSubagentEventScrollback:
+    """Scrollback lines for delegate_task subagent events."""
+
+    def test_subagent_tool_prints_scrollback_line(self):
+        """subagent.tool prints an indented tree line with tool name."""
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "subagent.tool", "read_file", "src/main.py", None,
+                task_index=0, task_count=1, goal="read the file",
+            )
+        mock_print.assert_called_once()
+        line = mock_print.call_args[0][0]
+        assert "read_file" in line
+
+    def test_subagent_tool_prints_batch_prefix_for_multi_task(self):
+        """Batch delegate_task children include a 1-indexed [N] prefix."""
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "subagent.tool", "read_file", "src/main.py", None,
+                task_index=1, task_count=3, goal="read the file",
+            )
+        line = mock_print.call_args[0][0]
+        assert "[2]" in line
+
+    def test_subagent_tool_hidden_in_off_mode(self):
+        """In 'off' mode, subagent.tool is not printed."""
+        cli = _make_cli(tool_progress="off")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "subagent.tool", "terminal", "ls", None,
+                task_index=0, task_count=1, goal="list",
+            )
+        mock_print.assert_not_called()
+
+    def test_subagent_tool_prints_in_verbose_mode(self):
+        """Verbose mode still commits child tool lines to scrollback."""
+        cli = _make_cli(tool_progress="verbose")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "subagent.tool", "read_file", "src/main.py", None,
+                task_index=0, task_count=1, goal="read the file",
+            )
+        mock_print.assert_called_once()
+
+    def test_subagent_tool_new_mode_skips_consecutive_repeats(self):
+        """New mode suppresses consecutive duplicate child tool names."""
+        cli = _make_cli(tool_progress="new")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "subagent.tool", "read_file", "src/main.py", None,
+                task_index=0, task_count=1, goal="read the file",
+            )
+            cli._on_tool_progress(
+                "subagent.tool", "read_file", "src/other.py", None,
+                task_index=0, task_count=1, goal="read the other file",
+            )
+        assert mock_print.call_count == 1
+
+    def test_subagent_tool_new_mode_prints_again_after_tool_changes(self):
+        """A different child tool breaks the new-mode repeat streak."""
+        cli = _make_cli(tool_progress="new")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "subagent.tool", "read_file", "src/main.py", None,
+                task_index=0, task_count=1, goal="read the file",
+            )
+            cli._on_tool_progress(
+                "subagent.tool", "terminal", "ls", None,
+                task_index=0, task_count=1, goal="list files",
+            )
+            cli._on_tool_progress(
+                "subagent.tool", "read_file", "src/other.py", None,
+                task_index=0, task_count=1, goal="read the other file",
+            )
+        assert mock_print.call_count == 3
+
+    def test_other_subagent_events_ignored(self):
+        """subagent.start/.complete/progress produce no output and don't affect spinner."""
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            for evt in ("subagent.start", "subagent.complete", "subagent.progress", "subagent_progress"):
+                cli._on_tool_progress(
+                    evt, None, "some text", None,
+                    task_index=0, task_count=1, goal="task", status="done",
+                )
+        mock_print.assert_not_called()
+        assert "some text" not in getattr(cli, "_spinner_text", "")

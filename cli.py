@@ -12040,7 +12040,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         can show a live elapsed timer (the TUI poll loop already invalidates
         every ~0.15s, so the counter updates automatically).
 
-        When tool_progress_mode is "all" or "new", also prints a persistent
+        When tool_progress_mode is "all", "new", or "verbose", also prints a persistent
         stacked line to scrollback on tool.completed so users can see the
         full history of tool calls (not just the current one in the spinner).
         """
@@ -12153,6 +12153,34 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     pass
             self._invalidate()
             return
+
+        if event_type == "subagent.tool" and function_name and self.tool_progress_mode in ("all", "new", "verbose"):
+            if self.tool_progress_mode == "new" and function_name == self._last_scrollback_tool:
+                self._invalidate()
+                return
+            self._last_scrollback_tool = function_name
+            try:
+                prefix = ""
+                task_count = kwargs.get("task_count", 1)
+                if task_count > 1:
+                    idx = kwargs.get("task_index", 0)
+                    prefix = f"[{idx + 1}] "
+                from agent.display import get_tool_emoji
+                emoji = get_tool_emoji(function_name)
+                short = preview or ""
+                from agent.display import get_tool_preview_max_len
+                _pl = get_tool_preview_max_len()
+                if _pl > 0 and short and len(short) > _pl:
+                    short = short[:_pl - 3] + "..."
+                line = f" {prefix}├─ {emoji} {function_name}"
+                if short:
+                    line += f'  "{short}"'
+                _cprint(f"  {line}")
+            except Exception:
+                pass
+            self._invalidate()
+            return
+
         if event_type != "tool.started":
             return
         if function_name and not function_name.startswith("_"):

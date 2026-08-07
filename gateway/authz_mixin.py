@@ -204,11 +204,22 @@ class GatewayAuthorizationMixin:
         ``self.adapters``. ``SessionSource.profile`` selects which map to consult.
         When a stamped profile has its own adapter registry entry, the default
         profile's same-platform adapter must not be consulted as a fallback.
+
+        Consult ``_profile_adapters`` *before* comparing against
+        ``_active_profile_name()``. Multiplex turns wrap authz in
+        ``_profile_runtime_scope``, which overrides ``HERMES_HOME`` so
+        ``get_active_profile_name()`` returns the secondary profile for the
+        duration of the turn. Treating that scoped name as "primary" would
+        look up ``self.adapters`` (empty for secondary-only platforms like
+        A2A) and default-deny an already-authenticated peer.
         """
         if not platform:
             return None
         profile_name = (profile or "").strip() or None
         if profile_name and profile_name != "default":
+            profile_adapters = getattr(self, "_profile_adapters", None) or {}
+            if profile_name in profile_adapters:
+                return profile_adapters[profile_name].get(platform)
             # Adapter ownership is process-wide: only the profile the gateway
             # was LAUNCHED as owns ``self.adapters``. ``_active_profile_name()``
             # reads the per-turn HERMES_HOME override, so inside a secondary
@@ -226,9 +237,6 @@ class GatewayAuthorizationMixin:
             if profile_name == primary_profile:
                 adapters = getattr(self, "adapters", None) or {}
                 return adapters.get(platform)
-            profile_adapters = getattr(self, "_profile_adapters", None) or {}
-            if profile_name in profile_adapters:
-                return profile_adapters[profile_name].get(platform)
             # Fail closed: a stamped secondary profile with no registry entry
             # (e.g. its adapter failed to connect) must NOT fall back to the
             # default profile's adapter — that sends replies out the wrong bot.

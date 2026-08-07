@@ -32,6 +32,7 @@ __pycache__/web_tools.cpython-310.pyc
 logs/
 data/
 .pytest_cache/
+.deepeval/
 test_durations.json
 .pytest-cache/
 tmp/

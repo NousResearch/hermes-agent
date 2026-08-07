@@ -3,6 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { resolveLocalReadPath } from './wsl-path-bridge'
+
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 // Default / floor / ceiling for Desktop's data-URL file load (composer attach,
 // image preview, etc.). The whole file is base64-buffered in main, so this is
@@ -172,7 +174,10 @@ function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
   return raw
 }
 
-function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseDir?: fs.PathOrFileDescriptor } = {}) {
+function resolveRequestedPathForIpc(
+  filePath,
+  options: { baseDir?: fs.PathOrFileDescriptor; hostPathResolver?: (value: string) => string; purpose?: string } = {}
+) {
   const purpose = String(options.purpose || 'File read')
   let raw = rejectUnsafePathSyntax(filePath, purpose)
 
@@ -207,6 +212,21 @@ function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseD
   const safeBaseInput = rejectUnsafePathSyntax(baseInput, purpose)
   const resolvedBase = path.resolve(safeBaseInput)
   rejectUnsafePathSyntax(resolvedBase, purpose)
+
+  // A WSL-hosted gateway reports POSIX absolute paths (`/home/<user>/.hermes/…`).
+  // On Windows `path.resolve` would anchor those to the current drive
+  // (`C:\home\<user>\…`) and every read ENOENTs — desktop plugins, previews and
+  // file reads all silently disappear. Bridge to the UNC form FIRST so the rest
+  // of the hardening chain validates the path the host will actually open.
+  // `readDirForIpc` already does this for directories; file reads need it too.
+  const hostPath = (options.hostPathResolver || resolveLocalReadPath)(raw)
+
+  if (hostPath !== raw) {
+    rejectUnsafePathSyntax(hostPath, purpose)
+
+    return hostPath
+  }
+
   const resolvedPath = path.resolve(resolvedBase, raw)
   rejectUnsafePathSyntax(resolvedPath, purpose)
 

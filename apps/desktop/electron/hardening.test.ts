@@ -352,3 +352,31 @@ test('resolveDirectoryForIpc accepts directory symlinks or junctions', async () 
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
 })
+
+test('resolveRequestedPathForIpc bridges a WSL POSIX path to the host UNC form', () => {
+  // Regression: a WSL-hosted gateway reports `/home/<user>/…`. Without the
+  // bridge, `path.resolve` anchored those to the current drive on Windows
+  // (`C:\home\…`) and every file read ENOENTed — desktop plugins dropped
+  // silently because the loader swallows read failures. `readDirForIpc`
+  // bridged directories already; file reads did not.
+  const toUnc = (value: string) =>
+    value.startsWith('/') ? `\\\\wsl.localhost\\Ubuntu\\${value.replace(/^\/+/, '').replace(/\//g, '\\')}` : value
+
+  assert.equal(
+    resolveRequestedPathForIpc('/home/alex/.hermes/desktop-plugins/my-plugin/plugin.js', {
+      hostPathResolver: toUnc
+    }),
+    '\\\\wsl.localhost\\Ubuntu\\home\\alex\\.hermes\\desktop-plugins\\my-plugin\\plugin.js'
+  )
+})
+
+test('resolveRequestedPathForIpc leaves paths the host resolver passes through untouched', () => {
+  const identity = (value: string) => value
+
+  const resolved = resolveRequestedPathForIpc('nested/file.txt', {
+    baseDir: path.join(os.tmpdir(), 'hermes-host-passthrough'),
+    hostPathResolver: identity
+  })
+
+  assert.equal(resolved, path.join(os.tmpdir(), 'hermes-host-passthrough', 'nested', 'file.txt'))
+})

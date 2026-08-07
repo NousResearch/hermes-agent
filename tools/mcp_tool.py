@@ -101,6 +101,7 @@ import math
 import os
 import random
 import re
+import shlex
 import shutil
 import sys
 import threading
@@ -725,6 +726,61 @@ def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
         *args,
     ]
     return sys.executable, watchdog_args
+
+
+def _normalize_stdio_args(args):
+    """Coerce a stdio MCP server's ``args`` config into a list.
+
+    The MCP config schema (``config.yaml`` ``mcp_servers.<name>.args``) declares
+    ``args`` as a YAML sequence, but config writers (and hand-edited files)
+    sometimes serialise the list as a JSON-quoted scalar — e.g.
+    ``args: '["-y", "@modelcontextprotocol/server-filesystem"]'`` instead of
+    the proper YAML sequence. When that happens, ``yaml.safe_load`` returns a
+    ``str`` and ``subprocess.Popen`` ends up receiving the entire JSON string
+    as one argv element. The server (typically ``npx``) then sees a malformed
+    argv, exits immediately, and ``ClientSession.initialize()`` raises
+    ``McpError: Connection closed``.
+
+    This helper detects the four broken shapes we see in the wild and converts
+    each into a list so the OSV malware preflight, the watchdog wrapper, and
+    ``StdioServerParameters`` all see the right ``args``. Pre-existing list
+    inputs are returned unchanged. Malformed strings fall through to a
+    single-element list rather than crashing — the OSV check already fails
+    open, so this preserves the observable behaviour for callers that
+    somehow get a garbage value here.
+
+    Args:
+        args: Whatever YAML produced for ``mcp_servers.<name>.args`` — usually
+            a ``list[str]``, but may also be a ``str`` (the bug case).
+
+    Returns:
+        ``list[str]`` suitable for ``subprocess.Popen`` / ``StdioServerParameters``.
+    """
+    if not isinstance(args, str):
+        return args
+    raw = args.strip()
+    if not raw:
+        return []
+    # 1. JSON-quoted scalar — the common config-writer bug.
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, list):
+        return [str(a) for a in parsed]
+    if isinstance(parsed, str):
+        # JSON parsed but produced a single string scalar — wrap it so the
+        # user gets one argv element rather than dropping the value.
+        return [parsed]
+    # 2. POSIX shell-style quoted scalar — `shlex.split` handles
+    #    `-y "@pkg/path"` and friends. Best-effort: never raise from here.
+    try:
+        return shlex.split(raw)
+    except ValueError:
+        # 3. Malformed string — preserve as one argv element rather than
+        # crashing the gateway at startup. OSV preflight still runs and
+        # will allow if the package is clean.
+        return [raw]
 
 
 # ---------------------------------------------------------------------------
@@ -2391,6 +2447,17 @@ class MCPServerTask:
             raise ValueError(
                 f"MCP server '{self.name}' has no 'command' in config"
             )
+
+        # Tolerate config writers that serialise ``args`` as a JSON-quoted YAML
+        # scalar (e.g. ``'["-y", "pkg"]'``) instead of a proper YAML sequence.
+        # Without this, subprocess.Popen receives the entire JSON string as a
+        # single argv element, the server exits immediately, and
+        # ClientSession.initialize() raises ``McpError: Connection closed``
+        # — see #75093. Normalise BEFORE the OSV malware preflight so the
+        # package-name extractor inspects the real argv.
+        args = _normalize_stdio_args(args)
+        if not isinstance(args, list):
+            args = list(args) if args else []
 
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)

@@ -932,12 +932,16 @@ def inspect_skill(identifier: str) -> Optional[dict]:
 
 def do_list(source_filter: str = "all",
             enabled_only: bool = False,
+            group_filter: str = "",
             console: Optional[Console] = None) -> None:
     """List installed skills, distinguishing hub, builtin, and local skills.
 
     Args:
         source_filter: ``all`` | ``hub`` | ``builtin`` | ``local``.
         enabled_only: If True, hide disabled skills from the output.
+        group_filter: If non-empty, only show skills that belong to this
+            group (see ``skills.groups`` in config.yaml). Unknown groups
+            print an error listing the configured groups.
 
     Enabled/disabled state is resolved against the currently active profile's
     config — ``hermes -p <profile> skills list`` reads that profile's
@@ -948,6 +952,7 @@ def do_list(source_filter: str = "all",
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
     from agent.skill_utils import get_disabled_skill_names
+    from hermes_cli.skills_groups import get_skill_groups
 
     c = console or _console
     ensure_hub_dirs()
@@ -959,9 +964,27 @@ def do_list(source_filter: str = "all",
     all_skills = _find_all_skills(skip_disabled=True)
     disabled_names = get_disabled_skill_names()
 
+    group_members: Optional[set] = None
+    if group_filter:
+        groups = get_skill_groups()
+        group_members = set(groups.get(group_filter, []))
+        if group_filter not in groups:
+            c.print(f"[bold red]Error:[/] Unknown group '{group_filter}'.")
+            if groups:
+                c.print(f"[dim]Available groups: {', '.join(sorted(groups))}[/]")
+            else:
+                c.print(
+                    "[dim]No groups configured. Create one with: "
+                    "hermes skills group add <group> <skill> [skill ...][/]"
+                )
+            c.print()
+            return
+
     title = "Installed Skills"
     if enabled_only:
         title += " (enabled only)"
+    if group_filter:
+        title += f" — group '{group_filter}'"
 
     table = Table(title=title)
     table.add_column("Name", style="bold cyan")
@@ -999,6 +1022,9 @@ def do_list(source_filter: str = "all",
 
         is_enabled = name not in disabled_names
         if enabled_only and not is_enabled:
+            continue
+
+        if group_members is not None and name not in group_members:
             continue
 
         if source_type == "hub":
@@ -1741,6 +1767,7 @@ def skills_command(args) -> None:
         do_list(
             source_filter=args.source,
             enabled_only=getattr(args, "enabled_only", False),
+            group_filter=getattr(args, "group", "") or "",
         )
     elif action == "check":
         do_check(name=getattr(args, "name", None))
@@ -1788,7 +1815,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|group|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1918,11 +1945,17 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     elif action == "list":
         source_filter = "all"
         enabled_only = "--enabled-only" in args or "--enabled" in args
+        group_filter = ""
         if "--source" in args:
             idx = args.index("--source")
             if idx + 1 < len(args):
                 source_filter = args[idx + 1]
-        do_list(source_filter=source_filter, enabled_only=enabled_only, console=c)
+        if "--group" in args:
+            idx = args.index("--group")
+            if idx + 1 < len(args):
+                group_filter = args[idx + 1]
+        do_list(source_filter=source_filter, enabled_only=enabled_only,
+                group_filter=group_filter, console=c)
 
     elif action == "check":
         name = args[0] if args else None

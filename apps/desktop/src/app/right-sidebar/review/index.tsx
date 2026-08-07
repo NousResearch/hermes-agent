@@ -45,6 +45,7 @@ import { PaneEmptyState, RightSidebarSectionHeader } from '../index'
 
 import { ReviewFileTree } from './file-tree'
 import { ReviewShipBar } from './ship-bar'
+import { VerificationEvidencePanel } from './verification-evidence'
 
 // Compact header/diff action buttons — micro hit targets packed tight, matching
 // the rest of the app's icon-action rows.
@@ -207,6 +208,7 @@ export function ReviewPane() {
         </div>
       )}
 
+      {hasFiles && <VerificationEvidencePanel />}
       <ReviewShipBar />
 
       <Dialog onOpenChange={open => !open && cancelRevert()} open={revertTarget !== undefined}>

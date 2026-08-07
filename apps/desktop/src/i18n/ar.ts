@@ -1821,6 +1821,32 @@ export const ar = defineLocale({
       ghMissing: 'ثبّت GitHub CLI (gh) وسجّل الدخول لفتح طلبات السحب',
       agentShip: 'اطلب من Hermes فتح PR',
       agentShipPrompt: 'راجع التغييرات الحالية، وأودعها برسالة إيداع تقليدية واضحة، وادفع الفرع، وافتح طلب سحب.',
+      verification: 'التحقق',
+      verificationPassed: 'ناجح',
+      verificationFailed: 'فاشل',
+      verificationStale: 'قديم',
+      verificationUnverified: 'غير مُتحقق منه',
+      verificationUnavailable: 'غير متاح',
+      verificationChecking: 'جارٍ التحقق',
+      verificationCheckingDetail: 'جارٍ فحص الأدلة المسجّلة',
+      verificationNoEvidence: 'لا يوجد تحقق مسجّل لهذه الجلسة',
+      verificationUnavailableDetail: 'أدلة التحقق غير متاحة',
+      verificationChangesAfterCheck: 'أُجريت تغييرات بعد هذا الفحص',
+      verificationPathsChanged: count =>
+        count === 1
+          ? 'تغيّر مسار واحد منذ هذا الفحص'
+          : count === 2
+            ? 'تغيّر مساران منذ هذا الفحص'
+            : count <= 10
+              ? `تغيّرت ${count} مسارات منذ هذا الفحص`
+              : `تغيّر ${count} مسارًا منذ هذا الفحص`,
+      verificationExit: code => `رمز الخروج ${code}`,
+      verificationFull: 'كامل',
+      verificationTargeted: 'مُوجَّه',
+      verificationRun: 'تحقق من التغييرات',
+      verificationRunAgain: 'تحقق مرة أخرى',
+      verificationPrompt:
+        'شغّل عمليات التحقق المناسبة للتغييرات الحالية. استخدم أوامر الاختبار والفحص والتحقق من الأنواع والبناء المعتمدة في المستودع عند الاقتضاء. أبلغ عن الأوامر والنتائج بدقة. لا تُجرِ تغييرات غير ذات صلة.',
       newBranch: 'فرع جديد',
       branchOffFrom: base => `فرع جديد من ${base}`,
       switchTo: branch => `التبديل إلى ${branch}`,

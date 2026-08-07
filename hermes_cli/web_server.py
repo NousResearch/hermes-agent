@@ -11912,6 +11912,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             prompt=body.prompt or "",
             schedule=body.schedule,
             name=body.name,
+            repeat=body.repeat,
             deliver=_cron_optional_text(body.deliver) or "local",
             skills=skills,
             model=_cron_optional_text(body.model),

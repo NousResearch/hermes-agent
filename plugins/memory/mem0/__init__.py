@@ -52,6 +52,14 @@ _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
 _PREFETCH_WAIT_SECS = 3
 
+# Lazy backend re-init: minimum interval between attempts to rebuild a dead
+# backend. The mem0/qdrant clients do not reconnect after a transport
+# failure, so a backend that was initialized while the store was down (or
+# lost the store mid-session) stays broken until the session restarts.
+# Rebuilding from config heals the session in place; the throttle stops a
+# still-down store from being hammered by every tool call.
+_REINIT_COOLDOWN_SECS = 30
+
 _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 
 # Sentinel returned when neither MEM0_USER_ID nor a gateway-native id is
@@ -208,6 +216,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._rerank_default = False
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
         self._sync_thread = None
+        self._sync_backlog = None
         self._prefetch_thread = None
         self._prefetch_query = ""
         self._prefetch_result = ""
@@ -218,6 +227,9 @@ class Mem0MemoryProvider(MemoryProvider):
         self._breaker_lock = threading.Lock()
         self._sync_lock = threading.Lock()
         self._prefetch_lock = threading.Lock()
+        # Lazy re-init state (see _REINIT_COOLDOWN_SECS)
+        self._init_lock = threading.Lock()
+        self._reinit_backend_at = 0.0
         self._atexit_registered = False
 
     @property
@@ -286,6 +298,21 @@ class Mem0MemoryProvider(MemoryProvider):
                 return SelfHostedBackend(self._api_key, self._host)
             from ._backend import PlatformBackend
             return PlatformBackend(self._api_key)
+        except EOFError as e:
+            # mem0 prompts interactively ("Install ollama? [y/N]") when a
+            # provider dependency is missing. In a non-interactive session
+            # that surfaces as an EOFError that reads like a transport
+            # failure ("EOF when reading a line") and sends users debugging
+            # the vector store. Report the real cause instead.
+            logger.error(
+                "Mem0 backend failed to initialize (%s mode): missing provider "
+                "dependency (EOF during dependency probe): %s", self._mode, e,
+            )
+            self._init_error = (
+                "missing provider dependency (EOF during dependency probe). "
+                "Install the package required by the configured provider."
+            )
+            return None
         except Exception as e:
             logger.error("Mem0 backend failed to initialize (%s mode): %s", self._mode, e)
             self._init_error = str(e)
@@ -300,6 +327,68 @@ class Mem0MemoryProvider(MemoryProvider):
                 self._consecutive_failures = 0
                 return False
             return True
+
+    @staticmethod
+    def _is_connection_error(exc: Exception) -> bool:
+        """True for transport-level failures (store/API down, socket errors).
+
+        These are the failures that leave a mem0/qdrant client permanently
+        broken — they never reconnect internally — so the backend must be
+        rebuilt from config. User-caused errors (bad ID, not found) are
+        handled separately by ``_is_client_error``.
+        """
+        err_str = str(exc).lower()
+        for needle in ("connection", "refused", "timeout", "eof",
+                       "socket", "unreachable", "nodename", "no route"):
+            if needle in err_str:
+                return True
+        return False
+
+    def _invalidate_backend(self) -> None:
+        """Drop a dead backend so the next operation rebuilds it lazily.
+
+        Called when a transport failure proves the current client can no
+        longer reach the store. Closing the old backend releases its client
+        and threads; the next ``_ensure_backend`` rebuilds from config
+        (throttled by ``_REINIT_COOLDOWN_SECS`` so a still-down store is not
+        hammered on every call).
+        """
+        with self._init_lock:
+            if self._backend is not None:
+                self._shutdown_backend()
+            self._backend = None
+            self._reinit_backend_at = time.monotonic() + _REINIT_COOLDOWN_SECS
+
+    def _ensure_backend(self):
+        """Return the live backend, lazily re-initializing a dead one.
+
+        The backend is built once per session in ``initialize``. If that
+        build failed (store was down at session start) or a transport
+        failure invalidated it mid-session, this retries ``_create_backend``
+        on a cooldown — healing the session without requiring a restart.
+        """
+        if self._backend is not None:
+            return self._backend
+        with self._init_lock:
+            if self._backend is not None:
+                return self._backend
+            if time.monotonic() < self._reinit_backend_at:
+                return None
+            backend = self._create_backend()
+            if backend is not None:
+                self._backend = backend
+                self._init_error = ""
+                self._consecutive_failures = 0
+                logger.info(
+                    "Mem0 backend re-initialized after previous failure "
+                    "(mode=%s)", self._mode,
+                )
+                if not self._atexit_registered:
+                    atexit.register(self._shutdown_backend)
+                    self._atexit_registered = True
+            else:
+                self._reinit_backend_at = time.monotonic() + _REINIT_COOLDOWN_SECS
+            return self._backend
 
     def _format_error(self, prefix: str, exc: Exception) -> str:
         msg = f"{prefix}: {exc}"
@@ -424,9 +513,11 @@ class Mem0MemoryProvider(MemoryProvider):
             return result
 
     def _start_prefetch(self, query: str) -> None:
-        if not query or self._backend is None or self._is_breaker_open():
+        if not query or self._is_breaker_open():
             return
-        backend = self._backend
+        backend = self._ensure_backend()
+        if backend is None:
+            return
         with self._prefetch_lock:
             if self._prefetch_query == query:
                 if self._prefetch_done:
@@ -448,6 +539,8 @@ class Mem0MemoryProvider(MemoryProvider):
                     body = "## Mem0 Memory\n" + "\n".join(f"- {l}" for l in lines)
                 self._record_success()
             except Exception as e:
+                if self._is_connection_error(e):
+                    self._invalidate_backend()
                 self._record_failure()
                 logger.debug("Mem0 prefetch failed: %s", e)
             with self._prefetch_lock:
@@ -477,13 +570,43 @@ class Mem0MemoryProvider(MemoryProvider):
         return ""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
-        if self._backend is None or self._is_breaker_open():
+        """Send the turn to Mem0 for server-side fact extraction (non-blocking).
+
+        Turns are processed by a single serialized worker. If the worker is
+        still busy with a previous turn, the new turn is buffered (coalescing
+        to the newest pending turn) instead of being dropped — a slow
+        extraction must never silently lose conversational memory.
+        """
+        if self._is_breaker_open():
             return
 
-        def _sync():
-            backend = self._backend
-            if backend is None:
+        with self._sync_lock:
+            self._sync_backlog = (user_content, assistant_content)
+            if self._sync_thread and self._sync_thread.is_alive():
+                # Worker is draining; it will pick up the newest backlog entry.
+                return
+            self._sync_thread = threading.Thread(
+                target=self._sync_worker, daemon=True, name="mem0-sync",
+            )
+            self._sync_thread.start()
+
+    def _sync_worker(self) -> None:
+        """Drain the sync backlog, one turn at a time, then exit.
+
+        Serialization is guaranteed by sync_turn (a new worker is only
+        spawned when no worker is alive), so concurrent adds never race.
+        A transport failure invalidates the backend for lazy re-init and
+        stops the drain; the next sync_turn spawns a fresh worker that
+        rebuilds the backend.
+        """
+        while True:
+            with self._sync_lock:
+                if self._sync_backlog is None:
+                    return  # queue empty — worker exits
+                user_content, assistant_content = self._sync_backlog
+                self._sync_backlog = None
+            backend = self._ensure_backend()
+            if backend is None or self._is_breaker_open():
                 return
             try:
                 messages = [
@@ -499,23 +622,18 @@ class Mem0MemoryProvider(MemoryProvider):
                 )
                 self._record_success()
             except Exception as e:
+                if self._is_connection_error(e):
+                    self._invalidate_backend()
                 self._record_failure()
                 logger.warning("Mem0 sync failed: %s", e)
-
-        with self._sync_lock:
-            if self._sync_thread and self._sync_thread.is_alive():
-                self._sync_thread.join(timeout=5.0)
-            # If still alive after timeout, skip to avoid duplicate ingestion.
-            if self._sync_thread and self._sync_thread.is_alive():
                 return
-            self._sync_thread = threading.Thread(target=_sync, daemon=True, name="mem0-sync")
-            self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
-        if self._backend is None:
+        backend = self._ensure_backend()
+        if backend is None:
             err = getattr(self, "_init_error", "unknown error")
             hint = ""
             if self._mode == "oss":
@@ -542,7 +660,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     rerank = rerank_raw.lower() not in ("false", "0", "no")
                 else:
                     rerank = bool(rerank_raw)
-                results = self._backend.search(query, filters=self._read_filters(), top_k=top_k, rerank=rerank)
+                results = backend.search(query, filters=self._read_filters(), top_k=top_k, rerank=rerank)
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
@@ -551,6 +669,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 return json.dumps({"results": items, "count": len(items)})
             except Exception as e:
                 if not _is_client_error(e):
+                    if self._is_connection_error(e):
+                        self._invalidate_backend()
                     self._record_failure()
                 return tool_error(self._format_error("Search failed", e))
 
@@ -559,7 +679,7 @@ class Mem0MemoryProvider(MemoryProvider):
             if not content:
                 return tool_error("Missing required parameter: content")
             try:
-                result = self._backend.add(
+                result = backend.add(
                     [{"role": "user", "content": content}],
                     user_id=self._user_id,
                     agent_id=self._agent_id,
@@ -572,6 +692,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 msg = "Fact stored." if (self._mode == "oss" or self._host) else "Fact queued for storage."
                 return json.dumps({"result": msg, "event_id": event_id})
             except Exception as e:
+                if self._is_connection_error(e):
+                    self._invalidate_backend()
                 self._record_failure()
                 return tool_error(self._format_error("Failed to store", e))
 
@@ -583,12 +705,14 @@ class Mem0MemoryProvider(MemoryProvider):
             if not text:
                 return tool_error("Missing required parameter: text")
             try:
-                result = self._backend.update(memory_id, text)
+                result = backend.update(memory_id, text)
                 self._record_success()
                 return json.dumps(result)
             except Exception as e:
                 if _is_client_error(e):
                     return tool_error(f"Memory not found: {memory_id}")
+                if self._is_connection_error(e):
+                    self._invalidate_backend()
                 self._record_failure()
                 return tool_error(self._format_error("Update failed", e))
 
@@ -597,12 +721,14 @@ class Mem0MemoryProvider(MemoryProvider):
             if not memory_id:
                 return tool_error("Missing required parameter: memory_id")
             try:
-                result = self._backend.delete(memory_id)
+                result = backend.delete(memory_id)
                 self._record_success()
                 return json.dumps(result)
             except Exception as e:
                 if _is_client_error(e):
                     return tool_error(f"Memory not found: {memory_id}")
+                if self._is_connection_error(e):
+                    self._invalidate_backend()
                 self._record_failure()
                 return tool_error(self._format_error("Delete failed", e))
 

@@ -190,6 +190,15 @@ def _format_messages_as_prompt(
 
         content = message.get("content")
         rendered = _render_message_content(content)
+        tool_calls_text = ""
+        if role == "assistant":
+            tool_calls_text = _render_tool_calls_for_prompt(message.get("tool_calls"))
+        if tool_calls_text:
+            rendered = (
+                f"{rendered}\n{tool_calls_text}".strip()
+                if rendered
+                else tool_calls_text
+            )
         if not rendered:
             continue
 
@@ -231,6 +240,80 @@ def _render_message_content(content: Any) -> str:
                     parts.append(text.strip())
         return "\n".join(parts).strip()
     return str(content).strip()
+
+
+def _coerce_tool_call_arguments(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        return arguments
+    if arguments is None:
+        return "{}"
+    try:
+        return json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(arguments)
+
+
+def _normalize_tool_call_payload(tool_call: Any) -> dict[str, Any] | None:
+    """Normalize dict/object tool_calls into OpenAI function-call JSON shape."""
+    if isinstance(tool_call, dict):
+        raw_fn = tool_call.get("function") or {}
+        if not isinstance(raw_fn, dict):
+            raw_fn = {}
+        name = raw_fn.get("name") or tool_call.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return None
+        call_id = tool_call.get("id") or tool_call.get("call_id") or ""
+        arguments = raw_fn.get("arguments")
+        if arguments is None:
+            arguments = tool_call.get("arguments")
+        return {
+            "id": str(call_id),
+            "type": tool_call.get("type") or "function",
+            "function": {
+                "name": name.strip(),
+                "arguments": _coerce_tool_call_arguments(arguments),
+            },
+        }
+
+    fn = getattr(tool_call, "function", None)
+    name = getattr(fn, "name", None) if fn is not None else getattr(tool_call, "name", None)
+    if not isinstance(name, str) or not name.strip():
+        return None
+    call_id = getattr(tool_call, "id", None) or getattr(tool_call, "call_id", None) or ""
+    arguments = getattr(fn, "arguments", None) if fn is not None else None
+    if arguments is None:
+        arguments = getattr(tool_call, "arguments", None)
+    return {
+        "id": str(call_id),
+        "type": getattr(tool_call, "type", None) or "function",
+        "function": {
+            "name": name.strip(),
+            "arguments": _coerce_tool_call_arguments(arguments),
+        },
+    }
+
+
+def _render_tool_calls_for_prompt(tool_calls: Any) -> str:
+    """Serialize assistant tool_calls into transcript <tool_call> blocks.
+
+    Hermes conversation history often carries assistant turns with
+    ``content=None`` and a populated ``tool_calls`` array. The ACP prompt is
+    plain text, so those calls must be flattened or the next turn loses which
+    tool was requested and only keeps orphan Tool results.
+    """
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return ""
+    blocks: list[str] = []
+    for tool_call in tool_calls:
+        payload = _normalize_tool_call_payload(tool_call)
+        if payload is None:
+            continue
+        blocks.append(
+            "<tool_call>"
+            + json.dumps(payload, ensure_ascii=False)
+            + "</tool_call>"
+        )
+    return "\n".join(blocks)
 
 
 def _build_openai_tool_call(

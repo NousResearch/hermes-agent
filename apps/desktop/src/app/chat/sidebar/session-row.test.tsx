@@ -1,9 +1,12 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { openSession } from '@/app/open-session'
 import type { SessionInfo } from '@/hermes'
+import { LOCALE_OPTIONS, TRANSLATIONS } from '@/i18n'
+import type * as I18n from '@/i18n'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -11,30 +14,39 @@ import type * as WindowsStore from '@/store/windows'
 
 import { SidebarSessionRow } from './session-row'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.clearAllMocks()
+})
 
-vi.mock('@/i18n', () => ({
-  useI18n: () => ({
-    t: {
-      sidebar: {
-        row: {
-          ageMin: 'm',
-          ageNow: 'now',
-          backgroundRunning: 'Running in background',
-          finishedUnread: 'Finished',
-          handoffOrigin: (platform: string) => `Started on ${platform}`,
-          needsInput: 'Needs input',
-          sessionActions: 'Session actions',
-          sessionRunning: 'Running',
-          waitingForAnswer: 'Waiting for answer'
+vi.mock('@/i18n', async importOriginal => {
+  const actual = await importOriginal<typeof I18n>()
+
+  return {
+    ...actual,
+    useI18n: () => ({
+      t: {
+        sidebar: {
+          row: {
+            ageMin: 'm',
+            ageNow: 'now',
+            backgroundRunning: 'Running in background',
+            finishedUnread: 'Finished',
+            handoffOrigin: (platform: string) => `Started on ${platform}`,
+            needsInput: 'Needs input',
+            sessionActions: 'Session actions',
+            sessionRunning: 'Running',
+            waitingForAnswer: 'Waiting for answer'
+          }
         }
       }
-    }
-  })
-}))
+    })
+  }
+})
 
 vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
+vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 // PlatformAvatar is intentionally NOT mocked (do not reintroduce this — see
 // #67500, Gille's third pass): it's a forwardRef component that spreads its
 // props onto the rendered span, and mocking it with a stand-in that spreads
@@ -116,6 +128,45 @@ const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"
 
 const noop = vi.fn()
 
+type GestureAction = 'archive' | 'pin' | 'resume' | 'tab' | 'window'
+
+const GESTURE_CASES: readonly {
+  action: GestureAction
+  event: 'click' | 'middle-click'
+  label: string
+  modifiers?: MouseEventInit
+}[] = [
+  { action: 'resume', event: 'click', label: 'ordinary click' },
+  { action: 'tab', event: 'click', label: 'exact Ctrl-click', modifiers: { ctrlKey: true } },
+  { action: 'tab', event: 'click', label: 'exact Cmd-click', modifiers: { metaKey: true } },
+  { action: 'pin', event: 'click', label: 'exact Shift-click', modifiers: { shiftKey: true } },
+  {
+    action: 'window',
+    event: 'click',
+    label: 'exact Cmd+Shift-click',
+    modifiers: { metaKey: true, shiftKey: true }
+  },
+  {
+    action: 'archive',
+    event: 'click',
+    label: 'exact Ctrl+Shift-click',
+    modifiers: { ctrlKey: true, shiftKey: true }
+  },
+  {
+    action: 'window',
+    event: 'click',
+    label: 'Ctrl+Shift+Alt-click',
+    modifiers: { altKey: true, ctrlKey: true, shiftKey: true }
+  },
+  {
+    action: 'window',
+    event: 'click',
+    label: 'Ctrl+Shift+Meta-click',
+    modifiers: { ctrlKey: true, metaKey: true, shiftKey: true }
+  },
+  { action: 'tab', event: 'middle-click', label: 'middle click', modifiers: { button: 1 } }
+]
+
 describe('SidebarSessionRow', () => {
   it('keeps an aria-label on the kebab without wrapping it in a Tip', () => {
     render(
@@ -133,6 +184,66 @@ describe('SidebarSessionRow', () => {
 
     const kebab = screen.getByRole('button', { name: 'Session actions' })
     expect(tipTrigger(kebab)).toBeNull()
+  })
+
+  it.each(GESTURE_CASES)('$label dispatches only $action', ({ action, event, modifiers = {} }) => {
+    const onArchive = vi.fn()
+    const onDelete = vi.fn()
+    const onPin = vi.fn()
+    const onResume = vi.fn()
+
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        isWorking={false}
+        onArchive={onArchive}
+        onDelete={onDelete}
+        onPin={onPin}
+        onResume={onResume}
+        session={makeSession({ title: 'Gesture target' })}
+      />
+    )
+
+    const row = screen.getByRole('button', { name: 'Gesture target' })
+
+    if (event === 'middle-click') {
+      fireEvent.pointerDown(row, modifiers)
+      fireEvent.pointerUp(row, modifiers)
+    } else {
+      fireEvent.click(row, modifiers)
+    }
+
+    const callbackActions: Record<Exclude<GestureAction, 'tab' | 'window'>, ReturnType<typeof vi.fn>> = {
+      archive: onArchive,
+      pin: onPin,
+      resume: onResume
+    }
+
+    for (const [candidate, callback] of Object.entries(callbackActions)) {
+      expect(callback).toHaveBeenCalledTimes(action === candidate ? 1 : 0)
+    }
+
+    expect(onDelete).not.toHaveBeenCalled()
+
+    if (action === 'tab' || action === 'window') {
+      expect(openSession).toHaveBeenCalledOnce()
+      expect(openSession).toHaveBeenCalledWith('s1', expect.any(Function), action)
+    } else {
+      expect(openSession).not.toHaveBeenCalled()
+    }
+  })
+
+  it('keeps archived-session settings copy gesture-neutral in every registered locale', () => {
+    const requiredLocales = LOCALE_OPTIONS.map(locale => locale.id)
+
+    expect(Object.keys(TRANSLATIONS).sort()).toEqual([...requiredLocales].sort())
+
+    for (const locale of requiredLocales) {
+      expect(TRANSLATIONS[locale].settings.sessions.archivedIntro, locale).not.toMatch(
+        /\b(?:ctrl|cmd|shift|click)\b|[⌘⌃⌥]|点击|點擊|クリック|اضغط|النقر/iu
+      )
+    }
   })
 
   it('does not render a handoff avatar for a locally-started session', () => {

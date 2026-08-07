@@ -41,7 +41,9 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from gateway.platforms.base import safe_url_for_log
 from gateway.relay.auth import make_upgrade_token
+from tools.url_safety import is_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,20 @@ logger = logging.getLogger(__name__)
 MEDIA_MAX_BYTES = 25 * 1024 * 1024
 
 _REQUEST_TIMEOUT_S = 30.0
+
+
+class _RelayMediaRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Apply the shared SSRF policy to every urllib-followed redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        if not is_safe_url(newurl):
+            raise ValueError(
+                f"Blocked relay media redirect to private/internal address: {safe_url_for_log(newurl)}"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_RELAY_MEDIA_OPENER = urllib.request.build_opener(_RelayMediaRedirectHandler)
 
 
 def media_base_url(relay_dial_url: str) -> str:
@@ -161,6 +177,9 @@ class RelayMediaClient:
         """
         if not url:
             return None
+        if not is_safe_url(url):
+            logger.warning("relay media download blocked unsafe URL: %s", safe_url_for_log(url))
+            return None
         needs_auth = self.is_relay_media_url(url)
         if needs_auth and not self.enabled:
             return None
@@ -171,7 +190,7 @@ class RelayMediaClient:
         def _get() -> Optional[str]:
             req = urllib.request.Request(url, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
+                with _RELAY_MEDIA_OPENER.open(req, timeout=_REQUEST_TIMEOUT_S) as resp:
                     length = int(resp.headers.get("Content-Length") or 0)
                     if length > MEDIA_MAX_BYTES:
                         logger.warning("relay media download too large: %s", url)

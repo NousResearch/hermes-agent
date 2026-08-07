@@ -112,7 +112,7 @@ describe('BillingSettings', () => {
     expect(screen.getByRole('button', { name: /^Buy$/ }).hasAttribute('disabled')).toBe(false)
   })
 
-  it('disables buy controls when no card is on file', async () => {
+  it('replaces the buy and auto-refill controls with reasons and Add card actions when no card is on file', async () => {
     const fixture = billingDevFixtures['no-card']
 
     apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
@@ -122,16 +122,18 @@ describe('BillingSettings', () => {
 
     // No card → the payment row collapses to a single "Add payment method" link.
     expect(await screen.findByRole('button', { name: /Add payment method/ })).toBeTruthy()
-    expect(screen.queryByText('No card on file')).toBeNull()
-    expect(screen.getByRole('button', { name: '$25' }).hasAttribute('disabled')).toBe(true)
-    expect(screen.getByRole('button', { name: '$50' }).hasAttribute('disabled')).toBe(true)
-    expect(screen.getByRole('button', { name: '$100' }).hasAttribute('disabled')).toBe(true)
-    expect(screen.getByRole('spinbutton', { name: 'Custom credit amount' }).hasAttribute('disabled')).toBe(true)
-    expect(screen.getByRole('button', { name: /^Buy$/ }).hasAttribute('disabled')).toBe(true)
 
-    fireEvent.click(screen.getByRole('button', { name: /^Buy$/ }))
+    // The dead control cluster is gone entirely — no disabled presets, amount
+    // field, or Buy button that can't explain themselves.
+    expect(screen.queryByRole('button', { name: '$25' })).toBeNull()
+    expect(screen.queryByRole('spinbutton', { name: 'Custom credit amount' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Buy$/ })).toBeNull()
 
-    expect(apiMocks.charge).not.toHaveBeenCalled()
+    // Each blocked row states the reason and offers the fix: the warn banner plus
+    // the buy row and the auto-refill row each carry an Add card action.
+    expect(screen.getByText('No card on file')).toBeTruthy()
+    expect(screen.getByText('Needs a card on file before it can be turned on.')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: /Add card/ })).toHaveLength(3)
   })
 
   it('saves enabled auto-refill edits and refreshes billing state', async () => {
@@ -542,14 +544,17 @@ describe('BillingSettings', () => {
     expect(screen.getByRole('button', { name: 'Verify to continue' })).toBeTruthy()
   })
 
-  it('keeps disabled auto-refill portal-only with no enable control', async () => {
+  it('keeps disabled auto-refill portal-only, now with a live Turn on link', async () => {
     apiMocks.fetchBillingState.mockResolvedValue(okBilling(postTrainBillingState))
     apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(postTrainSubscriptionState))
 
     renderBilling()
 
     expect((await screen.findAllByText('Off')).length).toBeGreaterThan(0)
-    expect(screen.getByText('Turn on auto-refill from the portal')).toBeTruthy()
+    expect(screen.getByText('Turn on auto-refill from the portal.')).toBeTruthy()
+    // The caption names the portal, so the row links to it — but still no in-app
+    // enable / Manage control.
+    expect(screen.getByRole('button', { name: /Turn on/ })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /enable/i })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Manage' })).toBeNull()
   })
@@ -672,7 +677,8 @@ describe('BillingSettings', () => {
         'Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.'
       )
     ).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Add card/ })).toBeTruthy()
+    // Banner + buy row + auto-refill row each carry the fix — exactly three.
+    expect(screen.getAllByRole('button', { name: /Add card/ })).toHaveLength(3)
   })
 
   it('does not show the no-card notice when a card is on file', async () => {

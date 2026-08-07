@@ -2874,19 +2874,32 @@ def _rich_text_from_ansi(text: str) -> _RichText:
 
 
 def _strip_markdown_syntax(text: str) -> str:
-    """Best-effort markdown marker removal for plain-text display."""
+    r"""Best-effort markdown marker removal for plain-text display.
+
+    Fenced code blocks (```...``` / ~~~...~~~) are extracted first and
+    replaced with placeholders so their contents are never touched by
+    the markdown-stripping regexes.  This preserves dunder identifiers
+    like ``__name__`` which would otherwise be treated as Markdown bold
+    (GH-73212).
+    """
     plain = _rich_text_from_ansi(text or "").plain
-    # Avoid stripping cron-style expressions like "* * * * *" as if they were
-    # Markdown horizontal rules. CommonMark treats three or more "*" as an HR,
-    # but in Hermes output it's common to display cron schedules verbatim.
-    #
-    # Keep the behavior for "-" / "_" HR markers, and only strip "*" HR lines
-    # when there are exactly 3 asterisks (with optional whitespace).
     plain = re.sub(r"^\s{0,3}(?:[-_]\s*){3,}$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}(?:\*\s*){3}\s*$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}#{1,6}\s+", "", plain, flags=re.MULTILINE)
-    # Preserve blockquotes, lists, and checkboxes because they carry structure.
-    plain = re.sub(r"(```+|~~~+)", "", plain)
+
+    # --- Preserve fenced code blocks (```...``` / ~~~...~~~) ---
+    _code_blocks: list[str] = []
+
+    def _extract_fence(match: re.Match[str]) -> str:
+        content = match.group(0)
+        content = re.sub(r"^(```+|~~~+)\w*\s*\n?", "", content, count=1)
+        content = re.sub(r"\n?(```+|~~~+)\s*$", "", content, count=1)
+        idx = len(_code_blocks)
+        _code_blocks.append(content)
+        return f"\x00CODEBLOCK{idx}\x00"
+
+    plain = re.sub(r"```[\s\S]*?```|~~~[\s\S]*?~~~", _extract_fence, plain)
+
     plain = re.sub(r"`([^`]*)`", r"\1", plain)
     plain = re.sub(r"!\[([^\]]*)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", plain)
@@ -2894,12 +2907,14 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"(?<!\w)___([^_]+)___(?!\w)", r"\1", plain)
     plain = re.sub(r"\*\*([^*]+)\*\*", r"\1", plain)
     plain = re.sub(r"(?<!\w)__([^_]+)__(?!\w)", r"\1", plain)
-    # Only strip `*emphasis*` markers when the inner text is non-whitespace.
-    # This avoids corrupting cron expressions like "* * * * *".
     plain = re.sub(r"\*([^\s*][^*]*?[^\s*])\*", r"\1", plain)
     plain = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", plain)
     plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
     plain = re.sub(r"\n{3,}", "\n\n", plain)
+
+    for idx, block in enumerate(_code_blocks):
+        plain = plain.replace(f"\x00CODEBLOCK{idx}\x00", block)
+
     return plain.strip("\n")
 
 

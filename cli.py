@@ -3068,6 +3068,43 @@ def _replay_output_history() -> None:
         _OUTPUT_HISTORY_REPLAYING = False
 
 
+def _plain_print(text: str) -> None:
+    """Last-resort emission when prompt_toolkit cannot render.
+
+    Encodes defensively: a legacy Windows codepage (cp1252/cp437) raises
+    UnicodeEncodeError on the box-drawing and emoji characters Hermes emits,
+    which would lose the line entirely.
+    """
+    try:
+        print(text)
+        return
+    except UnicodeEncodeError:
+        pass
+    except Exception:
+        return
+    try:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(text.encode(encoding, "replace").decode(encoding, "replace"))
+    except Exception:
+        pass
+
+
+def _emit_pt_or_plain(text: str) -> None:
+    """Emit through prompt_toolkit, degrading to a plain write on failure.
+
+    Single guarded emission point for ``_cprint``. prompt_toolkit raises
+    ``NoConsoleScreenBufferError`` (Windows) or ``OSError`` when stdout is not
+    a real console — piped output, a subprocess worker logging to a file, a
+    service with no attached console. ``isatty()`` can report True while the
+    console handle is still unusable, so every arm has to degrade rather than
+    only the one that could detect the situation up front (#65558).
+    """
+    try:
+        _pt_print(_PT_ANSI(text))
+    except Exception:
+        _plain_print(text)
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -3089,7 +3126,7 @@ def _cprint(text: str):
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
-        _pt_print(_PT_ANSI(text))
+        _emit_pt_or_plain(text)
         return
 
     app = None
@@ -3102,16 +3139,7 @@ def _cprint(text: str):
     # direct prompt_toolkit print is safe and matches existing behavior
     # (spinner frames, streamed tokens, tool activity prefixes, …).
     if app is None or not getattr(app, "_is_running", False):
-        try:
-            _pt_print(_PT_ANSI(text))
-        except Exception:
-            # Fallback when stdout is not a real console (e.g. subprocess
-            # worker logging to a file). prompt_toolkit raises
-            # NoConsoleScreenBufferError (Windows) or OSError (other).
-            try:
-                print(text)
-            except Exception:
-                pass
+        _emit_pt_or_plain(text)
         return
 
     try:
@@ -3119,7 +3147,7 @@ def _cprint(text: str):
     except Exception:
         loop = None
     if loop is None:
-        _pt_print(_PT_ANSI(text))
+        _emit_pt_or_plain(text)
         return
 
     import asyncio as _asyncio
@@ -3135,7 +3163,7 @@ def _cprint(text: str):
         current_loop = None
     # Same thread as the app's loop → safe to print directly.
     if current_loop is loop and loop.is_running():
-        _pt_print(_PT_ANSI(text))
+        _emit_pt_or_plain(text)
         return
 
     # Cross-thread emission: ask the app's event loop to schedule a
@@ -3156,7 +3184,7 @@ def _cprint(text: str):
         try:
             import asyncio as _aio
             import inspect as _inspect
-            coro = run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            coro = run_in_terminal(lambda: _emit_pt_or_plain(text))
             if coro is not None and (_inspect.isawaitable(coro) or _inspect.iscoroutine(coro)):
                 _aio.ensure_future(coro)
             # else: run_in_terminal ran the lambda synchronously; nothing more
@@ -3167,10 +3195,7 @@ def _cprint(text: str):
     try:
         loop.call_soon_threadsafe(_schedule)
     except Exception:
-        try:
-            _pt_print(_PT_ANSI(text))
-        except Exception:
-            pass
+        _emit_pt_or_plain(text)
 
 
 def _prepend_note_to_message(message, note: str):
@@ -18506,7 +18531,11 @@ def main(
                         ):
                             print(f"Error: {result['error']}", file=sys.stderr)
                         elif response:
-                            print(response)
+                            # Encode-safe: a legacy Windows codepage raises
+                            # UnicodeEncodeError on emitted box-drawing/emoji
+                            # characters, which would lose the whole answer on
+                            # the one path automation actually reads (#65558).
+                            _plain_print(response)
 
                         # Kanban goal-loop mode: a worker spawned for a
                         # goal_mode card keeps working in THIS session until an

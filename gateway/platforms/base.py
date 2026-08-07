@@ -1475,6 +1475,17 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "`\"'":
         candidate = candidate[1:-1].strip()
     candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    # On Windows, normalize Git Bash style paths (/c/Users/... -> C:\Users\...)
+    # so the is_absolute() check below passes. The Hermes terminal on Windows
+    # runs via the bundled Git Bash (MinGit), which reports paths in Unix
+    # format — without the drive letter Path.is_absolute() returns False and
+    # every file the agent names would be rejected as "unsafe". Guard on the
+    # drive existing so POSIX-style paths (/r/a.png) are left untouched.
+    if os.name == "nt" and candidate.startswith("/"):
+        _m = re.match(r"^/([a-zA-Z])/(.*)", candidate)
+        if _m and os.path.isdir(f"{_m.group(1).upper()}:\\"):
+            _sep = "\\"
+            candidate = f"{_m.group(1).upper()}:{_sep}{_m.group(2).replace('/', _sep)}"
     if not candidate:
         return None
 
@@ -1803,7 +1814,21 @@ def _normalize_media_tag_path(raw: str) -> str:
     path = str(raw or "").strip()
     if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
         path = path[1:-1].strip()
-    return path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    # On Windows, normalize Git Bash style paths (/c/Users/... -> C:\Users\...).
+    # The Hermes terminal on Windows runs via the bundled Git Bash (MinGit),
+    # which reports paths in Unix format. When the agent emits a MEDIA: tag
+    # with one of these paths, Path.is_absolute() returns False (no drive
+    # letter) and validate_media_delivery_path rejects it. Convert early so
+    # the rest of the pipeline sees a proper absolute Windows path. Guard on
+    # the drive actually existing so POSIX-style paths (/r/a.png) that merely
+    # start with a letter are left untouched.
+    if os.name == "nt" and path.startswith("/"):
+        _m = re.match(r"^/([a-zA-Z])/(.*)", path)
+        if _m and os.path.isdir(f"{_m.group(1).upper()}:\\"):
+            _sep = "\\"
+            path = f"{_m.group(1).upper()}:{_sep}{_m.group(2).replace('/', _sep)}"
+    return path
 
 
 def _path_lacks_deliverable_extension(path: str) -> bool:
@@ -4650,7 +4675,17 @@ class BasePlatformAdapter(ABC):
             if _in_code(match.start()):
                 continue
             raw = match.group(0)
-            expanded = os.path.expanduser(raw)
+            # On Windows, normalize Git Bash style paths (/c/Users/... -> C:\Users/...)
+            # so os.path.isfile can find the file. The raw text is returned as-is
+            # for display/stripping; only the existence check uses the normalized form.
+            # Guard on the drive existing so POSIX-style paths (/r/a.png) are left
+            # as-is for the existence check instead of being mangled to R:\a.png.
+            _check = raw
+            if os.name == "nt" and _check.startswith("/"):
+                _m = re.match(r"^/([a-zA-Z])/(.*)", _check)
+                if _m and os.path.isdir(f"{_m.group(1).upper()}:\\"):
+                    _check = f"{_m.group(1).upper()}:/{_m.group(2)}"
+            expanded = os.path.expanduser(_check)
             if os.path.isfile(expanded):
                 found.append((raw, expanded))
             else:

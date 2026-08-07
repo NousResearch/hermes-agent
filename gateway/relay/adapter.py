@@ -1387,7 +1387,20 @@ class RelayAdapter(BasePlatformAdapter):
         pre-media behaviour — media delivery is progressive enhancement,
         never a regression when the connector predates the op.
         """
-        if self._transport is None or not self.descriptor.supports_op("send_media"):
+        if self._transport is None:
+            return None
+        # Respect an explicit capability declaration: when the connector
+        # advertised its op set and send_media is not in it, don't attempt the
+        # lane (the caller falls back to text). Legacy connectors (empty
+        # supported_ops) predate the discovery field — send_media was added
+        # after it, so such a connector can never advertise the op even when it
+        # implements it. Fail open for those: attempt the op and let a
+        # transport decline degrade to the caller's text fallback, the same
+        # failure mode as gating but without dropping connectors that do
+        # handle send_media.
+        if self.descriptor.supported_ops and not self.descriptor.supports_op(
+            "send_media"
+        ):
             return None
         source_url = source
         if source_is_path:

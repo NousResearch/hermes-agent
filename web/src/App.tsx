@@ -316,11 +316,30 @@ function buildRoutes(
 
   for (const m of manifests) {
     if (m.tab.override) {
-      byOverride.set(m.tab.override, m);
+      // First valid override claim wins; a later manifest cannot re-claim
+      // an already-claimed target.
+      if (!byOverride.has(m.tab.override)) {
+        byOverride.set(m.tab.override, m);
+      }
     } else {
       addons.push(m);
     }
   }
+
+  // An override may target a built-in route or another dashboard addon route
+  // (e.g. an enhanced plugin replacing the bundled kanban addon at /kanban).
+  // Overrides of unknown targets are ignored so they cannot hide fallback.
+  const addonPaths = new Set(
+    addons
+      .filter((m) => m.tab.path !== "/plugins" && !builtinRoutes[m.tab.path])
+      .map((m) => m.tab.path),
+  );
+  const validOverrides = new Map(
+    [...byOverride.entries()].filter(
+      ([routePath]) =>
+        Boolean(builtinRoutes[routePath]) || addonPaths.has(routePath),
+    ),
+  );
 
   const routes: Array<{
     key: string;
@@ -329,7 +348,7 @@ function buildRoutes(
   }> = [];
 
   for (const [path, Component] of Object.entries(builtinRoutes)) {
-    const om = byOverride.get(path);
+    const om = validOverrides.get(path);
     if (om) {
       routes.push({
         key: `override:${om.name}`,
@@ -341,15 +360,29 @@ function buildRoutes(
     }
   }
 
+  const claimedAddonPaths = new Set<string>();
   for (const m of addons) {
     if (m.tab.hidden) continue;
     if (m.tab.path === "/plugins") continue;
     if (builtinRoutes[m.tab.path]) continue;
-    routes.push({
-      key: `plugin:${m.name}`,
-      path: m.tab.path,
-      element: <PluginPage name={m.name} />,
-    });
+    const om = validOverrides.get(m.tab.path);
+    if (om) {
+      // The claim replaces the addon's own route exactly once; duplicate
+      // owners for one path stay rejected.
+      if (claimedAddonPaths.has(m.tab.path)) continue;
+      claimedAddonPaths.add(m.tab.path);
+      routes.push({
+        key: `override:${om.name}`,
+        path: m.tab.path,
+        element: <PluginPage name={om.name} />,
+      });
+    } else {
+      routes.push({
+        key: `plugin:${m.name}`,
+        path: m.tab.path,
+        element: <PluginPage name={m.name} />,
+      });
+    }
   }
 
   for (const m of manifests) {

@@ -26,12 +26,48 @@ Design:
 import json
 import logging
 import time
+import contextvars
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_write_text
+
+# L2 enforcement (post-turn READONLY gate): refuse memory writes from
+# the background-review fork when HERMES_DISABLE_SELF_IMPROVEMENT or
+# HERMES_READ_ONLY_SESSION is activated. Read paths stay unaffected.
+from agent.self_improvement_policy import (
+    BACKGROUND_REVIEW_ORIGIN as _POLICY_BG_REVIEW_ORIGIN,
+    evaluate as _policy_evaluate,
+)
+
+def _phase1_memory_get_captured_decision():
+    """PHASE 2 (TIER 1): read the typed SelfImprovementDecision via ContextVar.
+
+    Phase 1 walked the Python stack; Phase 2 reads the canonical
+    ContextVar populated by ``AIAgent.__init__`` from the captured
+    Phase 1 Decision. Returns the active Decision or ``None`` to
+    mirror the original Phase 1 semantics (no captured Decision ->
+    ``None``). Production callers should prefer
+    ``agent.self_improvement_decision_context.get_self_improvement_decision()``
+    which always returns a Decision (the DENY fallback when unset).
+    """
+    try:
+        from agent.self_improvement_decision_context import (
+            get_self_improvement_decision as _phase2_get_decision,
+            DENY_FALLBACK_DECISION as _PHASE2_DENY_FB,
+        )
+        decision = _phase2_get_decision()
+        if decision is _PHASE2_DENY_FB:
+            return None
+        return decision
+    except Exception:
+        return None
+
+
+
+from tools.skill_provenance import is_background_review
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -45,6 +81,81 @@ except ImportError:
         pass
 
 logger = logging.getLogger(__name__)
+
+_memory_policy_operation: "contextvars.ContextVar[str]" = contextvars.ContextVar(
+    "memory_policy_operation",
+    default="memory_save",
+)
+
+_MEMORY_ACTION_OPERATION_KIND = {
+    "add": "memory_add",
+    "replace": "memory_replace",
+    "remove": "memory_remove",
+    "batch": "memory_batch",
+    "save": "memory_save",
+}
+
+
+def _memory_action_for_operation(operation_kind: str) -> str:
+    return {
+        "memory_add": "add",
+        "memory_replace": "replace",
+        "memory_remove": "remove",
+        "memory_batch": "batch",
+        "memory_save": "save",
+    }.get(operation_kind, "save")
+
+
+def _memory_policy_denial(action: str, target: str, *, origin: str = "memory_tool") -> Optional[Dict[str, Any]]:
+    operation_kind = _MEMORY_ACTION_OPERATION_KIND.get(action, action)
+    try:
+        from agent.session_write_policy import (
+            CapabilityGrant,
+            evaluate_session_write_policy,
+            get_current_session_write_policy,
+            policy_evaluation_failure_payload,
+        )
+
+        path = MemoryStore._path_for(target)
+        policy = get_current_session_write_policy(protected=False)
+        decision = evaluate_session_write_policy(
+            policy,
+            operation_kind=operation_kind,
+            origin=origin,
+            target_path=path,
+            capability=CapabilityGrant("filesystem", operation_kind),
+        )
+        if decision.denied:
+            return decision.denial_payload()
+    except Exception as e:
+        logger.debug("session write policy memory check failed: %s", e)
+        try:
+            from agent.session_write_policy import policy_evaluation_failure_payload
+
+            return policy_evaluation_failure_payload(
+                operation_kind=operation_kind,
+                session_id="",
+                target=str(target or ""),
+                error=e,
+            )
+        except Exception:
+            return {
+                "success": False,
+                "error": "Session write policy evaluation failed; mutation denied",
+                "policy_reason": "policy_evaluation_failed",
+                "operation_kind": operation_kind,
+                "session_id": "",
+                "target": str(target or ""),
+            }
+    return None
+
+
+def _set_memory_operation(action: str):
+    return _memory_policy_operation.set(_MEMORY_ACTION_OPERATION_KIND.get(action, action))
+
+
+def _reset_memory_operation(token) -> None:
+    _memory_policy_operation.reset(token)
 
 # Where memory files live — resolved dynamically so profile overrides
 # (HERMES_HOME env var changes) are always respected.  The old module-level
@@ -362,8 +473,42 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
+        guard = _background_review_self_improvement_memory_guard("save", target)
+        if guard is not None:
+            payload = json.loads(guard)
+            raise PermissionError(payload.get("error", "memory write denied"))
+        action = _memory_action_for_operation(_memory_policy_operation.get())
+        denial = _memory_policy_denial(action, target, origin="memory_store_save")
+        if denial is not None:
+            raise PermissionError(denial["error"])
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
+
+    def _persistence_failed(self, target: str, error: Exception) -> Dict[str, Any]:
+        return {
+            "success": False,
+            "error": "Memory persistence failed; mutation denied",
+            "policy_reason": "persistence_failed",
+            "target": target,
+        }
+
+    def _persist_candidate(self, target: str, entries: List[str], action: str) -> Optional[Dict[str, Any]]:
+        guard = _background_review_self_improvement_memory_guard(action, target)
+        if guard is not None:
+            return json.loads(guard)
+        denial = _memory_policy_denial(action, target, origin="memory_store_commit")
+        if denial is not None:
+            return denial
+        token = _set_memory_operation(action)
+        try:
+            get_memory_dir().mkdir(parents=True, exist_ok=True)
+            self._write_file(self._path_for(target), entries)
+        except Exception as e:
+            logger.debug("memory persistence failed: %s", e)
+            return self._persistence_failed(target, e)
+        finally:
+            _reset_memory_operation(token)
+        return None
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -389,6 +534,12 @@ class MemoryStore:
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
+        guard = _background_review_self_improvement_memory_guard("add", target)
+        if guard is not None:
+            return json.loads(guard)
+        denial = _memory_policy_denial("add", target, origin="memory_store_add")
+        if denial is not None:
+            return denial
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -414,7 +565,8 @@ class MemoryStore:
             if self._reload_target(target, skip_drift=True) is _READ_FAILED:
                 return _read_failed_error(self._path_for(target))
 
-            entries = self._entries_for(target)
+            baseline_entries = list(self._entries_for(target))
+            entries = list(baseline_entries)
             limit = self._char_limit(target)
 
             # Reject exact duplicates
@@ -440,14 +592,23 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries.append(content)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            candidate = entries + [content]
+            failure = self._persist_candidate(target, candidate, "add")
+            if failure is not None:
+                self._set_entries(target, baseline_entries)
+                return failure
+            self._set_entries(target, candidate)
 
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
+        guard = _background_review_self_improvement_memory_guard("replace", target)
+        if guard is not None:
+            return json.loads(guard)
+        denial = _memory_policy_denial("replace", target, origin="memory_store_replace")
+        if denial is not None:
+            return denial
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -467,7 +628,8 @@ class MemoryStore:
             if bak:
                 return _drift_error(self._path_for(target), bak)
 
-            entries = self._entries_for(target)
+            baseline_entries = list(self._entries_for(target))
+            entries = list(baseline_entries)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
@@ -511,14 +673,24 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries[idx] = new_content
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            candidate = entries.copy()
+            candidate[idx] = new_content
+            failure = self._persist_candidate(target, candidate, "replace")
+            if failure is not None:
+                self._set_entries(target, baseline_entries)
+                return failure
+            self._set_entries(target, candidate)
 
         return self._success_response(target, "Entry replaced.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
+        guard = _background_review_self_improvement_memory_guard("remove", target)
+        if guard is not None:
+            return json.loads(guard)
+        denial = _memory_policy_denial("remove", target, origin="memory_store_remove")
+        if denial is not None:
+            return denial
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
@@ -530,7 +702,8 @@ class MemoryStore:
             if bak:
                 return _drift_error(self._path_for(target), bak)
 
-            entries = self._entries_for(target)
+            baseline_entries = list(self._entries_for(target))
+            entries = list(baseline_entries)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
@@ -553,9 +726,13 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
-            entries.pop(idx)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            candidate = entries.copy()
+            candidate.pop(idx)
+            failure = self._persist_candidate(target, candidate, "remove")
+            if failure is not None:
+                self._set_entries(target, baseline_entries)
+                return failure
+            self._set_entries(target, candidate)
 
         return self._success_response(target, "Entry removed.")
 
@@ -572,6 +749,12 @@ class MemoryStore:
         the net result would exceed the char limit, NOTHING is written and an
         error is returned describing the first failure plus the live state.
         """
+        guard = _background_review_self_improvement_memory_guard("batch", target)
+        if guard is not None:
+            return json.loads(guard)
+        denial = _memory_policy_denial("batch", target, origin="memory_store_batch")
+        if denial is not None:
+            return denial
         if not operations:
             return {"success": False, "error": "operations list is empty."}
 
@@ -593,7 +776,8 @@ class MemoryStore:
                 return _drift_error(self._path_for(target), bak)
 
             # Work on a copy; only commit if the whole batch validates.
-            working: List[str] = list(self._entries_for(target))
+            baseline_entries = list(self._entries_for(target))
+            working: List[str] = list(baseline_entries)
             limit = self._char_limit(target)
 
             for i, op in enumerate(operations):
@@ -663,8 +847,11 @@ class MemoryStore:
                 })
 
             # Commit.
+            failure = self._persist_candidate(target, working, "batch")
+            if failure is not None:
+                self._set_entries(target, baseline_entries)
+                return failure
             self._set_entries(target, working)
-            self.save_to_disk(target)
 
         return self._success_response(target, f"Applied {len(operations)} operation(s).")
 
@@ -869,6 +1056,11 @@ class MemoryStore:
         concurrent readers see an empty file. Atomic rename avoids this:
         readers always see either the old complete file or the new one.
         """
+        action = _memory_action_for_operation(_memory_policy_operation.get())
+        target = "user" if path.name == "USER.md" else "memory"
+        denial = _memory_policy_denial(action, target, origin="memory_store_atomic_write")
+        if denial is not None:
+            raise PermissionError(denial["error"])
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
             atomic_write_text(path, content, tmp_prefix=".mem_")
@@ -906,6 +1098,85 @@ def load_on_disk_store() -> "MemoryStore":
     )
     store.load_from_disk()
     return store
+
+
+def _background_review_self_improvement_memory_guard(
+    action: str,
+    target: str,
+) -> Optional[str]:
+    """L2 enforcement for the memory tool — refuse writes from background review.
+
+    Returns a JSON-encoded error string when the active write origin is
+    the background-review fork and the canonical self-improvement
+    policy denies; ``None`` to fall through. Reads ``os.environ``
+    directly so the guard is independent of prompt text. Never raises.
+    """
+    provenance_failed = False
+    try:
+        if not is_background_review():
+            return None
+    except Exception:
+        provenance_failed = True
+
+    # PHASE 2 (TIER 1): read the typed Decision from the ContextVar.
+    # The Phase 1 fallback re-evaluated against os.environ; Phase 2
+    # reads the canonical ContextVar only — no environment re-sample.
+    try:
+        from agent.self_improvement_decision_context import (
+            get_self_improvement_decision as _phase2_memory_get_decision,
+        )
+        decision = _phase2_memory_get_decision()
+    except Exception:
+        logger.exception(
+            "self_improvement_policy ContextVar lookup raised in "
+            "memory guard; defaulting to deny"
+        )
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"Refusing background {action} to memory target "
+                    f"'{target}': self-improvement context lookup raised; "
+                    "defaulting to deny."
+                ),
+                "_self_improvement_guard": True,
+            },
+            ensure_ascii=False,
+        )
+
+    if getattr(decision, "allow", False):
+        return None
+
+    _session_id = ""
+    try:
+        _session_id = os.environ.get("HERMES_SESSION_ID", "") or ""
+    except Exception:
+        _session_id = ""
+    logger.warning(
+        "self_improvement_policy deny decision=DENY reason=%r "
+        "operation_kind=memory_write origin=background_review "
+        "session_id=%s target=%s action=%s",
+        getattr(decision, "reason", ""),
+        _session_id,
+        target,
+        action,
+    )
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                f"Refusing background {action} to memory target '{target}': "
+                + (
+                    "self-improvement provenance probe failed; defaulting to deny. "
+                    if provenance_failed
+                    else ""
+                )
+                + f"{getattr(decision, 'reason', '')}"
+            ),
+            "_self_improvement_guard": True,
+        },
+        ensure_ascii=False,
+    )
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str],
@@ -1078,6 +1349,14 @@ def memory_tool(
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+        # L2 enforcement: refuse the whole batch from background review
+        # under session protection. Read-path remains unaffected.
+        _bg_guard = _background_review_self_improvement_memory_guard("batch", target)
+        if _bg_guard is not None:
+            return _bg_guard
+        denial = _memory_policy_denial("batch", target, origin="memory_tool_batch")
+        if denial is not None:
+            return json.dumps(denial, ensure_ascii=False)
         gate_result = _apply_batch_write_gate(target, operations)
         if gate_result is not None:
             return gate_result
@@ -1087,6 +1366,15 @@ def memory_tool(
     # --- Single-op path ---------------------------------------------------
     # Validate required params BEFORE the gate so an invalid write is rejected
     # immediately instead of being staged and only failing at approve time.
+    if action not in {"add", "replace", "remove"}:
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+
+    # L2 enforcement: refuse the single-op write from background review
+    # under session protection. Read-path remains unaffected.
+    _bg_guard = _background_review_self_improvement_memory_guard(action, target)
+    if _bg_guard is not None:
+        return _bg_guard
+
     if action == "add" and not content:
         return tool_error("Content is required for 'add' action.", success=False)
     if action == "replace" and (not old_text or not content):
@@ -1100,6 +1388,10 @@ def memory_tool(
         return tool_error(f"{missing} is required for 'replace' action.", success=False)
     if action == "remove" and not old_text:
         return _missing_old_text_error(store, target, "remove")
+
+    denial = _memory_policy_denial(action, target, origin="memory_tool")
+    if denial is not None:
+        return json.dumps(denial, ensure_ascii=False)
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
@@ -1234,7 +1526,3 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
-

@@ -22,6 +22,7 @@ keep the exact logger name (``"agent.conversation_loop"``).
 
 from __future__ import annotations
 
+import logging
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -64,6 +65,12 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
         m for m in messages
         if not (isinstance(m, dict) and any(m.get(f) for f in _VERIFICATION_CONTINUATION_FLAGS))
     ]
+from agent.self_improvement_policy import (
+    BACKGROUND_REVIEW_ORIGIN as _POLICY_BG_REVIEW_ORIGIN,
+    evaluate as _policy_evaluate,
+)
+
+_logger = logging.getLogger("agent.conversation_loop")
 
 
 def finalize_turn(
@@ -721,7 +728,50 @@ def finalize_turn(
 
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    #
+    # L1 enforcement (post-turn READONLY gate): when
+    # ``HERMES_DISABLE_SELF_IMPROVEMENT`` or ``HERMES_READ_ONLY_SESSION`` is
+    # activated, the review fork is denied — no thread, no agent, no patch,
+    # no memory/skill/suggestions write. A single structured log line
+    # records the decision; the session closes normally. No retry.
+    _bg_review_allowed = True
+    # PHASE 1 (P0 containment): consult the typed SelfImprovementDecision
+    # captured at session start, NOT a fresh os.environ sample. The decision
+    # is immutable for the lifetime of the session; environment drift after
+    # init CANNOT convert a DENY into an ALLOW.
+    try:
+        _phase1_dec = getattr(agent, "_self_improvement_decision", None)
+        if _phase1_dec is None:
+            _bg_review_allowed = False
+            _logger.warning(
+                "self_improvement_policy deny decision=DENY reason=%r "
+                "operation_kind=background_review_spawn origin=background_review "
+                "session_id=%s",
+                "missing_self_improvement_decision",
+                getattr(agent, "session_id", "") or "",
+            )
+        elif not _phase1_dec.allow:
+            _bg_review_allowed = False
+            _logger.warning(
+                "self_improvement_policy deny decision=DENY reason=%r "
+                "operation_kind=background_review_spawn origin=background_review "
+                "session_id=%s",
+                _phase1_dec.reason or "decision_denies_spawn",
+                getattr(agent, "session_id", "") or "",
+            )
+    except Exception:
+        # Fail-closed: never spawn a reviewer we cannot gate.
+        _bg_review_allowed = False
+        _logger.exception(
+            "self_improvement_decision lookup raised; defaulting to deny background_review_spawn"
+        )
+
+    if (
+        _bg_review_allowed
+        and final_response
+        and not interrupted
+        and (_should_review_memory or _should_review_skills)
+    ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),

@@ -106,9 +106,56 @@ def _build_subprocess_env() -> dict[str, str]:
     env = hermes_subprocess_env(inherit_credentials=True)
     home = _resolve_home_dir()
     env["HOME"] = home
-    from hermes_constants import apply_subprocess_home_env
-    apply_subprocess_home_env(env)
+    env["HERMES_REAL_HOME"] = home
     return env
+
+
+def _format_pre_spawn_policy_block(*, disposition: Any = None, reason: Any = None) -> RuntimeError:
+    parts = ["acp_subprocess_blocked_by_session_write_policy"]
+    if disposition:
+        parts.append(f"disposition={disposition}")
+    if reason:
+        parts.append(f"reason={reason}")
+    return RuntimeError(" ".join(parts))
+
+
+def _consult_pre_spawn_session_write_policy(argv: list[str], cwd: str) -> None:
+    from agent.session_write_policy import (
+        CallerType,
+        PolicyDenied,
+        SessionWritePolicyDecisionResult,
+        pre_spawn_consult,
+    )
+
+    try:
+        decision = pre_spawn_consult(
+            caller_type=CallerType.DELEGATION,
+            operation_kind="terminal_exec",
+            argv=argv,
+            raw_command=None,
+            cwd=cwd,
+            env_subset=None,
+            target_path=None,
+        )
+    except PolicyDenied as exc:
+        raise _format_pre_spawn_policy_block(
+            disposition=getattr(exc, "disposition", None),
+            reason=getattr(exc, "reason", None),
+        ) from None
+    except Exception as exc:
+        raise _format_pre_spawn_policy_block(
+            reason=f"acp_pre_spawn_policy_evaluation_failed:{type(exc).__name__}",
+        ) from None
+
+    result = getattr(decision, "result", None)
+    denied = bool(getattr(decision, "denied", False)) or result is SessionWritePolicyDecisionResult.DENY
+    if not denied and isinstance(result, str):
+        denied = result == SessionWritePolicyDecisionResult.DENY.value
+    if denied:
+        raise _format_pre_spawn_policy_block(
+            disposition=getattr(decision, "disposition", None) or "DENY_POLICY",
+            reason=getattr(decision, "reason", None),
+        )
 
 
 def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
@@ -502,13 +549,15 @@ class CopilotACPClient:
         return completion
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        argv = [self._acp_command, *self._acp_args]
+        _consult_pre_spawn_session_write_policy(argv, self._acp_cwd)
         try:
             # Hide the console the CLI child would otherwise flash on Windows
             # (#56747). Hide-only — stdio pipes stay intact for the ACP wire.
             from hermes_cli._subprocess_compat import windows_hide_flags
 
             proc = subprocess.Popen(
-                [self._acp_command] + self._acp_args,
+                argv,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

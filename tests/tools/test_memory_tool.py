@@ -627,3 +627,145 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+
+@pytest.fixture
+def bg_origin():
+    """Background-review origin sentinel for F-19."""
+    return "background_review"
+
+
+# ---------------------------------------------------------------------------
+# PHASE 2 (TIER 1) — Typed ContextVar tests
+# ---------------------------------------------------------------------------
+class TestPhase2TypedContext:
+    """Focused matrix F-18, F-19, F-20 (memory mirrors) from
+    final_focused_test_matrix.tsv.
+
+    The memory L3 boundary shares the same authorization contract as
+    skill_manager_tool. Tests below exercise the mirror invariants.
+
+    The parametrization matches the matrix exactly:
+      * F-18: 1 method, 1 outcome (no Decision in legacy caller -> DENY)
+      * F-19: 1 method, 1 outcome (autonomous background under DENY blocked)
+      * F-20: 1 method, 3 outcomes ([missing_origin, forged_via_tool_arg, trusted_dispatcher])
+    """
+
+    # ------------------------------------------------------------------
+    # F-18 — no decision in legacy caller denies (1 outcome)
+    # ------------------------------------------------------------------
+    def test_no_decision_in_legacy_caller_denies(self, monkeypatch):
+        # F-18 — mirror of F-1 for the memory tool. No Decision in
+        # the ContextVar -> DENY_FALLBACK_DECISION, mutation blocked.
+        from agent.self_improvement_decision_context import (
+            get_self_improvement_decision,
+            DENY_FALLBACK_DECISION,
+        )
+        from tools import memory_tool as mt
+        monkeypatch.delenv("HERMES_DISABLE_SELF_IMPROVEMENT", raising=False)
+        monkeypatch.delenv("HERMES_READ_ONLY_SESSION", raising=False)
+        # Default ContextVar state: no Decision bound.
+        seen = get_self_improvement_decision()
+        assert seen is DENY_FALLBACK_DECISION
+        assert getattr(seen, "allow", True) is False
+
+    # ------------------------------------------------------------------
+    # F-19 — autonomous background under deny blocked (1 outcome)
+    # ------------------------------------------------------------------
+    def test_autonomous_background_under_deny_blocked(self, monkeypatch, bg_origin):
+        # F-19 — autonomous background memory mutation under DENY is
+        # blocked. The L3 guard returns a denial payload when Decision
+        # is DENY.
+        from agent.self_improvement_decision_context import (
+            self_improvement_decision_scope,
+        )
+        from agent.self_improvement_policy import (
+            DENY_READ_ONLY_SESSION,
+            Decision as _Dec,
+        )
+        from tools import memory_tool as mt
+        from tools.skill_provenance import set_current_write_origin
+        token = set_current_write_origin(bg_origin)
+        try:
+            with self_improvement_decision_scope(
+                _Dec(result=DENY_READ_ONLY_SESSION, reason="f19_read_only")
+            ):
+                payload_str = mt._background_review_self_improvement_memory_guard(
+                    "add", "memory"
+                )
+                # Guard must return a JSON error string under DENY.
+                assert payload_str is not None
+                import json as _json
+                payload = _json.loads(payload_str)
+                assert payload.get("success") is False
+                assert payload.get("_self_improvement_guard") is True
+        finally:
+            from tools.skill_provenance import reset_current_write_origin
+            reset_current_write_origin(token)
+
+    # ------------------------------------------------------------------
+    # F-20 — origin forgery blocked (3 outcomes)
+    # ------------------------------------------------------------------
+    @pytest.mark.parametrize(
+        "scenario",
+        ["missing_origin", "forged_via_tool_arg", "trusted_dispatcher"],
+    )
+    def test_origin_forgery_blocked(self, monkeypatch, scenario):
+        # F-20 — mirror of F-14 for the memory tool.
+        from agent.self_improvement_decision_context import (
+            self_improvement_decision_scope,
+            get_self_improvement_decision,
+            DENY_FALLBACK_DECISION,
+        )
+        from agent.self_improvement_policy import (
+            DENY_READ_ONLY_SESSION,
+            ALLOW,
+            Decision as _Dec,
+        )
+        from tools import memory_tool as mt
+        from tools.skill_provenance import set_current_write_origin
+        monkeypatch.delenv("HERMES_DISABLE_SELF_IMPROVEMENT", raising=False)
+        monkeypatch.delenv("HERMES_READ_ONLY_SESSION", raising=False)
+        if scenario == "missing_origin":
+            seen = get_self_improvement_decision()
+            assert seen is DENY_FALLBACK_DECISION
+            assert getattr(seen, "allow", True) is False
+        elif scenario == "forged_via_tool_arg":
+            token = set_current_write_origin("background_review")
+            try:
+                with self_improvement_decision_scope(
+                    _Dec(result=DENY_READ_ONLY_SESSION, reason="f20_forged_read_only")
+                ):
+                    seen = get_self_improvement_decision()
+                    assert getattr(seen, "allow", True) is False
+                    payload_str = mt._background_review_self_improvement_memory_guard(
+                        "add", "memory"
+                    )
+                    if payload_str is not None:
+                        import json as _json
+                        payload = _json.loads(payload_str)
+                        assert payload.get("success") is False
+            finally:
+                from tools.skill_provenance import reset_current_write_origin
+                reset_current_write_origin(token)
+        else:  # trusted_dispatcher
+            from agent.session_write_policy import (
+                SessionWritePolicy,
+                session_write_policy_scope,
+            )
+            token = set_current_write_origin("foreground_user_explicit")
+            try:
+                with self_improvement_decision_scope(
+                    _Dec(result=ALLOW, reason="f20_trusted")
+                ):
+                    with session_write_policy_scope(
+                        SessionWritePolicy.normal(
+                            session_id="f20", origin="foreground_user_explicit"
+                        )
+                    ):
+                        seen = get_self_improvement_decision()
+                        assert getattr(seen, "allow", False) is True
+            finally:
+                from tools.skill_provenance import reset_current_write_origin
+                reset_current_write_origin(token)

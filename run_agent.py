@@ -507,6 +507,7 @@ class AIAgent:
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
         requested_provider: str = None,
+        session_write_policy=None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         if tool_delay is not None:
@@ -591,6 +592,7 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            session_write_policy=session_write_policy,
         )
 
     def _get_session_db_for_recall(self):
@@ -1606,7 +1608,7 @@ class AIAgent:
         return AIAgent._model_requires_responses_api(model)
 
     def _max_tokens_param(self, value: int) -> dict:
-        """Return the correct max tokens kwarg for the current provider.
+        """Return the correct output-token kwarg with a routing safety cap.
 
         OpenAI's newer models (gpt-4o, gpt-4.1, gpt-5+, o-series) require
         'max_completion_tokens'. Azure OpenAI and GitHub Copilot also require
@@ -1616,18 +1618,50 @@ class AIAgent:
 
         The check is URL-first (api.openai.com / Azure / Copilot all use the
         new kwarg), then falls back to a model-name check so third-party
-        OpenAI-compatible endpoints fronting those models are recognised —
-        URL-only detection misses that case and silently sends the wrong
-        kwarg, which the upstream model rejects with a 400.
+        OpenAI-compatible endpoints fronting those models are recognised.
+
+        MiniMax and OpenRouter requests are bounded to avoid forwarding model
+        catalog limits such as 65536 as a per-request reservation. Other
+        provider-specific routes retain their established output budgets.
         """
+        normalized_provider = (
+            str(getattr(self, "provider", "") or "")
+            .strip()
+            .lower()
+            .replace("_", "-")
+        )
+        base_url_lower = str(
+            getattr(self, "_base_url_lower", "")
+            or getattr(self, "base_url", "")
+            or ""
+        ).lower()
+
+        should_cap = (
+            normalized_provider in {"openrouter", "minimax", "minimax-cn"}
+            or "openrouter.ai" in base_url_lower
+            or "api.minimax.io" in base_url_lower
+        )
+
+        safe_value = value
+        if should_cap:
+            try:
+                requested_value = int(value)
+            except (TypeError, ValueError):
+                requested_value = 2048
+
+            if requested_value <= 0:
+                requested_value = 2048
+
+            safe_value = min(requested_value, 8192)
+
         if (
             self._is_direct_openai_url()
             or self._is_azure_openai_url()
             or self._is_github_copilot_url()
             or model_forces_max_completion_tokens(self.model)
         ):
-            return {"max_completion_tokens": value}
-        return {"max_tokens": value}
+            return {"max_completion_tokens": safe_value}
+        return {"max_tokens": safe_value}
 
     @staticmethod
     def _requested_output_cap_from_api_kwargs(api_kwargs: Any) -> Optional[int]:
@@ -1810,7 +1844,10 @@ class AIAgent:
         appended to the review prompt — e.g. "save the deploy workflow as a
         skill". The automatic post-turn triggers never set it.
         """
-        from agent.background_review import spawn_background_review_thread
+        from agent.background_review import (
+            SKIP_BACKGROUND_REVIEW_THREAD,
+            spawn_background_review_thread,
+        )
         from tools.thread_context import propagate_context_to_thread
         target, _prompt = spawn_background_review_thread(
             self,
@@ -1819,6 +1856,8 @@ class AIAgent:
             review_skills=review_skills,
             focus=focus,
         )
+        if target is SKIP_BACKGROUND_REVIEW_THREAD:
+            return
         # Carry the active profile into the review thread so MEMORY.md / skill
         # review writes land in the right profile (#54937).
         t = threading.Thread(
@@ -5914,6 +5953,29 @@ class AIAgent:
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
         self._reapply_route_client_config(route_changed=route_changed)
+        self._client_kwargs.pop("ssl_verify", None)
+        self._client_kwargs.pop("ssl_ca_cert", None)
+        try:
+            from hermes_cli.config import (
+                apply_custom_provider_tls_to_client_kwargs,
+                get_compatible_custom_providers,
+                load_config_readonly,
+            )
+
+            apply_custom_provider_tls_to_client_kwargs(
+                self._client_kwargs,
+                str(self.base_url or ""),
+                get_compatible_custom_providers(load_config_readonly()),
+            )
+        except Exception:
+            logger.debug(
+                "custom-provider TLS resolution skipped on credential rotation",
+                exc_info=True,
+            )
+        self._apply_client_headers_for_base_url(
+            self.base_url,
+            apply_user_headers=not route_changed,
+        )
         self._replace_primary_openai_client(reason="credential_rotation")
 
     def _reapply_route_client_config(self, *, route_changed: bool) -> None:
@@ -7785,6 +7847,26 @@ class AIAgent:
             start_task_run,
         )
         from agent.subagent_lifecycle import bind_subagent_parent
+        from agent.session_write_policy import (
+            SessionWritePolicy,
+            session_write_policy_scope,
+        )
+        from agent.self_improvement_decision_context import (
+            DENY_FALLBACK_DECISION,
+            _is_decision_instance,
+            self_improvement_decision_scope,
+        )
+        from agent.subagent_lifecycle import bind_subagent_parent
+        policy = getattr(self, "session_write_policy", None)
+        if not isinstance(policy, SessionWritePolicy):
+            policy = SessionWritePolicy.normal(
+                session_id=getattr(self, "session_id", "") or "",
+                origin="AIAgent.run_conversation.fallback",
+            )
+            self.session_write_policy = policy
+        decision = getattr(self, "_self_improvement_decision", None)
+        if not _is_decision_instance(decision):
+            decision = DENY_FALLBACK_DECISION
         effective_task_id = task_id or str(uuid.uuid4())
         session_id = str(getattr(self, "session_id", None) or "")
         task_context = {
@@ -7849,7 +7931,7 @@ class AIAgent:
             # replaces the value with the live runtime after fallback restoration.
             # Keep the scope local instead of storing ContextVar tokens on the agent,
             # which may be observed from another thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}):
+            with session_write_policy_scope(policy), self_improvement_decision_scope(decision), bind_subagent_parent(self), scoped_runtime_main({}):
                 result = run_conversation(
                     self,
                     user_message,

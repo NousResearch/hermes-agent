@@ -2233,6 +2233,113 @@ def _resolve_command_cwd(
     return get_session_cwd(session_key) or default_cwd
 
 
+def _session_write_policy_blocked_result(
+    *,
+    error: str,
+    policy_reason: str,
+    session_id: Optional[str],
+    target: str = "",
+    disposition: Optional[str] = None,
+) -> str:
+    """Return the terminal-tool blocked schema for session write denials."""
+    payload = {
+        "output": "",
+        "exit_code": -1,
+        "error": error,
+        "status": "blocked",
+        "success": False,
+        "policy_reason": policy_reason,
+        "operation_kind": "terminal_exec",
+        "session_id": session_id or "",
+        "target": target or "",
+    }
+    if disposition:
+        payload["disposition"] = disposition
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _consult_terminal_pre_spawn_policy(
+    *,
+    command: str,
+    cwd: str,
+    session_id: Optional[str],
+) -> str | None:
+    """Consult the foreground pre-spawn policy before any terminal subprocess.
+
+    The function exists to plug the v0.20 missing-seam: SIM/v0.20 ran
+    ``_get_env_config`` and even created an environment before consulting the
+    session-write policy, so unknown/ambiguous ``git`` commands and other
+    pre-spawn policy denials were evaluated too late to short-circuit
+    sandbox creation. PRIMARY calls this consult immediately before any
+    environment-creation work; we mirror that contract.
+
+    Returns a JSON blocked-result string when the consult denies execution
+    (either via a returned DENY decision or a raised ``PolicyDenied`` /
+    unexpected exception — all fail closed). Returns ``None`` when the
+    consult allows execution, in which case the caller continues with the
+    normal ALLOW path.
+    """
+    from agent.session_write_policy import (
+        CallerType,
+        PolicyDenied,
+        pre_spawn_consult,
+    )
+
+    try:
+        decision = pre_spawn_consult(
+            CallerType.TERMINAL_TOOL,
+            operation_kind="terminal_exec",
+            raw_command=command,
+            cwd=cwd,
+            env_subset=None,
+        )
+    except PolicyDenied as exc:
+        reason = str(exc.reason or exc.disposition or "policy_denied")
+        return _session_write_policy_blocked_result(
+            error=f"Session write policy denied terminal execution: {reason}",
+            policy_reason=reason,
+            session_id=session_id,
+            disposition=str(exc.disposition or ""),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Session write policy pre-spawn consult failed closed: %s",
+            type(exc).__name__,
+        )
+        return _session_write_policy_blocked_result(
+            error="Session write policy evaluation failed; terminal execution denied",
+            policy_reason="policy_evaluation_failed",
+            session_id=session_id,
+        )
+
+    if getattr(decision, "denied", False):
+        # ``denial_payload()`` is the public, contract-stable shape
+        # (test_session_write_policy_foreground / _git_terminal assert
+        # exactly these keys). Fall back to the decision's ``reason`` if
+        # the payload helper is missing on the decision instance.
+        payload_fn = getattr(decision, "denial_payload", None)
+        if callable(payload_fn):
+            payload = payload_fn()
+        else:
+            payload = {
+                "error": "Session write policy denied terminal execution",
+                "policy_reason": getattr(decision, "reason", "policy_denied"),
+                "operation_kind": "terminal_exec",
+                "session_id": session_id or "",
+                "target": "",
+            }
+        return _session_write_policy_blocked_result(
+            error=str(payload.get("error") or "Session write policy denied terminal execution"),
+            policy_reason=str(
+                payload.get("policy_reason")
+                or getattr(decision, "reason", "policy_denied")
+            ),
+            session_id=str(payload.get("session_id") or session_id or ""),
+            target=str(payload.get("target") or ""),
+        )
+    return None
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -2288,6 +2395,41 @@ def terminal_tool(
                 "error": f"Invalid command: expected string, got {type(command).__name__}",
                 "status": "error",
             }, ensure_ascii=False)
+
+        # Pre-spawn session-write-policy consult. Runs BEFORE _get_env_config()
+        # so a denied consult (DENY_ALL / ALLOWLIST-out-of-scope / unknown
+        # ``git`` mutation / PolicyDenied exception) short-circuits terminal
+        # execution without ever touching env config or environment creation.
+        # The protected-session preflight (further down, when session_write_policy
+        # is in scope) catches DENY_ALL/ALLOWLIST early; this consult catches
+        # the unknown/ambiguous ``git`` and resolver/helper-failure classes
+        # that the protected preflight does not. PRIMARY ports the same
+        # pattern immediately before env creation; we deliberately place it
+        # before _get_env_config so the seam is conservative (and matches
+        # FOREGROUND_FIRST_DIVERGENCE: ``integration_seam_session_write_policy
+        # _before__get_env_config_missing_in_SIM``).
+        _pre_spawn_session_id = session_id or task_id or ""
+        # Pre-spawn consult's ``cwd`` must be the live session cwd, not an
+        # empty string: ``git -C <path> ...`` is a *git* command that affects
+        # ``<path>``, and the resolver derives ``target_path`` from the path
+        # argument — so we must NOT rewrite cwd to ``<path>`` here. Pass the
+        # existing env's cwd as the fallback so the resolver sees the real
+        # parent directory of any ``git -C`` argument. If no env is live yet
+        # (first call) the ``default_cwd`` stays empty and the resolver falls
+        # back to ``os.getcwd()`` on its own.
+        _pre_spawn_existing_env = get_active_env(task_id or "default")
+        _pre_spawn_cwd = _resolve_command_cwd(
+            workdir=workdir,
+            default_cwd=(getattr(_pre_spawn_existing_env, "cwd", None) or ""),
+            session_key=_pre_spawn_session_id,
+        )
+        _pre_spawn_block = _consult_terminal_pre_spawn_policy(
+            command=command,
+            cwd=_pre_spawn_cwd,
+            session_id=_pre_spawn_session_id,
+        )
+        if _pre_spawn_block is not None:
+            return _pre_spawn_block
 
         # Get configuration
         config = _get_env_config()
@@ -2579,6 +2721,7 @@ def terminal_tool(
                             # same reason as the local branch above (#77703).
                             return None
                         return output
+                        return result.get("output", "")
                 except Exception:
                     pass
                 return None

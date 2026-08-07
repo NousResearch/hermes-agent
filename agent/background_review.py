@@ -798,6 +798,7 @@ def _run_review_in_thread(
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 skip_memory=True,
+                session_write_policy=getattr(agent, "session_write_policy", None),
                 **_fork_kwargs,
             )
             review_agent._memory_write_origin = "background_review"
@@ -1027,6 +1028,32 @@ def _run_review_in_thread(
             pass
 
 
+def _policy_blocks_background_review_spawn(agent: Any) -> Optional[str]:
+    """Return the DENY reason string if the session must skip the spawn.
+
+    Consults the typed SelfImprovementDecision captured at session start.
+    Does NOT re-sample os.environ. Never raises; returns the auditable
+    reason on DENY, ``None`` on ALLOW. This is the L1 backup: turn_finalizer
+    already checks before invoking ``_spawn_background_review``; this entry
+    point covers direct callers that bypass the finalizer.
+    """
+    try:
+        decision = getattr(agent, "_self_improvement_decision", None)
+        if decision is None:
+            return "missing_self_improvement_decision"
+        if not decision.allow:
+            return decision.reason or "decision_denies_spawn"
+    except Exception:
+        # Fail-closed if the decision lookup itself cannot run — never
+        # spawn a reviewer we cannot gate.
+        logger.exception("self_improvement_decision lookup raised; defaulting to DENY")
+        return "decision-lookup-raised"
+    return None
+
+
+SKIP_BACKGROUND_REVIEW_THREAD = object()
+
+
 def spawn_background_review_thread(
     agent: Any,
     messages_snapshot: List[Dict],
@@ -1045,6 +1072,12 @@ def spawn_background_review_thread(
     the user asked for while keeping the same guardrails. Automatic
     post-turn reviews pass ``None`` — their prompts are byte-identical to
     before this parameter existed.
+
+    L1 enforcement: if the session's self-improvement decision denies the
+    spawn (including read-only sessions), return the explicit
+    ``(SKIP_BACKGROUND_REVIEW_THREAD, prompt)`` sentinel so the caller skips
+    ``Thread(...)`` and the session closes normally. A single structured log
+    line records the denial (no prompt text, no secrets). No retry.
     """
     # Pick the right prompt based on which triggers fired.  Allow per-agent
     # override (the prompts moved to module-level constants but old code paths
@@ -1065,8 +1098,36 @@ def spawn_background_review_thread(
             f"{focus}"
         )
 
+    deny_reason = _policy_blocks_background_review_spawn(agent)
+    if deny_reason is not None:
+        session_id = ""
+        try:
+            session_id = getattr(agent, "session_id", "") or ""
+        except Exception:
+            pass
+        # Single structured log line: decision / reason / operation /
+        # origin / session_id. No prompt text. No secrets. Return the
+        # explicit skip sentinel; the caller must not create a thread.
+        logger.warning(
+            "self_improvement_policy deny decision=DENY reason=%r "
+            "operation_kind=background_review_spawn origin=background_review "
+            "session_id=%s",
+            deny_reason,
+            session_id,
+        )
+
+        return SKIP_BACKGROUND_REVIEW_THREAD, prompt
+
+    parent_policy = getattr(agent, "session_write_policy", None)
+
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        from agent.session_write_policy import SessionWritePolicy, session_write_policy_scope
+
+        if isinstance(parent_policy, SessionWritePolicy):
+            with session_write_policy_scope(parent_policy):
+                _run_review_in_thread(agent, messages_snapshot, prompt)
+        else:
+            _run_review_in_thread(agent, messages_snapshot, prompt)
 
     return _target, prompt
 
@@ -1076,6 +1137,7 @@ __all__ = [
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",
     "spawn_background_review_thread",
+    "SKIP_BACKGROUND_REVIEW_THREAD",
     "summarize_background_review_actions",
     "build_memory_write_metadata",
 ]

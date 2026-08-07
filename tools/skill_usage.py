@@ -598,6 +598,7 @@ def adopt_skill(skill_name: str) -> Tuple[bool, str]:
 
     Writes the same ``created_by: agent`` marker the background review fork
     writes, so the skill joins ``curated_report()`` and the automatic
+    writes, so the skill joins the curator-managed set and the automatic
     transition walk. The inactivity clock is NOT reset: the skill's existing
     ``last_activity_at`` still governs staleness, so adopting something idle
     for months does not buy it a fresh window (nor does it archive it on the
@@ -1140,6 +1141,11 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     way to lift a prune). Restoring clears any suppression entry so future
     updates may re-seed the built-in again.
     """
+    # Phase C -- Block 3: lazy-import the shared publication guard. Local import
+    # mirrors the pattern used by _create_skill in tools/skill_manager_tool.py
+    # and keeps top-of-module surface stable for monkey-patching tests.
+    import tools.skill_publish_guard as _spg
+
     # Hub skills always have an external upstream owner — never shadow them.
     if is_hub_installed(skill_name):
         return False, (
@@ -1188,20 +1194,50 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     if dest.exists():
         return False, f"destination already exists: {dest}"
 
+    # Phase C -- Block 3: wrap the live publication inside the SHARED
+    # ``tools.skill_publish_guard.live_skill_publish_guard`` so that
+    # P2 restore_skill collides on the same global lock path as P1 _create_skill,
+    # P3 install_from_quarantine, P4 restore_official_optional_skill,
+    # P5 reset_bundled_skill, and P6 sync_skills for the same canonical name.
+    # Policy is ``new_only``; the destination-existence refusal is preserved
+    # both as a precheck (legacy contract; cheap short-circuit) AND enforced
+    # authoritatively inside the shared guard by the new_only policy. The
+    # sidecar lock ``_usage_file_lock`` (used by set_state below) is OUT OF
+    # PUBLICATION SCOPE and is preserved verbatim.
     try:
-        src.rename(dest)
-    except OSError:
-        import shutil
-        try:
-            shutil.move(str(src), str(dest))
-        except Exception as e:
-            return False, f"failed to restore: {e}"
+        with _spg.live_skill_publish_guard(
+            skill_name,
+            target=dest,
+            replacement_policy="new_only",
+        ):
+            try:
+                src.rename(dest)
+            except OSError:
+                import shutil
+                try:
+                    shutil.move(str(src), str(dest))
+                except Exception as e:
+                    return False, f"failed to restore: {e}"
 
-    # Restoring a pruned built-in lifts its suppression so updates can manage it.
-    remove_suppressed_name(skill_name)
-
-    set_state(skill_name, STATE_ACTIVE)
-    return True, f"restored to {dest}"
+            # Restoring a pruned built-in lifts its suppression so updates can
+            # manage it. ``set_state`` -> ``_mutate`` -> ``_usage_file_lock``
+            # is the sidecar lock (OUT OF PUBLICATION SCOPE); preserved verbatim.
+            remove_suppressed_name(skill_name)
+            set_state(skill_name, STATE_ACTIVE)
+            return True, f"restored to {dest}"
+    except _spg.SkillMutationLockAcquireFailure as _acq_exc:
+        # Acquire failures map to the frozen Tuple[bool, str] return contract.
+        # We do NOT import the private formatters from skill_manager_tool.py;
+        # we do NOT convert the tuple/bool API into a JSON payload. The
+        # exception carries the structured metadata for callers that want it;
+        # the tuple is the canonical user-facing surface for restore_skill.
+        return False, f"restore could not acquire the publication lock: {_acq_exc}"
+    # SkillMutationLockReleaseFailure is intentionally NOT caught here:
+    # release failures after a successful publish mean the process-level lock
+    # state is structurally corrupt; absorbing them into a (False, msg)
+    # tuple would misrepresent that to the caller and silently mask a
+    # cross-cutting lock-layer problem. Propagate per the frozen exception
+    # propagation convention.
 
 
 def _find_skill_dir(skill_name: str) -> Optional[Path]:

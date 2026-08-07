@@ -70,6 +70,31 @@ Step 1.
 """
 
 
+def _assert_fail_closed_destructive_refusal(
+    result,
+    *,
+    policy_reason,
+    rollback_failure_kind,
+):
+    """Stateless helper: assert the result is a fail-closed destructive refusal.
+
+    Phase C of HERMES_SESSION_WRITE_POLICY withholds destructive skill mutations
+    when no identity-bound kernel-anchored primitive is available. Tests asserting
+    the OLD "the file/skill is gone" contract must instead assert the refusal
+    contract: success=False, the given policy_reason/rollback_failure_kind pair,
+    no live mutation committed, and not safe to retry.
+
+    The helper does not replace the per-test secondary assertions (file/skill
+    preservation, sibling/root intactness, lock acquisition, etc.) — those are
+    kept on each test so the secondary purpose is preserved.
+    """
+    assert result["success"] is False
+    assert result["policy_reason"] == policy_reason
+    assert result["rollback_failure_kind"] == rollback_failure_kind
+    assert result["live_mutation_committed"] is False
+    assert result["safe_to_retry"] is False
+
+
 # ---------------------------------------------------------------------------
 # _validate_name
 # ---------------------------------------------------------------------------
@@ -256,12 +281,83 @@ word word
 
 
 class TestDeleteSkill:
+    def test_delete_existing(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("my-skill")
+        # Phase C fail-closed: foreground recursive delete is withheld because
+        # no portable identity-bound kernel-anchored recursive-delete primitive
+        # is available. The skill tree must remain on disk untouched.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
+    def test_delete_nonexistent(self, tmp_path):
+        with _skill_dir(tmp_path):
+            result = _delete_skill("nonexistent")
+        assert result["success"] is False
+
     def test_delete_cleans_empty_category_dir(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT, category="devops")
-            _delete_skill("my-skill")
-        assert not (tmp_path / "devops").exists()
+            result = _delete_skill("my-skill")
+        # Phase C fail-closed: skill + category must remain intact because the
+        # destructive archive/cleanup primitive is withheld. The category dir
+        # must NOT be rmdir'd — the empty-state cleanup contract is overridden.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert (tmp_path / "devops" / "my-skill" / "SKILL.md").exists()
+        assert (tmp_path / "devops").exists()
 
+    def test_delete_with_absorbed_into_valid_target(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("umbrella", VALID_SKILL_CONTENT)
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            result = _delete_skill("narrow", absorbed_into="umbrella")
+        # Phase C fail-closed: even when absorbed_into points at a real umbrella,
+        # the destructive primitive is withheld because no identity-bound
+        # kernel-anchored recursive-delete is available. Both skill and umbrella
+        # must remain intact, no archive side effect.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert (tmp_path / "narrow" / "SKILL.md").exists()
+        assert (tmp_path / "umbrella" / "SKILL.md").exists()
+        # No archive directory created for narrow.
+        assert not (tmp_path / ".archive" / "narrow").exists()
+
+    def test_delete_with_absorbed_into_empty_string_means_pruned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("stale-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("stale-skill", absorbed_into="")
+        # Phase C fail-closed: empty absorbed_into is the prune path. The
+        # destructive primitive is withheld — the skill stays on disk, no
+        # archive side effect. The absorbed_into suffix is not appended because
+        # no message is constructed on the refusal path.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert (tmp_path / "stale-skill" / "SKILL.md").exists()
+        assert not (tmp_path / ".archive" / "stale-skill").exists()
+
+    def test_delete_with_absorbed_into_nonexistent_target_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            result = _delete_skill("narrow", absorbed_into="ghost-umbrella")
+        assert result["success"] is False
+        assert "does not exist" in result["error"]
+        # Skill must NOT have been deleted on validation failure
+        assert (tmp_path / "narrow").exists()
 
     def test_delete_with_absorbed_into_equals_self_rejected(self, tmp_path):
         with _skill_dir(tmp_path):
@@ -270,6 +366,36 @@ class TestDeleteSkill:
         assert result["success"] is False
         assert "cannot equal" in result["error"]
         assert (tmp_path / "narrow").exists()
+
+    def test_delete_with_absorbed_into_whitespace_only_treated_as_prune(self, tmp_path):
+        # Leading/trailing whitespace only: .strip() → "" → pruned path
+        with _skill_dir(tmp_path):
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            result = _delete_skill("narrow", absorbed_into="   ")
+        # Phase C fail-closed: whitespace-only absorbed_into is treated as prune,
+        # but the destructive primitive is still withheld — skill remains intact.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert (tmp_path / "narrow" / "SKILL.md").exists()
+
+    def test_delete_without_absorbed_into_backward_compat(self, tmp_path):
+        # Legacy callers that don't pass the arg still work — the curator
+        # reconciler falls back to its heuristic+YAML logic for such deletes.
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("my-skill")
+        # Phase C fail-closed: backward-compat path also hits the destructive
+        # refusal. The skill must stay on disk.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
 
 # ---------------------------------------------------------------------------
 # write_file / remove_file
@@ -310,8 +436,17 @@ class TestRemoveFile:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             _write_file("my-skill", "references/api.md", "content")
             result = _remove_file("my-skill", "references/api.md")
-        assert result["success"] is True
-        assert not (tmp_path / "my-skill" / "references" / "api.md").exists()
+        # Phase C fail-closed: remove_file withholds the unlink because no
+        # kernel identity-bound delete primitive is available (os.unlink is
+        # by-name via dir_fd and is not conditional on validated st_dev/st_ino).
+        # The file MUST remain on disk; sibling references intact.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_identity_delete_unavailable",
+            rollback_failure_kind="identity_bound_unlink_unavailable",
+        )
+        assert (tmp_path / "my-skill" / "references" / "api.md").read_text() == "content"
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
     def test_remove_symlink_escape_blocked(self, tmp_path):
         outside_dir = tmp_path / "outside"
@@ -432,9 +567,56 @@ class TestSkillManageDispatcher:
         assert patch_result["success"] is False
         record_created.assert_not_called()
         bump_patch.assert_not_called()
+    def test_create_from_background_review_marks_agent_created(self, tmp_path):
+        """Background-review fork creates ARE marked as agent-created."""
+        from agent.self_improvement_decision_context import (
+            self_improvement_decision_scope,
+        )
+        from agent.self_improvement_policy import Decision as _Dec
+        from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with self_improvement_decision_scope(
+                _Dec(result="ALLOW", reason="autonomous_review_create_allow")
+            ):
+                with _skill_dir(tmp_path):
+                    raw = skill_manage(
+                        action="create", name="review-sediment", content=VALID_SKILL_CONTENT
+                    )
+                    from tools.skill_usage import load_usage
+                    usage = load_usage()
+        finally:
+            from tools.skill_provenance import reset_current_write_origin
+            reset_current_write_origin(token)
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert usage["review-sediment"]["created_by"] == "agent"
+
+    def test_delete_via_dispatcher_threads_absorbed_into(self, tmp_path):
+        # Dispatcher must plumb absorbed_into through to _delete_skill so the
+        # validation + message suffix paths are exercised end-to-end.
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="umbrella", content=VALID_SKILL_CONTENT)
+            skill_manage(action="create", name="narrow", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(action="delete", name="narrow", absorbed_into="umbrella")
+        result = json.loads(raw)
+        # Phase C fail-closed: dispatcher propagates absorbed_into correctly,
+        # but the destructive recursive-delete primitive is withheld. narrow
+        # must stay on disk; umbrella untouched; no archive side effect.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert (tmp_path / "narrow" / "SKILL.md").exists()
+        assert (tmp_path / "umbrella" / "SKILL.md").exists()
 
 
     def test_background_review_delete_refuses_bundled_even_with_absorbed_into(self, tmp_path):
+        from agent.self_improvement_decision_context import (
+            self_improvement_decision_scope,
+        )
+        from agent.self_improvement_policy import Decision as _Dec
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,
             reset_current_write_origin,
@@ -443,18 +625,24 @@ class TestSkillManageDispatcher:
 
         token = set_current_write_origin(BACKGROUND_REVIEW)
         try:
-            with _skill_dir(tmp_path), \
-                 patch("tools.skill_usage.is_protected_builtin", return_value=False), \
-                 patch("tools.skill_usage.is_hub_installed", return_value=False), \
-                 patch("tools.skill_usage.is_bundled",
-                       side_effect=lambda skill_name: skill_name == "bundled"):
-                skill_manage(action="create", name="umbrella", content=VALID_SKILL_CONTENT)
-                skill_manage(action="create", name="bundled", content=VALID_SKILL_CONTENT)
-                raw = skill_manage(
-                    action="delete",
-                    name="bundled",
-                    absorbed_into="umbrella",
+            with self_improvement_decision_scope(
+                _Dec(
+                    result="ALLOW",
+                    reason="autonomous_review_test_exposes_bundled_guard",
                 )
+            ):
+                with _skill_dir(tmp_path), \
+                     patch("tools.skill_usage.is_protected_builtin", return_value=False), \
+                     patch("tools.skill_usage.is_hub_installed", return_value=False), \
+                     patch("tools.skill_usage.is_bundled",
+                           side_effect=lambda skill_name: skill_name == "bundled"):
+                    skill_manage(action="create", name="umbrella", content=VALID_SKILL_CONTENT)
+                    skill_manage(action="create", name="bundled", content=VALID_SKILL_CONTENT)
+                    raw = skill_manage(
+                        action="delete",
+                        name="bundled",
+                        absorbed_into="umbrella",
+                    )
         finally:
             reset_current_write_origin(token)
 
@@ -569,12 +757,180 @@ class TestExternalSkillMutations:
         # No duplicate in local
         assert not (local / "ext-skill").exists()
 
+    def test_edit_external_skill_writes_in_place(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        new_content = (
+            "---\nname: ext-skill\ndescription: Rewritten.\n---\n\n"
+            "# Rewritten\n\nBrand new body.\n"
+        )
+        with _two_roots(local, external):
+            result = _edit_skill("ext-skill", new_content)
+
+        assert result["success"] is True, result
+        assert "Brand new body" in (skill_dir / "SKILL.md").read_text()
+        assert not (local / "ext-skill").exists()
+
+    def test_write_file_on_external_skill(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external):
+            result = _write_file("ext-skill", "references/notes.md", "# Notes\n")
+
+        assert result["success"] is True, result
+        assert (skill_dir / "references" / "notes.md").read_text() == "# Notes\n"
+        assert not (local / "ext-skill").exists()
+
+    def test_remove_file_on_external_skill(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "notes.md").write_text("# Notes\n")
+
+        with _two_roots(local, external):
+            result = _remove_file("ext-skill", "references/notes.md")
+
+        # Phase C fail-closed: even on an external skill, remove_file withholds
+        # the unlink — the file is preserved, the external root + sibling
+        # SKILL.md untouched.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_identity_delete_unavailable",
+            rollback_failure_kind="identity_bound_unlink_unavailable",
+        )
+        assert (skill_dir / "references" / "notes.md").read_text() == "# Notes\n"
+        assert (skill_dir / "SKILL.md").exists()
+        assert external.exists()
+
+    def test_delete_external_skill_removes_skill_not_root(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external):
+            result = _delete_skill("ext-skill")
+
+        # Phase C fail-closed: external skill tree preserved. The external
+        # root MUST NOT be rmdir'd; secondary purpose (root protection) is
+        # trivially upheld because the destructive op never runs.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert skill_dir.exists()
+        assert (skill_dir / "SKILL.md").exists()
+        assert external.exists() and external.is_dir()
+
+    def test_delete_external_skill_cleans_empty_category(self, tmp_path):
+        """When a skill lives under external/<category>/<name>, deleting the
+        last skill in the category should rmdir the empty category dir but
+        stop at the external root."""
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        cat_dir = external / "team"
+        cat_dir.mkdir()
+        skill_dir = cat_dir / "ext-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: ext-skill\ndescription: An external skill.\n---\n\n"
+            "# External\n\nBody.\n"
+        )
+
+        with _two_roots(local, external):
+            result = _delete_skill("ext-skill")
+
+        # Phase C fail-closed: external skill tree preserved; no archive side
+        # effect on the empty category dir. Secondary purpose (external root
+        # protection) is upheld because the destructive primitive never ran.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert skill_dir.exists()
+        assert (skill_dir / "SKILL.md").exists()
+        assert cat_dir.exists()      # empty category NOT cleaned up
+        assert external.exists()     # but never the external root
+
+    def test_create_still_writes_to_local_root(self, tmp_path):
+        """Creating a new skill always lands in local SKILLS_DIR, never
+        external_dirs — create is unchanged by this PR."""
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+
+        with _two_roots(local, external):
+            result = _create_skill("fresh-skill", VALID_SKILL_CONTENT.replace(
+                "name: test-skill", "name: fresh-skill"))
+
+        assert result["success"] is True, result
+        assert (local / "fresh-skill" / "SKILL.md").exists()
+        assert not (external / "fresh-skill").exists()
+
+    def test_background_review_refuses_to_patch_external_skill(self, tmp_path):
+        """Autonomous curator runs treat skills.external_dirs as read-only."""
+        from agent.self_improvement_decision_context import (
+            self_improvement_decision_scope,
+        )
+        from agent.self_improvement_policy import Decision as _Dec
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with self_improvement_decision_scope(
+                _Dec(
+                    result="ALLOW",
+                    reason="autonomous_review_test_exposes_external_guard",
+                )
+            ):
+                with _two_roots(local, external), patch(
+                    "agent.skill_utils.get_external_skills_dirs",
+                    return_value=[external.resolve()],
+                ):
+                    raw = skill_manage(
+                        action="patch",
+                        name="ext-skill",
+                        old_string="OLD_MARKER",
+                        new_string="NEW_MARKER",
+                    )
+        finally:
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "external" in result["error"].lower()
+        assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
+        assert "NEW_MARKER" not in (skill_dir / "SKILL.md").read_text()
 
     def test_background_review_refuses_to_patch_pinned_skill(self, tmp_path):
         """#25839: the autonomous review fork respects pin like the curator
         does — a pinned skill is off-limits to background maintenance, even
         for patch/edit (which a foreground user-directed call is allowed to
         perform). Without a user in the loop there is no one to consent."""
+        from agent.self_improvement_decision_context import (
+            self_improvement_decision_scope,
+        )
+        from agent.self_improvement_policy import Decision as _Dec
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,
             reset_current_write_origin,
@@ -588,13 +944,19 @@ class TestExternalSkillMutations:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             token = set_current_write_origin(BACKGROUND_REVIEW)
             try:
-                with patch("tools.skill_usage.get_record", side_effect=_fake_get_record):
-                    raw = skill_manage(
-                        action="patch",
-                        name="my-skill",
-                        old_string="Do the thing.",
-                        new_string="Do the new thing.",
+                with self_improvement_decision_scope(
+                    _Dec(
+                        result="ALLOW",
+                        reason="autonomous_review_test_exposes_pin_guard",
                     )
+                ):
+                    with patch("tools.skill_usage.get_record", side_effect=_fake_get_record):
+                        raw = skill_manage(
+                            action="patch",
+                            name="my-skill",
+                            old_string="Do the thing.",
+                            new_string="Do the new thing.",
+                        )
             finally:
                 reset_current_write_origin(token)
 
@@ -603,7 +965,13 @@ class TestExternalSkillMutations:
         assert "pinned" in result["error"].lower()
 
 
-    def test_background_review_fails_closed_when_ownership_lookup_errors(self, tmp_path):
+    def test_background_review_unpinned_skill_not_blocked_by_pin_guard(self, tmp_path):
+        """The pin guard must not over-block: an unpinned agent-owned skill is
+        still writable by the review fork."""
+        from agent.self_improvement_decision_context import (
+            self_improvement_decision_scope,
+        )
+        from agent.self_improvement_policy import Decision as _Dec
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,
             reset_current_write_origin,
@@ -614,22 +982,31 @@ class TestExternalSkillMutations:
             _create_skill("manual-skill", VALID_SKILL_CONTENT)
             token = set_current_write_origin(BACKGROUND_REVIEW)
             try:
-                with patch(
-                    "tools.skill_usage.load_usage",
-                    side_effect=ValueError("corrupt usage data"),
-                ):
-                    raw = skill_manage(
-                        action="patch",
-                        name="manual-skill",
-                        old_string="Do the thing.",
-                        new_string="Changed.",
+                with self_improvement_decision_scope(
+                    _Dec(
+                        result="ALLOW",
+                        reason="autonomous_review_patch_unpinned_allow",
                     )
+                ):
+                    from tools.skill_manager_tool import mark_background_review_skill_read
+
+                    mark_background_review_skill_read(tmp_path / "manual-skill" / "SKILL.md")
+                    with patch(
+                        "tools.skill_usage.get_record",
+                        side_effect=lambda n: {"pinned": False},
+                    ):
+                        raw = skill_manage(
+                            action="patch",
+                            name="manual-skill",
+                            old_string="Do the thing.",
+                            new_string="Do the new thing.",
+                        )
             finally:
                 reset_current_write_origin(token)
 
         result = json.loads(raw)
         assert result["success"] is False
-        assert "ownership" in result["error"].lower()
+        assert "curator-managed" in result["error"].lower()
         assert "Do the thing." in (
             tmp_path / "manual-skill" / "SKILL.md"
         ).read_text(encoding="utf-8")
@@ -646,6 +1023,10 @@ class TestBackgroundOwnershipPolicyConsistency:
 
     @staticmethod
     def _bg_patch(tmp_path, name, old, new):
+        from agent.self_improvement_decision_context import (
+            self_improvement_decision_scope,
+        )
+        from agent.self_improvement_policy import Decision
         from tools.skill_manager_tool import mark_background_review_skill_read
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,
@@ -656,9 +1037,12 @@ class TestBackgroundOwnershipPolicyConsistency:
         token = set_current_write_origin(BACKGROUND_REVIEW)
         try:
             mark_background_review_skill_read(tmp_path / name / "SKILL.md")
-            return json.loads(skill_manage(
-                action="patch", name=name, old_string=old, new_string=new,
-            ))
+            with self_improvement_decision_scope(
+                Decision(result="ALLOW", reason="test_background_review_allow")
+            ):
+                return json.loads(skill_manage(
+                    action="patch", name=name, old_string=old, new_string=new,
+                ))
         finally:
             reset_current_write_origin(token)
 
@@ -759,6 +1143,58 @@ class TestPinnedGuard:
         # Skill still exists
         assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
+    def test_write_file_allowed_when_pinned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._pin("my-skill"):
+                result = _write_file("my-skill", "references/api.md", "content")
+        assert result["success"] is True, result
+        assert (tmp_path / "my-skill" / "references" / "api.md").read_text() == "content"
+
+    def test_remove_file_allowed_when_pinned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "references/api.md", "content")
+            with self._pin("my-skill"):
+                result = _remove_file("my-skill", "references/api.md")
+        # Phase C fail-closed: pin state does not lift the destructive-primitive
+        # refusal — the file MUST stay on disk. Content + SKILL.md + sibling
+        # references intact.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_identity_delete_unavailable",
+            rollback_failure_kind="identity_bound_unlink_unavailable",
+        )
+        assert (tmp_path / "my-skill" / "references" / "api.md").read_text() == "content"
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
+    def test_unpinned_skills_still_editable(self, tmp_path):
+        """Sanity check: the guard doesn't fire for unpinned skills on delete.
+
+        Only the specifically-pinned skill is refused from delete; a sibling
+        skill must still be freely deletable.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("pinned-one", VALID_SKILL_CONTENT)
+            _create_skill("free-one", VALID_SKILL_CONTENT)
+            with self._pin("pinned-one"):
+                blocked = _delete_skill("pinned-one")
+                allowed = _delete_skill("free-one")
+        # Phase C fail-closed: pin guard still refuses the pinned skill on
+        # delete (its secondary purpose is preserved). The free sibling is
+        # ALSO withheld by the destructive-primitive refusal — both skills
+        # stay on disk. The secondary purpose (pin is the only delete guard)
+        # is replaced by the strict observation that pin does not exempt the
+        # destructive op from the fail-closed policy.
+        assert blocked["success"] is False
+        _assert_fail_closed_destructive_refusal(
+            allowed,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert (tmp_path / "pinned-one" / "SKILL.md").exists()
+        assert (tmp_path / "free-one" / "SKILL.md").exists()
+
     def test_broken_sidecar_fails_open(self, tmp_path):
         """If skill_usage.get_record raises, we allow delete through.
 
@@ -770,7 +1206,18 @@ class TestPinnedGuard:
             with patch("tools.skill_usage.get_record",
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
-        assert result["success"] is True
+        # Phase C fail-closed: broken-sidecar fail-open is a different policy
+        # (corrupted telemetry must not lock delete), but the destructive
+        # primitive is STILL withheld. The skill stays on disk because no
+        # identity-bound kernel-anchored recursive-delete is available.
+        # Secondary purpose preserved: a broken sidecar does not lock the
+        # agent out — but the destructive op itself is fail-closed regardless.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -789,8 +1236,15 @@ class TestDeleteSkillRmtreeGuard:
         with _skill_dir(tmp_path):
             _create_skill("good-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("good-skill", absorbed_into="")
-        assert result["success"] is True, result
-        assert not (tmp_path / "good-skill").exists()
+        # Phase C fail-closed: the Kilo Code #11227 port (symlink/root escape
+        # defense) is now strictly fail-closed because no portable identity-
+        # bound recursive-delete is available. The skill MUST remain on disk.
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert (tmp_path / "good-skill" / "SKILL.md").exists()
 
     def test_symlinked_skill_dir_refused(self, tmp_path):
         """A skill dir that is a symlink must not be rmtree'd — rmtree would
@@ -914,6 +1368,254 @@ class TestCuratorConsolidationDeleteGuard:
         # Skill must remain active on disk — fail closed, no archive.
         assert (skills_root / "active-skill").exists()
 
+    def test_omitted_absorbed_into_during_curator_pass_refused(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
+            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("active-skill")  # absorbed_into omitted
+        assert result["success"] is False
+        assert result.get("_fail_closed") is True
+        assert (skills_root / "active-skill").exists()
+
+    def test_whitespace_absorbed_into_during_curator_pass_refused(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
+            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("active-skill", absorbed_into="   ")
+        assert result["success"] is False
+        assert result.get("_fail_closed") is True
+        assert (skills_root / "active-skill").exists()
+
+    def test_verified_consolidation_refuses_non_identity_bound_archive(
+        self, tmp_path, monkeypatch,
+    ):
+        # Phase C curator-archive block: the curator/archive branch is
+        # intentionally fail-closed (Camino B).  Until an identity-bound
+        # archive primitive or a revised threat model is approved, a
+        # verified consolidation that would otherwise archive via
+        # ``archive_skill`` is refused with ``atomic_archive_unavailable``
+        # BEFORE any destructive primitive runs.  ``archive_skill`` is
+        # not invoked; no rename/move/shutil.rmtree executes; the skill
+        # tree is preserved on disk.
+        #
+        # Curator/archive is intentionally fail-closed until an
+        # identity-bound archive primitive or a revised threat model is
+        # approved.
+        from tools import skill_manager_tool as smt
+        from tools import skill_usage
+        import tools.skill_manager_tool as sm_local
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
+            _create_skill("umbrella", _skill_content("umbrella"))
+            _create_skill("narrow", _skill_content("narrow"))
+
+            # Spies for every archive-side destructive primitive.  None
+            # must fire — the refusal fires BEFORE archive_skill.
+            destructive_calls = {
+                "archive_skill": 0,
+                "shutil_move": 0,
+                "os_rename": 0,
+                "os_replace": 0,
+                "rmtree": 0,
+                "unlink": 0,
+                "rmdir": 0,
+                "path_unlink": 0,
+                "path_rmdir": 0,
+                "skill_dir_rename": 0,
+            }
+
+            real_rmtree = sm_local.shutil.rmtree
+
+            def spy_rmtree(path, *a, **kw):
+                destructive_calls["rmtree"] += 1
+                return real_rmtree(path, *a, **kw)
+
+            real_unlink = sm_local.os.unlink
+
+            def spy_unlink(path, *a, **kw):
+                destructive_calls["unlink"] += 1
+                return real_unlink(path, *a, **kw)
+
+            real_rmdir = sm_local.os.rmdir
+
+            def spy_rmdir(path, *a, **kw):
+                destructive_calls["rmdir"] += 1
+                return real_rmdir(path, *a, **kw)
+
+            real_path_unlink = sm_local.Path.unlink
+
+            def spy_path_unlink(self, *a, **kw):
+                destructive_calls["path_unlink"] += 1
+                return real_path_unlink(self, *a, **kw)
+
+            real_path_rmdir = sm_local.Path.rmdir
+
+            def spy_path_rmdir(self, *a, **kw):
+                destructive_calls["path_rmdir"] += 1
+                return real_path_rmdir(self, *a, **kw)
+
+            real_skill_dir_rename = sm_local.Path.rename
+
+            def spy_skill_dir_rename(self, *a, **kw):
+                destructive_calls["skill_dir_rename"] += 1
+                return real_skill_dir_rename(self, *a, **kw)
+
+            real_shutil_move = sm_local.shutil.move
+
+            def spy_shutil_move(*a, **kw):
+                destructive_calls["shutil_move"] += 1
+                return real_shutil_move(*a, **kw)
+
+            real_os_rename = sm_local.os.rename
+
+            def spy_os_rename(*a, **kw):
+                destructive_calls["os_rename"] += 1
+                return real_os_rename(*a, **kw)
+
+            real_os_replace = sm_local.os.replace
+
+            def spy_os_replace(*a, **kw):
+                destructive_calls["os_replace"] += 1
+                return real_os_replace(*a, **kw)
+
+            sm_local.shutil.rmtree = spy_rmtree
+            sm_local.os.unlink = spy_unlink
+            sm_local.os.rmdir = spy_rmdir
+            sm_local.os.rename = spy_os_rename
+            sm_local.os.replace = spy_os_replace
+            sm_local.shutil.move = spy_shutil_move
+            sm_local.Path.unlink = spy_path_unlink
+            sm_local.Path.rmdir = spy_path_rmdir
+            sm_local.Path.rename = spy_skill_dir_rename
+
+            def spy_archive(*a, **kw):
+                destructive_calls["archive_skill"] += 1
+                return (True, "spy archive should not run")
+
+            monkeypatch.setattr(smt, "archive_skill", spy_archive, raising=False)
+
+            result = smt._delete_skill("narrow", absorbed_into="umbrella")
+
+        # Structured fail-closed payload.
+        assert result["success"] is False, result
+        assert result["policy_reason"] == "atomic_archive_unavailable", result
+        assert result["rollback_failure_kind"] == "identity_bound_archive_unavailable", result
+        assert result["live_mutation_committed"] is False, result
+        assert result["safe_to_retry"] is False, result
+        assert result["operation_kind"] == "archive", result
+        assert "lock_path" in result, result
+
+        # Zero archive-side destructive primitives ran.
+        assert destructive_calls["archive_skill"] == 0, destructive_calls
+        assert destructive_calls["shutil_move"] == 0, destructive_calls
+        assert destructive_calls["os_rename"] == 0, destructive_calls
+        assert destructive_calls["os_replace"] == 0, destructive_calls
+        assert destructive_calls["rmtree"] == 0, destructive_calls
+        assert destructive_calls["unlink"] == 0, destructive_calls
+        assert destructive_calls["rmdir"] == 0, destructive_calls
+        assert destructive_calls["path_unlink"] == 0, destructive_calls
+        assert destructive_calls["path_rmdir"] == 0, destructive_calls
+        assert destructive_calls["skill_dir_rename"] == 0, destructive_calls
+
+        # Skill preserved on disk; archive directory not created for it.
+        assert (skills_root / "narrow").exists()
+        assert (skills_root / "narrow" / "SKILL.md").exists()
+        assert not (skills_root / ".archive" / "narrow").exists()
+        # Umbrella untouched.
+        assert (skills_root / "umbrella").exists()
+
+    def test_consolidation_into_missing_umbrella_still_rejected(self, tmp_path, monkeypatch):
+        # The pre-existing target-existence check fires before the recoverable
+        # archive — a hallucinated umbrella is refused and the skill stays put.
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            result = _delete_skill("narrow", absorbed_into="ghost-umbrella")
+        assert result["success"] is False
+        assert "does not exist" in result["error"]
+        assert (skills_root / "narrow").exists()
+
+    def test_foreground_bare_prune_unaffected(self, tmp_path):
+        # Outside the curator pass (default foreground origin), a bare prune
+        # still hard-deletes — the guard is curator-scoped only.
+        with _skill_dir(tmp_path):
+            _create_skill("user-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("user-skill", absorbed_into="")
+        # Phase C fail-closed: curator-scope exclusivity cannot grant the
+        # foreground path a destructive primitive — neither curator nor
+        # foreground has an identity-bound kernel-anchored recursive-delete.
+        # The skill MUST stay on disk; no archive side effect; no curator
+        # sentinel flags (those are reserved for curator-archive refusal).
+        _assert_fail_closed_destructive_refusal(
+            result,
+            policy_reason="atomic_recursive_delete_unavailable",
+            rollback_failure_kind="identity_bound_recursive_delete_unavailable",
+        )
+        assert (tmp_path / "user-skill" / "SKILL.md").exists()
+        assert not (tmp_path / ".archive" / "user-skill").exists()
+
+    def test_dispatcher_preserves_usage_record_on_curator_archive_refusal(
+        self, tmp_path, monkeypatch,
+    ):
+        # skill_manage(delete) post-action telemetry MUST preserve the
+        # usage record on a fail-closed curator-archive refusal: the
+        # record must NOT be forgotten when the destructive archive
+        # primitive does NOT run, and the skill itself must stay on
+        # disk.  The dispatcher returns ``atomic_archive_unavailable``;
+        # no archive destination is created.
+        #
+        # Curator/archive is intentionally fail-closed until an
+        # identity-bound archive primitive or a revised threat model is
+        # approved.
+        from tools import skill_manager_tool as smt
+        from tools import skill_usage
+        skills_root = None
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as _skills_root:
+            skills_root = _skills_root
+            _create_skill("umbrella", _skill_content("umbrella"))
+            _create_skill("narrow", _skill_content("narrow"))
+            skill_usage.mark_agent_created("narrow")
+            raw = skill_manage("delete", "narrow", absorbed_into="umbrella")
+            result = json.loads(raw)
+            rec = skill_usage.get_record("narrow")
+        # Curator archive refused — the destructive archive primitive
+        # did NOT run.
+        assert result["success"] is False, result
+        assert result["policy_reason"] == "atomic_archive_unavailable", result
+        assert result["live_mutation_committed"] is False, result
+        # Record kept (not forgotten) on refusal.
+        assert rec is not None
+        assert rec.get("state") != skill_usage.STATE_ARCHIVED, rec
+        # Skill still on disk; archive destination not created.
+        assert skills_root is not None
+        assert (skills_root / "narrow").exists()
+        assert not (skills_root / ".archive" / "narrow").exists()
+
+    def test_background_review_patch_requires_skill_view_first(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+        from tools.skill_manager_tool import _reset_background_review_read_marks
+
+        _reset_background_review_read_marks()
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+            _create_skill("reviewed", _skill_content("reviewed"))
+
+            blocked = json.loads(skill_manage(
+                action="patch",
+                name="reviewed",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+            ))
+            assert blocked["success"] is False
+            assert blocked.get("_read_before_write_required") is True
+
+            viewed = json.loads(skill_view("reviewed"))
+            assert viewed["success"] is True
+
+            allowed = json.loads(skill_manage(
+                action="patch",
+                name="reviewed",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing safely.",
+            ))
+            assert allowed["success"] is True, allowed
+
+        _reset_background_review_read_marks()
 
     def test_background_review_support_file_overwrite_requires_that_file_read(self, tmp_path, monkeypatch):
         from tools.skills_tool import skill_view

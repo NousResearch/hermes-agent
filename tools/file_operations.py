@@ -29,7 +29,9 @@ import os
 import re
 import difflib
 import hashlib
+import contextvars
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
 from pathlib import Path
@@ -52,6 +54,11 @@ _HOME = str(Path.home())
 WRITE_DENIED_PATHS = build_write_denied_paths(_HOME)
 
 WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
+
+_file_policy_operation_overrides: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar(
+    "file_policy_operation_overrides",
+    default={},
+)
 
 
 _OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
@@ -874,6 +881,65 @@ class ShellFileOperations(FileOperations):
             stdout=result.get("output", ""),
             exit_code=result.get("returncode", 0)
         )
+
+    def _policy_target_path(self, path: str) -> str:
+        raw = Path(path)
+        if raw.is_absolute():
+            return str(raw)
+        effective_cwd = getattr(self.env, "cwd", None) or self.cwd or os.getcwd()
+        return str(Path(effective_cwd) / raw)
+
+    def _operation_for_path(self, path: str, default: str) -> str:
+        overrides = _file_policy_operation_overrides.get() or {}
+        return overrides.get(path) or overrides.get(self._policy_target_path(path)) or default
+
+    def _session_write_decision(self, path: str, operation_kind: str, origin: str):
+        from agent.session_write_policy import (
+            CapabilityGrant,
+            evaluate_session_write_policy,
+            get_current_session_write_policy,
+        )
+
+        target = self._policy_target_path(path)
+        policy = get_current_session_write_policy(protected=False)
+        return evaluate_session_write_policy(
+            policy,
+            operation_kind=operation_kind,
+            origin=origin,
+            target_path=target,
+            capability=CapabilityGrant("filesystem", operation_kind),
+        )
+
+    def _policy_denied_write_result(self, decision) -> WriteResult:
+        payload = decision.denial_payload()
+        return WriteResult(
+            error=payload["error"],
+            warning=(
+                f"policy_reason={payload['policy_reason']}; "
+                f"operation_kind={payload['operation_kind']}; "
+                f"session_id={payload['session_id']}; "
+                f"target={payload['target']}"
+            ),
+        )
+
+    def _policy_denied_patch_result(self, decision) -> PatchResult:
+        payload = decision.denial_payload()
+        return PatchResult(
+            success=False,
+            error=payload["error"],
+        )
+
+    @contextmanager
+    def _file_policy_operations(self, mapping: dict[str, str]):
+        expanded = {}
+        for path, operation_kind in mapping.items():
+            expanded[str(path)] = operation_kind
+            expanded[self._policy_target_path(str(path))] = operation_kind
+        token = _file_policy_operation_overrides.set(expanded)
+        try:
+            yield
+        finally:
+            _file_policy_operation_overrides.reset(token)
     
     def _has_command(self, cmd: str) -> bool:
         """Check if a command exists in the environment (cached)."""
@@ -1014,6 +1080,11 @@ class ShellFileOperations(FileOperations):
         was swapped into place atomically. A non-zero exit means nothing was
         renamed and the original (if any) is intact.
         """
+        operation_kind = self._operation_for_path(path, "file_write")
+        decision = self._session_write_decision(path, operation_kind, "file_operations_atomic_write")
+        if decision.denied:
+            return ExecuteResult(stdout=decision.denial_payload()["error"], exit_code=1)
+
         q_path = self._escape_shell_arg(path)
         parent = os.path.dirname(path) or "."
         q_parent = self._escape_shell_arg(parent)
@@ -1351,6 +1422,11 @@ class ShellFileOperations(FileOperations):
         denied = get_write_denied_error(path, verb="Delete")
         if denied:
             return WriteResult(error=denied)
+        decision = self._session_write_decision(path, "file_delete", "file_operations_delete")
+        if decision.denied:
+            return self._policy_denied_write_result(decision)
+        if _is_write_denied(path):
+            return WriteResult(error=f"Delete denied: {path} is a protected path")
 
         # We can't shell out to ``rm`` here — it doesn't exist on Windows
         # ``cmd.exe`` or PowerShell, so this code path is what's left when
@@ -1394,6 +1470,10 @@ class ShellFileOperations(FileOperations):
         """Move a file via mv."""
         src = self._expand_path(src)
         dst = self._expand_path(dst)
+        for _path, _kind in ((src, "file_delete"), (dst, "file_write")):
+            decision = self._session_write_decision(_path, _kind, "file_operations_move")
+            if decision.denied:
+                return self._policy_denied_write_result(decision)
         for p in (src, dst):
             denied = get_write_denied_error(p, verb="Move")
             if denied:
@@ -1452,6 +1532,10 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+        operation_kind = self._operation_for_path(path, "file_write")
+        decision = self._session_write_decision(path, operation_kind, "file_operations_write")
+        if decision.denied:
+            return self._policy_denied_write_result(decision)
 
         # Block writes to sensitive paths
         denied = get_write_denied_error(path)
@@ -1670,6 +1754,9 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
+        decision = self._session_write_decision(path, "file_patch", "file_operations_patch")
+        if decision.denied:
+            return self._policy_denied_patch_result(decision)
 
         # Block writes to sensitive paths
         denied = get_write_denied_error(path)
@@ -1744,6 +1831,9 @@ class ShellFileOperations(FileOperations):
         # content (before _strip_bom) so write_file can detect/restore BOM.
         write_result = self.write_file(path, new_content,
                                        pre_content=raw_content)
+        # Write back
+        with self._file_policy_operations({path: "file_patch"}):
+            write_result = self.write_file(path, new_content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
 
@@ -1826,9 +1916,29 @@ class ShellFileOperations(FileOperations):
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
+
+        operation_map: dict[str, str] = {}
+        for op in operations:
+            op_kind = "file_patch"
+            if getattr(op.operation, "value", "") == "add":
+                op_kind = "file_create"
+            elif getattr(op.operation, "value", "") == "delete":
+                op_kind = "file_delete"
+            elif getattr(op.operation, "value", "") == "move":
+                op_kind = "file_delete"
+            operation_map[op.file_path] = op_kind
+            decision = self._session_write_decision(op.file_path, op_kind, "file_operations_patch_v4a")
+            if decision.denied:
+                return self._policy_denied_patch_result(decision)
+            if getattr(op.operation, "value", "") == "move" and op.new_path:
+                operation_map[op.new_path] = "file_write"
+                decision = self._session_write_decision(op.new_path, "file_write", "file_operations_patch_v4a")
+                if decision.denied:
+                    return self._policy_denied_patch_result(decision)
         
         # Apply operations
-        result = apply_v4a_operations(operations, self)
+        with self._file_policy_operations(operation_map):
+            result = apply_v4a_operations(operations, self)
         return result
     
     def _check_lint(self, path: str, content: Optional[str] = None) -> LintResult:

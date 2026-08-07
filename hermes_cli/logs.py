@@ -59,6 +59,28 @@ _LOGGER_NAME_RE = re.compile(
 # Level ordering for >= filtering
 _LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
 
+# Shared bounds for ``hermes logs -n`` and dashboard ``GET /api/logs``.
+# The console-engine path already rejects values outside this range;
+# other surfaces must clamp or they hit Python negative-slice footguns.
+LOG_LINES_MIN = 1
+LOG_LINES_MAX = 500
+LOG_LINES_DEFAULT_CLI = 50
+LOG_LINES_DEFAULT_DASHBOARD = 100
+
+
+def clamp_log_lines(value, default: int = LOG_LINES_DEFAULT_CLI) -> int:
+    """Clamp a log line-count request to ``[1, 500]``.
+
+    A bare ``min(lines, 500)`` is not enough: negative values keep the
+    negative number (``min(-1, 500) == -1``), and Python negative slices
+    then return nearly the entire log buffer instead of a short tail.
+    """
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(LOG_LINES_MIN, min(LOG_LINES_MAX, parsed))
+
 
 def _parse_since(since_str: str) -> Optional[datetime]:
     """Parse a relative time string like '1h', '30m', '2d' into a datetime cutoff.
@@ -171,6 +193,8 @@ def tail_log(
     component
         Component name to filter by (e.g. ``"gateway"``, ``"tools"``).
     """
+    num_lines = clamp_log_lines(num_lines, default=LOG_LINES_DEFAULT_CLI)
+
     filename = LOG_FILES.get(log_name)
     if filename is None:
         print(f"Unknown log: {log_name!r}. Available: {', '.join(sorted(LOG_FILES))}")

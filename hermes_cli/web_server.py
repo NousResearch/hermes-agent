@@ -11509,7 +11509,12 @@ async def get_logs(
     component: Optional[str] = None,
     search: Optional[str] = None,
 ):
-    from hermes_cli.logs import _read_tail, LOG_FILES
+    from hermes_cli.logs import (
+        LOG_FILES,
+        LOG_LINES_DEFAULT_DASHBOARD,
+        _read_tail,
+        clamp_log_lines,
+    )
 
     log_name = LOG_FILES.get(file)
     if not log_name:
@@ -11538,9 +11543,10 @@ async def get_logs(
     else:
         comp_prefixes = None
 
+    safe_lines = clamp_log_lines(lines, default=LOG_LINES_DEFAULT_DASHBOARD)
     has_filters = bool(min_level or comp_prefixes or search)
     result = _read_tail(
-        log_path, min(lines, 500) if not search else 2000,
+        log_path, safe_lines if not search else 2000,
         has_filters=has_filters,
         min_level=min_level,
         component_prefixes=comp_prefixes,
@@ -11550,7 +11556,7 @@ async def get_logs(
     # trim to the requested line count afterward.
     if search:
         needle = search.lower()
-        result = [l for l in result if needle in l.lower()][-min(lines, 500):]
+        result = [l for l in result if needle in l.lower()][-safe_lines:]
     return {"file": file, "lines": result}
 
 

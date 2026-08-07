@@ -1308,8 +1308,6 @@ class MatrixAdapter(BasePlatformAdapter):
             "🌀": "session",
             "♾️": "always",
             "♾": "always",
-            "\u267e\ufe0f": "always",
-            "\u267e": "always",
             "❌": "deny",
             "❎": "deny",
         }

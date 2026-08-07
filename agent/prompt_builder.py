@@ -306,6 +306,23 @@ KANBAN_GUIDANCE = (
     "cross-agent handoffs that outlive one API loop."
 )
 
+KANBAN_ORCHESTRATOR_GUIDANCE = (
+    "# Kanban board orchestration protocol\n"
+    "This is a normal interactive session with board-routing access, not a "
+    "dispatcher-spawned worker assigned to one task. There is no implicit task "
+    "id.\n"
+    "\n"
+    "- To inspect the board, call `kanban_list()` first.\n"
+    "- To inspect one card, call `kanban_show(task_id=\"t_...\")` with an id "
+    "returned by `kanban_list`; never call `kanban_show()` without a task id.\n"
+    "- Use `kanban_create`, `kanban_link`, and `kanban_unblock` for durable "
+    "routing when appropriate.\n"
+    "- Use the `kanban_*` tools rather than shelling out to `hermes kanban`; "
+    "the tools reach the host board even when the terminal backend is remote.\n"
+    "- Do not complete, block, or otherwise mutate a task unless the user asked "
+    "you to route it or you have verified the task state and intended action."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

@@ -767,13 +767,15 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
             "[System: The previous response was cut off by a "
             "network error mid-stream. Continue exactly where "
             "you left off. Do not restart or repeat prior text. "
-            "Finish the answer directly.]"
+            "You may still use tool calls if needed — all tools "
+            "remain available.]"
         )
     else:
         return (
             "[System: Your previous response was truncated by the output "
             "length limit. Continue exactly where you left off. Do not "
-            "restart or repeat prior text. Finish the answer directly.]"
+            "restart or repeat prior text. You may still use tool calls "
+            "if needed — all tools remain available.]"
         )
 
 

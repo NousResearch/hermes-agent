@@ -114,8 +114,11 @@ No additional credential is required when `ANTHROPIC_API_KEY` was already
 configured for the model, but the model itself must be served by Anthropic's
 own API — the key alone does not enable this backend elsewhere. Search uses
 `web_search_20250305`; fetch uses `web_fetch_20250910` with citations enabled.
-Both are capped at five uses per model request. Anthropic web search has a
-per-search charge in addition to normal token usage.
+Both are capped at five uses per model request, and fetched page text is capped
+at roughly 25 000 tokens so a single large page cannot fill the context window
+— note that Anthropic applies this limit to text only, not to binary content
+such as PDFs. Anthropic web search has a per-search charge in addition to
+normal token usage.
 
 ---
 

@@ -1348,6 +1348,23 @@ def _anthropic_web_search_schema_overrides() -> dict:
     }
 
 
+# Ceiling on how much fetched page text Anthropic may load into the context.
+#
+# The local ``web_extract`` path is bounded twice before a result reaches the
+# model: the auxiliary summariser, and ``max_result_size_chars`` on the registry
+# entry below.  The native fetch executes inside the Messages API request, so
+# neither guard ever sees it — an unbounded fetch would be injected whole and,
+# because it is preserved for replay, resent on every later turn of the session.
+# Bound it server-side at the same order of magnitude as the local cap
+# (100_000 chars, ~4 chars/token) so choosing this backend does not silently
+# change how much of a page can land in the context.
+#
+# Approximate by Anthropic's own definition, and explicitly NOT applied to
+# binary content such as PDFs — a large PDF is still bounded only by the
+# context window.
+_ANTHROPIC_WEB_FETCH_MAX_CONTENT_TOKENS = 25_000
+
+
 def _anthropic_web_fetch_schema_overrides() -> dict:
     """Expose Anthropic web_fetch in place of Hermes web_extract when selected."""
     if _get_extract_backend() != "anthropic":
@@ -1363,6 +1380,7 @@ def _anthropic_web_fetch_schema_overrides() -> dict:
                 "type": "web_fetch_20250910",
                 "name": "web_fetch",
                 "max_uses": 5,
+                "max_content_tokens": _ANTHROPIC_WEB_FETCH_MAX_CONTENT_TOKENS,
                 "citations": {"enabled": True},
             },
         }

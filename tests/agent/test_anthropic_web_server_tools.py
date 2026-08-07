@@ -414,3 +414,37 @@ def test_third_party_endpoint_drop_is_reported_once(caplog):
     assert "third_party_probe_tool" in message
     assert "api.minimax.io" in message
     assert "hermes tools" in message
+
+
+def test_native_web_fetch_bounds_the_content_it_injects(anthropic_key):
+    """A server-side fetch must carry a content ceiling of its own.
+
+    The local ``web_extract`` path is bounded before a result reaches the model
+    (auxiliary summariser, then ``max_result_size_chars`` on the registry
+    entry).  The native fetch runs inside Anthropic's request, so neither guard
+    ever sees it: without ``max_content_tokens`` one large page is injected
+    whole and — because the block is preserved for replay — resent on every
+    later turn of the session.
+    """
+    from tools import registry, web_tools
+
+    _write_hermes_config("""
+        model:
+          provider: anthropic
+        web:
+          backend: anthropic
+    """)
+
+    definition = web_tools._anthropic_web_fetch_schema_overrides()
+    definition = definition["_hermes_server_tool"]["definition"]
+
+    cap = definition.get("max_content_tokens")
+    assert isinstance(cap, int) and cap > 0, definition
+
+    # Tie the ceiling to the local cap rather than freezing a number: the two
+    # bound the same thing on two paths, and a reader who raises one should be
+    # told to look at the other. ~4 chars/token, so the native ceiling stays
+    # within an order of magnitude of the local one.
+    local_chars = registry.registry.get_entry("web_extract").max_result_size_chars
+    assert local_chars is not None
+    assert local_chars / 40 <= cap <= local_chars, (cap, local_chars)

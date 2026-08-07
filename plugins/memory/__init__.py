@@ -199,7 +199,14 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
     precedence on name collisions.
 
     Returns None if the provider is not found or fails to load.
+
+    When ``HERMES_SAFE_MODE`` is active, all memory providers are
+    skipped — no plugin code is imported or executed.
     """
+    from utils import env_var_enabled
+    if env_var_enabled("HERMES_SAFE_MODE"):
+        logger.debug("HERMES_SAFE_MODE=1 — memory provider loading skipped")
+        return None
     provider_dir = find_provider_dir(name)
     if not provider_dir:
         logger.debug("Memory provider '%s' not found in bundled or user plugins", name)
@@ -353,7 +360,14 @@ def _get_active_memory_provider() -> Optional[str]:
     Returns the provider name (e.g. ``"honcho"``) or None if no
     external provider is configured.  Lightweight — only reads config,
     no plugin loading.
+
+    When ``HERMES_IGNORE_USER_CONFIG`` or ``HERMES_SAFE_MODE`` is set,
+    the user's ``memory.provider`` config is explicitly being ignored,
+    so this returns None regardless of what config.yaml contains.
     """
+    from utils import env_var_enabled
+    if env_var_enabled("HERMES_IGNORE_USER_CONFIG") or env_var_enabled("HERMES_SAFE_MODE"):
+        return None
     try:
         from hermes_cli.config import load_config
         config = load_config()

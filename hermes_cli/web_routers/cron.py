@@ -239,5 +239,12 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
     except HTTPException:
         raise
     except Exception as e:
+        from cron.scheduler import CronSchedulerRegistrationError
+
+        if isinstance(e, CronSchedulerRegistrationError):
+            raise HTTPException(
+                status_code=424,
+                detail=e.to_dict(),
+            ) from e
         _log.exception("POST /api/cron/blueprints/instantiate failed")
         raise HTTPException(status_code=400, detail=str(e))

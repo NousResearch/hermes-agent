@@ -40,7 +40,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from cron.jobs import (
     AmbiguousJobReference,
     claim_job_for_fire,
-    create_job,
     get_job,
     list_jobs,
     mark_job_run,
@@ -1099,25 +1098,38 @@ def cronjob(
                             success=False,
                         )
 
-            job = create_job(
-                prompt=prompt or "",
-                schedule=schedule,
-                name=name,
-                repeat=repeat,
-                deliver=_normalize_deliver_param(deliver),
-                origin=_origin_from_env(),
-                skills=canonical_skills,
-                model=_normalize_optional_job_value(model),
-                provider=_normalize_optional_job_value(provider),
-                base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
-                script=_normalize_optional_job_value(script),
-                context_from=context_from,
-                enabled_toolsets=enabled_toolsets or None,
-                workdir=_normalize_optional_job_value(workdir),
-                no_agent=_no_agent,
-                attach_to_session=attach_to_session,
+            from cron.scheduler import (
+                CronSchedulerRegistrationError,
+                create_job_with_scheduler_registration,
             )
-            _notify_provider_jobs_changed_safe()
+
+            try:
+                job = create_job_with_scheduler_registration(
+                    prompt=prompt or "",
+                    schedule=schedule,
+                    name=name,
+                    repeat=repeat,
+                    deliver=_normalize_deliver_param(deliver),
+                    origin=_origin_from_env(),
+                    skills=canonical_skills,
+                    model=_normalize_optional_job_value(model),
+                    provider=_normalize_optional_job_value(provider),
+                    base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                    script=_normalize_optional_job_value(script),
+                    context_from=context_from,
+                    enabled_toolsets=enabled_toolsets or None,
+                    workdir=_normalize_optional_job_value(workdir),
+                    no_agent=_no_agent,
+                    attach_to_session=attach_to_session,
+                )
+            except CronSchedulerRegistrationError as exc:
+                return json.dumps(
+                    {
+                        "success": False,
+                        **exc.to_dict(),
+                    },
+                    indent=2,
+                )
             _create_message = f"Cron job '{job['name']}' created."
             _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
             if _local_notice:

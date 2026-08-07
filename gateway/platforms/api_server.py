@@ -1284,12 +1284,15 @@ try:
     from cron.jobs import (
         list_jobs as _cron_list,
         get_job as _cron_get,
-        create_job as _cron_create,
         update_job as _cron_update,
         remove_job as _cron_remove,
         pause_job as _cron_pause,
         resume_job as _cron_resume,
         trigger_job as _cron_trigger,
+    )
+    from cron.scheduler import (
+        CronSchedulerRegistrationError as _CronSchedulerRegistrationError,
+        create_job_with_scheduler_registration as _cron_create,
     )
     _CRON_AVAILABLE = True
 except ImportError:
@@ -1301,6 +1304,9 @@ except ImportError:
     _cron_pause = None
     _cron_resume = None
     _cron_trigger = None
+
+    class _CronSchedulerRegistrationError(RuntimeError):
+        pass
 
 
 def _notify_cron_provider_jobs_changed() -> None:
@@ -5573,8 +5579,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 kwargs["repeat"] = repeat
 
             job = _cron_create(**kwargs)
-            _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
+        except _CronSchedulerRegistrationError as e:
+            return web.json_response(e.to_dict(), status=424)
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 

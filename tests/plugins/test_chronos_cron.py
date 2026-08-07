@@ -75,6 +75,29 @@ def test_arm_one_shot_sends_provision(chronos):
     assert p["agent_callback_url"] == "https://agent.example/"
 
 
+def test_register_job_arms_only_the_created_job(chronos):
+    prov, fake = chronos
+    job = {"id": "created", "next_run_at": "2026-06-18T12:00:00+00:00"}
+
+    prov.register_job(job)
+
+    assert [p["job_id"] for p in fake.provisions] == ["created"]
+
+
+def test_register_job_propagates_provision_failure(chronos):
+    prov, fake = chronos
+
+    def fail_provision(**kwargs):
+        raise RuntimeError("provision rejected")
+
+    fake.provision = fail_provision
+
+    with pytest.raises(RuntimeError, match="provision rejected"):
+        prov.register_job(
+            {"id": "created", "next_run_at": "2026-06-18T12:00:00+00:00"}
+        )
+
+
 # -- reconcile ----------------------------------------------------------------
 
 def test_reconcile_arms_all_enabled(temp_home, chronos, monkeypatch):
@@ -104,5 +127,4 @@ def test_fire_due_rearms_next_oneshot(chronos, monkeypatch):
     assert prov.fire_due("j1") is True
     assert [p["job_id"] for p in fake.provisions] == ["j1"]
     assert fake.provisions[0]["fire_at"] == "2026-06-18T12:05:00+00:00"
-
 

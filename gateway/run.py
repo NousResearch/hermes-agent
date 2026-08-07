@@ -4545,6 +4545,18 @@ class TurnRunner:
                         on_before_finalize=_pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id,
                         run_still_current=ctx._run_still_current,
+                        # Lazily report the agent's model-API failure so
+                        # the stream consumer can suppress a partial /
+                        # oversized streamed buffer (e.g. echoed system
+                        # prompt) and deliver a single clean error instead
+                        # of flooding the user with split messages.
+                        api_error_fn=(
+                            lambda: getattr(
+                                ctx.agent_holder[0], "api_failed_summary", None
+                            )
+                            if ctx.agent_holder and ctx.agent_holder[0] is not None
+                            else None
+                        ),
                     )
                     if _want_stream_deltas:
                         def _stream_delta_cb(text: str) -> None:

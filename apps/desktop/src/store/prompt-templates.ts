@@ -16,8 +16,8 @@
  * Chinese UI" problem that a module-level constant would cause.
  */
 
-import { persistentAtom, Codecs } from '@/lib/persisted'
 import { translateNow } from '@/i18n/runtime'
+import { Codecs, persistentAtom } from '@/lib/persisted'
 
 const STORAGE_KEY = 'hermes.desktop.prompt-templates'
 
@@ -47,8 +47,12 @@ export function getBuiltInTemplates(): PromptTemplate[] {
 }
 
 function isTemplate(value: unknown): value is PromptTemplate {
-  if (!value || typeof value !== 'object') return false
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
   const s = value as Record<string, unknown>
+
   return (
     typeof s.id === 'string' &&
     typeof s.label === 'string' &&
@@ -69,11 +73,7 @@ function sanitizeTemplates(raw: unknown): PromptTemplate[] {
   return []
 }
 
-export const $promptTemplates = persistentAtom<PromptTemplate[]>(
-  STORAGE_KEY,
-  [],
-  Codecs.json(sanitizeTemplates)
-)
+export const $promptTemplates = persistentAtom<PromptTemplate[]>(STORAGE_KEY, [], Codecs.json(sanitizeTemplates))
 
 /** Seed the store with locale-appropriate built-in templates the first time
  *  the dialog is opened (or after a corrupted-payload reset).  If the user
@@ -103,9 +103,7 @@ export function addTemplate(label = '', description = '', text = ''): PromptTemp
 
 /** Patch a single template by id.  Unknown ids are ignored. */
 export function updateTemplate(id: string, patch: Partial<Omit<PromptTemplate, 'id'>>): void {
-  $promptTemplates.set(
-    $promptTemplates.get().map(s => (s.id === id ? { ...s, ...patch } : s))
-  )
+  $promptTemplates.set($promptTemplates.get().map(s => (s.id === id ? { ...s, ...patch } : s)))
 }
 
 /** Remove a template by id.  Unknown ids are ignored. */
@@ -118,7 +116,9 @@ export function moveTemplateUp(id: string): void {
   const list = [...$promptTemplates.get()]
   const index = list.findIndex(s => s.id === id)
 
-  if (index <= 0) return
+  if (index <= 0) {
+    return
+  }
 
   ;[list[index - 1], list[index]] = [list[index], list[index - 1]]
   $promptTemplates.set(list)
@@ -129,7 +129,9 @@ export function moveTemplateDown(id: string): void {
   const list = [...$promptTemplates.get()]
   const index = list.findIndex(s => s.id === id)
 
-  if (index < 0 || index >= list.length - 1) return
+  if (index < 0 || index >= list.length - 1) {
+    return
+  }
 
   ;[list[index], list[index + 1]] = [list[index + 1], list[index]]
   $promptTemplates.set(list)

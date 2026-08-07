@@ -2,7 +2,7 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
+- All bundled plugins (brave-free, ddgs, searxng, exa, parallel,
   tavily, firecrawl, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
@@ -45,6 +45,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
         "XAI_API_KEY",
+        "DEEPSEEK_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -68,7 +69,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All bundled web plugins discover and register correctly."""
 
     def test_all_seven_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
@@ -78,6 +79,7 @@ class TestBundledPluginsRegister:
         assert names == [
             "brave-free",
             "ddgs",
+            "deepseek",
             "exa",
             "firecrawl",
             "parallel",
@@ -91,6 +93,7 @@ class TestBundledPluginsRegister:
         [
             ("brave-free", True, False),
             ("ddgs", True, False),
+            ("deepseek", True, False),
             ("searxng", True, False),
             ("exa", True, True),
             ("parallel", True, True),
@@ -116,7 +119,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "deepseek", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -145,6 +148,44 @@ class TestIsAvailable:
         assert p.is_available() is False  # no BRAVE_SEARCH_API_KEY
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "real")
         assert p.is_available() is True
+
+    def test_deepseek_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("deepseek")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_deepseek_local_dispatch_returns_route_error(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("deepseek")
+        result = p.search("query")
+        assert result["success"] is False
+        assert "deepseek-v4-flash" in result["error"]
+
+    def test_deepseek_native_search_requires_explicit_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.transports.codex import _deepseek_prefers_native_web_search
+
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "real")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {},
+        )
+        assert _deepseek_prefers_native_web_search() is False
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"web": {"search_backend": "deepseek"}},
+        )
+        assert _deepseek_prefers_native_web_search() is True
 
     def test_searxng_requires_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()

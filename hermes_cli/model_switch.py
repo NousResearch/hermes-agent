@@ -29,10 +29,12 @@ from hermes_cli.providers import (
     ProviderDef,
     custom_provider_aliases,
     custom_provider_slug,
+    deepseek_api_mode,
     determine_api_mode,
     get_label,
     host_mandated_api_mode,
     is_aggregator,
+    normalize_deepseek_base_url,
     resolve_provider_full,
 )
 from hermes_cli.model_normalize import (
@@ -1879,6 +1881,10 @@ def switch_model(
     if target_provider in {"opencode-zen", "opencode-go", "opencode"}:
         api_mode = opencode_model_api_mode(target_provider, new_model)
 
+    # --- DeepSeek model-dependent Responses override ---
+    if target_provider == "deepseek":
+        api_mode = deepseek_api_mode(new_model)
+
     # --- Nous Portal dual-wire override ---
     # Portal serves anthropic/* on /v1/messages and everything else on
     # /chat/completions. resolve_runtime_provider already sets this when it
@@ -1909,6 +1915,8 @@ def switch_model(
     if target_provider in {"opencode-zen", "opencode-go"} and isinstance(base_url, str):
         from hermes_cli.models import normalize_opencode_base_url
         base_url = normalize_opencode_base_url(target_provider, api_mode, base_url)
+    elif target_provider == "deepseek" and isinstance(base_url, str):
+        base_url = normalize_deepseek_base_url(target_provider, api_mode, base_url)
 
     # --- Get capabilities (legacy) ---
     capabilities = get_model_capabilities(target_provider, new_model, allow_network=True)

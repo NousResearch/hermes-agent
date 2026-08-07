@@ -669,7 +669,14 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+    if agent.provider == "deepseek":
+        # DeepSeek is model-dependent: only V4 Flash accepts Responses. Do not
+        # let a stale persisted/explicit mode route V4 Pro to an unsupported
+        # endpoint when AIAgent is constructed outside the runtime resolver.
+        from hermes_cli.providers import deepseek_api_mode
+
+        agent.api_mode = deepseek_api_mode(agent.model)
+    elif api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
@@ -708,6 +715,16 @@ def init_agent(
         agent.api_mode = nous_api_mode(agent.model)
     else:
         agent.api_mode = "chat_completions"
+
+    if agent.provider == "deepseek":
+        from hermes_cli.providers import normalize_deepseek_base_url
+
+        agent.base_url = normalize_deepseek_base_url(
+            agent.provider, agent.api_mode, agent.base_url
+        )
+        # The explicit-client branch below still reads the constructor-local
+        # value, so keep it aligned with the normalized agent property.
+        base_url = agent.base_url
 
     # Credential-pool validation runs AFTER provider auto-detection so
     # a pool scoped to e.g. "anthropic" is not rejected when the agent

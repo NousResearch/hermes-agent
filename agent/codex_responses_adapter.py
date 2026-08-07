@@ -393,6 +393,43 @@ _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
 _MAX_RESPONSES_ITEM_ID_LENGTH = 64
 
 
+def _json_safe_responses_item(value: Any) -> Any:
+    """Convert an SDK Responses item into JSON-safe replay data.
+
+    DeepSeek's stateless native tools require the returned ``web_search_call``
+    item on later turns. Preserve provider-added action fields while dropping
+    private Python attributes and non-serializable values.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key): _json_safe_responses_item(item)
+            for key, item in value.items()
+            if not str(key).startswith("_") and item is not None
+        }
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_responses_item(item) for item in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _json_safe_responses_item(model_dump(exclude_none=True))
+        except TypeError:
+            return _json_safe_responses_item(model_dump())
+    raw = getattr(value, "__dict__", None)
+    if isinstance(raw, dict):
+        return _json_safe_responses_item(raw)
+    return str(value)
+
+
+def _normalize_server_tool_replay_item(raw_item: Any) -> Optional[Dict[str, Any]]:
+    """Return a safe server-side tool item accepted as later Responses input."""
+    item = _json_safe_responses_item(raw_item)
+    if not isinstance(item, dict) or item.get("type") != "web_search_call":
+        return None
+    return item
+
+
 def _normalize_responses_message_status(value: Any, *, default: str = "completed") -> str:
     """Normalize a Responses assistant message status for replay.
 
@@ -547,6 +584,11 @@ def _chat_messages_to_responses_input(
                 if isinstance(codex_message_items, list):
                     for raw_item in codex_message_items:
                         if not isinstance(raw_item, dict):
+                            continue
+                        if raw_item.get("type") == "web_search_call":
+                            replay_item = _normalize_server_tool_replay_item(raw_item)
+                            if replay_item is not None:
+                                items.append(replay_item)
                             continue
                         if raw_item.get("type") != "message" or raw_item.get("role") != "assistant":
                             continue
@@ -1372,7 +1414,13 @@ def _normalize_codex_response(
             has_incomplete_items = True
             saw_streaming_or_item_incomplete = True
 
-        if item_type == "message":
+        if item_type == "web_search_call":
+            raw_server_item = _normalize_server_tool_replay_item(item)
+            if raw_server_item is not None:
+                # Keep it in the same ordered output-item carrier as assistant
+                # messages so replay preserves search-call-before-answer order.
+                message_items_raw.append(raw_server_item)
+        elif item_type == "message":
             item_phase = getattr(item, "phase", None)
             normalized_phase = None
             is_commentary_phase = False

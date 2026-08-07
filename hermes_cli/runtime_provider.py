@@ -45,7 +45,12 @@ from hermes_cli.config import (
     load_config,
     normalize_extra_headers,
 )
-from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
+from hermes_cli.providers import (
+    custom_provider_aliases,
+    custom_provider_slug,
+    deepseek_api_mode,
+    normalize_deepseek_base_url,
+)
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.providers import is_official_openai_host
 from utils import base_url_host_matches, base_url_hostname, env_int
@@ -543,7 +548,11 @@ def _resolve_runtime_from_pool_entry(
             if cfg_base_url:
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-        if provider in {"opencode-zen", "opencode-go"}:
+        if provider == "deepseek":
+            # DeepSeek is dual-wire by model. Never let a persisted mode from
+            # V4 Pro/Flash survive a model switch.
+            api_mode = deepseek_api_mode(effective_model)
+        elif provider in {"opencode-zen", "opencode-go"}:
             # Re-derive api_mode from the effective model rather than the
             # persisted api_mode: the opencode providers serve both
             # anthropic_messages and chat_completions models, so the previous
@@ -568,6 +577,8 @@ def _resolve_runtime_from_pool_entry(
         from hermes_cli.models import normalize_opencode_base_url
 
         base_url = normalize_opencode_base_url(provider, api_mode, base_url)
+    elif provider == "deepseek":
+        base_url = normalize_deepseek_base_url(provider, api_mode, base_url)
 
     # Optional opt-in: route OpenAI/Codex turns through `codex app-server`.
     # Inert when `model.openai_runtime` is unset or "auto".
@@ -1638,7 +1649,9 @@ def _resolve_explicit_runtime(
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+            if provider == "deepseek":
+                api_mode = deepseek_api_mode(target_model or model_cfg.get("default", ""))
+            elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
                 api_mode = configured_mode
             else:
                 # URL detection first, then the provider's declared transport
@@ -1647,6 +1660,8 @@ def _resolve_explicit_runtime(
                     provider, base_url, target_model or model_cfg.get("default", "")
                 )
 
+        if provider == "deepseek":
+            base_url = normalize_deepseek_base_url(provider, api_mode, base_url)
         if provider == "actual" and not api_key and is_actual_local_base_url(base_url):
             api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
 
@@ -2244,7 +2259,10 @@ def resolve_runtime_provider(
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if provider in {"opencode-zen", "opencode-go"}:
+            if provider == "deepseek":
+                _effective = target_model or model_cfg.get("default", "")
+                api_mode = deepseek_api_mode(_effective)
+            elif provider in {"opencode-zen", "opencode-go"}:
                 # opencode-zen/go must always re-derive api_mode from the
                 # target model (not the stale persisted api_mode), because
                 # the same provider serves both anthropic_messages
@@ -2269,6 +2287,8 @@ def resolve_runtime_provider(
         if provider in {"opencode-zen", "opencode-go"}:
             from hermes_cli.models import normalize_opencode_base_url
             base_url = normalize_opencode_base_url(provider, api_mode, base_url)
+        elif provider == "deepseek":
+            base_url = normalize_deepseek_base_url(provider, api_mode, base_url)
         if provider == "lmstudio":
             base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
         api_key = creds.get("api_key", "")

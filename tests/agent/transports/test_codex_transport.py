@@ -892,3 +892,201 @@ class TestPreflightSlashEnumStrip:
         assert params["properties"]["model_id"].get("enum") == [
             "Qwen/Qwen3.5-0.8B", "plain-id"
         ]
+
+
+class TestDeepSeekNativeWebSearch:
+    @staticmethod
+    def _select_backend(monkeypatch, name, *, resolved_name=None):
+        monkeypatch.setattr(
+            "agent.web_search_registry._read_config_key",
+            lambda *path: name if path == ("web", "search_backend") else None,
+        )
+        resolved = resolved_name if resolved_name is not None else name
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: SimpleNamespace(name=resolved) if resolved else None,
+        )
+
+    @staticmethod
+    def _tools():
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Run a command",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            },
+        ]
+
+    def test_explicit_deepseek_backend_swaps_client_tool_one_for_one(
+        self, transport, monkeypatch
+    ):
+        self._select_backend(monkeypatch, "deepseek")
+        kw = transport.build_kwargs(
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "latest news"}],
+            tools=self._tools(),
+            is_deepseek_responses=True,
+        )
+        assert [tool.get("name") for tool in kw["tools"] if tool.get("type") == "function"] == ["terminal"]
+        assert [tool for tool in kw["tools"] if tool.get("type") == "web_search"] == [{"type": "web_search"}]
+
+    def test_non_deepseek_backend_preserves_client_web_search(
+        self, transport, monkeypatch
+    ):
+        self._select_backend(monkeypatch, "firecrawl")
+        kw = transport.build_kwargs(
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "latest news"}],
+            tools=self._tools(),
+            is_deepseek_responses=True,
+        )
+        assert any(tool.get("name") == "web_search" for tool in kw["tools"])
+        assert not any(tool.get("type") == "web_search" for tool in kw["tools"])
+
+    def test_auto_resolved_deepseek_provider_is_not_enough(self, transport, monkeypatch):
+        self._select_backend(monkeypatch, None, resolved_name="deepseek")
+        kw = transport.build_kwargs(
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "latest news"}],
+            tools=self._tools(),
+            is_deepseek_responses=True,
+        )
+        assert any(tool.get("name") == "web_search" for tool in kw["tools"])
+        assert not any(tool.get("type") == "web_search" for tool in kw["tools"])
+
+    def test_native_search_is_not_added_without_client_tool(
+        self, transport, monkeypatch
+    ):
+        self._select_backend(monkeypatch, "deepseek")
+        kw = transport.build_kwargs(
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=self._tools()[:1],
+            is_deepseek_responses=True,
+        )
+        assert not any(tool.get("type") == "web_search" for tool in kw["tools"])
+
+    def test_deepseek_sanitizer_runs_after_request_overrides(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[],
+            session_id="session-1",
+            is_deepseek_responses=True,
+            reasoning_config={"effort": "high"},
+            request_overrides={
+                "include": ["reasoning.encrypted_content"],
+                "prompt_cache_key": "override",
+                "prompt_cache_retention": "24h",
+                "service_tier": "priority",
+                "reasoning": {"effort": "high", "summary": "auto"},
+                "extra_body": {
+                    "prompt_cache_key": "nested",
+                    "service_tier": "priority",
+                    "kept": "yes",
+                },
+            },
+        )
+        for key in ("include", "prompt_cache_key", "prompt_cache_retention", "service_tier"):
+            assert key not in kw
+        assert kw["reasoning"] == {"effort": "high"}
+        assert kw["extra_body"] == {"kept": "yes"}
+
+
+class TestDeepSeekWebSearchReplay:
+    def test_completed_search_call_is_persisted_and_replayed_in_order(self, transport):
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="web_search_call",
+                    id="ws_123",
+                    call_id="ws_call_123",
+                    status="completed",
+                    action=SimpleNamespace(
+                        type="search",
+                        query="current DeepSeek release",
+                        sources=[{"url": "https://example.com"}],
+                    ),
+                ),
+                SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    id="msg_123",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="DeepSeek released ...")],
+                ),
+            ],
+            status="completed",
+            incomplete_details=None,
+        )
+
+        normalized = transport.normalize_response(response)
+        assert normalized.finish_reason == "stop"
+        assert normalized.codex_message_items[0] == {
+            "type": "web_search_call",
+            "id": "ws_123",
+            "call_id": "ws_call_123",
+            "status": "completed",
+            "action": {
+                "type": "search",
+                "query": "current DeepSeek release",
+                "sources": [{"url": "https://example.com"}],
+            },
+        }
+
+        replay = transport.convert_messages(
+            [
+                {
+                    "role": "assistant",
+                    "content": "DeepSeek released ...",
+                    "codex_message_items": normalized.codex_message_items,
+                },
+                {"role": "user", "content": "What was the source?"},
+            ],
+            base_url="https://api.deepseek.com",
+            replay_encrypted_reasoning=False,
+        )
+        assert replay[0]["type"] == "web_search_call"
+        assert replay[0]["call_id"] == "ws_call_123"
+        assert replay[0]["action"]["query"] == "current DeepSeek release"
+        assert replay[1]["type"] == "message"
+        assert replay[2] == {"role": "user", "content": "What was the source?"}
+        assert all(item.get("content") != "ws_call_123" for item in replay)
+
+    def test_in_progress_server_call_does_not_force_incomplete(self, transport):
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="web_search_call",
+                    id="ws_pending",
+                    status="in_progress",
+                    action=SimpleNamespace(type="search", query="query"),
+                ),
+                SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="answer")],
+                ),
+            ],
+            status="completed",
+            incomplete_details=None,
+        )
+        normalized = transport.normalize_response(response)
+        assert normalized.finish_reason == "stop"
+        assert normalized.content == "answer"

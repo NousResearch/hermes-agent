@@ -98,6 +98,7 @@ class NormalizedResponse:
 
     * Anthropic: ``{"reasoning_details": [...]}``
     * Codex: ``{"codex_reasoning_items": [...], "codex_message_items": [...]}``
+      (the latter also carries ordered server-side tool output items)
     * Others: ``None``
     """
 

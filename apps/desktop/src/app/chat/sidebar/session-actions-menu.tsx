@@ -297,19 +297,6 @@ function useSessionActions({
                 })
               ]
             : []),
-          ...(onClose
-            ? [
-                spec({
-                  disabled: false,
-                  icon: 'close',
-                  label: t.common.close,
-                  onSelect: () => {
-                    triggerHaptic('selection')
-                    onClose()
-                  }
-                })
-              ]
-            : []),
           ...(tabPaneId
             ? [
                 spec({
@@ -340,33 +327,55 @@ function useSessionActions({
                   }
                 })
               ]
+            : []),
+          // Plain Close goes LAST: users reach for the bottom item expecting
+          // it, so the wider-blast-radius verbs (close-all) must not sit there.
+          ...(onClose
+            ? [
+                spec({
+                  disabled: false,
+                  icon: 'close',
+                  label: t.common.close,
+                  onSelect: () => {
+                    triggerHaptic('selection')
+                    onClose()
+                  }
+                })
+              ]
             : [])
         ]
       : []
 
   // DANGER — put it away / destroy it (delete stays last, destructive-red).
-  const dangerItems: ActionItemSpec[] = [
-    spec({
-      disabled: !onArchive,
-      icon: 'archive',
-      label: r.archive,
-      onSelect: () => {
-        triggerHaptic('selection')
-        onArchive?.()
-      }
-    }),
-    {
-      className: 'text-destructive focus:text-destructive',
-      disabled: !onDelete,
-      icon: 'trash',
-      label: t.common.delete,
-      onSelect: () => {
-        triggerHaptic('warning')
-        onDelete?.()
-      },
-      variant: 'destructive'
-    }
-  ]
+  // Sidebar rows only: tab surfaces omit Archive/Delete entirely. A tab's
+  // bottom slot is where users expect Close, so destructive verbs there are
+  // one mis-click away from losing a session; session lifecycle stays on the
+  // sidebar row menu.
+  const dangerItems: ActionItemSpec[] =
+    surface === 'tab'
+      ? []
+      : [
+          spec({
+            disabled: !onArchive,
+            icon: 'archive',
+            label: r.archive,
+            onSelect: () => {
+              triggerHaptic('selection')
+              onArchive?.()
+            }
+          }),
+          {
+            className: 'text-destructive focus:text-destructive',
+            disabled: !onDelete,
+            icon: 'trash',
+            label: t.common.delete,
+            onSelect: () => {
+              triggerHaptic('warning')
+              onDelete?.()
+            },
+            variant: 'destructive'
+          }
+        ]
 
   const renderItems = (kit: MenuKit) => (
     <>
@@ -409,8 +418,12 @@ function useSessionActions({
           {tabItems.map(item => renderActionItem(kit, item))}
         </>
       )}
-      <kit.Separator />
-      {dangerItems.map(item => renderActionItem(kit, item))}
+      {dangerItems.length > 0 && (
+        <>
+          <kit.Separator />
+          {dangerItems.map(item => renderActionItem(kit, item))}
+        </>
+      )}
       {onHideTabBar && (
         <>
           <kit.Separator />

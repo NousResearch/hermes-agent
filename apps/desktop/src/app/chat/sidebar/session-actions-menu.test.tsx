@@ -113,4 +113,39 @@ describe('SessionActionsMenu', () => {
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /archive/i })).toBeTruthy()
   })
+
+  // Tab surfaces (right-clicking a session tab in the strip): the destructive
+  // Archive/Delete pair stays on the sidebar row menu — a tab's bottom slot is
+  // where users expect Close, so destructive verbs there invite mis-clicks.
+  // Plain Close is the LAST item for the same reason.
+  it('tab surface omits Archive/Delete and puts Close last', async () => {
+    render(
+      <SessionActionsMenu
+        onArchive={() => undefined}
+        onClose={() => undefined}
+        onDelete={() => undefined}
+        sessionId="s1"
+        surface="tab"
+        tabPaneId="session-tile:s1"
+        title="My session"
+      >
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    expect(await screen.findByRole('menu')).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: /archive/i })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: /delete/i })).toBeNull()
+
+    const items = screen.getAllByRole('menuitem')
+    const last = items[items.length - 1]
+    expect(last.textContent?.trim()).toBe('Close')
+  })
 })

@@ -486,11 +486,13 @@ function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: str
   })
 }
 
-/** A session TAB's context menu: the full session verb set (pin, copy id, new
- *  window, branch, rename, archive, delete) — the SAME menu a sidebar row
- *  gets, targeted through the tile delegate (whose verbs are generic over
- *  stored ids, primary included). The wrapper stops the contextmenu from also
- *  opening the zone strip's menu. Shared by tile tabs AND the main tab. */
+/** A session TAB's context menu: the session verb set (pin, copy id, new
+ *  window, branch, rename) MINUS the destructive Archive/Delete pair — those
+ *  stay on the sidebar row menu, because a tab's bottom slot is where users
+ *  expect Close and destructive verbs there invite mis-clicks. Verbs target
+ *  through the tile delegate (generic over stored ids, primary included). The
+ *  wrapper stops the contextmenu from also opening the zone strip's menu.
+ *  Shared by tile tabs AND the main tab. */
 export function SessionTabMenu({
   children,
   onClose,

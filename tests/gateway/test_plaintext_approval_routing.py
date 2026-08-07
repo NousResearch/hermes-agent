@@ -110,6 +110,45 @@ def test_plaintext_yes_resolves_approval(reply):
     _clear_approval_state()
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "/approve",          # direct slash
+        "/approve all",      # resolve all
+        "/approve session",  # session scope
+        "/approve always",   # permanent scope
+        "> previous prompt\n/approve",          # quoted reply
+        "> quoted\n/approve all",               # quoted /approve all
+        "> quoted\n/approve session",           # quoted /approve session
+        "!approve",          # Slack/Matrix display prefix
+        "/yes",              # alias slash
+        "> quoted\n/yes",    # quoted alias
+    ],
+)
+def test_approval_routing_handles_slash_and_quoted_replies(reply):
+    """A quoted /approve (or last-line slash) must resolve, not be queued.
+
+    Regression for #81026: the second (and subsequent) /approve in a session
+    can be delivered as a quoted reply or with a display prefix. The busy
+    handler previously only matched bare words and exact slash forms that
+    bypassed the active-session guard, so the approval was queued/interrupted
+    and the command timed out.
+    """
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(_make_event(reply), session_key)
+    )
+
+    assert handled is True
+    assert entry.event.is_set()
+    assert entry.result in {"once", "session", "always"}
+    adapter._send_with_retry.assert_awaited()
+    _clear_approval_state()
+
+
 def test_no_pending_approval_does_not_consume_conversational_yes():
     """A bare 'yes' with NO blocking approval must NOT be treated as an
     approval — it falls through to normal busy handling (design intent:

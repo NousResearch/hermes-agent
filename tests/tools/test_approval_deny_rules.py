@@ -56,6 +56,62 @@ class TestMatchUserDenyRule:
         deny_config(["git push --force*"])
         assert mod._match_user_deny_rule('git pu""sh --force origin main') is not None
 
+    def test_compound_command_suffix_matches_prefix_deny(self, deny_config):
+        """Prefix deny must see the real command after && / ; / |."""
+        deny_config(["git push --force*"])
+        assert mod._match_user_deny_rule(
+            "echo hi && git push --force origin main"
+        ) == "git push --force*"
+        assert mod._match_user_deny_rule(
+            "cd /tmp; git push --force origin main"
+        ) is not None
+
+    def test_env_and_sudo_wrappers_match_prefix_deny(self, deny_config):
+        deny_config(["git push --force*"])
+        assert mod._match_user_deny_rule(
+            "env X=1 git push --force origin main"
+        ) == "git push --force*"
+        assert mod._match_user_deny_rule(
+            "env -i PATH=/usr/bin git push --force origin main"
+        ) is not None
+        assert mod._match_user_deny_rule(
+            "sudo -E git push --force origin main"
+        ) is not None
+
+    def test_git_global_options_before_push_match_prefix_deny(self, deny_config):
+        """git -C / -c / --git-dir must not hide a denied subcommand."""
+        deny_config(["git push --force*", "git push -f *"])
+        assert mod._match_user_deny_rule(
+            "git -C /tmp/repo push --force origin main"
+        ) == "git push --force*"
+        assert mod._match_user_deny_rule(
+            "git -C/tmp/repo push --force origin main"
+        ) is not None
+        assert mod._match_user_deny_rule(
+            "git -c push.default=simple push --force origin main"
+        ) is not None
+        assert mod._match_user_deny_rule(
+            "git --git-dir=/tmp/repo.git push -f origin main"
+        ) is not None
+
+    def test_wrapper_plus_git_global_options_still_denied(self, deny_config):
+        deny_config(["git push --force*"])
+        assert mod._match_user_deny_rule(
+            "env X=1 git -C /tmp/repo push --force origin main"
+        ) is not None
+        assert mod._match_user_deny_rule(
+            "echo prep && sudo git -C /tmp/repo push --force origin main"
+        ) is not None
+
+    def test_non_force_push_with_wrappers_still_passes(self, deny_config):
+        deny_config(["git push --force*", "git push -f *"])
+        assert mod._match_user_deny_rule(
+            "env X=1 git -C /tmp/repo push origin main"
+        ) is None
+        assert mod._match_user_deny_rule(
+            "echo hi && git push origin main"
+        ) is None
+
 
 class TestDenyBeatsYolo:
     def test_deny_blocks_under_yolo_env(self, deny_config, clean_env, monkeypatch):
@@ -133,3 +189,21 @@ class TestDenyOrdering:
         assert "git push --force*" in msg
         assert "retry" in msg.lower()
         assert "rephrase" in msg.lower()
+
+    def test_gateway_path_blocks_git_c_force_push(self, deny_config, clean_env):
+        deny_config(["git push --force*"])
+        result = mod.check_all_command_guards(
+            "git -C /tmp/repo push --force origin main", "local"
+        )
+        assert result["approved"] is False
+        assert result.get("user_deny") is True
+
+    def test_gateway_path_blocks_env_wrapped_force_push_under_yolo(
+            self, deny_config, clean_env, monkeypatch):
+        deny_config(["git push --force*"])
+        monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", True)
+        result = mod.check_dangerous_command(
+            "env X=1 git push --force origin main", "local"
+        )
+        assert result["approved"] is False
+        assert result.get("user_deny") is True

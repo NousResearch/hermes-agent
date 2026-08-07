@@ -873,6 +873,17 @@ class TestGitDestructiveOps:
             assert dangerous is True, cmd
             assert word in desc.lower(), cmd
 
+    def test_git_push_force_with_global_options_detected(self):
+        """Global options before the subcommand must not hide force-push."""
+        for cmd in (
+            "git -C /tmp/repo push --force origin main",
+            "git -C/tmp/repo push --force origin main",
+            "git -c push.default=simple push --force origin main",
+            "git --git-dir=/tmp/repo.git push -f origin main",
+        ):
+            dangerous, _, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert "force" in desc.lower(), cmd
 
     def test_safe_git_ops_not_flagged(self):
         for cmd in ("git status", "git push origin main"):

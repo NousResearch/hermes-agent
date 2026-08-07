@@ -1190,6 +1190,37 @@ _SUDO_OPTIONS_WITH_ARG = {
     "-p", "--prompt",
     "-u", "--user",
 }
+# env(1) options that consume a separate argument. Shared with the wrapper
+# peeler so `env -u FOO git ...` / `env -C /tmp git ...` still expose `git`.
+_ENV_OPTIONS_WITH_ARG = {
+    "-u", "--unset",
+    "-C", "--chdir",
+    "-S", "--split-string",
+}
+# git global options that may appear before the subcommand (git -C <path> push).
+# Used to project a canonical `git <subcommand> ...` form for prefix deny rules
+# and dangerous-pattern detection without forcing operators to write every
+# wrapper spelling into approvals.deny.
+_GIT_GLOBAL_OPTIONS_WITH_ARG = {
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--config-env",
+    "--exec-path",
+    "--super-prefix",
+}
+_GIT_GLOBAL_OPTIONS_BOOL = {
+    "--bare",
+    "--no-replace-objects",
+    "--literal-pathspecs",
+    "--glob-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+    "--no-optional-locks",
+    "--no-advice",
+}
 
 _INTERPRETER_EXEC_FLAGS = {
     "python": {"-c"},
@@ -2095,6 +2126,130 @@ def _iter_shell_command_word_spans(command: str):
             break
 
 
+def _read_shell_words_from(command: str, start: int, limit: int = 32):
+    """Return up to *limit* shell words starting at *start* as (text, end) pairs."""
+    words: list[tuple[str, int]] = []
+    pos = start
+    while len(words) < limit:
+        word_start, word_end, word = _read_shell_word(command, pos)
+        if word_start == word_end:
+            break
+        words.append((word, word_end))
+        pos = word_end
+    return words
+
+
+def _wrapper_option_takes_arg(wrapper: str, option_token: str) -> bool:
+    """Whether *option_token* for *wrapper* consumes the next argv word."""
+    if "=" in option_token:
+        return False
+    name = option_token.split("=", 1)[0]
+    if wrapper == "sudo":
+        return name in _SUDO_OPTIONS_WITH_ARG
+    if wrapper == "env":
+        # Short clustered env options like -iB do not take args; only the
+        # known long/short forms with separate operands do.
+        return name in _ENV_OPTIONS_WITH_ARG
+    return False
+
+
+def _peel_leading_wrappers(words: list[str]) -> list[str]:
+    """Strip sudo/env/nohup/... and VAR=val prefixes from a command word list."""
+    i = 0
+    n = len(words)
+    while i < n:
+        raw = words[i]
+        deob = _deobfuscate_shell_word_for_detection(raw)
+        lower = deob.lower()
+        if lower in _COMMAND_WRAPPER_WORDS:
+            i += 1
+            if lower in {"sudo", "env"}:
+                while i < n:
+                    opt = _deobfuscate_shell_word_for_detection(words[i])
+                    opt_l = opt.lower()
+                    if opt_l.startswith("-"):
+                        takes_arg = _wrapper_option_takes_arg(lower, opt_l)
+                        i += 1
+                        if takes_arg and i < n:
+                            i += 1
+                        continue
+                    if lower == "env" and _ENV_ASSIGNMENT_RE.fullmatch(opt):
+                        i += 1
+                        continue
+                    break
+            continue
+        if _ENV_ASSIGNMENT_RE.fullmatch(deob):
+            i += 1
+            continue
+        break
+    return words[i:]
+
+
+def _canonical_git_command_words(words: list[str]) -> list[str] | None:
+    """Return ``['git', <subcommand>, ...]`` with global options removed.
+
+    Handles ``git -C path push --force``, glued ``-C/path``, and
+    ``--git-dir=...`` forms. Returns None when *words* is not a git
+    invocation or no subcommand remains after peeling globals.
+    """
+    if not words:
+        return None
+    first = _deobfuscate_shell_word_for_detection(words[0]).lower()
+    # Allow path-qualified git binaries ( /usr/bin/git ).
+    if first != "git" and not first.endswith("/git"):
+        return None
+    i = 1
+    n = len(words)
+    while i < n:
+        tok = _deobfuscate_shell_word_for_detection(words[i])
+        lower = tok.lower()
+        if lower == "--":
+            i += 1
+            break
+        if not lower.startswith("-"):
+            break
+        # Glued short options: -C/path or -ckey=value
+        if lower.startswith("-c") and not lower.startswith("--") and lower != "-c":
+            # -C/path or -ckey=value (no separate argv word)
+            i += 1
+            continue
+        name = lower.split("=", 1)[0]
+        if name in _GIT_GLOBAL_OPTIONS_BOOL:
+            i += 1
+            continue
+        if name in _GIT_GLOBAL_OPTIONS_WITH_ARG:
+            if "=" in lower:
+                i += 1
+            else:
+                i += 2
+            continue
+        # Unknown dashed token before subcommand — stop rather than guess.
+        break
+    if i >= n:
+        return None
+    sub = _deobfuscate_shell_word_for_detection(words[i])
+    if not sub or sub.startswith("-"):
+        return None
+    # Preserve original spelling of the remaining argv for deny/pattern match.
+    return ["git", *words[i:]]
+
+
+def _projected_command_variants_from_segment(segment: str):
+    """Yield canonical command projections for one shell command segment."""
+    words = [w for w, _ in _read_shell_words_from(segment, 0)]
+    if not words:
+        return
+    peeled = _peel_leading_wrappers(words)
+    if not peeled:
+        return
+    # Full peeled command (env/sudo/nohup stripped).
+    peeled_cmd = " ".join(peeled)
+    yield peeled_cmd
+    git_words = _canonical_git_command_words(peeled)
+    if git_words is not None:
+        yield " ".join(git_words)
+
+
 def _command_detection_variants(command: str):
     # Mask quoted newlines BEFORE normalization: normalization strips
     # backslash-escapes (\" -> ") and empty-string pairs (""), which would
@@ -2108,6 +2263,22 @@ def _command_detection_variants(command: str):
     grep_safe, _ = _grep_safe_detection_variant(normalized)
     seen = {grep_safe}
     yield grep_safe
+    # Project wrapper-peeled and git-global-option-stripped forms so prefix
+    # deny rules like ``git push --force*`` and dangerous-pattern regexes
+    # still match ``env X=1 git -C /repo push --force``.
+    pending_segments = [grep_safe, normalized]
+    while pending_segments:
+        segment = pending_segments.pop()
+        for start in _iter_shell_command_starts(segment):
+            # Slice from each real command start so compound commands
+            # (a && b ; c) expose each tail independently.
+            tail = segment[start:].lstrip()
+            if not tail:
+                continue
+            for projected in _projected_command_variants_from_segment(tail):
+                if projected and projected not in seen:
+                    seen.add(projected)
+                    yield projected
     # Program-bearing options are parsed in their owning command's context.
     # Surfacing only their payload lets the hardline floor inspect the command
     # that will actually run without promoting similar flags or quoted prose.

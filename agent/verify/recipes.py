@@ -5,6 +5,21 @@ Mirrors grok's detection order and command choices: Node (lockfile-based
 package-manager choice + framework detection), Python (Django / FastAPI /
 generic, with uv/poetry/pipenv awareness), Go, Rust, Java (Maven/Gradle),
 Makefile fallback, plus a docker-compose recipe.
+
+Layer ownership vs :mod:`agent.coding_context`:
+
+- ``agent.coding_context.detect_project_facts`` owns the *cheap prompt-time
+  facts* — manifests, package managers, and test/lint/build verify commands
+  surfaced in the system-prompt workspace snapshot, the verify-on-stop nudge,
+  and the desktop verify UI. Its output must stay byte-stable and fast; do
+  not push runtime detection into it.
+- This module owns the *deep runtime recipe* — framework identification,
+  bootstrap/build/test command inference, and crucially the start command,
+  port, and readiness path that let ``hermes verify`` boot the app and prove
+  it serves HTTP. The ``hermes verify`` CLI merges any project-facts verify
+  commands the recipe missed into its test list (see
+  ``hermes_cli.verify_cmd._merge_project_facts_commands``) so the two layers
+  extend rather than contradict each other.
 """
 
 from __future__ import annotations

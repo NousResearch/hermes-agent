@@ -4,11 +4,16 @@ Scoped port of superagent-ai/grok-cli's verify subsystem entrypoint.
 Statically detects the project kind (or loads the saved manifest at
 ``.hermes/environment.json``), then runs bootstrap/build/test phases and an
 optional background start + readiness poll, printing an evidence summary.
+
+Completed runs are recorded into the coding verification evidence ledger
+(:mod:`agent.verification_evidence`), so a passing ``hermes verify`` satisfies
+the verify-on-stop guard the same way a passing canonical test command does.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -38,6 +43,9 @@ def run_verify_command(args) -> int:
             print(message, file=sys.stderr)
         return 1
 
+    if source == "detected":
+        _merge_project_facts_commands(root, recipe)
+
     if args.port:
         recipe.port = args.port
 
@@ -65,6 +73,8 @@ def run_verify_command(args) -> int:
         port_override=args.port,
     )
 
+    _record_evidence(root, recipe, result, partial=bool(phases or args.skip_start))
+
     if args.json:
         payload = result.to_dict()
         payload["source"] = source
@@ -73,6 +83,69 @@ def run_verify_command(args) -> int:
 
     _print_human_report(recipe, source, result)
     return 0 if result.ok else 1
+
+
+def _merge_project_facts_commands(root: Path, recipe) -> None:
+    """Fold ``detect_project_facts`` verify commands into a detected recipe.
+
+    Layer ownership: ``agent.coding_context`` owns the cheap prompt-time facts
+    (test/lint/build commands surfaced in the workspace snapshot and the
+    verify-on-stop nudge); ``agent.verify.recipes`` owns the deep runtime
+    recipe (framework, start command, port, readiness). When the two disagree
+    the runtime recipe must not *lose* commands the prompt layer already
+    promised the model — e.g. ``scripts/run_tests.sh`` or a ``pytest`` config
+    the recipe detector doesn't know about — so any project-facts verify
+    command not already covered is appended to the recipe's test list.
+
+    Never applied to a saved manifest (the user-edited manifest is the source
+    of truth) and never raises: this is a best-effort union.
+    """
+    try:
+        from agent.coding_context import detect_project_facts
+
+        facts_commands = list(detect_project_facts(root).verify_commands)
+    except Exception:
+        return
+    existing = {c.strip() for c in (*recipe.bootstrap, *recipe.build, *recipe.test) if c}
+    for command in facts_commands:
+        command = command.strip()
+        if command and command not in existing:
+            recipe.test.append(command)
+            existing.add(command)
+
+
+def _record_evidence(root: Path, recipe, result, *, partial: bool) -> None:
+    """Record the completed run into the verification evidence ledger.
+
+    Best-effort and fail-silent: a ledger problem must never change the CLI's
+    exit code or output. ``partial`` (an explicit ``--phase`` subset or
+    ``--skip-start``) downgrades the scope to ``targeted`` so a partial pass
+    is never presented as a full workspace green.
+    """
+    try:
+        from agent.verification_evidence import record_verify_run
+
+        tails: list[str] = []
+        for p in result.phases:
+            if p.output_tail:
+                tails.append(f"[{p.phase}] {p.command}\n{p.output_tail}")
+        if result.readiness is not None:
+            r = result.readiness
+            readiness_line = (
+                f"[start] {recipe.start} -> "
+                + (f"ready (HTTP {r.status_code})" if r.ready else f"not ready ({r.error or 'timeout'})")
+            )
+            tails.append(readiness_line)
+        record_verify_run(
+            root=root,
+            session_id=os.environ.get("HERMES_SESSION_ID"),
+            ok=result.ok,
+            command="hermes verify",
+            scope="targeted" if partial else "full",
+            output="\n".join(tails),
+        )
+    except Exception:
+        pass
 
 
 def _print_human_report(recipe, source, result) -> None:

@@ -4132,6 +4132,45 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] == "blocked"
 
 
+def _is_dependency_wait(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True when ``task_id`` is currently waiting on a task
+    dependency declared via ``kanban_block(kind="dependency")``.
+
+    A dependency block does not enter the human ``blocked`` bucket — it
+    routes the card back to ``todo`` (see :func:`block_task`), stamps
+    ``tasks.block_kind = 'dependency'``, and emits a ``dependency_wait``
+    event.  The card then relies on :func:`recompute_ready` gating it on
+    its parent links until they reach ``done``.  That contract only holds
+    while the card's parent edge is intact.
+
+    :func:`recompute_ready` uses this to tell a card that is *waiting on a
+    dependency* apart from a genuinely standalone ``todo`` card.  It
+    matters because ``all([])`` is vacuously True: a dependency-waiting
+    card whose parent link is transiently or permanently missing would
+    otherwise be promoted on an EMPTY parent set
+    (``satisfied_parent_ids: []``) and thrash on respawn (t_4f14b90d;
+    live repro t_7cf95f5a).
+
+    We look at the most recent event among the lifecycle-transition kinds
+    a dependency wait competes with.  If ``dependency_wait`` is the most
+    recent of those, the card is still waiting on its dependency and must
+    not be promoted on a vacuous parent set.  Any later
+    ``promoted`` / ``claimed`` / ``unblocked`` / terminal event means the
+    card advanced and this guard no longer applies (so it cannot be
+    fooled by a stale ``block_kind`` column left over from an earlier
+    cycle).
+    """
+    row = conn.execute(
+        "SELECT kind FROM task_events "
+        "WHERE task_id = ? "
+        "AND kind IN ('dependency_wait', 'promoted', 'claimed', "
+        "'unblocked', 'done', 'archived') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return bool(row) and row["kind"] == "dependency_wait"
+
+
 def recompute_ready(
     conn: sqlite3.Connection, failure_limit: int = None,
 ) -> int:
@@ -4186,6 +4225,29 @@ def recompute_ready(
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
+            # Vacuous-satisfaction guard (t_4f14b90d). ``all([])`` is True, so a
+            # card with ZERO parent links always passes the gate below. That is
+            # correct for a genuinely standalone task, but WRONG for a card that
+            # only landed in ``todo`` because a worker declared a dependency
+            # wait (``kanban_block(kind="dependency")`` -> routes to ``todo``,
+            # stamps ``block_kind='dependency'``, emits ``dependency_wait``).
+            # Such a card's dependency edge can be transiently absent while a
+            # re-decompose / unlink->recompute sweep churns the links, or when a
+            # link was dropped without being re-added. Promoting on that empty
+            # set flips the card ``todo -> ready`` with ``satisfied_parent_ids:
+            # []``, it gets claimed, the worker re-declares the SAME
+            # ``dependency_wait``, and the card thrashes on a ~5-10 min respawn
+            # cadence burning a worker every cycle with zero forward progress
+            # (Prime-Directive violation; live repro t_7cf95f5a on t_3365a1dd).
+            #
+            # An empty satisfied-parent set is NEVER a satisfied gate for a
+            # dependency-waiting card: a dependency wait with no live (done)
+            # parent is a broken/racing link, not a met dependency. Hold it in
+            # ``todo`` until a real parent link exists AND reaches ``done``.
+            # Standalone tasks are unaffected — they never emit
+            # ``dependency_wait``.
+            if not parents and _is_dependency_wait(conn, task_id):
+                continue
             if all(p["status"] in ("done", "archived") for p in parents):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
@@ -5867,6 +5929,24 @@ def promote_task(
             "WHERE l.child_id = ?",
             (task_id,),
         ).fetchall()
+        # Vacuous-satisfaction guard (t_4f14b90d), sibling to the one in
+        # recompute_ready. ``unsatisfied`` is computed as [] when ``parents``
+        # is empty, which reads as "nothing to refuse" — correct for a
+        # genuinely standalone task, but wrong for a task that only landed
+        # in todo/blocked because it declared a dependency wait
+        # (kanban_block(kind="dependency")) whose parent link is now
+        # transiently or permanently missing (link churn). Silently
+        # promoting that case defeats the exact safety check this
+        # function's docstring promises ("refuses to promote if any parent
+        # dep is not in a terminal state"). Refuse it the same way an
+        # explicit unsatisfied parent would be refused; --force still
+        # overrides, same as any other refusal path here.
+        if not parents and _is_dependency_wait(conn, task_id):
+            return False, (
+                f"task {task_id} is a dependency wait with no live parent "
+                f"link (link missing/dropped, not satisfied) "
+                f"(use --force to override)"
+            )
         unsatisfied = [
             p["id"] for p in parents
             if p["status"] not in ("done", "archived")

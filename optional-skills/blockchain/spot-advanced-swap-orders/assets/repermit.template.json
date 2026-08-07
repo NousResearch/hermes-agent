@@ -1,0 +1,213 @@
+{
+    "domain": {
+        "name": "RePermit",
+        "version": "1",
+        "chainId": "<CHAIN_ID>",
+        "verifyingContract": "0x00002a9C4D9497df5Bd31768eC5d30eEf5405000"
+    },
+    "primaryType": "RePermitWitnessTransferFrom",
+    "types": {
+        "EIP712Domain": [
+            {
+                "name": "name",
+                "type": "string"
+            },
+            {
+                "name": "version",
+                "type": "string"
+            },
+            {
+                "name": "chainId",
+                "type": "uint256"
+            },
+            {
+                "name": "verifyingContract",
+                "type": "address"
+            }
+        ],
+        "RePermitWitnessTransferFrom": [
+            {
+                "name": "permitted",
+                "type": "TokenPermissions"
+            },
+            {
+                "name": "spender",
+                "type": "address"
+            },
+            {
+                "name": "nonce",
+                "type": "uint256"
+            },
+            {
+                "name": "deadline",
+                "type": "uint256"
+            },
+            {
+                "name": "witness",
+                "type": "Order"
+            }
+        ],
+        "Exchange": [
+            {
+                "name": "adapter",
+                "type": "address"
+            },
+            {
+                "name": "ref",
+                "type": "address"
+            },
+            {
+                "name": "share",
+                "type": "uint32"
+            },
+            {
+                "name": "data",
+                "type": "bytes"
+            }
+        ],
+        "Input": [
+            {
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "name": "amount",
+                "type": "uint256"
+            },
+            {
+                "name": "maxAmount",
+                "type": "uint256"
+            }
+        ],
+        "Order": [
+            {
+                "name": "reactor",
+                "type": "address"
+            },
+            {
+                "name": "executor",
+                "type": "address"
+            },
+            {
+                "name": "exchange",
+                "type": "Exchange"
+            },
+            {
+                "name": "swapper",
+                "type": "address"
+            },
+            {
+                "name": "nonce",
+                "type": "uint256"
+            },
+            {
+                "name": "start",
+                "type": "uint256"
+            },
+            {
+                "name": "deadline",
+                "type": "uint256"
+            },
+            {
+                "name": "chainid",
+                "type": "uint256"
+            },
+            {
+                "name": "exclusivity",
+                "type": "uint32"
+            },
+            {
+                "name": "epoch",
+                "type": "uint32"
+            },
+            {
+                "name": "slippage",
+                "type": "uint32"
+            },
+            {
+                "name": "freshness",
+                "type": "uint32"
+            },
+            {
+                "name": "input",
+                "type": "Input"
+            },
+            {
+                "name": "output",
+                "type": "Output"
+            }
+        ],
+        "Output": [
+            {
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "name": "limit",
+                "type": "uint256"
+            },
+            {
+                "name": "triggerLower",
+                "type": "uint256"
+            },
+            {
+                "name": "triggerUpper",
+                "type": "uint256"
+            },
+            {
+                "name": "recipient",
+                "type": "address"
+            }
+        ],
+        "TokenPermissions": [
+            {
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "name": "amount",
+                "type": "uint256"
+            }
+        ]
+    },
+    "message": {
+        "permitted": {
+            "token": "<INPUT_TOKEN>",
+            "amount": "<INPUT_MAX_AMOUNT>"
+        },
+        "spender": "0x000000b33fE4fB9d999Dd684F79b110731c3d000",
+        "nonce": "<NONCE>",
+        "deadline": "<DEADLINE>",
+        "witness": {
+            "reactor": "0x000000b33fE4fB9d999Dd684F79b110731c3d000",
+            "executor": "0x000642A0966d9bd49870D9519f76b5cf823f3000",
+            "exchange": {
+                "adapter": "<ADAPTER>",
+                "ref": "0x0000000000000000000000000000000000000000",
+                "share": 0,
+                "data": "0x"
+            },
+            "swapper": "<SWAPPER>",
+            "nonce": "<NONCE>",
+            "start": "<START>",
+            "deadline": "<DEADLINE>",
+            "chainid": "<CHAIN_ID>",
+            "exclusivity": 0,
+            "epoch": "<EPOCH_SECONDS>",
+            "slippage": 500,
+            "freshness": 50,
+            "input": {
+                "token": "<INPUT_TOKEN>",
+                "amount": "<INPUT_AMOUNT>",
+                "maxAmount": "<INPUT_MAX_AMOUNT>"
+            },
+            "output": {
+                "token": "<OUTPUT_TOKEN>",
+                "limit": "<OUTPUT_LIMIT>",
+                "triggerLower": "<OUTPUT_TRIGGER_LOWER>",
+                "triggerUpper": "<OUTPUT_TRIGGER_UPPER>",
+                "recipient": "<OUTPUT_RECIPIENT>"
+            }
+        }
+    }
+}

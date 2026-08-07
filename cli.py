@@ -14622,7 +14622,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Fallback: shell clear command (rarely needed — escapes work on every
         # VT-capable terminal, but this covers exotic stdout wrappers).
         try:
-            os.system("cls" if os.name == "nt" else "clear")
+            import subprocess
+            subprocess.run(
+                "cls" if os.name == "nt" else ["clear"],
+                shell=os.name == "nt",
+            )
         except Exception:
             pass
 

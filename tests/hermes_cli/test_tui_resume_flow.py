@@ -186,7 +186,15 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.models",
-        mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
+        mod(
+            "hermes_cli.models",
+            detect_provider_for_model=lambda *_args, **_kwargs: None,
+            # Added for hermes_cli.oneshot._run_agent's provider:model
+            # split (review of #75311, sibling gap to #74214's HermesCLI
+            # fix). Safe passthrough: no provider prefix in this test's
+            # model name ("m"), so no split should occur.
+            parse_model_input=lambda raw, current_provider: ("", raw),
+        ),
     )
     monkeypatch.setitem(
         sys.modules,

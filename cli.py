@@ -4376,6 +4376,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # through MoA instead of hitting the real provider with an unknown
         # model (#56828). A ``moa:`` prefix wins over an explicit ``--provider``.
         _moa_provider_override, self.model = _normalize_moa_model(self.model)
+        # A model string can also carry a provider:model (or the
+        # custom:<name>:<model> triple form for a named custom provider) --
+        # the SAME syntax the interactive /model command already parses via
+        # parse_model_input(). The -m/--model CLI flag never applied that
+        # split at all: the compound string was passed straight through as
+        # the model, provider stayed unset, and provider resolution fell
+        # back to the configured DEFAULT provider -- so `-m
+        # "custom:local-vllm:my-model"` silently sent the prompt to
+        # whatever cloud provider was configured as default, not the local
+        # endpoint the user named (issue #73943). Only applies when
+        # --provider wasn't explicitly passed, matching the moa: prefix
+        # precedent above (an explicit --provider flag still wins).
+        _model_provider_override: Optional[str] = None
+        if not provider and not _moa_provider_override:
+            from hermes_cli.models import parse_model_input
+            _split_provider, _split_model = parse_model_input(self.model, "")
+            if _split_provider:
+                _model_provider_override = _split_provider
+                self.model = _split_model
         # Read max_tokens from config (env var override: HERMES_MAX_TOKENS)
         _env_mt = os.environ.get("HERMES_MAX_TOKENS")
         if _env_mt:
@@ -4413,6 +4432,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.requested_provider = (
             _moa_provider_override
             or provider
+            or _model_provider_override
             or CLI_CONFIG["model"].get("provider")
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"

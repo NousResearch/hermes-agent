@@ -593,3 +593,145 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
 
 
+
+class TestCliInitParsesCompoundModelProviderString:
+    """Regression tests for issue #73943: `-m "custom:name:model"` (and the
+    plain `provider:model` form) was passed straight through as an unsplit
+    model string. requested_provider stayed at its default/config value, so
+    a user selecting a local custom endpoint had their prompt sent to
+    whatever cloud provider was configured as default instead -- a real
+    data-egress bug, not just a UX papercut. The interactive /model command
+    already parsed this via parse_model_input(); -m/--model never did.
+    """
+
+    def test_named_custom_provider_triple_syntax_splits_correctly(self, monkeypatch):
+        cli = _import_cli()
+        config_copy = dict(cli.CLI_CONFIG)
+        model_copy = dict(config_copy.get("model", {}))
+        model_copy["provider"] = None
+        config_copy["model"] = model_copy
+        monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+        monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+        shell = cli.HermesCLI(
+            model="custom:jetson-vllm:nemotron-nano-30b", compact=True, max_turns=1
+        )
+
+        assert shell.requested_provider == "custom:jetson-vllm", (
+            "The named custom provider must be extracted from the compound "
+            "model string, not silently dropped to the default provider"
+        )
+        assert shell.model == "nemotron-nano-30b"
+
+    def test_provider_colon_model_syntax_splits_correctly(self, monkeypatch):
+        cli = _import_cli()
+        config_copy = dict(cli.CLI_CONFIG)
+        model_copy = dict(config_copy.get("model", {}))
+        model_copy["provider"] = None
+        config_copy["model"] = model_copy
+        monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+        monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+        shell = cli.HermesCLI(model="nous:hermes-3", compact=True, max_turns=1)
+
+        assert shell.requested_provider == "nous"
+        assert shell.model == "hermes-3"
+
+    def test_explicit_provider_flag_wins_over_embedded_provider(self, monkeypatch):
+        """--provider must take precedence over any provider: prefix in the
+        model string -- mirrors the moa: precedence test above, and
+        prevents this fix from surprising a user who passes both."""
+        cli = _import_cli()
+        config_copy = dict(cli.CLI_CONFIG)
+        model_copy = dict(config_copy.get("model", {}))
+        model_copy["provider"] = None
+        config_copy["model"] = model_copy
+        monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+        monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+        shell = cli.HermesCLI(
+            model="custom:jetson-vllm:nemotron-nano-30b",
+            provider="deepseek",
+            compact=True,
+            max_turns=1,
+        )
+
+        assert shell.requested_provider == "deepseek"
+        # The model string is left unsplit when an explicit --provider wins,
+        # matching existing behavior for any other provider-prefixed string.
+        assert shell.model == "custom:jetson-vllm:nemotron-nano-30b"
+
+    def test_plain_model_name_without_provider_prefix_unaffected(self, monkeypatch):
+        """A normal model name (no colon, or a colon that isn't a known
+        provider prefix) must not be touched -- this fix must not regress
+        the common case."""
+        cli = _import_cli()
+        config_copy = dict(cli.CLI_CONFIG)
+        model_copy = dict(config_copy.get("model", {}))
+        model_copy["provider"] = None
+        config_copy["model"] = model_copy
+        monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+        monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+        shell = cli.HermesCLI(
+            model="anthropic/claude-3.5-sonnet:beta", compact=True, max_turns=1
+        )
+
+        assert shell.model == "anthropic/claude-3.5-sonnet:beta"
+        assert shell.requested_provider == "auto"
+
+    def test_moa_prefix_still_wins_over_provider_colon_split(self, monkeypatch):
+        """moa: precedence (#56828) must not regress: since 'moa' isn't a
+        registered provider name recognized by parse_model_input in the
+        same way, the moa branch runs first and this fix's split must not
+        fire on an already-moa-normalized model string."""
+        cli = _import_cli()
+        config_copy = dict(cli.CLI_CONFIG)
+        model_copy = dict(config_copy.get("model", {}))
+        model_copy["provider"] = None
+        config_copy["model"] = model_copy
+        monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+        monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+        shell = cli.HermesCLI(model="moa:strategy", compact=True, max_turns=1)
+
+        assert shell.requested_provider == "moa"
+        assert shell.model == "strategy"
+
+    def test_end_to_end_resolves_to_named_custom_providers_own_base_url(self, monkeypatch):
+        """The actual reported symptom: verify the split provider string
+        reaches resolve_runtime_provider() correctly, rather than the
+        pre-fix behavior where the compound string was passed as the
+        model and no provider override was ever derived."""
+        cli = _import_cli()
+        config_copy = dict(cli.CLI_CONFIG)
+        model_copy = dict(config_copy.get("model", {}))
+        model_copy["provider"] = None
+        config_copy["model"] = model_copy
+        monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+        monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+        shell = cli.HermesCLI(
+            model="custom:jetson-vllm:nemotron-nano-30b", compact=True, max_turns=1
+        )
+
+        captured = {}
+
+        def _fake_resolve_runtime_provider(**kwargs):
+            captured.update(kwargs)
+            return {
+                "provider": "custom", "api_mode": "chat_completions",
+                "base_url": "http://192.168.1.149:8000/v1",
+                "api_key": "EMPTY", "source": "test",
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            _fake_resolve_runtime_provider,
+        )
+        shell._ensure_runtime_credentials()
+
+        assert captured.get("requested") == "custom:jetson-vllm", (
+            f"resolve_runtime_provider must receive the split provider "
+            f"name, not the compound string or the default: {captured}"
+        )

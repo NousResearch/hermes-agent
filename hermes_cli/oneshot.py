@@ -339,6 +339,27 @@ def _run_agent(
     env_model = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
     effective_model = (model or "").strip() or env_model or cfg_model
 
+    # A model string can also carry a provider:model (or the
+    # custom:<name>:<model> triple form for a named custom provider) -- the
+    # same syntax the interactive /model command and the HermesCLI
+    # -m/--model path (cli.py) already parse via parse_model_input(). The
+    # oneshot (-z/--oneshot) path bypasses HermesCLI entirely and sent the
+    # compound string straight through detect_provider_for_model() /
+    # resolve_runtime_provider() unsplit -- so `hermes -z -m
+    # "custom:local-vllm:my-model" "prompt"` silently sent the prompt to
+    # the default provider instead of the named local endpoint (review of
+    # #74214, sibling gap to the HermesCLI fix). Only applies when
+    # --provider wasn't explicitly passed, matching that fix's precedence
+    # rule (an explicit --provider flag still wins).
+    _oneshot_provider_override: Optional[str] = None
+    if not (provider or "").strip() and effective_model:
+        from hermes_cli.models import parse_model_input
+
+        _split_provider, _split_model = parse_model_input(effective_model, "")
+        if _split_provider:
+            _oneshot_provider_override = _split_provider
+            effective_model = _split_model
+
     # Resolve effective provider: explicit arg → (auto-detect from model if
     # model was explicit) → env / config (handled inside resolve_runtime_provider).
     #
@@ -347,7 +368,7 @@ def _run_agent(
     # session.  Without this, resolve_runtime_provider() would fall back to
     # the user's configured default provider, which may not host the model
     # the caller just asked for.
-    effective_provider = (provider or "").strip() or None
+    effective_provider = (provider or "").strip() or _oneshot_provider_override or None
     explicit_base_url_from_alias: Optional[str] = None
     if effective_provider is None and (model or env_model):
         # Only auto-detect when the model was explicitly requested via arg or

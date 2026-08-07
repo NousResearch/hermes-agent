@@ -1102,6 +1102,13 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 "docker_extra_args": config.get("docker_extra_args", []),
                 "docker_shm_size": config.get("docker_shm_size", "1g"),
+                # #76906: the probe must honor the operator's egress control.
+                # Omitting this let docker_network fall through to the True
+                # default in _create_environment, so the backend-probe
+                # container came up networked (on `bridge`) even under
+                # docker_network: false / TERMINAL_DOCKER_NETWORK=false —
+                # while carrying the same docker_volumes as the agent shell.
+                "docker_network": config.get("docker_network", True),
                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
             }

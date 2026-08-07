@@ -767,6 +767,46 @@ class TestEnvironmentHints:
         assert "root" in line
 
 
+    def test_probe_remote_backend_honors_docker_network_false(self, monkeypatch):
+        """Regression for #76906: the backend probe built its own
+        ``container_config`` and omitted ``docker_network``, so the key fell
+        through to the ``True`` default in ``_create_environment`` and the
+        ``prompt-backend-probe`` container came up networked even when the
+        operator set ``docker_network: false`` / ``TERMINAL_DOCKER_NETWORK=false``
+        as an egress control — while inheriting the agent's ``docker_volumes``.
+        The probe must forward the operator's setting."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_NETWORK", "false")
+        _pb._clear_backend_probe_cache()
+
+        captured = {}
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": "os=Linux\nkernel=6.8.0\nhome=/root\ncwd=/workspace\nuser=root\n",
+                }
+
+        def _fake_create_environment(*, env_type, container_config=None, **kwargs):
+            captured["container_config"] = container_config
+            return _FakeEnv()
+
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
+
+        _pb._probe_remote_backend("docker")
+
+        cc = captured.get("container_config")
+        assert cc is not None, "probe must pass a container_config for docker"
+        assert cc.get("docker_network") is False, (
+            "probe container_config must forward docker_network so the "
+            "operator's egress control applies to the probe container too"
+        )
+
+
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
         import agent.prompt_builder as _pb

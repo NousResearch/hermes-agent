@@ -496,6 +496,30 @@ You can verify the plist has the correct PATH:
 - Check your network latency to the provider
 - For local models, ensure you have enough GPU VRAM
 
+If Hermes starts fast and then slows down over the life of a long session, check
+whether context size and compression are the actual bottleneck before changing
+models:
+
+```bash
+grep -E "Preflight compression|Compression summary failed|context=~|latency=" \
+  ~/.hermes/logs/agent.log ~/.hermes/logs/desktop.log 2>/dev/null | tail -40
+```
+
+Field signal to watch for:
+
+- `Preflight compression` before ordinary turns means Hermes is spending time
+  compacting the session before it can answer.
+- `Compression summary failed` means compaction itself hit a provider/network
+  failure and Hermes had to continue with a fallback marker.
+- `context=~... tokens` in the tens or hundreds of thousands usually means the
+  current conversation, tool outputs, or active tool schemas are dominating the
+  request.
+
+When those appear, the highest-leverage fix is usually a fresh session with a
+short handoff summary, plus only the toolsets needed for the next task. Treat
+`/compress` as a recovery step, not a reason to keep one conversation alive
+forever.
+
 #### High token usage
 
 **Cause:** Long conversations, verbose system prompts, or many tool calls accumulating context.

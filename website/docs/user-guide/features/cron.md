@@ -332,6 +332,38 @@ When scheduling jobs, you specify where the output goes:
 
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
 
+### Diagnosing "the job ran, but I did not get a message"
+
+First separate scheduling, execution, and delivery. A job can run successfully
+and still produce no chat notification if it was created from the CLI with the
+default `local` delivery, if `[SILENT]` suppressed the final message, or if the
+target platform has no configured home channel.
+
+Use this checklist before recreating the job:
+
+```bash
+hermes cron status
+hermes cron list
+hermes cron runs <job-id-or-name> --limit 5
+ls -lt ~/.hermes/cron/output/<job-id>/ | head
+```
+
+- If `next_run_at` passed but `last_run_at` did not change, check that the
+  gateway daemon is running; the scheduler ticks from the gateway process, not
+  from an open chat window.
+- If the execution ledger shows `failed`, inspect the latest local output file
+  and `~/.hermes/logs/gateway.log` before editing the schedule.
+- If `last_status` is successful but there is no chat message, confirm the
+  job's `deliver` target. CLI-created jobs default to `local`, which saves the
+  response under `~/.hermes/cron/output/` only.
+- If the output contains `[SILENT]`, the result was intentionally saved locally
+  without delivery. Failed jobs bypass this suppression and still deliver.
+
+For scheduled desktop or browser automation, make the script print a small
+status block (`STATUS`, `STATE`, `ACTIONS`, and `ERROR` when relevant). That
+turns "nothing happened" into an auditable execution record and makes it clear
+whether the scheduler, the script, or the delivery target needs attention.
+
 ### Routing intent (`all`)
 
 `all` lets you ship one cron job to every messaging channel you have configured, without having to enumerate them by name. It is **resolved at fire time**, so a job created before you wired up Telegram will pick up Telegram on the next tick after you set `TELEGRAM_HOME_CHANNEL`.

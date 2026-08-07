@@ -2905,6 +2905,217 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+# Marker prefix stamped into the error string returned by ``run_job`` when the
+# pre-dispatch configuration validation (T1-26) refuses to run the agent.
+# ``run_one_job`` keys off it to record ``last_status='blocked_config'`` and to
+# apply the alert-once dedup. The ``:silent`` variant means "already alerted on
+# a previous tick — do not deliver again".
+BLOCKED_CONFIG_MARKER = "[blocked_config]"
+BLOCKED_CONFIG_SILENT_MARKER = "[blocked_config:silent]"
+
+
+def _cron_preflight_enabled(cfg: dict) -> bool:
+    """Whether cron pre-dispatch configuration validation is enabled.
+
+    Default ON; only the literal boolean ``false`` under ``cron.preflight``
+    opts out (mirrors ``cron_model_drift_guard_enabled`` semantics).
+    """
+    cron_cfg = (cfg or {}).get("cron")
+    if not isinstance(cron_cfg, dict):
+        return True
+    return cron_cfg.get("preflight", True) is not False
+
+
+def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
+    """READ-ONLY probe: would provider resolution fail for lack of a key?
+
+    Mirrors the effective requested-provider computation from run_job's
+    resolution block without any side effects on the run. When a fallback
+    chain is configured the check is skipped entirely — the existing
+    auth-fallback path may legitimately rescue a missing primary key, so
+    blocking here would break that contract (and burning zero LLM calls is
+    already guaranteed by the fallback resolution being config-local).
+    """
+    try:
+        if get_fallback_chain(cfg):
+            return None
+    except Exception:
+        return None  # fail-open: never block on a preflight-internal error
+
+    _cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
+    requested = (
+        job.get("provider")
+        or str((_cron_cfg or {}).get("model_provider") or "").strip()
+        or None
+    )
+    model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+
+    from hermes_cli.auth import AuthError
+
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        kwargs = {"requested": requested, "target_model": model}
+        if job.get("base_url"):
+            kwargs["explicit_base_url"] = job.get("base_url")
+        resolve_runtime_provider(**kwargs)
+    except AuthError as exc:
+        return (
+            f"provider credential missing: {exc}. "
+            "Set the provider API key in .env (or `hermes setup`), or pin a "
+            "working provider via `cronjob action=update job_id="
+            f"{job.get('id')} provider=<p>`."
+        )
+    except Exception:
+        # Non-auth resolution errors (bad config shapes, network probes,
+        # import issues) are NOT a missing-credential condition — let the
+        # real resolution path handle and report them as before.
+        return None
+    return None
+
+
+def _preflight_check_delivery(job: dict) -> Optional[str]:
+    """Check the job's delivery target(s) resolve to configured platforms.
+
+    ``local``/``origin`` (and the ``all`` routing token) need no gateway
+    credentials and are never checked — a deliver=local job must not pay a
+    gateway-config load. For concrete platform targets, an unknown platform
+    always blocks; a known platform additionally blocks when the gateway
+    config is loadable and reports it unconnected (enabled + credentials —
+    the same source `cron_delivery_targets` uses). Gateway-config load
+    failures fail OPEN so a transient config hiccup never wedges delivery
+    that would have worked.
+    """
+    deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+    platform_parts: list[str] = []
+    for part in deliver_value.split(","):
+        part = part.strip()
+        if not part or part.lower() in {"local", "origin", "all"}:
+            continue
+        platform_parts.append(part.split(":", 1)[0].strip())
+    if not platform_parts:
+        return None
+
+    connected: Optional[set] = None
+    for platform_name in platform_parts:
+        if not _is_known_delivery_platform(platform_name):
+            return (
+                f"delivery platform '{platform_name}' is not a known cron "
+                "delivery target. Fix the job's `deliver` value or configure "
+                "the platform's gateway credentials."
+            )
+        if connected is None:
+            try:
+                from gateway.config import load_gateway_config
+
+                gateway_config = load_gateway_config()
+                connected = {
+                    p.value for p in gateway_config.get_connected_platforms()
+                }
+            except Exception:
+                logger.debug(
+                    "preflight: gateway config unavailable — skipping "
+                    "delivery credential check", exc_info=True,
+                )
+                return None  # fail-open
+        if platform_name.lower() not in connected:
+            return (
+                f"delivery platform '{platform_name}' has no gateway "
+                "credentials configured (not connected). Configure it via "
+                "`hermes setup` or change the job's `deliver` target."
+            )
+    return None
+
+
+def _preflight_check_skills(job: dict) -> Optional[str]:
+    """Check attached skills report ready (no missing required env/commands).
+
+    Consults the same ``readiness_status`` payload ``skill_view`` computes
+    for interactive use. Skills that fail to load at all are left to the
+    existing skipped-skill handling in ``_build_job_prompt`` (fail-open):
+    this check only blocks on an affirmative "setup needed" verdict, i.e.
+    the skill exists but its required environment is missing — a run that
+    is guaranteed to misfire.
+    """
+    skills = job.get("skills")
+    if skills is None:
+        legacy = job.get("skill")
+        skills = [legacy] if legacy else []
+    elif isinstance(skills, str):
+        skills = [skills]
+    skill_names = [str(name).strip() for name in skills if str(name).strip()]
+    if not skill_names:
+        return None
+
+    from tools.skills_tool import skill_view
+
+    for skill_name in skill_names:
+        try:
+            payload = json.loads(skill_view(skill_name))
+        except Exception:
+            continue  # unreadable/missing skill → existing skip handling
+        if not isinstance(payload, dict) or not payload.get("success"):
+            continue
+        if (
+            payload.get("setup_needed")
+            or payload.get("readiness_status") == "setup_needed"
+        ):
+            missing = [
+                f"env ${name}"
+                for name in payload.get(
+                    "missing_required_environment_variables"
+                ) or []
+            ]
+            missing += [
+                f"command '{name}'"
+                for name in payload.get("missing_required_commands") or []
+            ]
+            missing += [
+                f"credential file {name}"
+                for name in payload.get("missing_credential_files") or []
+            ]
+            detail = ", ".join(missing) or "required setup incomplete"
+            return (
+                f"attached skill '{skill_name}' is not ready: missing "
+                f"{detail}. Provide the missing prerequisites or detach the "
+                "skill from this job."
+            )
+    return None
+
+
+def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
+    """Pre-dispatch configuration validation (T1-26).
+
+    Returns a human-readable reason when the job's configuration cannot
+    produce a successful run — missing provider API key, unconfigured
+    delivery platform, or an attached skill with missing required env —
+    so the caller can refuse the run BEFORE any agent machinery is
+    constructed and no LLM call is burned. Returns ``None`` when the
+    configuration validates (or when a check cannot be evaluated: every
+    check fails open, so preflight can only ever block on an affirmative
+    misconfiguration verdict).
+
+    Same fail-before-spend spirit as the #44585 drift guard and the
+    fail-loud-on-hidden-tools direction in #27948; alert dedup follows the
+    alert-once pattern from the dead-pin auto-pause (#73506).
+    """
+    for name, check in (
+        ("provider_key", lambda: _preflight_check_provider_key(job, cfg)),
+        ("skills", lambda: _preflight_check_skills(job)),
+        ("delivery", lambda: _preflight_check_delivery(job)),
+    ):
+        try:
+            reason = check()
+        except Exception:
+            logger.debug(
+                "preflight check %s raised — failing open", name, exc_info=True
+            )
+            continue
+        if reason:
+            return reason
+    return None
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None,
     extra_prompt: Optional[str] = None,
@@ -3538,6 +3749,75 @@ def run_job(
         # — reaches this sink unchecked. Fail closed before resolution so no
         # off-host call is ever made with a stored key.
         _guard_job_credential_exfil(job)
+
+        # ---------------------------------------------------------------
+        # Pre-dispatch configuration validation (T1-26).
+        #
+        # A job whose configuration cannot possibly produce a successful
+        # run — missing provider API key (no fallback chain), unready
+        # attached skill, unconfigured delivery platform — is refused HERE,
+        # before AIAgent is constructed and before the resolution below can
+        # feed a doomed runtime into it, so a misconfigured job never burns
+        # an LLM call. run_one_job keys off the BLOCKED_CONFIG_MARKER in
+        # the returned error to record last_status='blocked_config' and
+        # alert exactly once (dedup persisted via the job's
+        # `preflight_alerted` bit — the #73506 alert-once shape).
+        # Runs after the wake-gate/prompt build so silent script ticks stay
+        # silent. Opt-out: `cron.preflight: false` in config.yaml.
+        # ---------------------------------------------------------------
+        _pf_reason = None
+        try:
+            if _cron_preflight_enabled(_cfg):
+                _pf_reason = _preflight_job_config(job, _cfg)
+                if not _pf_reason and job.get("preflight_alerted"):
+                    # Configuration validates again — clear the alert-once
+                    # marker so a FUTURE config break re-alerts.
+                    try:
+                        from cron.jobs import clear_preflight_alerted
+                        clear_preflight_alerted(job_id)
+                    except Exception:
+                        pass
+        except Exception:
+            # The validator must never take down a runnable job — fail open.
+            logger.debug(
+                "Job '%s': preflight validation errored — failing open",
+                job_id, exc_info=True,
+            )
+            _pf_reason = None
+
+        if _pf_reason:
+            logger.warning(
+                "Job '%s' (ID: %s): BLOCKED by pre-dispatch config "
+                "validation — %s (no LLM call was made)",
+                job_name, job_id, _pf_reason,
+            )
+            already_alerted = False
+            try:
+                from cron.jobs import mark_preflight_alerted
+                already_alerted = mark_preflight_alerted(job_id)
+            except Exception:
+                logger.debug(
+                    "Job '%s': could not persist preflight alert marker",
+                    job_id, exc_info=True,
+                )
+            marker = (
+                BLOCKED_CONFIG_SILENT_MARKER if already_alerted
+                else BLOCKED_CONFIG_MARKER
+            )
+            blocked_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"**Status:** BLOCKED (configuration)\n\n"
+                "Pre-dispatch validation found a configuration problem and "
+                "the agent was NOT run (no tokens spent).\n\n"
+                f"**Reason:** {_pf_reason}\n\n"
+                "The job will stay blocked (without re-alerting) until the "
+                "configuration is fixed; the next healthy run clears this "
+                "state. Set `cron.preflight: false` in config.yaml to "
+                "disable this validation."
+            )
+            return False, blocked_doc, "", f"{marker} {_pf_reason}"
 
         primary_model_for_drift = model
         configured_provider_for_drift = (
@@ -4223,6 +4503,7 @@ def run_one_job(
         # deferred agent is still torn down. Otherwise the outer `except` would
         # swallow the error and leak the agent's subprocesses/clients (#10200).
         delivery_error = None
+        blocked_config = False
         try:
             output_file = save_job_output(job["id"], output)
             if verbose:
@@ -4245,11 +4526,41 @@ def run_one_job(
             # Deliver the final response to the origin/target chat.
             # If the agent responded with [SILENT], skip delivery (but
             # output is already saved above).  Failed jobs always deliver.
-            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            #
+            # Exception: a run blocked by pre-dispatch config validation
+            # (T1-26) alerts exactly ONCE — the silent marker means the
+            # operator was already told on a previous tick, so re-delivering
+            # the same alert every tick would be spam (#73506 alert-once
+            # shape).
+            blocked_config_silent = (
+                bool(error) and BLOCKED_CONFIG_SILENT_MARKER in str(error)
+            )
+            blocked_config = blocked_config_silent or (
+                bool(error) and BLOCKED_CONFIG_MARKER in str(error)
+            )
+            if blocked_config and not success:
+                # Blocked-config alert: bypass the generic failure summarizer
+                # (whose auth/timeout heuristics would mislabel this as a
+                # provider runtime failure) — say plainly that config
+                # validation blocked the run and nothing was spent.
+                _pf_text = re.sub(
+                    r"\[blocked_config[^\]]*\]\s*", "", str(error)
+                ).strip()
+                deliver_content = (
+                    f"⛔ Cron '{job.get('name') or job['id']}' blocked by "
+                    f"configuration validation (no LLM call was made): "
+                    f"{_pf_text} "
+                    "This alert is sent once; the job stays blocked until "
+                    "the configuration is fixed."
+                )
+            else:
+                deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
+            if blocked_config_silent:
+                should_deliver = False
             unresolved_origin = False
             # Cron silence suppression — see _is_cron_silence_response.  Replaces the
             # old `SILENT_MARKER in ...upper()` substring check, which both leaked
@@ -4286,7 +4597,13 @@ def run_one_job(
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            if blocked_config:
+                mark_job_run(
+                    job["id"], success, error, delivery_error=delivery_error,
+                    status="blocked_config",
+                )
+            else:
+                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
         if delivery_error:
             delivery_outcome = "failed"

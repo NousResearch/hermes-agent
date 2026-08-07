@@ -67,6 +67,33 @@ Every morning at 9am, check Hacker News for AI news and send me a summary on Tel
 
 Hermes will use the unified `cronjob` tool internally.
 
+## Pre-dispatch configuration validation
+
+Before constructing any agent machinery for a scheduled run, the scheduler
+validates that the job's configuration can actually produce a successful run:
+
+- the provider API key resolves (skipped when a `fallback_providers` chain is
+  configured, since the fallback path may rescue a missing primary key),
+- attached skills are ready (no missing required environment variables,
+  commands, or credential files),
+- delivery platform targets are known and have gateway credentials configured
+  (`local`/`origin` targets are never checked).
+
+When validation fails, the job's `last_status` becomes `blocked_config`, ONE
+alert is delivered (it is not repeated every tick), and **no LLM call is
+made** — a misconfigured job never spends tokens. The next healthy run clears
+the blocked state so a future configuration break alerts again.
+
+To disable the validation and restore the old behavior (the run proceeds and
+fails during execution):
+
+```yaml
+cron:
+  preflight: false
+```
+
+Or: `hermes config set cron.preflight false`
+
 ## Letting unpinned jobs track global defaults
 
 The model/provider drift guard is enabled by default. If your unpinned cron

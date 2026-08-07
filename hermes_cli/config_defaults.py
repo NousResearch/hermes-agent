@@ -2196,6 +2196,14 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Pre-dispatch configuration validation (T1-26): before constructing
+        # any agent machinery for a job, verify the provider API key resolves
+        # (unless a fallback chain is configured), attached skills are ready
+        # (required env/commands present), and delivery platforms are
+        # configured. A failing job is recorded as last_status=blocked_config
+        # with ONE alert (no re-alert every tick) and NO LLM call is made.
+        # Set to false to restore the old behavior (fail during the run).
+        "preflight": True,
         # Fail closed when an unpinned job's current global model/provider
         # differs from its creation-time snapshot. This prevents unattended
         # jobs from silently inheriting a paid default. Set to false only when

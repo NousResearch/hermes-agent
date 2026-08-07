@@ -1974,8 +1974,44 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
+def _set_preflight_alerted(job_id: str, value: bool) -> bool:
+    """Set/clear the preflight alert-dedup marker; return the PRIOR value.
+
+    The marker records that the operator was already alerted about this
+    job's blocked configuration, so the scheduler alerts exactly once and
+    stays silent on subsequent ticks until the config heals (same
+    alert-once shape as the dead-pin auto-pause in #73506). Persisted on
+    the job record so the dedup survives gateway restarts.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] == job_id:
+                prior = bool(job.get("preflight_alerted"))
+                if value:
+                    job["preflight_alerted"] = True
+                else:
+                    job.pop("preflight_alerted", None)
+                if prior != value:
+                    jobs[i] = job
+                    save_jobs(jobs)
+                return prior
+    return False
+
+
+def mark_preflight_alerted(job_id: str) -> bool:
+    """Mark the job as preflight-alerted; return True if it already was."""
+    return _set_preflight_alerted(job_id, True)
+
+
+def clear_preflight_alerted(job_id: str) -> None:
+    """Clear the preflight alert-dedup marker (config validates again)."""
+    _set_preflight_alerted(job_id, False)
+
+
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 status: Optional[str] = None):
     """
     Mark a job as having been run.
     
@@ -1984,6 +2020,12 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
+
+    ``status`` overrides the derived ``last_status`` ("ok"/"error") with a
+    specific terminal status for this run — e.g. ``"blocked_config"`` when
+    the pre-dispatch configuration validation refused to run the agent
+    (T1-26), so `cronjob list` distinguishes "your config is broken" from
+    "the run itself failed".
     """
     with _jobs_lock():
         jobs = load_jobs()
@@ -1991,8 +2033,13 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
             if job["id"] == job_id:
                 now = _hermes_now().isoformat()
                 job["last_run_at"] = now
-                job["last_status"] = "ok" if success else "error"
+                job["last_status"] = status or ("ok" if success else "error")
                 job["last_error"] = error if not success else None
+                # A healthy run means the configuration validates again — drop
+                # the preflight alert-dedup marker so a FUTURE config break
+                # re-alerts instead of being silently swallowed.
+                if success:
+                    job.pop("preflight_alerted", None)
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
                 # Clear any external-fire claim so a re-armed recurring job can

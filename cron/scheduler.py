@@ -4911,8 +4911,14 @@ def tick(
         # That alone only keeps workdir jobs from overlapping EACH OTHER;
         # run_job's _terminal_cwd_lock is what additionally stops a concurrently
         # firing workdir-less parallel-pool job from observing the override.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        #
+        # no_agent script jobs never touch TERMINAL_CWD — their workdir is
+        # applied only as the subprocess cwd (process-local), so they are safe
+        # to run on the parallel pool even when workdir is set (#73804).
+        sequential_jobs = [j for j in due_jobs
+                           if (j.get("workdir") or "").strip()
+                           and not j.get("no_agent")]
+        parallel_jobs = [j for j in due_jobs if j not in sequential_jobs]
 
         _results: list = []
         _all_futures: list = []

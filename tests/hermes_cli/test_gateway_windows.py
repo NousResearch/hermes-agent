@@ -124,9 +124,13 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
 
 
 def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
-    """UAC handoff launches console python with SW_HIDE — a single hidden
-    console, not console-less pythonw (#54220/#56747), and no visible
-    elevated cmd.exe window left open."""
+    """UAC handoff launches the resolved hermes console script with SW_HIDE —
+    a single hidden console, not console-less pythonw (#54220/#56747), and no
+    visible elevated cmd.exe window left open.
+
+    The console script is resolved via resolve_hermes_argv() (interpreter-bound
+    sibling first, `-m` fallback) instead of hardcoding `python -m
+    hermes_cli.main` (#76705)."""
     calls = []
 
     class FakeShell32:
@@ -139,7 +143,11 @@ def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "_current_profile_cli_args", lambda: ["--profile", "alice"])
-    monkeypatch.setattr(gateway_windows.sys, "executable", r"C:\Hermes\venv\Scripts\python.exe")
+    monkeypatch.setattr(
+        gateway_windows,
+        "resolve_hermes_argv",
+        lambda: [r"C:\Hermes\venv\Scripts\hermes.exe"],
+    )
     monkeypatch.setattr(gateway_windows.ctypes, "windll", FakeWindll(), raising=False)
 
     assert gateway_windows._launch_elevated_gateway_command("install", ["--start-now", "--elevated-handoff"])
@@ -147,8 +155,10 @@ def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
     assert len(calls) == 1
     _hwnd, verb, executable, params, cwd, show = calls[0]
     assert verb == "runas"
-    assert executable == r"C:\Hermes\venv\Scripts\python.exe"
+    # Resolved console script, not `python -m hermes_cli.main` (#76705).
+    assert executable == r"C:\Hermes\venv\Scripts\hermes.exe"
     assert "--profile alice gateway install --start-now --elevated-handoff" in params
+    assert "-m" not in params and "hermes_cli.main" not in params
     assert show == 0
     assert cwd
 
@@ -198,12 +208,26 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
 
 
 def test_gateway_vbs_script_is_console_less(monkeypatch):
-    """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
-    (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""
+    """The .vbs launcher must avoid cmd.exe entirely and Run the hidden
+    console interpreter (issue #45599 fix A: no console -> no logon
+    CTRL_CLOSE_EVENT / 0xC000013A).
+
+    The interpreter argv is resolved via resolve_hermes_argv() — mocked here
+    to the `-m` fallback shape so the test stays deterministic on POSIX CI
+    (where a Windows-style interpreter path has no sibling shim); the real
+    resolver prefers the interpreter-bound console script when one exists
+    (#76705)."""
     monkeypatch.setattr(
         gateway_windows,
         "_resolve_detached_python",
         lambda exe: (r"C:\venv\Scripts\pythonw.exe", Path(r"C:\venv"), []),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "resolve_hermes_argv",
+        lambda interp=None, prefer_interpreter_sibling=False: [
+            r"C:\venv\Scripts\pythonw.exe", "-m", "hermes_cli.main",
+        ],
     )
     content = gateway_windows._build_gateway_vbs_script(
         r"C:\venv\Scripts\python.exe",

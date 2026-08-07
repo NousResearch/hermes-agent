@@ -51,6 +51,7 @@ from hermes_cli.config import (
     save_env_value,
     write_platform_config_field,
 )
+from hermes_cli.hermes_argv import resolve_hermes_argv
 
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
@@ -674,7 +675,7 @@ def find_profile_gateway_processes(
 
 
 def _gateway_run_args_for_profile(profile: str) -> list[str]:
-    args = [get_python_path(), "-m", "hermes_cli.main"]
+    args = resolve_hermes_argv(get_python_path())
     if profile != "default":
         args.extend(["--profile", profile])
     args.extend(["gateway", "run", "--replace"])
@@ -2910,6 +2911,9 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries.extend(_build_wsl_interop_paths(path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
+        # Resolve the console script next to the (remapped) interpreter so the
+        # unit never hardcodes `python -m hermes_cli.main` (#76705).
+        hermes_exec = " ".join(resolve_hermes_argv(python_path, prefer_interpreter_sibling=True))
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2920,7 +2924,7 @@ StartLimitIntervalSec=0
 Type={systemd_type}
 {systemd_watchdog_directives}User={username}
 Group={group_name}
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
+ExecStart={hermes_exec}{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
@@ -2953,6 +2957,9 @@ WantedBy=multi-user.target
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
+    # Resolve the console script next to the interpreter so the unit never
+    # hardcodes `python -m hermes_cli.main` (#76705).
+    hermes_exec = " ".join(resolve_hermes_argv(python_path, prefer_interpreter_sibling=True))
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2961,7 +2968,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type={systemd_type}
-{systemd_watchdog_directives}ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
+{systemd_watchdog_directives}ExecStart={hermes_exec}{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
@@ -4009,12 +4016,15 @@ def _launchd_unsupported_marker_exists() -> bool:
 
 
 def _gateway_run_command() -> list[str]:
-    """Build the `python -m hermes_cli.main [--profile X] gateway run --replace` argv.
+    """Build the hermes CLI gateway-run argv for a detached launch.
 
     Profile-aware: honors the active HERMES_HOME via `_profile_arg()` so the
     detached fallback launches into the same profile as the CLI invocation.
+    Resolves the ``hermes`` console script (interpreter-bound sibling first)
+    instead of hardcoding ``python -m hermes_cli.main``, falling back to the
+    ``-m`` form only when no shim exists (#76705).
     """
-    cmd = [get_python_path(), "-m", "hermes_cli.main"]
+    cmd = resolve_hermes_argv(get_python_path(), prefer_interpreter_sibling=True)
     profile_arg = _profile_arg()
     if profile_arg:
         cmd.extend(profile_arg.split())
@@ -4111,11 +4121,12 @@ def generate_launchd_plist() -> str:
         )
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
+    # Build ProgramArguments array, including --profile when using a named
+    # profile. Resolves the console script next to the interpreter instead of
+    # hardcoding `python -m hermes_cli.main` (#76705).
     prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
+        f"<string>{part}</string>"
+        for part in resolve_hermes_argv(python_path, prefer_interpreter_sibling=True)
     ]
     if profile_arg:
         for part in profile_arg.split():

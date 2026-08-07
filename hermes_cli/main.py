@@ -96,6 +96,9 @@ from hermes_cli import _startup_fast  # noqa: E402
 # the full recovery path below.
 from hermes_cli import _early_recovery as _early_recovery_mod
 
+# Stdlib-only helper; safe to import even on a corrupted venv.
+from hermes_cli.hermes_argv import resolve_hermes_argv
+
 try:
     _early_recovery_mod.recover_if_needed()
 except Exception:
@@ -10307,8 +10310,12 @@ def cmd_dashboard(args):
             f"Routing to the machine dashboard (profile '{_launch_profile}' "
             f"preselected). Use --isolated for a dedicated per-profile server."
         )
+        # Resolve the hermes console script (interpreter-bound sibling first,
+        # `-m` fallback) so the re-exec does not hardcode `python -m
+        # hermes_cli.main` — a service running the console script with no -p
+        # must not re-exec itself back into the -m shape (#76705).
         reexec_argv = [
-            sys.executable, "-m", "hermes_cli.main",
+            *resolve_hermes_argv(),
             "-p", "default",
             # Preserve the lean serve path across the re-exec so a named-profile
             # `serve` doesn't silently rebuild the UI as `dashboard`.
@@ -10358,7 +10365,7 @@ def cmd_dashboard(args):
             proc = subprocess.Popen(reexec_argv, env=env)
             sys.exit(proc.wait())
         else:
-            os.execvpe(sys.executable, reexec_argv, env)
+            os.execvpe(reexec_argv[0], reexec_argv, env)
 
     if _token_file:
         _ssh_session_token = _read_ssh_session_token_file(_token_file)

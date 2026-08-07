@@ -81,6 +81,7 @@ from hermes_cli.config import (
     write_platform_config_field,
     _deep_merge,
 )
+from hermes_cli.hermes_argv import resolve_hermes_argv
 from plugins.memory.config_schema import (
     ProviderConfigSchema,
     ProviderField,
@@ -3793,8 +3794,9 @@ def _spawn_hermes_action(
 ) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
 
-    Uses the running interpreter's ``hermes_cli.main`` module so the action
-    inherits the same venv/PYTHONPATH the web server is using.
+    Resolves the ``hermes`` console script (interpreter-bound sibling first,
+    ``-m`` fallback) so the action inherits the same venv/PYTHONPATH the web
+    server is using without hardcoding ``python -m hermes_cli.main`` (#76705).
     """
     log_file_name = _ACTION_LOG_FILES[name]
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -3804,7 +3806,7 @@ def _spawn_hermes_action(
         f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
     )
 
-    cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
+    cmd = [*resolve_hermes_argv(_dashboard_spawn_executable()), *subcommand]
 
     # The dashboard runs *inside* the gateway process, so os.environ carries
     # _HERMES_GATEWAY=1. Inheriting it makes a spawned `hermes gateway restart`

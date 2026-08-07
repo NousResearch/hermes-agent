@@ -44,6 +44,7 @@ from hermes_cli._subprocess_compat import (
     windows_detach_flags_without_breakaway,
     windows_hide_flags,
 )
+from hermes_cli.hermes_argv import resolve_hermes_argv
 
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
 _SCHTASKS_TIMEOUT_S = 15
@@ -218,12 +219,15 @@ def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None 
     the parent shell before this point.
     """
     _assert_windows()
-    args = ["-m", "hermes_cli.main", *_current_profile_cli_args(), "gateway", command]
+    # Resolve the console script (interpreter-bound sibling first, `-m`
+    # fallback) instead of hardcoding `python -m hermes_cli.main` (#76705).
+    invocation = resolve_hermes_argv()
+    elevated_python = invocation[0]
+    args = [*invocation[1:], *_current_profile_cli_args(), "gateway", command]
     if extra_args:
         args.extend(extra_args)
     params = subprocess.list2cmdline(args)
     cwd = str(Path(__file__).resolve().parent.parent)
-    elevated_python = sys.executable
     try:
         result = ctypes.windll.shell32.ShellExecuteW(
             None,
@@ -421,7 +425,9 @@ def _build_gateway_cmd_script(
     ]
     lines.append(f'set "PYTHONPATH={";".join([*pythonpath_entries, "%PYTHONPATH%"])}"')
 
-    prog_args = [python_exe_path, "-m", "hermes_cli.main"]
+    # Resolve the console script next to the interpreter instead of
+    # hardcoding `python -m hermes_cli.main` (#76705).
+    prog_args = resolve_hermes_argv(python_exe_path, prefer_interpreter_sibling=True)
     if profile_arg:
         prog_args.extend(profile_arg.split())
     prog_args.extend(["gateway", "run"])
@@ -475,7 +481,9 @@ def _build_gateway_vbs_script(
     """
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
 
-    prog_args = [python_exe_path, "-m", "hermes_cli.main"]
+    # Resolve the console script next to the interpreter instead of
+    # hardcoding `python -m hermes_cli.main` (#76705).
+    prog_args = resolve_hermes_argv(python_exe_path, prefer_interpreter_sibling=True)
     if profile_arg:
         prog_args.extend(profile_arg.split())
     prog_args.extend(["gateway", "run"])
@@ -801,7 +809,9 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     hermes_home = str(Path(get_hermes_home()))
     profile_arg = _profile_arg(hermes_home)
 
-    argv = [python_exe, "-m", "hermes_cli.main"]
+    # Resolve the console script next to the interpreter instead of
+    # hardcoding `python -m hermes_cli.main` (#76705).
+    argv = resolve_hermes_argv(python_exe, prefer_interpreter_sibling=True)
     if profile_arg:
         argv.extend(profile_arg.split())
     argv.extend(["gateway", "run"])

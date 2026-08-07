@@ -15,6 +15,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.hermes_argv import resolve_hermes_argv
 
 def log_info(msg: str):
     print(f"{color('→', Colors.CYAN)} {msg}")
@@ -467,16 +468,17 @@ def _uninstall_profile(profile) -> None:
     service names, unit paths, and plist paths are all derived from the
     current HERMES_HOME and can't be easily switched in-process.
     """
-    import sys as _sys
     name = profile.name
     profile_home = profile.path
 
     log_info(f"Uninstalling profile '{name}'...")
 
     # 1. Stop and remove this profile's gateway service.
-    #    Use `python -m hermes_cli.main` so we don't depend on a `hermes`
-    #    wrapper that may be half-removed mid-uninstall.
-    hermes_invocation = [_sys.executable, "-m", "hermes_cli.main", "--profile", name]
+    #    Resolve the `hermes` console script (interpreter-bound sibling first)
+    #    instead of hardcoding `python -m hermes_cli.main`; the helper falls
+    #    back to the `-m` form when the shim is absent, so a wrapper that may
+    #    be half-removed mid-uninstall does not break the invocation (#76705).
+    hermes_invocation = [*resolve_hermes_argv(), "--profile", name]
     for subcmd in ("stop", "uninstall"):
         try:
             subprocess.run(

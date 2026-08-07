@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from hermes_cli.hermes_argv import resolve_hermes_argv
 from hermes_constants import venv_python_path
 
 logger = logging.getLogger(__name__)
@@ -4231,7 +4232,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _skip_desktop_build:
                 print("  ✓ Desktop app up to date")
             else:
-                _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
+                _desktop_build_cmd = [*resolve_hermes_argv(), "desktop", "--build-only"]
                 # Capture the (very loud) Electron/vite build output into
                 # update.log instead of streaming it to the terminal. On the rare
                 # nonzero exit, retry once after waiting again for the venv — this

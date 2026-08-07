@@ -48,7 +48,13 @@ class TestUnifiedDashboardRouting:
 
         assert len(execs) == 1
         exe, argv, env = execs[0]
-        assert exe == sys.executable
+        # The re-exec resolves the hermes console script (interpreter-bound
+        # sibling first, `-m` fallback) instead of hardcoding
+        # `python -m hermes_cli.main` (#76705).
+        from hermes_cli.hermes_argv import resolve_hermes_argv
+        resolved = resolve_hermes_argv()
+        assert argv[: len(resolved)] == resolved
+        assert exe == resolved[0]
         # Pinned to the default profile + launching profile preselected.
         assert "-p" in argv and argv[argv.index("-p") + 1] == "default"
         assert "--open-profile" in argv

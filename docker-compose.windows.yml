@@ -9,30 +9,44 @@
 # Usage:
 #   docker compose -f docker-compose.windows.yml up -d
 #
+x-windows-entrypoint: &windows-entrypoint
+  # Git may have materialized s6's extensionless metadata and scripts with
+  # CRLF in an existing Windows checkout. Repair the image copy before /init
+  # compiles the service tree, then preserve the image entrypoint contract.
+  - /bin/sh
+  - -c
+  - |
+      find /etc/s6-overlay/s6-rc.d /etc/cont-init.d -type f -exec sed -i 's/\r$$//' {} +
+      exec /init /opt/hermes/docker/main-wrapper.sh "$$@"
+  - windows-crlf-fix
+
 services:
   gateway:
-    image: nousresearch/hermes-agent:latest
+    build: .
+    image: ${DOCKTER_HERMES_IMAGE:-nousresearch/hermes-agent:latest}
     container_name: hermes
     restart: unless-stopped
     volumes:
-      - ${USERPROFILE}/.hermes:/opt/data
+      - "${DOCKTER_HERMES_DATA_DIR:-${USERPROFILE}/.hermes}:/opt/data"
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
+    entrypoint: *windows-entrypoint
     command: ["gateway", "run"]
 
   dashboard:
-    image: nousresearch/hermes-agent:latest
+    image: ${DOCKTER_HERMES_IMAGE:-nousresearch/hermes-agent:latest}
     container_name: hermes-dashboard
     restart: unless-stopped
     depends_on:
       - gateway
     volumes:
-      - ${USERPROFILE}/.hermes:/opt/data
+      - "${DOCKTER_HERMES_DATA_DIR:-${USERPROFILE}/.hermes}:/opt/data"
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
       - HERMES_DASHBOARD_HOST=0.0.0.0
+    entrypoint: *windows-entrypoint
     ports:
-      - "127.0.0.1:9119:9119"
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
+      - "127.0.0.1:${DOCKTER_HERMES_DASHBOARD_PORT:-9119}:9119"
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"]

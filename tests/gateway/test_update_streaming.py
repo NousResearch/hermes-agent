@@ -16,7 +16,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionSource
 
 
@@ -168,6 +168,72 @@ class TestUpdateCommandGatewayFlag:
 
 class TestWatchUpdateProgress:
     """Tests for _watch_update_progress() streaming output."""
+
+    @pytest.mark.asyncio
+    async def test_success_from_initiating_process_preserves_restart_marker(self, tmp_path):
+        """The watcher reports restart intent but leaves final delivery to the new PID."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending_path = hermes_home / ".update_pending.json"
+        pending_path.write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "session_key": "agent:main:telegram:dm:111",
+            "initiating_gateway_pid": 101,
+        }))
+        output_path = hermes_home / ".update_output.txt"
+        output_path.write_text("✓ Code updated!\n")
+        exit_path = hermes_home / ".update_exit_code"
+        exit_path.write_text("0")
+        adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.os.getpid", return_value=101):
+            await runner._watch_update_progress(
+                poll_interval=0.01,
+                stream_interval=0.01,
+                timeout=1.0,
+            )
+
+        sent = " ".join(str(call) for call in adapter.send.await_args_list)
+        assert "Restarting gateway" in sent
+        assert pending_path.exists()
+        assert output_path.exists()
+        assert exit_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_final_notification_retries_send_result_failure(self, tmp_path):
+        """A soft adapter failure must not consume legacy completion markers."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending_path = hermes_home / ".update_pending.json"
+        pending_path.write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "session_key": "agent:main:telegram:dm:111",
+        }))
+        exit_path = hermes_home / ".update_exit_code"
+        exit_path.write_text("0")
+        adapter = AsyncMock()
+        adapter.send.side_effect = [
+            SendResult(success=False, error="temporary failure"),
+            SendResult(success=True),
+        ]
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.01,
+                stream_interval=0.01,
+                timeout=1.0,
+            )
+
+        assert adapter.send.await_count == 2
+        assert not pending_path.exists()
+        assert not exit_path.exists()
 
     @pytest.mark.asyncio
     async def test_streams_output_to_adapter(self, tmp_path):
@@ -397,4 +463,3 @@ class TestCmdUpdateGatewayMode:
 
         assert len(calls) == 1
         assert "Restore" in calls[0]
-

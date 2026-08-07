@@ -5603,6 +5603,11 @@ class GatewaySlashCommandsMixin:
             "user_id": event.source.user_id,
             "session_key": session_key,
             "timestamp": datetime.now().isoformat(),
+            # Lets the completion watcher distinguish the gateway that
+            # initiated the update from the freshly restarted process.  The
+            # old process must not consume the final notification marker just
+            # before systemd stops it.
+            "initiating_gateway_pid": os.getpid(),
         }
         if event.source.thread_id:
             pending["thread_id"] = event.source.thread_id

@@ -21156,6 +21156,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         chat_id = None
         session_key = None
         metadata = None
+        initiating_gateway_pid = None
         for path in (claimed_path, pending_path):
             if path.exists():
                 try:
@@ -21164,6 +21165,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_id = pending.get("chat_id")
                     chat_type = pending.get("chat_type")
                     session_key = pending.get("session_key")
+                    initiating_gateway_pid = pending.get("initiating_gateway_pid")
                     thread_id = pending.get("thread_id")
                     message_id = pending.get("message_id")
                     if platform_str and chat_id:
@@ -21249,35 +21251,81 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         pass
                 await _flush_buffer()
 
-                # Send final status
+                # A successful gateway update writes its exit marker before it
+                # asks systemd to restart the gateway.  The initiating process
+                # must leave the durable target marker for the next process;
+                # otherwise a send racing with shutdown can fail and erase the
+                # only record of who should receive the completion message.
                 try:
                     exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
                     exit_code = int(exit_code_raw)
-                    if exit_code == 0:
+                except (OSError, ValueError):
+                    exit_code = 1
+
+                if (
+                    exit_code == 0
+                    and initiating_gateway_pid is not None
+                    and str(initiating_gateway_pid) == str(os.getpid())
+                ):
+                    try:
                         await adapter.send(
+                            chat_id,
+                            "✅ Hermes update installed.\n♻️ Restarting gateway…",
+                            metadata=_non_conversational_metadata(metadata, platform=platform),
+                        )
+                    except Exception as e:
+                        # The restart may already be stopping this process.
+                        # Keeping the markers is what guarantees that the new
+                        # gateway can still deliver the definitive result.
+                        logger.info("Pre-restart update notification was not delivered: %s", e)
+                    return
+
+                # Send final status for failed updates and legacy markers that
+                # predate initiating_gateway_pid.  Cleanup only after delivery.
+                delivered = False
+                try:
+                    if exit_code == 0:
+                        send_result = await adapter.send(
                             chat_id,
                             "✅ Hermes update finished.",
                             metadata=_non_conversational_metadata(metadata, platform=platform),
                         )
                     else:
-                        await adapter.send(
+                        send_result = await adapter.send(
                             chat_id,
                             "❌ Hermes update failed (exit code {}).".format(exit_code),
                             metadata=_non_conversational_metadata(metadata, platform=platform),
                         )
-                    logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
+                    if (
+                        send_result is not None
+                        and getattr(send_result, "success", True) is False
+                    ):
+                        logger.warning(
+                            "Update final notification was not delivered: %s",
+                            getattr(send_result, "error", "send returned success=False"),
+                        )
+                    else:
+                        delivered = True
+                        logger.info(
+                            "Update finished (exit=%s), notified %s",
+                            exit_code,
+                            session_key,
+                        )
                 except Exception as e:
                     logger.warning("Update final notification failed: %s", e)
 
-                # Cleanup
-                for p in (pending_path, claimed_path, output_path,
-                          exit_code_path, prompt_path):
-                    p.unlink(missing_ok=True)
-                (_hermes_home / ".update_response").unlink(missing_ok=True)
-                _up_done = self._peek_session_state(session_key)
-                if _up_done is not None:
-                    _up_done.persistent.update_prompt_pending = False
-                return
+                if delivered:
+                    for p in (pending_path, claimed_path, output_path,
+                              exit_code_path, prompt_path):
+                        p.unlink(missing_ok=True)
+                    (_hermes_home / ".update_response").unlink(missing_ok=True)
+                    _up_done = self._peek_session_state(session_key)
+                    if _up_done is not None:
+                        _up_done.persistent.update_prompt_pending = False
+                    return
+
+                await asyncio.sleep(poll_interval)
+                continue
 
             # Check for new output
             if output_path.exists():
@@ -21421,6 +21469,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
             exit_code = int(exit_code_raw)
 
+            initiating_gateway_pid = pending.get("initiating_gateway_pid")
+            if (
+                exit_code == 0
+                and initiating_gateway_pid is not None
+                and str(initiating_gateway_pid) == str(os.getpid())
+            ):
+                logger.info(
+                    "Update completion deferred until the gateway restarts "
+                    "(initiating pid=%s)",
+                    initiating_gateway_pid,
+                )
+                cleanup = False
+                active_pending_path = pending_path
+                claimed_path.replace(pending_path)
+                return False
+
             # Read the captured update output
             output = ""
             if output_path.exists():
@@ -21464,18 +21528,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if len(output) > 3500:
                         output = "…" + output[-3500:]
                     if exit_code == 0:
-                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
+                        msg = (
+                            "✅ Hermes update finished.\n"
+                            "♻️ Gateway restarted and is back online.\n\n"
+                            f"```\n{output}\n```"
+                        )
                     else:
                         msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
                 elif exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
+                    msg = (
+                        "✅ Hermes update finished successfully.\n"
+                        "♻️ Gateway restarted and is back online."
+                    )
                 else:
                     msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
-                await adapter.send(
-                    chat_id,
-                    msg,
-                    metadata=_non_conversational_metadata(metadata, platform=platform),
-                )
+                try:
+                    send_result = await adapter.send(
+                        chat_id,
+                        msg,
+                        metadata=_non_conversational_metadata(metadata, platform=platform),
+                    )
+                except Exception as send_error:
+                    # A transient platform reconnect or network failure must
+                    # not destroy the only durable completion target. Restore
+                    # the claim so the startup watcher can retry delivery.
+                    logger.warning("Post-update notification send failed: %s", send_error)
+                    cleanup = False
+                    active_pending_path = pending_path
+                    claimed_path.replace(pending_path)
+                    return False
+                if (
+                    send_result is not None
+                    and getattr(send_result, "success", True) is False
+                ):
+                    logger.warning(
+                        "Post-update notification was not delivered: %s",
+                        getattr(send_result, "error", "send returned success=False"),
+                    )
+                    cleanup = False
+                    active_pending_path = pending_path
+                    claimed_path.replace(pending_path)
+                    return False
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",
                     platform_str,

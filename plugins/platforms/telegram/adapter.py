@@ -4318,10 +4318,19 @@ class TelegramAdapter(BasePlatformAdapter):
         via ``_consume_abandoned_task``.
         """
         task = asyncio.ensure_future(awaitable)
-        if timeout <= 0:
-            done, _pending = await asyncio.wait({task})
-        else:
-            done, _pending = await asyncio.wait({task}, timeout=timeout)
+        try:
+            if timeout <= 0:
+                done, _pending = await asyncio.wait({task})
+            else:
+                done, _pending = await asyncio.wait({task}, timeout=timeout)
+        except asyncio.CancelledError:
+            # Outer cancellation (e.g. the fatal handler's outer timeout) must
+            # not orphan the inner task — asyncio.wait does NOT cancel its
+            # futures when itself cancelled (#80598).  Mirror the pattern used
+            # by GatewayRunner._await_adapter_cleanup_with_timeout.
+            task.cancel()
+            task.add_done_callback(_consume_abandoned_task)
+            raise
         if task in done:
             # Intentional cancels (heartbeat / identity / lifecycle) surface as
             # CancelledError — swallow so disconnect keeps advancing.

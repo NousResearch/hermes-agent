@@ -673,6 +673,14 @@ function Invoke-ProcessWithWallClockTimeout {
     if ($RedirectStandardOutput) { $startArgs.RedirectStandardOutput = $RedirectStandardOutput }
     if ($RedirectStandardError) { $startArgs.RedirectStandardError = $RedirectStandardError }
     $proc = Start-Process @startArgs
+    # Force the process handle to be opened IMMEDIATELY. On Windows
+    # PowerShell 5.1 (and pwsh 7.4.0 on Windows; fixed upstream in 7.4.1),
+    # Start-Process -NoNewWindow -PassThru returns a Process object whose
+    # handle was never acquired, so WaitForExit()/ExitCode silently read as
+    # $null (PowerShell issues #20400 / #5421). Touching .Handle forces the
+    # underlying handle open, which is what WaitForExit() and .ExitCode
+    # need to work. Harmless no-op on hosts without the bug.
+    $null = $proc.Handle
     $exited = $proc.WaitForExit($TimeoutSec * 1000)
     if (-not $exited) {
         # Kill the whole tree rooted at $proc, not just $proc itself.

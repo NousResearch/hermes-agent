@@ -15,10 +15,10 @@ import {
   messageContentText,
   pickPrimaryPreviewTarget
 } from '@/components/assistant-ui/thread/content'
+import { MessageAge as MessageAgeLabel } from '@/components/assistant-ui/thread/message-age'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseLoadingIndicator, StreamStallIndicator } from '@/components/assistant-ui/thread/status'
-import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -28,7 +28,6 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
-import { formatAgo } from '@/lib/time'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
@@ -301,23 +300,9 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
 }
 
 const MessageAge: FC = () => {
-  const { t } = useI18n()
   const createdAt = useAuiState(s => s.message.createdAt)
-  const date = createdAt ? new Date(createdAt) : null
 
-  if (!date || Number.isNaN(date.getTime())) {
-    return null
-  }
-
-  // Compact "2h ago" (shared util) with the absolute time on hover.
-  return (
-    <span
-      className="px-0.5 text-[0.6875rem] tabular-nums text-muted-foreground"
-      title={formatMessageTimestamp(date, t.assistant.thread) || undefined}
-    >
-      {formatAgo(date.getTime(), t.agents)}
-    </span>
-  )
+  return <MessageAgeLabel createdAt={createdAt} />
 }
 
 const AssistantFooter: FC<MessageActionProps> = props => (

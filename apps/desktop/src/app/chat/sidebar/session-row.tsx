@@ -6,6 +6,7 @@ import { ProfileTag } from '@/app/chat/profile-tag'
 import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { openSession } from '@/app/open-session'
+import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
@@ -80,7 +81,10 @@ function SidebarSessionRowImpl({
   const r = t.sidebar.row
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
-  const age = formatAge(session.last_active || session.started_at, r)
+  const timestamp = session.last_active || session.started_at
+  const age = formatAge(timestamp, r)
+  const timestampDate = new Date(timestamp * 1000)
+  const absoluteAge = formatMessageTimestamp(timestampDate, t.assistant.thread)
   const handleLabel = `Reorder ${title}`
   // A handed-off session's live source is local, but it originated on a
   // messaging platform — surface that origin as a small badge so e.g. a
@@ -89,6 +93,47 @@ function SidebarSessionRowImpl({
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
   // True when a clarify prompt in this session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+
+  const sessionMiddleClickHandlers = middleClickHandlers(() => {
+    triggerHaptic('selection')
+    openSession(session.id, () => undefined, 'tab')
+  })
+
+  const handleSessionClick = (event: React.MouseEvent<HTMLElement>) => {
+    const mod = event.metaKey || event.ctrlKey
+
+    // ⇧⌘-click → pop into its own window (needs standalone windows).
+    if (mod && event.shiftKey) {
+      event.preventDefault()
+      event.stopPropagation()
+      triggerHaptic('selection')
+      openSession(session.id, () => undefined, 'window')
+
+      return
+    }
+
+    // ⌘/⌃-click → open in a new tab (stack into main).
+    if (mod) {
+      event.preventDefault()
+      event.stopPropagation()
+      triggerHaptic('selection')
+      openSession(session.id, () => undefined, 'tab')
+
+      return
+    }
+
+    // ⇧-click → pin.
+    if (event.shiftKey) {
+      event.preventDefault()
+      event.stopPropagation()
+      triggerHaptic('selection')
+      onPin()
+
+      return
+    }
+
+    onResume()
+  }
 
   return (
     <SessionContextMenu
@@ -105,9 +150,18 @@ function SidebarSessionRowImpl({
         actions={
           <div className="relative z-2 grid w-[1.375rem] place-items-center" data-row-actions>
             {!isWorking && (
-              <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
-                {age}
-              </span>
+              <Tip label={absoluteAge} side="top">
+                <time
+                  aria-label={`${age}, ${absoluteAge}`}
+                  className="absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
+                  dateTime={timestampDate.toISOString()}
+                  {...sessionMiddleClickHandlers}
+                  onClick={handleSessionClick}
+                  tabIndex={0}
+                >
+                  {age}
+                </time>
+              </Tip>
             )}
             <SessionActionsMenu
               onArchive={onArchive}
@@ -169,46 +223,8 @@ function SidebarSessionRowImpl({
         )}
         <SidebarRowBody
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
-          // Middle-click = open in a new tab (browser muscle memory).
-          {...middleClickHandlers(() => {
-            triggerHaptic('selection')
-            openSession(session.id, () => undefined, 'tab')
-          })}
-          onClick={event => {
-            const mod = event.metaKey || event.ctrlKey
-
-            // ⇧⌘-click → pop into its own window (needs standalone windows).
-            if (mod && event.shiftKey) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              openSession(session.id, () => undefined, 'window')
-
-              return
-            }
-
-            // ⌘/⌃-click → open in a new tab (stack into main).
-            if (mod) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              openSession(session.id, () => undefined, 'tab')
-
-              return
-            }
-
-            // ⇧-click → pin.
-            if (event.shiftKey) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              onPin()
-
-              return
-            }
-
-            onResume()
-          }}
+          {...sessionMiddleClickHandlers}
+          onClick={handleSessionClick}
         >
           {reorderable ? (
             <SidebarRowGrab

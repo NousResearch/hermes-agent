@@ -102,7 +102,12 @@ class CLIAgentSetupMixin:
             # no API key was found, use a placeholder so the OpenAI SDK
             # doesn't reject the request and local servers just ignore it.
             _source = runtime.get("source", "")
-            _has_custom_base = isinstance(base_url, str) and base_url and "openrouter.ai" not in base_url
+            _has_custom_base = (
+                isinstance(base_url, str) and base_url
+                and "openrouter.ai" not in base_url
+                and "generativelanguage.googleapis.com" not in base_url
+                and "aiplatform.googleapis.com" not in base_url
+            )
             if _has_custom_base:
                 api_key = "no-key-required"
                 logger.debug(

@@ -19700,6 +19700,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
+            # [[artifact:...]] publish hints → bare paths so the deliverable
+            # pipeline below ships them as native attachments (mirrors the
+            # normalize step in the non-streaming send path).
+            response = BasePlatformAdapter.normalize_artifact_tags(response)
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             # Do NOT deduplicate explicit MEDIA tags against prior turns here

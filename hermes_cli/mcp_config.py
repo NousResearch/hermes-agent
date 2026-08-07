@@ -693,14 +693,15 @@ def cmd_mcp_list(args=None):
         else:
             transport = "?"
 
-        # Tool count
+        # Tool count. Explicit ``include: []`` means "0 selected" (block all),
+        # not missing-key "all" — same contract as tools/mcp_tool.py.
         tools_cfg = cfg.get("tools", {})
         if isinstance(tools_cfg, dict):
             include = tools_cfg.get("include")
             exclude = tools_cfg.get("exclude")
-            if include and isinstance(include, list):
+            if isinstance(include, list):
                 tools_str = f"{len(include)} selected"
-            elif exclude and isinstance(exclude, list):
+            elif isinstance(exclude, list):
                 tools_str = f"-{len(exclude)} excluded"
             else:
                 tools_str = "all"

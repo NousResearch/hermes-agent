@@ -1,0 +1,198 @@
+# .github/workflows/release-desktop.yml
+#
+# Build the Hermes Desktop app for every supported OS/arch and attach the
+# artifacts (plus the electron-updater `latest-*.yml` feeds) to the GitHub
+# Release for a tag.
+#
+# Why this exists
+# ---------------
+# Hermes Desktop's only update story today is the *source install*: the
+# machine running the app needs a git checkout, the `hermes` CLI, and a Node
+# toolchain (`applyUpdates` → `hermes update` + `hermes desktop --build-only`).
+# That excludes the remote-client topology — an always-on backend host (Mac
+# Mini / server) plus one or more packaged clients (a MacBook) that have no
+# repo, no CLI, and no build tools. Those clients currently have NO update
+# path and silently fall behind the backend.
+#
+# This workflow is the first, independently-mergeable slice of the fix: it
+# makes releases ship real, downloadable desktop binaries. A follow-up wires
+# `electron-updater` into the app so packaged clients self-update from these
+# artifacts. See the linked Discussion for the full design.
+#
+# Design notes
+# ------------
+# - Pure CI: no runtime-code change, so it is safe to merge on its own.
+# - Build+artifact ALWAYS runs on a tag so the binaries are E2E-verifiable
+#   even before any signing secret exists.
+# - electron-builder `--publish always` attaches artifacts to the release.
+#   Publishing is *additive*; without signing secrets the artifacts are still
+#   produced (ad-hoc signed on macOS, unsigned elsewhere) and uploaded, so
+#   forks and early adopters get working binaries immediately. Adding real
+#   Apple/Windows certs later only changes the signature, not the flow.
+# - Matrix mirrors the builder targets already declared in
+#   `apps/desktop/package.json` (mac dmg/zip, win nsis, linux AppImage).
+
+name: Release Desktop
+
+on:
+  # Fire on the same release event as the Docker publish workflow so desktop
+  # binaries and the container image ship together for a tag.
+  release:
+    types: [published]
+  # Allow a maintainer to build binaries for an arbitrary ref without cutting
+  # a release (verification / pre-release testing).
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (defaults to the triggering ref)"
+        required: false
+        default: ""
+
+permissions:
+  # `contents: write` is required for electron-builder to upload release
+  # assets. This workflow only ever runs on trusted release/dispatch events,
+  # never on untrusted PR code, so the elevated scope cannot be reached by a
+  # fork.
+  contents: write
+
+concurrency:
+  # One desktop release per tag; a re-published release replaces, never
+  # doubles, the artifact set.
+  group: release-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'NousResearch/hermes-agent'
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS (Apple Silicon)
+            runs-on: macos-latest
+            platform: mac
+            arch: arm64
+          - label: macOS (Intel)
+            runs-on: macos-13
+            platform: mac
+            arch: x64
+          - label: Windows (x64)
+            runs-on: windows-latest
+            platform: win
+            arch: x64
+          - label: Linux (x64)
+            runs-on: ubuntu-latest
+            platform: linux
+            arch: x64
+
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          # electron-builder reads the tag for the version when publishing.
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Python (desktop backend build)
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        uses: ./.github/actions/retry
+        with:
+          # Root install pulls every workspace incl. apps/desktop; the desktop
+          # build script then runs vite + bundles the Electron main process.
+          command: npm ci --ignore-scripts
+
+      # Teknium review (#76240): the publish target must BE the triggering
+      # release. electron-publish computes its target tag as
+      # `githubTagPrefix(info) + version` (gitHubPublisher.js:38 +
+      # publishOptions.js githubTagPrefix), i.e. it derives the tag from the
+      # app version — but this repo tags releases CALENDAR-versioned
+      # (`v2026.7.30`) while the app package.json carries a SEMVER
+      # (`0.19.1`, and it even drifts — main currently says 0.17.0). Passing
+      # the semver alone would publish to a nonexistent `v0.19.1` tag.
+      #
+      # The single contract that resolves it: split the triggering tag into
+      # (prefix, version) and feed both back, so the tag electron-publish
+      # reconstructs is byte-identical to the release that fired the
+      # workflow — independent of any package.json semver drift.
+      - name: Resolve release tag for publishing
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          # Split the triggering tag into (prefix, version) so the tag
+          # electron-publish computes — `tagNamePrefix + version`
+          # (gitHubPublisher.js:38) — reconstructs the EXACT triggering tag.
+          # `v2026.7.30` → prefix "v", version "2026.7.30"; a prefix-less
+          # `2026.7.30` → prefix "", version "2026.7.30". Hardcoding either
+          # half would publish to a sibling tag instead of the release that
+          # fired the workflow (cross-PR triage catch on #76240).
+          TAG="$RELEASE_TAG"
+          case "$TAG" in
+            v*) PREFIX="v"; VER="${TAG#v}" ;;
+            *)  PREFIX="";  VER="$TAG" ;;
+          esac
+          if [ -z "$VER" ]; then
+            echo "::error::could not derive a publish version from tag '$TAG'"
+            exit 1
+          fi
+          echo "Publishing to triggering release tag: $TAG (prefix: '$PREFIX', version: $VER)"
+          echo "semver=$VER" >> "$GITHUB_OUTPUT"
+          echo "tagprefix=$PREFIX" >> "$GITHUB_OUTPUT"
+
+      - name: Build + publish desktop app
+        working-directory: apps/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signing is optional: when these are unset, electron-builder falls
+          # back to ad-hoc (mac) / unsigned (win/linux) and still produces +
+          # uploads working artifacts. Set them in the repo to enable proper
+          # notarization / Authenticode without changing this workflow.
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_IDENTITY_AUTO_DISCOVERY || 'false' }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          # Teknium review (#76240): only the release-event path may publish.
+          # A workflow_dispatch run is a VERIFICATION build — with
+          # `--publish always` electron-publish would create a draft release
+          # for the resolved tag as a side effect (gitHubPublisher.js
+          # releaseType resolution). `--publish never` keeps dispatch runs
+          # side-effect-free; their artifacts ship via the upload-artifact
+          # step below instead.
+          PUBLISH_MODE: ${{ github.event_name == 'release' && 'always' || 'never' }}
+        run: |
+          # `dist` = `npm run build` (vite + bundle) then electron-builder.
+          # On the release event, `--publish always` attaches the artifacts +
+          # latest-*.yml to the triggering GitHub Release. On
+          # workflow_dispatch this resolves to `--publish never` (see env
+          # comment) and the build only produces local artifacts.
+          npm run dist -- --${{ matrix.platform }} --${{ matrix.arch }} --publish "$PUBLISH_MODE" \
+            -c.extraMetadata.version=${{ steps.version.outputs.semver }} \
+            -c.publish.tagNamePrefix="${{ steps.version.outputs.tagprefix }}"
+
+      - name: Upload artifacts (workflow_dispatch / verification runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hermes-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/latest*.yml
+          if-no-files-found: warn
+          retention-days: 14

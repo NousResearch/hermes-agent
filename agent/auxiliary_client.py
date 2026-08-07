@@ -7486,7 +7486,17 @@ def _resolve_task_provider_model(
         try:
             from hermes_cli.providers import get_provider
 
-            return get_provider(normalized) is not None
+            if get_provider(normalized) is not None:
+                return True
+            # User-defined ``providers:`` / ``custom_providers:`` entries are
+            # not part of the built-in registry, but a named custom provider
+            # paired with an explicit base_url must keep its identity so
+            # resolve_provider_client lands in the named-custom arm (which
+            # honours the entry's own key_env / api_mode) instead of
+            # collapsing to anonymous "custom" and losing the key (#76602).
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+
+            return _get_named_custom_provider(normalized) is not None
         except Exception:
             # Keep the high-risk provider-backed routes safe even if provider
             # catalog loading is unavailable during early import/test paths.

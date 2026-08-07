@@ -24,7 +24,15 @@ from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
-from hermes_constants import get_optional_skills_dir
+from hermes_constants import (
+    BLAXEL_DEFAULT_IMAGE,
+    BLAXEL_DEFAULT_MEMORY_MB,
+    BLAXEL_DEFAULT_TTL,
+    BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+    BLAXEL_SDK_DEPENDENCY,
+    BLAXEL_SDK_INSTALL_COMMAND,
+    get_optional_skills_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -764,6 +772,56 @@ def _prompt_container_resources(config: dict):
         pass
 
 
+def _prompt_blaxel_sandbox_settings(config: dict):
+    """Prompt only for the Blaxel knobs that take effect.
+
+    Blaxel allocates CPU and container disk from the image profile, so this
+    deliberately does not reuse ``_prompt_container_resources``: asking for
+    values the backend ignores misleads the user. Durable volume size is its
+    own prompt and is never derived from memory.
+    """
+    terminal = config.setdefault("terminal", {})
+
+    print()
+    print_info("Blaxel settings:")
+    print_info("  CPU and container disk come from the image profile and are ignored here.")
+    print_info("  Credentials are read from BL_WORKSPACE and BL_API_KEY, never from config.yaml.")
+
+    current_image = terminal.get("blaxel_image") or BLAXEL_DEFAULT_IMAGE
+    image = prompt("  Sandbox image", current_image).strip() or current_image
+    terminal["blaxel_image"] = image
+    save_env_value("TERMINAL_BLAXEL_IMAGE", image)
+
+    current_memory = terminal.get("container_memory") or BLAXEL_DEFAULT_MEMORY_MB
+    memory_str = prompt("  Memory (MB)", str(current_memory))
+    try:
+        terminal["container_memory"] = int(memory_str)
+    except ValueError:
+        print_warning(f"Invalid memory '{memory_str}', keeping {current_memory}.")
+        terminal["container_memory"] = int(current_memory)
+
+    current_persist = terminal.get("container_persistent", True)
+    persist_label = "yes" if current_persist else "no"
+    persistent = prompt(
+        "  Keep a persistent volume per task? (yes/no)", persist_label
+    ).lower() in {"yes", "true", "y", "1"}
+    terminal["container_persistent"] = persistent
+
+    if persistent:
+        current_volume = terminal.get("container_disk") or BLAXEL_DEFAULT_VOLUME_SIZE_MB
+        volume_str = prompt("  Persistent volume size (MB)", str(current_volume))
+        try:
+            terminal["container_disk"] = int(volume_str)
+        except ValueError:
+            print_warning(f"Invalid volume size '{volume_str}', keeping {current_volume}.")
+            terminal["container_disk"] = int(current_volume)
+
+    current_ttl = terminal.get("blaxel_ttl") or BLAXEL_DEFAULT_TTL
+    ttl = prompt("  Sandbox TTL (e.g. 24h)", current_ttl).strip() or current_ttl
+    terminal["blaxel_ttl"] = ttl
+    save_env_value("TERMINAL_BLAXEL_TTL", ttl)
+
+
 def _prompt_vercel_sandbox_settings(config: dict):
     """Prompt for Vercel Sandbox settings without exposing unsupported disk sizing."""
     terminal = config.setdefault("terminal", {})
@@ -1340,11 +1398,18 @@ def setup_terminal_backend(config: dict):
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
         "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
+        "Blaxel - cloud sandbox with an optional persistent volume",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5}
+    idx_to_backend = {
+        0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona",
+        5: "vercel_sandbox", 6: "blaxel",
+    }
+    backend_to_idx = {
+        "local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4,
+        "vercel_sandbox": 5, "blaxel": 6,
+    }
 
-    next_idx = 6
+    next_idx = 7
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1592,6 +1657,46 @@ def setup_terminal_backend(config: dict):
 
         _prompt_vercel_sandbox_settings(config)
 
+    elif selected_backend == "blaxel":
+        print_success("Terminal backend: Blaxel")
+        print_info("Cloud sandboxes with an optional persistent volume per task.")
+        print_info(f"Requires the optional SDK: {BLAXEL_SDK_INSTALL_COMMAND}")
+        print_info("Sign up at: https://blaxel.ai")
+
+        try:
+            __import__("blaxel")
+        except ImportError:
+            print_info("Installing blaxel SDK...")
+            import subprocess
+
+            # Managed uv first, same reasoning as the Vercel branch above.
+            from hermes_cli.managed_uv import ensure_uv
+
+            uv_bin = ensure_uv()
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable,
+                     BLAXEL_SDK_DEPENDENCY],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", BLAXEL_SDK_DEPENDENCY],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("blaxel SDK installed")
+            else:
+                print_warning(
+                    f"Install failed — run manually: {BLAXEL_SDK_INSTALL_COMMAND}"
+                )
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        _prompt_blaxel_sandbox_settings(config)
+
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")
         print_info("Run commands on a remote machine via SSH.")
@@ -1647,6 +1752,10 @@ def setup_terminal_backend(config: dict):
         save_env_value("TERMINAL_MODAL_MODE", config["terminal"].get("modal_mode", "auto"))
     if selected_backend == "vercel_sandbox":
         save_env_value("TERMINAL_VERCEL_RUNTIME", config["terminal"].get("vercel_runtime", "node24"))
+    if selected_backend == "blaxel":
+        terminal_cfg = config["terminal"]
+        save_env_value("TERMINAL_CONTAINER_MEMORY", str(terminal_cfg.get("container_memory", BLAXEL_DEFAULT_MEMORY_MB)))
+        save_env_value("TERMINAL_CONTAINER_DISK", str(terminal_cfg.get("container_disk", BLAXEL_DEFAULT_VOLUME_SIZE_MB)))
     save_config(config)
     print()
     print_success(f"Terminal backend set to: {selected_backend}")

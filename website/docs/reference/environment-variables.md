@@ -244,6 +244,11 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 | `TERMINAL_MODAL_IMAGE` | Modal container image |
 | `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image |
 | `TERMINAL_VERCEL_RUNTIME` | Vercel Sandbox runtime (`node24`, `node22`, `python3.13`) |
+| `TERMINAL_BLAXEL_IMAGE` | Blaxel sandbox image |
+| `TERMINAL_BLAXEL_TTL` | Blaxel sandbox time-to-live (e.g. `24h`) |
+| `BL_WORKSPACE` | Blaxel workspace (required for `TERMINAL_ENV=blaxel`) |
+| `BL_API_KEY` | Blaxel API key (required for `TERMINAL_ENV=blaxel`) |
+| `BL_REGION` | Blaxel region (default `us-pdx-1`) |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
 | `TERMINAL_CWD` | Deprecated direct override for gateway/cron terminal sessions. Prefer `terminal.cwd` in `config.yaml`; CLI still uses the launch directory. |

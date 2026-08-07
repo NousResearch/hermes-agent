@@ -120,7 +120,7 @@ Hermes supports seven terminal backends. Each determines where the agent's shell
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | blaxel | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
   timeout: 180      # Per-command timeout in seconds
@@ -145,6 +145,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
+| **blaxel** | Blaxel cloud sandbox | Full (cloud sandbox) | Cloud execution with an optional persistent volume per task |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -424,6 +425,39 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 **Background commands:** `terminal(background=true)` uses Hermes' generic non-local background process flow. You can spawn, poll, wait, view logs, and kill processes through the normal process tool while the sandbox is alive. Hermes does not provide native Vercel detached-process recovery after cleanup or restart.
 
 **Disk sizing:** Vercel Sandbox does not currently support Hermes' `container_disk` resource knob. Leave `container_disk` unset or at the shared default `51200`; non-default values fail diagnostics and backend creation instead of being silently ignored.
+
+### Blaxel Backend
+
+Runs commands in a [Blaxel](https://blaxel.ai) cloud sandbox. Hermes uses the normal terminal and file tool surfaces; there are no Blaxel-specific model-facing tools.
+
+```yaml
+terminal:
+  backend: blaxel
+  blaxel_image: blaxel/py-app:latest   # sandbox image
+  blaxel_ttl: 24h                      # sandbox time-to-live
+  cwd: /blaxel                         # default workspace root
+  container_persistent: true           # Mount a durable volume per task
+  container_memory: 4096               # MB
+  container_disk: 10240                # MB, durable volume size (not container disk)
+```
+
+**Required install:** Install the optional SDK extra:
+
+```bash
+pip install 'hermes-agent[blaxel]'
+```
+
+**Required authentication:** Set `BL_WORKSPACE` and `BL_API_KEY`. Keep `BL_API_KEY` in your environment or `.env`, never in `config.yaml`. Set `BL_REGION` to pick a region; it defaults to `us-pdx-1`.
+
+**Image:** `blaxel_image` defaults to `blaxel/py-app:latest`. Avoid `blaxel/base-image:latest` for general agent work: it is Alpine/musl and has no glibc, so any manylinux-only Python wheel the agent installs in the sandbox fails to build.
+
+**Ignored resource knobs:** Blaxel allocates CPU and container disk from the image profile. `container_cpu` is ignored, and a non-default value is logged rather than applied. `container_disk` is repurposed as the durable volume size and is only used when `container_persistent: true`.
+
+**Persistence:** When `container_persistent: true`, Hermes mounts one durable Blaxel volume per task. The volume name is derived from the task id, then sanitized and length-capped, so the name in the Blaxel console is not always a literal `hermes-<task_id>-data`. Deleting the sandbox preserves the volume. Note that a single delete leaves a `TERMINATED` sandbox record in Blaxel; that record is expected and does not mean cleanup failed.
+
+**Background commands:** `terminal(background=true)` uses Hermes' generic non-local background process flow. Processes are tracked while the sandbox is alive and do not survive cleanup or sandbox recreation.
+
+**File sync limit:** Per-file uploads above `TERMINAL_FILE_SYNC_MAX_MB` (default 100 MB) are refused with a clear error rather than buffered into memory.
 
 ### Singularity/Apptainer Backend
 

@@ -4,6 +4,8 @@ Pure-data leaf module: DEFAULT_CONFIG and OPTIONAL_ENV_VARS, extracted
 verbatim from hermes_cli/config.py. Must not import from hermes_cli.config.
 """
 
+from hermes_constants import BLAXEL_DEFAULT_IMAGE, BLAXEL_DEFAULT_TTL
+
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
@@ -318,6 +320,10 @@ DEFAULT_CONFIG = {
         # Vercel Sandbox runtime (vercel_sandbox backend only).
         # Supported: node24, node22, python3.13.
         "vercel_runtime": "node24",
+        # Blaxel sandbox settings (blaxel backend only). Region comes from
+        # BL_REGION so it sits with the other BL_* credentials.
+        "blaxel_image": BLAXEL_DEFAULT_IMAGE,
+        "blaxel_ttl": BLAXEL_DEFAULT_TTL,
         # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)

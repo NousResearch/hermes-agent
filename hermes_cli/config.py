@@ -689,6 +689,10 @@ def get_container_exec_info() -> Optional[dict]:
 
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F811,E402
+from hermes_constants import (  # noqa: E402
+    BLAXEL_DEFAULT_MEMORY_MB,
+    BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+)
 from utils import atomic_replace, fast_safe_load
 
 def get_config_path() -> Path:
@@ -2827,6 +2831,51 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _apply_backend_terminal_defaults(
+    config: Dict[str, Any],
+    user_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Give the selected terminal backend its own resource defaults.
+
+    ``DEFAULT_CONFIG`` carries the shared container sizes (5120 MB / 51200 MB),
+    which are wrong for Blaxel: it wants 4096 MB of memory and treats
+    ``container_disk`` as a durable volume size. Without this, selecting the
+    backend in ``config.yaml`` yielded the shared defaults while the
+    ``TERMINAL_*`` env path yielded the Blaxel ones — the same value meaning two
+    different things depending on which path configured it.
+
+    Only untouched defaults are replaced. An explicit user value always wins.
+    """
+    terminal = config.get("terminal")
+    if not isinstance(terminal, dict):
+        return config
+
+    user_terminal = (user_config or {}).get("terminal")
+    if not isinstance(user_terminal, dict):
+        user_terminal = {}
+
+    backend = terminal.get("backend") or terminal.get("env_type")
+    if backend != "blaxel":
+        return config
+
+    shared_defaults = DEFAULT_CONFIG["terminal"]
+    backend_defaults = {
+        "container_memory": BLAXEL_DEFAULT_MEMORY_MB,
+        "container_disk": BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+    }
+
+    terminal = dict(terminal)
+    for key, value in backend_defaults.items():
+        if key in user_terminal:
+            continue
+        if terminal.get(key) == shared_defaults.get(key):
+            terminal[key] = value
+
+    config = dict(config)
+    config["terminal"] = terminal
+    return config
+
+
 def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize legacy root-level max_turns into agent.max_turns.
 
@@ -3191,6 +3240,8 @@ TERMINAL_CONFIG_ENV_MAP = {
     "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
     "modal_image": "TERMINAL_MODAL_IMAGE",
     "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "blaxel_image": "TERMINAL_BLAXEL_IMAGE",
+    "blaxel_ttl": "TERMINAL_BLAXEL_TTL",
     "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",
@@ -3345,6 +3396,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config.pop("max_turns", None)
 
                 config = _deep_merge(config, user_config)
+                config = _apply_backend_terminal_defaults(config, user_config)
             except Exception as e:
                 # Last-known-good fallback (port of openai/codex#31188's
                 # invariant: a parse failure in a policy/config file must not

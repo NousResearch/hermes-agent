@@ -18,6 +18,25 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
     "_HERMES_HOME_OVERRIDE", default=_UNSET
 )
 
+# ── Blaxel terminal backend defaults ──────────────────────────────────
+# Single source of truth for config loading, the setup wizard, doctor, and
+# runtime. Every Blaxel default is defined here exactly once so the wizard,
+# the env-var path, and the persisted config can never disagree.
+BLAXEL_DEFAULT_CWD = "/blaxel"
+# py-app, not base-image: base-image is Alpine/musl and has no glibc, so any
+# manylinux-only wheel an agent pip-installs in the sandbox fails to build.
+BLAXEL_DEFAULT_IMAGE = "blaxel/py-app:latest"
+BLAXEL_DEFAULT_MEMORY_MB = 4096
+BLAXEL_DEFAULT_TTL = "24h"
+# Durable volume size is its own knob. It is deliberately NOT derived from
+# container memory: raising memory must never silently grow paid storage.
+BLAXEL_DEFAULT_VOLUME_SIZE_MB = 10240
+# Declared once here and mirrored by the ``terminal.blaxel`` lazy-dep entry and
+# the ``blaxel`` extra in pyproject.toml, so the wizard, doctor, and the runtime
+# error message can never suggest a different install than the one that runs.
+BLAXEL_SDK_DEPENDENCY = "blaxel==0.2.55"
+BLAXEL_SDK_INSTALL_COMMAND = "pip install 'hermes-agent[blaxel]'"
+
 # ── TUI busy-indicator styles ─────────────────────────────────────────
 # Single source of truth shared by the CLI /indicator command, the TUI
 # gateway config handler, and the /help command registry. Keep in sync

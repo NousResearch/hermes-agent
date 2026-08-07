@@ -12,9 +12,10 @@ Environment Selection (via TERMINAL_ENV environment variable):
 - "docker": Execute in Docker containers (isolated, requires Docker)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 - "vercel_sandbox": Execute in Vercel Sandbox cloud sandboxes
+- "blaxel": Execute in Blaxel cloud sandboxes
 
 Features:
-- Multiple execution backends (local, docker, modal, vercel_sandbox)
+- Multiple execution backends (local, docker, modal, vercel_sandbox, blaxel)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
@@ -49,6 +50,13 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+from hermes_constants import (
+    BLAXEL_DEFAULT_CWD,
+    BLAXEL_DEFAULT_MEMORY_MB,
+    BLAXEL_DEFAULT_TTL,
+    BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+    BLAXEL_SDK_INSTALL_COMMAND,
+)
 from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
@@ -187,6 +195,49 @@ def _check_vercel_sandbox_requirements(config: dict[str, Any]) -> bool:
         "development only."
     )
     return False
+
+
+def _check_blaxel_requirements(config: dict[str, Any]) -> bool:
+    """Validate Blaxel terminal backend requirements.
+
+    Accepts either supported credential path — ``BL_API_KEY`` for deployments,
+    or credentials already stored by ``bl login`` for local development. The
+    Blaxel SDK honors both, so requiring the API key would reject a setup that
+    works.
+    """
+    from hermes_cli.blaxel_auth import describe_blaxel_auth
+
+    auth = describe_blaxel_auth()
+    if not auth.ok:
+        logger.error(
+            "Blaxel backend selected but authentication is not usable (%s). %s",
+            auth.label,
+            " ".join(auth.detail_lines),
+        )
+        return False
+
+    if importlib.util.find_spec("blaxel") is not None:
+        return True
+
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("terminal.blaxel", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.error("blaxel is required for the Blaxel terminal backend: %s", e)
+        return False
+
+    # A just-installed distribution is invisible to find_spec until the import
+    # system's directory caches are dropped.
+    importlib.invalidate_caches()
+    if importlib.util.find_spec("blaxel") is None:
+        logger.error(
+            "blaxel is required for the Blaxel terminal backend: %s",
+            BLAXEL_SDK_INSTALL_COMMAND,
+        )
+        return False
+    return True
 
 
 # Cache for disk usage warning to avoid full rglob scan on every call.
@@ -1364,7 +1415,7 @@ def _safe_getcwd() -> str:
 # cwd looks when it leaks toward a Linux container's ``-w`` flag.
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox", "blaxel"})
 
 
 def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
@@ -1466,7 +1517,7 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
-    container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
+    container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox", "blaxel"}
     docker_backend = env_type == "docker"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
@@ -1481,6 +1532,17 @@ def _get_env_config() -> Dict[str, Any]:
         container_cpu = 1.0
         container_memory = 5120
         container_disk = 51200
+
+    if env_type == "blaxel":
+        # Blaxel's durable volume is billed storage, not container scratch, so
+        # it must not inherit the shared 51200 default. Re-resolved here rather
+        # than folded into the block above so no other backend is touched.
+        container_memory = _parse_env_var(
+            "TERMINAL_CONTAINER_MEMORY", str(BLAXEL_DEFAULT_MEMORY_MB)
+        )
+        container_disk = _parse_env_var(
+            "TERMINAL_CONTAINER_DISK", str(BLAXEL_DEFAULT_VOLUME_SIZE_MB)
+        )
 
     if docker_backend:
         docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
@@ -1504,6 +1566,8 @@ def _get_env_config() -> Dict[str, Any]:
         default_cwd = "~"
     elif env_type == "vercel_sandbox":
         default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
+    elif env_type == "blaxel":
+        default_cwd = BLAXEL_DEFAULT_CWD
     else:
         default_cwd = "/root"
 
@@ -1609,7 +1673,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
+            "daytona", "vercel_sandbox", "blaxel", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
         cwd: Working directory
         timeout: Default command timeout
@@ -1748,6 +1812,22 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             task_id=task_id,
         )
 
+    elif env_type == "blaxel":
+        # Lazy import so the blaxel SDK is only required when the backend is
+        # actually selected.
+        from tools.environments.blaxel import BlaxelEnvironment as _BlaxelEnvironment
+        return _BlaxelEnvironment(
+            image=image,
+            cwd=cwd,
+            timeout=timeout,
+            cpu=cpu,
+            memory=memory,
+            disk=disk,
+            persistent_filesystem=persistent,
+            task_id=task_id,
+            ttl=cc.get("blaxel_ttl") or BLAXEL_DEFAULT_TTL,
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1763,7 +1843,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', 'blaxel', or 'ssh'"
         )
 
 
@@ -2433,7 +2513,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+                        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox", "blaxel"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -2441,6 +2521,7 @@ def terminal_tool(
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),
                                 "vercel_runtime": config.get("vercel_runtime", ""),
+                                "blaxel_ttl": config.get("blaxel_ttl", ""),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
@@ -3293,6 +3374,9 @@ def check_terminal_requirements() -> bool:
         elif env_type == "vercel_sandbox":
             return _check_vercel_sandbox_requirements(config)
 
+        elif env_type == "blaxel":
+            return _check_blaxel_requirements(config)
+
         elif env_type == "daytona":
             from daytona import Daytona  # noqa: F401 — SDK presence check
             from agent.secret_scope import get_secret
@@ -3301,7 +3385,7 @@ def check_terminal_requirements() -> bool:
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "modal, daytona, vercel_sandbox, blaxel, ssh.",
                 env_type,
             )
             return False
@@ -3344,7 +3428,7 @@ if __name__ == "__main__":
     print(
         "  TERMINAL_ENV: "
         f"{os.getenv('TERMINAL_ENV', 'local')} "
-        "(local/docker/singularity/modal/daytona/vercel_sandbox/ssh)"
+        "(local/docker/singularity/modal/daytona/vercel_sandbox/blaxel/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")

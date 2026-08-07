@@ -34,6 +34,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_constants import BLAXEL_SDK_INSTALL_COMMAND
 from utils import base_url_host_matches
 
 
@@ -1819,6 +1820,30 @@ def run_doctor(args):
                 "daytona SDK not installed",
                 "(pip install daytona)",
                 "Install daytona SDK: pip install daytona",
+                issues,
+            )
+
+    # Blaxel (if using blaxel backend)
+    if terminal_env == "blaxel":
+        from hermes_cli.blaxel_auth import describe_blaxel_auth
+
+        blaxel_auth = describe_blaxel_auth()
+        if blaxel_auth.ok:
+            check_ok("Blaxel auth", f"({blaxel_auth.label})")
+        else:
+            _fail_and_issue(
+                f"Blaxel auth unusable: {blaxel_auth.label}",
+                "(required for TERMINAL_ENV=blaxel)",
+                " ".join(blaxel_auth.detail_lines) or "Run `bl login <workspace>` or set BL_API_KEY",
+                issues,
+            )
+        if importlib.util.find_spec("blaxel") is not None:
+            check_ok("blaxel SDK", "(installed)")
+        else:
+            _fail_and_issue(
+                "blaxel SDK not installed",
+                f"({BLAXEL_SDK_INSTALL_COMMAND})",
+                f"Install blaxel SDK: {BLAXEL_SDK_INSTALL_COMMAND}",
                 issues,
             )
 

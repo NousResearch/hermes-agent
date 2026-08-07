@@ -24,6 +24,7 @@ from hermes_cli.nous_account import (
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.vercel_auth import describe_vercel_auth
+from hermes_constants import BLAXEL_DEFAULT_IMAGE, BLAXEL_DEFAULT_TTL, BLAXEL_SDK_INSTALL_COMMAND
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
@@ -456,6 +457,39 @@ def show_status(args):
             print(f"  Auth detail:  {line}")
         print(f"  Persistence:  {'snapshot filesystem' if persist_enabled else 'ephemeral filesystem'}")
         print("  Processes:    live processes do not survive cleanup, snapshots, or sandbox recreation")
+    elif terminal_env == "blaxel":
+        blaxel_image = (
+            os.getenv("TERMINAL_BLAXEL_IMAGE")
+            or terminal_cfg.get("blaxel_image")
+            or BLAXEL_DEFAULT_IMAGE
+        )
+        ttl = (
+            os.getenv("TERMINAL_BLAXEL_TTL")
+            or terminal_cfg.get("blaxel_ttl")
+            or BLAXEL_DEFAULT_TTL
+        )
+        persist = os.getenv("TERMINAL_CONTAINER_PERSISTENT")
+        if persist is None:
+            persist_enabled = bool(terminal_cfg.get("container_persistent", True))
+        else:
+            persist_enabled = persist.lower() in {"1", "true", "yes", "on"}
+        sdk_ok = importlib.util.find_spec("blaxel") is not None
+        sdk_label = (
+            "installed" if sdk_ok
+            else f"missing (install: {BLAXEL_SDK_INSTALL_COMMAND})"
+        )
+        from hermes_cli.blaxel_auth import describe_blaxel_auth
+
+        blaxel_auth = describe_blaxel_auth()
+        print(f"  Blaxel Image: {blaxel_image}")
+        print(f"  TTL:          {ttl}")
+        print(f"  SDK:          {check_mark(sdk_ok)} {sdk_label}")
+        print(f"  Workspace:    {check_mark(bool(blaxel_auth.workspace))} "
+              f"{blaxel_auth.workspace or 'none resolved'}")
+        print(f"  Auth:         {check_mark(blaxel_auth.ok)} {blaxel_auth.label}")
+        for line in blaxel_auth.detail_lines:
+            print(f"  Auth detail:  {line}")
+        print(f"  Persistence:  {'persistent volume per task' if persist_enabled else 'ephemeral filesystem'}")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

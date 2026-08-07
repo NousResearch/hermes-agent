@@ -326,6 +326,24 @@ terminal:
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
+# -----------------------------------------------------------------------------
+# OPTION 7: Blaxel cloud execution
+# Commands run in Blaxel cloud sandboxes
+# Great for: Cloud sandboxes with a durable per-task volume
+# Requires: pip install 'hermes-agent[blaxel]', BL_WORKSPACE + BL_API_KEY env vars
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "blaxel"
+#   cwd: "/blaxel"
+#   timeout: 180
+#   lifetime_seconds: 300
+#   blaxel_image: "blaxel/py-app:latest"   # base-image is Alpine/musl (no glibc)
+#   blaxel_ttl: "24h"
+#   container_memory: 4096         # MB
+#   container_persistent: true     # Mount a durable volume per task
+#   container_disk: 10240          # MB -- durable volume size, not container disk
+#   # container_cpu is ignored: Blaxel allocates CPU from the image profile
+
 #
 # --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
 # These settings apply to all container backends. They control the resources

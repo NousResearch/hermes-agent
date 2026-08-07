@@ -1037,6 +1037,24 @@ class TestHomeChannelEnvOverrides:
                 {"SMS_HOME_CHANNEL": "+15559876543", "SMS_HOME_CHANNEL_NAME": "My Phone"},
                 ("+15559876543", "My Phone"),
             ),
+            (
+                Platform.QQBOT,
+                PlatformConfig(
+                    enabled=True,
+                    extra={"app_id": "102000000", "client_secret": "secret_from_yaml"},
+                ),
+                {"QQBOT_HOME_CHANNEL": "OPENID_ABC", "QQBOT_HOME_CHANNEL_NAME": "QQ Home"},
+                ("OPENID_ABC", "QQ Home"),
+            ),
+            (
+                Platform.QQBOT,
+                PlatformConfig(
+                    enabled=True,
+                    extra={"app_id": "102000000", "client_secret": "secret_from_yaml"},
+                ),
+                {"QQ_HOME_CHANNEL": "OPENID_LEGACY", "QQ_HOME_CHANNEL_NAME": "Legacy"},
+                ("OPENID_LEGACY", "Legacy"),
+            ),
         ]
 
         for platform, platform_config, env, expected in cases:
@@ -1047,6 +1065,14 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+    def test_home_channel_env_does_not_create_unconfigured_platform(self):
+        """A stray home-channel env var must not conjure a platform entry."""
+        config = GatewayConfig(platforms={})
+        with patch.dict(os.environ, {"QQBOT_HOME_CHANNEL": "OPENID_ABC"}, clear=True):
+            _apply_env_overrides(config)
+
+        assert Platform.QQBOT not in config.platforms
 
 
 class TestMultiplexProfilesEnvOverride:

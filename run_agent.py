@@ -7078,6 +7078,7 @@ class AIAgent:
             "x-ai/",
             "google/gemini-2",
             "google/gemma-4",
+            "nvidia/",
             "qwen/qwen3",
             "tencent/hy3",
             "xiaomi/",

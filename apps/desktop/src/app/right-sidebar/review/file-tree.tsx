@@ -1,15 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { AnimatePresence, motion } from 'motion/react'
-import {
-  type CSSProperties,
-  type ReactNode,
-  type RefObject,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from 'react'
+import { type CSSProperties, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -305,9 +297,7 @@ function ReviewDirRow({
         </span>
         {!open && <DiffCount added={node.added} className="text-[0.64rem] leading-4" removed={node.removed} />}
       </div>
-      {!leaf && open && node.children && (
-        <ReviewNodeList animate={animate} depth={depth + 1} nodes={node.children} />
-      )}
+      {!leaf && open && node.children && <ReviewNodeList animate={animate} depth={depth + 1} nodes={node.children} />}
     </>
   )
 }

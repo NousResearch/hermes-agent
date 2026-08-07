@@ -25,7 +25,7 @@ a2a_agents:
   researcher:
     url: "http://localhost:9999"
     auth: { type: bearer, token: "sk-..." }
-    timeout: 120
+    timeout: 900   # optional, seconds (default 330); raise for slow peers
     capabilities: [web_search, research]
 ```
 
@@ -34,7 +34,7 @@ a2a_agents:
 The agent gets five tools:
 
 - `a2a_discover(url)` — what can this agent do?
-- `a2a_call(agent, message, context_id?)` — send it a task, get the reply.
+- `a2a_call(agent, message, context_id?, timeout?)` — send it a task, get the reply.
 - `a2a_list()` — configured peers, saved conversations, metrics.
 - `a2a_history(context_id)` — recall a saved A2A conversation.
 - `a2a_orchestrate(capability, message, mode?)` — fan-out a task to every

@@ -38,7 +38,7 @@ With the `a2a` toolset enabled, the agent gets:
 | Tool | What it does |
 |---|---|
 | `a2a_discover(url)` | Fetch and summarize a peer's Agent Card |
-| `a2a_call(agent, message, context_id?)` | Send a task, get the reply; multi-turn via `context_id` |
+| `a2a_call(agent, message, context_id?, timeout?)` | Send a task, get the reply; multi-turn via `context_id`; `timeout` (seconds) for long tasks |
 | `a2a_list()` | Configured peers, saved conversations, metrics |
 | `a2a_history(context_id)` | Recall a persisted A2A conversation |
 | `a2a_orchestrate(capability, message, mode?)` | Fan a task out to every peer advertising a capability (`all` / `first` / `best`) |
@@ -50,7 +50,7 @@ a2a_agents:
   researcher:
     url: "http://research-box.local:9900"
     auth: { type: bearer, token: "..." }
-    timeout: 120
+    timeout: 900   # optional, seconds (default 330); raise for slow peers
     capabilities: [web_search, research]
 ```
 

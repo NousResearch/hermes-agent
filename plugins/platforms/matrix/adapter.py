@@ -138,6 +138,7 @@ from gateway.platforms.base import (
     _ssrf_redirect_guard,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
+from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -787,7 +788,7 @@ def _resolve_e2ee_mode(extra: Optional[Dict[str, Any]] = None) -> str:
         return _normalize_e2ee_mode(explicit)
     legacy_enabled = extra.get(
         "encryption",
-        os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes"),
+        env_var_enabled("MATRIX_ENCRYPTION", default="false"),
     )
     return "required" if legacy_enabled else "off"
 
@@ -1248,32 +1249,30 @@ class MatrixAdapter(BasePlatformAdapter):
             self._allowed_rooms: Set[str] = {
                 r.strip() for r in str(allowed_rooms_raw).split(",") if r.strip()
             }
-        self._allow_room_mentions: bool = os.getenv(
-            "MATRIX_ALLOW_ROOM_MENTIONS", "false"
-        ).lower() in ("true", "1", "yes")
-        self._auto_thread: bool = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in (
-            "true",
-            "1",
-            "yes",
+        self._allow_room_mentions: bool = env_var_enabled(
+            "MATRIX_ALLOW_ROOM_MENTIONS", default="false"
         )
-        self._dm_auto_thread: bool = os.getenv(
-            "MATRIX_DM_AUTO_THREAD", "false"
-        ).lower() in {"true", "1", "yes"}
-        self._dm_mention_threads: bool = os.getenv(
-            "MATRIX_DM_MENTION_THREADS", "false"
-        ).lower() in ("true", "1", "yes")
+        self._auto_thread: bool = env_var_enabled(
+            "MATRIX_AUTO_THREAD", default="true"
+        )
+        self._dm_auto_thread: bool = env_var_enabled(
+            "MATRIX_DM_AUTO_THREAD", default="false"
+        )
+        self._dm_mention_threads: bool = env_var_enabled(
+            "MATRIX_DM_MENTION_THREADS", default="false"
+        )
         raw_session_scope = os.getenv("MATRIX_SESSION_SCOPE", "auto").strip().lower()
         self._matrix_session_scope = (
             raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         )
-        self._process_notices: bool = os.getenv(
-            "MATRIX_PROCESS_NOTICES", "false"
-        ).lower() in ("true", "1", "yes")
+        self._process_notices: bool = env_var_enabled(
+            "MATRIX_PROCESS_NOTICES", default="false"
+        )
 
         # Reactions: configurable via MATRIX_REACTIONS (default: true).
-        self._reactions_enabled: bool = os.getenv(
-            "MATRIX_REACTIONS", "true"
-        ).lower() not in {"false", "0", "no"}
+        self._reactions_enabled: bool = env_var_enabled(
+            "MATRIX_REACTIONS", default="true"
+        )
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Delay before redacting reactions so Matrix homeservers have time to
         # deliver the final message event without tripping "missing event"
@@ -1315,9 +1314,9 @@ class MatrixAdapter(BasePlatformAdapter):
         }
         self._approval_prompts_by_event: Dict[str, _MatrixApprovalPrompt] = {}
         self._approval_prompt_by_session: Dict[str, str] = {}
-        self._approval_require_sender: bool = os.getenv(
-            "MATRIX_APPROVAL_REQUIRE_SENDER", "true"
-        ).lower() in ("true", "1", "yes")
+        self._approval_require_sender: bool = env_var_enabled(
+            "MATRIX_APPROVAL_REQUIRE_SENDER", default="true"
+        )
         try:
             self._approval_timeout_seconds = int(
                 os.getenv("MATRIX_APPROVAL_TIMEOUT_SECONDS", "300")

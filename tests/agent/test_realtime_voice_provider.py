@@ -89,6 +89,67 @@ def test_setup_declares_shared_audio_instructions_and_tools_immutably() -> None:
     assert setup.audio is audio
 
 
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda value: SessionReady(session_id="session", provider_data=value),
+        lambda value: RealtimeVoiceSetup(provider_options=value),
+        lambda value: ToolCall(
+            "call", "batch", "turn", "response", "lookup", value
+        ),
+        lambda value: RealtimeTool("lookup", "description", value),
+    ],
+)
+def test_mapping_contract_fields_require_mapping_shape_and_string_keys(factory) -> None:
+    with pytest.raises(TypeError, match="Mapping"):
+        factory([])
+    with pytest.raises(TypeError, match="string keys"):
+        factory({1: "value"})
+
+
+@pytest.mark.parametrize("mime_type", ["", " audio/pcm", "audio/pcm ", "x" * 513])
+def test_audio_format_rejects_blank_padded_or_oversized_mime_type(mime_type) -> None:
+    with pytest.raises(ValueError, match="mime_type"):
+        RealtimeAudioFormat(mime_type=mime_type, sample_rate_hz=24_000, channels=1)
+
+
+@pytest.mark.parametrize("field_name", ["sample_rate_hz", "channels"])
+@pytest.mark.parametrize("invalid", [0, -1, True, 1.5, "1", None])
+def test_audio_format_requires_positive_non_bool_integer_primitives(
+    field_name, invalid
+) -> None:
+    values = {"mime_type": "audio/pcm", "sample_rate_hz": 24_000, "channels": 1}
+    values[field_name] = invalid
+
+    with pytest.raises((TypeError, ValueError), match=field_name):
+        RealtimeAudioFormat(**values)
+
+
+@pytest.mark.parametrize("instructions", [1, b"text", object()])
+def test_setup_instructions_must_be_none_or_string(instructions) -> None:
+    with pytest.raises(TypeError, match="instructions"):
+        RealtimeVoiceSetup(instructions=instructions)
+
+
+@pytest.mark.parametrize("audio", [{}, "audio/pcm", object()])
+def test_setup_audio_must_be_none_or_realtime_audio_format(audio) -> None:
+    with pytest.raises(TypeError, match="audio"):
+        RealtimeVoiceSetup(audio=audio)
+
+
+@pytest.mark.parametrize("tools", ["lookup", b"lookup", [object()]])
+def test_setup_tools_reject_strings_and_non_tools(tools) -> None:
+    with pytest.raises(TypeError, match="tools"):
+        RealtimeVoiceSetup(tools=tools)
+
+
+def test_setup_copies_tool_iterables_to_tuple() -> None:
+    tool = RealtimeTool("lookup", "description", {})
+    setup = RealtimeVoiceSetup(tools=(item for item in [tool]))
+
+    assert setup.tools == (tool,)
+
+
 def test_capabilities_are_explicit_and_immutable() -> None:
     capabilities = frozenset(RealtimeCapability)
 
@@ -329,6 +390,43 @@ class _Session(RealtimeVoiceSession):
         self.closed_count += 1
 
 
+class _ControlledCloseSession(_Session):
+    def __init__(self, outcomes=()) -> None:
+        super().__init__()
+        self.close_entered = asyncio.Event()
+        self.release_close = asyncio.Event()
+        self.outcomes = list(outcomes)
+        self.completed_close_count = 0
+
+    async def _close(self) -> None:
+        self.closed_count += 1
+        self.close_entered.set()
+        await self.release_close.wait()
+        if self.outcomes:
+            outcome = self.outcomes.pop(0)
+            if outcome is not None:
+                raise outcome
+        self.completed_close_count += 1
+
+
+class _NoOptionalHooksSession(RealtimeVoiceSession):
+    async def send_audio(self, audio: bytes, *, mime_type: str | None = None) -> None:
+        return None
+
+    async def _submit_tool_results(self, batch_id, results) -> None:
+        return None
+
+    def events(self):
+        async def stream():
+            if False:
+                yield RealtimeVoiceEvent()
+
+        return stream()
+
+    async def _close(self) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_tool_results_require_tool_calling_and_continuation_is_separate() -> None:
     result = RealtimeToolResult(
@@ -376,6 +474,36 @@ async def test_optional_operations_fail_with_typed_capability_error() -> None:
         assert exc.value.capability is capability
 
 
+@pytest.mark.parametrize(
+    "capability",
+    [
+        RealtimeCapability.EXPLICIT_INTERRUPTION,
+        RealtimeCapability.OUTPUT_TRUNCATION,
+        RealtimeCapability.INPUT_COMMIT_EVENTS,
+        RealtimeCapability.TOOL_CALL_CANCELLATION,
+        RealtimeCapability.DYNAMIC_CONTEXT,
+        RealtimeCapability.SESSION_RESUMPTION,
+        RealtimeCapability.CONTINUATION,
+    ],
+)
+def test_operational_capability_requires_subclass_hook_override(capability) -> None:
+    with pytest.raises(ValueError, match=rf"{capability.value}.*override"):
+        _NoOptionalHooksSession({capability})
+
+
+def test_passive_capabilities_do_not_require_hooks() -> None:
+    session = _NoOptionalHooksSession(
+        {
+            RealtimeCapability.RESPONSE_METADATA_ECHO,
+            RealtimeCapability.INPUT_TRANSCRIPTION,
+            RealtimeCapability.OUTPUT_TRANSCRIPTION,
+            RealtimeCapability.TOOL_CALLING,
+        }
+    )
+
+    assert RealtimeCapability.TOOL_CALLING in session.capabilities
+
+
 @pytest.mark.asyncio
 async def test_close_is_idempotent_under_concurrent_callers_and_context_exit() -> None:
     session = _Session()
@@ -384,3 +512,37 @@ async def test_close_is_idempotent_under_concurrent_callers_and_context_exit() -
         await asyncio.gather(session.close(), session.close(), session.close())
 
     assert session.closed_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_close_caller_leaves_cleanup_owned_for_second_close() -> None:
+    session = _ControlledCloseSession()
+    first = asyncio.create_task(session.close())
+    await session.close_entered.wait()
+
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    second = asyncio.create_task(session.close())
+    session.release_close.set()
+    await second
+    await session.close()
+
+    assert session.closed_count == 1
+    assert session.completed_close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_close_exception_allows_later_retry() -> None:
+    session = _ControlledCloseSession([RuntimeError("cleanup failed"), None])
+    session.release_close.set()
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await session.close()
+
+    await session.close()
+    await session.close()
+
+    assert session.closed_count == 2
+    assert session.completed_close_count == 1

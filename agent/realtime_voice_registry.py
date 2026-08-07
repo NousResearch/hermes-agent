@@ -27,16 +27,17 @@ _built_in_names: Set[str] = set()
 _lock = threading.Lock()
 
 
-def register_provider(
-    provider: RealtimeVoiceProvider,
-    *,
-    built_in: bool = False,
-) -> bool:
-    """Register a realtime voice provider.
+def register_provider(provider: RealtimeVoiceProvider) -> bool:
+    """Register a plugin provider without replacing a reserved built-in."""
+    return _register_provider(provider, built_in=False)
 
-    Returns ``True`` when accepted. Built-ins replace an earlier plugin with
-    the same normalized name. Plugin registrations cannot replace a built-in.
-    """
+
+def _register_builtin_provider(provider: RealtimeVoiceProvider) -> bool:
+    """Register a core built-in; the first built-in for a name wins."""
+    return _register_provider(provider, built_in=True)
+
+
+def _register_provider(provider: RealtimeVoiceProvider, *, built_in: bool) -> bool:
     if not isinstance(provider, RealtimeVoiceProvider):
         raise TypeError(
             "register_provider() expects a RealtimeVoiceProvider instance, "
@@ -68,10 +69,10 @@ def register_provider(
         return False
 
     with _lock:
-        if not built_in and key in _built_in_names:
+        if key in _built_in_names:
             logger.warning(
-                "Realtime voice provider '%s' shadows a built-in name; "
-                "registration ignored. Built-in providers always win.",
+                "Realtime voice provider '%s' collides with a reserved built-in "
+                "name; registration ignored. Built-in providers always win.",
                 key,
             )
             return False

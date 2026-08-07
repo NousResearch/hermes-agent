@@ -38,6 +38,7 @@ event names may be added without changing the provider API version.
 from __future__ import annotations
 
 import abc
+import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from enum import StrEnum
@@ -113,14 +114,23 @@ def _freeze(value: Any) -> Any:
     )
 
 
+def _freeze_mapping(value: Any, field_name: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be a Mapping")
+    if any(not isinstance(key, str) for key in value):
+        raise TypeError(f"{field_name} must have string keys")
+    return _freeze(value)
+
+
 def _freeze_provider_data(event: Any) -> None:
+    provider_data = _freeze_mapping(event.provider_data, "provider_data")
     shared_fields = {item.name for item in fields(event)} - {"provider_data"}
-    shadowed = shared_fields.intersection(event.provider_data)
+    shadowed = shared_fields.intersection(provider_data)
     if shadowed:
         raise ValueError(
             f"provider_data cannot shadow shared event field: {min(shadowed)}"
         )
-    object.__setattr__(event, "provider_data", _freeze(event.provider_data))
+    object.__setattr__(event, "provider_data", provider_data)
 
 
 class RealtimeVoiceEvent:
@@ -240,7 +250,9 @@ class ToolCall(RealtimeVoiceEvent):
         _validate_identifier(self.turn_id, "turn_id")
         _validate_identifier(self.response_id, "response_id")
         _validate_identifier(self.name, "name")
-        object.__setattr__(self, "arguments", _freeze(self.arguments))
+        object.__setattr__(
+            self, "arguments", _freeze_mapping(self.arguments, "arguments")
+        )
         _freeze_provider_data(self)
 
 
@@ -340,6 +352,15 @@ class RealtimeAudioFormat:
     sample_rate_hz: int
     channels: int
 
+    def __post_init__(self) -> None:
+        _validate_identifier(self.mime_type, "mime_type")
+        for field_name in ("sample_rate_hz", "channels"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{field_name} must be a positive integer")
+            if value <= 0:
+                raise ValueError(f"{field_name} must be a positive integer")
+
 
 @dataclass(frozen=True, slots=True)
 class RealtimeTool:
@@ -349,7 +370,9 @@ class RealtimeTool:
 
     def __post_init__(self) -> None:
         _validate_identifier(self.name, "name")
-        object.__setattr__(self, "parameters", _freeze(self.parameters))
+        object.__setattr__(
+            self, "parameters", _freeze_mapping(self.parameters, "parameters")
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,22 +395,57 @@ class RealtimeVoiceSetup:
             _validate_identifier(self.model, "model")
         if self.voice is not None:
             _validate_identifier(self.voice, "voice")
+        if self.instructions is not None and not isinstance(self.instructions, str):
+            raise TypeError("instructions must be None or str")
+        if self.audio is not None and not isinstance(self.audio, RealtimeAudioFormat):
+            raise TypeError("audio must be None or RealtimeAudioFormat")
+        provider_options = _freeze_mapping(self.provider_options, "provider_options")
         shared_fields = {"audio", "instructions", "model", "tools", "voice"}
-        shadowed = shared_fields.intersection(self.provider_options)
+        shadowed = shared_fields.intersection(provider_options)
         if shadowed:
             raise ValueError(
                 f"provider_options cannot shadow shared setup field: {min(shadowed)}"
             )
-        object.__setattr__(self, "tools", tuple(self.tools))
-        object.__setattr__(self, "provider_options", _freeze(self.provider_options))
+        if isinstance(self.tools, (str, bytes, bytearray, memoryview)):
+            raise TypeError("tools must be an iterable of RealtimeTool instances")
+        try:
+            tools = tuple(self.tools)
+        except TypeError as exc:
+            raise TypeError(
+                "tools must be an iterable of RealtimeTool instances"
+            ) from exc
+        if any(not isinstance(tool, RealtimeTool) for tool in tools):
+            raise TypeError("tools must contain only RealtimeTool instances")
+        object.__setattr__(self, "tools", tools)
+        object.__setattr__(self, "provider_options", provider_options)
 
 
 class RealtimeVoiceSession(abc.ABC):
     """One provider-neutral bidirectional session with immutable capabilities."""
 
+    _CAPABILITY_HOOKS = {
+        RealtimeCapability.EXPLICIT_INTERRUPTION: "_interrupt",
+        RealtimeCapability.OUTPUT_TRUNCATION: "_truncate_output",
+        RealtimeCapability.INPUT_COMMIT_EVENTS: "_commit_audio",
+        RealtimeCapability.TOOL_CALL_CANCELLATION: "_cancel_tool_call",
+        RealtimeCapability.DYNAMIC_CONTEXT: "_update_context",
+        RealtimeCapability.SESSION_RESUMPTION: "_resume_session",
+        RealtimeCapability.CONTINUATION: "_continue_response",
+    }
+
     def __init__(self, capabilities: Iterable[RealtimeCapability] = ()) -> None:
         self._capabilities = frozenset(capabilities)
+        for capability, hook_name in self._CAPABILITY_HOOKS.items():
+            if capability in self._capabilities and getattr(
+                type(self), hook_name
+            ) is getattr(RealtimeVoiceSession, hook_name):
+                raise ValueError(
+                    f"advertised capability {capability.value} requires a subclass "
+                    f"override of {hook_name}"
+                )
         self._closed = False
+        self._close_lock = asyncio.Lock()
+        self._close_task: asyncio.Task[None] | None = None
 
     @property
     def capabilities(self) -> frozenset[RealtimeCapability]:
@@ -491,14 +549,36 @@ class RealtimeVoiceSession(abc.ABC):
 
     async def close(self) -> None:
         """Release resources once; repeated calls are successful no-ops."""
-        if self._closed:
-            return
-        self._closed = True
-        await self._close()
+        async with self._close_lock:
+            if self._closed:
+                return
+            task = self._close_task
+            if task is None:
+                task = asyncio.create_task(self._close())
+                self._close_task = task
+
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                async with self._close_lock:
+                    if self._close_task is task:
+                        self._close_task = None
+            raise
+        except BaseException:
+            async with self._close_lock:
+                if self._close_task is task:
+                    self._close_task = None
+            raise
+
+        async with self._close_lock:
+            if self._close_task is task:
+                self._closed = True
+                self._close_task = None
 
     @abc.abstractmethod
     async def _close(self) -> None:
-        """Provider-specific release, called at most once."""
+        """Provider-specific release, retried only after failed cleanup."""
 
 
 class RealtimeVoiceProvider(abc.ABC):

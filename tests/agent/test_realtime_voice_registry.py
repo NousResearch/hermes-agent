@@ -106,7 +106,7 @@ class TestRegistration:
         shadow = _FakeProvider(name="OPENAI")
 
         assert realtime_voice_registry.register_provider(plugin) is True
-        assert realtime_voice_registry.register_provider(built_in, built_in=True) is True
+        assert realtime_voice_registry._register_builtin_provider(built_in) is True
         assert realtime_voice_registry.get_provider("openai") is built_in
         assert realtime_voice_registry.is_builtin_provider(" OpenAI ") is True
 
@@ -116,6 +116,24 @@ class TestRegistration:
         assert accepted is False
         assert realtime_voice_registry.get_provider("openai") is built_in
         assert "Built-in providers always win" in caplog.text
+
+    def test_public_registration_has_no_builtin_bypass(self):
+        provider = _FakeProvider(name="openai")
+
+        with pytest.raises(TypeError, match="built_in"):
+            realtime_voice_registry.register_provider(provider, built_in=True)  # type: ignore[call-arg]
+
+        assert realtime_voice_registry.get_provider("openai") is None
+        assert realtime_voice_registry.is_builtin_provider("openai") is False
+
+    def test_first_builtin_wins_even_against_later_builtin(self):
+        first = _FakeProvider(name="openai")
+        second = _FakeProvider(name="OPENAI")
+
+        assert realtime_voice_registry._register_builtin_provider(first) is True
+        assert realtime_voice_registry._register_builtin_provider(second) is False
+
+        assert realtime_voice_registry.get_provider("openai") is first
 
 
 class TestLookup:

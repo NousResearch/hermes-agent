@@ -98,13 +98,15 @@ def expensive_model_warning(
             output_cost = entry.output_cost_per_million
             source = entry.source
 
+    is_known_gpt55_pro_confusion = model.lower() == GPT55_PRO_OPENROUTER_ID
+
     over_input = (
         input_cost is not None and input_cost > INPUT_COST_WARNING_THRESHOLD
     )
     over_output = (
         output_cost is not None and output_cost > OUTPUT_COST_WARNING_THRESHOLD
     )
-    if not over_input and not over_output:
+    if not over_input and not over_output and not is_known_gpt55_pro_confusion:
         return None
 
     lines = [
@@ -120,7 +122,7 @@ def expensive_model_warning(
     ]
     if source:
         lines.append(f"Pricing source: {source}.")
-    if model.lower() == GPT55_PRO_OPENROUTER_ID:
+    if is_known_gpt55_pro_confusion:
         lines.append(GPT55_SUGGESTION)
     lines.append("Confirm only if you intend to use this model.")
 

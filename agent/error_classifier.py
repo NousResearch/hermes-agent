@@ -108,6 +108,8 @@ _BILLING_PATTERNS = [
     "credit balance",
     "credits exhausted",
     "credits have been exhausted",
+    "requires available credits",
+    "account balance is too low",
     "no usable credits",
     "top up your credits",
     "payment required",

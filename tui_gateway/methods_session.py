@@ -2418,8 +2418,16 @@ def _(rid, params: dict) -> dict:
         with _session_db(session) as db:
             if db is not None:
                 try:
+                    # Renderer-facing projection: the payload below goes
+                    # through _history_to_messages, which forwards the durable
+                    # ``row_id`` that message.react addresses. Ask for the row
+                    # ids like every other display projection does. Model-facing
+                    # reloads deliberately stay opt-out so ACP restore/export
+                    # keep the historical transcript shape.
                     history = db.get_messages_as_conversation(
-                        session["session_key"], include_ancestors=True
+                        session["session_key"],
+                        include_ancestors=True,
+                        include_row_ids=True,
                     )
                 except Exception:
                     pass

@@ -331,6 +331,32 @@ def _assistant_copy_text(content: Any) -> str:
     return _strip_reasoning_tags(_assistant_content_as_text(content))
 
 
+def _print_code_copy_hint(response: Any) -> None:
+    """Print copy hint if the response contains code blocks.
+
+    Called after a response completes to let the user know they can
+    use ``/cc`` (short for ``/copy-code``) to copy code blocks.
+    """
+    from hermes_cli.code_fences import parse_code_fences
+
+    if response is None:
+        return
+    text = _assistant_content_as_text(response) if not isinstance(response, str) else response
+    fences = parse_code_fences(text)
+    closed_fences = [f for f in fences if f["closed"]]
+    if not closed_fences:
+        return
+    if len(closed_fences) == 1:
+        _cprint(
+            f"\n{_DIM}💡 Single code block — run /cc to copy it{_RST}"
+        )
+    else:
+        _cprint(
+            f"\n{_DIM}💡 {len(closed_fences)} code blocks — "
+            f"/cc to list, /cc N to copy block N{_RST}"
+        )
+
+
 # =============================================================================
 # Configuration Loading
 # =============================================================================
@@ -10162,6 +10188,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._show_insights(cmd_original)
         elif canonical == "copy":
             self._handle_copy_command(cmd_original)
+        elif canonical == "copy-code":
+            self._handle_copy_code_command(cmd_original)
         elif canonical == "debug":
             self._handle_debug_command(cmd_original)
         elif canonical == "update":
@@ -14525,6 +14553,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Skip batch TTS when streaming TTS already handled it
             if self._voice_tts and response and not use_streaming_tts:
                 self._voice_speak_response_async(response)
+
+            # Show code copy hint after responses containing fenced code blocks
+            _print_code_copy_hint(response)
 
 
             # Re-queue the interrupt message (and any that arrived while we were

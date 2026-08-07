@@ -3,6 +3,8 @@ import { forceRedraw, type MouseTrackingMode } from '@hermes/ink'
 import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
+import type { CopyBloxFence } from '../../../domain/codeFence.js'
+import { parseCodeFences } from '../../../domain/codeFence.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
@@ -433,6 +435,69 @@ export const coreCommands: SlashCommand[] = [
             sys(`copy failed: ${String(error)}`)
           }
         })
+    }
+  },
+
+  {
+    aliases: ['cc', 'copyblock'],
+    help: 'copy a fenced code block from the latest assistant response',
+    name: 'copy-code',
+    run: async (arg, ctx) => {
+      const all = ctx.local.getHistoryItems().filter(message => message.role === 'assistant')
+      const requested = arg.trim()
+
+      if (!all.length) {
+        return ctx.transcript.sys('nothing to copy — start a conversation first')
+      }
+      if (requested && !/^[1-9]\d*$/.test(requested)) {
+        return ctx.transcript.sys('usage: /cc [block_number] — block_number must be a positive integer')
+      }
+
+      let fences: CopyBloxFence[] = []
+      for (const message of [...all].reverse()) {
+        fences = parseCodeFences(message.text).filter(fence => fence.closed)
+        if (fences.length) {
+          break
+        }
+      }
+      if (!fences.length) {
+        return ctx.transcript.sys('no complete code blocks found — nothing to copy')
+      }
+
+      if (!requested && fences.length > 1) {
+        const preview = fences
+          .map((fence, index) => `${index + 1}. [${fence.language || 'text'}] ${fence.rawContent.slice(0, 60)}${fence.rawContent.length > 60 ? '…' : ''}`)
+          .join('\n')
+        ctx.transcript.sys(`Code blocks in the last response (${fences.length} found):`)
+        ctx.transcript.sys(preview)
+        return ctx.transcript.sys(`Run /cc <1-${fences.length}> to copy a specific block`)
+      }
+
+      const blockNumber = requested ? Number.parseInt(requested, 10) : 1
+      if (blockNumber > fences.length) {
+        return ctx.transcript.sys(`only ${fences.length} block(s) found — /cc 1${fences.length > 1 ? `-${fences.length}` : ''}`)
+      }
+
+      const fence = fences[blockNumber - 1]!
+      if (isRemoteShellSession(process.env)) {
+        writeOsc52Clipboard(fence.rawContent)
+        return ctx.transcript.sys(`copied ${fence.language || 'text'} block #${blockNumber} via OSC52 (terminal support required)`)
+      }
+
+      try {
+        if (await writeClipboardText(fence.rawContent)) {
+          if (!ctx.stale()) {
+            ctx.transcript.sys(`copied ${fence.language || 'text'} block #${blockNumber}`)
+          }
+        } else if (!ctx.stale()) {
+          writeOsc52Clipboard(fence.rawContent)
+          ctx.transcript.sys(`copied ${fence.language || 'text'} block #${blockNumber} via OSC52 (terminal support required)`)
+        }
+      } catch (error) {
+        if (!ctx.stale()) {
+          ctx.transcript.sys(`copy failed: ${String(error)}`)
+        }
+      }
     }
   },
 

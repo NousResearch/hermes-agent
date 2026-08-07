@@ -325,6 +325,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, args_hint="<pause|resume|list> [name]"),
     CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
                cli_only=True, args_hint="[number]"),
+    CommandDef("copy-code", "Pick or copy a fenced code block from the last response", "Info",
+               cli_only=True, args_hint="[block_number]", aliases=("cc", "copyblock")),
     CommandDef("paste", "Attach clipboard image from your clipboard", "Info",
                cli_only=True),
     CommandDef("image", "Attach a local image file for your next prompt", "Info",

@@ -3513,6 +3513,84 @@ class CLICommandsMixin:
             _cprint(f"Unknown voice subcommand: {subcommand}")
             _cprint("Usage: /voice [on|off|tts|status]")
 
+    def _handle_copy_code_command(self, cmd_original: str) -> None:
+        """Handle /copy-code [block_number] for the latest fenced code block."""
+        from cli import _assistant_content_as_text, _cprint
+        from hermes_cli.code_fences import parse_code_fences
+
+        parts = cmd_original.split(maxsplit=1)
+        raw_arg = parts[1].strip() if len(parts) > 1 else ""
+        if raw_arg and (not raw_arg.isdecimal() or int(raw_arg) < 1):
+            _cprint("  Usage: /copy-code [block_number]")
+            return
+
+        assistant_messages = [
+            message for message in self.conversation_history
+            if message.get("role") == "assistant"
+        ]
+        if not assistant_messages:
+            _cprint("  Nothing to copy yet — no assistant responses.")
+            return
+
+        closed_fences: list[dict] = []
+        for message in reversed(assistant_messages):
+            content = message.get("content", "")
+            if isinstance(content, list):
+                content = _assistant_content_as_text(content) if content else ""
+            elif content is None:
+                content = ""
+            closed_fences = [fence for fence in parse_code_fences(content) if fence["closed"]]
+            if closed_fences:
+                break
+
+        if not closed_fences:
+            _cprint("  No complete code blocks found in assistant responses.")
+            return
+
+        if raw_arg:
+            block_index = int(raw_arg) - 1
+            if block_index >= len(closed_fences):
+                _cprint(f"  Invalid block number. Use 1-{len(closed_fences)}.")
+                return
+            self._copy_fence(closed_fences[block_index], block_index + 1)
+            return
+
+        if len(closed_fences) == 1:
+            self._copy_fence(closed_fences[0], 1)
+            return
+
+        self._code_block_preview(closed_fences)
+
+    def _copy_fence(self, fence: dict, block_num: int) -> None:
+        """Copy raw fenced content using the same policy as /copy."""
+        from cli import _cprint
+        from hermes_cli.clipboard import is_remote_shell_session, write_clipboard_text
+
+        text = fence["raw_content"]
+        try:
+            if is_remote_shell_session():
+                self._write_osc52_clipboard(text)
+                method = " via OSC 52 (terminal support required)"
+            elif write_clipboard_text(text):
+                method = ""
+            else:
+                self._write_osc52_clipboard(text)
+                method = " via OSC 52 (terminal support required)"
+            _cprint(f"  Copied code block #{block_num} ({fence['language'] or 'text'}) to clipboard{method}")
+        except Exception as exc:
+            _cprint(f"  Failed to copy code block #{block_num} to clipboard: {exc}")
+
+    def _code_block_preview(self, fences: list[dict]) -> None:
+        """Print a numbered list of fences for a follow-up /cc selection."""
+        from cli import _DIM, _RST, _cprint
+
+        _cprint("  Code blocks in the last response:")
+        for index, fence in enumerate(fences, start=1):
+            first_line = fence["raw_content"].split("\n", 1)[0].strip()
+            preview = first_line[:47] + "..." if len(first_line) > 50 else first_line
+            _cprint(f"  {index}  {fence['language'] or 'text':12s} {preview}")
+        _cprint(f"\n  {_DIM}Run /cc <1-{len(fences)}> to copy a block{_RST}")
+
     def _handle_wake_command(self, command: str):
         """Handle /wake [on|off|status] — the 'Hey Hermes' hotword listener.
 

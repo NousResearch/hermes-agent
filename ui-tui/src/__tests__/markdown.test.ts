@@ -371,6 +371,17 @@ describe('renderTable CJK width alignment', () => {
   })
 })
 
+describe('Markdown fences', () => {
+  it('keeps recursively rendering fenced Markdown', () => {
+    const markdown = ['```markdown', '## Nested heading', '', '- nested item', '```'].join('\n')
+    const output = renderPlain(React.createElement(Md, { t: DEFAULT_THEME, text: markdown })).join('\n')
+
+    expect(output).toContain('Nested heading')
+    expect(output).toContain('nested item')
+    expect(output).not.toContain('⧉⧉⧉')
+  })
+})
+
 describe('body prose stays in the theme palette', () => {
   // Prose used to render in the terminal's DEFAULT foreground while inline
   // tokens beside it carried a theme color, so one line mixed two inks.

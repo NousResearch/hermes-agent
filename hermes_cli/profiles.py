@@ -34,6 +34,10 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
+# Pre-load gateway.status at module level to avoid import-lock deadlock
+# when list_profiles() iterates 30+ profiles via run_in_executor.
+from gateway.status import get_running_pid, get_runtime_status_running_pid, read_runtime_status
+
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # Directories bootstrapped inside every new profile
@@ -714,7 +718,6 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     agree.  Parameterized by ``profile_dir`` so it never mutates ``HERMES_HOME``.
     """
     try:
-        from gateway.status import get_running_pid
         if (
             get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False)
             is not None
@@ -723,10 +726,6 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     except Exception:
         pass
     try:
-        from gateway.status import (
-            get_runtime_status_running_pid,
-            read_runtime_status,
-        )
         runtime = read_runtime_status(profile_dir / "gateway_state.json")
         return get_runtime_status_running_pid(runtime, expected_home=profile_dir) is not None
     except Exception:

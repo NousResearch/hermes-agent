@@ -893,6 +893,58 @@ class TestMaxIterationsSummaryReplay:
         assert messages[0]["api_content"] == "q1\n\nPLUGIN-CTX"
 
 
+class TestMaxIterationsSummarySanitizer:
+    """Regression: handle_max_iterations() must route summary content through
+    the canonical strip_think_blocks() so that tool-call XML leaked by open
+    models (e.g. GLM  and ) is removed from the user-visible summary — not
+    just bare  tags.
+
+    The old inline re.sub(r'\\).*?') was thinking-block-only and left
+    function_call XML in the transcript (#58220).
+    """
+    def test_summary_strips_thinking_and_xml_leakage(self):
+        from run_agent import AIAgent
+        from agent.chat_completion_helpers import handle_max_iterations
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent._cached_system_prompt = "SYS"
+        agent.model = "test/model"
+
+        class _Completions:
+            def create(self, **kwargs):
+                return "RAW-RESPONSE"
+
+        client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=_Completions())
+        )
+        # Summary content contains BOTH a thinking block and leaked function_call
+        # XML — the old inline regex only removed the thinking block, leaving the
+        # stray XML in the transcript.
+        transport = types.SimpleNamespace(
+            normalize_response=lambda _r: types.SimpleNamespace(
+                content="thinking block>reasoning summary  function_call>name=\"x\" args={}"
+            )
+        )
+
+        messages = [{"role": "user", "content": "q"}]
+        with patch.object(
+            agent, "_ensure_primary_openai_client", return_value=client
+        ), patch.object(agent, "_get_transport", return_value=transport):
+            out = handle_max_iterations(agent, messages, 5)
+
+        # strip_think_blocks removes the thinking block + function_call XML,
+        # leaving only the visible summary text.
+        assert "thinking block>" not in out
+        assert "function_call" not in out
+        assert "summary" in out
+
+
 class TestSessionRowExistsBeforePreflightCompaction:
     """Moving the crash persist after prefetch/pre_llm_call (one write with
     the final sidecar) must NOT delay session-row creation: with PRAGMA

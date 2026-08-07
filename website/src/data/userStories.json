@@ -1,4 +1,14 @@
-[
+[ 
+  {"id":"agenticbrian-coordination-discord",
+    "source": "blog",
+    "author": "Brian Becker",
+    "url": "https://www.agenticbrian.com/meet-my-team",
+    "date": "2026-05-27",
+    "category": "agentic-coordination",
+    "headline": "The Day 4 Agents Worked Together Successfully",
+    "quote": "Agentic Aunt Caroline (Sonnet) took my draft md file, edited and proofed it. Over discord, she messaged AgenticBen (left-brain: Haiku, right-brain: Nano Banana 2) to create specific images. He provided them back to Aunt Caroline who evaluated and approved. She messaged Josephine (qwen3-coder-next local) to publish the post to draft on WP with the images. Josephine got 3/4s done, got errors creating new user for author. After multiple attempts, she escalated to Neo (Opus 4.7) who fixed the issues and finalized the draft.",
+    "size": "lg"
+  },
   {
     "id": "anthony-inbox-cron",
     "source": "blog",

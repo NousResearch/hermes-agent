@@ -231,6 +231,37 @@ class TestFallbackChainAdvancement:
         assert agent.api_mode == "chat_completions"
         assert agent.client is not None
 
+    def test_explicit_api_mode_uses_anthropic_messages_for_local_proxy(self):
+        """A fallback entry must be able to declare its wire protocol.
+
+        Local Claude Code OAuth proxies expose /v1/messages on a plain
+        localhost URL, so hostname/path inference cannot identify the
+        Anthropic Messages API.  Ignoring this field makes Hermes rebuild an
+        OpenAI client and POST /chat/completions instead.
+        """
+        fbs = [
+            {
+                "provider": "claude-max-cliproxy",
+                "model": "claude-opus-5",
+                "api_mode": "anthropic_messages",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="http://127.0.0.1:8317"),
+                    "claude-opus-5",
+                ),
+            ),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert getattr(agent, "api_mode") == "anthropic_messages"
+            assert getattr(agent, "_anthropic_base_url") == "http://127.0.0.1:8317"
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

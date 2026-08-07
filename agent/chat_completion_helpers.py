@@ -2041,11 +2041,27 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 fb_model, fb_provider, _norm_err,
             )
 
-        # Determine api_mode from provider / base URL / model
-        fb_api_mode = "chat_completions"
+        # Determine api_mode from the explicit fallback entry first, then infer
+        # from provider / base URL / model.  Named custom providers may expose
+        # Anthropic Messages on an ordinary localhost URL (for example a
+        # Claude Code OAuth proxy), so URL inference alone is insufficient.
+        _fb_configured_api_mode = str(fb.get("api_mode") or "").strip().lower()
+        _fb_valid_api_modes = {
+            "chat_completions",
+            "anthropic_messages",
+            "codex_responses",
+            "bedrock_converse",
+        }
+        fb_api_mode = (
+            _fb_configured_api_mode
+            if _fb_configured_api_mode in _fb_valid_api_modes
+            else "chat_completions"
+        )
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        if _fb_configured_api_mode in _fb_valid_api_modes:
+            pass
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
             # Portal is dual-wire: anthropic/* must land on /v1/messages.

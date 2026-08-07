@@ -524,4 +524,46 @@ class TestRootLevelProviderOverride:
 
 
 
+class TestInitAgentErrors:
+    """`_init_agent`'s failure banner goes through Rich, so anything interpolated
+    into it must be escaped or Rich eats it as markup."""
+
+    def test_init_agent_escapes_rich_markup_in_exception_messages(self, monkeypatch):
+        cli_obj = _make_cli()
+        rendered: list[str] = []
+
+        cli_obj._session_db = MagicMock()
+        monkeypatch.setattr(cli_obj, "_install_tool_callbacks", lambda: None)
+        monkeypatch.setattr(cli_obj, "_ensure_tirith_security", lambda: None)
+        monkeypatch.setattr(cli_obj, "_ensure_runtime_credentials", lambda: True)
+        monkeypatch.setattr(
+            "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+            lambda **_kwargs: None,
+        )
+
+        import cli as cli_module
+
+        def _boom(**_kwargs):
+            # Verbatim httpx text when a SOCKS proxy is configured without the extra.
+            raise RuntimeError(
+                "Using SOCKS proxy, but the 'socksio' package is not installed. "
+                "Make sure to install httpx[socks]."
+            )
+
+        monkeypatch.setattr(cli_module, "AIAgent", _boom)
+        monkeypatch.setattr(cli_module, "_prepare_deferred_agent_startup", lambda: None)
+        # `ChatConsole.print` renders through Rich and hands each finished line to
+        # `cli._cprint`, so capturing here asserts on post-render output — the only
+        # point where markup swallowing is observable.
+        monkeypatch.setattr(cli_module, "_cprint", rendered.append)
+
+        assert cli_obj._init_agent() is False
+
+        out = "\n".join(rendered)
+        assert "Failed to initialize agent:" in out
+        # Without the escape Rich treats `[socks]` as a style tag and drops it,
+        # leaving `pip install httpx` — advice for a package that is already there.
+        assert "httpx[socks]" in out
+
+
 

@@ -566,7 +566,12 @@ class CLIAgentSetupMixin:
             return True
         except Exception as e:
             console = ChatConsole()
-            console.print(f"[bold red]Failed to initialize agent: {e}[/]")
+            # Rich parses square brackets as markup, so an unescaped exception
+            # swallows literal bracketed text — `pip install httpx[socks]` from a
+            # missing-SOCKS-extra error renders as `pip install httpx`, telling the
+            # user to install the wrong thing. Every other console.print in this
+            # module already escapes its interpolated values.
+            console.print(f"[bold red]Failed to initialize agent: {_escape(str(e))}[/]")
             from hermes_constants import partial_update_hint
 
             for line in partial_update_hint(e):

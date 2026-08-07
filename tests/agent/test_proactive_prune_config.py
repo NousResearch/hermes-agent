@@ -85,6 +85,28 @@ class TestProactivePruneConfig:
         agent = _make_agent(monkeypatch, tmp_path, proactive_prune_tokens=True)
         assert agent.context_compressor.proactive_prune_tokens == 0
 
+    def test_ratio_default_is_disabled_when_unset(self, monkeypatch, tmp_path):
+        agent = _make_agent(monkeypatch, tmp_path)
+        assert agent.context_compressor.proactive_prune_ratio is None
+
+    def test_ratio_honored_and_clamped(self, monkeypatch, tmp_path):
+        agent = _make_agent(monkeypatch, tmp_path, proactive_prune_ratio=0.4)
+        assert agent.context_compressor.proactive_prune_ratio == 0.4
+        # Above 1 clamps to 1.0 (prune at the full window), not rejected —
+        # a ratio of 1 is a legitimate "as late as possible" setting.
+        agent = _make_agent(monkeypatch, tmp_path, proactive_prune_ratio=2.5)
+        assert agent.context_compressor.proactive_prune_ratio == 1.0
+        # <= 0 disables.
+        agent = _make_agent(monkeypatch, tmp_path, proactive_prune_ratio=-0.5)
+        assert agent.context_compressor.proactive_prune_ratio is None
+
+    def test_ratio_boolean_is_rejected_not_coerced(self, monkeypatch, tmp_path):
+        # YAML `proactive_prune_ratio: true` must NOT coerce to 1.0 — that
+        # would silently near-disable the feature (trigger at the FULL
+        # window) in the most confusing way possible. Fall back to disabled.
+        agent = _make_agent(monkeypatch, tmp_path, proactive_prune_ratio=True)
+        assert agent.context_compressor.proactive_prune_ratio is None
+
 
 
 

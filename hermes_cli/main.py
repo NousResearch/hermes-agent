@@ -579,6 +579,7 @@ def _apply_profile_override() -> None:
         "-r", "--resume",
         "-s", "--skills",
         "--usage-file",
+        "--in",
     }
     optional_value_flags = {"-c", "--continue"}
     i = 0
@@ -2532,6 +2533,41 @@ def cmd_chat(args):
     use_tui = _resolve_use_tui(args)
 
     _apply_safe_mode(args)
+
+    # --in DIR: run in DIR. Must happen before any session resolution so the
+    # workspace-scoped "latest"/-c lookups key off DIR, and it pins the
+    # session there — an explicit --in wins over a resumed session's
+    # recorded cwd (so the restore step below is skipped).
+    in_dir = getattr(args, "in_dir", None)
+    if in_dir:
+        _target_dir = os.path.abspath(os.path.expanduser(in_dir))
+        if not os.path.isdir(_target_dir):
+            print(f"Error: --in directory not found: {in_dir}")
+            sys.exit(1)
+        try:
+            os.chdir(_target_dir)
+        except OSError as e:
+            print(f"Error: cannot enter --in directory {in_dir}: {e}")
+            sys.exit(1)
+        args.no_restore_cwd = True
+
+    # --resume latest: keyword for "most recent session" — same resolution
+    # as `-c` with no name (workspace-scoped MRU, then global fallback).
+    # The keyword wins over a session literally titled "latest"; that
+    # session stays reachable via its ID or `-c latest` (title match).
+    _resume_raw = getattr(args, "resume", None)
+    if isinstance(_resume_raw, str) and _resume_raw.strip().lower() == "latest":
+        _source = "tui" if use_tui else "cli"
+        _last_id = _resolve_last_session(source=_source)
+        if not _last_id and _source == "tui":
+            _last_id = _resolve_last_session(source="cli")
+        if _last_id:
+            args.resume = _last_id
+        else:
+            kind = "TUI" if use_tui else "CLI"
+            print(f"No previous {kind} session found to resume.")
+            print("Use 'hermes sessions list' to see available sessions.")
+            sys.exit(1)
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
@@ -10651,6 +10687,7 @@ _TOP_LEVEL_VALUE_FLAGS = frozenset(
         "-r", "--resume",
         "-s", "--skills",
         "--usage-file",
+        "--in",
         # ``-c / --continue`` is nargs='?' (optional value). Treat it as
         # value-taking: if the next token is a subcommand-looking word
         # the user almost certainly meant it as the session name, and

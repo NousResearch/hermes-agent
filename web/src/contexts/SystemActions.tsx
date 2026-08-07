@@ -10,6 +10,8 @@ import {
 
 const ACTION_NAMES: Record<SystemAction, string> = {
   restart: "gateway-restart",
+  dashboard: "dashboard-restart",
+  hermes: "hermes-restart",
   update: "hermes-update",
 };
 
@@ -72,6 +74,35 @@ export function SystemActionsProvider({
         if (action === "restart") {
           await api.restartGateway();
           setActiveAction(action);
+        } else if (action === "dashboard") {
+          const resp = await api.restartDashboard();
+          // Non-systemd installs can't restart from inside their own process;
+          // the endpoint returns structured guidance instead of spawning.
+          if (!resp.ok) {
+            setToast({
+              type: "error",
+              message: resp.message ?? t.status.actionFailed,
+            });
+            return;
+          }
+          setActiveAction(action);
+        } else if (action === "hermes") {
+          const resp = await api.restartHermes();
+          // Same structured-envelope handling as dashboard/update: a
+          // non-systemd dashboard can restart the gateway but not itself.
+          if (!resp.ok) {
+            setToast({
+              type: "error",
+              message: resp.message ?? t.status.actionFailed,
+            });
+            return;
+          }
+          // restart-hermes is fire-and-forget: the gateway is signalled to
+          // self-restart and the dashboard restarts itself ~1s later — there
+          // is no spawned action to poll. Do NOT setActiveAction here:
+          // polling would resolve to a synthetic "Action failed (exit ?)"
+          // toast for a restart that actually succeeded. The page reload
+          // itself is the completion feedback.
         } else {
           const resp = await api.updateHermes();
           // Some installs cannot apply updates from inside the dashboard. The

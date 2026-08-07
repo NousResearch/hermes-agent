@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
+import { SLASH_COMMANDS } from '../app/slash/registry.js'
 import { inlineSlashTrigger, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
@@ -20,6 +21,41 @@ export function mergeWidgetAppItems(input: string, items: CompletionItem[]): Com
     .filter(app => `/${app.id}`.startsWith(input.toLowerCase()))
     .filter(app => !items.some(item => item.text === `/${app.id}`))
     .map(app => ({ display: `/${app.id}`, meta: app.help, text: `/${app.id}` }))
+
+  return [...items, ...local]
+}
+
+/** TUI-local slash commands dispatch from SLASH_COMMANDS without going through
+ *  the gateway completer. Merge them into `/` Tab results so names like
+ *  `/widgets-reload` are discoverable (#70649). Gateway entries stay first. */
+export function mergeLocalSlashItems(input: string, items: CompletionItem[]): CompletionItem[] {
+  // Only complete the command NAME position (no args typed yet).
+  if (input.includes(' ')) {
+    return items
+  }
+
+  const knownNames = new Set(items.map(item => item.text.toLowerCase()))
+  const prefix = input.toLowerCase()
+
+  const local = SLASH_COMMANDS.flatMap(command =>
+    [command.name, ...(command.aliases ?? [])].map(name => ({
+      display: `/${name}`,
+      meta: command.help,
+      text: `/${name}`
+    }))
+  )
+    .filter(item => item.text.toLowerCase().startsWith(prefix))
+    .filter(item => {
+      const name = item.text.toLowerCase()
+
+      if (knownNames.has(name)) {
+        return false
+      }
+
+      knownNames.add(name)
+
+      return true
+    })
 
   return [...items, ...local]
 }
@@ -122,7 +158,9 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
           const r = asRpcResult<CompletionResponse>(raw)
 
           const fetched =
-            request.method === 'complete.slash' ? mergeWidgetAppItems(input, r?.items ?? []) : (r?.items ?? [])
+            request.method === 'complete.slash'
+              ? mergeLocalSlashItems(input, mergeWidgetAppItems(input, r?.items ?? []))
+              : (r?.items ?? [])
 
           // Mid-message offers SKILLS only. A built-in like `/model` or `/new`
           // acts on the app, so it's meaningless as a reference inside prose —

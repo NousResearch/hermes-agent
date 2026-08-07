@@ -176,6 +176,33 @@ def clear_session_context() -> None:
     _session_context.session_id = None
 
 
+# Cap exception/detail text written into log messages so large HTTP error
+# bodies (Cloudflare challenge HTML, proxy 502 pages, …) cannot grow gateway
+# stderr without bound. Agent-facing tool returns keep the full string.
+DEFAULT_LOG_DETAIL_LIMIT = 2000
+
+
+def truncate_for_log(text, limit: int = DEFAULT_LOG_DETAIL_LIMIT) -> str:
+    """Return *text* capped at *limit* characters for safe log emission.
+
+    ``str(exception)`` on HTTP clients often embeds the entire response body.
+    Callers should keep the original text for agent-facing tool results and
+    only pass the truncated form to loggers. Prefer omitting ``exc_info=True``
+    at the same sites — the traceback tail re-renders the full exception and
+    would reintroduce the unbounded write (see #75927).
+    """
+    if text is None:
+        return ""
+    s = text if isinstance(text, str) else str(text)
+    if limit <= 0:
+        return ""
+    if len(s) <= limit:
+        return s
+    if limit <= 3:
+        return s[:limit]
+    return s[: limit - 3] + "..."
+
+
 # ---------------------------------------------------------------------------
 # Record factory — injects session_tag into every LogRecord at creation
 # ---------------------------------------------------------------------------

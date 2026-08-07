@@ -63,6 +63,7 @@ def _load_auxiliary_client() -> None:
 
 
 from hermes_constants import get_hermes_dir
+from hermes_logging import truncate_for_log
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
 import sys
@@ -1379,7 +1380,9 @@ async def vision_analyze_tool(
         
     except Exception as e:
         error_msg = f"Error analyzing image: {str(e)}"
-        logger.error("%s", error_msg, exc_info=True)
+        # Truncate + drop exc_info so large HTTP bodies are not written twice
+        # (message + traceback tail). Full detail still returned to the agent.
+        logger.error("Error analyzing image: %s", truncate_for_log(e))
         
         # Detect vision capability errors — give the model a clear message
         # so it can inform the user instead of a cryptic API error.
@@ -1847,7 +1850,9 @@ async def video_analyze_tool(
 
     except Exception as e:
         error_msg = f"Error analyzing video: {str(e)}"
-        logger.error("%s", error_msg, exc_info=True)
+        # Truncate + drop exc_info so large HTTP bodies are not written twice
+        # (message + traceback tail). Full detail still returned to the agent.
+        logger.error("Error analyzing video: %s", truncate_for_log(e))
 
         err_str = str(e).lower()
         if any(hint in err_str for hint in (

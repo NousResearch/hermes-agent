@@ -58,6 +58,7 @@ from urllib.parse import urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import display_hermes_home
+from hermes_logging import truncate_for_log
 
 logger = logging.getLogger(__name__)
 def get_env_value(name, default=None):
@@ -3148,12 +3149,20 @@ def text_to_speech_tool(
     except FileNotFoundError as e:
         # Missing dependencies or files
         error_msg = f"TTS dependency missing ({provider}): {e}"
-        logger.error("%s", error_msg, exc_info=True)
+        # Truncate + drop exc_info so large error bodies are not written twice
+        # (message + traceback tail). Full detail still returned to the agent.
+        logger.error(
+            "TTS dependency missing (%s): %s", provider, truncate_for_log(e)
+        )
         return tool_error(error_msg, success=False)
     except Exception as e:
         # Unexpected errors
         error_msg = f"TTS generation failed ({provider}): {e}"
-        logger.error("%s", error_msg, exc_info=True)
+        # Truncate + drop exc_info so large HTTP bodies are not written twice
+        # (message + traceback tail). Full detail still returned to the agent.
+        logger.error(
+            "TTS generation failed (%s): %s", provider, truncate_for_log(e)
+        )
         return tool_error(error_msg, success=False)
 
 

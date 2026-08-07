@@ -674,6 +674,47 @@ class TestErrorClassification:
         assert "rejected the image" in result["analysis"].lower()
         assert "smaller" in result["analysis"].lower()
 
+    @pytest.mark.asyncio
+    async def test_huge_http_error_body_not_dumped_to_log(self, tmp_path, caplog):
+        """Large HTTP error bodies must not grow gateway/agent logs unboundedly (#75927)."""
+        from hermes_logging import DEFAULT_LOG_DETAIL_LIMIT
+
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        # Simulate openai.APIStatusError carrying a Cloudflare HTML page.
+        huge_body = "<html>" + ("challenge-page" * 50_000) + "</html>"
+        api_error = Exception(f"Error code: 403 - {huge_body}")
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=api_error,
+            ),
+            caplog.at_level(logging.ERROR, logger="tools.vision_tools"),
+        ):
+            result = json.loads(
+                await vision_analyze_tool(str(img), "describe", "test/model")
+            )
+
+        # Agent-facing payload still carries the full error string.
+        assert result["success"] is False
+        assert huge_body in result["error"]
+
+        error_records = [
+            r for r in caplog.records if "Error analyzing image" in r.getMessage()
+        ]
+        assert len(error_records) == 1
+        # One truncated line, no traceback re-render of the full body.
+        assert len(error_records[0].getMessage()) < DEFAULT_LOG_DETAIL_LIMIT + 80
+        assert error_records[0].exc_info is None
+        assert huge_body not in error_records[0].getMessage()
+
 
 class TestVisionRegistration:
     def test_vision_analyze_registered_with_schema(self):

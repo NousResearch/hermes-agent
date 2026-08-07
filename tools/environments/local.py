@@ -907,21 +907,38 @@ def _bash_starts(bash: str) -> bool:
     if cached is not None:
         return cached
 
+    combined = ""
     try:
-        result = subprocess.run(
-            [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=15,
-            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
-        )
+        # Do not use PIPE-backed capture here. During ACP startup, MCP and
+        # plugin subprocesses launch concurrently; on Windows one can inherit
+        # a probe pipe handle and prevent subprocess.run().communicate() from
+        # ever observing EOF, even after its timeout kills bash. A temporary
+        # file keeps the diagnostic output without a reader thread or EOF wait.
+        with tempfile.TemporaryFile() as capture:
+            try:
+                result = subprocess.run(
+                    [
+                        bash,
+                        "--noprofile",
+                        "--norc",
+                        "-c",
+                        _BASH_EXTERNAL_PROGRAM_PROBE,
+                    ],
+                    stdout=capture,
+                    stderr=subprocess.STDOUT,
+                    timeout=15,
+                    creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
+                )
+            finally:
+                capture.seek(0)
+                combined = capture.read().decode("utf-8", errors="replace")
         ok = result.returncode == 0
         if not ok:
-            combined = f"{result.stdout or ''}{result.stderr or ''}"
             _bash_probe_details_cache[bash] = combined.strip()[:2000]
             logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
     except Exception as exc:
-        _bash_probe_details_cache[bash] = str(exc)[:2000]
+        details = combined.strip() or str(exc)
+        _bash_probe_details_cache[bash] = details[:2000]
         logger.debug("bash probe error for %s: %s", bash, exc)
         ok = False
 

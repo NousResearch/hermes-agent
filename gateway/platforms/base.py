@@ -5966,6 +5966,7 @@ class BasePlatformAdapter(ABC):
                 # (#60671) — the gateway streaming-TTS consumer sets the flag.
                 _tts_path = None
                 _tts_requested_path = None
+                _tts_error_notice = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
@@ -5997,10 +5998,19 @@ class BasePlatformAdapter(ABC):
                                 output_path=_tts_requested_path,
                             )
                             tts_data = _json.loads(tts_result_str)
-                            if tts_data.get("success", True):
-                                _tts_path = tts_data.get("file_path") or _tts_requested_path
+                            if not tts_data.get("success", False):
+                                raise RuntimeError(
+                                    tts_data.get("error") or "TTS tool returned success=false"
+                                )
+                            _tts_path = tts_data.get("file_path") or _tts_requested_path
+                        else:
+                            raise RuntimeError("TTS provider requirements are unavailable")
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
+                        _tts_error_notice = (
+                            "Audio was not sent because TTS failed with the "
+                            "configured provider."
+                        )
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
@@ -6046,6 +6056,9 @@ class BasePlatformAdapter(ABC):
                 # adapter while its in-flight handler was still producing a
                 # final response; that response is a new message, so resolve
                 # the current transport before sending it.
+                if _tts_error_notice and text_content and not _tts_caption_delivered:
+                    text_content = f"{_tts_error_notice}\n\n{text_content}"
+
                 if text_content and not _tts_caption_delivered:
                     delivery_adapter = self._final_delivery_adapter(event.source)
                     logger.info(

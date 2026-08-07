@@ -1172,6 +1172,9 @@ platform_toolsets:
 #   gemini:
 #     model: "gemini-3.1-flash-tts-preview"
 #     voice: "Kore"
+#     max_attempts: 3          # transient request/read failures
+#     timeout: 60              # per-attempt seconds
+#     retry_delay_seconds: 1.0
 #     audio_tags: false
 #     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
 #   xai:

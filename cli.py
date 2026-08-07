@@ -10025,7 +10025,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             else:
                 from hermes_state import format_session_db_unavailable
                 _cprint(f"  {format_session_db_unavailable()}")
-        elif canonical == "handoff":
+        elif canonical == "handoff-messaging":
             if not self._handle_handoff_command(cmd_original):
                 return False
         elif canonical == "new":
@@ -10506,7 +10506,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 from hermes_cli.commands import COMMANDS
                 typed_base = cmd_lower.split()[0]
                 all_known = set(COMMANDS) | set(skill_commands) | set(skill_bundles)
-                matches = [c for c in all_known if c.startswith(typed_base)]
+                # Do not preserve retired core spellings as implicit aliases via prefix
+                # expansion. Exact skill/bundle matching already ran above, so an
+                # installed /handoff command still dispatches normally.
+                retired_core_names = {"/handoff"}
+                matches = (
+                    []
+                    if typed_base in retired_core_names
+                    else [c for c in all_known if c.startswith(typed_base)]
+                )
                 if len(matches) > 1:
                     # Prefer an exact match (typed the full command name)
                     exact = [c for c in matches if c == typed_base]

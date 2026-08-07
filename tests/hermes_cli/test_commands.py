@@ -90,6 +90,15 @@ class TestResolveCommand:
         assert not ctx.cli_only and not ctx.gateway_only
         assert "context" in GATEWAY_KNOWN_COMMANDS
 
+    def test_messaging_handoff_has_explicit_name_and_releases_generic_name(self):
+        handoff = resolve_command("handoff-messaging")
+
+        assert handoff is not None
+        assert handoff.name == "handoff-messaging"
+        assert handoff.args_hint == "<platform>"
+        assert handoff.cli_only
+        assert resolve_command("handoff") is None
+
 
 
 
@@ -436,8 +445,8 @@ class TestSubcommandCompletion:
         )
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: fake)
 
-    def test_handoff_completes_connected_platforms(self, monkeypatch):
-        """`/handoff ` offers connected platforms, with or without a home channel."""
+    def test_handoff_messaging_completes_connected_platforms(self, monkeypatch):
+        """The explicit messaging command offers connected platforms."""
         self._fake_gateway(
             monkeypatch,
             {
@@ -446,7 +455,7 @@ class TestSubcommandCompletion:
             },
         )
 
-        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff ")}
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff-messaging ")}
         assert texts == {"telegram", "discord"}
 
 

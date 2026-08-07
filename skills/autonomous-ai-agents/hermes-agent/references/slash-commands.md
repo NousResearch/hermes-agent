@@ -27,7 +27,8 @@ it. New commands land often; `/help` in-session is always authoritative.
 /branch (/fork) [name]   Branch the session
 /resume [name]           Resume a named session
 /sessions                Browse and resume previous sessions
-/handoff <platform>      Hand live session off to a messaging platform (CLI)
+/handoff-messaging <platform>
+                         Hand live session off to a messaging platform (CLI)
 /status                  Session, model, token, and context info
 /redraw                  Force full UI repaint (CLI)
 ```

@@ -243,6 +243,15 @@ class TestScanSkillCommands:
 
     # -- core-command collision guard (#31204 / #53450) ---------------------
 
+    def test_handoff_skill_registers_when_generic_name_is_not_core_reserved(self, tmp_path):
+        """The messaging command must not reserve the generic skill name."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "handoff")
+            result = scan_skill_commands()
+
+        assert "/handoff" in result
+        assert result["/handoff"]["name"] == "handoff"
+
 
 
 

@@ -1,6 +1,6 @@
-"""Unit tests for /handoff platform aliasing over relay (Phase 1 parity).
+"""Unit tests for /handoff-messaging platform aliasing over relay (Phase 1 parity).
 
-Symptom fixed: on a relay-fronted gateway, ``/handoff discord`` was rejected
+Symptom fixed: on a relay-fronted gateway, ``/handoff-messaging discord`` was rejected
 in TWO places even though "discord" is deliverable through the relay adapter:
 
   1. The CLI pre-check (``cli_commands_mixin._handle_handoff_command``) looked

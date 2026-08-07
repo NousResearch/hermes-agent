@@ -113,15 +113,60 @@ class TestHandoffCommandRegistration:
 
     def test_command_registered(self):
         from hermes_cli.commands import resolve_command
-        cmd = resolve_command("handoff")
+        cmd = resolve_command("handoff-messaging")
         assert cmd is not None
-        assert cmd.name == "handoff"
+        assert cmd.name == "handoff-messaging"
         assert cmd.category == "Session"
 
     def test_command_is_cli_only(self):
-        """`/handoff` is initiated from the CLI; gateway shouldn't expose it."""
+        """Messaging handoff starts in the CLI; gateway shouldn't expose it."""
         from hermes_cli.commands import resolve_command, GATEWAY_KNOWN_COMMANDS
-        cmd = resolve_command("handoff")
+        cmd = resolve_command("handoff-messaging")
         assert cmd is not None
         assert cmd.cli_only is True
-        assert "handoff" not in GATEWAY_KNOWN_COMMANDS
+        assert "handoff-messaging" not in GATEWAY_KNOWN_COMMANDS
+
+    def test_process_command_dispatches_explicit_messaging_name(self, monkeypatch):
+        import cli as cli_module
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._pending_resume_sessions = None
+        cli.config = {}
+        cli.session_id = "test-session"
+        handled = []
+
+        def _handle_handoff(cmd_original):
+            handled.append(cmd_original)
+            return True
+
+        cli._handle_handoff_command = _handle_handoff
+        monkeypatch.setattr(cli_module, "_ensure_skill_commands", lambda: {})
+        monkeypatch.setattr(cli_module, "get_skill_bundles", lambda: {})
+        monkeypatch.setattr(cli_module, "_get_plugin_cmd_handler_names", lambda: set())
+
+        assert cli.process_command("/handoff-messaging telegram") is True
+        assert handled == ["/handoff-messaging telegram"]
+
+    def test_process_command_does_not_expand_retired_handoff_name(self, monkeypatch):
+        """The old core spelling must not survive as an implicit prefix alias."""
+        import cli as cli_module
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._pending_resume_sessions = None
+        cli.config = {}
+        cli.session_id = "test-session"
+        handled = []
+
+        def _handle_handoff(cmd_original):
+            handled.append(cmd_original)
+            return True
+
+        cli._handle_handoff_command = _handle_handoff
+        monkeypatch.setattr(cli_module, "_ensure_skill_commands", lambda: {})
+        monkeypatch.setattr(cli_module, "get_skill_bundles", lambda: {})
+        monkeypatch.setattr(cli_module, "_get_plugin_cmd_handler_names", lambda: set())
+
+        assert cli.process_command("/handoff telegram") is True
+        assert handled == []

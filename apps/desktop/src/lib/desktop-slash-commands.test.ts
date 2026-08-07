@@ -159,8 +159,14 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashCommandArgumentMode('/steer')).toBe('text')
     expect(desktopSlashCommandArgumentMode('/queue')).toBe('text')
     expect(desktopSlashCommandArgumentMode('/personality')).toBe('options')
-    expect(desktopSlashCommandArgumentMode('/handoff')).toBe('options')
     expect(desktopSlashCommandArgumentMode('/version')).toBeNull()
+  })
+
+  it('routes messaging handoff explicitly and leaves /handoff available to skills', () => {
+    expect(resolveDesktopCommand('/handoff-messaging')?.surface).toEqual({ kind: 'action', action: 'handoff' })
+    expect(desktopSlashCommandArgumentMode('/handoff-messaging')).toBe('options')
+    expect(resolveDesktopCommand('/handoff')).toBeNull()
+    expect(isDesktopSlashCommand('/handoff')).toBe(true)
   })
 
   it('routes /journey (and aliases) to the memory graph overlay action', () => {

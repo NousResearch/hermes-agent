@@ -732,9 +732,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
-        // /handoff hands this session to a messaging platform. The platform is
+        // /handoff-messaging hands this session to a messaging platform. The platform is
         // completed inline in the slash popover (backend _handoff_completions),
-        // so there is no overlay: `/handoff <platform>` runs the desktop's own
+        // so there is no overlay: `/handoff-messaging <platform>` runs the desktop's own
         // handoff RPC. cli_only on the backend, so it must not reach slash.exec.
         handoff: async ({ arg, command, recordInput, sessionHint }) => {
           const platform = arg.trim()

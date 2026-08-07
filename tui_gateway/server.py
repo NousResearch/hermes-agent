@@ -3562,7 +3562,7 @@ def _pet_sig() -> tuple:
     hatch flow rebuilds a sheet, or the scale changes."""
     display = _load_cfg().get("display") or {}
     pet_cfg = display.get("pet") if isinstance(display.get("pet"), dict) else {}
-    if not pet_cfg or not pet_cfg.get("enabled"):
+    if not pet_cfg or not is_truthy_value(pet_cfg.get("enabled"), default=False):
         return ("off",)
     try:
         enabled, pet, scale = _pet_active_selection()

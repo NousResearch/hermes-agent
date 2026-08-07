@@ -4713,6 +4713,19 @@ class AIAgent:
 
     def _client_log_context(self) -> str:
         provider = getattr(self, "provider", "unknown")
+        requested_provider = getattr(self, "requested_provider", "")
+        if str(provider).strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import user_facing_provider_identity
+
+                provider = user_facing_provider_identity(
+                    provider=provider,
+                    requested_provider=requested_provider,
+                    base_url=getattr(self, "base_url", "") or None,
+                    model=getattr(self, "model", "") or None,
+                )
+            except Exception:
+                provider = requested_provider or provider
         base_url = getattr(self, "base_url", "unknown")
         model = getattr(self, "model", "unknown")
         return (

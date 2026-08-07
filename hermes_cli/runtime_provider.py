@@ -1035,6 +1035,30 @@ def canonical_custom_identity(
     return None
 
 
+def user_facing_provider_identity(
+    *,
+    provider: Optional[str] = None,
+    requested_provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+) -> str:
+    """Return the provider identity humans should see in logs and status."""
+    resolved = str(provider or "").strip().lower()
+    requested = str(requested_provider or "").strip().lower()
+    if resolved != "custom":
+        return resolved or requested or "unknown"
+    if requested not in {"", "auto", "custom", "openrouter"}:
+        return requested
+    identity = canonical_custom_identity(
+        base_url=base_url,
+        config_provider=requested_provider,
+        model=model,
+    )
+    if identity and identity.startswith("custom:"):
+        return identity.split(":", 1)[1]
+    return identity or requested or resolved or "unknown"
+
+
 def _normalize_base_url_for_match(value) -> str:
     return str(value or "").strip().rstrip("/").lower()
 

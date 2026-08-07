@@ -91,6 +91,7 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
+from hermes_cli.runtime_provider import user_facing_provider_identity
 
 logger = logging.getLogger(__name__)
 
@@ -3495,7 +3496,13 @@ def run_conversation(
                         _cache_pct = f" cache={canonical_usage.cache_read_tokens}/{prompt_tokens} ({100*canonical_usage.cache_read_tokens/prompt_tokens:.0f}%)"
                     logger.info(
                         "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s",
-                        agent.session_api_calls, agent.model, agent.provider or "unknown",
+                        agent.session_api_calls, agent.model,
+                        user_facing_provider_identity(
+                            provider=agent.provider,
+                            requested_provider=getattr(agent, "requested_provider", ""),
+                            base_url=getattr(agent, "base_url", "") or None,
+                            model=agent.model,
+                        ),
                         prompt_tokens, completion_tokens, total_tokens,
                         api_duration, _cache_pct,
                     )

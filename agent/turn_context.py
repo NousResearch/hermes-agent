@@ -46,6 +46,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
 )
+from hermes_cli.runtime_provider import user_facing_provider_identity
 
 logger = logging.getLogger(__name__)
 
@@ -509,9 +510,17 @@ def build_turn_context(
     _preview_text = summarize_user_message_for_log(user_message)
     _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text
     _msg_preview = _msg_preview.replace("\n", " ")
+    from hermes_cli.runtime_provider import user_facing_provider_identity
+
     logger.info(
         "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
-        agent.session_id or "none", agent.model, agent.provider or "unknown",
+        agent.session_id or "none", agent.model,
+        user_facing_provider_identity(
+            provider=agent.provider,
+            requested_provider=getattr(agent, "requested_provider", ""),
+            base_url=getattr(agent, "base_url", "") or None,
+            model=agent.model,
+        ),
         agent.platform or "unknown", len(conversation_history or []),
         _msg_preview,
     )

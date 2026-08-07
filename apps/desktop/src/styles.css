@@ -527,6 +527,22 @@
        touch — still clearly a surface, no longer the brightest thing in the
        transcript. Derived from the card so every skin follows its own seed. */
     --ui-widget-surface-background: color-mix(in srgb, var(--ui-bg-editor) 88%, #000);
+
+    /* Dark glass themes are often run translucent over wallpaper. The default
+       text ladder is calibrated for opaque panels and becomes too dim when the
+       desktop bleeds through, especially in sidebars, file trees, captions, and
+       assistant prose. Keep the skin hue, then blend toward white so ordinary
+       UI text stays readable without brightening the whole background. */
+    --ui-text-primary: color-mix(in srgb, var(--ui-base) 94%, #ffffff 12%);
+    --ui-text-secondary: color-mix(in srgb, var(--ui-base) 82%, #ffffff 18%);
+    --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 68%, #ffffff 16%);
+    --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 52%, #ffffff 12%);
+    --dt-foreground: var(--ui-text-primary);
+    --dt-card-foreground: var(--ui-text-primary);
+    --dt-muted-foreground: var(--ui-text-tertiary);
+    --dt-secondary-foreground: var(--ui-text-secondary);
+    --dt-accent-foreground: var(--ui-text-primary);
+    --sidebar-foreground: var(--ui-text-primary);
   }
 
   * {

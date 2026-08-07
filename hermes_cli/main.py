@@ -451,6 +451,7 @@ from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
+from hermes_cli.subcommands.pause import build_pause_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
@@ -10609,9 +10610,10 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pets", "plugins", "portal", "profile",
+        "model", "monitoring", "pairing", "pause", "pets", "plugins", "portal", "profile",
         "project", "proxy",
         "prompt-size",
+        "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
@@ -11479,6 +11481,11 @@ def main():
     # status command  (parser built in hermes_cli/subcommands/status.py)
     # =========================================================================
     build_status_parser(subparsers, cmd_status=cmd_status)
+
+    # =========================================================================
+    # pause / resume commands  (parser built in hermes_cli/subcommands/pause.py)
+    # =========================================================================
+    build_pause_parser(subparsers)
 
     # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)

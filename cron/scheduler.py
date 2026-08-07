@@ -4759,6 +4759,17 @@ def tick(
         return 0
 
     try:
+        # Global emergency stop (`hermes pause`): skip dispatch entirely while
+        # the ESTOP sentinel exists. Never touches in-flight runs — due jobs
+        # simply wait for the next tick after `hermes resume`. Logged once per
+        # engagement (not every tick) by check_paused.
+        try:
+            from agent.estop import check_paused as _estop_check_paused
+            if _estop_check_paused("cron", logger):
+                return 0
+        except ImportError:
+            pass
+
         if can_dispatch is not None and not can_dispatch():
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0

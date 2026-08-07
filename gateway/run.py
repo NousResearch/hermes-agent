@@ -14663,7 +14663,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Record rate limit so subsequent messages are silently ignored
                     pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
-        
+
+        # Global emergency stop (`hermes pause`): give new turns a brief
+        # paused notice instead of starting an agent run. Internal events
+        # (background-process completions from IN-FLIGHT work) bypass the
+        # gate — pause stops NEW work, it never kills or orphans running
+        # work. Placed after auth so unauthorized senders keep the normal
+        # silent/pairing behavior and can't probe pause state.
+        if not is_internal:
+            try:
+                from agent.estop import paused_reply as _estop_paused_reply
+                _paused_notice = _estop_paused_reply()
+            except ImportError:
+                _paused_notice = None
+            if _paused_notice is not None:
+                logger.info(
+                    "Gateway turn paused by global emergency stop (platform=%s chat=%s)",
+                    getattr(getattr(source, "platform", None), "value", "unknown"),
+                    getattr(source, "chat_id", None) or "unknown",
+                )
+                return _paused_notice
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via

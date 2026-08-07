@@ -23,6 +23,9 @@ class GeminiProfile(ProviderProfile):
     ) -> dict[str, Any]:
         """Emit extra_body.thinking_config (native) or extra_body.extra_body.google.thinking_config
         (OpenAI-compat /openai subpath), mirroring the legacy path's behavior.
+        Also emits ``gemini_builtin_tools`` when the user configures Gemini's
+        native built-in tools (googleSearch, codeExecution, retrieval) via the
+        ``gemini.builtin_tools`` config section.
         """
         from agent.transports.chat_completions import (
             _build_gemini_thinking_config,

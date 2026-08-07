@@ -63,7 +63,10 @@ async def test_send_image_file_hits_attachment_endpoint(
     calls = _capture_sidecar(adapter)
 
     result = await adapter.send_image_file(
-        "any;-;+15551234567", real_file, caption="look"
+        "any;-;+15551234567",
+        real_file,
+        caption="look",
+        reply_to="incoming-image",
     )
 
     assert result.success is True
@@ -76,6 +79,50 @@ async def test_send_image_file_hits_attachment_endpoint(
     assert body["kind"] == "attachment"
     assert body["caption"] == "look"
     assert body["mimeType"] == "image/jpeg"  # inferred from .jpg
+    assert body["replyTo"] == "incoming-image"
+
+
+@pytest.mark.asyncio
+async def test_media_helpers_forward_reply_targets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _patch_safe_path(monkeypatch)
+    media = tmp_path / "media.bin"
+    media.write_bytes(b"media")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    await adapter.send_voice("space", str(media), reply_to="voice-target")
+    await adapter.send_video("space", str(media), reply_to="video-target")
+    await adapter.send_document("space", str(media), reply_to="document-target")
+
+    assert [body["replyTo"] for _, body in calls] == [
+        "voice-target",
+        "video-target",
+        "document-target",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_image_url_forwards_reply_target(
+    monkeypatch: pytest.MonkeyPatch, real_file: str
+) -> None:
+    _patch_safe_path(monkeypatch)
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    async def _fake_cache(url: str, *args, **kwargs) -> str:
+        return real_file
+
+    import gateway.platforms.base as base_mod
+
+    monkeypatch.setattr(base_mod, "cache_image_from_url", _fake_cache)
+
+    await adapter.send_image(
+        "space", "https://example.com/image.jpg", reply_to="image-url-target"
+    )
+
+    assert calls[0][1]["replyTo"] == "image-url-target"
 
 
 @pytest.mark.asyncio

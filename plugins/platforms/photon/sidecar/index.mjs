@@ -20,13 +20,15 @@
 //   - POST /healthz     -> {"ok": true}
 //   - POST /send        -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "text": "...",
-//              "format": "text" | "markdown" (default "text")}
+//              "format": "text" | "markdown" (default "text"),
+//              "replyTo": "..." | null}
 //   - POST /send-richlink -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "url": "https://..."}
 //   - POST /send-attachment -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "path": "...", "name": "..." | null,
 //              "mimeType": "..." | null, "caption": "..." | null,
-//              "kind": "attachment" | "voice"}
+//              "kind": "attachment" | "voice",
+//              "replyTo": "..." | null}
 //   - POST /react       -> {"ok": true, "reactionId": "..." | null}
 //       body: {"spaceId": "...", "messageId": "<target msg id>",
 //              "emoji": "👀"}
@@ -67,6 +69,7 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
+import { sendWithReply } from "./reply-target.mjs";
 import {
   classifyProbeRejection,
   shouldProbe,
@@ -1012,7 +1015,7 @@ const server = http.createServer(async (req, res) => {
     }
     const body = await readBody(req);
     if (req.url === "/send") {
-      const { spaceId, text, format = "text" } = body || {};
+      const { spaceId, text, format = "text", replyTo } = body || {};
       if (!spaceId || typeof text !== "string") {
         return badRequest(res, "spaceId and text are required");
       }
@@ -1032,7 +1035,7 @@ const server = http.createServer(async (req, res) => {
         chooseSendFormat(format, text) === "markdown"
           ? spectrumMarkdown(text)
           : spectrumText(text);
-      const result = await space.send(builder);
+      const result = await sendWithReply(space, builder, replyTo, knownMessages);
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-richlink") {
@@ -1045,7 +1048,7 @@ const server = http.createServer(async (req, res) => {
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-attachment") {
-      const { spaceId, path, name, mimeType, caption, kind } =
+      const { spaceId, path, name, mimeType, caption, kind, replyTo } =
         body || {};
       if (!spaceId || typeof path !== "string" || !path) {
         return badRequest(res, "spaceId and path are required");
@@ -1063,7 +1066,7 @@ const server = http.createServer(async (req, res) => {
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
-      const result = await space.send(builder);
+      const result = await sendWithReply(space, builder, replyTo, knownMessages);
 
       // iMessage delivers the caption as a separate bubble; send it
       // after the media so the attachment renders first.

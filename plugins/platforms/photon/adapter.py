@@ -1949,7 +1949,9 @@ class PhotonAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+        return await self._sidecar_send(
+            chat_id, self.format_message(content), reply_to=reply_to,
+        )
 
     # -- Clarify (native iMessage poll) ------------------------------------
     #
@@ -2021,7 +2023,7 @@ class PhotonAdapter(BasePlatformAdapter):
             # Couldn't fetch the URL — fall back to sending it as text.
             return await super().send_image(chat_id, image_url, caption, reply_to)
         return await self._sidecar_send_attachment(
-            chat_id, local_path, caption=caption,
+            chat_id, local_path, caption=caption, reply_to=reply_to,
         )
 
     async def send_image_file(
@@ -2034,7 +2036,7 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, image_path, caption=caption,
+            chat_id, image_path, caption=caption, reply_to=reply_to,
         )
 
     async def send_voice(
@@ -2047,7 +2049,7 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, audio_path, caption=caption, kind="voice",
+            chat_id, audio_path, caption=caption, kind="voice", reply_to=reply_to,
         )
 
     async def send_video(
@@ -2060,7 +2062,7 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, video_path, caption=caption,
+            chat_id, video_path, caption=caption, reply_to=reply_to,
         )
 
     async def send_document(
@@ -2074,7 +2076,7 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, file_path, name=file_name, caption=caption,
+            chat_id, file_path, name=file_name, caption=caption, reply_to=reply_to,
         )
 
     async def send_animation(
@@ -2470,8 +2472,12 @@ class PhotonAdapter(BasePlatformAdapter):
         *,
         richlink: bool = True,
         markdown: bool = True,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
-        rich_url = _richlink_candidate(text) if richlink else None
+        # Native replies take precedence over rich-link previews: the rich-link
+        # endpoint has no reply anchor, while /send can reply to the cached
+        # inbound Message object.
+        rich_url = _richlink_candidate(text) if richlink and not reply_to else None
         if rich_url:
             rich_result = await self._sidecar_send_richlink(space_id, rich_url)
             if rich_result.success:
@@ -2488,6 +2494,8 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             text = text[: self.MAX_MESSAGE_LENGTH]
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
+        if reply_to:
+            body["replyTo"] = reply_to
         # Omit the key when disabled so an older sidecar (pre-`format`)
         # keeps accepting the body during a half-upgraded restart.
         if markdown and _markdown_enabled():
@@ -2544,6 +2552,7 @@ class PhotonAdapter(BasePlatformAdapter):
         mime_type: Optional[str] = None,
         caption: Optional[str] = None,
         kind: str = "attachment",
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         """POST a local file to the sidecar's ``/send-attachment`` endpoint.
 
@@ -2577,6 +2586,8 @@ class PhotonAdapter(BasePlatformAdapter):
             body["mimeType"] = mime_type
         if caption:
             body["caption"] = caption
+        if reply_to:
+            body["replyTo"] = reply_to
         try:
             data = await self._sidecar_call("/send-attachment", body)
         except PhotonSidecarError as e:

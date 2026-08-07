@@ -76,6 +76,21 @@ async def test_url_only_send_routes_to_richlink_endpoint(
 
 
 @pytest.mark.asyncio
+async def test_url_only_reply_preserves_native_reply_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.send("+155****4567", _URL, reply_to="incoming-url-message")
+
+    assert result.success is True
+    path, body = calls[0]
+    assert path == "/send"
+    assert body["replyTo"] == "incoming-url-message"
+
+
+@pytest.mark.asyncio
 async def test_mixed_prose_url_stays_on_markdown_send(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

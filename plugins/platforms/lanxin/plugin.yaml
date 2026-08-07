@@ -1,0 +1,46 @@
+name: lanxin-platform
+label: Lanxin (蓝信)
+kind: platform
+version: 1.0.0
+description: >
+  Lanxin (蓝信) gateway adapter for Hermes Agent.
+  Receives messages via encrypted HTTP callback (AES-256-CBC + HMAC-SHA256)
+  and replies through the Lanxin Open Platform REST API.
+  Supports text messages, user allowlists, and group @mention gating.
+author: by2017
+requires_env:
+  - name: LANXIN_APP_ID
+    description: "Lanxin application ID"
+    prompt: "Lanxin App ID"
+    url: "https://www.lanxin.cn"
+    password: false
+  - name: LANXIN_APP_SECRET
+    description: "Lanxin application secret"
+    prompt: "Lanxin App Secret"
+    url: "https://www.lanxin.cn"
+    password: true
+  - name: LANXIN_API_GW
+    description: "Lanxin API gateway URL"
+    prompt: "Lanxin API Gateway URL"
+    password: false
+optional_env:
+  - name: LANXIN_AES_KEY
+    description: "Base64-encoded AES-256 key for callback decryption"
+    prompt: "AES key (base64)"
+    password: true
+  - name: LANXIN_SIGN_TOKEN
+    description: "HMAC-SHA256 signing token for callback verification"
+    prompt: "Sign token"
+    password: true
+  - name: LANXIN_BOT_PORT
+    description: "Local port for the callback HTTP server"
+    prompt: "Callback port (default 8805)"
+    password: false
+  - name: LANXIN_ALLOWED_USERS
+    description: "Comma-separated user IDs allowed to talk to the bot (* = any)"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: LANXIN_ALLOW_ALL_USERS
+    description: "Set to 'true' to allow all users"
+    prompt: "Allow all users (true/false)"
+    password: false

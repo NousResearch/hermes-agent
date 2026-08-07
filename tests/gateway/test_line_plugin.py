@@ -243,6 +243,16 @@ class TestSendRouting:
         assert not _is_system_bypass("Hello world")
         assert not _is_system_bypass("")
 
+    def test_system_bypass_recognized_with_system_prefix(self):
+        """gateway/run.py wraps all busy-ack messages with a '[System] '
+        prefix; the bypass check must strip it before matching the known
+        emoji prefixes, or every busy-ack silently stops bypassing the
+        postback cache on LINE."""
+        assert _is_system_bypass("[System] ⚡ Interrupting current run")
+        assert _is_system_bypass("[System] ⏳ Queued — agent is busy")
+        assert _is_system_bypass("[System] ⏩ Steered toward new task")
+        assert not _is_system_bypass("[System] Hello world")
+
 
     def test_send_caps_messages_per_call_at_five(self, adapter):
         # Build a payload that would naturally split into more than 5 LINE

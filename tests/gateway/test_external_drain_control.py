@@ -210,4 +210,43 @@ class TestNewTurnGate:
         result = await runner._handle_message(event)
         assert result is not None
         assert "draining" in result.lower()
+        assert result.startswith("[System] "), (
+            "The external-drain new-turn gate's acknowledgement must carry "
+            "the [System] prefix like every other busy-ack message "
+            f"(review of #68501/#74641): {result!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_priority_active_session_drain_ack_prefixed(self):
+        """Regression (review of #74641): a SEPARATE priority fast-path
+        inside _handle_message() -- reached when a message arrives for a
+        session that ALREADY has a running (non-pending) agent while the
+        gateway is draining -- returns its own bare drain acknowledgement,
+        distinct from both the external-drain gate tested above and
+        _handle_active_session_busy_message()'s prefix logic. Drives the
+        real handler end to end via the session-key routing this specific
+        branch depends on."""
+        from gateway.session import build_session_key
+
+        runner, _ = _drain_runner()
+        runner._draining = True
+        runner._queue_during_drain_enabled = lambda: False
+        runner._status_action_gerund = lambda: "restarting"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=make_restart_source(),
+            message_id="m2",
+        )
+        sk = build_session_key(event.source)
+        runner._running_agents[sk] = MagicMock()  # active, non-pending agent
+
+        result = await runner._handle_message(event)
+
+        assert result is not None
+        assert "draining" in result.lower() or "restarting" in result.lower()
+        assert result.startswith("[System] "), (
+            "The priority active-session drain acknowledgement must also "
+            f"carry the [System] prefix: {result!r}"
+        )
 

@@ -664,6 +664,8 @@ _SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = (
 def _is_system_bypass(content: str) -> bool:
     if not content:
         return False
+    if content.startswith("[System] "):
+        content = content[len("[System] "):]
     return any(content.startswith(p) for p in _SYSTEM_BYPASS_PREFIXES)
 
 

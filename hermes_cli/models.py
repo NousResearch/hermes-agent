@@ -3287,14 +3287,8 @@ def cached_provider_model_ids(
     entry = cache.get(normalized)
     now = time.time()
 
-    if (
-        not force_refresh
-        and isinstance(entry, dict)
-        and entry.get("fp") == fp
-        and isinstance(entry.get("models"), list)
-        and entry["models"]
-    ):
-        age = now - float(entry.get("at", 0))
+    if not force_refresh and _cache_entry_valid(entry, fp):
+        age = now - entry["at"]
         if age < ttl_seconds:
             return list(entry["models"])
         if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
@@ -3318,12 +3312,7 @@ def cached_provider_model_ids(
     # Live fetch returned nothing. If we have a stale entry with the
     # SAME fingerprint, prefer it over an empty result — stale data
     # beats no data when the network is flaky.
-    if (
-        isinstance(entry, dict)
-        and entry.get("fp") == fp
-        and isinstance(entry.get("models"), list)
-        and entry["models"]
-    ):
+    if _cache_entry_valid(entry, fp):
         return list(entry["models"])
     return list(live or [])
 

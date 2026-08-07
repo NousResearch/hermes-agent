@@ -433,8 +433,6 @@ class TestSalvageFollowups:
         reference pins the evicted agents during gc.collect + malloc_trim
         (otherwise the in-pass trim frees nothing and the next tick
         over-evicts another batch)."""
-        from collections import OrderedDict as _OD
-
         from gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
@@ -455,7 +453,7 @@ class TestSalvageFollowups:
 
         runner._release_pressure_batch(plan)
 
-        assert sorted(released) == ["s0", "s1", "s2"]
+        assert released == ["s0", "s1", "s2"], "LRU-first (FIFO) release order"
         assert plan_len_at_trim["len"] == 0, (
             "plan still held agent references when trim_memory ran"
         )

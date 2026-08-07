@@ -542,9 +542,10 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
     assert saved_cfg["model"]["api_mode"] == "codex_responses"
     assert captured_provider["api_mode"] == "codex_responses"
 
-    # The key itself goes to .env; config.yaml only references it (#69449).
+    # The key itself goes to .env; config.yaml only names the env var (#57547).
     key_env = captured_provider["key_env"]
-    assert saved_cfg["model"]["api_key"] == f"${{{key_env}}}"
+    assert saved_cfg["model"]["key_env"] == key_env
+    assert "api_key" not in saved_cfg["model"]
     assert saved_env[key_env] == "test-key"
 
 
@@ -678,5 +679,4 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
 
     for identity in ("127.0.0.1_8080", "0.0.0.0", "10.0.0.7:11434", "", "-–-"):
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
-
 

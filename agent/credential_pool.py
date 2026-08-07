@@ -3068,14 +3068,24 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
         def _is_suppressed(_p, _s):  # type: ignore[misc]
             return False
 
-    # Seed from the custom_providers config entry's api_key field
+    # Seed from the custom_providers config entry's api_key/key_env field.
+    # ``key_env`` is the security-preserving representation written by the
+    # model setup flows; resolve it from ~/.hermes/.env (or the active
+    # environment) without ever persisting the secret value to auth.json.
     cp_config = _get_custom_provider_config(pool_key)
     if cp_config:
-        api_key = str(cp_config.get("api_key") or "").strip()
+        key_env = str(
+            cp_config.get("key_env") or cp_config.get("api_key_env") or ""
+        ).strip()
+        configured_api_key = str(cp_config.get("api_key") or "").strip()
+        env_api_key = get_env_prefer_dotenv(key_env) if key_env else ""
+        api_key = env_api_key
+        if not api_key:
+            api_key = configured_api_key
         base_url = str(cp_config.get("base_url") or "").strip().rstrip("/")
         name = str(cp_config.get("name") or "").strip()
         if api_key:
-            source = f"config:{name}"
+            source = f"env:{key_env}" if env_api_key else f"config:{name}"
             if not _is_suppressed(pool_key, source):
                 active_sources.add(source)
                 changed |= _upsert_entry(
@@ -3087,28 +3097,37 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                         "auth_type": AUTH_TYPE_API_KEY,
                         "access_token": api_key,
                         "base_url": base_url,
-                        "label": name or source,
+                        "label": (
+                            key_env if source.startswith("env:") else name or source
+                        ),
                     },
                 )
 
-    # Seed from model.api_key if model.provider=='custom' and model.base_url matches
+    # Seed from model.api_key/key_env if model.provider=='custom' and the
+    # model.base_url matches.
     try:
         config = _load_config_safe()
         model_cfg = config.get("model") if config else None
         if isinstance(model_cfg, dict):
             model_provider = str(model_cfg.get("provider") or "").strip().lower()
             model_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-            model_api_key = ""
+            model_key_env = str(
+                model_cfg.get("key_env") or model_cfg.get("api_key_env") or ""
+            ).strip()
+            env_model_api_key = (
+                get_env_prefer_dotenv(model_key_env) if model_key_env else ""
+            )
+            model_api_key = env_model_api_key
             for k in ("api_key", "api"):
                 v = model_cfg.get(k)
-                if isinstance(v, str) and v.strip():
+                if not model_api_key and isinstance(v, str) and v.strip():
                     model_api_key = v.strip()
                     break
             if model_provider == "custom" and model_base_url and model_api_key:
                 # Check if this model's base_url matches our custom provider
                 matched_key = get_custom_provider_pool_key(model_base_url)
                 if matched_key == pool_key:
-                    source = "model_config"
+                    source = f"env:{model_key_env}" if env_model_api_key else "model_config"
                     if not _is_suppressed(pool_key, source):
                         active_sources.add(source)
                         changed |= _upsert_entry(
@@ -3120,7 +3139,11 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                                 "auth_type": AUTH_TYPE_API_KEY,
                                 "access_token": model_api_key,
                                 "base_url": model_base_url,
-                                "label": "model_config",
+                                "label": (
+                                    model_key_env
+                                    if source.startswith("env:")
+                                    else "model_config"
+                                ),
                             },
                         )
     except Exception:
@@ -3164,7 +3187,11 @@ def load_pool(provider: str) -> CredentialPool:
         # Custom endpoint pool — seed from custom_providers config and model config
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)
         changed = raw_needs_sanitization or raw_needs_auth_normalization or custom_changed
-        changed |= _prune_stale_seeded_entries(entries, custom_sources)
+        # A missing key_env in one process must not delete the persisted
+        # metadata for another process that still has the environment value.
+        changed |= _prune_stale_seeded_entries(
+            entries, custom_sources, prune_env_sources=False
+        )
     else:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
         env_changed, env_sources = _seed_from_env(provider, entries)

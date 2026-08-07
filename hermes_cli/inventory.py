@@ -522,14 +522,38 @@ def _append_unconfigured_rows(
     the saved model so GUI pickers don't silently snap to some other provider.
     """
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
+    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_ALIASES, _PROVIDER_LABELS
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
     cur_model = str(ctx.current_model or "").strip()
+    # Honor ``model_catalog.excluded_providers`` here too. Without this the
+    # unconfigured skeleton loop re-adds every canonical provider the operator
+    # excluded, so ``include_unconfigured`` pickers (the in-session TUI
+    # ``/model`` command) showed excluded providers even though ``hermes model``
+    # hid them. Exclude unconditionally to match ``list_authenticated_providers``,
+    # which drops an excluded provider even when it is the current one (#68816).
+    #
+    # A canonical provider is hidden if its slug OR any of its aliases is
+    # excluded (case-insensitive), mirroring ``hermes model``
+    # (``main.py`` alias-aware exclusion) and ``list_authenticated_providers``.
+    # Matching the raw exclusion strings against ``entry.slug`` alone would let
+    # an alias exclusion (e.g. ``google`` → ``gemini``) leak the canonical
+    # skeleton row back into the picker.
+    _excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+    _names_for: dict[str, set[str]] = {entry.slug: {entry.slug.lower()} for entry in CANONICAL_PROVIDERS}
+    for _alias, _canon in _PROVIDER_ALIASES.items():
+        _names_for.setdefault(_canon, {_canon.lower()}).add(_alias.lower())
+    _excluded_slugs = {
+        entry.slug.lower()
+        for entry in CANONICAL_PROVIDERS
+        if _names_for.get(entry.slug, {entry.slug.lower()}) & _excluded
+    }
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
         if entry.slug.lower() in seen:
+            continue
+        if entry.slug.lower() in _excluded_slugs:
             continue
         if current_only and entry.slug.lower() != cur:
             continue

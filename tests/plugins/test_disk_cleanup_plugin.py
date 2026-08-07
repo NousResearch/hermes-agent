@@ -326,6 +326,36 @@ class TestPostToolCallHook:
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
 
+    def test_unreadable_path_never_raises(self, _isolate_env, monkeypatch):
+        """A terminal command referencing an unreadable path (e.g. under
+        /root or another user's home) must not let PermissionError escape the
+        hook.
+
+        Regression: Path.exists() raises ``PermissionError: [Errno 13]
+        Permission denied: '/root/.npm/_logs'`` when the path sits under a
+        directory the agent can't traverse. The exception used to propagate
+        out of ``_attempt_track`` and the dispatcher logged a WARNING for it
+        on every occurrence (observed in production).
+        """
+        pi = _load_plugin_init()
+        real_exists = Path.exists
+
+        def flaky_exists(self):
+            if str(self) == "/root/.npm/_logs":
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", flaky_exists)
+        # Must not raise — and must not track anything.
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={"command": "ls -la /root/.npm/_logs"},
+            result="total 0",
+            task_id="t5", session_id="s5",
+        )
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
+
 
 class TestOnSessionEndHook:
     def test_runs_quick_when_test_files_tracked(self, _isolate_env):

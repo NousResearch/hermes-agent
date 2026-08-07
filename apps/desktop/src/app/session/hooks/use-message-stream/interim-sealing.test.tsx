@@ -233,6 +233,52 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts).toHaveLength(2)
   })
 
+  it('keeps reasoning, interim text, tool activity, and final text in stable turn order', async () => {
+    await mountStream()
+    await start()
+
+    // This is the smallest deterministic replay of the structure in the
+    // reported long-running turn. The two stream channels land in one batch,
+    // then an interim boundary seals the pre-tool commentary.
+    await act(() =>
+      handleEvent!({ payload: { text: 'checking the request' }, session_id: SID, type: 'reasoning.delta' })
+    )
+    await delta('I will retry the image request.')
+    await interim('I will retry the image request.')
+
+    const sealed = getState().messages.at(-1)
+    expect(sealed?.parts.map(part => part.type)).toEqual(['reasoning', 'text'])
+    expect(sealed?.interim).toBe(true)
+
+    await act(() =>
+      handleEvent!({
+        payload: { args: { command: 'generate-image' }, name: 'terminal', tool_id: 'tool-1' },
+        session_id: SID,
+        type: 'tool.start'
+      })
+    )
+
+    const liveToolMessageId = getState().messages.at(-1)?.id
+
+    await act(() =>
+      handleEvent!({
+        payload: { name: 'terminal', result: { exit_code: 0 }, tool_id: 'tool-1' },
+        session_id: SID,
+        type: 'tool.complete'
+      })
+    )
+    await delta('The image is ready.')
+    await complete('The image is ready.')
+
+    const assistants = getState().messages.filter(message => message.role === 'assistant' && !message.hidden)
+
+    expect(assistants).toHaveLength(2)
+    expect(assistants.map(message => message.id)).toEqual([sealed?.id, liveToolMessageId])
+    expect(assistants[0]?.parts.map(part => part.type)).toEqual(['reasoning', 'text'])
+    expect(assistants[1]?.parts.map(part => part.type)).toEqual(['tool-call', 'text'])
+    expect(assistantMessages()).toEqual(['I will retry the image request.', 'The image is ready.'])
+  })
+
   it('settles an identical final completion onto the interim when response_previewed', async () => {
     await mountStream()
     await start()

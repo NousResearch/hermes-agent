@@ -51,9 +51,11 @@ interface MessageStreamOptions {
   ) => ClientSessionState
 }
 
-interface QueuedStreamDeltas {
-  assistant: string
-  reasoning: string
+type StreamDeltaChannel = 'assistant' | 'reasoning'
+
+interface QueuedStreamDeltaRun {
+  channel: StreamDeltaChannel
+  text: string
 }
 
 // Date.now() alone can collide when an interim seal and the next segment's
@@ -182,7 +184,7 @@ export function useMessageStream({
     []
   )
 
-  const queuedDeltasRef = useRef<Map<string, QueuedStreamDeltas>>(new Map())
+  const queuedDeltasRef = useRef<Map<string, QueuedStreamDeltaRun[]>>(new Map())
   const flushHandleRef = useRef<number | null>(null)
   const lastFlushAtRef = useRef<number>(0)
   // What the previous flush cost on the main thread — drives the adaptive
@@ -212,21 +214,31 @@ export function useMessageStream({
 
         queue.delete(id)
 
-        if (queued.assistant) {
-          mutateStream(
-            id,
-            parts => dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(parts, queued.assistant)),
-            () => [assistantTextPart(queued.assistant)]
-          )
+        // Preserve the gateway's cross-channel run order. The previous pair of
+        // `{ assistant, reasoning }` strings always applied assistant first,
+        // so reasoning→text rendered text→reasoning whenever both landed in
+        // the same timer batch. Recording only each channel's first occurrence
+        // is also insufficient for A→R→A, so the queue coalesces ADJACENT runs
+        // and folds the whole ordered sequence into one state/cache publish.
+        //
+        // appendStreamPart still deliberately makes the opposite channel
+        // transparent within a tool-bounded segment (GLM/Kimi-style token
+        // interleave): preserving the run sequence here means batching cannot
+        // change that data-layer decision or its first-channel order.
+        const applyRuns = (parts: ChatMessagePart[]) => {
+          let next = parts
+
+          for (const run of queued) {
+            next =
+              run.channel === 'assistant'
+                ? dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(next, run.text))
+                : appendReasoningPart(next, run.text)
+          }
+
+          return next
         }
 
-        if (queued.reasoning) {
-          mutateStream(
-            id,
-            parts => appendReasoningPart(parts, queued.reasoning),
-            () => [reasoningPart(queued.reasoning)]
-          )
-        }
+        mutateStream(id, applyRuns, () => applyRuns([]))
       }
     },
     [mutateStream]
@@ -329,13 +341,20 @@ export function useMessageStream({
   }, [flushQueuedDeltas])
 
   const queueDelta = useCallback(
-    (sessionId: string, key: keyof QueuedStreamDeltas, delta: string) => {
+    (sessionId: string, key: StreamDeltaChannel, delta: string) => {
       if (!delta) {
         return
       }
 
-      const queued = queuedDeltasRef.current.get(sessionId) ?? { assistant: '', reasoning: '' }
-      queued[key] += delta
+      const queued = queuedDeltasRef.current.get(sessionId) ?? []
+      const tail = queued.at(-1)
+
+      if (tail?.channel === key) {
+        tail.text += delta
+      } else {
+        queued.push({ channel: key, text: delta })
+      }
+
       queuedDeltasRef.current.set(sessionId, queued)
       scheduleDeltaFlush()
     },

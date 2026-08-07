@@ -93,4 +93,78 @@ describe('stream delta delivery', () => {
     // for a frame that may never come.
     expect(rafSpy).toHaveBeenCalled()
   })
+
+  it('preserves reasoning-before-text order when both channels share one flush batch', async () => {
+    vi.useFakeTimers()
+
+    render(<Harness />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    act(() => {
+      handleEvent?.({ payload: { text: 'first thought' }, session_id: SID, type: 'reasoning.delta' })
+      handleEvent?.({ payload: { text: 'then the answer' }, session_id: SID, type: 'message.delta' })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STREAM_DELTA_FLUSH_MS)
+    })
+
+    expect(states.get(SID)?.messages.at(-1)?.parts).toEqual([
+      { type: 'reasoning', text: 'first thought' },
+      { type: 'text', text: 'then the answer' }
+    ])
+  })
+
+  it('preserves text-before-reasoning order when that is the gateway order', async () => {
+    vi.useFakeTimers()
+
+    render(<Harness />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    act(() => {
+      handleEvent?.({ payload: { text: 'narration first' }, session_id: SID, type: 'message.delta' })
+      handleEvent?.({ payload: { text: 'reasoning second' }, session_id: SID, type: 'reasoning.delta' })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STREAM_DELTA_FLUSH_MS)
+    })
+
+    expect(states.get(SID)?.messages.at(-1)?.parts).toEqual([
+      { type: 'text', text: 'narration first' },
+      { type: 'reasoning', text: 'reasoning second' }
+    ])
+  })
+
+  it('preserves an assistant-reasoning-assistant run sequence without timing-dependent fragmentation', async () => {
+    vi.useFakeTimers()
+
+    render(<Harness />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    act(() => {
+      handleEvent?.({ payload: { text: 'Let me ' }, session_id: SID, type: 'message.delta' })
+      handleEvent?.({ payload: { text: 'checking internally' }, session_id: SID, type: 'reasoning.delta' })
+      handleEvent?.({ payload: { text: 'retry that.' }, session_id: SID, type: 'message.delta' })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STREAM_DELTA_FLUSH_MS)
+    })
+
+    // The queue retains all three adjacent-channel runs. The message model's
+    // separate, deliberate GLM/Kimi interleave rule then coalesces the two
+    // narration fragments inside this tool-bounded segment, without letting
+    // timer batching choose a different first block.
+    expect(states.get(SID)?.messages.at(-1)?.parts).toEqual([
+      { type: 'text', text: 'Let me retry that.' },
+      { type: 'reasoning', text: 'checking internally' }
+    ])
+  })
 })

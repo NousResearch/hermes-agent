@@ -15729,14 +15729,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # and interrupt alike.
             self._restore_moa_one_shot(event, _quick_key)
             self._restore_pending_one_turn_model_override(_quick_key)
-            # Unconditional release covers every exit path. _release_running_agent_state
-            # is idempotent (pop-on-absent is harmless) and, called without a
-            # run_generation guard, always clears the slot regardless of which
-            # generation it holds. This evicts the zombie left when session_reset
-            # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
-            # inside _run_agent returns False, and the old sentinel-only check here
-            # missed the leftover real agent — locking the session out forever (#28686).
-            self._release_running_agent_state(_quick_key)
+            # Normal exits clear unconditionally to evict zombies left by a mid-run
+            # reset (#28686). A turn rejected as stale before transcript load is
+            # different: a newer generation may already own this routing-key slot,
+            # so the stale unwind must use the generation guard and preserve it.
+            if getattr(event, "_stale_turn_before_history", False):
+                self._release_running_agent_state(
+                    _quick_key,
+                    run_generation=_run_generation,
+                )
+            else:
+                self._release_running_agent_state(_quick_key)
             # Turn lease (#64934): release THIS turn's lease token — keyed by
             # (routing key, run generation) so this unwind can only ever free
             # the lease its own turn acquired, never a newer turn's.
@@ -16579,18 +16582,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # _handle_message's finally via _release_turn_lease — granted per
         # (routing key, run generation) so a stale unwind can't release a
         # newer turn's lease.
-        _lease_registry = getattr(self, "_turn_leases", None)
-        if _lease_registry is not None:
-            _lease_token = await _lease_registry.acquire(
-                session_entry.session_id,
-                owner_key=_quick_key,
-                generation=run_generation,
-                timeout=_float_env("HERMES_AGENT_TIMEOUT", 1800),
-            )
-            if _lease_token is not None:
-                _lease_state = self._session_state(_quick_key).turn
-                _lease_state.lease_token = _lease_token
-                _lease_state.lease_generation = run_generation
+        if not await self._acquire_turn_lease_for_run(
+            _quick_key,
+            session_entry.session_id,
+            run_generation,
+            timeout=_float_env("HERMES_AGENT_TIMEOUT", 1800),
+        ):
+            # /stop and /new invalidate the generation before releasing the
+            # active slot. A turn already waiting on the old holder can wake
+            # afterward; stop it before transcript load or compression. Mark
+            # this event so the outer finally preserves any newer owner.
+            setattr(event, "_stale_turn_before_history", True)
+            return {"final_response": "", "api_calls": 0, "interrupted": True}
 
         # Load conversation history from transcript
         history = await self.async_session_store.load_transcript(session_entry.session_id)
@@ -22854,6 +22857,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # between lifecycle transitions.  Preserves gateway_state (see
         # _persist_active_agents).
         self._persist_active_agents()
+        return True
+
+    async def _acquire_turn_lease_for_run(
+        self,
+        session_key: str,
+        session_id: str,
+        run_generation: int,
+        *,
+        timeout: float,
+    ) -> bool:
+        """Acquire the resolved-session lease and reject stale waiters.
+
+        A waiter may claim its routing-key slot before /stop invalidates the
+        generation, then resume only after the interrupted turn releases the
+        lease. Re-checking after the await closes that stale-waiter race. The
+        token is registered first so the dispatch finally releases it normally.
+        """
+        registry = getattr(self, "_turn_leases", None)
+        if registry is not None:
+            token = await registry.acquire(
+                session_id,
+                owner_key=session_key,
+                generation=run_generation,
+                timeout=timeout,
+            )
+            if token is not None:
+                turn = self._session_state(session_key).turn
+                turn.lease_token = token
+                turn.lease_generation = run_generation
+
+        if not self._is_session_run_current(session_key, run_generation):
+            logger.info(
+                "Dropping stale turn before transcript load for %s — "
+                "generation %s is no longer current",
+                session_key or "?",
+                run_generation,
+            )
+            return False
         return True
 
     def _release_turn_lease(self, session_key: str, run_generation: int) -> bool:

@@ -22,7 +22,9 @@ import {
   parseLoopbackCallback,
   parseStoredTokenSet,
   parseTokenResponse,
+  resolveLoginProvider,
   resolveLoginStrategy,
+  resolveNativeLoginRoute,
   statusSupportsNativeFlow,
   tokenNeedsRefresh
 } from './native-oauth'
@@ -222,4 +224,132 @@ test('tokenNeedsRefresh respects the skew window', () => {
   assert.equal(tokenNeedsRefresh({ expiresAt: now - 10 }, now), true)
   // Unknown expiry ⇒ refresh (validate before use).
   assert.equal(tokenNeedsRefresh({ expiresAt: 0 }, now), true)
+})
+
+// --- provider resolution (mixed-provider first-run auth) ---
+//
+// resolveLoginProvider decides whether the native authorize URL names a
+// provider explicitly, omits the param (gateway single-provider shortcut),
+// or signals "do not attempt native flow at all". Each case below was a real
+// failure mode on a mixed basic+nous gateway before the resolver existed.
+
+test('resolveLoginProvider: password-only providers → none (route to embedded chooser)', () => {
+  // basic-only gateway: native PKCE cannot broker a password login (the
+  // gateway's /auth/native/authorize rejects password providers with 400).
+  // The embedded /login chooser is the only path that handles a password form.
+  assert.deepEqual(resolveLoginProvider([{ name: 'basic', supportsPassword: true }]), { kind: 'none' })
+  // Multiple password providers → still none; native flow is never valid.
+  assert.deepEqual(
+    resolveLoginProvider([
+      { name: 'basic', supportsPassword: true },
+      { name: 'ldap', supportsPassword: true }
+    ]),
+    { kind: 'none' }
+  )
+})
+
+test('resolveLoginProvider: single redirect provider → named explicitly', () => {
+  // nous-only hosted gateway: name it so the gateway doesn't need its
+  // single-provider shortcut, and so we exercise the explicit path.
+  assert.deepEqual(resolveLoginProvider([{ name: 'nous', supportsPassword: false }]), {
+    kind: 'named',
+    provider: 'nous'
+  })
+  // displayName is irrelevant to the resolution (only name is sent).
+  assert.deepEqual(resolveLoginProvider([{ name: 'github', displayName: 'GitHub', supportsPassword: false }]), {
+    kind: 'named',
+    provider: 'github'
+  })
+})
+
+test('resolveLoginProvider: mixed basic+nous → named nous (basic cannot do native PKCE)', () => {
+  // The incident scenario: a self-hosted gateway registers both a local
+  // basic (password) provider and the Nous redirect provider. The user's
+  // stated preference is local/basic, but native PKCE can ONLY broker the
+  // redirect provider — so naming nous is correct for the native flow, and
+  // the embedded chooser remains available for the password path.
+  //
+  // This replaces the old incident patch that hard-coded "select nous" with
+  // a derivation from advertised capabilities: if the redirect provider were
+  // ever renamed or swapped, this still picks the right one.
+  assert.deepEqual(
+    resolveLoginProvider([
+      { name: 'basic', supportsPassword: true },
+      { name: 'nous', supportsPassword: false }
+    ]),
+    { kind: 'named', provider: 'nous' }
+  )
+  // Order-independent: nous listed first still resolves to nous.
+  assert.deepEqual(
+    resolveLoginProvider([
+      { name: 'nous', supportsPassword: false },
+      { name: 'basic', supportsPassword: true }
+    ]),
+    { kind: 'named', provider: 'nous' }
+  )
+})
+
+test('resolveLoginProvider: two or more redirect providers → none (ambiguous, use chooser)', () => {
+  // When more than one redirect-capable provider is advertised, no metadata
+  // can pick one. Route to the embedded chooser so a human decides, rather
+  // than the gateway 404-ing an empty provider param or us favouring a vendor.
+  assert.deepEqual(
+    resolveLoginProvider([
+      { name: 'nous', supportsPassword: false },
+      { name: 'github', supportsPassword: false }
+    ]),
+    { kind: 'none' }
+  )
+  // A password provider alongside two redirect providers doesn't change the
+  // ambiguity — there are still two candidates for the native flow.
+  assert.deepEqual(
+    resolveLoginProvider([
+      { name: 'basic', supportsPassword: true },
+      { name: 'nous', supportsPassword: false },
+      { name: 'google', supportsPassword: false }
+    ]),
+    { kind: 'none' }
+  )
+})
+
+test('resolveLoginProvider: empty/unknown list → auto (gateway single-provider shortcut)', () => {
+  // Backends that predate /api/auth/providers, or a probe that failed to
+  // parse the body, arrive as [] or null. The gateway's single-provider
+  // shortcut still applies on the authorize endpoint, so let it resolve.
+  // The 404 "Unknown provider: ''" only fires when MORE than one session
+  // provider is registered — a case this function handles when the list IS
+  // available.
+  assert.deepEqual(resolveLoginProvider([]), { kind: 'auto' })
+  assert.deepEqual(resolveLoginProvider(null), { kind: 'auto' })
+  assert.deepEqual(resolveLoginProvider(undefined), { kind: 'auto' })
+  // Malformed entries that lack a name are dropped, leaving an empty list.
+  // The function defends against this even though gatewayAuthProviders()
+  // pre-filters; the cast reflects that we're deliberately feeding it
+  // shape-violating input to exercise the defensive filter.
+  assert.deepEqual(resolveLoginProvider([{ supportsPassword: false }, { name: '', supportsPassword: false }] as any), {
+    kind: 'auto'
+  })
+})
+
+test('resolveNativeLoginRoute: mixed basic+nous invokes native flow with provider query', () => {
+  const route = resolveNativeLoginRoute([
+    { name: 'basic', supportsPassword: true },
+    { name: 'nous', supportsPassword: false }
+  ])
+
+  assert.deepEqual(route, { kind: 'native', provider: 'nous' })
+  assert.equal(route.kind, 'native')
+
+  const authorizeUrl = buildNativeAuthorizeUrl('https://gw.example.com', {
+    challenge: 'CHAL',
+    redirectUri: 'http://127.0.0.1:51000/callback',
+    state: 'STATE',
+    provider: route.kind === 'native' ? route.provider : undefined
+  })
+
+  assert.equal(new URL(authorizeUrl).searchParams.get('provider'), 'nous')
+})
+
+test('resolveNativeLoginRoute: password-only inventory uses embedded chooser', () => {
+  assert.deepEqual(resolveNativeLoginRoute([{ name: 'basic', supportsPassword: true }]), { kind: 'embedded' })
 })

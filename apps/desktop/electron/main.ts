@@ -148,6 +148,7 @@ import {
   type NativeTokenSet,
   parseTokenResponse,
   resolveLoginStrategy,
+  resolveNativeLoginRoute,
   tokenNeedsRefresh
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
@@ -9864,27 +9865,55 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   const strategy = resolveLoginStrategy(statusBody)
 
   if (strategy === 'native') {
-    try {
-      const tokens = await runNativeLogin(baseUrl, {
-        openExternal: url => shell.openExternal(url),
-        postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
-        rememberLog
-      })
+    // Resolve which provider the native authorize URL should name BEFORE we
+    // open the system browser. The gateway's /auth/native/authorize rejects
+    // password providers (400) and 404s an empty provider when more than one
+    // session provider is registered. Without this resolution step, a mixed
+    // basic+nous gateway opens the browser only to land on a 404 and then
+    // fall through to the embedded webview — the "unintended portal launch"
+    // symptom on first-run.
+    //
+    // providers may be [] when /api/auth/providers is unreadable or the
+    // gateway predates it; resolveNativeLoginRoute keeps the native route with
+    // no named provider so the gateway's single-provider shortcut still
+    // applies.
+    const providers = await gatewayAuthProviders(baseUrl)
+    const loginRoute = resolveNativeLoginRoute(providers)
 
-      _storeNativeTokens(baseUrl, tokens)
-      // Confirmed sign-in — release the reauth latch so the next
-      // startHermes() re-dials instead of replaying the stale rejection.
-      remoteReauthFailure = null
+    if (loginRoute.kind === 'native') {
+      const nativeProvider = loginRoute.provider
 
-      return { ok: true, baseUrl, connected: true }
-    } catch (error) {
+      try {
+        const tokens = await runNativeLogin(
+          baseUrl,
+          {
+            openExternal: url => shell.openExternal(url),
+            postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
+            rememberLog
+          },
+          nativeProvider ? { provider: nativeProvider } : {}
+        )
+
+        _storeNativeTokens(baseUrl, tokens)
+        // Confirmed sign-in — release the reauth latch so the next
+        // startHermes() re-dials instead of replaying the stale rejection.
+        remoteReauthFailure = null
+
+        return { ok: true, baseUrl, connected: true }
+      } catch (error) {
+        rememberLog(
+          `[native-oauth] native login failed (${
+            error instanceof Error ? error.message : String(error)
+          }); falling back to embedded flow`
+        )
+        // Fall through to the embedded flow so a native-flow hiccup (blocked
+        // loopback, user closed the browser) still lets the user sign in.
+      }
+    } else {
       rememberLog(
-        `[native-oauth] native login failed (${
-          error instanceof Error ? error.message : String(error)
-        }); falling back to embedded flow`
+        '[native-oauth] skipping native flow: no redirect-capable provider ' +
+          'advertised (password-only or ambiguous multi-provider); using embedded chooser'
       )
-      // Fall through to the embedded flow so a native-flow hiccup (blocked
-      // loopback, user closed the browser) still lets the user sign in.
     }
   }
 

@@ -95,6 +95,115 @@ export function resolveLoginStrategy(statusBody: any, opts: { forceEmbedded?: bo
 }
 
 /**
+ * The advertised-provider shape ``/api/auth/providers`` returns (mirrored by
+ * ``gatewayAuthProviders`` in main.ts).
+ */
+export interface AdvertisedSessionProvider {
+  name: string
+  displayName?: string
+  supportsPassword?: boolean
+}
+
+/**
+ * Resolve which provider the native authorize URL should name, or null to let
+ * the gateway's "exactly one session provider" auto-selection rule apply.
+ *
+ * The gateway's ``/auth/native/authorize`` (a) rejects a password provider with
+ * 400 (``Provider does not support native OAuth login`` — password providers
+ * have no IDP round trip to broker), and (b) 404s an empty ``provider`` when
+ * more than one session provider is registered (``Unknown provider: ''``).
+ * Sending the desktop's native PKCE request with no provider selection against
+ * a mixed basic+nous gateway therefore opens the system browser only to land
+ * on a 404, then falls through to the embedded webview — which is the
+ * "unintended portal launch" symptom on first-run.
+ *
+ * Selection rule (one resolver, every caller gets the same answer):
+ *   1. Drop password providers — native PKCE can only broker a redirect/OAuth
+ *      IDP, so a password provider is never a valid native target.
+ *   2. If exactly one redirect-capable provider remains → name it explicitly.
+ *      This avoids the 404 on the multi-session-provider path AND the silent
+ *      "auto-select the only non-password one" the old incident patch reached
+ *      for, because the choice is now derived from advertised capabilities,
+ *      not hard-coded to a vendor name.
+ *   3. If zero remain → there is no native-usable provider. The caller must
+ *      route to the embedded ``/login`` (which CAN broker a password login),
+ *      never open the system browser.
+ *   4. If two or more remain → genuinely ambiguous; no single provider can be
+ *      derived from metadata alone. The caller routes to the embedded chooser
+ *      so a human picks, rather than the gateway 404-ing or us guessing.
+ *
+ * Returns ``{ kind: 'named', provider } | { kind: 'auto' } | { kind: 'none' }``.
+ * ``kind: 'auto'`` means "omit the param and let the gateway's one-provider
+ * shortcut resolve it" (the hosted common case); ``kind: 'none'`` means "do
+ * not attempt native flow at all — use the embedded chooser".
+ */
+export type LoginProviderResolution = { kind: 'named'; provider: string } | { kind: 'auto' } | { kind: 'none' }
+
+export function resolveLoginProvider(
+  providers: AdvertisedSessionProvider[] | null | undefined
+): LoginProviderResolution {
+  if (!Array.isArray(providers) || providers.length === 0) {
+    // Unknown list — let the gateway's single-provider shortcut try. A
+    // gateway that predates /api/auth/providers still works if it has exactly
+    // one session provider; the native authorize 404 only fires on the
+    // genuinely multi-provider path, which we handle below.
+    return { kind: 'auto' }
+  }
+
+  // Keep only entries with a usable name. gatewayAuthProviders() in main.ts
+  // pre-filters, but this function is pure and testable on its own, so it
+  // defends against shape-violating input rather than assuming a clean list.
+  const named = providers.filter(p => p && typeof p === 'object' && typeof p.name === 'string' && p.name)
+
+  if (named.length === 0) {
+    // The array was non-empty but every entry was malformed (no name). This is
+    // indistinguishable from an unreadable provider list, so treat it the same
+    // as the empty case rather than prematurely routing to the chooser.
+    return { kind: 'auto' }
+  }
+
+  const redirectProviders = named.filter(p => !p.supportsPassword)
+
+  if (redirectProviders.length === 0) {
+    // We have valid named providers but none can do native PKCE (all password).
+    return { kind: 'none' }
+  }
+
+  if (redirectProviders.length === 1) {
+    return { kind: 'named', provider: redirectProviders[0].name }
+  }
+
+  // Two or more redirect-capable providers: no metadata can pick one. Route
+  // to the embedded chooser so a human decides, instead of the gateway 404-ing
+  // an empty provider param or us silently favouring one vendor.
+  return { kind: 'none' }
+}
+
+/**
+ * Convert provider resolution into the caller's actual native-vs-embedded
+ * branch. This deliberately does not model a user's preferred login method;
+ * it only selects a viable route after the caller has chosen the native PKCE
+ * strategy from gateway capabilities.
+ */
+export type NativeLoginRoute = { kind: 'native'; provider?: string } | { kind: 'embedded' }
+
+export function resolveNativeLoginRoute(
+  providers: AdvertisedSessionProvider[] | null | undefined
+): NativeLoginRoute {
+  const providerResolution = resolveLoginProvider(providers)
+
+  if (providerResolution.kind === 'none') {
+    return { kind: 'embedded' }
+  }
+
+  if (providerResolution.kind === 'named') {
+    return { kind: 'native', provider: providerResolution.provider }
+  }
+
+  return { kind: 'native' }
+}
+
+/**
  * Build the gateway `/auth/native/authorize` URL the system browser opens.
  * `redirectUri` is the desktop's loopback callback (127.0.0.1:<port>/...).
  * `provider` is optional — omitted lets the gateway pick when it has exactly

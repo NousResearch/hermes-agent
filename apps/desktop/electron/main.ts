@@ -27,7 +27,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 import nodePty from 'node-pty'
 
@@ -1050,6 +1051,8 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+let appTray = null
+let isQuitting = false
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
@@ -9347,7 +9350,14 @@ function createWindow() {
   mainWindow.on('moved', schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault()
+      mainWindow.hide()
+      return
+    }
+    schedulePersistWindowState.flush()
+  })
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   const createdMainWindow = mainWindow
@@ -9364,6 +9374,49 @@ function createWindow() {
 
   streamThrottle.register(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
+
+  // System tray: minimize to tray on close instead of quitting
+  if (!appTray) {
+    const iconPath = getAppIconPath()
+    let trayIcon
+    if (iconPath) {
+      trayIcon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
+    } else {
+      // Fallback: 16x1 transparent pixel — Electron needs a non-empty image
+      trayIcon = nativeImage.createFromBuffer(
+        Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAFJJREFUOE9jZKAQMFJqABMDA8N/RkZGamk2YGBg+M/IwMBALQ0MDAz/mRgYGKiloQoNDQ3/z5gxg1oa/jMwMPxnZGCglgYGBob/DFQy4D8DAwMAtpoMDwd7XZcAAAAASUVORK5CYII=', 'base64')
+      ).resize({ width: 16, height: 16 })
+    }
+    appTray = new Tray(trayIcon)
+
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: '显示 Hermes',
+        click: () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.show()
+            mainWindow.focus()
+          }
+        }
+      },
+      { type: 'separator' },
+      {
+        label: '退出',
+        click: () => {
+          isQuitting = true
+          app.quit()
+        }
+      }
+    ])
+    appTray.setToolTip('Hermes Agent')
+    appTray.setContextMenu(contextMenu)
+    appTray.on('double-click', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show()
+        mainWindow.focus()
+      }
+    })
+  }
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
@@ -12025,14 +12078,20 @@ app.on('before-quit', event => {
   stopAllPoolBackends()
 })
 
+app.on('before-quit', () => {
+  isQuitting = true
+  // Clean up tray
+  if (appTray) {
+    appTray.destroy()
+    appTray = null
+  }
+})
+
 app.on('window-all-closed', () => {
-  // macOS convention: keep the process alive in the Dock when the user closes
-  // the last window. But when we're handing off to a detached updater / swap /
-  // uninstall script, the process MUST exit so the script can replace or remove
-  // the bundle and relaunch — without this the script's PID-wait spins to its
-  // full timeout and the user is left with an invisible app (or an uninstall
-  // that appears to do nothing).
   if (process.platform !== 'darwin' || isQuittingForHandoff) {
-    app.quit()
+    if (!appTray || isQuitting) {
+      app.quit()
+    }
+    // Otherwise (tray exists, not quitting): window hidden to tray — keep alive
   }
 })

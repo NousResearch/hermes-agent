@@ -12791,7 +12791,19 @@ _AGENT_SUBCOMMANDS = {
 
 
 def _is_tui_chat_launch(args) -> bool:
-    return bool(getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1")
+    if getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1":
+        return True
+    # The chat path decides TUI-vs-classic via _resolve_use_tui (--cli/--tui
+    # flags, TTY gate, HERMES_TUI env, display.interface config). Bare
+    # `hermes`/`hermes chat` with a TUI display config was previously missed
+    # here, so the wrapper pre-warmed its own MCP discovery while the TUI
+    # gateway (spawned moments later) ran a second one — an idle stdio MCP
+    # server copy held dead for the whole session. Only chat commands can
+    # launch the TUI; other commands (mcp serve, gateway, acp, cron) keep
+    # their own discovery behavior untouched.
+    if getattr(args, "command", None) not in {None, "chat"}:
+        return False
+    return _resolve_use_tui(args)
 
 
 def _command_has_dedicated_mcp_startup(args) -> bool:

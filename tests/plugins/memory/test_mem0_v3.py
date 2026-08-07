@@ -409,3 +409,80 @@ class TestSelfHostedConfig:
         assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
 
 
+    def test_is_available_false_without_key_or_host(self, monkeypatch):
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        monkeypatch.delenv("MEM0_HOST", raising=False)
+        monkeypatch.setenv("MEM0_MODE", "platform")
+        assert Mem0MemoryProvider().is_available() is False
+
+
+class TestMem0WriteIsolation:
+    """Provider-level write-isolation defense-in-depth (#68393): non-primary
+    agent contexts (cron/flush/subagent) and platform=cron must not perform
+    durable writes; search/read stays available."""
+
+    def _provider(self, backend, **init_kwargs):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session", **init_kwargs)
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._backend = backend
+        return provider
+
+    def _run_sync(self, provider, user, assistant):
+        provider.sync_turn(user, assistant)
+        thread = provider._sync_thread
+        if thread is not None:
+            thread.join(timeout=5.0)
+
+    @pytest.mark.parametrize("context", ["cron", "flush", "subagent"])
+    def test_non_primary_context_blocks_sync_turn(self, context):
+        backend = FakeBackend()
+        provider = self._provider(backend, agent_context=context)
+        assert provider._write_enabled is False
+        self._run_sync(provider, "temporary task instruction", "done")
+        assert backend.captured == []
+
+    @pytest.mark.parametrize("context", ["cron", "flush", "subagent"])
+    def test_non_primary_context_blocks_mem0_add(self, context):
+        backend = FakeBackend()
+        provider = self._provider(backend, agent_context=context)
+        result = json.loads(
+            provider.handle_tool_call("mem0_add", {"content": "temporary task state"})
+        )
+        assert "Not stored" in result["result"]
+        assert backend.captured == []
+
+    @pytest.mark.parametrize("tool", ["mem0_update", "mem0_delete"])
+    def test_non_primary_context_blocks_other_write_tools(self, tool):
+        backend = FakeBackend()
+        provider = self._provider(backend, agent_context="subagent")
+        args = {"memory_id": "m1"}
+        if tool == "mem0_update":
+            args["text"] = "x"
+        result = json.loads(provider.handle_tool_call(tool, args))
+        assert "Not stored" in result["result"]
+        assert backend.captured == []
+
+    def test_cron_platform_empty_context_blocks_writes(self):
+        backend = FakeBackend()
+        provider = self._provider(backend, platform="cron", agent_context="")
+        assert provider._write_enabled is False
+        result = json.loads(provider.handle_tool_call("mem0_add", {"content": "x"}))
+        assert "Not stored" in result["result"]
+        assert backend.captured == []
+
+    def test_primary_context_still_writes(self):
+        backend = FakeBackend()
+        provider = self._provider(backend, agent_context="primary")
+        assert provider._write_enabled is True
+        json.loads(provider.handle_tool_call("mem0_add", {"content": "user likes tea"}))
+        self._run_sync(provider, "hi", "hello there")
+        kinds = [c[0] for c in backend.captured]
+        assert kinds.count("add") == 2  # explicit mem0_add + sync_turn
+
+    def test_search_stays_available_in_non_primary_context(self):
+        backend = FakeBackend(search_results=[{"id": "m1", "memory": "foo", "score": 0.9}])
+        provider = self._provider(backend, agent_context="subagent")
+        result = json.loads(provider.handle_tool_call("mem0_search", {"query": "q"}))
+        assert result["results"][0]["id"] == "m1"

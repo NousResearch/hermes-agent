@@ -322,6 +322,7 @@ export interface UiState {
   busy: boolean
   busyInputMode: BusyInputMode
   compact: boolean
+  destructiveSlashConfirm: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
   // Focus view (/focus) — display-only reduced-output mode. Drives the

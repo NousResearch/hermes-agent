@@ -76,3 +76,118 @@ def test_empty_results_is_noop():
         [{"task_index": 0, "status": "failed", "summary": None}],
         _FakeParent(131_000, 1_000, 8_000),
     )
+
+
+class _LiveParent:
+    """Parent whose compressor reports real occupancy, alongside the
+    session-CUMULATIVE billing counter that grows on every API call."""
+
+    def __init__(
+        self,
+        context_length,
+        session_prompt_tokens,
+        max_tokens,
+        last_prompt_tokens=0,
+        last_real_prompt_tokens=0,
+    ):
+        compressor = _FakeCompressor(context_length, max_tokens)
+        compressor.last_prompt_tokens = last_prompt_tokens
+        compressor.last_real_prompt_tokens = last_real_prompt_tokens
+        self.context_compressor = compressor
+        self.session_prompt_tokens = session_prompt_tokens
+
+
+def test_budget_tracks_occupancy_not_cumulative_spend():
+    """The budget must size against what is IN the context, not lifetime spend.
+
+    ``session_prompt_tokens`` accumulates on every API call and is never reset
+    by compaction, so on a long-but-small conversation it crosses
+    ``context_length`` after a handful of ordinary tool-loop iterations. Sizing
+    the budget off it collapses every subagent summary to the floor for the
+    rest of the session, even though the parent is nearly empty.
+    """
+    # Conversation occupies 20k of a 131k window (~15% full) and stays there,
+    # but 20 API calls have been billed.
+    parent = _LiveParent(
+        context_length=131_072,
+        session_prompt_tokens=400_000,
+        max_tokens=8_000,
+        last_prompt_tokens=20_000,
+    )
+    budget = dt._parent_summary_char_budget(parent, n_summaries=1)
+
+    assert budget is not None
+    # Real headroom is 131,072 - 20,000 - 8,000 = 103,072 tokens.
+    assert budget == (103_072 * 4) // 2
+    assert budget > dt._MIN_SUMMARY_CHARS
+
+    # The cumulative counter must not move the budget at all.
+    later = _LiveParent(
+        context_length=131_072,
+        session_prompt_tokens=4_000_000,
+        max_tokens=8_000,
+        last_prompt_tokens=20_000,
+    )
+    assert dt._parent_summary_char_budget(later, n_summaries=1) == budget
+
+
+def test_summary_survives_when_parent_has_headroom(monkeypatch):
+    """End-to-end: a report that fits must reach the parent untrimmed."""
+    with tempfile.TemporaryDirectory() as td:
+        monkeypatch.setenv("HERMES_HOME", os.path.join(td, ".hermes"))
+        report = "HEAD_MARKER\n" + ("SUBAGENT FINDINGS. " * 900) + "\nTAIL_MARKER"
+        parent = _LiveParent(
+            context_length=131_072,
+            session_prompt_tokens=400_000,   # 20 API calls billed
+            max_tokens=8_000,
+            last_prompt_tokens=20_000,       # but only 15% of the window in use
+        )
+        results = [{"task_index": 0, "summary": report, "status": "completed"}]
+        dt._apply_summary_budget(results, parent)
+
+        assert results[0]["summary"] == report
+        assert "summary_truncated" not in results[0]
+
+
+def test_floor_still_enforced_when_context_genuinely_full():
+    """The #9126 overflow guard must survive the occupancy fix."""
+    parent = _LiveParent(
+        context_length=131_072,
+        session_prompt_tokens=125_000,
+        max_tokens=8_000,
+        last_prompt_tokens=125_000,   # genuinely nearly full
+    )
+    assert dt._parent_summary_char_budget(parent, 3) == dt._MIN_SUMMARY_CHARS
+
+
+def test_post_compaction_sentinel_falls_back_to_last_real():
+    """Right after a compaction ``last_prompt_tokens`` is parked at -1.
+
+    The budget must fall through to ``last_real_prompt_tokens`` rather than
+    treating the sentinel as "empty context" (or reaching the cumulative
+    counter, which would report the parent as hopelessly over budget).
+    """
+    parent = _LiveParent(
+        context_length=131_072,
+        session_prompt_tokens=900_000,
+        max_tokens=8_000,
+        last_prompt_tokens=-1,
+        last_real_prompt_tokens=30_000,
+    )
+    budget = dt._parent_summary_char_budget(parent, n_summaries=1)
+    assert budget == ((131_072 - 30_000 - 8_000) * 4) // 2
+
+
+def test_cumulative_fallback_is_clamped_to_context_length():
+    """With no compressor telemetry the cumulative counter is the last resort,
+    but it must not drive headroom arbitrarily negative — clamped, the worst it
+    can say is "full"."""
+    parent = _LiveParent(
+        context_length=131_072,
+        session_prompt_tokens=10_000_000,
+        max_tokens=8_000,
+    )
+    assert dt._parent_used_tokens(
+        parent, parent.context_compressor, 131_072
+    ) == 131_072
+    assert dt._parent_summary_char_budget(parent, 1) == dt._MIN_SUMMARY_CHARS

@@ -122,6 +122,45 @@ class CodexAppServerClient:
                     "sandbox_workspace_write.network_access=false",
                 ]
             )
+            # ...and the handoff tools must be able to IDENTIFY the task before
+            # they can write it. Codex replaces the MCP child's environment with
+            # the static ``env`` table from config.toml rather than extending
+            # this process's, so the per-worker HERMES_KANBAN_* vars never reach
+            # the hermes-tools callback. kanban_complete / kanban_block /
+            # kanban_heartbeat then resolve no task id at all
+            # ("task_id is required (or set HERMES_KANBAN_TASK in the env)"),
+            # so the worker does its work but can never report it — it hangs
+            # until the dispatcher reclaims the run, forever. A static config
+            # cannot carry a per-worker value, but a ``-c`` override can: it is
+            # merged into the server's env table, leaving HERMES_QUIET and
+            # HERMES_REDACT_SECRETS from config.toml intact.
+            #
+            # HERMES_KANBAN_DB matters twice over: without it the callback
+            # falls back to the DEFAULT board, so a worker's completion lands
+            # on the wrong board. Passing it also re-arms the worker-vs-
+            # orchestrator gate in tools/kanban_tools.py, which otherwise fails
+            # open and hands task workers the orchestrator-only kanban_list /
+            # kanban_unblock surface.
+            for _kanban_var in (
+                "HERMES_KANBAN_TASK",
+                "HERMES_KANBAN_RUN_ID",
+                "HERMES_KANBAN_DB",
+                "HERMES_KANBAN_BOARD",
+                "HERMES_KANBAN_CLAIM_LOCK",
+                "HERMES_SESSION_ID",
+            ):
+                _kanban_val = spawn_env.get(_kanban_var)
+                if not _kanban_val:
+                    continue
+                # TOML basic string — escape backslashes and quotes so Windows
+                # paths and odd board slugs cannot break the override parse.
+                _escaped = str(_kanban_val).replace("\\", "\\\\").replace('"', '\\"')
+                app_server_args.extend(
+                    [
+                        "-c",
+                        f'mcp_servers.hermes-tools.env.{_kanban_var}="{_escaped}"',
+                    ]
+                )
 
         cmd = [codex_bin, "app-server"] + app_server_args
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.

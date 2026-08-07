@@ -264,6 +264,104 @@ class TestSpawnEnvIsolation:
         assert "sandbox_workspace_write.network_access=false" in cmd
         assert all("danger" not in part for part in cmd)
 
+        # The sandbox lets the handoff tools WRITE the board; these overrides
+        # let them IDENTIFY the task in the first place. Codex replaces the MCP
+        # child's env with the static `env` table from config.toml rather than
+        # extending this process's, so without them kanban_complete /
+        # kanban_block / kanban_heartbeat resolve no task id at all and the
+        # worker hangs until the dispatcher reclaims the run.
+        assert 'mcp_servers.hermes-tools.env.HERMES_KANBAN_TASK="t_smoke"' in cmd
+        # HERMES_KANBAN_DB must travel too, or the callback falls back to the
+        # DEFAULT board and a worker's completion lands on the wrong one.
+        assert (
+            'mcp_servers.hermes-tools.env.HERMES_KANBAN_DB='
+            '"/users/alice/.hermes/kanban/boards/smoke/kanban.db"'
+        ) in cmd
+
+    @staticmethod
+    def test_kanban_env_overrides_are_omitted_outside_worker_context(monkeypatch):
+        """No HERMES_KANBAN_TASK => no kanban plumbing at all."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        cmd = captured["cmd"]
+        assert not any("mcp_servers.hermes-tools.env." in part for part in cmd)
+        assert not any("sandbox_workspace_write" in part for part in cmd)
+
+    @staticmethod
+    def test_kanban_env_override_values_are_toml_escaped(monkeypatch):
+        """Quotes/backslashes in a value must not break the override parse."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
+        # Contains both a backslash and a double quote.
+        monkeypatch.setenv("HERMES_KANBAN_DB", 'C:\\boards\\od"d\\kanban.db')
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        override = next(
+            part for part in captured["cmd"]
+            if part.startswith("mcp_servers.hermes-tools.env.HERMES_KANBAN_DB=")
+        )
+        assert r"\\boards\\od" in override
+        assert r'\"' in override
+
 
 class TestSpawnEnvSecretStripping:
     """codex app-server routes its spawn env through hermes_subprocess_env(

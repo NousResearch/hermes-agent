@@ -236,8 +236,13 @@ def _prune_durable_records() -> None:
     now = time.time()
     cutoff = now - _DURABLE_RETENTION_SECONDS
     with _DB_LOCK, _transaction() as conn:
+        # 'orphaned' is a terminal non-delivery state (see
+        # expire_stale_pending_completions) and must age out on the same
+        # retention window as 'delivered' — otherwise expired rows accumulate
+        # forever and only the audit-preserving extra window was intended.
         conn.execute(
-            "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?",
+            """DELETE FROM async_delegations
+               WHERE delivery_state IN ('delivered','orphaned') AND updated_at < ?""",
             (cutoff,),
         )
         terminal_count = conn.execute(
@@ -341,6 +346,38 @@ def recover_abandoned_delegations() -> int:
     return recovered
 
 
+def expire_stale_pending_completions(
+    max_age_seconds: float = _DURABLE_RETENTION_SECONDS,
+) -> int:
+    """Mark terminal completions that outlived their owner as ``orphaned``.
+
+    Durable pending delivery is intentionally fail-closed: a
+    restored event is never adopted by an unrelated session. Without an expiry
+    boundary that also means an owner that never returns is re-enqueued on every
+    process start forever. ``orphaned`` is an explicit non-delivery terminal
+    state — unlike ``delivered`` it does not claim the user saw the result, and
+    unlike ``pending`` it is not replayed again.
+
+    The completion timestamp (falling back to ``updated_at`` for legacy rows)
+    is used for age. Running/finalizing work is never touched. ``updated_at``
+    is reset when orphaned so ordinary retention cleanup preserves the audit
+    row for one additional retention window.
+    """
+    now = time.time()
+    cutoff = now - max(0.0, float(max_age_seconds))
+    with _DB_LOCK, _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE async_delegations
+               SET delivery_state='orphaned', updated_at=?,
+                   delivery_claim=NULL, delivery_claimed_at=NULL
+               WHERE state NOT IN ('running','finalizing')
+                 AND delivery_state='pending'
+                 AND COALESCE(completed_at, updated_at) < ?""",
+            (now, cutoff),
+        )
+        return cur.rowcount
+
+
 def restore_undelivered_completions(target_queue) -> int:
     """Enqueue durable pending completions as fresh turns after process start.
 
@@ -354,6 +391,10 @@ def restore_undelivered_completions(target_queue) -> int:
     results seconds after boot (#64484).
     """
     recover_abandoned_delegations()
+    # Bound the replay window before re-enqueueing, so a completion
+    # whose owner never came back becomes 'orphaned' instead of replaying on
+    # every Desktop start forever.
+    expire_stale_pending_completions()
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT delegation_id, event_json FROM async_delegations

@@ -457,6 +457,16 @@ class TestSchemaValidation:
 
 
 
+    def test_background_process_notifications_is_accepted(
+        self, _isolated_hermes_home, capsys
+    ):
+        set_config_value("display.background_process_notifications", "result")
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["display"]["background_process_notifications"] == "result"
+        assert "not a recognized config key" not in capsys.readouterr().out
+
     def test_desktop_macos_signing_identity_is_accepted(self, _isolated_hermes_home, capsys):
         """The documented TCC signing identity setting is part of the schema."""
         set_config_value("desktop.macos_signing_identity", "Hermes Local Signing")

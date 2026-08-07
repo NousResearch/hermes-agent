@@ -1202,6 +1202,7 @@ DEFAULT_CONFIG = {
         # When false, commentary falls back to the reasoning channel and is
         # only visible when show_reasoning is enabled.
         "show_commentary": True,
+        "background_process_notifications": "all",
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         # NOTE: display.tool_progress_overrides is deprecated and no longer
         # seeded here — use display.platforms. A user-set value is still

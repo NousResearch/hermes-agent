@@ -3225,6 +3225,28 @@ class MCPServerTask:
 
         while True:
             try:
+                # Refresh this server's config from disk on every (re)spawn.
+                # External tooling can rotate credentials in config.yaml
+                # (e.g. a pre-run script rewriting BW_SESSION); without this,
+                # every respawn reused the stale snapshot captured at first
+                # connect and the running child never saw the new values.
+                # _load_mcp_config() -> load_config() is mtime-aware, so this
+                # is cheap when the file is unchanged.
+                try:
+                    fresh_config = _load_mcp_config().get(self.name)
+                    if isinstance(fresh_config, dict) and fresh_config:
+                        if fresh_config != config:
+                            logger.info(
+                                "MCP server '%s': config changed on disk, "
+                                "(re)spawning with fresh config",
+                                self.name,
+                            )
+                        config = fresh_config
+                        self._config = fresh_config
+                except Exception:
+                    # Never let a config-refresh failure break the reconnect
+                    # loop — fall back to the last known config.
+                    pass
                 if self._is_http():
                     lifecycle_reason = await self._run_http(config)
                 else:

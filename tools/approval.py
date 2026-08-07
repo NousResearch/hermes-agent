@@ -2817,12 +2817,81 @@ def load_permanent(patterns: set):
         _permanent_approved.update(patterns)
 
 
-_ALLOWLIST_SHELL_OPERATOR_RE = re.compile(r"(?:\n|&&|\|\||[;&|<>`]|\$\()")
+# Shell control characters that make a command compound when they appear
+# OUTSIDE quotes. Inside quotes they are literal to the outer shell — but
+# they become executable again if an option like `-c`/`-e`/`--eval` (or a
+# git `-c alias.x=!...`) hands the quoted argument to another interpreter,
+# so quoted control chars only disqualify a command when such an option is
+# present. Port of can1357/oh-my-pi#7553.
+_SHELL_CONTROL_CHARS = frozenset("\n\r;&|<>`$()")
+_REINTERPRETED_ARGUMENT_RE = re.compile(
+    r"(?:^|[ \t])(?:-[^-\s]*[ce]|--(?:command|eval))(?:[= \t]|$)"
+)
 
 
 def _has_allowlist_shell_operator(command: str) -> bool:
-    """Return True when a command is too compound for the allowlist shortcut."""
-    return bool(_ALLOWLIST_SHELL_OPERATOR_RE.search(command or ""))
+    """Return True when a command is too compound for the allowlist shortcut.
+
+    Quote-aware: shell metacharacters inside single/double quotes or behind
+    a backslash are literal arguments (``cargo bench -- '^a(b|c)$'``), not
+    shell syntax, so they don't disqualify an otherwise-simple command from
+    matching a ``cargo *`` allowlist glob. Exceptions that still disqualify:
+
+    - ``$`` or backtick inside DOUBLE quotes (expansion stays active there);
+    - any quoted/escaped control character when the command also carries a
+      ``-c``/``-e``/``--command``/``--eval``-style option that would hand
+      the quoted text to another interpreter (``sh -c '...'``,
+      ``git -c alias.x='!...' x``).
+    """
+    command = command or ""
+    quote = None  # None | "'" | '"'
+    has_reinterpretable = False
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            elif ch in _SHELL_CONTROL_CHARS:
+                has_reinterpretable = True
+            i += 1
+            continue
+        if ch == "\\":
+            nxt = command[i + 1] if i + 1 < n else ""
+            if nxt in _SHELL_CONTROL_CHARS:
+                has_reinterpretable = True
+            i += 2
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+            elif ch in ("`", "$"):
+                # Expansion is active inside double quotes.
+                return True
+            elif ch in _SHELL_CONTROL_CHARS:
+                has_reinterpretable = True
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "$":
+            # Unquoted $ is only compound when it opens a substitution —
+            # matches the historical `\$\(` behavior ("$HOME" stays simple).
+            if i + 1 < n and command[i + 1] == "(":
+                return True
+            i += 1
+            continue
+        if ch in _SHELL_CONTROL_CHARS and ch not in "()":
+            return True
+        i += 1
+        continue
+    # An unterminated quote means we can't reason about the command shape.
+    if quote is not None:
+        return True
+    return has_reinterpretable and bool(_REINTERPRETED_ARGUMENT_RE.search(command))
 
 
 def _command_matches_permanent_allowlist(command: str) -> bool:

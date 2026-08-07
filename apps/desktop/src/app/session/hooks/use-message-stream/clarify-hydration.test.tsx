@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { clearClarifyRequest } from '@/store/clarify'
+import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
@@ -90,6 +90,19 @@ describe('clarify.request stream hydration', () => {
     expect(parts[0].type === 'tool-call' && parts[0].args).toMatchObject({
       choices: ['yes', 'no'],
       question: 'Ship it?'
+    })
+  })
+
+  it('marks a non-empty all-invalid choice array as malformed', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    await mountStream()
+
+    clarifyRequest({ choices: ['', '   ', '\n'], question: 'Pick one', request_id: 'req-invalid' })
+
+    expect($clarifyRequests.get()[SID]).toMatchObject({
+      choices: null,
+      choicesMalformed: true,
+      requestId: 'req-invalid'
     })
   })
 

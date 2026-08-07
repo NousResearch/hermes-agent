@@ -22,6 +22,11 @@ from typing import List, Optional, Callable
 # A 5th "Other (type your answer)" option is always appended by the UI.
 MAX_CHOICES = 4
 
+INVALID_CHOICES_ERROR = (
+    "choices contained no non-empty options; resend with meaningful labels "
+    "or omit choices for an open-ended question."
+)
+
 
 def _flatten_choice(c) -> str:
     """Coerce a single choice into its user-facing display string.
@@ -145,6 +150,7 @@ def clarify_tool(
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
+        choices_were_provided = bool(choices)
         # LLMs sometimes emit dict-shaped choices (e.g. [{"description": "..."}])
         # instead of bare strings. _flatten_choice unwraps them to their
         # user-facing text here — the single platform-agnostic entry point —
@@ -153,6 +159,8 @@ def clarify_tool(
         choices = [s for s in (_flatten_choice(c) for c in choices) if s]
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
+        if choices_were_provided and not choices:
+            return tool_error(INVALID_CHOICES_ERROR)
         if not choices:
             choices = None  # empty list → open-ended
 

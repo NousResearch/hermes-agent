@@ -22,7 +22,7 @@ import time
 import threading
 import uuid
 import warnings
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Union
 from datetime import datetime
 from pathlib import Path
 
@@ -1432,7 +1432,7 @@ def _save_sample_trajectory(agent: "AIAgent", result: dict, user_query: str, mod
 
 
 def main(
-    query: str = None, model: str = "", api_key: str = None, base_url: str = "", max_turns: int = 10,
+    query: Union[str, list, tuple] = None, model: str = "", api_key: str = None, base_url: str = "", max_turns: int = 10,
     enabled_toolsets: str = None, disabled_toolsets: str = None, list_tools: bool = False,
     save_trajectories: bool = False, save_sample: bool = False, verbose: bool = False, log_prefix_chars: int = 20,
 ):
@@ -1483,9 +1483,16 @@ def main(
     except RuntimeError as e:
         print(f"❌ Failed to initialize agent: {e}")
         return
-
-    user_query = query if query is not None else ("Tell me about the latest developments in Python 3.13 and what new features "
-                                                  "developers should know about. Please search for current information and try it out.")
+    if isinstance(query, (list, tuple)):
+        # fire.Fire splits comma-separated values into tuples (e.g.
+        # --query="hello,what model are you" → ("hello", "what model are you")).
+        # Join them back into a single string so the API receives a valid message.
+        user_query = ", ".join(str(p) for p in query)
+    else:
+        user_query = query if query is not None else (
+            "Tell me about the latest developments in Python 3.13 and what new features "
+            "developers should know about. Please search for current information and try it out."
+        )
     print(f"\n📝 User Query: {user_query}")
     print("\n" + "=" * 50)
 

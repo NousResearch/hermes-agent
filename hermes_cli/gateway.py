@@ -4159,6 +4159,9 @@ def generate_launchd_plist() -> str:
         <string>Aqua</string>
         <string>Background</string>
     </array>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
     
     <key>RunAtLoad</key>
     <true/>

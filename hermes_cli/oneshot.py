@@ -31,7 +31,10 @@ Session chaining (--resume / --continue):
       recent / named CLI session, exactly like interactive chat. Unlike
       ``--resume``, an unmatched ``--continue`` is an error.
     - Best-effort: if the SQLite session store is unavailable, the turn still
-      runs stateless rather than failing.
+      runs stateless rather than failing. A store that is merely *contended*
+      is the one exception — the resume reads wait the write lock out and
+      then fail loudly, because running a --resume turn with no context is a
+      wrong answer at full token price, not a graceful degradation.
 
 Env var fallbacks (used when the corresponding arg is not passed):
     - HERMES_INFERENCE_MODEL
@@ -41,7 +44,9 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import sys
+import time
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Optional
@@ -333,6 +338,75 @@ def _create_session_db_for_oneshot():
         return None
 
 
+class ResumeStoreContendedError(RuntimeError):
+    """A --resume read stayed blocked on the state.db write lock.
+
+    Distinct from the broken-store case, which stays best-effort: here the
+    store is healthy and merely busy, so silently dropping the chain would
+    discard recoverable context. See :func:`_read_with_lock_patience`.
+    """
+
+
+# Lock-contention patience for the two --resume reads. SessionDB gives every
+# WRITE 20-60s of jittered retry (``_WRITE_PATIENCE_S`` /
+# ``_TRANSCRIPT_WRITE_PATIENCE_S``) and its ``__init__`` gets the same budget,
+# but the READ path has none: off WAL, ``SessionDB._read_ctx`` hands back the
+# shared writer connection, which carries a 1s busy timeout and no retry loop
+# at all. Match the write budget so the reads are no more fragile than the
+# writes they bracket.
+_RESUME_READ_PATIENCE_S = 20.0
+_RESUME_READ_RETRY_MIN_S = 0.050
+_RESUME_READ_RETRY_MAX_S = 0.350
+
+
+def _is_lock_contention(exc: BaseException) -> bool:
+    """True for SQLite's transient ``database is locked`` / ``busy`` class.
+
+    Message-scoped rather than class-scoped for the same reason
+    ``SessionDB._execute_write`` does it that way: the exception CLASS varies
+    across SQLite builds, and matching on ``sqlite3.OperationalError`` alone
+    would let some builds escape the retry net.
+    """
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database is busy" in msg
+
+
+def _read_with_lock_patience(what: str, session_id: str, fn):
+    """Run one --resume read, waiting out transient write-lock contention.
+
+    Returns ``(value, ok)``. ``ok=False`` means the read genuinely failed and
+    the caller should degrade; a lock that outlasts the whole budget raises
+    :class:`ResumeStoreContendedError` instead, because that is not a broken
+    store and must not be silently swallowed (see ``_load_resume_history``).
+    """
+    deadline = time.monotonic() + _RESUME_READ_PATIENCE_S
+    while True:
+        try:
+            return fn(), True
+        except Exception as exc:
+            if not _is_lock_contention(exc):
+                logging.debug(
+                    "oneshot resume: %s failed for %s: %s", what, session_id, exc
+                )
+                return None, False
+            now = time.monotonic()
+            if now >= deadline:
+                raise ResumeStoreContendedError(
+                    f"--resume {what} for session '{session_id}' was blocked by "
+                    f"another Hermes process holding the state.db write lock for "
+                    f"over {_RESUME_READ_PATIENCE_S:.0f}s. Refusing to run this "
+                    f"turn with no prior context — retry the invocation."
+                ) from exc
+            time.sleep(
+                min(
+                    random.uniform(
+                        _RESUME_READ_RETRY_MIN_S, _RESUME_READ_RETRY_MAX_S
+                    ),
+                    max(deadline - now, 0.001),
+                )
+            )
+
+
 def _load_resume_history(session_db, resume: str) -> tuple[Optional[str], Optional[list]]:
     """Resolve a --resume id and load its transcript for oneshot chaining.
 
@@ -342,26 +416,46 @@ def _load_resume_history(session_db, resume: str) -> tuple[Optional[str], Option
     drop ``session_meta`` rows. Unlike interactive resume, an id with no
     existing session is NOT an error — it is returned as-is with no history,
     so the session is created on first use under the caller's chosen id.
-    Every step is best-effort: a broken store degrades to a stateless turn.
+
+    A broken store stays best-effort and degrades to a stateless turn. A
+    *contended* one does NOT, and the distinction matters because these two
+    reads are the only ones in the resume path with no lock patience of their
+    own. Off WAL — the default whenever the linked SQLite carries the WAL-reset
+    bug (``apply_wal_with_fallback``), and on NFS / SMB / ZFS homes — reads run
+    on the shared writer connection with a 1s busy timeout and no retry, so a
+    sibling process holding the write lock for a second (a large FTS-triggered
+    append, an incremental merge, a checkpoint, VACUUM) fails them while every
+    surrounding write rides out the same contention on 20-60s of patience.
+    Swallowing that would silently run the turn with NO prior context, exit 0,
+    and still append the context-less result into the middle of the chain —
+    burning the tokens ``--resume`` exists to save and corrupting the
+    transcript every later turn resumes from. So: wait the lock out with the
+    write path's own budget, and if it truly never clears, fail loudly through
+    ``run_oneshot``'s error path (non-zero exit) so a scripted caller retries
+    instead of banking a context-less answer.
     """
     session_id = (resume or "").strip() or None
     if not session_id or session_db is None:
         return session_id, None
-    try:
-        resolved = session_db.resolve_resume_session_id(session_id)
-        if resolved:
-            session_id = resolved
-    except Exception as exc:
-        logging.debug("oneshot resume: id resolution failed for %s: %s", session_id, exc)
+    resolved, ok = _read_with_lock_patience(
+        "id resolution",
+        session_id,
+        lambda: session_db.resolve_resume_session_id(session_id),
+    )
+    if ok and resolved:
+        session_id = resolved
     history: Optional[list] = None
-    try:
-        restored = session_db.get_messages_as_conversation(session_id)
-        restored = [m for m in restored if m.get("role") != "session_meta"]
-        history = restored or None
-    except Exception as exc:
-        logging.debug("oneshot resume: history load failed for %s: %s", session_id, exc)
+    restored, ok = _read_with_lock_patience(
+        "history load",
+        session_id,
+        lambda: session_db.get_messages_as_conversation(session_id),
+    )
+    if ok and restored:
+        history = [m for m in restored if m.get("role") != "session_meta"] or None
     # Ended sessions accept appends again once reopened; harmless if the
-    # session is new or already open.
+    # session is new or already open. Best-effort even under contention: this
+    # is a WRITE, so it already carries SessionDB's own jittered patience, and
+    # a session that stays ended still accepts this turn's appends.
     try:
         session_db.reopen_session(session_id)
     except Exception:

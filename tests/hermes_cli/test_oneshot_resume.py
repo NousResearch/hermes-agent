@@ -13,15 +13,19 @@ contract:
     the flag's documented "by ID or title" contract.
   - A caller-minted id that could escape the sessions dir as a path is
     rejected before it is written (CWE-22).
-  - A broken session store degrades to a stateless turn, never a failure.
+  - A broken session store degrades to a stateless turn, never a failure —
+    but a merely CONTENDED one does not: the resume reads wait the write lock
+    out, and fail loudly rather than silently running a context-less turn.
 """
 
+import sqlite3
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli.oneshot import _load_resume_history
+from hermes_cli.oneshot import ResumeStoreContendedError, _load_resume_history
 
 
 class TestLoadResumeHistory:
@@ -70,6 +74,132 @@ class TestLoadResumeHistory:
         assert hist is None
 
 
+class TestResumeReadLockPatience:
+    """The resume reads are the only step in the chaining path with no lock
+    patience of its own.  ``SessionDB`` gives every WRITE 20-60s of jittered
+    retry and gives ``__init__`` the same budget, but off WAL — the default
+    whenever the linked SQLite carries the WAL-reset bug, plus every NFS / SMB
+    / ZFS home — ``_read_ctx`` returns the shared writer connection, which
+    carries a 1s busy timeout and NO retry loop.
+
+    Swallowing that ``database is locked`` (as a plain best-effort ``except``
+    would) is the worst available outcome for a scripted chain: the turn runs
+    with NO prior context, exits 0, and still appends its context-less answer
+    into the middle of the session every later turn resumes from — burning the
+    tokens ``--resume`` exists to save, invisibly, because oneshot has already
+    called ``logging.disable(logging.CRITICAL)`` and redirected stderr to
+    devnull by then.
+    """
+
+    def test_transient_lock_is_waited_out_not_swallowed(self):
+        db = MagicMock()
+        db.resolve_resume_session_id.side_effect = lambda s: s
+        calls = {"n": 0}
+
+        def _flaky(_sid):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise sqlite3.OperationalError("database is locked")
+            return [{"role": "user", "content": "remember ZEBRA"}]
+
+        db.get_messages_as_conversation.side_effect = _flaky
+        sid, hist = _load_resume_history(db, "apollo-run-42")
+        assert sid == "apollo-run-42"
+        # The chain survived the contention instead of silently vanishing.
+        assert hist == [{"role": "user", "content": "remember ZEBRA"}]
+        assert calls["n"] == 3
+
+    def test_lock_that_never_clears_fails_loudly(self, monkeypatch):
+        import hermes_cli.oneshot as oneshot
+
+        monkeypatch.setattr(oneshot, "_RESUME_READ_PATIENCE_S", 0.2)
+        db = MagicMock()
+        db.resolve_resume_session_id.side_effect = lambda s: s
+        db.get_messages_as_conversation.side_effect = sqlite3.OperationalError(
+            "database is locked"
+        )
+        with pytest.raises(ResumeStoreContendedError) as exc:
+            _load_resume_history(db, "apollo-run-42")
+        assert "apollo-run-42" in str(exc.value)
+
+    def test_contended_compression_resolve_also_fails_loudly(self, monkeypatch):
+        """The id resolution read matters just as much: swallowing a lock there
+        leaves ``session_id`` on the pre-compression parent, so the turn
+        replays the dead parent's (empty) transcript and writes into it — the
+        #15000 shape, silently reintroduced under contention."""
+        import hermes_cli.oneshot as oneshot
+
+        monkeypatch.setattr(oneshot, "_RESUME_READ_PATIENCE_S", 0.2)
+        db = MagicMock()
+        db.resolve_resume_session_id.side_effect = sqlite3.OperationalError(
+            "database is locked"
+        )
+        with pytest.raises(ResumeStoreContendedError):
+            _load_resume_history(db, "caller_minted_parent")
+
+    def test_non_lock_error_still_degrades_to_stateless(self, monkeypatch):
+        """Only the transient lock class is escalated. A genuinely broken
+        store keeps the documented best-effort behaviour."""
+        import hermes_cli.oneshot as oneshot
+
+        monkeypatch.setattr(oneshot, "_RESUME_READ_PATIENCE_S", 0.2)
+        db = MagicMock()
+        db.resolve_resume_session_id.side_effect = lambda s: s
+        db.get_messages_as_conversation.side_effect = sqlite3.DatabaseError(
+            "file is not a database"
+        )
+        sid, hist = _load_resume_history(db, "sid")
+        assert (sid, hist) == ("sid", None)
+
+    def test_real_sqlite_lock_contention_recovers_the_transcript(self, tmp_path):
+        """The mock tests pin the retry logic; this pins that the retry is
+        aimed at a failure that a REAL contended ``SessionDB`` actually
+        produces. A sibling connection holds the write lock past the read
+        connection's 1s busy timeout, exactly as a large FTS-triggered append
+        / incremental merge / checkpoint / VACUUM in another `hermes` process
+        would."""
+        from hermes_state import SessionDB
+
+        db_path = tmp_path / "state.db"
+        sid = "apollo-run-42"
+        seed = SessionDB(db_path=db_path)
+        wal = seed._wal_active
+        seed.create_session(sid, source="cli")
+        seed.append_messages_batch(
+            session_id=sid,
+            messages=[
+                {"role": "user", "content": "investigate_bug"},
+                {"role": "assistant", "content": "root cause found"},
+            ],
+        )
+        seed.close()
+
+        if wal:
+            pytest.skip("WAL readers never block on the writer; needs journal_mode=delete")
+
+        db = SessionDB(db_path=db_path)
+        holder = sqlite3.connect(
+            str(db_path), isolation_level=None, timeout=30, check_same_thread=False
+        )
+        holder.execute("BEGIN EXCLUSIVE")
+        holder.execute("CREATE TABLE IF NOT EXISTS _hold (x)")
+
+        def _release():
+            holder.execute("ROLLBACK")
+            holder.close()
+
+        released = threading.Timer(2.5, _release)
+        released.start()
+        try:
+            resolved, history = _load_resume_history(db, sid)
+        finally:
+            released.join()
+            db.close()
+
+        assert resolved == sid
+        assert [m["role"] for m in history] == ["user", "assistant"]
+
+
 class TestRunAgentResumeWiring:
     def _run(self, resume, load_result, monkeypatch):
         monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
@@ -102,6 +232,36 @@ class TestRunAgentResumeWiring:
         agent_cls, agent, _ = self._run(None, (None, None), monkeypatch)
         assert agent_cls.call_args.kwargs["session_id"] is None
         agent.run_conversation.assert_called_once_with("hi", conversation_history=None)
+
+    def test_contended_store_aborts_the_turn_and_closes_the_db(self, monkeypatch):
+        """A lock that outlasts the read patience must NOT reach the model.
+        It propagates out of ``_run_agent`` — so ``run_oneshot`` reports it on
+        the real stderr and exits non-zero, and a scripted caller retries —
+        while the ``finally`` still closes the SQLite store (the hard-exit path
+        skips finalizers, so a leak here is permanent)."""
+        monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+        monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+        session_db = MagicMock()
+        agent_cls = MagicMock()
+        with (
+            patch("hermes_cli.oneshot._create_session_db_for_oneshot", return_value=session_db),
+            patch(
+                "hermes_cli.oneshot._load_resume_history",
+                side_effect=ResumeStoreContendedError("still locked"),
+            ),
+            patch("hermes_cli.oneshot.get_fallback_chain", return_value=None),
+            patch("hermes_cli.config.load_config", return_value={"model": {"default": "m1", "provider": "p1"}}),
+            patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={}),
+            patch("hermes_cli.tools_config._get_platform_tools", return_value=set()),
+            patch("run_agent.AIAgent", agent_cls),
+        ):
+            from hermes_cli.oneshot import _run_agent
+
+            with pytest.raises(ResumeStoreContendedError):
+                _run_agent("hi", resume="apollo-run-42")
+
+        agent_cls.assert_not_called()
+        session_db.close.assert_called_once_with()
 
 
 class TestOneshotResumeIntegration:
@@ -451,6 +611,55 @@ class TestResolveOneshotResume:
             lambda: _resolve_oneshot_resume(self._args(resume=bad))
         )
 
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "run\r\nconversation turn: session=root",  # CWE-117 log forging
+            "run\x1b]0;pwned\x07",  # terminal escape injection
+            "run\x7f",
+            "x" * 257,  # over NAME_MAX -> "{id}.json" is never creatable
+        ],
+    )
+    def test_control_chars_and_overlong_new_ids_are_rejected(self, bad):
+        """The gateway's entry boundary is a COMPOSITE of three checks applied
+        together (``_is_path_unsafe`` + ``re.search(r'[\\r\\n\\x00]')`` + the
+        ``_MAX_SESSION_HEADER_LEN`` cap — see ``GatewayAPIServer``). Mirroring
+        only the first left CR/LF free to forge entries in the per-turn
+        ``conversation turn: session=%s`` log line, ESC free to drive the
+        operator's terminal via the rejection message, and an unbounded id free
+        to make ``{id}.json`` permanently un-creatable while riding on every
+        message row."""
+        from hermes_cli.main import _resolve_oneshot_resume
+
+        self._assert_hardened_exit(
+            lambda: _resolve_oneshot_resume(self._args(resume=bad))
+        )
+
+    def test_rejection_message_does_not_replay_control_characters(self, capsys):
+        """The rejection quotes the offending value back at the operator, so it
+        must be escaped on the way out — otherwise rejecting an ESC-bearing id
+        is itself the terminal-injection primitive."""
+        from hermes_cli.main import _resolve_oneshot_resume
+
+        self._assert_hardened_exit(
+            lambda: _resolve_oneshot_resume(
+                self._args(resume="run\x1b]0;pwned\x07")
+            )
+        )
+        err = capsys.readouterr().err
+        assert "\x1b" not in err
+        assert "\\x1b" in err
+
+    def test_ordinary_punctuation_ids_still_pass(self):
+        """The tightening must not narrow the create-on-first-use contract:
+        colon-delimited gateway-shaped keys and glob metacharacters are legal
+        filename content and stay allowed (``_remove_session_files`` escapes
+        them at the glob call site instead)."""
+        from hermes_cli.main import _resolve_oneshot_resume
+
+        for ok in ("agent:main:cli:run-42", "run_42.v2", "run*42", "x" * 256):
+            assert _resolve_oneshot_resume(self._args(resume=ok)) == ok
+
     def test_path_unsafe_value_still_allowed_when_it_resolves(self):
         """The guard only applies to values about to become NEW ids. A title
         containing '/' that resolves to a real session is fine — the value
@@ -507,3 +716,45 @@ class TestResolveOneshotResume:
             )
             == "explicit_id"
         )
+
+
+class TestRemoveSessionFilesGlobEscaping:
+    """``--resume`` mints caller-chosen session ids, and the guard deliberately
+    allows any character that isn't a traversal vector — including the glob
+    metacharacters ``*``/``?``/``[``. ``SessionDB._remove_session_files``
+    interpolates the id straight into a glob PATTERN for the gateway's
+    ``request_dump_{id}_*.json`` artifacts, so an id of ``*`` expanded to
+    ``request_dump_*_*.json`` and a later ``sessions delete``/``prune`` (or an
+    ``auto_prune`` sweep) wiped every OTHER session's request dumps out of the
+    sessions dir. Escaped at the call site rather than banned at the boundary,
+    so gateway-minted ids are covered by the same fix.
+    """
+
+    def test_wildcard_id_only_deletes_its_own_dumps(self, tmp_path):
+        from hermes_state import SessionDB
+
+        victim = tmp_path / "request_dump_20260101_120000_abc_1.json"
+        victim.write_text("keep me")
+        own = tmp_path / "request_dump_*_1.json"
+        own.write_text("delete me")
+
+        SessionDB._remove_session_files(tmp_path, "*")
+
+        assert victim.exists()
+        assert not own.exists()
+
+    def test_ordinary_id_still_sweeps_its_dumps(self, tmp_path):
+        from hermes_state import SessionDB
+
+        mine = tmp_path / "request_dump_sess1_1.json"
+        mine.write_text("x")
+        theirs = tmp_path / "request_dump_sess2_1.json"
+        theirs.write_text("x")
+        transcript = tmp_path / "sess1.json"
+        transcript.write_text("x")
+
+        SessionDB._remove_session_files(tmp_path, "sess1")
+
+        assert not mine.exists()
+        assert not transcript.exists()
+        assert theirs.exists()

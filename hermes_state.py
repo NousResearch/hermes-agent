@@ -17,6 +17,7 @@ Key design decisions:
 import asyncio
 import atexit
 import errno
+import glob
 import hashlib
 import json
 import logging
@@ -8219,6 +8220,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``request_dump_{session_id}_*.json`` files left by the gateway.
         Silently skips files that don't exist and swallows OSError so a
         filesystem hiccup never blocks a DB operation.
+
+        ``session_id`` is interpolated into a glob PATTERN below, so it must
+        be ``glob.escape``d first. The path-traversal guards at the entry
+        boundaries (``gateway.session._is_path_unsafe``,
+        ``hermes_cli.main._is_unsafe_new_session_id``) reject ``..`` and path
+        separators but deliberately allow every other character — including
+        the glob metacharacters ``*``, ``?`` and ``[``. Unescaped, a session
+        whose id is ``*`` expands to ``request_dump_*_*.json`` and this delete
+        sweeps EVERY other session's request dumps out of the sessions dir.
+        Escaping keeps the pattern a literal prefix match. The two unlink()
+        calls above need no escaping — ``Path.unlink`` never globs.
         """
         if sessions_dir is None:
             return
@@ -8230,7 +8242,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 pass
         # request_dump files use session_id as a prefix component
         try:
-            for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
+            for p in sessions_dir.glob(f"request_dump_{glob.escape(session_id)}_*.json"):
                 try:
                     p.unlink(missing_ok=True)
                 except OSError:

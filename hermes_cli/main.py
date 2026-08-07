@@ -1365,24 +1365,78 @@ def _resolve_workspace_key() -> Optional[str]:
         return None
 
 
-def _is_unsafe_new_session_id(value: str) -> bool:
-    """Return True if *value* could escape the sessions directory as a path.
+# Matches the gateway's own cap on an externally-supplied session id
+# (``GatewayAPIServer._MAX_SESSION_HEADER_LEN``). Every real id — CLI
+# ``<ts>_<hex>``, gateway ``agent:main:<platform>:...``, ``api_<ts>_<hex>`` —
+# is well under this.
+_MAX_NEW_SESSION_ID_LEN = 256
 
-    Mirrors ``gateway.session._is_path_unsafe``, which guards the gateway's
-    externally-supplied ``session_id`` at its entry boundary. Duplicated
-    rather than imported because ``gateway.session`` is a heavy module with
-    optional platform deps and this runs on every CLI startup.
+# C0 controls + DEL. No legitimate session id contains one, and each is a
+# distinct problem downstream: CR/LF forge lines in the log record that
+# stamps ``session=%s`` on every turn, ESC injects terminal escape sequences
+# into the ``hermes -z: invalid --resume session id '<value>'`` message that
+# rejects it, and all of them produce unreadable on-disk filenames.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _echo_safe(value: str, limit: int = 120) -> str:
+    """Render a rejected caller-supplied value safely for stderr.
+
+    The rejection messages below quote the value back at the operator, so the
+    value must not be able to drive the terminal it is printed to: escape
+    control characters (ESC/CSI/OSC would otherwise repaint the line, retitle
+    the window, or hide the rest of the diagnostic) and bound the length so a
+    megabyte-long argv value can't flood the console.
+    """
+    s = str(value or "")
+    truncated = s[:limit]
+    rendered = _CONTROL_CHARS_RE.sub(
+        lambda m: f"\\x{ord(m.group()):02x}", truncated
+    )
+    return rendered + ("…" if len(s) > limit else "")
+
+
+def _is_unsafe_new_session_id(value: str) -> bool:
+    """Return True if *value* is unsafe to mint as a brand-new session id.
+
+    Mirrors the gateway's entry-boundary check for an externally-supplied
+    ``session_id``, which is the composite of THREE things applied together
+    at every gateway call site (``GatewayAPIServer._create_session``,
+    ``_resolve_request_session``): ``gateway.session._is_path_unsafe``, a
+    control-character reject, and a length cap. Duplicated rather than
+    imported because ``gateway.session`` is a heavy module with optional
+    platform deps and this runs on every CLI startup.
 
     Oneshot ``--resume`` creates unknown ids on first use, which makes it a
     second entry boundary for caller-supplied session ids. The id becomes a
     filename downstream — ``SessionDB._remove_session_files`` builds
     ``sessions_dir / f"{session_id}.json"`` and ``request_dump_{id}_*.json``
-    unsanitized — so ``hermes --resume ../../x -z ...`` would mint a row that
-    a later ``sessions delete``/``prune`` unlinks outside the sessions dir
-    (CWE-22). Real and gateway-minted ids never contain these characters.
+    — so ``hermes --resume ../../x -z ...`` would mint a row that a later
+    ``sessions delete``/``prune`` unlinks outside the sessions dir (CWE-22).
+
+    Beyond traversal, two argv-reachable cases the path check alone lets
+    through:
+
+    * Control characters. CR/LF forge entries in the per-turn
+      ``conversation turn: session=%s`` log line (CWE-117) and ESC injects
+      terminal escape sequences into the rejection message itself; none can
+      appear in a real id. (A NUL cannot arrive through ``argv`` at all —
+      ``execve`` strings are NUL-terminated — but the class is rejected
+      wholesale rather than enumerated.)
+    * Length. An id over ``NAME_MAX`` makes ``{id}.json`` permanently
+      un-creatable (ENAMETOOLONG), so the session's on-disk snapshot silently
+      never lands, and the oversized id is copied into the ``session_id``
+      column of every message row for the life of the session.
+
+    Glob metacharacters (``*``/``?``/``[``) are deliberately NOT rejected —
+    they are legal in a filename, and the one place that interpolated them
+    into a pattern (``_remove_session_files``) now ``glob.escape``s instead,
+    which also covers ids minted through the gateway.
     """
     s = str(value or "")
     if ".." in s or "/" in s or "\\" in s:
+        return True
+    if len(s) > _MAX_NEW_SESSION_ID_LEN or _CONTROL_CHARS_RE.search(s):
         return True
     return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
 
@@ -1400,8 +1454,9 @@ def _resolve_oneshot_resume(args) -> Optional[str]:
     Crafts OS gateway mint their own stable id and pass it on every turn), so
     an unresolved value is returned as-is and ``hermes_cli.oneshot`` starts a
     fresh session under it. Because that value is about to become a brand-new
-    session id — one that lands on disk as a filename — it must first pass the
-    path-traversal guard applied to every other caller-supplied session id.
+    session id — one that lands on disk as a filename — it must first pass
+    :func:`_is_unsafe_new_session_id`, the same entry-boundary guard applied to
+    every other caller-supplied session id.
 
     ``--continue`` resolves by name when a value is given, otherwise the most
     recent CLI session; an unresolvable ``--continue`` is an error (there is
@@ -1421,8 +1476,10 @@ def _resolve_oneshot_resume(args) -> Optional[str]:
         # Create-on-first-use: the raw value becomes a new session id.
         if _is_unsafe_new_session_id(resume):
             _fail_and_exit_oneshot(
-                f"hermes -z: invalid --resume session id '{resume}': "
-                "path separators and '..' are not allowed.\n"
+                f"hermes -z: invalid --resume session id "
+                f"'{_echo_safe(resume)}': path separators, '..', control "
+                f"characters, and ids over {_MAX_NEW_SESSION_ID_LEN} "
+                "characters are not allowed.\n"
             )
         return resume
     cont = getattr(args, "continue_last", None)
@@ -1432,7 +1489,7 @@ def _resolve_oneshot_resume(args) -> Optional[str]:
         resolved = _resolve_session_by_name_or_id(cont)
         if not resolved:
             _fail_and_exit_oneshot(
-                f"hermes -z: no session found matching '{cont}'. "
+                f"hermes -z: no session found matching '{_echo_safe(cont)}'. "
                 "Use 'hermes sessions list' to see available sessions.\n"
             )
         return resolved

@@ -32,8 +32,8 @@ optional_env:
     prompt: "Home channel ID"
     password: false
   - name: MATTERMOST_REPLY_MODE
-    description: "How replies are sent: 'thread' (nested) or 'off' (flat). Default: off."
-    prompt: "Reply mode (thread|off)"
+    description: "How replies are sent: 'thread' (always nested), 'auto' (nested only when your message was in a thread), or 'off' (flat). Default: off."
+    prompt: "Reply mode (thread|auto|off)"
     password: false
   - name: MATTERMOST_REQUIRE_MENTION
     description: "Require @bot mention in channels (default true). Set false for free-response everywhere."

@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.base import MessageType, _thread_metadata_for_source
 from gateway.run import (
     _resolve_gateway_display_bool,
     _resolve_progress_thread_id,
@@ -194,6 +194,96 @@ class TestMattermostSend:
         payload = self.adapter._session.post.call_args[1]["json"]
         assert payload["root_id"] == "root_post"
 
+    @pytest.mark.asyncio
+    async def test_send_without_thread_no_root_id(self):
+        """When reply_mode is 'off', reply_to should NOT set root_id."""
+        self.adapter._reply_mode = "off"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post789"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert "root_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_send_auto_mode_top_level_stays_flat(self):
+        """In 'auto' mode a top-level message (no metadata thread_id) replies flat,
+        even when reply_to is present — keeping a DM as one continuous session."""
+        self.adapter._reply_mode = "auto"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_auto1"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send("channel_1", "Hi!", reply_to="some_post")
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert "root_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_send_auto_mode_threaded_uses_metadata_thread_id(self):
+        """In 'auto' mode, when the incoming message was itself in a thread
+        (metadata['thread_id']), the reply nests under that thread root."""
+        self.adapter._reply_mode = "auto"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_auto2"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        # thread_id from metadata is already a thread root; _resolve_root_id
+        # GETs the post and (no nested root_id) returns it unchanged.
+        mock_get_resp = AsyncMock()
+        mock_get_resp.status = 200
+        mock_get_resp.json = AsyncMock(return_value={"id": "thread_root", "root_id": ""})
+        mock_get_resp.text = AsyncMock(return_value="")
+        mock_get_resp.__aenter__ = AsyncMock(return_value=mock_get_resp)
+        mock_get_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+        self.adapter._session.get = MagicMock(return_value=mock_get_resp)
+
+        result = await self.adapter.send(
+            "channel_1", "In-thread reply", metadata={"thread_id": "thread_root"}
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "thread_root"
+
+    @pytest.mark.asyncio
+    async def test_send_uses_metadata_thread_id_for_progress_messages(self):
+        """Progress/status messages pass Mattermost thread context via metadata."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"id": "root_post_123", "root_id": ""})
+        self.adapter._api_post = AsyncMock(return_value={"id": "progress_post"})
+
+        result = await self.adapter.send(
+            "channel_1",
+            "⚡ terminal...",
+            metadata={"thread_id": "root_post_123"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._api_post.call_args_list[0][0][1]
+        assert payload["root_id"] == "root_post_123"
 
     @pytest.mark.asyncio
     async def test_progress_send_with_invalid_thread_root_never_falls_back_flat(self):
@@ -594,3 +684,149 @@ async def test_mattermost_top_level_channel_post_is_thread_root():
     assert msg_event.message_id == "top_post_123"
 
 
+@pytest.mark.asyncio
+async def test_mattermost_dm_post_does_not_seed_thread_root():
+    adapter = _make_adapter()
+    adapter._reply_mode = "thread"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    post_data = {
+        "id": "dm_post_123",
+        "user_id": "user_123",
+        "channel_id": "dm_chan",
+        "message": "hello",
+        "root_id": "",
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "D",
+            "sender_name": "@alice",
+        },
+    }
+
+    await adapter._handle_ws_event(event)
+
+    msg_event = adapter.handle_message.call_args[0][0]
+    assert msg_event.source.thread_id is None
+    assert msg_event.source.message_id == "dm_post_123"
+
+
+# ---------------------------------------------------------------------------
+# reply_mode="auto" — full receive→send contract
+#
+# The dedicated send() tests above drive send() with hand-written metadata.
+# These two exercise the *real* contract instead: an inbound WebSocket
+# "posted" event is parsed by _handle_ws_event (deriving source.thread_id), then
+# the gateway derives the outbound send metadata from that
+# source field via _thread_metadata_for_source (the same function run.py calls
+# on every delivery), and only then is send() invoked. This proves the two
+# halves actually agree end-to-end:
+#   • a top-level DM  → source.thread_id is None → metadata None → flat payload;
+#   • a real root_id thread event → source.thread_id set → {"thread_id": …}
+#     metadata → rooted payload.
+# ---------------------------------------------------------------------------
+
+
+def _mock_json_response(payload):
+    resp = AsyncMock()
+    resp.status = 200
+    resp.json = AsyncMock(return_value=payload)
+    resp.text = AsyncMock(return_value="")
+    resp.__aenter__ = AsyncMock(return_value=resp)
+    resp.__aexit__ = AsyncMock(return_value=False)
+    return resp
+
+
+async def _receive_then_send_payload(adapter, event, reply_text):
+    """Drive the real receive→send path and return the outbound POST payload.
+
+    1. Parse the inbound event through _handle_ws_event (captures the source
+       the adapter actually derived — no fabricated thread_id).
+    2. Build outbound send metadata from that source the same way the gateway
+       does (_thread_metadata_for_source).
+    3. Send the reply and return the JSON payload POSTed to /api/v4/posts.
+    """
+    adapter.handle_message = AsyncMock()
+    await adapter._handle_ws_event(event)
+    assert adapter.handle_message.called, "inbound event was not delivered"
+    source = adapter.handle_message.call_args[0][0].source
+
+    # Gateway-side metadata construction from the parsed source field.
+    metadata = _thread_metadata_for_source(source)
+
+    adapter._session = MagicMock()
+    adapter._session.post = MagicMock(return_value=_mock_json_response({"id": "sent_post"}))
+    # In "auto" mode a threaded reply resolves the root via GET posts/<id>;
+    # returning the post with no nested root_id makes it its own thread root.
+    adapter._session.get = MagicMock(
+        return_value=_mock_json_response(
+            {"id": source.thread_id or "", "root_id": ""}
+        )
+    )
+
+    result = await adapter.send(source.chat_id, reply_text, metadata=metadata)
+    assert result.success is True
+    return adapter._session.post.call_args[1]["json"]
+
+
+@pytest.mark.asyncio
+async def test_auto_receive_send_top_level_dm_replies_flat():
+    """auto: a top-level DM (no root_id) parses to thread_id=None, so the
+    gateway builds no thread metadata and the outbound reply is flat."""
+    adapter = _make_adapter()
+    adapter._reply_mode = "auto"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+
+    post_data = {
+        "id": "dm_top_1",
+        "user_id": "user_123",
+        "channel_id": "dm_chan",
+        "message": "hello there",
+        "root_id": "",  # top-level: not inside a thread
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "D",
+            "sender_name": "@alice",
+        },
+    }
+
+    payload = await _receive_then_send_payload(adapter, event, "hi back")
+    assert payload["channel_id"] == "dm_chan"
+    assert "root_id" not in payload
+
+
+@pytest.mark.asyncio
+async def test_auto_receive_send_thread_event_replies_rooted():
+    """auto: an inbound event carrying a real root_id parses to that thread_id,
+    the gateway surfaces it as metadata, and the outbound reply nests under it."""
+    adapter = _make_adapter()
+    adapter._reply_mode = "auto"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+
+    post_data = {
+        "id": "reply_post_1",
+        "user_id": "user_123",
+        "channel_id": "chan_456",
+        "message": "@hermes-bot continue in this thread",
+        "root_id": "root_post_123",  # inside an existing thread
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "O",
+            "sender_name": "@alice",
+        },
+    }
+
+    payload = await _receive_then_send_payload(adapter, event, "answering in thread")
+    assert payload["channel_id"] == "chan_456"
+    assert payload["root_id"] == "root_post_123"

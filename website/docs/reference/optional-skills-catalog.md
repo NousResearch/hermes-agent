@@ -188,7 +188,6 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**canvas**](/docs/user-guide/skills/optional/productivity/productivity-canvas) | Fetch Canvas LMS courses and assignments via API token. |
-| [**document-to-action-items**](/docs/user-guide/skills/optional/productivity/productivity-document-to-action-items) | Extract cited obligations, deadlines, tasks from documents. |
 | [**here.now**](/docs/user-guide/skills/optional/productivity/productivity-here-now) | Publish sites to &#123;slug&#125;.here.now and store files in Drives. |
 | [**memento-flashcards**](/docs/user-guide/skills/optional/productivity/productivity-memento-flashcards) | Spaced-repetition flashcard system. Create cards from facts or text, chat with flashcards using free-text answers graded by the agent, generate quizzes from YouTube transcripts, review due cards with adaptive scheduling, and export/impor... |
 | [**shop**](/docs/user-guide/skills/optional/productivity/productivity-shop) | Shop catalog search, checkout, order tracking, returns. |

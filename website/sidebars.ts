@@ -257,6 +257,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/productivity/productivity-airtable',
+                    'user-guide/skills/bundled/productivity/productivity-document-to-action-items',
                     'user-guide/skills/bundled/productivity/productivity-docx',
                     'user-guide/skills/bundled/productivity/productivity-google-workspace',
                     'user-guide/skills/bundled/productivity/productivity-maps',
@@ -534,7 +535,6 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/productivity/productivity-canvas',
-                    'user-guide/skills/optional/productivity/productivity-document-to-action-items',
                     'user-guide/skills/optional/productivity/productivity-here-now',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
                     'user-guide/skills/optional/productivity/productivity-shop',

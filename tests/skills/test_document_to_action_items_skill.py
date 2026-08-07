@@ -6,7 +6,7 @@ import yaml
 
 SKILL_PATH = (
     Path(__file__).resolve().parents[2]
-    / "optional-skills"
+    / "skills"
     / "productivity"
     / "document-to-action-items"
     / "SKILL.md"

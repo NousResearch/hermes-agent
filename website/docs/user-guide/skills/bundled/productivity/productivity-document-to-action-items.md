@@ -14,8 +14,8 @@ Extract cited obligations, deadlines, tasks from documents.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/productivity/document-to-action-items` |
-| Path | `optional-skills/productivity/document-to-action-items` |
+| Source | Bundled (installed by default) |
+| Path | `skills/productivity/document-to-action-items` |
 | Version | `0.1.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |

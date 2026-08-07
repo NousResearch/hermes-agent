@@ -51,6 +51,7 @@ from hermes_cli.config import (
     save_env_value,
     write_platform_config_field,
 )
+from utils import is_truthy_value
 
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
@@ -5569,7 +5570,9 @@ def _platform_status(platform: dict) -> str:
         password = get_env_value("MATRIX_PASSWORD")
         if (val or password) and homeserver:
             e2ee = get_env_value("MATRIX_ENCRYPTION")
-            suffix = " + E2EE" if e2ee and e2ee.lower() in {"true", "1", "yes"} else ""
+            # Match gateway/config.py runtime enablement (is_truthy_value)
+            # so MATRIX_ENCRYPTION=on is reported as configured + E2EE.
+            suffix = " + E2EE" if is_truthy_value(e2ee) else ""
             return f"configured{suffix}"
         if val or password or homeserver:
             return "partially configured"

@@ -799,6 +799,22 @@ class TestMatrixRequirements:
              patch("tools.lazy_deps.feature_missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is False
 
+    @pytest.mark.parametrize("raw", ["on", "ON", "1", "yes", " true "])
+    def test_check_requirements_encryption_truthy_aliases_no_e2ee_deps(
+        self, raw, monkeypatch
+    ):
+        """Shared truthy aliases must enable E2EE requirements like 'true'."""
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("MATRIX_ENCRYPTION", raw)
+        monkeypatch.delenv("MATRIX_E2EE_MODE", raising=False)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
+             patch("tools.lazy_deps.feature_missing", return_value=()):
+            assert matrix_mod.check_matrix_requirements() is False
+            assert matrix_mod._resolve_e2ee_mode({}) == "required"
+
     def test_check_requirements_e2ee_optional_no_deps_ok(self, monkeypatch):
         """MATRIX_E2EE_MODE=optional should not block startup without python-olm."""
         monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")

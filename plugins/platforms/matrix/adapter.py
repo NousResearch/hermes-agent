@@ -138,6 +138,7 @@ from gateway.platforms.base import (
     _ssrf_redirect_guard,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -785,10 +786,13 @@ def _resolve_e2ee_mode(extra: Optional[Dict[str, Any]] = None) -> str:
     explicit = extra.get("e2ee_mode") or os.getenv("MATRIX_E2EE_MODE", "")
     if explicit:
         return _normalize_e2ee_mode(explicit)
-    legacy_enabled = extra.get(
-        "encryption",
-        os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes"),
-    )
+    # Prefer config.extra["encryption"] when present; otherwise honor the
+    # legacy MATRIX_ENCRYPTION env with the shared truthy contract (so
+    # "on" matches gateway/config.py enablement).
+    if "encryption" in extra:
+        legacy_enabled = is_truthy_value(extra.get("encryption"))
+    else:
+        legacy_enabled = is_truthy_value(os.getenv("MATRIX_ENCRYPTION", ""))
     return "required" if legacy_enabled else "off"
 
 

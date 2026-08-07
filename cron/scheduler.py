@@ -4125,8 +4125,7 @@ def run_job(
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
-        # Tag this fire and time the
-        # run_conversation call for the usage_audit.jsonl entry.
+        # Tag this fire and time the run_conversation call for the usage_audit.jsonl entry.
         _audit_fire_id = uuid.uuid4().hex
         _audit_t_start = time.monotonic()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
@@ -4285,10 +4284,7 @@ def run_job(
 
         # Emit one JSONL line per fire for usage audit.
         _audit_duration_ms = int((time.monotonic() - _audit_t_start) * 1000)
-        _audit_response_silent = (
-            not final_response.strip()
-            or SILENT_MARKER in (final_response or "").upper()
-        )
+        _audit_response_silent = _is_cron_silence_response(final_response or "")
         _write_usage_audit({
             "ts": _utcnow_iso_ms(),
             "job_id": job_id,
@@ -4308,8 +4304,8 @@ def run_job(
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         # Best-effort audit write on failure path. _audit_fire_id
-        # may be unset if the exception fired before submit() — guard with
-        # locals() lookup so the audit write itself never raises.
+        # may be unset if the exception fired before submit() — guard
+        # with a None check so the audit write itself never raises.
         if "_audit_fire_id" in locals():
             _audit_duration_ms = int((time.monotonic() - _audit_t_start) * 1000)
             _write_usage_audit({
@@ -4321,7 +4317,7 @@ def run_job(
                 "total_tokens": None,
                 "response_silent": False,
                 "deliver_target": job.get("deliver"),
-                "model": (model or None) if "model" in locals() else None,
+                "model": model or None,
                 "duration_ms": _audit_duration_ms,
                 "error": error_msg,
             })

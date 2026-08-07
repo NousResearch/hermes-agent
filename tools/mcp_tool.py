@@ -2305,6 +2305,9 @@ class MCPServerTask:
                     "parking (state: parked → connected)",
                     self.name,
                 )
+                _emit_liveness_transition(
+                    self.name, "parked", "connected", reason="session_proven"
+                )
 
     async def _wait_for_lifecycle_event(self) -> str:
         """Block until either _shutdown_event or _reconnect_event fires.
@@ -2390,6 +2393,12 @@ class MCPServerTask:
                             "MCP server '%s' keepalive failed, triggering "
                             "reconnect (state: connected → degraded): %s: %s",
                             self.name, type(root).__name__, root,
+                        )
+                        _emit_liveness_transition(
+                            self.name,
+                            "connected",
+                            "degraded",
+                            reason=f"keepalive_failed:{type(root).__name__}",
                         )
                         self._reconnect_event.set()
                         break
@@ -3281,6 +3290,12 @@ class MCPServerTask:
                             self.name, _MAX_RECONNECT_RETRIES,
                             _PARKED_RETRY_INTERVAL,
                         )
+                        _emit_liveness_transition(
+                            self.name,
+                            "degraded",
+                            "parked",
+                            reason="rapid_drop_budget_exhausted",
+                        )
                         self._was_parked = True
                         self._deregister_tools()
                         self._reconnect_event.clear()
@@ -3362,6 +3377,12 @@ class MCPServerTask:
                             "(state: connecting → parked): %s: %s",
                             self.name, type(root).__name__, root,
                         )
+                        _emit_liveness_transition(
+                            self.name,
+                            "connecting",
+                            "parked",
+                            reason=f"initial_permanent:{type(root).__name__}",
+                        )
                         self._error = exc
                         self._ready.set()
                         self._was_parked = True
@@ -3393,6 +3414,12 @@ class MCPServerTask:
                             "requested (state: connecting → parked): %s: %s",
                             self.name, _MAX_INITIAL_CONNECT_RETRIES,
                             type(root).__name__, root,
+                        )
+                        _emit_liveness_transition(
+                            self.name,
+                            "connecting",
+                            "parked",
+                            reason="initial_retries_exhausted",
                         )
                         self._error = exc
                         self._ready.set()
@@ -3454,6 +3481,12 @@ class MCPServerTask:
                         self.name, _PARKED_RETRY_INTERVAL,
                         type(root).__name__, root,
                     )
+                    _emit_liveness_transition(
+                        self.name,
+                        "connected",
+                        "parked",
+                        reason=f"permanent:{type(root).__name__}",
+                    )
                     self._was_parked = True
                     self._deregister_tools()
                     self._reconnect_event.clear()
@@ -3481,6 +3514,12 @@ class MCPServerTask:
                         self.name, _MAX_RECONNECT_RETRIES,
                         _PARKED_RETRY_INTERVAL,
                         type(root).__name__, root,
+                    )
+                    _emit_liveness_transition(
+                        self.name,
+                        "degraded",
+                        "parked",
+                        reason="reconnect_retries_exhausted",
                     )
                     # Do NOT return — exiting the task orphans the server:
                     # nothing would ever listen for _reconnect_event again
@@ -3712,6 +3751,144 @@ _server_error_counts: Dict[str, int] = {}
 _server_breaker_opened_at: Dict[str, float] = {}
 _CIRCUIT_BREAKER_THRESHOLD = 3
 _CIRCUIT_BREAKER_COOLDOWN_SEC = 60.0
+# Configurable overrides (populated from config.yaml mcp_servers._circuit_breaker
+# by _load_breaker_config). Empty → use the module-level defaults above.
+_breaker_cfg: Dict[str, Any] = {}
+
+
+def _breaker_threshold() -> int:
+    return int(_breaker_cfg.get("threshold", _CIRCUIT_BREAKER_THRESHOLD))
+
+
+def _breaker_cooldown_sec() -> float:
+    return float(_breaker_cfg.get("cooldown_sec", _CIRCUIT_BREAKER_COOLDOWN_SEC))
+
+
+def _server_breaker_state(server_name: str) -> str:
+    """Derive the breaker state for ``server_name``: closed / open / half-open.
+
+    Mirrors the inline check in the call-site short-circuit: open when
+    ``count >= threshold`` *and* the cooldown window hasn't elapsed;
+    half-open once the window has elapsed but the probe hasn't yet
+    resolved; closed otherwise.
+    """
+    count = _server_error_counts.get(server_name, 0)
+    if count < _breaker_threshold():
+        return "closed"
+    opened_at = _server_breaker_opened_at.get(server_name, 0.0)
+    age = time.monotonic() - opened_at
+    if age < _breaker_cooldown_sec():
+        return "open"
+    return "half-open"
+
+
+def _load_breaker_config(servers: Dict[str, dict]) -> None:
+    """Apply ``mcp_servers._circuit_breaker`` overrides to the module-level cfg.
+
+    Reads an optional ``_circuit_breaker`` sibling key from the MCP servers
+    config block and caches threshold / cooldown / connect-backoff values.
+    Missing keys fall back to the existing module-level defaults, so a config
+    without the block is a strict no-op. Safe to call on every discovery pass.
+    """
+    global _breaker_cfg
+    cb = servers.get("_circuit_breaker") if isinstance(servers, dict) else None
+    if not isinstance(cb, dict):
+        _breaker_cfg = {}
+        return
+    try:
+        _breaker_cfg = {
+            "threshold": int(cb.get("threshold", _CIRCUIT_BREAKER_THRESHOLD)),
+            "cooldown_sec": float(cb.get("cooldown_sec", _CIRCUIT_BREAKER_COOLDOWN_SEC)),
+            "connect_retry_base_sec": float(
+                cb.get("connect_retry_base_sec", _CONNECT_RETRY_BASE_BACKOFF_SEC)
+            ),
+            "connect_retry_max_sec": float(
+                cb.get("connect_retry_max_sec", _CONNECT_RETRY_MAX_BACKOFF_SEC)
+            ),
+        }
+        logger.info("MCP breaker config applied: %s", _breaker_cfg)
+    except (TypeError, ValueError) as exc:
+        logger.warning("Invalid mcp_servers._circuit_breaker config, ignoring: %s", exc)
+        _breaker_cfg = {}
+
+
+def _emit_breaker_transition(
+    server_name: str, old_state: str, new_state: str, failures: int
+) -> None:
+    """Fire a GatewayDiagnosticEvent on a breaker state transition.
+
+    Fail-isolated: an emitter import/emit failure must never propagate into
+    the tool-call path. Only called when ``old_state != new_state``.
+    """
+    if old_state == new_state:
+        return
+    try:
+        from agent.monitoring.emitter import get_emitter
+        from agent.monitoring.events import GatewayDiagnosticEvent
+
+        severity = "error" if new_state == "open" else "info"
+        get_emitter().emit(
+            GatewayDiagnosticEvent(
+                name="mcp_breaker_transition",
+                subsystem="mcp",
+                error_class="breaker_state_change",
+                error_code=server_name,
+                platform=server_name,
+                old_state=old_state,
+                new_state=new_state,
+                severity=severity,
+            )
+        )
+    except Exception:
+        logger.debug(
+            "failed to emit mcp_breaker_transition for %s", server_name, exc_info=True
+        )
+
+
+def _emit_liveness_transition(
+    server_name: str,
+    old_state: str,
+    new_state: str,
+    *,
+    reason: str = "",
+) -> None:
+    """Fire a GatewayDiagnosticEvent on a session-liveness state transition.
+
+    The session-liveness state machine (connected / degraded / parked /
+    half-open probe) is distinct from the per-server error-count breaker
+    above — its transitions were previously only ``logger.warning`` lines,
+    so the alert notifier and OTLP plane saw nothing. This closes that gap:
+    every ``state: X → Y`` transition in the run loop now also emits.
+
+    Fail-isolated: an emitter import/emit failure must never propagate into
+    the run loop. ``old_state == new_state`` is a no-op.
+    """
+    if old_state == new_state:
+        return
+    try:
+        from agent.monitoring.emitter import get_emitter
+        from agent.monitoring.events import GatewayDiagnosticEvent
+
+        severity = "warning" if new_state != "connected" else "info"
+        get_emitter().emit(
+            GatewayDiagnosticEvent(
+                name="mcp_liveness_transition",
+                subsystem="mcp",
+                error_class="liveness_state_change",
+                error_code=server_name,
+                platform=server_name,
+                old_state=old_state,
+                new_state=new_state,
+                severity=severity,
+                source_logger=reason or None,
+            )
+        )
+    except Exception:
+        logger.debug(
+            "failed to emit mcp_liveness_transition for %s",
+            server_name,
+            exc_info=True,
+        )
 
 # ---------------------------------------------------------------------------
 # Trust-tier gating state (per-server trust + per-tool readOnlyHint).
@@ -3863,12 +4040,16 @@ def _bump_server_error(server_name: str) -> None:
 
     When the count crosses :data:`_CIRCUIT_BREAKER_THRESHOLD`, stamp the
     breaker-open timestamp so the cooldown clock starts (or re-starts,
-    for probe failures in the half-open state).
+    for probe failures in the half-open state). Detects state transitions
+    and emits a diagnostic event (closed→open, half-open→open, etc.).
     """
+    old_state = _server_breaker_state(server_name)
     n = _server_error_counts.get(server_name, 0) + 1
     _server_error_counts[server_name] = n
-    if n >= _CIRCUIT_BREAKER_THRESHOLD:
+    if n >= _breaker_threshold():
         _server_breaker_opened_at[server_name] = time.monotonic()
+    new_state = _server_breaker_state(server_name)
+    _emit_breaker_transition(server_name, old_state, new_state, n)
 
 
 def _reset_server_error(server_name: str) -> None:
@@ -3876,10 +4057,41 @@ def _reset_server_error(server_name: str) -> None:
 
     Clears both the failure count and the breaker-open timestamp. Call
     this on any unambiguous success signal (successful tool call,
-    successful reconnect, manual /mcp refresh).
+    successful reconnect, manual /mcp refresh). Emits a transition event
+    when closing from open/half-open back to closed.
     """
+    old_state = _server_breaker_state(server_name)
     _server_error_counts[server_name] = 0
     _server_breaker_opened_at.pop(server_name, None)
+    new_state = _server_breaker_state(server_name)
+    _emit_breaker_transition(server_name, old_state, new_state, 0)
+
+
+def _breaker_snapshot() -> Dict[str, Any]:
+    """Per-server breaker snapshot for ``/health/detailed``.
+
+    Walks every known server (connected, parked, or mid-cooldown) and
+    reports its derived state, failure count, and how long ago the open
+    timestamp was stamped (-1 when not open).
+    """
+    names = set(_servers.keys())
+    names.update(_server_error_counts.keys())
+    names.update(_server_connect_failures.keys())
+    now = time.monotonic()
+    out: Dict[str, Any] = {}
+    for name in sorted(names):
+        count = _server_error_counts.get(name, 0)
+        opened_at = _server_breaker_opened_at.get(name, 0.0)
+        out[name] = {
+            "state": _server_breaker_state(name),
+            "failures": count,
+            "threshold": _breaker_threshold(),
+            "cooldown_sec": _breaker_cooldown_sec(),
+            "opened_age_sec": round(now - opened_at, 1) if opened_at else -1,
+            "connect_cooldown_active": _connect_cooldown_active(name),
+            "connect_failures": _server_connect_failures.get(name, 0),
+        }
+    return out
 
 
 def _signal_reconnect(server: Any) -> bool:
@@ -4857,6 +5069,11 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
 
     safe_servers = {}
     for name, cfg in servers.items():
+        # Drop reserved meta keys (e.g. ``_circuit_breaker``) — they configure
+        # the breaker itself, not a server to spawn. Anything starting with an
+        # underscore is treated as a non-server config block.
+        if isinstance(name, str) and name.startswith("_"):
+            continue
         if not isinstance(cfg, dict):
             safe_servers[name] = cfg
             continue
@@ -5151,11 +5368,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         # failure the error paths below bump the count again, which
         # re-stamps the open-time via _bump_server_error (re-arming
         # the cooldown).
-        if _server_error_counts.get(server_name, 0) >= _CIRCUIT_BREAKER_THRESHOLD:
+        if _server_error_counts.get(server_name, 0) >= _breaker_threshold():
             opened_at = _server_breaker_opened_at.get(server_name, 0.0)
             age = time.monotonic() - opened_at
-            if age < _CIRCUIT_BREAKER_COOLDOWN_SEC:
-                remaining = max(1, int(_CIRCUIT_BREAKER_COOLDOWN_SEC - age))
+            if age < _breaker_cooldown_sec():
+                remaining = max(1, int(_breaker_cooldown_sec() - age))
                 return tool_error(
                     f"MCP server '{server_name}' is unreachable after "
                     f"{_server_error_counts[server_name]} consecutive "
@@ -6002,6 +6219,9 @@ def _forget_mcp_tool_server(tool_name: str) -> None:
 def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dict) -> List[dict]:
     """Select utility schemas based on config and server capabilities."""
     tools_filter = config.get("tools") or {}
+    if isinstance(tools_filter, list):
+        # bare list shorthand → treat as include; resources/prompts stay default
+        tools_filter = {"include": tools_filter}
     resources_enabled = _parse_boolish(tools_filter.get("resources"), default=True)
     prompts_enabled = _parse_boolish(tools_filter.get("prompts"), default=True)
 
@@ -6108,7 +6328,11 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     #   entries may be exact names or fnmatch globs (e.g. "*_radar_*")
     #   include takes precedence over exclude
     #   Neither set → register all tools (backward-compatible default)
+    #   A bare list (``tools: [a, b]``) is treated as ``include`` — the
+    #   shorthand predates the include/exclude dict shape.
     tools_filter = config.get("tools") or {}
+    if isinstance(tools_filter, list):
+        tools_filter = {"include": tools_filter}
     include_set = _normalize_name_filter(
         tools_filter.get("include"), f"mcp_servers.{name}.tools.include"
     )
@@ -6752,6 +6976,10 @@ def discover_mcp_tools() -> List[str]:
     if not servers:
         logger.debug("No MCP servers configured")
         return []
+
+    # Apply optional mcp_servers._circuit_breaker config overrides before
+    # connecting, so threshold/cooldown are tunable without code changes.
+    _load_breaker_config(servers)
 
     # Cross-process discovery guard (#62771). A lock loser waits for
     # the holder, then performs its own process-local discovery. If locking is

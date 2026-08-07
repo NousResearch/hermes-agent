@@ -10941,6 +10941,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._gateway_health_export_runtime = start_gateway_health_export(load_config())
             if getattr(self._gateway_health_export_runtime, "enabled", False):
                 logger.info("Gateway health OTLP export: enabled")
+            # Alert notifier: subscribe to monitoring emitter, push alerts to
+            # Feishu incoming webhook. fail-silent if webhook unconfigured.
+            try:
+                from agent.monitoring.alert_notifier import start_alert_notifier
+                start_alert_notifier(load_config())
+            except Exception:
+                logger.debug("alert notifier startup failed", exc_info=True)
         except Exception:
             logger.debug("gateway health OTLP export startup failed", exc_info=True)
 
@@ -26861,6 +26868,12 @@ async def _await_thread_exit(
 
 def _shutdown_gateway_health_export(runner: Any) -> None:
     """Idempotently drain and detach Gateway Health OTLP export."""
+    # Alert notifier: unsubscribe + drain thread pool (fail-silent).
+    try:
+        from agent.monitoring.alert_notifier import stop_alert_notifier
+        stop_alert_notifier()
+    except Exception:
+        logger.debug("alert notifier shutdown failed", exc_info=True)
     runtime = getattr(runner, "_gateway_health_export_runtime", None)
     if runtime is None:
         return

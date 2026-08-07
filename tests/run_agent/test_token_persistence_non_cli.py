@@ -45,6 +45,9 @@ def _make_agent(session_db, *, platform: str):
 
 def test_run_conversation_persists_tokens_for_telegram_sessions():
     session_db = MagicMock()
+    # Recovery adapters must declare their inspection surface statically;
+    # dynamic MagicMock attributes are intentionally rejected fail-closed.
+    session_db.get_session = MagicMock(return_value=None)
     agent = _make_agent(session_db, platform="telegram")
 
     result = agent.run_conversation("hello")

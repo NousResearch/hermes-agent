@@ -72,6 +72,8 @@ def _build_agent_with_db(
         return agent
 
     compressor = MagicMock()
+    compressor.on_session_start = MagicMock()
+    compressor.bind_session_state = MagicMock()
 
     def _compress_with_overlap(*_a, **_kw):
         time.sleep(0.15)
@@ -757,8 +759,9 @@ def test_delayed_contender_adopts_unique_rotated_child(tmp_path: Path) -> None:
     agent.context_compressor.compress.assert_not_called()
     lifecycle_args, lifecycle_kwargs = agent.context_compressor.on_session_start.call_args
     assert lifecycle_args == (child_sid,)
-    assert lifecycle_kwargs["boundary_reason"] == "compression"
+    assert lifecycle_kwargs["boundary_reason"] == "resume"
     assert lifecycle_kwargs["old_session_id"] == parent_sid
+    assert lifecycle_kwargs["recovered_from_compression"] is True
     assert lifecycle_kwargs["session_db"] is db
 
 

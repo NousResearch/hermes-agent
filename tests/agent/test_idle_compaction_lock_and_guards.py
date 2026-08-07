@@ -25,6 +25,9 @@ import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from agent.conversation_compression import CompressionRecoveryUnavailableError
 from hermes_state import SessionDB
 
 from agent.turn_context import build_turn_context
@@ -113,13 +116,14 @@ def test_idle_compaction_status_emitted_by_default(tmp_path: Path) -> None:
 
 
 def test_idle_compaction_defers_to_held_compression_lock(tmp_path: Path) -> None:
-    """An idle-triggered compress racing another path must sit the round out.
+    """An idle-triggered compress racing another path must fail closed.
 
     The per-session lock landed after the idle-compaction PR: when another
     path (turn-triggered preflight, background-review fork) already holds the
-    lock, ``compress_context`` returns the input list unchanged. The idle
-    block must treat that skip as a strict no-op: no compressor call, no
-    rotation, no flush re-baseline, anchor untouched.
+    lock, ``compress_context`` returns the input list unchanged. Turn-start
+    persistence is fenced by that same lock, so the prologue must stop before
+    model/tool continuation rather than return a context whose user turn was
+    not persisted.
     """
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "IDLE_LOCKED"
@@ -129,20 +133,16 @@ def test_idle_compaction_defers_to_held_compression_lock(tmp_path: Path) -> None
     agent = _prep_idle_agent(db, sid)
     history = _history()
 
-    ctx = _run_prologue(agent, history)
+    with pytest.raises(CompressionRecoveryUnavailableError) as exc_info:
+        _run_prologue(agent, history)
 
-    # Skipped: the compressor never ran and the session did not rotate.
+    assert exc_info.value.reason == "turn_start_persistence_failed"
+    # Skipped: the compressor never ran and the session did not rotate or
+    # release another writer's lease.
     agent.context_compressor.compress.assert_not_called()
     assert agent.session_id == sid
-    # The external holder still owns the lock (we must not have stolen or
-    # released someone else's lease).
     assert db.get_compression_lock_holder(sid) == "external_holder"
-    # Turn state untouched: full history + this turn's user message, anchor on
-    # the just-appended message, flush baseline not re-baselined to None-then-
-    # doubled semantics.
-    assert len(ctx.messages) == len(history) + 1
-    assert ctx.current_turn_user_idx == len(ctx.messages) - 1
-    assert ctx.messages[ctx.current_turn_user_idx]["content"] == "hello again"
+    assert db.get_messages(sid) == []
 
 
 def test_idle_compaction_respects_anti_thrash_breaker(tmp_path: Path) -> None:

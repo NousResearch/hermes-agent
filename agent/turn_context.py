@@ -32,11 +32,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
 from agent.conversation_compression import (
+    CompressionRecoveryUnavailableError,
     IDLE_COMPACTION_STATUS_TEMPLATE,
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock,
     conversation_history_after_compression,
     recover_rotated_compression_session,
+    resume_pending_compression_memory_switch,
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
@@ -364,12 +366,19 @@ def build_turn_context(
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 
+    # A prior recovery can commit the canonical child before a memory provider
+    # finishes its forward-only switch. Retry only the failed providers and
+    # stop here if any remain pending: no turn state may use mixed bindings.
+    resumed_history = resume_pending_compression_memory_switch(agent)
+
     # Recover a session rotated by another path before binding log/turn ids or
     # copying client-supplied history. Everything in this turn must consistently
     # belong to the canonical child, including observability metadata.
     recovered_history = recover_rotated_compression_session(agent)
     if recovered_history is not None:
         conversation_history = recovered_history
+    elif resumed_history is not None:
+        conversation_history = resumed_history
 
     # NOTE: the DB session row is created later, AFTER the system prompt is
     # restored/built (see _ensure_db_session() below the system-prompt block).
@@ -1238,7 +1247,13 @@ def build_turn_context(
     # the pre-compression attempt above failed transiently.
     def _ensure_and_persist() -> None:
         agent._ensure_db_session()
-        agent._persist_session(messages, conversation_history)
+        if agent._persist_session(messages, conversation_history) is False:
+            raise CompressionRecoveryUnavailableError(
+                "turn-start persistence was refused after compression recovery",
+                reason="turn_start_persistence_failed",
+                session_id=getattr(agent, "session_id", "") or "",
+                retryable=True,
+            )
 
     try:
         if persist_lock is None:
@@ -1246,12 +1261,20 @@ def build_turn_context(
         else:
             with persist_lock:
                 _ensure_and_persist()
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "Early turn-start session persistence failed for session=%s",
             agent.session_id or "none",
             exc_info=True,
         )
+        if isinstance(exc, CompressionRecoveryUnavailableError):
+            raise
+        raise CompressionRecoveryUnavailableError(
+            "turn-start persistence failed after compression recovery",
+            reason="turn_start_persistence_failed",
+            session_id=getattr(agent, "session_id", "") or "",
+            retryable=True,
+        ) from exc
     finally:
         # Keep an unmarked staged input available to a later close retry if the
         # normal persistence attempt failed. Once the marker is present, the

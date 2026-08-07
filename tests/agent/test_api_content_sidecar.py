@@ -177,6 +177,7 @@ class _FakeAgent:
             protect_first_n=2, protect_last_n=2
         )
         self._cached_system_prompt = "SYSTEM"
+        self._session_db: object | None = None
         self._memory_store = None
         self._memory_manager = None
         self._memory_nudge_interval = 0
@@ -589,7 +590,11 @@ class TestPrologueMoaAndInPlaceBackfill:
         the existing row directly."""
         agent = _FakeAgent()
         agent.compression_enabled = True
-        agent._session_db = MagicMock()
+        session_db = MagicMock()
+        # Recovery adapters must declare their inspection surface statically;
+        # dynamic MagicMock attributes are intentionally rejected fail-closed.
+        session_db.get_session = MagicMock(return_value=None)
+        agent._session_db = session_db
 
         calls = {"n": 0}
 
@@ -637,7 +642,7 @@ class TestPrologueMoaAndInPlaceBackfill:
         msg = ctx.messages[ctx.current_turn_user_idx]
         assert msg["content"] == "hello"
         assert msg["api_content"] == "hello\n\nPLUGIN-CTX"
-        agent._session_db.set_latest_user_api_content.assert_called_once_with(
+        session_db.set_latest_user_api_content.assert_called_once_with(
             "sess-1", "hello", "hello\n\nPLUGIN-CTX"
         )
 

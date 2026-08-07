@@ -219,7 +219,7 @@ class MemoryProvider(ABC):
         reset: bool = False,
         rewound: bool = False,
         **kwargs,
-    ) -> None:
+    ) -> Optional[bool]:
         """Called when the agent switches session_id mid-process.
 
         Fires on ``/resume``, ``/branch``, ``/reset``, ``/new`` (CLI), the
@@ -251,6 +251,11 @@ class MemoryProvider(ABC):
             ``True`` if session_id is unchanged but the transcript was
             truncated; providers caching per-turn document state should
             invalidate.
+
+        Return ``False`` only when the provider could not complete the switch.
+        ``None`` (the backward-compatible default) means success. Failed
+        providers may be retried on a later turn and should make switching to
+        the same session idempotent.
 
         Default is no-op for backward compatibility.
         """

@@ -1911,24 +1911,25 @@ class AIAgent:
 
         persist_lock = getattr(self, "_session_persist_lock", None)
 
-        def _persist_and_drain() -> None:
+        def _persist_and_drain() -> bool:
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._save_session_log(messages)
-            self._flush_messages_to_session_db(messages, conversation_history)
+            if self._flush_messages_to_session_db(messages, conversation_history) is False:
+                return False
             # Drain async token-accounting deltas at every persist point (turn
             # finalize + error exits) so a crash after this line loses at most
             # the in-flight API call's delta. Cheap no-op when nothing queued.
             if self._session_db is not None:
                 self._session_db.flush_token_counts()
             note_turn_persisted(self)
+            return True
 
         if persist_lock is None:
-            _persist_and_drain()
-            return
+            return _persist_and_drain()
 
         with persist_lock:
-            _persist_and_drain()
+            return _persist_and_drain()
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
@@ -2259,12 +2260,52 @@ class AIAgent:
             # re-writes the whole tail (same recovery contract as before,
             # minus the partial-prefix case that could double-pay counters).
             if _batch_rows:
+                compression_lock_holder = getattr(
+                    self, "_active_compression_lock_holder", None
+                )
+                if compression_lock_holder:
+                    get_lock_holder = getattr(
+                        self._session_db,
+                        "get_compression_lock_holder",
+                        None,
+                    )
+                    if callable(get_lock_holder):
+                        try:
+                            durable_holder = get_lock_holder(self.session_id)
+                        except Exception as exc:
+                            # Ownership is unverifiable: discard the local token
+                            # and let the transactional append guard fail closed
+                            # if any lease (including this one) is still active.
+                            if (
+                                getattr(
+                                    self,
+                                    "_active_compression_lock_holder",
+                                    None,
+                                )
+                                == compression_lock_holder
+                            ):
+                                self._active_compression_lock_holder = None
+                            compression_lock_holder = None
+                            logger.debug(
+                                "compression lock ownership lookup failed before append: %s",
+                                exc,
+                            )
+                        else:
+                            if durable_holder != compression_lock_holder:
+                                if (
+                                    getattr(
+                                        self,
+                                        "_active_compression_lock_holder",
+                                        None,
+                                    )
+                                    == compression_lock_holder
+                                ):
+                                    self._active_compression_lock_holder = None
+                                compression_lock_holder = None
                 self._session_db.append_messages_batch(
                     session_id=self.session_id,
                     messages=_batch_rows,
-                    compression_lock_holder=getattr(
-                        self, "_active_compression_lock_holder", None
-                    ),
+                    compression_lock_holder=compression_lock_holder,
                 )
                 for _written in _batch_msgs:
                     _written[_DB_PERSISTED_MARKER] = True

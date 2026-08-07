@@ -18,13 +18,18 @@ These tests drive the real ``compress_context`` path against a real SessionDB.
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import agent.conversation_compression as compression_module
+from agent.conversation_compression import recover_rotated_compression_session
 from agent.context_compressor import ContextCompressor
+from agent.memory_manager import MemoryManager
+from agent.memory_provider import MemoryProvider
 from hermes_state import SessionDB
 
 
@@ -45,6 +50,11 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegr
         )
 
     compressor = MagicMock()
+    # Lifecycle methods must be explicit instance attributes so the fixture
+    # models the declared ContextCompressor contract instead of relying on
+    # MagicMock.__getattr__ to synthesize them dynamically.
+    compressor.on_session_start = MagicMock()
+    compressor.bind_session_state = MagicMock()
     compressor.compress.return_value = [
         {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
         {"role": "user", "content": "tail"},
@@ -308,8 +318,1195 @@ class TestFallbackStreakFollowsRotation:
         assert db.get_compression_fallback_streak(child) == 1
 
 
+class TestRotatedSessionRecovery:
+    def test_recovers_live_tip_across_multiple_compressions(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "STALE_MULTI_HOP_PARENT"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+
+        db.end_session(parent, "compression")
+        db.create_session("COMPRESSED_CHILD_1", source="webui", parent_session_id=parent)
+        db.end_session("COMPRESSED_CHILD_1", "compression")
+        db.create_session(
+            "COMPRESSED_CHILD_2",
+            source="webui",
+            parent_session_id="COMPRESSED_CHILD_1",
+        )
+        db.end_session("COMPRESSED_CHILD_2", "compression")
+        db.create_session(
+            "LIVE_MULTI_HOP_TIP",
+            source="webui",
+            parent_session_id="COMPRESSED_CHILD_2",
+        )
+        db.replace_messages(
+            "LIVE_MULTI_HOP_TIP",
+            [{"role": "user", "content": "latest compacted history"}],
+        )
+        db.set_compression_fallback_streak(parent, 1)
+        db.set_compression_ineffective_count(parent, 1)
+        db.set_compression_fallback_streak("COMPRESSED_CHILD_2", 2)
+        db.set_compression_ineffective_count("COMPRESSED_CHILD_2", 2)
+        db.set_compression_fallback_streak("LIVE_MULTI_HOP_TIP", 7)
+        db.set_compression_ineffective_count("LIVE_MULTI_HOP_TIP", 8)
+        compressor = _bound_context_compressor(db, parent)
+        setattr(agent, "context_compressor", compressor)
+        class _RecordingMemoryManager:
+            def __init__(self):
+                self.on_session_switch = MagicMock(return_value=True)
+
+        memory_manager = _RecordingMemoryManager()
+        setattr(agent, "_memory_manager", memory_manager)
+
+        with patch.object(
+            compressor,
+            "on_session_start",
+            wraps=compressor.on_session_start,
+        ) as on_session_start:
+            recovered = recover_rotated_compression_session(agent)
+
+        assert recovered is not None
+        assert [message["content"] for message in recovered] == [
+            "latest compacted history"
+        ]
+        assert getattr(agent, "session_id") == "LIVE_MULTI_HOP_TIP"
+        assert compressor._fallback_compression_streak == 7
+        assert compressor._ineffective_compression_count == 8
+        assert db.get_compression_fallback_streak("LIVE_MULTI_HOP_TIP") == 7
+        assert db.get_compression_ineffective_count("LIVE_MULTI_HOP_TIP") == 8
+        assert on_session_start.call_args.kwargs["boundary_reason"] == "resume"
+        assert on_session_start.call_args.kwargs["old_session_id"] == "COMPRESSED_CHILD_2"
+        assert on_session_start.call_args.kwargs["recovered_from_compression"] is True
+        memory_manager.on_session_switch.assert_called_once_with(
+            "LIVE_MULTI_HOP_TIP",
+            parent_session_id="COMPRESSED_CHILD_2",
+            reset=False,
+            reason="resume",
+        )
+
+    def test_revalidation_retries_tip_that_rotates_during_load(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "STALE_RACING_PARENT"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session("RACING_TIP", source="webui", parent_session_id=parent)
+        db.replace_messages(
+            "RACING_TIP",
+            [{"role": "user", "content": "loaded before rotation"}],
+        )
+        original_loader = SessionDB.get_messages_as_conversation
+
+        def _load_then_rotate(session_db: SessionDB, session_id: str):
+            loaded = original_loader(session_db, session_id)
+            if session_id == "RACING_TIP":
+                session_db.end_session("RACING_TIP", "compression")
+                session_db.create_session(
+                    "NEW_RACING_TIP",
+                    source="webui",
+                    parent_session_id="RACING_TIP",
+                )
+                session_db.replace_messages(
+                    "NEW_RACING_TIP",
+                    [{"role": "user", "content": "new durable tip"}],
+                )
+            return loaded
+
+        with patch.object(
+            SessionDB,
+            "get_messages_as_conversation",
+            _load_then_rotate,
+        ):
+            recovered = recover_rotated_compression_session(agent)
+
+        assert recovered is not None
+        assert [message["content"] for message in recovered] == [
+            "new durable tip"
+        ]
+        assert getattr(agent, "session_id") == "NEW_RACING_TIP"
+        getattr(agent, "context_compressor").on_session_start.assert_called_once()
+        assert (
+            getattr(agent, "context_compressor").on_session_start.call_args.args[0]
+            == "NEW_RACING_TIP"
+        )
+
+    def test_adoption_holds_tip_lease_through_final_validation(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "LEASE_RACING_PARENT"
+        tip = "LEASE_RACING_TIP"
+        successor = "LEASE_RACING_SUCCESSOR"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(
+            tip,
+            [{"role": "user", "content": "durable tip history"}],
+        )
+        original_finder = SessionDB.find_live_compression_child
+        finder_calls = 0
+        competitor_acquired: list[bool] = []
+
+        def _find_then_compete(session_db: SessionDB, session_id: str):
+            nonlocal finder_calls
+            found = original_finder(session_db, session_id)
+            finder_calls += 1
+            if finder_calls == 2:
+                acquired = session_db.try_acquire_compression_lock(
+                    tip,
+                    "competing-compressor",
+                    ttl_seconds=60,
+                )
+                competitor_acquired.append(acquired)
+                if acquired:
+                    try:
+                        session_db.publish_compression_child(
+                            parent_session_id=tip,
+                            child_session_id=successor,
+                            source="webui",
+                            messages=[
+                                {"role": "user", "content": "successor history"}
+                            ],
+                            compression_lock_holder="competing-compressor",
+                        )
+                    finally:
+                        session_db.release_compression_lock(
+                            tip,
+                            "competing-compressor",
+                        )
+            return found
+
+        with patch.object(
+            SessionDB,
+            "find_live_compression_child",
+            _find_then_compete,
+        ):
+            recovered = recover_rotated_compression_session(agent)
+
+        assert competitor_acquired == [False]
+        assert recovered is not None
+        assert [message["content"] for message in recovered] == [
+            "durable tip history"
+        ]
+        assert getattr(agent, "session_id") == tip
+        tip_row = db.get_session(tip)
+        assert tip_row is not None
+        assert tip_row["ended_at"] is None
+        assert db.get_session(successor) is None
+        assert db.get_compression_lock_holder(tip) is None
+
+    def test_adoption_loads_transcript_after_acquiring_tip_lease(
+        self,
+        tmp_path: Path,
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "POST_LEASE_LOAD_PARENT"
+        tip = "POST_LEASE_LOAD_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(
+            tip,
+            [{"role": "user", "content": "initial"}],
+        )
+        original_acquire = SessionDB.try_acquire_compression_lock
+        appended_before_acquire: list[bool] = []
+
+        def _append_then_acquire(
+            session_db: SessionDB,
+            session_id: str,
+            holder: str,
+            ttl_seconds: float = 300.0,
+            *,
+            patience_s: float = 20.0,
+            raise_on_error: bool = False,
+        ) -> bool:
+            if holder.endswith(":adoption"):
+                session_db.append_message(
+                    tip,
+                    role="user",
+                    content="late-before-lease",
+                )
+                appended_before_acquire.append(True)
+            return original_acquire(
+                session_db,
+                session_id,
+                holder,
+                ttl_seconds=ttl_seconds,
+                patience_s=patience_s,
+                raise_on_error=raise_on_error,
+            )
+
+        with patch.object(
+            SessionDB,
+            "try_acquire_compression_lock",
+            _append_then_acquire,
+        ):
+            recovered = recover_rotated_compression_session(agent)
+
+        assert appended_before_acquire == [True]
+        assert recovered is not None
+        assert [message["content"] for message in recovered] == [
+            "initial",
+            "late-before-lease",
+        ]
+        assert getattr(agent, "session_id") == tip
+
+    def test_lost_adoption_lease_fails_closed_without_replaying_hooks(
+        self,
+        tmp_path: Path,
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "EXPIRED_ADOPTION_PARENT"
+        tip = "EXPIRED_ADOPTION_TIP"
+        successor = "EXPIRED_ADOPTION_SUCCESSOR"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(
+            tip,
+            [{"role": "user", "content": "stale tip history"}],
+        )
+        raced: list[bool] = []
+
+        def _expire_during_lifecycle(session_id: str, **_kwargs) -> None:
+            if session_id != tip or raced:
+                return
+            with db._lock:
+                assert db._conn is not None
+                db._conn.execute(
+                    "UPDATE compression_locks SET expires_at = 0 WHERE session_id = ?",
+                    (tip,),
+                )
+                db._conn.commit()
+            acquired = db.try_acquire_compression_lock(
+                tip,
+                "competing-compressor",
+                ttl_seconds=60,
+            )
+            raced.append(acquired)
+            assert acquired
+            try:
+                db.publish_compression_child(
+                    parent_session_id=tip,
+                    child_session_id=successor,
+                    source="webui",
+                    messages=[
+                        {"role": "user", "content": "successor history"}
+                    ],
+                    compression_lock_holder="competing-compressor",
+                )
+            finally:
+                db.release_compression_lock(tip, "competing-compressor")
+
+        getattr(agent, "context_compressor").on_session_start.side_effect = (
+            _expire_during_lifecycle
+        )
+
+        # Failure injection: the background refresher is deliberately stalled,
+        # forcing the synchronous ownership check to detect the reclaimed lease.
+        with patch.object(
+            compression_module._CompressionLockLeaseRefresher,
+            "start",
+            lambda self: self,
+        ):
+            with pytest.raises(
+                compression_module.CompressionRecoveryUnavailableError
+            ) as exc_info:
+                recover_rotated_compression_session(agent)
+
+        assert raced == [True]
+        assert exc_info.value.reason == "lease_lost_after_lifecycle"
+        assert exc_info.value.session_id == parent
+        assert exc_info.value.retryable is True
+        assert getattr(agent, "session_id") == parent
+        getattr(agent, "context_compressor").on_session_start.assert_called_once()
+        assert (
+            getattr(agent, "context_compressor").on_session_start.call_args.args[0]
+            == tip
+        )
+        getattr(agent, "context_compressor").bind_session_state.assert_called_once_with(
+            db,
+            parent,
+        )
+        tip_row = db.get_session(tip)
+        assert tip_row is not None
+        assert tip_row["ended_at"] is not None
+        assert db.get_compression_lock_holder(tip) is None
+
+    def test_expired_adoption_lease_cannot_hide_intervening_append(
+        self,
+        tmp_path: Path,
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "EXPIRED_GAP_PARENT"
+        tip = "EXPIRED_GAP_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(
+            tip,
+            [{"role": "user", "content": "loaded-before-gap"}],
+        )
+
+        def _expire_and_append(session_id: str, **_kwargs) -> None:
+            if session_id != tip:
+                return
+            with db._lock:
+                assert db._conn is not None
+                db._conn.execute(
+                    "UPDATE compression_locks SET expires_at = 0 WHERE session_id = ?",
+                    (tip,),
+                )
+                db._conn.commit()
+            db.append_message(
+                tip,
+                role="user",
+                content="committed-during-lease-gap",
+            )
+
+        getattr(agent, "context_compressor").on_session_start.side_effect = (
+            _expire_and_append
+        )
+
+        with patch.object(
+            compression_module._CompressionLockLeaseRefresher,
+            "start",
+            lambda self: self,
+        ):
+            with pytest.raises(
+                compression_module.CompressionRecoveryUnavailableError
+            ) as exc_info:
+                recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "lease_lost_after_lifecycle"
+        assert getattr(agent, "session_id") == parent
+        assert [
+            message["content"] for message in db.get_messages_as_conversation(tip)
+        ] == ["loaded-before-gap", "committed-during-lease-gap"]
+
+    def test_lifecycle_hook_false_restores_parent_and_aborts(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "HOOK_FALSE_PARENT"
+        tip = "HOOK_FALSE_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+        compressor = getattr(agent, "context_compressor")
+        compressor.on_session_start.return_value = False
+
+        with pytest.raises(
+            compression_module.CompressionRecoveryUnavailableError
+        ) as exc_info:
+            recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "lifecycle_binding_failed"
+        assert getattr(agent, "session_id") == parent
+        compressor.bind_session_state.assert_called_once_with(db, parent)
+
+    def test_lifecycle_hook_failure_restores_parent_and_aborts(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "HOOK_FAILURE_PARENT"
+        tip = "HOOK_FAILURE_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+        compressor = getattr(agent, "context_compressor")
+        bound_state = {"session_id": parent}
+
+        def _partially_bind_then_fail(session_id, **_kwargs):
+            bound_state["session_id"] = session_id
+            raise RuntimeError("plugin hook failed")
+
+        def _bind_state(_session_db, session_id):
+            bound_state["session_id"] = session_id
+
+        compressor.on_session_start.side_effect = _partially_bind_then_fail
+        compressor.bind_session_state.side_effect = _bind_state
+
+        with pytest.raises(
+            compression_module.CompressionRecoveryUnavailableError
+        ) as exc_info:
+            recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "lifecycle_binding_failed"
+        assert getattr(agent, "session_id") == parent
+        assert bound_state["session_id"] == parent
+        compressor.on_session_start.assert_called_once()
+        compressor.bind_session_state.assert_called_once_with(db, parent)
+
+    def test_persistent_adoption_conflict_fails_closed(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "BUSY_ADOPTION_PARENT"
+        tip = "BUSY_ADOPTION_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(
+            tip,
+            [{"role": "user", "content": "canonical tip history"}],
+        )
+        assert db.try_acquire_compression_lock(
+            tip,
+            "competing-compressor",
+            ttl_seconds=60,
+        )
+        with patch.object(compression_module.time, "sleep", return_value=None):
+            with pytest.raises(
+                compression_module.CompressionRecoveryUnavailableError
+            ) as exc_info:
+                recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "tip_busy"
+        assert exc_info.value.session_id == parent
+        assert exc_info.value.retryable is True
+        assert getattr(agent, "session_id") == parent
+        assert db.get_compression_lock_holder(tip) == "competing-compressor"
+
+    def test_sqlite_lock_error_is_not_retried_as_tip_contention(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "SQLITE_ERROR_PARENT"
+        tip = "SQLITE_ERROR_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+        acquire_calls = 0
+
+        def _acquire_sqlite_error(
+            _db,
+            session_id,
+            holder,
+            ttl_seconds=300.0,
+            *,
+            patience_s=None,
+            raise_on_error=False,
+        ):
+            del session_id, holder, ttl_seconds, patience_s, raise_on_error
+            nonlocal acquire_calls
+            acquire_calls += 1
+            raise sqlite3.OperationalError("database is locked")
+
+        with patch.object(
+            SessionDB,
+            "try_acquire_compression_lock",
+            new=_acquire_sqlite_error,
+        ):
+            with patch.object(compression_module.time, "sleep", return_value=None):
+                with pytest.raises(
+                    compression_module.CompressionRecoveryUnavailableError
+                ) as exc_info:
+                    recover_rotated_compression_session(agent)
+
+        assert acquire_calls == 1
+        assert exc_info.value.reason == "sqlite_error"
+        assert exc_info.value.session_id == parent
+        assert exc_info.value.retryable is True
+        assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
+        assert getattr(agent, "session_id") == parent
+
+    def test_real_sqlite_contention_respects_composed_recovery_budget(
+        self,
+        tmp_path: Path,
+    ):
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        parent = "REAL_BUSY_PARENT"
+        tip = "REAL_BUSY_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+        blocker = sqlite3.connect(str(db_path), timeout=0, isolation_level=None)
+        blocker.execute("BEGIN IMMEDIATE")
+        started = time.monotonic()
+        try:
+            with pytest.raises(
+                compression_module.CompressionRecoveryUnavailableError
+            ) as exc_info:
+                recover_rotated_compression_session(agent)
+        finally:
+            elapsed = time.monotonic() - started
+            blocker.rollback()
+            blocker.close()
+
+        assert exc_info.value.reason == "sqlite_error"
+        assert exc_info.value.retryable is True
+        assert elapsed < 1.5
+        assert getattr(agent, "session_id") == parent
+
+    def test_declared_instance_session_db_adapter_can_recover(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "ADAPTER_PARENT"
+        tip = "ADAPTER_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+        class _DeclaredAdapter:
+            pass
+
+        adapter = _DeclaredAdapter()
+        for name in (
+            "get_session",
+            "find_live_compression_child",
+            "get_messages_as_conversation",
+            "get_compression_lock_holder",
+            "try_acquire_compression_lock",
+            "refresh_compression_lock",
+            "release_compression_lock",
+        ):
+            setattr(adapter, name, getattr(db, name))
+        setattr(agent, "_session_db", adapter)
+
+        recovered = recover_rotated_compression_session(agent)
+
+        assert recovered is not None
+        assert [message["content"] for message in recovered] == ["tip history"]
+        assert getattr(agent, "session_id") == tip
+
+    def test_lock_adapter_without_bounded_error_contract_is_rejected(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "LEGACY_LOCK_ADAPTER_PARENT"
+        tip = "LEGACY_LOCK_ADAPTER_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+        class _LegacyLockAdapter:
+            def get_session(self, session_id):
+                return db.get_session(session_id)
+
+            def find_live_compression_child(self, session_id):
+                return db.find_live_compression_child(session_id)
+
+            def get_messages_as_conversation(self, session_id):
+                return db.get_messages_as_conversation(session_id)
+
+            def get_compression_lock_holder(self, session_id):
+                return db.get_compression_lock_holder(session_id)
+
+            def try_acquire_compression_lock(self, session_id, holder):
+                return db.try_acquire_compression_lock(session_id, holder)
+
+            def refresh_compression_lock(self, session_id, holder):
+                return db.refresh_compression_lock(session_id, holder)
+
+            def release_compression_lock(self, session_id, holder):
+                return db.release_compression_lock(session_id, holder)
+
+        setattr(agent, "_session_db", _LegacyLockAdapter())
+
+        with pytest.raises(
+            compression_module.CompressionRecoveryUnavailableError
+        ) as exc_info:
+            recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "unsupported_db"
+        assert exc_info.value.retryable is False
+        assert getattr(agent, "session_id") == parent
+
+    def test_lock_adapter_cannot_hide_positional_only_controls_behind_kwargs(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "POSITIONAL_LOCK_ADAPTER_PARENT"
+        tip = "POSITIONAL_LOCK_ADAPTER_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+        class _PositionalOnlyLockAdapter:
+            pass
+
+        adapter = _PositionalOnlyLockAdapter()
+        for name in (
+            "get_session",
+            "find_live_compression_child",
+            "get_messages_as_conversation",
+            "get_compression_lock_holder",
+            "refresh_compression_lock",
+            "release_compression_lock",
+        ):
+            setattr(adapter, name, getattr(db, name))
+
+        def _legacy_acquire(
+            session_id,
+            holder,
+            ttl_seconds=300.0,
+            patience_s=20.0,
+            raise_on_error=False,
+            /,
+            **_kwargs,
+        ):
+            return db.try_acquire_compression_lock(
+                session_id,
+                holder,
+                ttl_seconds,
+                patience_s=patience_s,
+                raise_on_error=raise_on_error,
+            )
+
+        setattr(adapter, "try_acquire_compression_lock", _legacy_acquire)
+        setattr(agent, "_session_db", adapter)
+
+        with pytest.raises(
+            compression_module.CompressionRecoveryUnavailableError
+        ) as exc_info:
+            recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "unsupported_db"
+
+    def test_kwargs_only_lock_adapter_does_not_declare_bounded_contract(self):
+        def _kwargs_only(*_args, **_kwargs):
+            return True
+
+        assert not compression_module._lock_method_accepts_bounded_recovery_contract(
+            _kwargs_only,
+            require_ttl=True,
+        )
+        assert not compression_module._lock_method_accepts_bounded_recovery_contract(
+            _kwargs_only,
+            require_ttl=False,
+        )
+
+    def test_undeclared_session_db_inspection_fails_closed(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "UNSUPPORTED_ADAPTER_PARENT"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        setattr(agent, "_session_db", object())
+
+        with pytest.raises(
+            compression_module.CompressionRecoveryUnavailableError
+        ) as exc_info:
+            recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "unsupported_db"
+        assert exc_info.value.session_id == parent
+        assert exc_info.value.retryable is False
+
+    def test_failed_hook_and_direct_binding_never_commit_agent(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "BIND_FAILURE_PARENT"
+        tip = "BIND_FAILURE_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+        compressor = getattr(agent, "context_compressor")
+        compressor.on_session_start.side_effect = RuntimeError("hook failed")
+        compressor.bind_session_state.side_effect = RuntimeError("bind failed")
+
+        with pytest.raises(
+            compression_module.CompressionRecoveryUnavailableError
+        ) as exc_info:
+            recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "lifecycle_binding_failed"
+        assert exc_info.value.retryable is False
+        assert getattr(agent, "session_id") == parent
+        compressor.on_session_start.assert_called_once()
+        compressor.bind_session_state.assert_called_once_with(db, parent)
+
+    def test_dynamic_context_lifecycle_hook_is_rejected_without_invocation(
+        self,
+        tmp_path: Path,
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "DYNAMIC_CONTEXT_PARENT"
+        tip = "DYNAMIC_CONTEXT_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+        class _DynamicCompressor:
+            def __init__(self):
+                self.lifecycle_calls = 0
+                self.binding_calls = []
+
+            def __getattr__(self, name):
+                if name != "on_session_start":
+                    raise AttributeError(name)
+
+                def _dynamic_hook(*_args, **_kwargs):
+                    self.lifecycle_calls += 1
+
+                return _dynamic_hook
+
+            def bind_session_state(self, *args, **kwargs):
+                self.binding_calls.append((args, kwargs))
+
+        compressor = _DynamicCompressor()
+        setattr(agent, "context_compressor", compressor)
+
+        with pytest.raises(
+            compression_module.CompressionRecoveryUnavailableError
+        ) as exc_info:
+            recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "lifecycle_binding_failed"
+        assert compressor.lifecycle_calls == 0
+        assert compressor.binding_calls == [((db, parent), {})]
+        assert getattr(agent, "session_id") == parent
+
+    def test_dynamic_restore_binder_is_rejected_without_invocation(
+        self,
+        tmp_path: Path,
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "DYNAMIC_RESTORE_PARENT"
+        tip = "DYNAMIC_RESTORE_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+        class _DynamicRestoreCompressor:
+            def __init__(self):
+                self.binding_calls = 0
+
+            def on_session_start(self, *_args, **_kwargs):
+                return False
+
+            def __getattr__(self, name):
+                if name != "bind_session_state":
+                    raise AttributeError(name)
+
+                def _dynamic_bind(*_args, **_kwargs):
+                    self.binding_calls += 1
+
+                return _dynamic_bind
+
+        compressor = _DynamicRestoreCompressor()
+        setattr(agent, "context_compressor", compressor)
+
+        with pytest.raises(
+            compression_module.CompressionRecoveryUnavailableError
+        ) as exc_info:
+            recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "lifecycle_binding_failed"
+        assert compressor.binding_calls == 0
+        assert getattr(agent, "session_id") == parent
+
+    def test_memory_switch_failure_commits_child_and_blocks_until_retry(
+        self,
+        tmp_path: Path,
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "MEMORY_SWITCH_FAILURE_PARENT"
+        tip = "MEMORY_SWITCH_FAILURE_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+        class _RetryingMemoryManager:
+            def __init__(self):
+                self.switch_calls = []
+                self.retry_calls = 0
+
+            def on_session_switch(self, session_id, **kwargs):
+                self.switch_calls.append((session_id, kwargs))
+                return False
+
+            def retry_pending_session_switch(self):
+                self.retry_calls += 1
+                return True
+
+        memory_manager = _RetryingMemoryManager()
+        setattr(agent, "_memory_manager", memory_manager)
+
+        with pytest.raises(
+            compression_module.CompressionRecoveryUnavailableError
+        ) as exc_info:
+            recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "memory_binding_pending"
+        assert getattr(agent, "session_id") == tip
+        assert getattr(agent, "_pending_compression_memory_switch") == {
+            "session_id": tip,
+            "parent_session_id": parent,
+        }
+        getattr(agent, "context_compressor").on_session_start.assert_called_once()
+        assert memory_manager.switch_calls == [
+            (
+                tip,
+                {
+                    "parent_session_id": parent,
+                    "reset": False,
+                    "reason": "resume",
+                },
+            )
+        ]
+
+        resumed_history = (
+            compression_module.resume_pending_compression_memory_switch(agent)
+        )
+
+        assert memory_manager.retry_calls == 1
+        assert resumed_history is not None
+        assert [message["content"] for message in resumed_history] == ["tip history"]
+        assert getattr(agent, "_pending_compression_memory_switch") is None
+
+    def test_memory_retry_is_not_replayed_after_transcript_reload_error(
+        self,
+        tmp_path: Path,
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "MEMORY_RELOAD_PARENT"
+        tip = "MEMORY_RELOAD_TIP"
+        db.create_session(parent, source="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "durable tip"}])
+        agent = _build_agent_with_db(db, tip, platform="webui")
+        agent._pending_compression_memory_switch = {
+            "session_id": tip,
+            "parent_session_id": parent,
+        }
+
+        class _RetryingMemoryManager:
+            def __init__(self):
+                self.retry_calls = 0
+
+            def retry_pending_session_switch(self):
+                self.retry_calls += 1
+                return True
+
+            def on_session_switch(self, *_args, **_kwargs):
+                raise AssertionError("full memory switch must not replay")
+
+        memory_manager = _RetryingMemoryManager()
+        agent._memory_manager = memory_manager
+        real_loader = db.get_messages_as_conversation
+        load_calls = 0
+
+        def _load_once_then_succeed(session_id, *_args, **_kwargs):
+            nonlocal load_calls
+            load_calls += 1
+            if load_calls == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return real_loader(session_id)
+
+        setattr(db, "get_messages_as_conversation", _load_once_then_succeed)
+
+        with pytest.raises(
+            compression_module.CompressionRecoveryUnavailableError
+        ) as exc_info:
+            compression_module.resume_pending_compression_memory_switch(agent)
+
+        assert exc_info.value.reason == "sqlite_error"
+        assert memory_manager.retry_calls == 1
+        assert getattr(agent, "_pending_compression_memory_switch")["memory_bound"] is True
+
+        resumed_history = (
+            compression_module.resume_pending_compression_memory_switch(agent)
+        )
+
+        assert memory_manager.retry_calls == 1
+        assert resumed_history is not None
+        assert [message["content"] for message in resumed_history] == ["durable tip"]
+        assert getattr(agent, "_pending_compression_memory_switch") is None
+
+    def test_partial_memory_provider_failure_is_forward_only_and_selectively_retried(
+        self,
+        tmp_path: Path,
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARTIAL_MEMORY_PARENT"
+        tip = "PARTIAL_MEMORY_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+        class _StatefulProvider(MemoryProvider):
+            def __init__(self, name: str, *, fail_once: bool = False):
+                self._name = name
+                self.fail_once = fail_once
+                self.session_id = parent
+                self.switch_calls = 0
+
+            @property
+            def name(self):
+                return self._name
+
+            def is_available(self):
+                return True
+
+            def initialize(self, session_id, **kwargs):
+                self.session_id = session_id
+
+            def get_tool_schemas(self):
+                return []
+
+            def on_session_switch(self, new_session_id, **kwargs):
+                self.switch_calls += 1
+                self.session_id = new_session_id
+                if self.fail_once:
+                    self.fail_once = False
+                    raise RuntimeError("partial provider failure")
+                return None
+
+        good = _StatefulProvider("builtin")
+        flaky = _StatefulProvider("external", fail_once=True)
+        memory_manager = MemoryManager()
+        memory_manager.add_provider(good)
+        memory_manager.add_provider(flaky)
+        setattr(agent, "_memory_manager", memory_manager)
+
+        with pytest.raises(
+            compression_module.CompressionRecoveryUnavailableError
+        ) as exc_info:
+            recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "memory_binding_pending"
+        assert getattr(agent, "session_id") == tip
+        assert good.session_id == tip
+        assert flaky.session_id == tip
+        assert good.switch_calls == 1
+        assert flaky.switch_calls == 1
+
+        compression_module.resume_pending_compression_memory_switch(agent)
+
+        assert good.switch_calls == 1
+        assert flaky.switch_calls == 2
+        assert getattr(agent, "_pending_compression_memory_switch") is None
+
+    def test_final_refresh_sqlite_error_restores_parent_binding(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "FINAL_REFRESH_ERROR_PARENT"
+        tip = "FINAL_REFRESH_ERROR_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+        real_refresh = db.refresh_compression_lock
+        refresh_calls = 0
+
+        def _refresh_then_error(
+            _db,
+            session_id,
+            holder,
+            ttl_seconds=300.0,
+            *,
+            patience_s=None,
+            raise_on_error=False,
+        ):
+            nonlocal refresh_calls
+            refresh_calls += 1
+            if refresh_calls == 1:
+                return real_refresh(
+                    session_id,
+                    holder,
+                    ttl_seconds,
+                    patience_s=patience_s,
+                    raise_on_error=raise_on_error,
+                )
+            raise sqlite3.OperationalError("database is locked")
+
+        with patch.object(
+            compression_module._CompressionLockLeaseRefresher,
+            "start",
+            lambda self: self,
+        ):
+            with patch.object(
+                SessionDB,
+                "refresh_compression_lock",
+                new=_refresh_then_error,
+            ):
+                with pytest.raises(
+                    compression_module.CompressionRecoveryUnavailableError
+                ) as exc_info:
+                    recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "sqlite_error"
+        assert getattr(agent, "session_id") == parent
+        compressor = getattr(agent, "context_compressor")
+        compressor.on_session_start.assert_called_once()
+        compressor.bind_session_state.assert_called_once_with(db, parent)
+
+    def test_failed_hook_without_direct_binding_never_commits_agent(
+        self,
+        tmp_path: Path,
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "NO_BINDER_PARENT"
+        tip = "NO_BINDER_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+        class _BrokenCompressor:
+            @staticmethod
+            def on_session_start(*_args, **_kwargs):
+                raise RuntimeError("hook failed")
+
+        setattr(agent, "context_compressor", _BrokenCompressor())
+
+        with pytest.raises(
+            compression_module.CompressionRecoveryUnavailableError
+        ) as exc_info:
+            recover_rotated_compression_session(agent)
+
+        assert exc_info.value.reason == "lifecycle_binding_failed"
+        assert getattr(agent, "session_id") == parent
+
+    def test_release_failure_does_not_mask_committed_adoption(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "RELEASE_FAILURE_PARENT"
+        tip = "RELEASE_FAILURE_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+        class _DeclaredAdapter:
+            pass
+
+        adapter = _DeclaredAdapter()
+        for name in (
+            "get_session",
+            "find_live_compression_child",
+            "get_messages_as_conversation",
+            "get_compression_lock_holder",
+            "try_acquire_compression_lock",
+            "refresh_compression_lock",
+            "append_messages_batch",
+        ):
+            setattr(adapter, name, getattr(db, name))
+
+        def _release_fails(
+            session_id,
+            holder,
+            *,
+            patience_s=None,
+            raise_on_error=False,
+        ):
+            del session_id, holder, patience_s, raise_on_error
+            raise RuntimeError("release failed")
+
+        setattr(adapter, "release_compression_lock", _release_fails)
+        setattr(agent, "_session_db", adapter)
+
+        recovered = recover_rotated_compression_session(agent)
+
+        assert recovered is not None
+        assert [message["content"] for message in recovered] == ["tip history"]
+        assert getattr(agent, "session_id") == tip
+        active_holder = getattr(agent, "_active_compression_lock_holder", None)
+        assert active_holder is not None
+        assert db.get_compression_lock_holder(tip) == active_holder
+        db.append_messages_batch(
+            tip,
+            [{"role": "assistant", "content": "owner can continue"}],
+            compression_lock_holder=active_holder,
+        )
+        with db._lock:
+            assert db._conn is not None
+            db._conn.execute(
+                "UPDATE compression_locks SET expires_at = 0 WHERE session_id = ?",
+                (tip,),
+            )
+            db._conn.commit()
+        assert db.try_acquire_compression_lock(tip, "successor-holder") is True
+        messages = list(recovered)
+        messages.append({"role": "user", "content": "must not cross reclaimed lease"})
+        setattr(agent, "messages", messages)
+
+        flush_pending = getattr(agent, "_flush_messages_to_session_db")
+        assert flush_pending(messages) is False
+        assert getattr(agent, "_active_compression_lock_holder", None) is None
+        assert db.get_compression_lock_holder(tip) == "successor-holder"
+
+    def test_false_release_preserves_committed_adoption_holder(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "FALSE_RELEASE_PARENT"
+        tip = "FALSE_RELEASE_TIP"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session(tip, source="webui", parent_session_id=parent)
+        db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+        class _DeclaredAdapter:
+            pass
+
+        adapter = _DeclaredAdapter()
+        for name in (
+            "get_session",
+            "find_live_compression_child",
+            "get_messages_as_conversation",
+            "get_compression_lock_holder",
+            "try_acquire_compression_lock",
+            "refresh_compression_lock",
+        ):
+            setattr(adapter, name, getattr(db, name))
+
+        def _release_returns_false(
+            session_id,
+            holder,
+            *,
+            patience_s=None,
+            raise_on_error=False,
+        ):
+            del session_id, holder, patience_s, raise_on_error
+            return False
+
+        setattr(adapter, "release_compression_lock", _release_returns_false)
+        setattr(agent, "_session_db", adapter)
+
+        recovered = recover_rotated_compression_session(agent)
+
+        assert recovered is not None
+        active_holder = getattr(agent, "_active_compression_lock_holder", None)
+        assert active_holder is not None
+        assert db.get_compression_lock_holder(tip) == active_holder
+
+    def test_persist_session_propagates_batch_append_refusal(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "PERSISTENCE_REFUSAL"
+        db.create_session(session_id, source="webui")
+        agent = _build_agent_with_db(db, session_id, platform="webui")
+        setattr(agent, "_save_session_log", lambda _messages: None)
+        setattr(agent, "_flush_messages_to_session_db", lambda *_args: False)
+        setattr(db, "flush_token_counts", lambda: None)
+
+        assert agent._persist_session([], []) is False
+
+
 class TestAutomaticCompressionStateRefreshAfterLock:
-    def test_prebound_agent_rejects_parent_rotated_before_lock_acquisition(
+    def test_prebound_agent_fails_closed_on_empty_rotated_child_before_lock(
         self,
         refresh_state_db: SessionDB,
     ):
@@ -324,16 +1521,29 @@ class TestAutomaticCompressionStateRefreshAfterLock:
         # but before it acquires the parent lock.
         real_acquire = db.try_acquire_compression_lock
 
-        def _acquire_after_rotation(*args, **kwargs):
+        def _acquire_after_rotation(
+            session_id,
+            holder,
+            ttl_seconds=300.0,
+            *,
+            patience_s=None,
+            raise_on_error=False,
+        ):
             db.end_session(parent_id, "compression")
             db.create_session(
                 child_id,
                 source="telegram",
                 parent_session_id=parent_id,
             )
-            return real_acquire(*args, **kwargs)
+            return real_acquire(
+                session_id,
+                holder,
+                ttl_seconds,
+                patience_s=patience_s,
+                raise_on_error=raise_on_error,
+            )
 
-        db.try_acquire_compression_lock = _acquire_after_rotation
+        setattr(db, "try_acquire_compression_lock", _acquire_after_rotation)
         agent.context_compressor = compressor
         agent.compression_in_place = False
         agent._compression_feasibility_checked = True
@@ -344,18 +1554,21 @@ class TestAutomaticCompressionStateRefreshAfterLock:
             "compress",
             side_effect=AssertionError("stale parent was compressed again"),
         ) as compress:
-            returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=120_000,
-                force=True,
-            )
+            with pytest.raises(
+                compression_module.CompressionRecoveryUnavailableError
+            ) as exc_info:
+                agent._compress_context(
+                    messages,
+                    "sys",
+                    approx_tokens=120_000,
+                    force=True,
+                )
 
         children = db._conn.execute(
             "SELECT id FROM sessions WHERE parent_session_id = ?",
             (parent_id,),
         ).fetchall()
-        assert returned is messages
+        assert exc_info.value.reason == "empty_tip"
         assert agent.session_id == parent_id
         assert [row["id"] for row in children] == [child_id]
         compress.assert_not_called()

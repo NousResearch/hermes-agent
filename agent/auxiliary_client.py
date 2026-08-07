@@ -1556,6 +1556,11 @@ class _CodexCompletionsAdapter:
 
             resp_usage = getattr(final, "usage", None)
             if resp_usage:
+                # Pass through input_tokens_details so usage_pricing.py
+                # can extract cache tokens for codex_responses mode (#71242).
+                _details = getattr(resp_usage, "input_tokens_details", None)
+                if _details is None and isinstance(resp_usage, dict):
+                    _details = resp_usage.get("input_tokens_details")
                 usage = SimpleNamespace(
                     prompt_tokens=getattr(resp_usage, "input_tokens", 0)
                         or (resp_usage.get("input_tokens", 0) if isinstance(resp_usage, dict) else 0),
@@ -1563,6 +1568,7 @@ class _CodexCompletionsAdapter:
                         or (resp_usage.get("output_tokens", 0) if isinstance(resp_usage, dict) else 0),
                     total_tokens=getattr(resp_usage, "total_tokens", 0)
                         or (resp_usage.get("total_tokens", 0) if isinstance(resp_usage, dict) else 0),
+                    input_tokens_details=_details,
                 )
         except Exception as exc:
             if timed_out.is_set():
@@ -1807,10 +1813,16 @@ class _AnthropicCompletionsAdapter:
             prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
             completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
             total_tokens = getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+            # Preserve Anthropic cache token fields so that usage_pricing.py
+            # can calculate MoA / auxiliary cost correctly (issue #71242).
+            cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            cache_creation = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
             usage = SimpleNamespace(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_creation,
             )
 
         choice = SimpleNamespace(

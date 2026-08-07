@@ -9,6 +9,11 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    # Manual credential selection (#76937): map provider -> credential name
+    # (the ``--name`` given to ``hermes auth add``).  The provider's pool is
+    # pinned to that credential while it is available, falling back to
+    # auto-rotation when it is missing or exhausted.
+    "default_auth": {},
     "toolsets": ["hermes-cli"],
     # SQLite journal mode used by every Hermes database opener. WAL is the
     # normal default; set DELETE for weak-fsync/shared filesystems where WAL is

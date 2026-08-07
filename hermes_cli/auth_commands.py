@@ -22,6 +22,7 @@ from agent.credential_pool import (
     PooledCredential,
     _exhausted_until,
     _normalize_custom_pool_name,
+    get_default_auth_name,
     get_pool_strategy,
     label_from_token,
     list_custom_pool_providers,
@@ -107,6 +108,19 @@ def _oauth_default_label(provider: str, count: int) -> str:
 
 def _api_key_default_label(count: int) -> str:
     return f"api-key-{count}"
+
+
+def _credential_name(args) -> Optional[str]:
+    """Return a user-supplied credential name (``--name``), stripped, or None.
+
+    The name is the manual-selection key for #76937: pairing it with
+    ``config.default_auth`` pins the provider's pool to this credential.
+    """
+    name = getattr(args, "name", None)
+    if not isinstance(name, str):
+        return None
+    name = name.strip()
+    return name or None
 
 
 def _display_source(source: str) -> str:
@@ -216,6 +230,7 @@ def auth_add_command(args) -> None:
             source=SOURCE_MANUAL,
             access_token=token,
             base_url=_provider_base_url(provider),
+            name=_credential_name(args),
         )
         pool.add_entry(entry)
         print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
@@ -242,6 +257,7 @@ def auth_add_command(args) -> None:
             refresh_token=creds.get("refresh_token"),
             expires_at_ms=creds.get("expires_at_ms"),
             base_url=_provider_base_url(provider),
+            name=_credential_name(args),
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
@@ -276,7 +292,11 @@ def auth_add_command(args) -> None:
                 )
                 if rehydrated is not None:
                     custom_label = (getattr(args, "label", None) or "").strip() or None
-                    entry = auth_mod.persist_nous_credentials(rehydrated, label=custom_label)
+                    entry = auth_mod.persist_nous_credentials(
+                        rehydrated,
+                        label=custom_label,
+                        name=_credential_name(args),
+                    )
                     shown_label = entry.label if entry is not None else label_from_token(
                         rehydrated.get("access_token", ""), _oauth_default_label(provider, 1),
                     )
@@ -300,7 +320,11 @@ def auth_add_command(args) -> None:
         # helper embeds this into providers.nous so that label_from_token
         # doesn't overwrite it on every subsequent load_pool("nous").
         custom_label = (getattr(args, "label", None) or "").strip() or None
-        entry = auth_mod.persist_nous_credentials(creds, label=custom_label)
+        entry = auth_mod.persist_nous_credentials(
+            creds,
+            label=custom_label,
+            name=_credential_name(args),
+        )
         shown_label = entry.label if entry is not None else label_from_token(
             creds.get("access_token", ""), _oauth_default_label(provider, 1),
         )
@@ -334,6 +358,7 @@ def auth_add_command(args) -> None:
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url"),
             last_refresh=creds.get("last_refresh"),
+            name=_credential_name(args),
         )
         first_credential = not pool.entries()
         pool.add_entry(entry)
@@ -375,6 +400,7 @@ def auth_add_command(args) -> None:
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url") or auth_mod.DEFAULT_XAI_OAUTH_BASE_URL,
             last_refresh=creds.get("last_refresh"),
+            name=_credential_name(args),
         )
         first_credential = not pool.entries()
         pool.add_entry(entry)
@@ -402,6 +428,7 @@ def auth_add_command(args) -> None:
             source=f"{SOURCE_MANUAL}:qwen_cli",
             access_token=creds["api_key"],
             base_url=creds.get("base_url"),
+            name=_credential_name(args),
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
@@ -426,6 +453,7 @@ def auth_add_command(args) -> None:
             access_token=creds["access_token"],
             refresh_token=creds.get("refresh_token"),
             base_url=creds.get("inference_base_url"),
+            name=_credential_name(args),
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
@@ -450,14 +478,21 @@ def auth_list_command(args) -> None:
         if not entries:
             continue
         current = pool.peek()
-        print(f"{provider} ({len(entries)} credentials):")
+        default_auth = get_default_auth_name(provider)
+        header = f"{provider} ({len(entries)} credentials):"
+        if default_auth:
+            header += f"  [default_auth: {default_auth}]"
+        print(header)
         for idx, entry in enumerate(entries, start=1):
             marker = "  "
             if current is not None and entry.id == current.id:
                 marker = "← "
             status = _format_exhausted_status(entry)
             source = _display_source(entry.source)
-            print(f"  #{idx}  {entry.label:<20} {entry.auth_type:<7} {source}{status} {marker}".rstrip())
+            name_tag = f" [name:{entry.name}]" if (entry.name or "").strip() else ""
+            print(
+                f"  #{idx}  {entry.label:<20} {entry.auth_type:<7} {source}{name_tag}{status} {marker}".rstrip()
+            )
         print()
 
 
@@ -698,8 +733,18 @@ def _interactive_add() -> None:
     if typed_label:
         label = typed_label
 
+    name = None
+    try:
+        typed_name = input(
+            "Credential name for manual selection, e.g. 'daily' (optional): "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if typed_name:
+        name = typed_name
+
     auth_add_command(SimpleNamespace(
-        provider=provider, auth_type=auth_type, label=label, api_key=None,
+        provider=provider, auth_type=auth_type, label=label, name=name, api_key=None,
         portal_url=None, inference_url=None, client_id=None, scope=None,
         no_browser=False, timeout=None, insecure=False, ca_bundle=None,
     ))

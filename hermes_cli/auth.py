@@ -6130,6 +6130,7 @@ def persist_nous_credentials(
     creds: Dict[str, Any],
     *,
     label: Optional[str] = None,
+    name: Optional[str] = None,
 ):
     """Persist Nous OAuth credentials as the singleton provider state
     and ensure the credential pool is in sync.
@@ -6166,6 +6167,11 @@ def persist_nous_credentials(
     state = dict(creds)
     if label and str(label).strip():
         state["label"] = str(label).strip()
+    # Optional manual-selection name (#76937) — carried through the
+    # singleton state so ``_seed_from_singletons`` re-applies it on every
+    # subsequent ``load_pool(\"nous\")``.
+    if name and str(name).strip():
+        state["name"] = str(name).strip()
 
     with _auth_store_lock():
         auth_store = _load_auth_store()

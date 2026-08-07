@@ -94,6 +94,57 @@ def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     assert entry["access_token"] == "sk-or-manual"
 
 
+def test_auth_add_api_key_persists_name_for_manual_selection(tmp_path, monkeypatch):
+    """`hermes auth add --name <name>` stores the manual-selection name (#76937)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openrouter"
+        auth_type = "api-key"
+        api_key = "sk-or-daily"
+        label = "daily key"
+        name = "daily"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openrouter"]
+    entry = next(item for item in entries if item["source"] == "manual")
+    assert entry["name"] == "daily"
+    assert entry["access_token"] == "sk-or-daily"
+
+
+def test_auth_add_without_name_leaves_no_name_key(tmp_path, monkeypatch):
+    """Unnamed keys keep the legacy payload shape (no ``name`` key)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openrouter"
+        auth_type = "api-key"
+        api_key = "sk-or-legacy"
+        label = "legacy"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entry = next(
+        item
+        for item in payload["credential_pool"]["openrouter"]
+        if item["source"] == "manual"
+    )
+    assert "name" not in entry
+
+
 def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})

@@ -206,6 +206,12 @@ class PooledCredential:
     agent_key: Optional[str] = None
     agent_key_expires_at: Optional[str] = None
     request_count: int = 0
+    # Optional user-assigned name (``hermes auth add <provider> --name <name>``)
+    # used for manual credential selection via ``config.default_auth``.  Unlike
+    # ``label`` (a display label that singleton seeding may rewrite), ``name``
+    # is a stable selection key that the user controls.  Entries without a
+    # name keep the legacy auto-rotate behavior.
+    name: Optional[str] = None
     extra: Dict[str, Any] = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -534,6 +540,30 @@ def get_pool_strategy(provider: str) -> str:
     return STRATEGY_FILL_FIRST
 
 
+def get_default_auth_name(provider: str) -> Optional[str]:
+    """Return the user-selected credential name for a provider, if any.
+
+    Reads ``config.yaml``'s ``default_auth`` map (``default_auth:
+    {<provider>: <credential name>}``).  When set, the pool prefers the
+    credential whose ``name`` matches — manual selection instead of passive
+    auto-rotation (#76937).  Selection falls back to the normal strategy when
+    the named credential is missing or currently exhausted.  A missing or
+    malformed config returns None, preserving the legacy auto-rotate
+    behavior for every existing pool.
+    """
+    config = _load_config_safe()
+    if config is None:
+        return None
+    default_auth = config.get("default_auth")
+    if not isinstance(default_auth, dict):
+        return None
+    name = default_auth.get(provider)
+    if not isinstance(name, str):
+        return None
+    name = name.strip()
+    return name or None
+
+
 def credential_pool_matches_provider(
     pool_or_provider: Any,
     provider: Optional[str],
@@ -636,12 +666,11 @@ class CredentialPool:
         self._entries = sorted(entries, key=lambda entry: entry.priority)
         self._current_id: Optional[str] = None
         self._strategy = get_pool_strategy(provider)
-        # RLock: the mutation primitives below (_replace_entry/_persist)
-        # self-acquire this lock so the DEFERRED single-use-token refresh
-        # path (which runs network I/O outside the lock by design) still
-        # serializes its pool mutations. In-lock callers re-acquire
-        # reentrantly at negligible cost.
-        self._lock = threading.RLock()
+        # Optional manual-selection name from config ``default_auth``
+        # (#76937).  When set and a matching entry is available, selection is
+        # pinned to that credential instead of passive auto-rotation.
+        self._default_auth = get_default_auth_name(provider)
+        self._lock = threading.Lock()
         self._active_leases: Dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
         # Monotonic timestamp of the last "no available entries" log, used to
@@ -1975,17 +2004,46 @@ class CredentialPool:
         self._last_no_entries_log_at = now
         logger.info("credential pool: no available entries (all exhausted or empty)")
 
-    def _select_unlocked(self, *, refresh: bool = True) -> Tuple[Optional[PooledCredential], List[tuple]]:
-        """Select the best available credential entry.
+    def _narrow_to_default_auth_unlocked(
+        self, available: List[PooledCredential]
+    ) -> List[PooledCredential]:
+        """Pin selection to the ``default_auth`` named credential when possible.
 
-        Returns ``(entry, pending_refresh)`` where *pending_refresh* contains
-        single-use-token entries that must be refreshed outside the lock.
+        #76937 manual selection: when the user configured a preferred
+        credential name for this provider, selection is restricted to entries
+        with that name while one of them is available.  If the named entry is
+        missing or currently exhausted it drops out of ``available`` and the
+        full list is returned, so the pool falls back to the legacy
+        auto-rotate behavior instead of failing the request.
         """
-        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh)
+        if not self._default_auth:
+            return available
+        named = [
+            entry
+            for entry in available
+            if (entry.name or "").strip() == self._default_auth
+        ]
+        if named:
+            return named
+        logger.info(
+            "credential pool: default_auth credential %r for %s unavailable "
+            "(missing or exhausted) — falling back to auto-rotation",
+            self._default_auth,
+            self.provider,
+        )
+        return available
+
+    def _select_unlocked(self, *, refresh: bool = True) -> Optional[PooledCredential]:
+        available = self._available_entries(clear_expired=True, refresh=refresh)
         if not available:
             self._current_id = None
             self._log_no_available_entries()
             return None, pending_refresh
+
+        # Manual selection (#76937): pin to the configured default_auth
+        # credential while it is available; fall back to auto-rotate below
+        # when it is missing or exhausted.
+        available = self._narrow_to_default_auth_unlocked(available)
 
         # A successful selection means the pool recovered; re-arm the throttle
         # so a later re-exhaustion logs immediately rather than being silenced
@@ -2025,7 +2083,8 @@ class CredentialPool:
             current = self._current_unlocked()
             if current is not None:
                 return current
-            available, _pending = self._available_entries()
+            available = self._available_entries()
+            available = self._narrow_to_default_auth_unlocked(available)
             return available[0] if available else None
 
     def mark_exhausted_and_rotate(
@@ -2599,6 +2658,10 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "agent_key_obtained_at": state.get("agent_key_obtained_at"),
                     "tls": state.get("tls") if isinstance(state.get("tls"), dict) else None,
                     "label": seeded_label,
+                    # Manual-selection name (#76937) embedded by
+                    # persist_nous_credentials(name=...) — None when unset,
+                    # which _upsert_entry ignores.
+                    "name": state.get("name"),
                 },
             )
 

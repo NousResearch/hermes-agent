@@ -300,6 +300,49 @@ Adoption only fires until `tab_id` is populated for the session. If the external
 
 **Concurrency note:** the external app and Hermes can drive the same Camofox `userId` simultaneously, but Camofox does not coordinate per-tab focus between clients. Coordinate ownership at the application layer (e.g. the external app pauses while Hermes runs).
 
+#### Multi-account operation (per-call `user_id`)
+
+The settings above pin **one** identity for the whole process. When you need several signed-in accounts at once — daily sign-ins for a handful of accounts, parallel account testing — pass a `user_id` on the individual browser tool call instead. Camofox maps each `userId` to its own browser profile, so each value gets its own cookies and logins.
+
+The parameter appears on `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_scroll`, `browser_back`, `browser_press`, `browser_console`, `browser_get_images`, and `browser_vision` — **only while the Camofox backend is actually active**, i.e. `CAMOFOX_URL` is set *and* no CDP override is in play. Setting `BROWSER_CDP_URL` or `browser.cdp_url` (or running `/browser connect`) takes priority over Camofox, and the parameter disappears along with it. On agent-browser, CDP, and cloud backends it is not part of the tool schema at all, so it costs nothing there.
+
+A two-account sign-in run looks like this:
+
+```
+browser_navigate(url="https://example.com/login", user_id="acct-alice")
+browser_type(ref="@e3", text="alice@example.com", user_id="acct-alice")
+browser_press(key="Enter", user_id="acct-alice")
+
+browser_navigate(url="https://example.com/login", user_id="acct-bob")
+browser_type(ref="@e3", text="bob@example.com", user_id="acct-bob")
+browser_press(key="Enter", user_id="acct-bob")
+```
+
+Each account keeps its own tab. Reusing the same `user_id` returns to that account's tab; switching values switches accounts; omitting it entirely uses the default session, which is **another separate profile again** — not a continuation of the account you last named. Mixing all three freely in one conversation is supported and is the intended usage; the agent picks per call.
+
+:::warning Pass `user_id` on every call in a sequence
+Element refs (`@e3`) come from a snapshot of one specific account's page and mean nothing in another profile's tab. Because omitting `user_id` switches to the default session rather than continuing the current account, dropping it midway through a signed-in sequence can apply that sequence's refs to a different profile's page. Keep the same `user_id` on every call from navigate through to the last interaction, and re-snapshot after any switch.
+:::
+
+Tool results echo the `user_id` they acted as — on success, on errors, and on blocked pages — so the agent can always confirm which account a call ran under.
+
+**Identity resolution order** (highest precedence first):
+
+1. `user_id` passed on the call
+2. `CAMOFOX_USER_ID` / `browser.camofox.user_id`
+3. `browser.camofox.managed_persistence` (profile-scoped stable identity)
+4. A random ephemeral identity
+
+Omitting `user_id` therefore preserves the existing behavior exactly.
+
+**Allowed values:** a string of 1–64 characters, starting with a letter or digit, containing only letters, digits, and `.` `_` `-` `:` `@`. Anything else — including a non-string such as `0` or `12345` — is rejected before a request is sent, rather than falling back to the default identity. The value reaches Camofox as a URL path segment on session teardown, so the charset is deliberately narrow. This check applies only to per-call values; `CAMOFOX_USER_ID` and `browser.camofox.user_id` are operator-configured and are not re-validated.
+
+**If the backend changes mid-conversation** (e.g. you run `/browser connect`), calls that still carry a `user_id` are **rejected with an error** rather than silently run on the now-shared browser. A shared CDP/cloud browser has one profile and cannot isolate accounts, so running the call anyway could act as whatever account that browser happens to be signed in as.
+
+**Cleanup:** a session created with an explicit `user_id` is treated as caller-owned. At task end Hermes closes its **tab** (`DELETE /tabs/<tabId>`) but never calls `DELETE /sessions/<user_id>`, so the profile, cookies, and logins survive — next time you use the same `user_id` you are still signed in, just in a fresh tab. Closing the tab matters because Camofox's `POST /pressure/cleanup` is caller-triggered, not an automatic reaper; without it every distinct `user_id` would leave a window open indefinitely.
+
+**Tab reuse:** per-call identities follow the same `adopt_existing_tab` setting described above. With it off (the default) each account gets a fresh tab; turn it on if you want Hermes to reattach to an account's existing tab rather than opening another one.
+
 #### VNC live view
 
 When Camofox runs in headed mode (with a visible browser window), it exposes a VNC port in its health check response. Hermes automatically discovers this and includes the VNC URL in navigation responses, so the agent can share a link for you to watch the browser live.

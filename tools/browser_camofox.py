@@ -21,6 +21,14 @@ Then set ``CAMOFOX_URL=http://localhost:9377`` in ``~/.hermes/.env``.
 For Docker Camofox, optionally set ``CAMOFOX_REWRITE_LOOPBACK_URLS=true``
 so page URLs like ``http://127.0.0.1:3000`` are opened inside the
 container as ``http://host.docker.internal:3000``.
+
+Multi-account operation
+-----------------------
+Every tool here takes an optional ``user_id``.  Camofox maps each ``userId``
+to its own browser profile (its own cookies and logins), so passing a
+different one per call lets a single Hermes process drive several signed-in
+accounts without spawning extra Hermes profiles or instances.  Omitting it
+keeps the historical single-identity behaviour.
 """
 
 from __future__ import annotations
@@ -29,9 +37,10 @@ import base64
 import json
 import logging
 import os
+import re
 import threading
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import requests
@@ -313,9 +322,102 @@ def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[Dict[str,
 # ---------------------------------------------------------------------------
 # Session management
 # ---------------------------------------------------------------------------
-# Maps task_id -> {"user_id": str, "tab_id": str|None}
+# Maps session cache key -> {"user_id": str, "tab_id": str|None, ...}
+#
+# The cache key is the bare ``task_id`` for the default (single-identity) path
+# and ``<task_id>::camofox_user::<user_id>`` when a caller pins an explicit
+# per-call identity.  Suffixing keeps today's key space byte-identical for
+# every existing caller while letting one task drive several Camofox accounts
+# side by side; it mirrors the ``::local`` sidecar key convention in
+# ``browser_tool._is_local_sidecar_key``.
 _sessions: Dict[str, Dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
+
+_USER_SCOPE_SEP = "::camofox_user::"
+
+# Charset for a per-call userId.  Deliberately narrow because the value reaches
+# ``DELETE /sessions/{user_id}`` as a *path segment* (see :func:`camofox_close`)
+# and, unlike the config/env identity, it can originate from a model tool call:
+#
+#   - first char must be alphanumeric, which rejects ``.`` / ``..`` / ``-flag``.
+#     ``DELETE /sessions/..`` normalizes to ``DELETE /sessions`` on some servers,
+#     which would wipe every user rather than one.
+#   - no ``/``, ``\``, ``%`` or whitespace, so neither path traversal nor
+#     percent-encoded traversal can be expressed.
+#
+# Matched with ``fullmatch``: Python's ``$`` also matches just before a trailing
+# newline, so ``match(...)`` would accept ``"acct\n"``.  The ``.strip()`` below
+# happens to remove it today, but a security check must not depend on that.
+_CALL_USER_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,63}")
+
+
+class InvalidCamofoxUserId(ValueError):
+    """Raised when a per-call ``user_id`` fails validation."""
+
+
+def _validate_call_user_id(user_id: Any) -> str:
+    """Validate and return a caller-supplied Camofox ``userId``.
+
+    Only applies to per-call identities.  ``CAMOFOX_USER_ID`` /
+    ``browser.camofox.user_id`` are operator-configured and stay unvalidated —
+    tightening those retroactively would break working deployments, and they
+    are not attacker-reachable the way a tool argument is.
+
+    The type check is not defensive nit-picking: models emit type-confused tool
+    arguments, and a bare truthiness gate would let ``user_id=0`` fall through
+    to the *default* identity while the caller believes it addressed a specific
+    account — silently producing the cross-account action this parameter exists
+    to prevent.
+    """
+    if not isinstance(user_id, str):
+        raise InvalidCamofoxUserId(
+            f"Invalid user_id {user_id!r}: expected a string, got "
+            f"{type(user_id).__name__}."
+        )
+    candidate = user_id.strip()
+    if not _CALL_USER_ID_RE.fullmatch(candidate):
+        raise InvalidCamofoxUserId(
+            f"Invalid user_id {user_id!r}. Must be 1-64 characters, start with a "
+            "letter or digit, and contain only letters, digits, and '.', '_', "
+            "'-', ':', '@'."
+        )
+    return candidate
+
+
+def _normalize_call_user_id(user_id: Any) -> Optional[str]:
+    """Return the validated per-call identity, or ``None`` when none was given.
+
+    An empty/whitespace string means "not supplied" — models routinely emit
+    ``""`` for an optional string parameter.  Any *other* non-string (``0``,
+    ``False``, ``12345``) is an error rather than a fallback to the default
+    identity: falling back would run the action under a different account than
+    the caller named, with nothing in the result to distinguish it.
+    """
+    if user_id is None:
+        return None
+    if isinstance(user_id, str) and not user_id.strip():
+        return None
+    return _validate_call_user_id(user_id)
+
+
+def _session_cache_key(task_id: Optional[str], user_id: Optional[str]) -> str:
+    """Return the ``_sessions`` key for a task, optionally scoped to a user."""
+    base = task_id or "default"
+    if not user_id:
+        return base
+    return f"{base}{_USER_SCOPE_SEP}{user_id}"
+
+
+def _session_keys_for_task(task_id: Optional[str]) -> List[str]:
+    """Return every live ``_sessions`` key owned by ``task_id``.
+
+    Includes the bare key plus every per-user key scoped to that task, so task
+    teardown reaps multi-account sessions instead of leaking them.  Callers must
+    hold ``_sessions_lock``.
+    """
+    base = task_id or "default"
+    prefix = f"{base}{_USER_SCOPE_SEP}"
+    return [key for key in _sessions if key == base or key.startswith(prefix)]
 
 
 def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
@@ -356,19 +458,51 @@ def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
     return session
 
 
-def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
-    """Get or create a camofox session for the given task.
+def _get_session(task_id: Optional[str], user_id: Optional[str] = None) -> Dict[str, Any]:
+    """Get or create a camofox session for the given task (and optional user).
 
-    When managed persistence is enabled, uses a deterministic userId
-    derived from the Hermes profile so the Camofox server can map it
-    to the same persistent browser profile across restarts.
+    Identity resolution, highest precedence first:
+
+    1. ``user_id`` — an explicit per-call identity.  Lets one Hermes process
+       drive several Camofox accounts side by side (issue #77273).
+    2. ``CAMOFOX_USER_ID`` / ``browser.camofox.user_id`` — an externally
+       managed identity shared with another app.
+    3. ``managed_persistence`` — a deterministic userId derived from the Hermes
+       profile so the Camofox server can map it to the same persistent browser
+       profile across restarts.
+    4. A random ephemeral userId.
+
+    Sessions are cached per ``(task_id, user_id)`` so repeated calls with the
+    same identity reuse the same tab.
+
+    Raises:
+        InvalidCamofoxUserId: when an explicit ``user_id`` fails validation.
+            Raised before any HTTP request, so a rejected identity never
+            reaches the Camofox server.
     """
     task_id = task_id or "default"
+    user_id = _normalize_call_user_id(user_id)
+    cache_key = _session_cache_key(task_id, user_id)
     with _sessions_lock:
-        if task_id in _sessions:
-            return _adopt_existing_tab(_sessions[task_id])
+        if cache_key in _sessions:
+            return _adopt_existing_tab(_sessions[cache_key])
 
         camofox_cfg = _get_camofox_config()
+        if user_id:
+            # Per-call identity: treated like the externally managed path — the
+            # profile belongs to a caller-named account, so destructive cleanup
+            # is off and tab adoption follows the same operator opt-in.
+            session = {
+                "user_id": user_id,
+                "tab_id": None,
+                "session_key": f"task_{task_id[:16]}",
+                "managed": True,
+                "adopt_existing_tab": _adopt_existing_tab_enabled(camofox_cfg),
+                "destroy_on_close": False,
+            }
+            _sessions[cache_key] = session
+            return _adopt_existing_tab(session)
+
         identity_override = _camofox_identity_override(task_id, camofox_cfg)
         if identity_override:
             session = {
@@ -377,6 +511,7 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
                 "session_key": identity_override["session_key"],
                 "managed": True,
                 "adopt_existing_tab": _adopt_existing_tab_enabled(camofox_cfg),
+                "destroy_on_close": True,
             }
         elif bool(camofox_cfg.get("managed_persistence")):
             identity = get_camofox_identity(task_id)
@@ -386,6 +521,7 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
                 "session_key": identity["session_key"],
                 "managed": True,
                 "adopt_existing_tab": _adopt_existing_tab_enabled(camofox_cfg),
+                "destroy_on_close": True,
             }
         else:
             session = {
@@ -394,14 +530,19 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
                 "session_key": f"task_{task_id[:16]}",
                 "managed": False,
                 "adopt_existing_tab": False,
+                "destroy_on_close": True,
             }
-        _sessions[task_id] = session
+        _sessions[cache_key] = session
         return _adopt_existing_tab(session)
 
 
-def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:
+def _ensure_tab(
+    task_id: Optional[str],
+    url: str = "about:blank",
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Ensure a tab exists for the session, creating one if needed."""
-    session = _get_session(task_id)
+    session = _get_session(task_id, user_id)
     if session["tab_id"]:
         return session
     base = get_camofox_url()
@@ -421,11 +562,49 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     return session
 
 
-def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Remove and return session info."""
-    task_id = task_id or "default"
+def _drop_sessions(
+    task_id: Optional[str], user_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Remove and return session info.
+
+    With ``user_id`` set, drops only that identity's session.  Without it, drops
+    the task's default session *and* every per-user session scoped to the task
+    so teardown doesn't leak multi-account state.
+    """
     with _sessions_lock:
-        return _sessions.pop(task_id, None)
+        if user_id:
+            keys = [_session_cache_key(task_id, user_id)]
+        else:
+            keys = _session_keys_for_task(task_id)
+        return [s for s in (_sessions.pop(key, None) for key in keys) if s]
+
+
+def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Remove the task's default session and return it (back-compat shim)."""
+    with _sessions_lock:
+        return _sessions.pop(task_id or "default", None)
+
+
+def list_camofox_sessions() -> List[Dict[str, Any]]:
+    """Return a snapshot of the active Camofox sessions.
+
+    One entry per live ``(task_id, user_id)`` pair — useful for skills and
+    debugging multi-account runs.  Not exposed as a model tool; the resolved
+    ``user_id`` is echoed in every tool result instead.
+    """
+    with _sessions_lock:
+        items = list(_sessions.items())
+    sessions = []
+    for key, session in items:
+        task_id, sep, _ = key.partition(_USER_SCOPE_SEP)
+        sessions.append({
+            "task_id": task_id,
+            "user_id": session.get("user_id", ""),
+            "session_key": session.get("session_key", ""),
+            "tab_id": session.get("tab_id"),
+            "explicit_user_id": bool(sep),
+        })
+    return sessions
 
 
 def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
@@ -433,13 +612,26 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 
     When managed persistence is enabled the browser profile (and its cookies)
     must survive across agent tasks.  This helper drops only the local tracking
-    entry and returns ``True``.  When managed persistence is *not* enabled it
+    entries and returns ``True``.  When managed persistence is *not* enabled it
     does nothing and returns ``False`` so the caller can fall back to
     :func:`camofox_close`.
     """
     camofox_cfg = _get_camofox_config()
     if bool(camofox_cfg.get("managed_persistence")) or _camofox_identity_override(task_id, camofox_cfg):
-        _drop_session(task_id)
+        for session in _drop_sessions(task_id):
+            # The managed/override profile is left completely untouched — that
+            # is the point of soft cleanup.  Per-call identities still get
+            # their tab closed, which is non-destructive (the profile and its
+            # cookies survive) and keeps multi-account runs from leaking
+            # windows on the Camofox server.
+            if session.get("destroy_on_close"):
+                continue
+            try:
+                _release_session(session)
+            except Exception as exc:
+                logger.debug(
+                    "Camofox tab release failed for %s: %s", session["user_id"], exc
+                )
         logger.debug("Camofox soft cleanup for task %s (managed persistence)", task_id)
         return True
     return False
@@ -479,12 +671,14 @@ def _get_raw(path: str, params: dict = None, timeout: Optional[int] = None) -> r
     return resp
 
 
-def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict:
+def _delete(path: str, body: dict = None, timeout: Optional[int] = None,
+            params: dict = None) -> dict:
     """DELETE to camofox and return parsed response."""
     if timeout is None:
         timeout = _get_command_timeout()
     url = f"{get_camofox_url()}{path}"
-    resp = requests.delete(url, json=body, timeout=timeout, headers=_auth_headers())
+    resp = requests.delete(url, json=body, params=params, timeout=timeout,
+                           headers=_auth_headers())
     resp.raise_for_status()
     return resp.json()
 
@@ -493,14 +687,29 @@ def _delete(path: str, body: dict = None, timeout: Optional[int] = None) -> dict
 # Tool implementations
 # ---------------------------------------------------------------------------
 
-def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
+def _identity_error(message: str, session: Optional[Dict[str, Any]] = None) -> str:
+    """Return a tool error that also discloses the identity it acted as.
+
+    Success payloads echo ``user_id`` so a multi-account agent can confirm it
+    did not cross accounts.  Errors must do the same: an agent that only sees
+    the echo on success cannot tell "this failed" from "this ran as someone
+    else", which is the failure mode the echo exists to surface.
+    """
+    if session and session.get("user_id"):
+        return tool_error(message, success=False, user_id=session["user_id"])
+    return tool_error(message, success=False)
+
+
+def camofox_navigate(url: str, task_id: Optional[str] = None,
+                     user_id: Optional[str] = None) -> str:
     """Navigate to a URL via Camofox."""
+    session = None
     try:
         browser_url, rewrite_info = _rewrite_loopback_url_for_camofox(url)
-        session = _get_session(task_id)
+        session = _get_session(task_id, user_id)
         if not session["tab_id"]:
             # Create tab with the target URL directly
-            session = _ensure_tab(task_id, browser_url)
+            session = _ensure_tab(task_id, browser_url, user_id)
             data = {"ok": True, "url": browser_url}
         else:
             # Navigate existing tab — recover from stale tab 404
@@ -518,7 +727,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                         session["tab_id"],
                     )
                     session["tab_id"] = None
-                    session = _ensure_tab(task_id, browser_url)
+                    session = _ensure_tab(task_id, browser_url, user_id)
                     data = {"ok": True, "url": browser_url}
                 else:
                     raise
@@ -526,6 +735,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             "success": True,
             "url": data.get("url", browser_url),
             "title": data.get("title", ""),
+            "user_id": session["user_id"],
         }
         if rewrite_info:
             result["requested_url"] = url
@@ -571,7 +781,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                      "or: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser",
         })
     except Exception as e:
-        return tool_error(str(e), success=False)
+        return _identity_error(str(e), session)
 
 
 def _camofox_private_page_block(session: Dict[str, Any], task_id: Optional[str], action: str) -> Optional[str]:
@@ -605,16 +815,19 @@ def _camofox_private_page_block(session: Dict[str, Any], task_id: Optional[str],
             f"({blocked_url}). Refusing to {action} on this page in this "
             "browser mode."
         ),
+        "user_id": session["user_id"],
     }, ensure_ascii=False)
 
 
 def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
-                     user_task: Optional[str] = None) -> str:
+                     user_task: Optional[str] = None,
+                     user_id: Optional[str] = None) -> str:
     """Get accessibility tree snapshot from Camofox."""
+    session = None
     try:
-        session = _get_session(task_id)
+        session = _get_session(task_id, user_id)
         if not session["tab_id"]:
-            return tool_error("No browser session. Call browser_navigate first.", success=False)
+            return _identity_error("No browser session. Call browser_navigate first.", session)
 
         blocked = _camofox_private_page_block(session, task_id, "read a page snapshot")
         if blocked:
@@ -645,17 +858,20 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
             "success": True,
             "snapshot": snapshot,
             "element_count": refs_count,
+            "user_id": session["user_id"],
         })
     except Exception as e:
-        return tool_error(str(e), success=False)
+        return _identity_error(str(e), session)
 
 
-def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
+def camofox_click(ref: str, task_id: Optional[str] = None,
+                  user_id: Optional[str] = None) -> str:
     """Click an element by ref via Camofox."""
+    session = None
     try:
-        session = _get_session(task_id)
+        session = _get_session(task_id, user_id)
         if not session["tab_id"]:
-            return tool_error("No browser session. Call browser_navigate first.", success=False)
+            return _identity_error("No browser session. Call browser_navigate first.", session)
 
         blocked = _camofox_private_page_block(session, task_id, "click")
         if blocked:
@@ -672,17 +888,20 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
             "success": True,
             "clicked": clean_ref,
             "url": data.get("url", ""),
+            "user_id": session["user_id"],
         })
     except Exception as e:
-        return tool_error(str(e), success=False)
+        return _identity_error(str(e), session)
 
 
-def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
+def camofox_type(ref: str, text: str, task_id: Optional[str] = None,
+                 user_id: Optional[str] = None) -> str:
     """Type text into an element by ref via Camofox."""
+    session = None
     try:
-        session = _get_session(task_id)
+        session = _get_session(task_id, user_id)
         if not session["tab_id"]:
-            return tool_error("No browser session. Call browser_navigate first.", success=False)
+            return _identity_error("No browser session. Call browser_navigate first.", session)
 
         blocked = _camofox_private_page_block(session, task_id, "type")
         if blocked:
@@ -709,6 +928,7 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
             # the page; only the returned display value is redacted.
             "typed": display_text,
             "element": clean_ref,
+            "user_id": session["user_id"],
         }
         response = redact_browser_typed_text_for_display(response, text)
         return json.dumps(response)
@@ -718,44 +938,58 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         return tool_error(redact_browser_typed_text_for_display(str(e), text), success=False)
 
 
-def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:
+def camofox_scroll(direction: str, task_id: Optional[str] = None,
+                   user_id: Optional[str] = None) -> str:
     """Scroll the page via Camofox."""
+    session = None
     try:
-        session = _get_session(task_id)
+        session = _get_session(task_id, user_id)
         if not session["tab_id"]:
-            return tool_error("No browser session. Call browser_navigate first.", success=False)
+            return _identity_error("No browser session. Call browser_navigate first.", session)
 
         _post(
             f"/tabs/{session['tab_id']}/scroll",
             {"userId": session["user_id"], "direction": direction},
         )
-        return json.dumps({"success": True, "scrolled": direction})
+        return json.dumps({
+            "success": True,
+            "scrolled": direction,
+            "user_id": session["user_id"],
+        })
     except Exception as e:
-        return tool_error(str(e), success=False)
+        return _identity_error(str(e), session)
 
 
-def camofox_back(task_id: Optional[str] = None) -> str:
+def camofox_back(task_id: Optional[str] = None,
+                 user_id: Optional[str] = None) -> str:
     """Navigate back via Camofox."""
+    session = None
     try:
-        session = _get_session(task_id)
+        session = _get_session(task_id, user_id)
         if not session["tab_id"]:
-            return tool_error("No browser session. Call browser_navigate first.", success=False)
+            return _identity_error("No browser session. Call browser_navigate first.", session)
 
         data = _post(
             f"/tabs/{session['tab_id']}/back",
             {"userId": session["user_id"]},
         )
-        return json.dumps({"success": True, "url": data.get("url", "")})
+        return json.dumps({
+            "success": True,
+            "url": data.get("url", ""),
+            "user_id": session["user_id"],
+        })
     except Exception as e:
-        return tool_error(str(e), success=False)
+        return _identity_error(str(e), session)
 
 
-def camofox_press(key: str, task_id: Optional[str] = None) -> str:
+def camofox_press(key: str, task_id: Optional[str] = None,
+                  user_id: Optional[str] = None) -> str:
     """Press a keyboard key via Camofox."""
+    session = None
     try:
-        session = _get_session(task_id)
+        session = _get_session(task_id, user_id)
         if not session["tab_id"]:
-            return tool_error("No browser session. Call browser_navigate first.", success=False)
+            return _identity_error("No browser session. Call browser_navigate first.", session)
 
         blocked = _camofox_private_page_block(session, task_id, "press")
         if blocked:
@@ -765,42 +999,94 @@ def camofox_press(key: str, task_id: Optional[str] = None) -> str:
             f"/tabs/{session['tab_id']}/press",
             {"userId": session["user_id"], "key": key},
         )
-        return json.dumps({"success": True, "pressed": key})
+        return json.dumps({
+            "success": True,
+            "pressed": key,
+            "user_id": session["user_id"],
+        })
     except Exception as e:
-        return tool_error(str(e), success=False)
+        return _identity_error(str(e), session)
 
 
-def camofox_close(task_id: Optional[str] = None) -> str:
-    """Close the browser session via Camofox."""
+def _release_session(session: Dict[str, Any]) -> None:
+    """Release one session's server-side resources.
+
+    Two distinct operations on the Camofox API, and the difference matters:
+
+    * ``DELETE /sessions/<userId>`` destroys the whole profile — "Closes all
+      tabs and cleans up state for the given userId".  Only for identities
+      Hermes owns (``destroy_on_close``).
+    * ``DELETE /tabs/<tabId>?userId=`` just closes the window and leaves the
+      profile, cookies, and logins intact.  This is what a caller-supplied
+      identity gets: without it every distinct ``user_id`` would leak an open
+      tab that nothing ever reclaims (the server's ``POST /pressure/cleanup``
+      is caller-triggered, not an automatic reaper).
+    """
+    if session.get("destroy_on_close"):
+        _delete(f"/sessions/{session['user_id']}")
+        return
+    tab_id = session.get("tab_id")
+    if tab_id:
+        _delete(f"/tabs/{tab_id}", params={"userId": session["user_id"]})
+
+
+def camofox_close(task_id: Optional[str] = None,
+                  user_id: Optional[str] = None) -> str:
+    """Close the browser session(s) via Camofox.
+
+    With ``user_id`` set, closes only that identity's session.  Without it,
+    closes the task's default session *and* every per-user session scoped to
+    the task.
+
+    Identities supplied per call are caller-owned, so their profile survives —
+    only their tab is closed.  See :func:`_release_session`.
+    """
     try:
-        session = _drop_session(task_id)
-        if not session:
-            return json.dumps({"success": True, "closed": True})
+        user_id = _normalize_call_user_id(user_id)
+    except InvalidCamofoxUserId as exc:
+        return tool_error(str(exc), success=False)
 
-        _delete(
-            f"/sessions/{session['user_id']}",
-        )
+    sessions = _drop_sessions(task_id, user_id)
+    if not sessions:
         return json.dumps({"success": True, "closed": True})
-    except Exception as e:
-        return json.dumps({"success": True, "closed": True, "warning": str(e)})
+
+    # Release each session independently. A single failing DELETE must not
+    # abort the loop: _drop_sessions has already removed every entry from the
+    # local map, so a sibling skipped here could never be reclaimed by anyone.
+    warnings = []
+    for session in sessions:
+        try:
+            _release_session(session)
+        except Exception as exc:
+            warnings.append(f"{session['user_id']}: {exc}")
+            logger.debug("Camofox release failed for %s: %s", session["user_id"], exc)
+
+    result = {
+        "success": True,
+        "closed": True,
+        "user_ids": [s["user_id"] for s in sessions],
+    }
+    if warnings:
+        result["warning"] = "; ".join(warnings)
+    return json.dumps(result)
 
 
-def camofox_get_images(task_id: Optional[str] = None) -> str:
+def camofox_get_images(task_id: Optional[str] = None,
+                       user_id: Optional[str] = None) -> str:
     """Get images on the current page via Camofox.
 
     Extracts image information from the accessibility tree snapshot,
     since Camofox does not expose a dedicated /images endpoint.
     """
+    session = None
     try:
-        session = _get_session(task_id)
+        session = _get_session(task_id, user_id)
         if not session["tab_id"]:
-            return tool_error("No browser session. Call browser_navigate first.", success=False)
+            return _identity_error("No browser session. Call browser_navigate first.", session)
 
         blocked = _camofox_private_page_block(session, task_id, "extract page images")
         if blocked:
             return blocked
-
-        import re
 
         data = _get(
             f"/tabs/{session['tab_id']}/snapshot",
@@ -831,18 +1117,21 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
             "success": True,
             "images": images,
             "count": len(images),
+            "user_id": session["user_id"],
         })
     except Exception as e:
-        return tool_error(str(e), success=False)
+        return _identity_error(str(e), session)
 
 
 def camofox_vision(question: str, annotate: bool = False,
-                   task_id: Optional[str] = None) -> str:
+                   task_id: Optional[str] = None,
+                   user_id: Optional[str] = None) -> str:
     """Take a screenshot and analyze it with vision AI via Camofox."""
+    session = None
     try:
-        session = _get_session(task_id)
+        session = _get_session(task_id, user_id)
         if not session["tab_id"]:
-            return tool_error("No browser session. Call browser_navigate first.", success=False)
+            return _identity_error("No browser session. Call browser_navigate first.", session)
 
         blocked = _camofox_private_page_block(session, task_id, "capture a screenshot")
         if blocked:
@@ -928,17 +1217,28 @@ def camofox_vision(question: str, annotate: bool = False,
             "success": True,
             "analysis": analysis,
             "screenshot_path": screenshot_path,
+            "user_id": session["user_id"],
         })
     except Exception as e:
-        return tool_error(str(e), success=False)
+        return _identity_error(str(e), session)
 
 
-def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
+def camofox_console(clear: bool = False, task_id: Optional[str] = None,
+                    user_id: Optional[str] = None) -> str:
     """Get console output — limited support in Camofox.
 
     Camofox does not expose browser console logs via its REST API.
     Returns an empty result with a note.
+
+    ``user_id`` is validated for signature parity with the other Camofox tools
+    but deliberately *not* echoed: this path never opens a session, so echoing
+    it back would rubber-stamp an identity that was never resolved against the
+    server — the opposite of the confirmation the echo is meant to provide.
     """
+    try:
+        _normalize_call_user_id(user_id)
+    except InvalidCamofoxUserId as exc:
+        return tool_error(str(exc), success=False)
     return json.dumps({
         "success": True,
         "console_messages": [],

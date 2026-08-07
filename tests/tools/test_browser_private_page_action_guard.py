@@ -99,7 +99,10 @@ def test_camofox_short_circuits_before_guard(monkeypatch):
 
     import tools.browser_camofox as camofox
 
-    monkeypatch.setattr(camofox, "camofox_click", lambda ref, task_id: '{"success": true, "camofox": true}')
+    monkeypatch.setattr(
+        camofox, "camofox_click",
+        lambda ref, task_id, user_id=None: '{"success": true, "camofox": true}',
+    )
 
     out = json.loads(browser_tool.browser_click("@e1", task_id="task-1"))
 
@@ -158,7 +161,10 @@ def test_browser_back_camofox_short_circuits_before_guard(monkeypatch):
 
     import tools.browser_camofox as camofox
 
-    monkeypatch.setattr(camofox, "camofox_back", lambda task_id: '{"success": true, "camofox": true}')
+    monkeypatch.setattr(
+        camofox, "camofox_back",
+        lambda task_id, user_id=None: '{"success": true, "camofox": true}',
+    )
 
     out = json.loads(browser_tool.browser_back(task_id="task-1"))
 

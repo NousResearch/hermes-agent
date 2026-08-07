@@ -101,6 +101,45 @@ def _cleanup(mcp_tool_module, name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_tool_level_errors_do_not_trip_server_breaker(monkeypatch, tmp_path):
+    """A completed MCP round-trip with ``isError=True`` proves transport health.
+
+    Validation/domain errors belong to the request or tool, not to the server
+    connection. Repeating them must preserve the actionable tool error without
+    opening the server-level circuit breaker.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_validation_error(*a, **kw):
+        call_count["n"] += 1
+        result = MagicMock()
+        result.isError = True
+        block = MagicMock()
+        block.text = "REQUEST_INVALID: type 'solution' is not allowed"
+        result.content = [block]
+        result.structuredContent = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv-semantic", _call_tool_validation_error)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        handler = _make_tool_handler("srv-semantic", "note_create", 10.0)
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 1):
+            parsed = json.loads(handler({"type": "solution"}))
+            assert "REQUEST_INVALID" in parsed.get("error", ""), parsed
+
+        assert call_count["n"] == mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 1
+        assert mcp_tool._server_error_counts.get("srv-semantic", 0) == 0
+    finally:
+        _cleanup(mcp_tool, "srv-semantic")
+
+
 def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
     """After a tripped breaker's cooldown elapses, the *next* call must
     actually execute against the session (half-open probe). When the

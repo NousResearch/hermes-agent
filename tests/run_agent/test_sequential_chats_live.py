@@ -40,10 +40,19 @@ def _load_user_env() -> None:
         os.environ.setdefault(k, v)
 
 
-_load_user_env()
-
-
 LIVE = os.environ.get("HERMES_LIVE_TESTS") == "1"
+
+
+@pytest.fixture(autouse=True)
+def _live_test_env(_hermetic_environment):
+    """Load developer's ~/.hermes/.env into os.environ *after* hermetic scrub.
+
+    This fixture runs after the hermetic_environment autouse fixture, so any
+    keys it loads (e.g. OPENROUTER_API_KEY for live tests) are present for
+    the test but were not pulled in at *collection* time — which would have
+    happened with the old module-level _load_user_env() call.
+    """
+    _load_user_env()
 OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
 pytestmark = [

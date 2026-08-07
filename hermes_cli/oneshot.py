@@ -5,7 +5,8 @@ no stderr chatter.  Just the agent's final text to stdout.
 
 Toolsets = explicit --toolsets when provided, otherwise whatever the user has
 configured for "cli" in `hermes tools`.
-Rules / memory / AGENTS.md / preloaded skills = same as a normal chat turn.
+Rules / memory / AGENTS.md = same as a normal chat turn.
+Explicit --skills/-s preloading is honoured the same way --toolsets is.
 Approvals = auto-bypassed (HERMES_YOLO_MODE=1 is set for the call).
 Working directory = the user's CWD (AGENTS.md etc. resolve from there as usual).
 
@@ -172,6 +173,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    skills: object = None,
     usage_file: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
@@ -183,6 +185,9 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        skills: Optional comma-separated string or iterable of skill
+            identifiers to preload for this invocation (same identifiers
+            accepted by `hermes --skills`).
         usage_file: Optional path; when set, a JSON usage report (estimated
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
@@ -216,6 +221,31 @@ def run_oneshot(
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
+    # --skills/-s preloading. Built up-front (before the stdout/stderr
+    # redirect below) so an unknown-skill error actually reaches the
+    # caller instead of vanishing into devnull. Mirrors cli.py's
+    # interactive --skills handling (agent/skill_commands.py), which this
+    # path previously bypassed entirely: --skills was parsed at the top
+    # level but never forwarded past _run_and_exit_oneshot()/run_oneshot(),
+    # so -z --skills <name> silently ran with no skill content injected.
+    ephemeral_system_prompt: Optional[str] = None
+    if skills:
+        from cli import _parse_skills_argument
+        from agent.skill_commands import build_preloaded_skills_prompt
+
+        parsed_skills = _parse_skills_argument(skills)
+        if parsed_skills:
+            skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
+                parsed_skills
+            )
+            if missing_skills and not loaded_skills:
+                sys.stderr.write(
+                    "hermes -z: Unknown skill(s): " + ", ".join(missing_skills) + "\n"
+                )
+                return 2
+            if skills_prompt:
+                ephemeral_system_prompt = skills_prompt
+
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
@@ -248,6 +278,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    ephemeral_system_prompt=ephemeral_system_prompt,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -316,6 +347,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    ephemeral_system_prompt: Optional[str] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -446,6 +478,7 @@ def _run_agent(
             #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
             #   - skill secret capture → returns gracefully when no callback set
             clarify_callback=_oneshot_clarify_callback,
+            ephemeral_system_prompt=ephemeral_system_prompt,
         )
 
         # Belt-and-braces: make sure AIAgent doesn't invoke any streaming

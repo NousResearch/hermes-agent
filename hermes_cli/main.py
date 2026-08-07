@@ -173,12 +173,29 @@ def _cleanup_oneshot_runtime() -> None:
         pass
 
 
+def _oneshot_kwargs_from_args(args) -> dict:
+    """Build the ``_run_and_exit_oneshot`` kwargs shared by both -z dispatch sites.
+
+    Kept as a single place so a field forwarded on one path is never silently
+    missing from the other -- ``--skills`` used to be dropped exactly this way
+    (see #75930): parsed at the top level, forwarded nowhere.
+    """
+    return {
+        "model": getattr(args, "model", None),
+        "provider": getattr(args, "provider", None),
+        "toolsets": getattr(args, "toolsets", None),
+        "skills": getattr(args, "skills", None),
+        "usage_file": getattr(args, "usage_file", None),
+    }
+
+
 def _run_and_exit_oneshot(
     prompt: str,
     *,
     model: object = None,
     provider: object = None,
     toolsets: object = None,
+    skills: object = None,
     usage_file: object = None,
 ) -> None:
     try:
@@ -189,6 +206,7 @@ def _run_and_exit_oneshot(
             model=model,
             provider=provider,
             toolsets=toolsets,
+            skills=skills,
             usage_file=usage_file,
         )
     except KeyboardInterrupt:
@@ -10921,13 +10939,7 @@ def _try_termux_fast_cli_launch() -> bool:
 
     if getattr(args, "oneshot", None):
         _prepare_agent_startup(args)
-        _run_and_exit_oneshot(
-            args.oneshot,
-            model=getattr(args, "model", None),
-            provider=getattr(args, "provider", None),
-            toolsets=getattr(args, "toolsets", None),
-            usage_file=getattr(args, "usage_file", None),
-        )
+        _run_and_exit_oneshot(args.oneshot, **_oneshot_kwargs_from_args(args))
 
     if (args.resume or args.continue_last) and args.command is None:
         args.command = "chat"
@@ -12562,13 +12574,7 @@ def main():
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.
     if getattr(args, "oneshot", None):
-        _run_and_exit_oneshot(
-            args.oneshot,
-            model=getattr(args, "model", None),
-            provider=getattr(args, "provider", None),
-            toolsets=getattr(args, "toolsets", None),
-            usage_file=getattr(args, "usage_file", None),
-        )
+        _run_and_exit_oneshot(args.oneshot, **_oneshot_kwargs_from_args(args))
 
     # Handle top-level --resume / --continue as shortcut to chat
     if (args.resume or args.continue_last) and args.command is None:

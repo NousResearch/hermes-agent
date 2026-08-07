@@ -7486,11 +7486,12 @@ def _resolve_task_provider_model(
         try:
             from hermes_cli.providers import get_provider
 
-            return get_provider(normalized) is not None
+            if get_provider(normalized) is not None:
+                return True
         except Exception:
             # Keep the high-risk provider-backed routes safe even if provider
             # catalog loading is unavailable during early import/test paths.
-            return normalized in {
+            if normalized in {
                 "anthropic",
                 "copilot",
                 "copilot-acp",
@@ -7499,7 +7500,19 @@ def _resolve_task_provider_model(
                 "openai-codex",
                 "qwen-oauth",
                 "xai-oauth",
-            }
+            }:
+                return True
+        # Also preserve custom providers defined in config.yaml's providers:
+        # table — without this check, the provider name is rewritten to
+        # "custom" and downstream key_env resolution cannot find the entry.
+        if prov:
+            try:
+                from hermes_cli.runtime_provider import _get_named_custom_provider
+
+                return _get_named_custom_provider(prov) is not None
+            except Exception:
+                pass
+        return False
 
     if provider:
         provider, base_url = _expand_direct_api_alias(provider, base_url)

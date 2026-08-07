@@ -354,6 +354,18 @@ Auth: `Authorization: Bearer ${MCP_AUTH_TOKEN}` from `.env.secrets`.
 
 **Backoff:** Exponential (5, 10, 15... up to 60 min) between recovery attempts. Max 10 consecutive failures before giving up. Counter resets on healthy check. Prevents restart loops (incident 2026-05-11: 10+ restarts in 4h).
 
+### Review activity (watchdog)
+
+**Why:** The pr-review cron (`c8559be3577c`, hourly at :23) can complete with `status=ok` yet post **zero reviews** — a silent failure (model/provider breakdown, gh-auth drift, rate-limit storm). Cron status does not reflect actual review output, so the business signal (reviews posted on GitHub) must be watched directly.
+
+**Watchdog:** `roosync-cluster/scripts/hermes-review-watchdog.ps1` runs every 30 min via Windows Scheduled Task `Hermes-Review-Watchdog` (off-minute :07/:37). It is an **independent observer** — reads `GH_TOKEN` + `TELEGRAM_BOT_TOKEN` from the host volume (`C:\Users\jsboi\.hermes\.env`) and queries the GitHub REST API directly (`Invoke-RestMethod`), so it alerts even when the Hermes container is down.
+
+**Logic:** counts open PRs across target repos (`jsboige/CoursIA`, `jsboige/roo-extensions`) and the most recent review by the bot. If open PRs exist but no review has been posted within `AlertThresholdHours` (default 4h), it sends a Telegram alert to the review chat (`-1003904676273`). A cooldown (state file, 4h) prevents alert spam.
+
+**Gotcha:** `Invoke-RestMethod` auto-deserializes JSON dates to `[datetime]` under the current culture (fr-FR here), which breaks naive subtraction and string round-tripping. All timestamps are normalized to UTC `[datetime]` via `ConvertTo-UtcDateTime` and formatted with `InvariantCulture` (else comma decimals like "722,2h").
+
+**Context:** added 2026-08-07 after the user flagged "Hermes ne fait plus de reviews" — which was the z.ai 429 storm (resolved by the claudish switch), not a live gap; the watchdog catches the next silent one.
+
 ### Cluster ASR
 
 `https://whisper-api.myia.io/v1` — self-hosted Whisper on po-2023. Auth via `WHISPER_BEARER_TOKEN` from `.env.secrets`.

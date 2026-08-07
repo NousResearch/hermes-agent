@@ -1870,6 +1870,12 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+        # Bounded staged-skill queue policy. Cleanup runs inside the pending
+        # store owner whenever skill writes are staged or reviewed; only
+        # readable pending skill JSON records are pruned. Memory pending writes
+        # are excluded and keep their existing lifecycle.
+        "write_approval_max_pending": 100,
+        "write_approval_ttl_days": 30,
     },
 
     # Curator — background skill maintenance.

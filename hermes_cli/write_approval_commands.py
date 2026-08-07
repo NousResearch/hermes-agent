@@ -30,21 +30,49 @@ def _fmt_state(subsystem: str) -> str:
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
-def _fmt_pending_list(subsystem: str) -> str:
-    records = wa.list_pending(subsystem)
+def _fmt_pending_list(subsystem: str, snapshot=None) -> str:
+    if snapshot is None:
+        snapshot = wa.pending_snapshot(subsystem)
+    records = snapshot["records"]
+    if subsystem == wa.SKILLS:
+        records = [wa._annotate_pending_record(record, subsystem) for record in records]
+    cleanup = _fmt_cleanup_notice(subsystem, snapshot)
     if not records:
-        return f"No pending {subsystem} writes."
+        out = f"No pending {subsystem} writes."
+        if cleanup:
+            out += f"\n\n{cleanup}"
+        return out
     lines = [f"Pending {subsystem} writes ({len(records)}):"]
     for r in records:
         origin = r.get("origin", "foreground")
         tag = " [auto]" if origin == "background_review" else ""
-        lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
+        stale = ""
+        if r.get("stale"):
+            reason = r.get("stale_reason", "The target changed; review this pending proposal.")
+            stale = f" [stale] {reason}"
+        lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}{stale}")
     where = "/{s} approve <id>".format(s=subsystem)
     lines.append("")
     lines.append(f"Apply: {where}   Reject: /{subsystem} reject <id>")
     if subsystem == wa.SKILLS:
         lines.append("Review full diff: /skills diff <id>")
+    if cleanup:
+        lines.extend(["", cleanup])
     return "\n".join(lines)
+
+
+def _fmt_cleanup_notice(subsystem: str, snapshot) -> str:
+    expired = len(snapshot.get("expired_ids", []))
+    overflow = len(snapshot.get("overflow_ids", []))
+    if not expired and not overflow:
+        return ""
+    subject = "skill" if subsystem == wa.SKILLS else subsystem
+    parts = []
+    if expired:
+        parts.append(f"{expired} expired")
+    if overflow:
+        parts.append(f"{overflow} overflow")
+    return f"Cleanup removed {' and '.join(parts)} pending {subject} write(s)."
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +85,7 @@ def handle_pending_subcommand(
     *,
     memory_store=None,
     set_mode_fn=None,
+    pending_snapshot=None,
 ) -> Optional[str]:
     """Dispatch a /memory or /skills subcommand.
 
@@ -76,13 +105,13 @@ def handle_pending_subcommand(
     """
     if not args:
         # Bare /memory or /skills with no sub → show pending + gate state.
-        return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem)
+        return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem, pending_snapshot)
 
     sub = args[0].lower()
     rest = args[1:]
 
     if sub == "pending":
-        return _fmt_pending_list(subsystem)
+        return _fmt_pending_list(subsystem, pending_snapshot)
 
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)
@@ -177,7 +206,11 @@ def _diff(rest: List[str]) -> str:
     if not rec:
         return f"No pending skill write with id '{rest[0]}'."
     diff = wa.skill_pending_diff(rec)
-    header = f"# Pending skill write {rec['id']}: {rec.get('summary', '')}\n"
+    stale = ""
+    if rec.get("stale"):
+        reason = rec.get("stale_reason", "The target changed; review this pending proposal.")
+        stale = f" [stale] {reason}"
+    header = f"# Pending skill write {rec['id']}: {rec.get('summary', '')}{stale}\n"
     return header + "\n" + diff
 
 

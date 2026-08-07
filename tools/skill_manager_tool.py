@@ -889,6 +889,65 @@ def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Pat
     return target, None
 
 
+_STALE_SKILL_PATCH_MESSAGE = (
+    "The target changed, so review the diff, reject this proposal, or re-stage it."
+)
+
+
+def inspect_skill_patch_pending(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Inspect a staged patch without changing skill or approval state."""
+    if not isinstance(payload, dict) or payload.get("action") != "patch":
+        return {"state": "unverified"}
+
+    name = payload.get("name")
+    old_string = payload.get("old_string")
+    new_string = payload.get("new_string")
+    if not isinstance(name, str) or not name:
+        return {"state": "unverified"}
+    if not isinstance(old_string, str) or not old_string:
+        return {"state": "unverified"}
+    if not isinstance(new_string, str):
+        return {"state": "unverified"}
+
+    try:
+        existing = _find_skill(name)
+        if not existing:
+            return {"state": "unverified"}
+
+        skill_dir = existing["path"]
+        file_path = payload.get("file_path")
+        if file_path:
+            error = _validate_file_path(file_path)
+            if error:
+                return {"state": "unverified"}
+            target, error = _resolve_skill_target(skill_dir, file_path)
+            if error or target is None:
+                return {"state": "unverified"}
+        else:
+            target = skill_dir / "SKILL.md"
+
+        if not target.is_file():
+            return {"state": "unverified"}
+        content = target.read_text(encoding="utf-8")
+
+        from tools.fuzzy_match import fuzzy_find_and_replace
+
+        _, _, _, match_error = fuzzy_find_and_replace(
+            content,
+            old_string,
+            new_string,
+            payload.get("replace_all", False),
+        )
+        if match_error == "Could not find a match for old_string in the file":
+            return {"state": "stale", "reason": _STALE_SKILL_PATCH_MESSAGE}
+        if match_error:
+            return {"state": "unverified"}
+        return {"state": "applicable"}
+    except Exception:
+        logger.debug("Pending skill patch inspection failed", exc_info=True)
+        return {"state": "unverified"}
+
+
 # =============================================================================
 # Core actions
 # =============================================================================
@@ -1442,6 +1501,17 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
     """Replay a staged skill write, bypassing the gate. Returns the tool result
     JSON string. Called by the /skills approve handler.
     """
+    inspection = inspect_skill_patch_pending(payload)
+    if inspection.get("state") == "stale":
+        return json.dumps(
+            {
+                "success": False,
+                "stale": True,
+                "error": inspection.get("reason", _STALE_SKILL_PATCH_MESSAGE),
+            },
+            ensure_ascii=False,
+        )
+
     token = _skill_gate_bypass.set(True)
     try:
         return skill_manage(

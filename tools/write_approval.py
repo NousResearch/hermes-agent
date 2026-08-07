@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -65,6 +66,10 @@ _SUBSYSTEMS = (MEMORY, SKILLS)
 # "block all writes" state — to disable a subsystem entirely use its own
 # enable flag (e.g. ``memory.memory_enabled: false``).
 CONFIG_KEY = "write_approval"
+SKILL_MAX_PENDING_KEY = "write_approval_max_pending"
+SKILL_TTL_DAYS_KEY = "write_approval_ttl_days"
+DEFAULT_SKILL_MAX_PENDING = 100
+DEFAULT_SKILL_TTL_DAYS = 30
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +116,215 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _resolve_skill_pending_policy() -> tuple[int, float]:
+    """Return the active bounded-retention policy for staged skill writes."""
+    try:
+        from hermes_cli.config import load_config, cfg_get
+
+        cfg = load_config()
+        max_pending_raw = cfg_get(cfg, SKILLS, SKILL_MAX_PENDING_KEY, default=DEFAULT_SKILL_MAX_PENDING)
+        ttl_days_raw = cfg_get(cfg, SKILLS, SKILL_TTL_DAYS_KEY, default=DEFAULT_SKILL_TTL_DAYS)
+    except Exception:
+        return DEFAULT_SKILL_MAX_PENDING, float(DEFAULT_SKILL_TTL_DAYS)
+
+    return (
+        _normalize_positive_int(max_pending_raw, DEFAULT_SKILL_MAX_PENDING),
+        _normalize_positive_number(ttl_days_raw, float(DEFAULT_SKILL_TTL_DAYS)),
+    )
+
+
+def _normalize_positive_int(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)) and _is_finite_number(value) and value > 0:
+        return max(1, int(value))
+    return default
+
+
+def _normalize_positive_number(value: Any, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)) and _is_finite_number(value) and value > 0:
+        return float(value)
+    return default
+
+
+def _is_finite_number(value: int | float) -> bool:
+    try:
+        return math.isfinite(value)
+    except (OverflowError, TypeError):
+        return False
+
+
+def _coerce_created_at(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and _is_finite_number(value):
+        return float(value)
+    return None
+
+
+def _safe_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except Exception:
+        return 0.0
+
+
+def _effective_pending_id(path: Path, record: Dict[str, Any]) -> str:
+    raw = record.get("id")
+    return path.stem if not isinstance(raw, str) or raw != path.stem else raw
+
+
+def _load_pending_entries(subsystem: str) -> List[Dict[str, Any]]:
+    d = _pending_dir(subsystem)
+    if not d.exists():
+        return []
+
+    entries: List[Dict[str, Any]] = []
+    for path in d.glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("Skipping unreadable pending record: %s", path)
+            continue
+        if not isinstance(record, dict):
+            logger.warning("Skipping unreadable pending record: %s", path)
+            continue
+
+        pending_id = _effective_pending_id(path, record)
+        if subsystem == SKILLS and record.get("id") != pending_id:
+            record = {**record, "id": pending_id}
+
+        entries.append(
+            {
+                "record": record,
+                "path": path,
+                "pending_id": pending_id,
+                "created_at": _coerce_created_at(record.get("created_at")),
+                "mtime": _safe_mtime(path),
+            }
+        )
+    return entries
+
+
+def _pending_entry_order(entry: Dict[str, Any]) -> tuple[float, str]:
+    sort_time = entry["created_at"] if entry["created_at"] is not None else entry["mtime"]
+    return sort_time, entry["path"].name
+
+
+def _unlink_snapshot_entry(entry: Dict[str, Any], reason: str) -> bool:
+    path = entry["path"]
+    pending_id = entry["pending_id"]
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return True
+    except Exception as e:  # pragma: no cover - filesystem failure path
+        logger.error("Failed to discard %s pending %s/%s: %s", reason, SKILLS, pending_id, e)
+        return False
+
+
+def _basic_pending_snapshot(subsystem: str) -> Dict[str, Any]:
+    entries = _load_pending_entries(subsystem)
+    if subsystem == MEMORY:
+        records = [entry["record"] for entry in entries]
+        records.sort(key=lambda record: record.get("created_at", 0))
+    else:
+        entries.sort(key=_pending_entry_order)
+        records = [entry["record"] for entry in entries]
+    return {
+        "records": records,
+        "expired_ids": [],
+        "overflow_ids": [],
+        "entries": entries,
+    }
+
+
+def _skill_pending_snapshot() -> Dict[str, Any]:
+    entries = _load_pending_entries(SKILLS)
+    if not entries:
+        return {"records": [], "expired_ids": [], "overflow_ids": [], "entries": []}
+
+    entries.sort(key=_pending_entry_order)
+    max_pending, ttl_days = _resolve_skill_pending_policy()
+    ttl_seconds = ttl_days * 86400.0
+    now = time.time()
+
+    active_entries: List[Dict[str, Any]] = []
+    expired_ids: List[str] = []
+
+    for entry in entries:
+        created_at = entry["created_at"]
+        if created_at is None or (now - created_at) <= ttl_seconds:
+            active_entries.append(entry)
+            continue
+        if _unlink_snapshot_entry(entry, "expired"):
+            expired_ids.append(entry["pending_id"])
+        else:
+            active_entries.append(entry)
+
+    overflow_ids: List[str] = []
+    overflow = max(0, len(active_entries) - max_pending)
+    if overflow:
+        removed_paths = set()
+        for entry in active_entries[:overflow]:
+            if _unlink_snapshot_entry(entry, "overflow"):
+                overflow_ids.append(entry["pending_id"])
+                removed_paths.add(entry["path"])
+        if removed_paths:
+            active_entries = [entry for entry in active_entries if entry["path"] not in removed_paths]
+
+    if expired_ids or overflow_ids:
+        affected_ids = expired_ids + overflow_ids
+        logger.info(
+            "Cleaned pending %s writes, expired=%d overflow=%d retained=%d affected_ids=%s",
+            SKILLS,
+            len(expired_ids),
+            len(overflow_ids),
+            len(active_entries),
+            affected_ids,
+        )
+
+    return {
+        "records": [entry["record"] for entry in active_entries],
+        "expired_ids": expired_ids,
+        "overflow_ids": overflow_ids,
+        "entries": active_entries,
+    }
+
+
+def pending_snapshot(subsystem: str) -> Dict[str, Any]:
+    """Return the active pending-record snapshot and any cleanup report."""
+    if subsystem == SKILLS:
+        return _skill_pending_snapshot()
+    return _basic_pending_snapshot(subsystem)
+
+
+def _annotate_pending_record(record: Dict[str, Any], subsystem: str) -> Dict[str, Any]:
+    """Add dynamic stale metadata to a resolved pending skill patch."""
+    if subsystem != SKILLS:
+        return record
+    payload = record.get("payload")
+    if not isinstance(payload, dict) or payload.get("action") != "patch":
+        return record
+    try:
+        from tools.skill_manager_tool import inspect_skill_patch_pending
+
+        inspection = inspect_skill_patch_pending(payload)
+        if inspection.get("state") != "stale":
+            return record
+        annotated = dict(record)
+        annotated["stale"] = True
+        annotated["stale_reason"] = inspection.get(
+            "reason", "The target changed; review this pending proposal."
+        )
+        return annotated
+    except Exception:
+        return record
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
                 *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
@@ -148,26 +362,33 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         os.replace(tmp, path)
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+    else:
+        if subsystem == SKILLS:
+            try:
+                pending_snapshot(SKILLS)
+            except Exception as e:  # pragma: no cover - maintenance failure path
+                logger.error("Failed to maintain pending %s writes: %s", subsystem, e, exc_info=True)
     return record
 
 
 def list_pending(subsystem: str) -> List[Dict[str, Any]]:
     """Return all pending records for ``subsystem``, oldest first."""
-    d = _pending_dir(subsystem)
-    if not d.exists():
-        return []
-    records: List[Dict[str, Any]] = []
-    for p in d.glob("*.json"):
-        try:
-            records.append(json.loads(p.read_text(encoding="utf-8")))
-        except Exception:
-            logger.warning("Skipping unreadable pending record: %s", p)
-    records.sort(key=lambda r: r.get("created_at", 0))
-    return records
+    if subsystem == SKILLS:
+        return [
+            _annotate_pending_record(record, subsystem)
+            for record in pending_snapshot(SKILLS)["records"]
+        ]
+    return _basic_pending_snapshot(subsystem)["records"]
 
 
 def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
     """Return a single pending record by id, or None."""
+    if subsystem == SKILLS:
+        snapshot = pending_snapshot(SKILLS)
+        for entry in snapshot["entries"]:
+            if entry["pending_id"] == pending_id:
+                return _annotate_pending_record(entry["record"], subsystem)
+        return None
     path = _pending_dir(subsystem) / f"{pending_id}.json"
     if not path.exists():
         return None
@@ -191,6 +412,8 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
 
 def pending_count(subsystem: str) -> int:
     """Cheap count of pending records (for notification badges)."""
+    if subsystem == SKILLS:
+        return len(pending_snapshot(SKILLS)["records"])
     d = _pending_dir(subsystem)
     if not d.exists():
         return 0

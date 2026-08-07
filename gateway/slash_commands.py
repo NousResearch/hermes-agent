@@ -3655,10 +3655,20 @@ class GatewaySlashCommandsMixin:
 
         gate_on = wa.write_approval_enabled(wa.SKILLS)
         wants_toggle = bool(args) and args[0].lower() in {"approval", "mode"}
-        if not gate_on and not wants_toggle and wa.pending_count(wa.SKILLS) == 0:
-            return ("Skill write approval is off (skills.write_approval). "
-                    "Enable it with /skills approval on, then review staged "
-                    "writes here with /skills pending.")
+        is_pending_list = not args or args[0].lower() == "pending"
+        pending_snapshot = None
+        if not gate_on and not wants_toggle:
+            if is_pending_list:
+                pending_snapshot = wa.pending_snapshot(wa.SKILLS)
+                has_cleanup = pending_snapshot["expired_ids"] or pending_snapshot["overflow_ids"]
+                if not pending_snapshot["records"] and not has_cleanup:
+                    return ("Skill write approval is off (skills.write_approval). "
+                            "Enable it with /skills approval on, then review staged "
+                            "writes here with /skills pending.")
+            elif wa.pending_count(wa.SKILLS) == 0:
+                return ("Skill write approval is off (skills.write_approval). "
+                        "Enable it with /skills approval on, then review staged "
+                        "writes here with /skills pending.")
 
         def _set_approval(enabled: bool):
             # Write-back round-trip: raw read is correct (merged defaults must
@@ -3672,6 +3682,7 @@ class GatewaySlashCommandsMixin:
 
         out = handle_pending_subcommand(
             wa.SKILLS, args, set_mode_fn=_set_approval,
+            pending_snapshot=pending_snapshot,
         )
         if out is None:
             return ("Unknown /skills subcommand on this platform. Use: pending, "

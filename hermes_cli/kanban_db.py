@@ -8143,8 +8143,10 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds). A prior worker already
         opened a PR; re-spawning risks a duplicate PR on the same task.
+        A later explicit requeue bypasses this guard because dependency
+        promotion or operator action deliberately resumed the existing task.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -8219,7 +8221,8 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         requeued_after = conn.execute(
             "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "AND kind IN ('status', 'promoted', 'promoted_manual', "
+            "'unblocked', 'reclaimed') "
             "LIMIT 1",
             (task_id, completed_at),
         ).fetchone()
@@ -8227,12 +8230,29 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    A later explicit requeue is deliberate continuation after review or
+    #    operator action, so it must resume the existing task instead of being
+    #    trapped by the stale PR comment for the full guard window.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    latest_pr_comment_at: Optional[int] = None
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            latest_pr_comment_at = int(c["created_at"] or 0)
+            break
+    if latest_pr_comment_at is not None:
+        requeued_after = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND created_at > ? "
+            "AND kind IN ('status', 'promoted', 'promoted_manual', "
+            "'unblocked', 'reclaimed') "
+            "LIMIT 1",
+            (task_id, latest_pr_comment_at),
+        ).fetchone()
+        if not requeued_after:
             return "active_pr"
 
     return None

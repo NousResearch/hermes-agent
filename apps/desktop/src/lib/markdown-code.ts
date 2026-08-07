@@ -1,7 +1,7 @@
 import { normalize } from '@/lib/text'
 
 const VALID_LANGUAGE_RE = /^[a-z0-9][a-z0-9+#-]*$/i
-const NON_CODE_FENCE_LANGUAGES = new Set(['', 'text', 'plain', 'plaintext', 'md', 'markdown'])
+const NON_CODE_FENCE_LANGUAGES = new Set(['md', 'markdown'])
 
 const COMMON_CODE_LANGUAGES = new Set([
   'bash',
@@ -27,6 +27,9 @@ const COMMON_CODE_LANGUAGES = new Set([
   'sh',
   'sql',
   'swift',
+  'text',
+  'plain',
+  'plaintext',
   'tsx',
   'ts',
   'typescript',
@@ -316,7 +319,7 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
     return false
   }
 
-  if (signals.bulletLines >= 1 && (signals.hasMarkdown || signals.proseLines >= 2)) {
+  if (signals.bulletLines >= 2 && (signals.hasMarkdown || signals.proseLines >= 2) && !COMMON_CODE_LANGUAGES.has(cleanLanguage)) {
     return true
   }
 
@@ -324,5 +327,5 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
     return signals.proseLines >= 3 && signals.codeSignals === 0
   }
 
-  return !COMMON_CODE_LANGUAGES.has(cleanLanguage) && signals.proseLines >= 2 && signals.codeSignals <= 1
+  return !COMMON_CODE_LANGUAGES.has(cleanLanguage) && cleanLanguage !== '' && signals.proseLines >= 2 && signals.codeSignals <= 1
 }

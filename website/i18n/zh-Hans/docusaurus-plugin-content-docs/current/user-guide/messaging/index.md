@@ -488,7 +488,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 
 ### 重启通知
 
-当网关重启（或在有进行中会话时关闭）时，它可以向每个平台的主频道发送一条"agent 已恢复"/"agent 被中断"的一次性消息。这由 `gateway-config.yaml` 中每个平台的 `gateway_restart_notification` 标志控制，默认为 `true`：
+当网关重启（或在有进行中会话时关闭）时，它可以向每个平台的主频道发送一条"agent 已恢复"/"agent 被中断"的一次性消息。这由 `~/.hermes/config.yaml` 中每个平台的 `gateway_restart_notification` 标志控制，默认为 `true`：
 
 ```yaml
 gateway:
@@ -505,7 +505,7 @@ gateway:
 
 ### 正在输入指示器
 
-当 agent 正在处理消息时，网关会在支持的平台上显示实时的输入状态——Telegram/Discord/Signal 上的"正在输入……"气泡，或 Slack 上的"is thinking…"助手状态。这由 `gateway-config.yaml` 中每个平台的 `typing_indicator` 标志控制，默认为 `true`：
+当 agent 正在处理消息时，网关会在支持的平台上显示实时的输入状态——Telegram/Discord/Signal 上的"正在输入……"气泡，或 Slack 上的"is thinking…"助手状态。这由 `~/.hermes/config.yaml` 中每个平台的 `typing_indicator` 标志控制，默认为 `true`：
 
 ```yaml
 gateway:

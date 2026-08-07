@@ -87,19 +87,17 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    def _check_existing():
-        with _profile_scope(body.profile or profile):
-            return _get_mcp_servers()
-
-    existing = await asyncio.to_thread(_check_existing)
-    if name in existing:
-        raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
-
-    def _save():
+    def _run():
         with _profile_scope(body.profile or profile):
             # _save_mcp_server does its own load→mutate→save of config.yaml;
             # serialize the whole cycle against other off-loop config writers.
+            # The duplicate-name check lives under the same lock span so a
+            # concurrent add of the same name can't slip between check and save.
             with _CONFIG_MUTATION_LOCK:
+                if name in _get_mcp_servers():
+                    raise HTTPException(
+                        status_code=409, detail=f"Server '{name}' already exists"
+                    )
                 if bearer_token is not None:
                     server_config["headers"] = _save_bearer_auth_token(name, bearer_token)
                 if not _save_mcp_server(name, server_config):
@@ -109,7 +107,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
                     )
 
     try:
-        await asyncio.to_thread(_save)
+        await asyncio.to_thread(_run)
     except HTTPException:
         raise
     except Exception as exc:

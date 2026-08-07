@@ -518,36 +518,40 @@ async def select_toolset_provider(
                 if body.capability is not None:
                     response["capability"] = body.capability
 
-                # Entitlement check for managed Nous rows — mirrors the gate the CLI
-                # applies via ensure_nous_portal_access at selection time.
-                cat = TOOL_CATEGORIES.get(name)
-                row = None
-                if cat:
-                    row = next(
-                        (
-                            p
-                            for p in _visible_providers(cat, config, force_fresh=True)
-                            if p.get("name") == body.provider
-                        ),
-                        None,
+            # Entitlement check for managed Nous rows — mirrors the gate the CLI
+            # applies via ensure_nous_portal_access at selection time. This hits
+            # the network (Portal), so it runs AFTER releasing the mutation lock:
+            # holding a process-wide config-write lock across a network fetch
+            # would stall every other config writer behind a slow Portal call.
+            # Still inside the worker thread + profile scope.
+            cat = TOOL_CATEGORIES.get(name)
+            row = None
+            if cat:
+                row = next(
+                    (
+                        p
+                        for p in _visible_providers(cat, config, force_fresh=True)
+                        if p.get("name") == body.provider
+                    ),
+                    None,
+                )
+            managed_feature = (row or {}).get("managed_nous_feature")
+            if managed_feature:
+                features = get_nous_subscription_features(config, force_fresh=True)
+                acct = features.account_info
+                category = MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)
+                entitled = bool(
+                    acct
+                    and acct.logged_in
+                    and (
+                        acct.tool_gateway_entitled_for(category)
+                        if category
+                        else acct.tool_gateway_entitled
                     )
-                managed_feature = (row or {}).get("managed_nous_feature")
-                if managed_feature:
-                    features = get_nous_subscription_features(config, force_fresh=True)
-                    acct = features.account_info
-                    category = MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)
-                    entitled = bool(
-                        acct
-                        and acct.logged_in
-                        and (
-                            acct.tool_gateway_entitled_for(category)
-                            if category
-                            else acct.tool_gateway_entitled
-                        )
-                    )
-                    if not entitled:
-                        response["needs_nous_auth"] = True
-                        response["feature"] = managed_feature
+                )
+                if not entitled:
+                    response["needs_nous_auth"] = True
+                    response["feature"] = managed_feature
         return response
 
     response = await asyncio.to_thread(_run)

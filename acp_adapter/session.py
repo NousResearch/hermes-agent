@@ -604,6 +604,7 @@ class SessionManager:
         from run_agent import AIAgent
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_cli.tools_config import _get_platform_tools
 
         config = load_config()
         model_cfg = config.get("model")
@@ -621,12 +622,22 @@ class SessionManager:
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
 
+        # Resolve the ACP toolset through the canonical platform resolver so
+        # platform_toolsets.acp and agent.disabled_toolsets are honored the
+        # same way they are for cli/telegram/etc. (#79516). The resolver
+        # falls back to the hermes-acp composite when acp is unconfigured and
+        # includes enabled MCP server toolsets (mcp-<name>).
+        enabled_toolsets = sorted(_get_platform_tools(config, "acp"))
+        agent_cfg = config.get("agent") or {}
+        disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
+                enabled_toolsets,
                 mcp_server_names=configured_mcp_servers,
             ),
+            "disabled_toolsets": disabled_toolsets,
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),

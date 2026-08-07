@@ -750,3 +750,49 @@ class TestPromptCacheKeyCapability:
             supports_prompt_cache_key=True,
         )
         assert kw1["prompt_cache_key"] != kw2["prompt_cache_key"]
+
+
+class TestDeveloperRoleSwap:
+    """Profile-gated ``system`` -> ``developer`` role swap.
+
+    The swap is chosen by model name (``DEVELOPER_ROLE_MODELS``), but whether
+    the *endpoint* understands the role is a provider property. Profiles that
+    set ``supports_developer_role=False`` must keep the leading ``system``
+    message untouched (#41125).
+    """
+
+    SYSTEM_FIRST = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hi"},
+    ]
+
+    def _leading_role(self, transport, provider, model):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+        assert profile is not None, f"no profile registered for {provider!r}"
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[dict(m) for m in self.SYSTEM_FIRST],
+            tools=[],
+            provider_profile=profile,
+            provider_name=provider,
+            base_url=profile.base_url,
+        )
+        return kw["messages"][0]["role"]
+
+    def test_custom_provider_keeps_system_role(self, transport):
+        """Custom OpenAI-compatible endpoints reject ``developer`` with a 400."""
+        assert self._leading_role(transport, "custom", "gpt-5.4") == "system"
+
+    def test_opencode_go_keeps_system_role(self, transport):
+        """OpenCode Go silently discards developer-role messages (200, no error)."""
+        assert self._leading_role(transport, "opencode-go", "gpt-5.6-luna") == "system"
+
+    def test_supporting_provider_still_swaps(self, transport):
+        """Endpoints that do understand the role keep the existing behaviour."""
+        assert self._leading_role(transport, "nous", "openai/gpt-5.6-sol") == "developer"
+
+    def test_non_gpt5_model_is_unaffected(self, transport):
+        """The swap is scoped to GPT-5/Codex model names regardless of provider."""
+        assert self._leading_role(transport, "nous", "glm-5.2") == "system"

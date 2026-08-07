@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from types import SimpleNamespace
 
-from hermes_cli.context_switch_guard import merge_preflight_compression_warning
+from hermes_cli.context_switch_guard import (
+    enrich_model_switch_warnings_for_gateway,
+    merge_preflight_compression_warning,
+)
 from hermes_cli.model_switch import ModelSwitchResult
 
 
@@ -171,3 +176,56 @@ def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
     assert "shrinks" in result3.warning_message
     # Must not honor the unused 1M custom override when no providers were passed.
     assert "1,048,576" not in result3.warning_message
+
+
+class _RecordingSessionDB:
+    def __init__(self, messages):
+        self.messages = messages
+        self.read_thread_id = None
+
+    def get_messages_as_conversation(self, session_id):
+        self.read_thread_id = threading.get_ident()
+        return self.messages
+
+
+def test_enrich_uses_sync_db_handle_from_off_loop_worker(monkeypatch):
+    """The gateway offloads this whole helper, so its DB read must stay sync."""
+    from hermes_state import AsyncSessionDB
+
+    captured = {}
+    real_messages = [{"role": "user", "content": "hi"}]
+    sync_db = _RecordingSessionDB(real_messages)
+    runner = SimpleNamespace(
+        _agent_cache_lock=threading.Lock(),
+        _agent_cache={"session-key": (SimpleNamespace(), None)},
+        _session_db=AsyncSessionDB(sync_db),
+        session_store=SimpleNamespace(
+            get_or_create_session=lambda source: SimpleNamespace(session_id="s1"),
+        ),
+    )
+
+    def _capture_merge(result, *, messages=None, **kwargs):
+        captured["messages"] = messages
+
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard.merge_preflight_compression_warning",
+        _capture_merge,
+    )
+
+    async def _run_like_gateway():
+        loop_thread_id = threading.get_ident()
+        await asyncio.to_thread(
+            enrich_model_switch_warnings_for_gateway,
+            _result(),
+            runner,
+            session_key="session-key",
+            source=SimpleNamespace(),
+        )
+        return loop_thread_id
+
+    loop_thread_id = asyncio.run(_run_like_gateway())
+    if asyncio.iscoroutine(captured["messages"]):
+        captured["messages"].close()
+
+    assert captured["messages"] == real_messages
+    assert sync_db.read_thread_id != loop_thread_id

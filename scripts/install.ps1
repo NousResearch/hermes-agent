@@ -373,8 +373,12 @@ $script:ResolvedPathReport = @{
 # Configuration
 # ============================================================================
 
-$RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
-$RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
+# Overridable so a desktop app built from a fork bootstraps against the repo it
+# was actually built from (HERMES_INSTALL_REPO_* is set by the desktop
+# bootstrap runner from the build stamp).  Unset -> canonical upstream.
+$RepoUrlSsh = if ($env:HERMES_INSTALL_REPO_URL_SSH) { $env:HERMES_INSTALL_REPO_URL_SSH } else { "git@github.com:NousResearch/hermes-agent.git" }
+$RepoUrlHttps = if ($env:HERMES_INSTALL_REPO_URL_HTTPS) { $env:HERMES_INSTALL_REPO_URL_HTTPS } else { "https://github.com/NousResearch/hermes-agent.git" }
+$RepoArchiveBase = if ($env:HERMES_INSTALL_REPO_ARCHIVE_BASE) { $env:HERMES_INSTALL_REPO_ARCHIVE_BASE.TrimEnd("/") } else { $RepoUrlHttps -replace "\.git$", "" }
 $PythonVersion = "3.11"
 # Minor versions the installer accepts when the requested $PythonVersion isn't
 # available, in preference order.  uv discovers both uv-managed and system
@@ -2062,13 +2066,13 @@ function Install-Repository {
                 # for.  GitHub supports archive URLs for commits, tags, and
                 # branches; we honour Commit > Tag > Branch.
                 if ($Commit) {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/$Commit.zip"
+                    $zipUrl = "$RepoArchiveBase/archive/$Commit.zip"
                     $zipLabel = $Commit
                 } elseif ($Tag) {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$Tag.zip"
+                    $zipUrl = "$RepoArchiveBase/archive/refs/tags/$Tag.zip"
                     $zipLabel = $Tag
                 } else {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
+                    $zipUrl = "$RepoArchiveBase/archive/refs/heads/$Branch.zip"
                     $zipLabel = $Branch
                 }
                 $zipPath = "$env:TEMP\hermes-agent-$zipLabel.zip"

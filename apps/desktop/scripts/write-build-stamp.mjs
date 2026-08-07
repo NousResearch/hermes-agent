@@ -9,6 +9,7 @@
  *     "schemaVersion": 1,
  *     "commit":        "<40-char SHA>",
  *     "branch":        "<branch name>",
+ *     "repository":    "<owner/name>",   // GitHub repo the build came from
  *     "builtAt":       "<ISO 8601 UTC timestamp>",
  *     "dirty":         true|false,
  *     "source":        "ci" | "local" | "fallback"
@@ -37,6 +38,27 @@ const STAMP_SCHEMA_VERSION = 1
 /** All-zero placeholder used when no real commit can be resolved. */
 export const FALLBACK_COMMIT = "0000000000000000000000000000000000000000"
 export const FALLBACK_BRANCH = "main"
+/** Canonical upstream repo; forks stamp their own so bootstrap follows them. */
+export const DEFAULT_REPOSITORY = "NousResearch/hermes-agent"
+
+const REPOSITORY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/**
+ * Reduce a GitHub remote URL (or an already-plain slug) to `owner/name`.
+ * Returns null for anything that isn't GitHub, so non-GitHub remotes fall back
+ * to the canonical repository rather than producing a bogus fetch URL.
+ */
+export function normalizeGitHubRepository(value) {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim().replace(/\/+$/, "")
+  if (!trimmed) return null
+
+  const ssh = trimmed.match(/^(?:ssh:\/\/)?git@github\.com[:/](.+?)(?:\.git)?$/i)
+  const https = trimmed.match(/^https?:\/\/(?:[^@/]+@)?github\.com\/(.+?)(?:\.git)?$/i)
+  const slug = ssh?.[1] ?? https?.[1] ?? (trimmed.includes("://") || trimmed.includes("@") ? null : trimmed)
+
+  return typeof slug === "string" && REPOSITORY_RE.test(slug) ? slug : null
+}
 
 const DESKTOP_ROOT = resolve(import.meta.dirname, "..")
 const REPO_ROOT = resolve(DESKTOP_ROOT, "..", "..")
@@ -58,6 +80,7 @@ export function fromCI(env = process.env) {
   return {
     commit: sha,
     branch: branch,
+    repository: normalizeGitHubRepository(env.GITHUB_REPOSITORY),
     dirty: false, // CI builds from a checkout-of-ref by definition
     source: "ci"
   }
@@ -75,9 +98,13 @@ export function fromLocalGit(repoRoot = REPO_ROOT, execFn = tryExec) {
   // differs from the commit being pinned.
   const status = execFn("git status --porcelain -uno", { cwd: repoRoot })
   const dirty = status !== null && status.length > 0
+  // A fork-built app must bootstrap from the fork: its branches and commits do
+  // not exist upstream.  `origin` is the remote the checkout was cloned from.
+  const remote = execFn("git remote get-url origin", { cwd: repoRoot })
   return {
     commit: sha,
     branch: branch === "HEAD" ? null : branch, // detached HEAD -> null
+    repository: normalizeGitHubRepository(remote),
     dirty: dirty,
     source: "local"
   }
@@ -92,6 +119,7 @@ export function fromFallback(branch = FALLBACK_BRANCH) {
   return {
     commit: FALLBACK_COMMIT,
     branch: branch || FALLBACK_BRANCH,
+    repository: null,
     dirty: false,
     source: "fallback"
   }
@@ -153,6 +181,7 @@ function main() {
     schemaVersion: STAMP_SCHEMA_VERSION,
     commit: stamp.commit,
     branch: stamp.branch,
+    repository: stamp.repository || DEFAULT_REPOSITORY,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
     source: stamp.source

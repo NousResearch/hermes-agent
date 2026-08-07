@@ -46,8 +46,49 @@ const STAMP_COMMIT_RE = /^[0-9a-f]{7,40}$/i
 const FALLBACK_COMMIT_RE = /^0{7,40}$/
 const FALLBACK_BRANCH = 'main'
 
+// Canonical upstream repository. A desktop app built from a fork stamps its own
+// `owner/name` so first-launch bootstrap fetches install.sh/ps1 -- and clones
+// the agent checkout -- from the repo the app was actually built from.
+const DEFAULT_INSTALL_REPOSITORY = 'NousResearch/hermes-agent'
+const INSTALL_REPOSITORY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/
+
 function isPinnedCommit(commit) {
   return typeof commit === 'string' && STAMP_COMMIT_RE.test(commit) && !FALLBACK_COMMIT_RE.test(commit)
+}
+
+/**
+ * The GitHub `owner/name` an install stamp points at, defaulting to the
+ * canonical repo so official builds and pre-`repository` stamps are unchanged.
+ * Anything that isn't a plain, well-formed slug is rejected rather than
+ * interpolated into a URL.
+ */
+function installRepositoryForStamp(installStamp) {
+  const value = installStamp && installStamp.repository
+
+  if (typeof value === 'string' && INSTALL_REPOSITORY_RE.test(value.trim())) {
+    return value.trim()
+  }
+
+  return DEFAULT_INSTALL_REPOSITORY
+}
+
+/**
+ * Environment handed to install.sh / install.ps1 so the installer clones the
+ * same repository the desktop app was built from. Empty for canonical builds --
+ * the scripts keep their own hardcoded defaults.
+ */
+function installerRepoEnv(installStamp) {
+  const repository = installRepositoryForStamp(installStamp)
+
+  if (repository === DEFAULT_INSTALL_REPOSITORY) {
+    return {}
+  }
+
+  return {
+    HERMES_INSTALL_REPO_ARCHIVE_BASE: `https://github.com/${repository}`,
+    HERMES_INSTALL_REPO_URL_HTTPS: `https://github.com/${repository}.git`,
+    HERMES_INSTALL_REPO_URL_SSH: `git@github.com:${repository}.git`
+  }
 }
 
 type ExecGitFn = (args: string[], cwd: string) => string
@@ -131,11 +172,18 @@ function resolveMarkerPinnedCommit(
  * never asks GitHub for commit 0000000... (#50823).
  */
 function installRefForStamp(installStamp) {
+  const repository = installRepositoryForStamp(installStamp)
+  // Fork refs live in a different namespace than canonical ones, so keep their
+  // cached scripts separate (an unpinned `fallback-main` key would otherwise
+  // collide across repositories).
+  const scope = repository === DEFAULT_INSTALL_REPOSITORY ? '' : `${repository.replace(/[^0-9A-Za-z._-]/g, '_')}-`
+
   if (installStamp && isPinnedCommit(installStamp.commit)) {
     return {
       ref: installStamp.commit,
-      cacheKey: installStamp.commit,
-      pinned: true
+      cacheKey: `${scope}${installStamp.commit}`,
+      pinned: true,
+      repository
     }
   }
 
@@ -144,8 +192,9 @@ function installRefForStamp(installStamp) {
 
     return {
       ref,
-      cacheKey: `fallback-${String(ref).replace(/[^0-9A-Za-z._-]/g, '_')}`,
-      pinned: false
+      cacheKey: `${scope}fallback-${String(ref).replace(/[^0-9A-Za-z._-]/g, '_')}`,
+      pinned: false,
+      repository
     }
   }
 
@@ -227,13 +276,14 @@ function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
-function downloadInstallScript(ref, destPath) {
+function downloadInstallScript(ref, destPath, repository = DEFAULT_INSTALL_REPOSITORY) {
   // Fetch from GitHub raw at the install ref. Normal production builds pass a
   // pinned SHA (immutable). Non-git fallback builds pass an unpinned branch
   // ref so local builds can still bootstrap without pretending the all-zero
-  // placeholder is a real GitHub commit.
+  // placeholder is a real GitHub commit. Fork-built apps pass their own
+  // repository so the ref resolves in the repo it actually came from.
   const scriptName = installScriptName()
-  const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${ref}/scripts/${scriptName}`
+  const url = `https://raw.githubusercontent.com/${repository}/${ref}/scripts/${scriptName}`
 
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(destPath), { recursive: true })
@@ -362,12 +412,12 @@ async function resolveInstallScript({
   emit({
     type: 'log',
     line:
-      `[bootstrap] fetching ${installScriptName()} for ${installRef.ref.slice(0, 12)} from GitHub` +
+      `[bootstrap] fetching ${installScriptName()} for ${installRef.ref.slice(0, 12)} from ${installRef.repository}` +
       (installRef.pinned ? '' : ' (fallback, unpinned)')
   })
 
   try {
-    await _download(installRef.ref, cached)
+    await _download(installRef.ref, cached, installRef.repository)
     emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
 
     return { path: cached, source: 'download', commit: resolvedCommit, kind: installScriptKind() }
@@ -456,7 +506,7 @@ function resolveWindowsPowerShell() {
   return 'powershell.exe'
 }
 
-function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
+function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome, installerEnv }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
     const fullArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
@@ -468,6 +518,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
           ...process.env,
+          ...(installerEnv || {}),
           // Pass HERMES_HOME through so install.ps1 respects the caller's
           // choice rather than re-computing the default.
           HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
@@ -560,12 +611,13 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
   })
 }
 
-function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
+function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome, installerEnv }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const child = spawn('bash', [scriptPath, ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
+        ...(installerEnv || {}),
         HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
       }
     })
@@ -700,7 +752,8 @@ async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, acti
   const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
     emit,
     stageName: '__manifest__',
-    hermesHome
+    hermesHome,
+    installerEnv: installerRepoEnv(installStamp)
   })
 
   if (result.code !== 0) {
@@ -782,7 +835,8 @@ async function runStage({
     emit,
     stageName: stage.name,
     abortSignal,
-    hermesHome
+    hermesHome,
+    installerEnv: installerRepoEnv(installStamp)
   })
 
   const durationMs = Date.now() - startedAt
@@ -1025,7 +1079,9 @@ export {
   cachedScriptPath,
   hasExistingGitCheckout,
   installedAgentInstallScript,
+  installerRepoEnv,
   installRefForStamp,
+  installRepositoryForStamp,
   isPinnedCommit,
   // Exposed for testability
   parseStageResult,

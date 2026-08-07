@@ -462,7 +462,7 @@ const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 // build hasn't been invoked, or schema mismatch). Callers must handle null.
 //
 // Schema:
-//   { schemaVersion: 1, commit, branch, builtAt, dirty, source }
+//   { schemaVersion: 1, commit, branch, repository, builtAt, dirty, source }
 const INSTALL_STAMP_SCHEMA_VERSION = 1
 
 function loadInstallStamp() {
@@ -493,6 +493,11 @@ function loadInstallStamp() {
           schemaVersion: parsed.schemaVersion,
           commit: parsed.commit,
           branch: parsed.branch || null,
+          // GitHub owner/name this build came from; bootstrap fetches the
+          // installer (and clones the agent) from here so fork-built apps do
+          // not chase refs that only exist in their own repo. Absent on
+          // pre-repository stamps -- bootstrap defaults to the canonical repo.
+          repository: parsed.repository || null,
           builtAt: parsed.builtAt || null,
           dirty: Boolean(parsed.dirty),
           source: parsed.source || null,

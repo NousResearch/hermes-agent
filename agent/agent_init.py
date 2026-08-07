@@ -1767,7 +1767,15 @@ def init_agent(
                         from hermes_cli.profiles import get_active_profile_name
                         _profile = get_active_profile_name()
                         _init_kwargs["agent_identity"] = _profile
-                        _init_kwargs["agent_workspace"] = "hermes"
+                        # HERMES_KANBAN_BOARD is pinned both by the dispatcher
+                        # (worker processes) and by _pin_kanban_board_env() in
+                        # cmd_chat (hermes_cli/main.py) at chat boot, so a normal
+                        # CLI chat resolves to the current board slug ("default"
+                        # on a pristine install) and memory providers scope
+                        # storage per board via their {workspace} placeholder.
+                        # The "hermes" fallback only applies where the var is
+                        # genuinely unset (library/SDK, some gateway paths).
+                        _init_kwargs["agent_workspace"] = os.environ.get("HERMES_KANBAN_BOARD") or "hermes"
                     except Exception:
                         pass
                     agent._memory_manager.initialize_all(**_init_kwargs)

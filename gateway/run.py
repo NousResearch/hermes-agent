@@ -376,7 +376,22 @@ _GATEWAY_PROVIDER_POLICY_RE = re.compile(
 )
 
 _GATEWAY_AUTH_ERROR_RE = re.compile(
-    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|\b401\b)",
+    r"("
+    r"provider\s+authentication\s+failed"
+    r"|authentication\s+failed"
+    r"|auth(?:entication)?\s+(?:failed|error)"
+    r"|incorrect\s+api\s+key"
+    r"|invalid\s+api\s+key"
+    r"|invalid\s+(?:access\s+)?token"
+    r"|invalid\s+key"
+    r"|credential\s+invalid"
+    r"|token\s+expired(?:\s+or\s+incorrect)?"
+    r"|api\s+key\s+(?:invalid|not\s+valid|missing|expired)"
+    r"|access\s+token\s+expired"
+    r"|\bunauthor(?:ized|ised)\b"
+    r"|\b401\b"
+    r"|\b403\b"
+    r")",
     re.IGNORECASE,
 )
 
@@ -17908,6 +17923,56 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
+            # Process pending voice notes BEFORE the stale check so they
+            # don't get discarded when the session is interrupted. This fixes
+            # the "hit or miss" voice note issue where queued voice messages
+            # were lost if the agent result became stale.
+            _pending_adapter = self.adapters.get(source.platform)
+            if _pending_adapter and session_key:
+                _pending_event = _dequeue_pending_event(_pending_adapter, session_key)
+                if _pending_event:
+                    _pending_media_urls = getattr(_pending_event, "media_urls", None) or []
+                    _pending_media_types = getattr(_pending_event, "media_types", None) or []
+                    _pending_audio_paths = []
+                    for _i, _path in enumerate(_pending_media_urls):
+                        _mtype = _pending_media_types[_i] if _i < len(_pending_media_types) else ""
+                        _is_audio = (
+                            _mtype.startswith("audio/")
+                            or getattr(_pending_event, "message_type", None) in (MessageType.VOICE, MessageType.AUDIO)
+                        )
+                        if _is_audio:
+                            _pending_audio_paths.append(_path)
+                    if _pending_audio_paths:
+                        try:
+                            _pending_text = _pending_event.text or ""
+                            _enriched, _transcripts = await self._enrich_message_with_transcription(
+                                _pending_text, _pending_audio_paths,
+                            )
+                            if _transcripts:
+                                _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                                for _tx in _transcripts:
+                                    try:
+                                        await _pending_adapter.send(
+                                            source.chat_id,
+                                            f'🎙️ "{_tx}"',
+                                            metadata=_echo_meta,
+                                        )
+                                    except Exception as _echo_exc:
+                                        logger.debug(
+                                            "Pre-stale voice echo failed (non-fatal): %s", _echo_exc,
+                                        )
+                            # Re-queue the enriched event so the next turn picks it up
+                            if _enriched:
+                                _pending_event.text = _enriched
+                                # Store back for the next turn's dequeue
+                                _pending_adapter._pending_messages[session_key] = _pending_event
+                        except Exception as _trans_exc:
+                            logger.warning(
+                                "Pre-stale voice transcription failed: %s", _trans_exc,
+                            )
+                            # Put it back so it can be processed later
+                            _pending_adapter._pending_messages[session_key] = _pending_event
+
             if not self._is_session_run_current(_quick_key, run_generation):
                 logger.info(
                     "Discarding stale agent result for %s — generation %d is no longer current",
@@ -21950,7 +22015,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         enriched_parts = []
         successful_transcripts: List[str] = []
+        
+        # Check if user_text already contains a pre-transcribed voice wrapper
+        # (from adapter pre-transcription). If so, skip re-transcription.
+        _already_transcribed = 'voice message~' in user_text
+        
         for path in audio_paths:
+            # Skip if this audio was already pre-transcribed by the adapter
+            # (prevents double-transcription when voice arrives during active run)
+            if _already_transcribed:
+                logger.debug("Skipping duplicate transcription for %s (already in user_text)", path)
+                continue
             try:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)

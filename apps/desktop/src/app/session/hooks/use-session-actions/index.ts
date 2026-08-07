@@ -432,13 +432,16 @@ export function useSessionActions({
         setNewChatWorkspaceTarget(undefined)
         setActiveSessionId(created.session_id)
         setSelectedStoredSessionId(stored)
-        setSessionStartedAt(Date.now())
+        const runtimeStartedAt = Date.now()
+        setSessionStartedAt(runtimeStartedAt)
         const yoloArmed = $yoloActive.get()
         const runtimeInfo = applyRuntimeInfo(created.info)
 
-        if (runtimeInfo) {
-          updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
-        }
+        updateSessionState(
+          created.session_id,
+          state => ({ ...state, ...(runtimeInfo ?? {}), runtimeStartedAt }),
+          stored
+        )
 
         // User may have armed YOLO on the new-chat draft before the runtime
         // session existed — apply it to the freshly created session.
@@ -724,7 +727,7 @@ export function useSessionActions({
           // un-owned for the life of the session (#71254).
           setWorkspaceCwdOwner(storedSessionId)
           setCurrentBranch(cachedViewState.branch)
-          setSessionStartedAt(Date.now())
+          setSessionStartedAt(cachedViewState.runtimeStartedAt)
 
           try {
             let activated: SessionResumeResponse | null = null
@@ -861,7 +864,8 @@ export function useSessionActions({
       clearNotifications()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
-      setSessionStartedAt(Date.now())
+      const runtimeStartedAt = Date.now()
+      setSessionStartedAt(runtimeStartedAt)
 
       const stored =
         $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
@@ -1019,6 +1023,7 @@ export function useSessionActions({
           state => ({
             ...state,
             ...(runtimeInfo ?? {}),
+            runtimeStartedAt,
             messages: messagesForView,
             busy: resumedRunning,
             awaitingResponse: resumedRunning && !recoveredInFlightTail,
@@ -1187,6 +1192,7 @@ export function useSessionActions({
             })
 
         const routedSessionId = branched.stored_session_id ?? branched.session_id
+        const runtimeStartedAt = Date.now()
         const preview = branchMessages.map(({ content }) => content).find(Boolean) ?? null
         // Draft until submit: nest under the parent at the parent's recency so it
         // doesn't bubble to the top until a real message lands (backend persists
@@ -1212,6 +1218,7 @@ export function useSessionActions({
           branched.session_id,
           state => ({
             ...state,
+            runtimeStartedAt,
             messages: branchMessages.map(({ source }) => source),
             busy: false,
             awaitingResponse: false

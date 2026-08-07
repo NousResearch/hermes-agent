@@ -3639,6 +3639,12 @@ def _parse_env_value(raw_value: str) -> str:
         return "".join(parsed)
     if len(value) >= 2 and value[0] == value[-1] == "'":
         return value[1:-1]
+    # Strip inline comments from unquoted values.  The dotenv convention
+    # is that ``#`` preceded by whitespace starts a comment.  A ``#`` that
+    # is NOT preceded by a space is part of the value (e.g. a hex color).
+    comment_idx = value.find(" #")
+    if comment_idx != -1:
+        value = value[:comment_idx].rstrip()
     return value
 
 

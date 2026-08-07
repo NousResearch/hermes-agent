@@ -8,6 +8,7 @@ import type { SessionTile } from '@/store/session-states'
 import {
   blankDraftTile,
   focusedSessionNeedsRoute,
+  homeFreshDraftToWorkspace,
   markSelectionRestore,
   orderTilesByTree,
   selectionHomesToWorkspace
@@ -81,6 +82,35 @@ describe('boot-restore selection homing (⌘R tab persistence)', () => {
     // One-shot consumed: the next selection change is a real navigation.
     $selectedStoredSessionId.set('nav-2')
     expect(activePane()).toBe('workspace')
+  })
+
+  // A fresh draft over an ALREADY-null selection notifies no listener (nanostores
+  // only fires on a value change), so ⌘N / the New session row / the worktree
+  // button all looked dead while a session tile was fronted.
+  it('a fresh draft fronts the workspace even when the selection does not change', () => {
+    $selectedStoredSessionId.set(null)
+    $layoutTree.set(mainGroup())
+
+    // Setting null over null notifies nothing — the tile stays fronted.
+    $selectedStoredSessionId.set(null)
+    expect(activePane()).toBe(tilePane('t'))
+
+    // The explicit new-chat homing call is what actually reveals the draft.
+    homeFreshDraftToWorkspace()
+    expect(activePane()).toBe('workspace')
+  })
+
+  it('a fresh draft does NOT consume the boot-restore one-shot', () => {
+    $layoutTree.set(mainGroup())
+    markSelectionRestore()
+
+    // An explicit fresh-draft home must leave the armed flag for the boot
+    // resume it belongs to, or a cold start clobbers the persisted active tab.
+    homeFreshDraftToWorkspace()
+    expect(activePane()).toBe(tilePane('t'))
+
+    $selectedStoredSessionId.set('boot-2')
+    expect(activePane()).toBe(tilePane('t'))
   })
 })
 

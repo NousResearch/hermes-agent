@@ -786,7 +786,15 @@ export function markSelectionRestore() {
 
 // Homing also FRONTS the workspace tab: the resumed chat loads in the workspace
 // pane, so a zone parked on a tile tab must switch back or the click looks dead.
-$selectedStoredSessionId.listen(selected => {
+//
+// Exported so an explicit primary navigation can apply the SAME policy without
+// depending on a selection CHANGE. `.listen` only notifies when the value
+// actually differs, so starting a fresh draft while the selection is already
+// null — main is on a blank new chat and the user is looking at a session tile —
+// never fired this, and ⌘N / the New session row / the worktree button all
+// looked completely dead. Idempotent, so the listener and an explicit call can
+// both run for one navigation.
+export function homeSelectionToWorkspace(selected: null | string): void {
   const restoring = selectionRestoreInFlight
   selectionRestoreInFlight = false
 
@@ -796,7 +804,21 @@ $selectedStoredSessionId.listen(selected => {
 
   noteActiveTreeGroup(null)
   revealTreePane('workspace')
-})
+}
+
+/** Front the workspace for an explicit primary navigation whose selection may
+ *  not have CHANGED (a fresh draft over an already-null selection). Unlike the
+ *  listener path this never consumes the boot-restore one-shot: that flag is
+ *  armed for a specific upcoming resume, and swallowing it here would let a
+ *  cold start clobber the persisted active tab (the ⌘R bug the flag prevents). */
+export function homeFreshDraftToWorkspace(): void {
+  if (!selectionRestoreInFlight && selectionHomesToWorkspace(null, $sessionTiles.get())) {
+    noteActiveTreeGroup(null)
+    revealTreePane('workspace')
+  }
+}
+
+$selectedStoredSessionId.listen(selected => homeSelectionToWorkspace(selected))
 
 // Dev hook for automation (mirrors __HERMES_LAYOUT_TREE__).
 if ((import.meta.env.DEV || import.meta.env.VITE_PERF_PROBE === '1') && typeof window !== 'undefined') {

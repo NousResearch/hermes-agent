@@ -154,6 +154,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
+import { createPreviewWatchRegistry } from './preview-watch'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
@@ -1117,7 +1118,6 @@ const MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS = 3
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 const hermesLog = []
-const previewWatchers = new Map()
 let previewShortcutActive = false
 let desktopLogBuffer = ''
 let desktopLogFlushTimer = null
@@ -4986,65 +4986,29 @@ function sendPreviewFileChanged(payload) {
   webContents.send('hermes:preview-file-changed', payload)
 }
 
+// Watcher lifecycle lives in ./preview-watch (unit-tested there): the
+// FSWatcher 'error' path is contained so a deleted/unmounted watch directory
+// can never crash the main process. This wrapper only resolves the preview
+// URL and shapes the renderer payload.
+const previewWatchRegistry = createPreviewWatchRegistry({
+  fileExists,
+  debounceMs: PREVIEW_WATCH_DEBOUNCE_MS,
+  sendChanged: ({ id, path: changedPath }) =>
+    sendPreviewFileChanged({ id, path: changedPath, url: pathToFileURL(changedPath).toString() })
+})
+
 async function watchPreviewFile(rawUrl) {
   const filePath = await filePathFromPreviewUrl(rawUrl)
-  const watchDir = path.dirname(filePath)
-  const targetName = path.basename(filePath)
-  const id = crypto.randomBytes(12).toString('base64url')
-  let timer = null
 
-  const watcher = fs.watch(watchDir, (_eventType, filename) => {
-    const changedName = filename ? path.basename(String(filename)) : ''
-
-    if (changedName && changedName !== targetName) {
-      return
-    }
-
-    if (timer) {
-      clearTimeout(timer)
-    }
-
-    timer = setTimeout(() => {
-      timer = null
-
-      if (!fileExists(filePath)) {
-        return
-      }
-
-      sendPreviewFileChanged({ id, path: filePath, url: pathToFileURL(filePath).toString() })
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
-  })
-
-  previewWatchers.set(id, {
-    close: () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
-      watcher.close()
-    }
-  })
-
-  return { id, path: filePath }
+  return previewWatchRegistry.watch(filePath)
 }
 
 function stopPreviewFileWatch(id) {
-  const watcher = previewWatchers.get(id)
-
-  if (!watcher) {
-    return false
-  }
-
-  watcher.close()
-  previewWatchers.delete(id)
-
-  return true
+  return previewWatchRegistry.stop(id)
 }
 
 function closePreviewWatchers() {
-  for (const id of previewWatchers.keys()) {
-    stopPreviewFileWatch(id)
-  }
+  previewWatchRegistry.closeAll()
 }
 
 /** Watch a DIRECTORY for entry churn (folders appearing/vanishing) — the
@@ -5059,31 +5023,9 @@ function watchDirectory(rawDir) {
     throw new Error(`Not a directory: ${watchDir}`)
   }
 
-  const id = crypto.randomBytes(12).toString('base64url')
-  let timer = null
-
-  const watcher = fs.watch(watchDir, () => {
-    if (timer) {
-      clearTimeout(timer)
-    }
-
-    timer = setTimeout(() => {
-      timer = null
-      sendPreviewFileChanged({ id, path: watchDir, url: pathToFileURL(watchDir).toString() })
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
+  return previewWatchRegistry.watchDirectory(watchDir, {
+    dirExists: (p) => fs.existsSync(p) && fs.statSync(p).isDirectory()
   })
-
-  previewWatchers.set(id, {
-    close: () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-
-      watcher.close()
-    }
-  })
-
-  return { id, path: watchDir }
 }
 
 // Best-effort read of a gateway's advertised auth providers, cached per base

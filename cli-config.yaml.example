@@ -1127,6 +1127,8 @@ platform_toolsets:
 #     Lower it below the server's session TTL for servers that expire idle
 #     sessions quickly (e.g. Unreal Engine editor MCP, ~15s), otherwise idle
 #     tool calls hit an expired session and pay a slow reconnect. Floored at 5s.
+#   keepalive_probe: auto (default) or list_tools. Use list_tools only for a
+#     tool-capable legacy server whose transport rejects the optional MCP ping.
 #
 # mcp_servers:
 #   time:

@@ -227,6 +227,39 @@ class TestKeepaliveProbeFallback:
         assert task._ping_unsupported is False
 
 
+    async def test_configured_list_tools_probe_skips_ping(self):
+        """Legacy servers can opt out before a hostile ping closes the stream."""
+        task = MCPServerTask("legacy-sse")
+        task._config = {"keepalive_probe": "list_tools"}
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(),
+            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
+        )
+
+        await task._keepalive_probe()
+
+        task.session.send_ping.assert_not_called()
+        task.session.list_tools.assert_awaited_once()
+
+
+    async def test_list_tools_probe_falls_back_for_prompt_only_server(self):
+        """A capability mismatch must not reconnect-loop on tools/list."""
+        task = MCPServerTask("prompt-only")
+        task._config = {"keepalive_probe": "list_tools"}
+        task.initialize_result = _caps(prompts=SimpleNamespace())
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(),
+            list_tools=AsyncMock(),
+        )
+
+        await task._keepalive_probe()
+
+        task.session.send_ping.assert_awaited_once()
+        task.session.list_tools.assert_not_called()
+        assert task._config["keepalive_probe"] == "auto"
+
+
     async def test_falls_back_on_unknown_method_string(self):
         """Regression for #50028: a server that surfaces method-not-found as a
         plain "Unknown method: ping" string (no structural -32601 code) must
@@ -289,5 +322,4 @@ class TestKeepaliveProbeFallback:
         await task._discover_tools()
 
         assert task._ping_unsupported is False
-
 

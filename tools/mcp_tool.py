@@ -23,6 +23,8 @@ Example config::
                                 # 180). Set below the server's session TTL for
                                 # servers that GC idle sessions quickly (e.g.
                                 # Unreal Engine editor MCP, ~15s). Floored at 5s.
+        keepalive_probe: list_tools  # optional compatibility mode for legacy
+                                     # servers whose transport rejects ping
         idle_timeout_seconds: 3600      # optional stdio recycle after idle
         max_lifetime_seconds: 86400     # optional stdio recycle after age
         # The recycle settings may also live under lifecycle: {...}.
@@ -2248,7 +2250,9 @@ class MCPServerTask:
     async def _keepalive_probe(self) -> None:
         """Exercise the session to detect a stale/expired connection.
 
-        Uses ``ping`` (cheap, transport-agnostic liveness) by default. ``ping``
+        Uses ``ping`` (cheap, transport-agnostic liveness) by default. Servers
+        that close their transport when they receive the optional ping utility
+        can opt into ``keepalive_probe: list_tools``. ``ping``
         is an OPTIONAL MCP utility: a server that doesn't implement it answers
         JSON-RPC -32601. The first time that happens we latch
         ``_ping_unsupported`` and fall back to the pre-ping probe — capability
@@ -2261,6 +2265,23 @@ class MCPServerTask:
         Raises on a genuine connection failure so the caller triggers a
         reconnect; returns normally when the session is alive.
         """
+        probe_mode = str(
+            self._config.get("keepalive_probe", "auto") or "auto"
+        ).strip().lower()
+        if probe_mode == "list_tools":
+            if self._advertises_tools():
+                await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
+                return
+            # A prompt/resource-only server cannot use tools/list. Recover to
+            # the universal ping path and latch the correction so this warning
+            # is emitted once rather than on every keepalive interval.
+            logger.warning(
+                "MCP server '%s': keepalive_probe=list_tools requires the "
+                "tools capability; falling back to ping.",
+                self.name,
+            )
+            self._config["keepalive_probe"] = "auto"
+
         if not self._ping_unsupported:
             try:
                 await asyncio.wait_for(self.session.send_ping(), timeout=30.0)
@@ -3146,7 +3167,19 @@ class MCPServerTask:
         Includes automatic reconnection with exponential backoff if the
         connection drops unexpectedly (unless shutdown was requested).
         """
-        self._config = config
+        self._config = dict(config)
+        keepalive_probe = str(
+            self._config.get("keepalive_probe", "auto") or "auto"
+        ).strip().lower()
+        if keepalive_probe not in {"auto", "list_tools"}:
+            logger.warning(
+                "MCP server '%s': invalid keepalive_probe=%r; using auto. "
+                "Expected 'auto' or 'list_tools'.",
+                self.name,
+                self._config.get("keepalive_probe"),
+            )
+            keepalive_probe = "auto"
+        self._config["keepalive_probe"] = keepalive_probe
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")

@@ -180,6 +180,31 @@ def _browser_cdp_private_guard(
     return None
 
 
+def _browser_cdp_frame_private_guard(
+    frame_info: Dict[str, Any],
+    method: str,
+) -> Optional[str]:
+    """Block page-content CDP calls when the selected OOPIF is private."""
+    if method in _CDP_PRIVATE_PAGE_ALLOWED_METHODS:
+        return None
+
+    try:
+        from tools import browser_tool as bt  # type: ignore[import-not-found]
+
+        for key in ("url", "origin"):
+            candidate = str(frame_info.get(key) or "").strip()
+            if not candidate:
+                continue
+            if (
+                bt._is_always_blocked_url(candidate)  # type: ignore[attr-defined]
+                or not bt._is_safe_url(candidate)  # type: ignore[attr-defined]
+            ):
+                return _private_page_guard_error(candidate, method)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("browser_cdp: frame private-page guard probe failed: %s", exc)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Core CDP call
 # ---------------------------------------------------------------------------
@@ -336,6 +361,10 @@ def _browser_cdp_via_supervisor(
             f"frame_id {frame_id!r} not found in supervisor state. "
             f"Call browser_snapshot to see current frame_tree."
         )
+
+    blocked = _browser_cdp_frame_private_guard(frame_info, method)
+    if blocked:
+        return blocked
 
     child_sid = frame_info.get("session_id")
     if not child_sid:

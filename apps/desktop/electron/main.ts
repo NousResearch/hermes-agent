@@ -5661,7 +5661,7 @@ function installContextMenu(window) {
     if (hasImage) {
       template.push(
         {
-          label: 'Open Image',
+          label: '打开图片',
           click: () => {
             if (params.srcURL && !params.srcURL.startsWith('data:')) {
               openExternalUrl(params.srcURL)
@@ -5670,17 +5670,17 @@ function installContextMenu(window) {
           enabled: !params.srcURL.startsWith('data:')
         },
         {
-          label: 'Copy Image',
+          label: '复制图片',
           click: () => {
             void copyImageFromUrl(params.srcURL).catch(error => rememberLog(`Copy image failed: ${error.message}`))
           }
         },
         {
-          label: 'Copy Image Address',
+          label: '复制图片地址',
           click: () => clipboard.writeText(params.srcURL)
         },
         {
-          label: 'Save Image As...',
+          label: '图片另存为...',
           click: () => {
             void saveImageFromUrl(params.srcURL).catch(error => rememberLog(`Save image failed: ${error.message}`))
           }
@@ -5695,11 +5695,11 @@ function installContextMenu(window) {
 
       template.push(
         {
-          label: 'Open Link',
+          label: '打开链接',
           click: () => openExternalUrl(params.linkURL)
         },
         {
-          label: 'Copy Link',
+          label: '复制链接',
           click: () => clipboard.writeText(params.linkURL)
         }
       )
@@ -5724,7 +5724,7 @@ function installContextMenu(window) {
 
       template.push({ type: 'separator' })
       template.push({
-        label: 'Add to dictionary',
+        label: '添加到词典',
         click: () => window.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord)
       })
     }
@@ -5736,14 +5736,14 @@ function installContextMenu(window) {
 
       if (isEditable) {
         template.push(
-          { role: 'cut', enabled: params.editFlags.canCut },
-          { role: 'copy', enabled: params.editFlags.canCopy },
-          { role: 'paste', enabled: params.editFlags.canPaste },
+          { role: 'cut', label: '剪切', enabled: params.editFlags.canCut },
+          { role: 'copy', label: '复制', enabled: params.editFlags.canCopy },
+          { role: 'paste', label: '粘贴', enabled: params.editFlags.canPaste },
           { type: 'separator' },
-          { role: 'selectAll', enabled: params.editFlags.canSelectAll }
+          { role: 'selectAll', label: '全选', enabled: params.editFlags.canSelectAll }
         )
       } else {
-        template.push({ role: 'copy', enabled: params.editFlags.canCopy })
+        template.push({ role: 'copy', label: '复制', enabled: params.editFlags.canCopy })
       }
     }
 

@@ -81,6 +81,12 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        # Automation that files tasks under an ``--idempotency-key`` has no way
+        # to ask the board what it already filed: ``create`` returns an id but
+        # never says whether it deduped, and every other lookup is by id. Without
+        # this field the only way for a caller to recognise its own tasks is to
+        # match on ``title``, which breaks the moment a human edits one.
+        "idempotency_key": t.idempotency_key,
     }
 
 

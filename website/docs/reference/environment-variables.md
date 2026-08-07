@@ -364,6 +364,9 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL` | Expected Google service account email for HTTP event bearer tokens |
 | `WHATSAPP_ENABLED` | Enable the WhatsApp bridge (`true`/`false`) |
 | `WHATSAPP_MODE` | `bot` (separate number) or `self-chat` (message yourself) |
+| `WHATSAPP_BRIDGE_HOST` | Externally managed bridge host for container deployments (default: `127.0.0.1`) |
+| `WHATSAPP_BRIDGE_BIND` | Bridge listen address when it is launched by Hermes (default: `127.0.0.1`) |
+| `WHATSAPP_BRIDGE_ACCEPTED_HOSTS` | Extra comma-separated Host header values accepted by the bridge; required for wildcard binds |
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`), or `*` to allow all senders |
 | `WHATSAPP_ALLOW_ALL_USERS` | Allow all WhatsApp senders without an allowlist (`true`/`false`) |
 | `WHATSAPP_HOME_CHANNEL` | Default chat ID for cron / notification delivery. |

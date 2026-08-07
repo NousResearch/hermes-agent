@@ -419,6 +419,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_port: int = config.extra.get("bridge_port", 3000)
+        # A non-loopback bridge host is an explicitly externally managed
+        # bridge (for example, Hermes in Docker talking to a host bridge).
+        # Keep the historic loopback endpoint and lifecycle as the default.
+        self._bridge_host = str(
+            config.extra.get("bridge_host")
+            or os.getenv("WHATSAPP_BRIDGE_HOST", "127.0.0.1")
+        ).strip() or "127.0.0.1"
+        self._bridge_host = self._bridge_host.strip("[]")
+        url_host = f"[{self._bridge_host}]" if ":" in self._bridge_host else self._bridge_host
+        self._bridge_url = f"http://{url_host}:{self._bridge_port}"
+        self._external_bridge = self._bridge_host.lower() not in {
+            "localhost", "127.0.0.1", "::1",
+        }
         self._bridge_script: Optional[str] = config.extra.get(
             "bridge_script",
             str(self._DEFAULT_BRIDGE_DIR / "bridge.js"),
@@ -512,6 +525,28 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         
         This launches the Node.js bridge process and waits for it to be ready.
         """
+        if getattr(self, "_external_bridge", False):
+            # Do not inspect local credentials, install npm packages, or kill
+            # a port when another machine owns the bridge lifecycle.
+            try:
+                import aiohttp
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{self._bridge_url}/health",
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as resp:
+                        if resp.status != 200:
+                            raise RuntimeError(f"HTTP {resp.status}")
+                self._http_session = aiohttp.ClientSession()
+                self._poll_task = asyncio.create_task(self._poll_messages())
+                self._mark_connected()
+                print(f"[{self.name}] Using external bridge at {self._bridge_url}")
+                return True
+            except Exception as e:
+                logger.warning("[%s] External WhatsApp bridge unavailable at %s: %s", self.name, self._bridge_url, e)
+                return False
+
         if not check_whatsapp_requirements():
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
             self._set_fatal_error(
@@ -619,7 +654,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
-                        f"http://127.0.0.1:{self._bridge_port}/health",
+                        f"{self._bridge_url}/health",
                         timeout=aiohttp.ClientTimeout(total=2)
                     ) as resp:
                         if resp.status == 200:
@@ -753,7 +788,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 try:
                     async with aiohttp.ClientSession() as session:
                         async with session.get(
-                            f"http://127.0.0.1:{self._bridge_port}/health",
+                            f"{self._bridge_url}/health",
                             timeout=aiohttp.ClientTimeout(total=2)
                         ) as resp:
                             if resp.status == 200:
@@ -785,7 +820,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     try:
                         async with aiohttp.ClientSession() as session:
                             async with session.get(
-                                f"http://127.0.0.1:{self._bridge_port}/health",
+                                f"{self._bridge_url}/health",
                                 timeout=aiohttp.ClientTimeout(total=2)
                             ) as resp:
                                 if resp.status == 200:
@@ -956,7 +991,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     payload["replyTo"] = reply_to
 
                 async with self._http_session.post(
-                    f"http://127.0.0.1:{self._bridge_port}/send",
+                    f"{self._bridge_url}/send",
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
@@ -999,7 +1034,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             import aiohttp
             async with self._http_session.post(
-                f"http://127.0.0.1:{self._bridge_port}/edit",
+                f"{self._bridge_url}/edit",
                 json={
                     "chatId": to_whatsapp_jid(chat_id),
                     "messageId": message_id,
@@ -1046,7 +1081,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 payload["fileName"] = file_name
 
             async with self._http_session.post(
-                f"http://127.0.0.1:{self._bridge_port}/send-media",
+                f"{self._bridge_url}/send-media",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as resp:
@@ -1093,7 +1128,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "selectableCount": selectable_count,
             }
             async with self._http_session.post(
-                f"http://127.0.0.1:{self._bridge_port}/send-poll",
+                f"{self._bridge_url}/send-poll",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
@@ -1180,7 +1215,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if address:
                 payload["address"] = address
             async with self._http_session.post(
-                f"http://127.0.0.1:{self._bridge_port}/send-location",
+                f"{self._bridge_url}/send-location",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
@@ -1279,7 +1314,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # leaves the response object alive until GC, holding its TCP
             # socket in CLOSE_WAIT. See #18451.
             async with self._http_session.post(
-                f"http://127.0.0.1:{self._bridge_port}/typing",
+                f"{self._bridge_url}/typing",
                 json={"chatId": to_whatsapp_jid(chat_id)},
                 timeout=aiohttp.ClientTimeout(total=5)
             ):
@@ -1298,7 +1333,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             import aiohttp
 
             async with self._http_session.get(
-                f"http://127.0.0.1:{self._bridge_port}/chat/{to_whatsapp_jid(chat_id)}",
+                f"{self._bridge_url}/chat/{to_whatsapp_jid(chat_id)}",
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status == 200:
@@ -1326,7 +1361,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 break
             try:
                 async with self._http_session.get(
-                    f"http://127.0.0.1:{self._bridge_port}/messages",
+                    f"{self._bridge_url}/messages",
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status == 200:
@@ -1365,7 +1400,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             import aiohttp
 
             async with self._http_session.post(
-                f"http://127.0.0.1:{self._bridge_port}/read",
+                f"{self._bridge_url}/read",
                 json={"key": key},
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
@@ -1710,6 +1745,12 @@ async def _standalone_send(
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         bridge_port = extra.get("bridge_port", 3000)
+        bridge_host = str(
+            extra.get("bridge_host")
+            or os.getenv("WHATSAPP_BRIDGE_HOST", "localhost")
+        ).strip().strip("[]") or "localhost"
+        url_host = f"[{bridge_host}]" if ":" in bridge_host else bridge_host
+        bridge_url = f"http://{url_host}:{bridge_port}"
         normalized_chat_id = to_whatsapp_jid(chat_id)
         media = media_files or []
         text = message or ""
@@ -1722,7 +1763,7 @@ async def _standalone_send(
             #    or when the text is delivered as the media caption instead).
             if text.strip() and not media_caption:
                 async with session.post(
-                    f"http://localhost:{bridge_port}/send",
+                    f"{bridge_url}/send",
                     json={"chatId": normalized_chat_id, "message": text},
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
@@ -1745,7 +1786,7 @@ async def _standalone_send(
                     if media_caption:
                         try:
                             async with session.post(
-                                f"http://localhost:{bridge_port}/send",
+                                f"{bridge_url}/send",
                                 json={"chatId": normalized_chat_id, "message": media_caption},
                                 timeout=aiohttp.ClientTimeout(total=30),
                             ) as resp:
@@ -1765,7 +1806,7 @@ async def _standalone_send(
                 if media_caption:
                     payload["caption"] = media_caption
                 async with session.post(
-                    f"http://localhost:{bridge_port}/send-media",
+                    f"{bridge_url}/send-media",
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=120),
                 ) as resp:

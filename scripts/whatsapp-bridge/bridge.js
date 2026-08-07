@@ -783,17 +783,30 @@ const app = express();
 app.use(express.json());
 
 // Host-header validation — defends against DNS rebinding.
-// The bridge binds loopback-only (127.0.0.1) but a victim browser on
-// the same machine could be tricked into fetching from an attacker
-// hostname that TTL-flips to 127.0.0.1. Reject any request whose Host
-// header doesn't resolve to a loopback alias.
+// By default the bridge binds loopback-only. A victim browser could be
+// tricked into fetching an attacker hostname that DNS-rebinds to the local
+// bridge, so accept only explicitly configured Host values. Host validation
+// is a DNS-rebinding defence, not network access control: never expose this
+// unauthenticated bridge to an untrusted network.
 // See GHSA-ppp5-vxwm-4cf7.
+const HOST = process.env.WHATSAPP_BRIDGE_BIND || '127.0.0.1';
 const _ACCEPTED_HOST_VALUES = new Set([
   'localhost',
   '127.0.0.1',
-  '[::1]',
   '::1',
 ]);
+for (const value of (process.env.WHATSAPP_BRIDGE_ACCEPTED_HOSTS || '').split(',')) {
+  const host = value.trim().replace(/^\[|\]$/g, '').toLowerCase();
+  if (host) _ACCEPTED_HOST_VALUES.add(host);
+}
+// A specific non-loopback bind is safe to accept by default: clients reaching
+// that address naturally send it in Host. Wildcard binds deliberately require
+// WHATSAPP_BRIDGE_ACCEPTED_HOSTS because they do not identify one origin.
+const _NORMALIZED_BIND_HOST = HOST.trim().replace(/^\[|\]$/g, '').toLowerCase();
+if (!_ACCEPTED_HOST_VALUES.has(_NORMALIZED_BIND_HOST)
+    && !['0.0.0.0', '::'].includes(_NORMALIZED_BIND_HOST)) {
+  _ACCEPTED_HOST_VALUES.add(_NORMALIZED_BIND_HOST);
+}
 
 app.use((req, res, next) => {
   const raw = (req.headers.host || '').trim();
@@ -1132,8 +1145,8 @@ if (PAIR_ONLY) {
     process.exit(1);
   });
 } else {
-  app.listen(PORT, '127.0.0.1', () => {
-    console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
+  app.listen(PORT, HOST, () => {
+    console.log(`🌉 WhatsApp bridge listening on ${HOST}:${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.size > 0) {
       console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);

@@ -1027,6 +1027,11 @@ platform_toolsets:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
+#   whatsapp:
+#     extra:
+#       # Use an externally managed bridge (for example, a host-side bridge
+#       # reachable from a Dockerized Hermes gateway).
+#       bridge_host: "172.17.0.1"
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

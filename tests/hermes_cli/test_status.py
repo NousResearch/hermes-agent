@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_cli.status import show_status
 
 
@@ -197,6 +199,37 @@ class TestShowStatusXaiOAuth:
 
         assert "xAI OAuth" in out
         assert "not logged in (run: hermes auth add xai-oauth)" in out
+def _fallback_spool_snapshot(**overrides):
+    snapshot = SimpleNamespace(
+        schema_version=1,
+        state="empty",
+        reasons=(),
+        pending_units=0,
+        pending_frames=0,
+        pending_bytes=0,
+        oldest_pending_age_seconds=None,
+        retry_pending=False,
+        retry_class=None,
+        cooldown_seconds=0.0,
+        ack_pending=False,
+        blocker_present=False,
+        blocker_sequence=None,
+        blocker_offset=None,
+        blocker_reason_class=None,
+        blocker_source_kind=None,
+        capacity_used_bytes=0,
+        capacity_cap_bytes=64,
+        capacity_remaining_bytes=64,
+        capacity_state="ok",
+        disk_free_bytes=1024,
+        disk_total_bytes=2048,
+        disk_headroom_threshold_bytes=64,
+        disk_state="ok",
+        inspection_error_class=None,
+    )
+    for key, value in overrides.items():
+        setattr(snapshot, key, value)
+    return snapshot
 
 
 def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, tmp_path):
@@ -221,6 +254,9 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
     class _FakeDB:
+        def __init__(self, db_path=None, read_only=False):
+            self.read_only = read_only
+
         def list_gateway_sessions(self, active_only=True):
             return [
                 {"id": "gw-old", "last_active": time.time() - 7200},
@@ -237,3 +273,61 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_label"),
+    [
+        ("empty", "idle"),
+        ("healthy", "healthy"),
+        ("degraded", "degraded"),
+    ],
+)
+def test_show_status_renders_fallback_spool_row_and_uses_read_only_session_db(
+    monkeypatch, capsys, tmp_path, state, expected_label
+):
+    import hermes_state
+
+    status_mod = _base_xai_mocks(monkeypatch, tmp_path)
+    opened = []
+
+    class _FakeSessionDB:
+        def __init__(self, db_path=None, read_only=False):
+            opened.append(read_only)
+
+        def list_gateway_sessions(self, active_only=True):
+            return [{"id": "one", "last_active": 0}]
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(hermes_state, "SessionDB", _FakeSessionDB)
+    monkeypatch.setattr(
+        status_mod,
+        "collect_session_fallback_spool_status",
+        lambda **_kwargs: _fallback_spool_snapshot(
+            state=state,
+            reasons=("pending_backlog", "capacity_full") if state == "degraded" else (),
+            pending_units=2 if state == "degraded" else 0,
+            pending_frames=2 if state == "degraded" else 0,
+            pending_bytes=128 if state == "degraded" else 0,
+            oldest_pending_age_seconds=12.0 if state == "degraded" else None,
+            capacity_state="full" if state == "degraded" else "ok",
+            capacity_used_bytes=64 if state == "degraded" else 0,
+            capacity_cap_bytes=64,
+            capacity_remaining_bytes=0 if state == "degraded" else 64,
+        ),
+        raising=False,
+    )
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+    out = capsys.readouterr().out
+
+    assert opened == [True]
+    assert "Fallback spool:" in out
+    assert expected_label in out
+    assert "session-123" not in out
+    assert "hello" not in out
+    if state == "degraded":
+        assert "pending=2u/2f/128b" in out
+        assert "pending_backlog,capacity_full" in out

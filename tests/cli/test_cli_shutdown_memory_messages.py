@@ -133,38 +133,26 @@ def test_cli_close_preflush_resumed_prefix_is_not_duplicated(tmp_path, monkeypat
 
     live_messages = list(loaded) + [{"role": "user", "content": "new prompt"}]
     agent = _real_agent(db, session_id, [])
-    entered_flush = threading.Event()
-    release_flush = threading.Event()
-    flush_calls = 0
+    entered_append = threading.Event()
+    release_append = threading.Event()
+    append_calls = 0
+    real_append_messages_batch = db.append_messages_batch
 
-    def _pause_before_flush(
-        messages: list[dict[str, Any]],
-        conversation_history: list[dict[str, Any]] | None = None,
-    ) -> None:
-        nonlocal flush_calls
-        flush_calls += 1
-        if flush_calls == 1:
-            # The worker has assigned its snapshot and is now paused before its
-            # regular DB write. The concurrent close call must stay live.
-            agent._session_messages = messages
-            entered_flush.set()
-            assert release_flush.wait(timeout=5)
-        from run_agent import AIAgent
+    def _pause_batch_append(*args: Any, **kwargs: Any):
+        nonlocal append_calls
+        append_calls += 1
+        if append_calls == 1:
+            entered_append.set()
+            assert release_append.wait(timeout=5)
+        return real_append_messages_batch(*args, **kwargs)
 
-        # Runtime accepts None; the stub keeps that optional contract explicit.
-        return AIAgent._flush_messages_to_session_db(
-            agent,
-            messages,
-            conversation_history if conversation_history is not None else [],
-        )
-
-    agent._flush_messages_to_session_db = _pause_before_flush
+    db.append_messages_batch = _pause_batch_append
     worker = threading.Thread(
         target=lambda: agent._persist_session(live_messages, loaded),
         daemon=True,
     )
     worker.start()
-    assert entered_flush.wait(timeout=5)
+    assert entered_append.wait(timeout=5)
 
     cli = object.__new__(cli_mod.HermesCLI)
     cli.conversation_history = list(loaded) + [{"role": "user", "content": "ui prompt"}]
@@ -185,13 +173,14 @@ def test_cli_close_preflush_resumed_prefix_is_not_duplicated(tmp_path, monkeypat
     # turn-start write has stamped its durable markers.
     assert not close_finished.wait(timeout=0.1)
 
-    release_flush.set()
+    release_append.set()
     worker.join(timeout=5)
     close_worker.join(timeout=5)
     assert not worker.is_alive()
     assert not close_worker.is_alive()
 
     stored = db.get_messages_as_conversation(session_id)
+    assert append_calls == 1
     assert [m["content"] for m in stored] == [
         "old prompt",
         "old answer",
@@ -328,4 +317,146 @@ def test_cli_close_builds_prompt_before_creating_first_session_row(tmp_path, mon
     assert session["system_prompt"] == "close-built-system-prompt"
     assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
         "first prompt"
+    ]
+
+
+def test_cli_close_waits_while_turn_start_replay_runs_under_persist_lock(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    import cli as cli_mod
+    import run_agent
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "cli-close-replay-lock"
+    db.create_session(session_id=session_id, source="cli")
+    loaded = [
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    for message in loaded:
+        db.append_message(
+            session_id=session_id,
+            role=message["role"],
+            content=message["content"],
+        )
+
+    live_messages = list(loaded) + [{"role": "user", "content": "new prompt"}]
+    agent = _real_agent(db, session_id, [])
+    entered_replay = threading.Event()
+    release_replay = threading.Event()
+
+    def _pause_replay(*_args: Any, **_kwargs: Any):
+        entered_replay.set()
+        assert release_replay.wait(timeout=5)
+        return types.SimpleNamespace(state="empty")
+
+    monkeypatch.setattr(run_agent.session_spool, "replay_to_session_db", _pause_replay)
+
+    worker = threading.Thread(
+        target=lambda: agent._persist_session(live_messages, loaded),
+        daemon=True,
+    )
+    worker.start()
+    assert entered_replay.wait(timeout=5)
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = list(loaded) + [{"role": "user", "content": "ui prompt"}]
+    cli.session_id = session_id
+    cli.agent = agent
+    close_started = threading.Event()
+    close_finished = threading.Event()
+
+    def _close_while_replay_waits():
+        close_started.set()
+        cli._persist_active_session_before_close()
+        close_finished.set()
+
+    close_worker = threading.Thread(target=_close_while_replay_waits, daemon=True)
+    close_worker.start()
+    assert close_started.wait(timeout=5)
+    assert not close_finished.wait(timeout=0.1)
+
+    release_replay.set()
+    worker.join(timeout=5)
+    close_worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert not close_worker.is_alive()
+
+
+def test_cli_close_waits_while_turn_start_replay_lock_returns_retry_pending(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    import cli as cli_mod
+    import run_agent
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "cli-close-replay-retry-pending"
+    db.create_session(session_id=session_id, source="cli")
+    loaded = [
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    for message in loaded:
+        db.append_message(
+            session_id=session_id,
+            role=message["role"],
+            content=message["content"],
+        )
+
+    live_messages = list(loaded) + [{"role": "user", "content": "new prompt"}]
+    agent = _real_agent(db, session_id, [])
+    entered_replay = threading.Event()
+    release_replay = threading.Event()
+    replay_calls = {"count": 0}
+
+    def _pause_replay(*_args: Any, **_kwargs: Any):
+        replay_calls["count"] += 1
+        if replay_calls["count"] == 1:
+            entered_replay.set()
+            assert release_replay.wait(timeout=5)
+        return types.SimpleNamespace(
+            state="retry_pending",
+            retry_class="ack_cleanup_busy",
+            ack_pending=True,
+            cooldown_seconds=1.0,
+        )
+
+    monkeypatch.setattr(run_agent.session_spool, "replay_to_session_db", _pause_replay)
+
+    worker = threading.Thread(
+        target=lambda: agent._persist_session(live_messages, loaded),
+        daemon=True,
+    )
+    worker.start()
+    assert entered_replay.wait(timeout=5)
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = list(loaded) + [{"role": "user", "content": "ui prompt"}]
+    cli.session_id = session_id
+    cli.agent = agent
+    close_started = threading.Event()
+    close_finished = threading.Event()
+
+    def _close_while_replay_waits():
+        close_started.set()
+        cli._persist_active_session_before_close()
+        close_finished.set()
+
+    close_worker = threading.Thread(target=_close_while_replay_waits, daemon=True)
+    close_worker.start()
+    assert close_started.wait(timeout=5)
+    assert not close_finished.wait(timeout=0.1)
+
+    release_replay.set()
+    worker.join(timeout=5)
+    close_worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert not close_worker.is_alive()
+    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
+        "old prompt",
+        "old answer",
     ]

@@ -285,7 +285,10 @@ CREATE TABLE IF NOT EXISTS messages (
     compacted INTEGER NOT NULL DEFAULT 0,
     api_content TEXT,
     display_kind TEXT,
-    display_metadata TEXT
+    display_metadata TEXT,
+    persistence_unit_id TEXT,
+    persistence_message_key TEXT,
+    persistence_ordinal INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -382,6 +385,12 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_messages_session_message_key
+    ON messages(session_id, persistence_message_key)
+    WHERE persistence_message_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_messages_session_unit_ordinal
+    ON messages(session_id, persistence_unit_id, persistence_ordinal)
+    WHERE persistence_unit_id IS NOT NULL AND persistence_ordinal IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer

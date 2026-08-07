@@ -46,7 +46,9 @@ import time
 import threading
 import uuid
 import warnings
-from typing import List, Dict, Any, Optional, Callable
+from dataclasses import dataclass
+from enum import Enum
+from typing import List, Dict, Any, Optional, Callable, Sequence, Tuple
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
 # that imports the SDK on first call/isinstance check. This preserves:
@@ -64,6 +66,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from hermes_constants import get_hermes_home
+import session_fallback_spool as session_spool
 
 
 def _launch_cwd_for_session(source: str) -> Optional[str]:
@@ -277,6 +280,96 @@ _MAX_TOOL_WORKERS = 8
 # every top-level ``_``-prefixed key before the request leaves the process, so
 # this never reaches a strict OpenAI-compatible gateway.
 _DB_PERSISTED_MARKER = "_db_persisted"
+_DB_SPOOLED_MARKER = "_db_spooled"
+_DB_PERSISTENCE_UNIT_ID = "_db_persistence_unit_id"
+_DB_PERSISTENCE_MESSAGE_KEY = "_db_persistence_message_key"
+_DB_PERSISTENCE_ORDINAL = "_db_persistence_ordinal"
+_DB_PERSISTENCE_TIMESTAMP = "_db_persistence_timestamp"
+_DB_PERSISTENCE_PAYLOAD_FINGERPRINT = "_db_persistence_payload_fingerprint"
+_DB_PERSISTENCE_UNIT_FINGERPRINT = "_db_persistence_unit_fingerprint"
+_DB_CANONICAL_COMMIT_MARKER = "_db_canonical_commit"
+
+
+class SessionPersistState(str, Enum):
+    CANONICAL = "canonical"
+    SPOOLED = "spooled"
+    NOT_DURABLE = "not_durable"
+
+
+@dataclass(frozen=True)
+class SessionPersistResult:
+    state: SessionPersistState
+    canonical_units_committed: int = 0
+    spooled_units: int = 0
+    spool_receipts: tuple[session_spool.SpoolUnitAppendResult, ...] = ()
+    error_class: str | None = None
+    error_message: str | None = None
+
+    def __bool__(self) -> bool:
+        raise TypeError("SessionPersistResult has no truthiness; branch on .state")
+
+
+@dataclass(frozen=True)
+class _PlannedPersistenceUnit:
+    message_indices: tuple[int, ...]
+    source_messages: tuple[Dict[str, Any], ...]
+    batch_messages: tuple[Any, ...]
+
+    @property
+    def persistence_unit_id(self) -> str:
+        return self.batch_messages[0].persistence_unit_id
+
+
+@dataclass(frozen=True)
+class _SessionPersistencePlan:
+    pending_units: tuple[_PlannedPersistenceUnit, ...]
+    mutated_spooled_unit_ids: tuple[str, ...] = ()
+
+
+def _batch_message_payload_fingerprint(message: Any) -> str:
+    """Hash only the row payload, excluding retry identity metadata."""
+    payload = {
+        "role": message.role,
+        "content": message.content,
+        "timestamp": message.timestamp,
+        "tool_name": message.tool_name,
+        "tool_calls": message.tool_calls,
+        "tool_call_id": message.tool_call_id,
+        "finish_reason": message.finish_reason,
+        "reasoning": message.reasoning,
+        "reasoning_content": message.reasoning_content,
+        "reasoning_details": message.reasoning_details,
+        "codex_reasoning_items": message.codex_reasoning_items,
+        "codex_message_items": message.codex_message_items,
+        "api_content": message.api_content,
+        "display_kind": message.display_kind,
+        "display_metadata": message.display_metadata,
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _unit_payload_fingerprint(payload_fingerprints: Sequence[str]) -> str:
+    """Freeze unit membership, order, cardinality, and per-row payloads."""
+    encoded = json.dumps(
+        list(payload_fingerprints),
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True)
+class _CanonicalAppendOutcome:
+    committed_units: tuple[_PlannedPersistenceUnit, ...]
+    remaining_units: tuple[_PlannedPersistenceUnit, ...]
+    error: Exception | None = None
 
 
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per
@@ -1890,45 +1983,720 @@ class AIAgent:
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
 
+    def _session_profile_name_for_persistence(self) -> Optional[str]:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            profile_name = get_active_profile_name()
+            if profile_name == "default":
+                return None
+            return profile_name
+        except Exception:
+            return None
+
+    def _get_session_spool_bootstrap(self) -> session_spool.SessionSpoolBootstrap:
+        cached = getattr(self, "_session_spool_bootstrap", None)
+        if cached is not None:
+            return cached
+        started_at = None
+        session_start = getattr(self, "session_start", None)
+        if session_start is not None and hasattr(session_start, "timestamp"):
+            try:
+                started_at = float(session_start.timestamp())
+            except Exception:
+                started_at = None
+        source = _session_source_for_agent(getattr(self, "platform", None))
+        bootstrap = session_spool.SessionSpoolBootstrap(
+            session_id=getattr(self, "session_id", None),
+            source=source,
+            started_at=started_at,
+            model=getattr(self, "model", None),
+            model_config=copy.deepcopy(getattr(self, "_session_init_model_config", None)),
+            system_prompt=getattr(self, "_cached_system_prompt", None),
+            parent_session_id=getattr(self, "_parent_session_id", None),
+            cwd=_launch_cwd_for_session(source),
+            profile_name=self._session_profile_name_for_persistence(),
+            user_id=getattr(self, "_user_id", None),
+            session_key=getattr(self, "_gateway_session_key", None),
+            chat_id=getattr(self, "_chat_id", None),
+            chat_type=getattr(self, "_chat_type", None),
+            thread_id=getattr(self, "_thread_id", None),
+        )
+        self._session_spool_bootstrap = bootstrap
+        return bootstrap
+
+    def _plan_session_persistence_units(
+        self,
+        messages: List[Dict],
+        conversation_history: Optional[List[Dict]] = None,
+    ) -> _SessionPersistencePlan:
+        from hermes_state import SessionDBBatchMessage
+
+        _ov_idx = getattr(self, "_persist_user_message_idx", None)
+        _ov_content = getattr(self, "_persist_user_message_override", None)
+        _ov_timestamp = getattr(self, "_persist_user_message_timestamp", None)
+
+        current_session_id = getattr(self, "session_id", None)
+        flushed_session_id = getattr(self, "_flushed_db_message_session_id", None)
+        if (
+            flushed_session_id != current_session_id
+            or getattr(self, "_last_flushed_db_idx", 0) == 0
+        ):
+            seed_ids = set()
+        else:
+            seed_ids = getattr(self, "_flushed_db_message_ids", None)
+            if not isinstance(seed_ids, set):
+                seed_ids = set()
+        self._flushed_db_message_session_id = current_session_id
+        history_ids = {
+            id(item) for item in (conversation_history or []) if isinstance(item, dict)
+        }
+
+        scan_start = 0
+        previous_prefix = getattr(self, "_db_flush_scan_prefix", None)
+        if isinstance(previous_prefix, list):
+            limit = min(len(previous_prefix), len(messages))
+            while scan_start < limit and messages[scan_start] is previous_prefix[scan_start]:
+                scan_start += 1
+
+        def _row_timestamp_for(msg: Dict[str, Any]):
+            row_timestamp = msg.get("timestamp")
+            if row_timestamp is not None:
+                return row_timestamp
+            if msg.get(_DB_PERSISTENCE_TIMESTAMP) is None:
+                msg[_DB_PERSISTENCE_TIMESTAMP] = time.time()
+            return msg.get(_DB_PERSISTENCE_TIMESTAMP)
+
+        def _build_batch_message(
+            msg: Dict[str, Any],
+            msg_idx: int,
+        ) -> SessionDBBatchMessage:
+            role = msg.get("role", "unknown")
+            content = msg.get("content")
+            row_api_content = msg.get("api_content")
+            if not isinstance(row_api_content, str):
+                row_api_content = None
+            legacy_row_timestamp = msg.get("timestamp")
+            row_timestamp = _row_timestamp_for(msg)
+            pending_cli_message = getattr(self, "_pending_cli_user_message", None)
+            is_current_turn_user = (_ov_idx == msg_idx or msg is pending_cli_message)
+            if is_current_turn_user and msg.get("role") == "user":
+                if (
+                    _ov_content is not None
+                    and (not isinstance(content, list) or isinstance(_ov_content, list))
+                    and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                ):
+                    if (
+                        row_api_content is None
+                        and isinstance(content, str)
+                        and content != _ov_content
+                    ):
+                        row_api_content = content
+                    content = _ov_content
+                if _ov_timestamp is not None:
+                    row_timestamp = _ov_timestamp
+                    legacy_row_timestamp = _ov_timestamp
+            if row_api_content == content:
+                row_api_content = None
+            if (
+                row_api_content is None
+                and role in ("user", "assistant")
+                and isinstance(content, str)
+                and content
+                and sanitize_context(content).strip() != content.strip()
+            ):
+                row_api_content = content
+            if _is_multimodal_tool_result(content):
+                content = _multimodal_text_summary(content)
+            elif isinstance(content, list):
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(str(part.get("text", "")))
+                    elif isinstance(part, dict) and part.get("type") in {
+                        "image",
+                        "image_url",
+                        "input_image",
+                    }:
+                        text_parts.append("[screenshot]")
+                content = "\n".join(text_parts) if text_parts else None
+            tool_calls_data = None
+            if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
+                tool_calls_data = [
+                    {"name": tc.function.name, "arguments": tc.function.arguments}
+                    for tc in msg.tool_calls
+                ]
+            elif isinstance(msg.get("tool_calls"), list):
+                tool_calls_data = msg["tool_calls"]
+            return SessionDBBatchMessage(
+                persistence_unit_id=msg[_DB_PERSISTENCE_UNIT_ID],
+                persistence_message_key=msg[_DB_PERSISTENCE_MESSAGE_KEY],
+                persistence_ordinal=msg[_DB_PERSISTENCE_ORDINAL],
+                role=role,
+                content=content,
+                timestamp=row_timestamp,
+                _legacy_timestamp=legacy_row_timestamp,
+                tool_name=msg.get("tool_name"),
+                tool_calls=tool_calls_data,
+                tool_call_id=msg.get("tool_call_id"),
+                finish_reason=msg.get("finish_reason"),
+                reasoning=msg.get("reasoning") if role == "assistant" else None,
+                reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
+                reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
+                codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
+                codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                api_content=row_api_content,
+                display_kind=(
+                    "hidden"
+                    if msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                    and not msg.get("_compressed_summary_has_user_turn")
+                    else msg.get("display_kind")
+                ),
+                display_metadata=msg.get("display_metadata"),
+            )
+
+        def _assign_new_unit(unit_items):
+            unit_id = uuid.uuid4().hex
+            for ordinal, (_msg_idx, unit_msg) in enumerate(unit_items):
+                unit_msg.setdefault(_DB_PERSISTENCE_UNIT_ID, unit_id)
+                unit_msg.setdefault(_DB_PERSISTENCE_MESSAGE_KEY, uuid.uuid4().hex)
+                unit_msg.setdefault(_DB_PERSISTENCE_ORDINAL, ordinal)
+                if (
+                    unit_msg.get("timestamp") is None
+                    and unit_msg.get(_DB_PERSISTENCE_TIMESTAMP) is None
+                ):
+                    unit_msg[_DB_PERSISTENCE_TIMESTAMP] = time.time()
+
+        pending_messages = []
+        for msg_idx in range(scan_start, len(messages)):
+            msg = messages[msg_idx]
+            if not isinstance(msg, dict):
+                continue
+            if _is_ephemeral_scaffolding(msg):
+                continue
+            if msg.get(_DB_PERSISTED_MARKER):
+                continue
+            # A missing persisted marker after a successful canonical commit
+            # means a caller intentionally rewrote the live row in place (for
+            # example turn_finalizer filling an incremental tool-call row).
+            # Failed writes have no canonical receipt and must retain their
+            # identity for idempotent retry; rewritten committed rows must get
+            # a fresh key or SessionDB will deduplicate the updated content as
+            # the already-durable stale row.
+            if msg.get(_DB_CANONICAL_COMMIT_MARKER):
+                for private_key in (
+                    _DB_SPOOLED_MARKER,
+                    _DB_PERSISTENCE_UNIT_ID,
+                    _DB_PERSISTENCE_MESSAGE_KEY,
+                    _DB_PERSISTENCE_ORDINAL,
+                    _DB_PERSISTENCE_TIMESTAMP,
+                    _DB_PERSISTENCE_PAYLOAD_FINGERPRINT,
+                    _DB_PERSISTENCE_UNIT_FINGERPRINT,
+                    _DB_CANONICAL_COMMIT_MARKER,
+                ):
+                    msg.pop(private_key, None)
+            if id(msg) in history_ids or id(msg) in seed_ids:
+                msg[_DB_PERSISTED_MARKER] = True
+                continue
+            pending_messages.append((msg_idx, msg))
+
+        units = []
+        mutated_spooled_unit_ids = []
+        while pending_messages:
+            keyed_idx = next(
+                (
+                    idx
+                    for idx, (_msg_idx, pending_msg) in enumerate(pending_messages)
+                    if pending_msg.get(_DB_PERSISTENCE_UNIT_ID)
+                ),
+                None,
+            )
+            if keyed_idx is None:
+                unit_items = list(pending_messages)
+                _assign_new_unit(unit_items)
+            else:
+                unit_items = []
+                unit_id = pending_messages[keyed_idx][1].get(_DB_PERSISTENCE_UNIT_ID)
+                cursor = keyed_idx
+                while (
+                    cursor < len(pending_messages)
+                    and pending_messages[cursor][1].get(_DB_PERSISTENCE_UNIT_ID) == unit_id
+                ):
+                    unit_items.append(pending_messages[cursor])
+                    cursor += 1
+            batch_messages = tuple(
+                _build_batch_message(unit_msg, unit_idx)
+                for unit_idx, unit_msg in unit_items
+            )
+            fingerprints = tuple(
+                _batch_message_payload_fingerprint(batch_message)
+                for batch_message in batch_messages
+            )
+            unit_fingerprint = _unit_payload_fingerprint(fingerprints)
+            fingerprint_changed = any(
+                (
+                    source_msg.get(_DB_PERSISTENCE_PAYLOAD_FINGERPRINT) is not None
+                    and source_msg.get(_DB_PERSISTENCE_PAYLOAD_FINGERPRINT)
+                    != fingerprint
+                )
+                or (
+                    source_msg.get(_DB_SPOOLED_MARKER)
+                    and source_msg.get(_DB_PERSISTENCE_PAYLOAD_FINGERPRINT) is None
+                )
+                for (_unit_idx, source_msg), fingerprint in zip(
+                    unit_items, fingerprints
+                )
+            )
+            fingerprint_changed = fingerprint_changed or any(
+                (
+                    source_msg.get(_DB_PERSISTENCE_UNIT_FINGERPRINT) is not None
+                    and source_msg.get(_DB_PERSISTENCE_UNIT_FINGERPRINT)
+                    != unit_fingerprint
+                )
+                or (
+                    source_msg.get(_DB_SPOOLED_MARKER)
+                    and source_msg.get(_DB_PERSISTENCE_UNIT_FINGERPRINT) is None
+                )
+                for _unit_idx, source_msg in unit_items
+            )
+            unit_blocked = fingerprint_changed and any(
+                source_msg.get(_DB_SPOOLED_MARKER)
+                for _unit_idx, source_msg in unit_items
+            )
+            if unit_blocked:
+                mutated_spooled_unit_ids.append(
+                    str(
+                        unit_items[0][1].get(_DB_PERSISTENCE_UNIT_ID)
+                        or "unknown"
+                    )
+                )
+            elif fingerprint_changed:
+                for _unit_idx, source_msg in unit_items:
+                    for private_key in (
+                        _DB_SPOOLED_MARKER,
+                        _DB_PERSISTENCE_UNIT_ID,
+                        _DB_PERSISTENCE_MESSAGE_KEY,
+                        _DB_PERSISTENCE_ORDINAL,
+                        _DB_PERSISTENCE_TIMESTAMP,
+                        _DB_PERSISTENCE_PAYLOAD_FINGERPRINT,
+                        _DB_PERSISTENCE_UNIT_FINGERPRINT,
+                        _DB_CANONICAL_COMMIT_MARKER,
+                    ):
+                        source_msg.pop(private_key, None)
+                _assign_new_unit(unit_items)
+                batch_messages = tuple(
+                    _build_batch_message(unit_msg, unit_idx)
+                    for unit_idx, unit_msg in unit_items
+                )
+                fingerprints = tuple(
+                    _batch_message_payload_fingerprint(batch_message)
+                    for batch_message in batch_messages
+                )
+                unit_fingerprint = _unit_payload_fingerprint(fingerprints)
+            if not unit_blocked:
+                for (_unit_idx, source_msg), fingerprint in zip(
+                    unit_items, fingerprints
+                ):
+                    source_msg[_DB_PERSISTENCE_PAYLOAD_FINGERPRINT] = fingerprint
+                    source_msg[_DB_PERSISTENCE_UNIT_FINGERPRINT] = unit_fingerprint
+
+            selected_ids = {id(unit_msg) for _unit_idx, unit_msg in unit_items}
+            pending_messages = [
+                item for item in pending_messages if id(item[1]) not in selected_ids
+            ]
+            units.append(
+                _PlannedPersistenceUnit(
+                    message_indices=tuple(unit_idx for unit_idx, _msg in unit_items),
+                    source_messages=tuple(unit_msg for _unit_idx, unit_msg in unit_items),
+                    batch_messages=batch_messages,
+                )
+            )
+
+        return _SessionPersistencePlan(
+            pending_units=tuple(units),
+            mutated_spooled_unit_ids=tuple(dict.fromkeys(mutated_spooled_unit_ids)),
+        )
+
+    def _finalize_full_canonical_flush(self, messages: List[Dict]) -> None:
+        self._flushed_db_message_ids = set()
+        self._last_flushed_db_idx = len(messages)
+        self._db_flush_scan_prefix = messages[:]
+
+    def _append_planned_units_canonically(
+        self,
+        plan: _SessionPersistencePlan,
+    ) -> _CanonicalAppendOutcome:
+        committed_units = []
+        try:
+            for unit in plan.pending_units:
+                self._session_db.append_messages_batch(
+                    self.session_id,
+                    messages=unit.batch_messages,
+                    compression_lock_holder=getattr(
+                        self, "_active_compression_lock_holder", None
+                    ),
+                )
+                for source_msg in unit.source_messages:
+                    source_msg[_DB_PERSISTED_MARKER] = True
+                    source_msg[_DB_CANONICAL_COMMIT_MARKER] = True
+                    # Identity/timestamp must survive failed canonical writes
+                    # and spool retries, but once this unit is canonical the
+                    # durable marker is sufficient. Removing random retry
+                    # metadata keeps live-message semantics identical to the
+                    # pre-spool path and lets a later marker pop re-key a
+                    # rewritten row cleanly.
+                    for private_key in (
+                        _DB_PERSISTENCE_UNIT_ID,
+                        _DB_PERSISTENCE_MESSAGE_KEY,
+                        _DB_PERSISTENCE_ORDINAL,
+                        _DB_PERSISTENCE_TIMESTAMP,
+                        _DB_PERSISTENCE_PAYLOAD_FINGERPRINT,
+                        _DB_PERSISTENCE_UNIT_FINGERPRINT,
+                    ):
+                        source_msg.pop(private_key, None)
+                committed_units.append(unit)
+            return _CanonicalAppendOutcome(
+                committed_units=tuple(committed_units),
+                remaining_units=(),
+            )
+        except Exception as exc:
+            self._db_flush_scan_prefix = None
+            logger.debug(
+                "Session DB append_message failed canonical_error_class=%s",
+                exc.__class__.__name__,
+            )
+            return _CanonicalAppendOutcome(
+                committed_units=tuple(committed_units),
+                remaining_units=tuple(plan.pending_units[len(committed_units) :]),
+                error=exc,
+            )
+
+    def _build_spool_records_for_units(
+        self,
+        units: Sequence[_PlannedPersistenceUnit],
+        *,
+        stage: str,
+        error: Exception | None,
+        session_row_created: bool,
+    ) -> tuple[session_spool.SessionSpoolRecord, ...]:
+        if not units:
+            return ()
+        error_message = str(error or "")
+        error_message = error_message.splitlines()[0]
+        error_message = error_message.encode("utf-8", errors="ignore")[:512].decode(
+            "utf-8", errors="ignore"
+        )
+        persist_attempt_id = uuid.uuid4().hex
+        bootstrap = self._get_session_spool_bootstrap()
+        return tuple(
+            session_spool.SessionSpoolRecord(
+                bootstrap=bootstrap,
+                persist_attempt_id=persist_attempt_id,
+                persist_attempt_unit_index=index,
+                canonical_failure={
+                    "stage": stage,
+                    "error_class": (error.__class__.__name__ if error is not None else "RuntimeError"),
+                    "error_message": error_message,
+                    "session_row_created": session_row_created,
+                },
+                batch_messages=tuple(unit.batch_messages),
+            )
+            for index, unit in enumerate(units)
+        )
+
+    def _replay_pending_session_spool(self, *, trigger: str):
+        if getattr(self, "_persist_disabled", False):
+            return None
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return None
+        return session_spool.replay_to_session_db(session_db, trigger=trigger)
+
+    @staticmethod
+    def _replay_result_blocks_canonical_persist(replay_result) -> Tuple[bool, Optional[str]]:
+        if replay_result is None:
+            return False, None
+        state = getattr(replay_result, "state", None)
+        state_value = getattr(state, "value", state)
+        if state_value in {
+            session_spool.ReplayRunState.BLOCKED_INTEGRITY.value,
+            session_spool.ReplayRunState.NOT_DURABLE.value,
+            session_spool.ReplayRunState.RETRY_PENDING.value,
+        }:
+            return True, state_value
+        return False, state_value
+
+    def _persist_log_signature(
+        self,
+        *,
+        outcome: str,
+        canonical_units_committed: int,
+        spooled_units: int,
+        canonical_error_class: Optional[str],
+        failure_class: Optional[str],
+        receipt_count: int,
+    ) -> Tuple[str, int, int, Optional[str], Optional[str], int]:
+        return (
+            outcome,
+            int(canonical_units_committed),
+            int(spooled_units),
+            canonical_error_class,
+            failure_class,
+            int(receipt_count),
+        )
+
+    def _log_persist_outcome(
+        self,
+        *,
+        outcome: str,
+        canonical_units_committed: int,
+        spooled_units: int,
+        canonical_error_class: Optional[str],
+        failure_class: Optional[str],
+        receipt_count: int,
+    ) -> None:
+        signature = self._persist_log_signature(
+            outcome=outcome,
+            canonical_units_committed=canonical_units_committed,
+            spooled_units=spooled_units,
+            canonical_error_class=canonical_error_class,
+            failure_class=failure_class,
+            receipt_count=receipt_count,
+        )
+        previous = getattr(self, "_persist_degraded_log_state", None)
+        now = time.monotonic()
+        degraded = outcome != "canonical"
+        if degraded:
+            if (
+                previous is not None
+                and previous.get("signature") == signature
+                and (now - float(previous.get("logged_at", 0.0))) < 300.0
+            ):
+                return
+            logger.warning(
+                "Session persistence degraded outcome=%s canonical_units_committed=%d spooled_units=%d canonical_error_class=%s failure_class=%s receipt_count=%d",
+                outcome,
+                canonical_units_committed,
+                spooled_units,
+                canonical_error_class,
+                failure_class,
+                receipt_count,
+            )
+            self._persist_degraded_log_state = {"signature": signature, "logged_at": now}
+            return
+        if previous is not None:
+            logger.info(
+                "Session persistence recovered outcome=%s canonical_units_committed=%d spooled_units=%d canonical_error_class=%s failure_class=%s receipt_count=%d",
+                outcome,
+                canonical_units_committed,
+                spooled_units,
+                canonical_error_class,
+                failure_class,
+                receipt_count,
+            )
+            self._persist_degraded_log_state = None
+
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
-        """Save session state to both JSON log and SQLite on any exit path.
-
-        Ensures conversations are never lost, even on errors or early returns.
-
-        Trailing empty-response scaffolding is dropped from the live list in
-        place (it is ephemeral junk the real transcript should shed). The
-        persist user-message *override* is NOT applied here — it is resolved
-        inside ``_flush_messages_to_session_db`` and written only to the DB row,
-        never mutating the live message list used by the API call (#48677 is
-        thus closed for every persist caller, not just this one).
-        """
-        # Scaffolding removal mutates the live list (desired — ephemeral
-        # retry/failure sentinels must not survive into the real transcript).
-        # Close and turn-start persistence can run on separate CLI threads; the
-        # marker test-and-append below must be one critical section or both can
-        # observe the same unmarked dict and write duplicate durable rows.
+        """Save session state, preferring canonical DB writes and falling back to the spool."""
         from agent.agent_runtime_helpers import note_turn_persisted
 
         persist_lock = getattr(self, "_session_persist_lock", None)
 
-        def _persist_and_drain() -> None:
+        def _persist_and_classify() -> SessionPersistResult:
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._save_session_log(messages)
-            self._flush_messages_to_session_db(messages, conversation_history)
-            # Drain async token-accounting deltas at every persist point (turn
-            # finalize + error exits) so a crash after this line loses at most
-            # the in-flight API call's delta. Cheap no-op when nothing queued.
-            if self._session_db is not None:
-                self._session_db.flush_token_counts()
-            note_turn_persisted(self)
+
+            if getattr(self, "_persist_disabled", False):
+                return SessionPersistResult(
+                    state=SessionPersistState.NOT_DURABLE,
+                    error_class="PersistenceDisabled",
+                    error_message="session persistence disabled for this agent",
+                )
+
+            # Preserve the established instance-level persistence seam used by
+            # lightweight agents and shutdown tests. Real AIAgent instances use
+            # the class method and therefore continue through the classified
+            # canonical/spool path below.
+            flush_override = getattr(self, "__dict__", {}).get(
+                "_flush_messages_to_session_db"
+            )
+            if callable(flush_override):
+                override_result = flush_override(messages, conversation_history)
+                if isinstance(override_result, SessionPersistResult):
+                    return override_result
+                if override_result is True:
+                    return SessionPersistResult(state=SessionPersistState.CANONICAL)
+                return SessionPersistResult(
+                    state=SessionPersistState.NOT_DURABLE,
+                    error_class="PersistenceOverrideUnconfirmed",
+                    error_message=(
+                        "instance-level persistence override did not explicitly "
+                        "confirm durable completion"
+                    ),
+                )
+
+            plan = self._plan_session_persistence_units(
+                messages, conversation_history
+            )
+            if plan.mutated_spooled_unit_ids:
+                self._db_flush_scan_prefix = None
+                return SessionPersistResult(
+                    state=SessionPersistState.NOT_DURABLE,
+                    error_class="SpooledPersistenceUnitMutated",
+                    error_message=(
+                        "a durably spooled persistence unit changed before replay"
+                    ),
+                )
+
+            replay_result = self._replay_pending_session_spool(trigger="pre_persist")
+            blocked, replay_state_value = self._replay_result_blocks_canonical_persist(
+                replay_result
+            )
+            if blocked:
+                return SessionPersistResult(
+                    state=SessionPersistState.NOT_DURABLE,
+                    error_class=replay_state_value,
+                    error_message="session spool replay blocked canonical persistence",
+                )
+
+            if not plan.pending_units:
+                self._finalize_full_canonical_flush(messages)
+                if self._session_db is not None:
+                    self._session_db.flush_token_counts()
+                note_turn_persisted(self)
+                return SessionPersistResult(state=SessionPersistState.CANONICAL)
+
+            canonical_stage = "append_messages_batch"
+            canonical_error = None
+            canonical_outcome = _CanonicalAppendOutcome((), plan.pending_units, None)
+
+            if self._session_db is None:
+                canonical_stage = "session_row_create"
+                canonical_error = RuntimeError("session_db unavailable for canonical persistence")
+                self._db_flush_scan_prefix = None
+                canonical_outcome = _CanonicalAppendOutcome((), plan.pending_units, canonical_error)
+            else:
+                if not self._session_db_created:
+                    self._ensure_db_session()
+                if not self._session_db_created:
+                    canonical_stage = "session_row_create"
+                    canonical_error = RuntimeError(
+                        "session row not available for canonical persistence"
+                    )
+                    self._db_flush_scan_prefix = None
+                    canonical_outcome = _CanonicalAppendOutcome(
+                        (), plan.pending_units, canonical_error
+                    )
+                else:
+                    canonical_outcome = self._append_planned_units_canonically(plan)
+                    canonical_error = canonical_outcome.error
+
+            if canonical_outcome.error is None:
+                self._finalize_full_canonical_flush(messages)
+                if self._session_db is not None:
+                    self._session_db.flush_token_counts()
+                note_turn_persisted(self)
+                self._log_persist_outcome(
+                    outcome="canonical",
+                    canonical_units_committed=len(canonical_outcome.committed_units),
+                    spooled_units=0,
+                    canonical_error_class=None,
+                    failure_class=None,
+                    receipt_count=0,
+                )
+                return SessionPersistResult(
+                    state=SessionPersistState.CANONICAL,
+                    canonical_units_committed=len(canonical_outcome.committed_units),
+                )
+
+            already_spooled_units = []
+            units_to_spool = []
+            for unit in canonical_outcome.remaining_units:
+                if unit.source_messages and all(
+                    msg.get(_DB_SPOOLED_MARKER) for msg in unit.source_messages
+                ):
+                    already_spooled_units.append(unit)
+                else:
+                    units_to_spool.append(unit)
+
+            spool_receipts: tuple[session_spool.SpoolUnitAppendResult, ...] = ()
+            spool_error = None
+            if units_to_spool:
+                records = self._build_spool_records_for_units(
+                    units_to_spool,
+                    stage=canonical_stage,
+                    error=canonical_outcome.error,
+                    session_row_created=(canonical_stage != "session_row_create"),
+                )
+                try:
+                    append_result = session_spool.append_records(records)
+                    spool_receipts = tuple(append_result.unit_results)
+                except session_spool.SpoolAppendAttemptPartialError as exc:
+                    spool_receipts = tuple(exc.durable_results)
+                    spool_error = exc.cause
+                except Exception as exc:
+                    spool_error = exc
+                if spool_error is None and len(spool_receipts) != len(units_to_spool):
+                    spool_error = RuntimeError(
+                        "missing spool receipts for one or more persistence units"
+                    )
+
+            receipt_unit_ids = {
+                receipt.persistence_unit_id for receipt in spool_receipts
+            }
+            durable_spooled_units = list(already_spooled_units)
+            for unit in units_to_spool:
+                if unit.persistence_unit_id in receipt_unit_ids:
+                    for source_msg in unit.source_messages:
+                        source_msg[_DB_SPOOLED_MARKER] = True
+                    durable_spooled_units.append(unit)
+
+            if (
+                spool_error is None
+                and len(durable_spooled_units) == len(canonical_outcome.remaining_units)
+            ):
+                note_turn_persisted(self)
+                self._log_persist_outcome(
+                    outcome="spooled",
+                    canonical_units_committed=len(canonical_outcome.committed_units),
+                    spooled_units=len(canonical_outcome.remaining_units),
+                    canonical_error_class=canonical_outcome.error.__class__.__name__,
+                    failure_class=None,
+                    receipt_count=len(spool_receipts),
+                )
+                return SessionPersistResult(
+                    state=SessionPersistState.SPOOLED,
+                    canonical_units_committed=len(canonical_outcome.committed_units),
+                    spooled_units=len(canonical_outcome.remaining_units),
+                    spool_receipts=spool_receipts,
+                    error_class=canonical_outcome.error.__class__.__name__,
+                    error_message=str(canonical_outcome.error),
+                )
+
+            failure = spool_error or canonical_outcome.error
+            self._log_persist_outcome(
+                outcome="not_durable",
+                canonical_units_committed=len(canonical_outcome.committed_units),
+                spooled_units=len(durable_spooled_units),
+                canonical_error_class=canonical_outcome.error.__class__.__name__,
+                failure_class=(failure.__class__.__name__ if failure is not None else None),
+                receipt_count=len(spool_receipts),
+            )
+            return SessionPersistResult(
+                state=SessionPersistState.NOT_DURABLE,
+                canonical_units_committed=len(canonical_outcome.committed_units),
+                spooled_units=len(durable_spooled_units),
+                spool_receipts=spool_receipts,
+                error_class=(failure.__class__.__name__ if failure is not None else None),
+                error_message=(str(failure) if failure is not None else None),
+            )
 
         if persist_lock is None:
-            _persist_and_drain()
-            return
+            return _persist_and_classify()
 
         with persist_lock:
-            _persist_and_drain()
+            return _persist_and_classify()
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
@@ -2005,281 +2773,44 @@ class AIAgent:
         messages: List[Dict],
         conversation_history: Optional[List[Dict]] = None,
     ):
-        """Persist any un-flushed messages to the SQLite session store.
-
-        Deduplicates via an intrinsic ``_DB_PERSISTED_MARKER`` stamped on each
-        written message dict, so repeated calls (from multiple exit paths) only
-        write truly new messages — preventing the duplicate-write bug (#860)
-        without relying on positional slices that can drift after
-        message-sequence repair, and without a retained ``id(msg)`` set that
-        CPython could alias onto a freed-then-reused address (#50372). The
-        ``_flushed_db_message_ids`` attribute is now only a one-shot seed
-        (translated to markers, then cleared each flush), not a persisted set.
-
-        Note: the marker is stamped on the live/shared conversation dict, which
-        correctly makes re-persistence idempotent across turns. No code path
-        edits a persisted message's content/role in place expecting a re-write
-        (in-place compaction resets the seed and re-diffs by identity).
-        """
-        # Persistence-isolated agents (e.g. the background skill/memory review
-        # fork) must NEVER write into the canonical session store. The fork
-        # shares the parent's session_id for prompt-cache warmth, so any write
-        # here would land its harness turn ("Review the conversation above and
-        # update the skill library…") inside the user's real session history,
-        # where the next live turn re-reads it as an instruction and the agent
-        # "becomes" the curator. Hard-stop before any DB touch.
+        """Persist any un-flushed messages to the SQLite session store."""
         if getattr(self, "_persist_disabled", False):
             return None
         if not self._session_db:
             return None
-        # Persist user-message override (#48677 chokepoint): historically this
-        # mutated the live `messages` list in place, which — on the early
-        # crash-resilience persist that runs BEFORE the API call is built —
-        # stripped observed group-chat context off the live user message and
-        # silently dropped it. Instead, resolve the override here and apply it
-        # ONLY to the value written to the DB (see the write loop below); the
-        # live dict is never mutated, so every caller (early persist, mid-loop
-        # flush, /resume, /branch) is protected uniformly. Timestamp override is
-        # metadata and is likewise applied only to the written row.
-        _ov_idx = getattr(self, "_persist_user_message_idx", None)
-        _ov_content = getattr(self, "_persist_user_message_override", None)
-        _ov_timestamp = getattr(self, "_persist_user_message_timestamp", None)
+
         try:
-            # Retry row creation if the earlier attempt failed transiently.
+            plan = AIAgent._plan_session_persistence_units(
+                self, messages, conversation_history
+            )
+            if plan.mutated_spooled_unit_ids:
+                self._db_flush_scan_prefix = None
+                return False
+            replay_result = AIAgent._replay_pending_session_spool(
+                self, trigger="pre_persist"
+            )
+            blocked, _replay_state_value = (
+                AIAgent._replay_result_blocks_canonical_persist(replay_result)
+            )
+            if blocked:
+                return False
+            if not plan.pending_units:
+                AIAgent._finalize_full_canonical_flush(self, messages)
+                return True
             if not self._session_db_created:
                 self._ensure_db_session()
-            # Positional flushing used to slice at
-            # max(len(conversation_history), _last_flushed_db_idx). That
-            # assumes the live `messages` list is the original history plus a
-            # new tail. repair_message_sequence can shrink/merge the history
-            # copy before the final flush, making len(conversation_history)
-            # larger than len(messages); the slice is then empty and delivered
-            # assistant responses never reach state.db (#46053).
-            #
-            # Track persistence with an intrinsic per-message marker rather than
-            # id(msg). `messages` is a shallow copy of `conversation_history`, so
-            # history dicts are skipped by identity, and new dicts appended
-            # during this turn are written once even if repair compacts the list
-            # around them. Unlike an id()-keyed set, a marker bound to the dict
-            # cannot be aliased onto a freed-then-reused address, so a real turn
-            # can never be silently skipped (see _DB_PERSISTED_MARKER).
-            #
-            # `self._flushed_db_message_ids` is still honoured as a *one-shot*
-            # seed: external callers (gateway shutdown, tests) populate it with
-            # {id(m) for m in already_persisted} immediately before the flush,
-            # while those objects are alive — so the ids are valid at that
-            # instant. We translate the seed into durable markers and then clear
-            # the set, so stale ids can never accumulate across turns and alias a
-            # future message.
-            current_session_id = getattr(self, "session_id", None)
-            flushed_session_id = getattr(self, "_flushed_db_message_session_id", None)
-            if flushed_session_id != current_session_id or self._last_flushed_db_idx == 0:
-                seed_ids = set()
-            else:
-                seed_ids = getattr(self, "_flushed_db_message_ids", None)
-                if not isinstance(seed_ids, set):
-                    seed_ids = set()
-            self._flushed_db_message_session_id = current_session_id
-            history_ids = {
-                id(item) for item in (conversation_history or [])
-                if isinstance(item, dict)
-            }
-
-            # Bounded scan: skip the longest identity-matched prefix of the
-            # list snapshot taken at the end of the previous successful flush.
-            # Every message in that snapshot was already given its final
-            # disposition (written+stamped, stamped as durable history, or
-            # skipped as ephemeral scaffolding / non-dict), and no code path
-            # pops _DB_PERSISTED_MARKER from a live dict in place (compression
-            # strips markers on fresh copies, which breaks identity here and
-            # forces a full re-scan). Identity match ⇒ identical skip decision,
-            # so starting after the matched prefix is behavior-preserving.
-            _scan_start = 0
-            _prev_prefix = getattr(self, "_db_flush_scan_prefix", None)
-            if isinstance(_prev_prefix, list):
-                _limit = min(len(_prev_prefix), len(messages))
-                while (
-                    _scan_start < _limit
-                    and messages[_scan_start] is _prev_prefix[_scan_start]
-                ):
-                    _scan_start += 1
-
-            # Collect this flush's new rows and write them in ONE transaction
-            # at the end of the scan (see append_messages_batch).
-            _batch_rows: List[Dict[str, Any]] = []
-            _batch_msgs: List[Dict] = []
-            for _msg_idx in range(_scan_start, len(messages)):
-                msg = messages[_msg_idx]
-                if not isinstance(msg, dict):
-                    continue
-                # Never write ephemeral recovery scaffolding to the session
-                # store. The flush is append-only (it only advances
-                # _last_flushed_db_idx via identity tracking), so a synthetic
-                # message committed by a mid-turn persist cannot be un-written
-                # when the end-of-turn drop removes it from the in-memory list —
-                # the resumed transcript would then replay synthetic
-                # "(empty)"/nudge/thinking-prefill turns as if they were genuine
-                # context. Skip regardless of position: an answered nudge leaves
-                # the synthetic pair buried mid-list, not just at the tail.
-                if _is_ephemeral_scaffolding(msg):
-                    continue
-                if msg.get(_DB_PERSISTED_MARKER):
-                    continue
-                # Already-durable messages: either carried over from the loaded
-                # history copy, or seeded by a caller. Stamp them so future
-                # flushes skip them without consulting any id() set again.
-                if id(msg) in history_ids or id(msg) in seed_ids:
-                    msg[_DB_PERSISTED_MARKER] = True
-                    continue
-                role = msg.get("role", "unknown")
-                content = msg.get("content")
-                # api_content sidecar: the exact bytes sent to the API when
-                # they differ from the clean content (stamped by the turn
-                # prologue for prefetch/plugin injections). Written verbatim
-                # so replay can reproduce the sent prefix byte-for-byte.
-                _row_api_content = msg.get("api_content")
-                if not isinstance(_row_api_content, str):
-                    _row_api_content = None
-                _row_timestamp = msg.get("timestamp")
-                # Apply the persist override to THIS row's written values only
-                # (never to the live dict). A multimodal override is a complete
-                # clean replacement for an API-local noted payload. Preserve the
-                # historical text-only guard for a list payload, though: a plain
-                # text override must not erase its image/audio transcript summary.
-                # The close safety-net may flush a shortened snapshot while
-                # turn setup still owns its staged CLI dict. In that shape the
-                # normal turn index refers to the full history, not this list;
-                # preserve the API-local override by recognizing the same dict.
-                pending_cli_message = getattr(self, "_pending_cli_user_message", None)
-                is_current_turn_user = (
-                    _ov_idx == _msg_idx or msg is pending_cli_message
+            if not self._session_db_created:
+                self._db_flush_scan_prefix = None
+                logger.warning(
+                    "Session DB append_message failed: session row not created"
                 )
-                if is_current_turn_user and msg.get("role") == "user":
-                    # Preflight compaction can re-anchor the override index at
-                    # a message whose content was MERGED with the compaction
-                    # summary (merge-summary-into-tail). Overwriting that with
-                    # the clean gateway text would silently drop the summary
-                    # from the durable transcript. The wire is already
-                    # consistent — the merge popped the sidecar and the merged
-                    # content is what gets sent — so keep it.
-                    if (
-                        _ov_content is not None
-                        and (not isinstance(content, list) or isinstance(_ov_content, list))
-                        and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
-                    ):
-                        # The live content is what the API call sends; the
-                        # override is the cleaned transcript value. If they
-                        # differ and no injection already stamped the sidecar,
-                        # keep the sent bytes in api_content so replay matches
-                        # the wire (#48677 divergence, closed for the cache
-                        # prefix too).
-                        if (
-                            _row_api_content is None
-                            and isinstance(content, str)
-                            and content != _ov_content
-                        ):
-                            _row_api_content = content
-                        content = _ov_content
-                    if _ov_timestamp is not None:
-                        _row_timestamp = _ov_timestamp
-                # Store the sidecar only when it actually differs.
-                if _row_api_content == content:
-                    _row_api_content = None
-                # Load-time sanitize divergence: get_messages_as_conversation
-                # replays user/assistant rows through
-                # ``sanitize_context(content).strip()``, so content that
-                # sanitize would rewrite (echoed/pasted <memory-context>
-                # fences or system notes) replays different bytes after a
-                # session reload even though THIS turn sent it verbatim.
-                # Capture the sent bytes in the sidecar so a reloaded session
-                # replays what was actually on the wire. Compared in wire form
-                # (both sides .strip()-ed — the api_messages build strips
-                # every outgoing content string) so plain surrounding
-                # whitespace doesn't grow redundant sidecars.
-                if (
-                    _row_api_content is None
-                    and role in ("user", "assistant")
-                    and isinstance(content, str)
-                    and content
-                    and sanitize_context(content).strip() != content.strip()
-                ):
-                    _row_api_content = content
-                # Persist multimodal tool results as their text summary only —
-                # base64 images would bloat the session DB and aren't useful
-                # for cross-session replay.
-                if _is_multimodal_tool_result(content):
-                    content = _multimodal_text_summary(content)
-                elif isinstance(content, list):
-                    # List of OpenAI-style content parts: strip images, keep text.
-                    _txt = []
-                    for p in content:
-                        if isinstance(p, dict) and p.get("type") == "text":
-                            _txt.append(str(p.get("text", "")))
-                        elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
-                            _txt.append("[screenshot]")
-                    content = "\n".join(_txt) if _txt else None
-                tool_calls_data = None
-                if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
-                    tool_calls_data = [
-                        {"name": tc.function.name, "arguments": tc.function.arguments}
-                        for tc in msg.tool_calls
-                    ]
-                elif isinstance(msg.get("tool_calls"), list):
-                    tool_calls_data = msg["tool_calls"]
-                _batch_rows.append({
-                    "role": role,
-                    "content": content,
-                    "tool_name": msg.get("tool_name"),
-                    "tool_calls": tool_calls_data,
-                    "tool_call_id": msg.get("tool_call_id"),
-                    "finish_reason": msg.get("finish_reason"),
-                    # Reasoning/codex fields are role-gated (assistant-only)
-                    # inside _insert_message_rows — pass through untouched.
-                    "reasoning": msg.get("reasoning"),
-                    "reasoning_content": msg.get("reasoning_content"),
-                    "reasoning_details": msg.get("reasoning_details"),
-                    "codex_reasoning_items": msg.get("codex_reasoning_items"),
-                    "codex_message_items": msg.get("codex_message_items"),
-                    "timestamp": _row_timestamp,
-                    "api_content": _row_api_content,
-                    "display_kind": (
-                        "hidden"
-                        if msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
-                        and not msg.get("_compressed_summary_has_user_turn")
-                        else msg.get("display_kind")
-                    ),
-                    "display_metadata": msg.get("display_metadata"),
-                })
-                _batch_msgs.append(msg)
-            # One transaction for the whole turn's new rows (typically 3-8
-            # messages): one BEGIN IMMEDIATE / commit — and, off WAL, one
-            # fsync — instead of one per row. All-or-nothing pairs exactly
-            # with the marker stamping below: on failure NO rows landed and
-            # NO markers were stamped, so the next flush re-scans and
-            # re-writes the whole tail (same recovery contract as before,
-            # minus the partial-prefix case that could double-pay counters).
-            if _batch_rows:
-                self._session_db.append_messages_batch(
-                    session_id=self.session_id,
-                    messages=_batch_rows,
-                    compression_lock_holder=getattr(
-                        self, "_active_compression_lock_holder", None
-                    ),
-                )
-                for _written in _batch_msgs:
-                    _written[_DB_PERSISTED_MARKER] = True
-            # The intrinsic markers are now the sole source of truth. Reset the
-            # one-shot seed so no id() outlives this flush to alias a message
-            # allocated next turn at a recycled address.
-            self._flushed_db_message_ids = set()
-            self._last_flushed_db_idx = len(messages)
-            # Snapshot for the bounded scan above — only on full success, so
-            # a partially-processed list can never be treated as settled.
-            self._db_flush_scan_prefix = messages[:]
+                return False
+            outcome = AIAgent._append_planned_units_canonically(self, plan)
+            if outcome.error is not None:
+                return False
+            AIAgent._finalize_full_canonical_flush(self, messages)
             return True
         except Exception as e:
-            # Force a full re-scan on the next flush: an exception mid-loop
-            # leaves messages with mixed dispositions.
             self._db_flush_scan_prefix = None
             logger.warning("Session DB append_message failed: %s", e)
             return False
@@ -2982,6 +3513,22 @@ class AIAgent:
                 if "content" in msg:
                     msg = dict(msg)
                     msg["content"] = self._redact_message_content(msg.get("content"))
+                if isinstance(msg, dict):
+                    msg = {
+                        key: value
+                        for key, value in msg.items()
+                        if key not in {
+                            _DB_PERSISTED_MARKER,
+                            _DB_SPOOLED_MARKER,
+                            _DB_PERSISTENCE_UNIT_ID,
+                            _DB_PERSISTENCE_MESSAGE_KEY,
+                            _DB_PERSISTENCE_ORDINAL,
+                            _DB_PERSISTENCE_TIMESTAMP,
+                            _DB_PERSISTENCE_PAYLOAD_FINGERPRINT,
+                            _DB_PERSISTENCE_UNIT_FINGERPRINT,
+                            _DB_CANONICAL_COMMIT_MARKER,
+                        }
+                    }
                 cleaned.append(msg)
 
             # Guard: never overwrite a larger session log with fewer messages.

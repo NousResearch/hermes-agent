@@ -25,6 +25,7 @@ from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
+from session_fallback_spool import collect_session_fallback_spool_status
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
@@ -107,6 +108,43 @@ def _effective_provider_label() -> str:
             effective = "custom"
 
     return provider_label(effective)
+
+
+def _format_fallback_spool_age(seconds) -> str:
+    if seconds is None:
+        return ""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, rem = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{rem:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def _render_fallback_spool_row() -> str:
+    try:
+        status = collect_session_fallback_spool_status()
+    except Exception:
+        return "  Fallback spool: degraded reasons=inspection_error"
+
+    state = str(getattr(status, "state", "empty") or "empty")
+    label = "idle" if state == "empty" else state
+    if state == "degraded":
+        details = [
+            f"pending={int(getattr(status, 'pending_units', 0))}u/"
+            f"{int(getattr(status, 'pending_frames', 0))}f/"
+            f"{int(getattr(status, 'pending_bytes', 0))}b"
+        ]
+        age = _format_fallback_spool_age(getattr(status, "oldest_pending_age_seconds", None))
+        if age:
+            details.append(f"age={age}")
+        reasons = getattr(status, "reasons", ()) or ()
+        if reasons:
+            details.append(f"reasons={','.join(str(reason) for reason in reasons)}")
+        return f"  Fallback spool: {label} {' '.join(details)}".rstrip()
+    return f"  Fallback spool: {label}"
 
 
 from hermes_constants import is_termux as _is_termux
@@ -582,7 +620,7 @@ def show_status(args):
     _gateway_rows = []
     try:
         from hermes_state import SessionDB
-        _db = SessionDB()
+        _db = SessionDB(read_only=True)
         try:
             _lister = getattr(_db, "list_gateway_sessions", None)
             if callable(_lister):
@@ -618,6 +656,8 @@ def show_status(args):
                 print("  Active:       (error reading sessions file)")
         else:
             print(f"  Active:       {_session_count if _session_count is not None else 0}")
+
+    print(_render_fallback_spool_row())
 
     # Slot usage, only when max_concurrent_sessions is set. The cap is shared
     # across CLI, desktop/TUI and the messaging gateway, so the surface that

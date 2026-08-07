@@ -4,8 +4,10 @@ import os
 import sys
 import types
 import io
+import re
 import contextlib
 from argparse import Namespace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +15,7 @@ import pytest
 import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 from hermes_cli.doctor import _has_provider_env_config
 
 
@@ -1410,3 +1413,249 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+def _doctor_fallback_spool_snapshot(**overrides):
+    snapshot = SimpleNamespace(
+        schema_version=1,
+        state="empty",
+        reasons=(),
+        pending_units=0,
+        pending_frames=0,
+        pending_bytes=0,
+        oldest_pending_age_seconds=None,
+        retry_pending=False,
+        retry_class=None,
+        cooldown_seconds=0.0,
+        ack_pending=False,
+        blocker_present=False,
+        blocker_sequence=None,
+        blocker_offset=None,
+        blocker_reason_class=None,
+        blocker_source_kind=None,
+        capacity_used_bytes=0,
+        capacity_cap_bytes=64,
+        capacity_remaining_bytes=64,
+        capacity_state="ok",
+        disk_free_bytes=1024,
+        disk_total_bytes=2048,
+        disk_headroom_threshold_bytes=64,
+        disk_state="ok",
+        inspection_error_class=None,
+    )
+    for key, value in overrides.items():
+        setattr(snapshot, key, value)
+    return snapshot
+
+
+def _doctor_spool_tree_snapshot(spool_root):
+    if not spool_root.exists():
+        return {}
+    snapshot = {}
+    for path in sorted(path for path in spool_root.rglob("*") if path.is_file()):
+        snapshot[str(path.relative_to(spool_root))] = path.read_bytes()
+    return snapshot
+
+
+def _doctor_summary_tail(output: str) -> str:
+    summary_positions = [
+        match.start()
+        for match in re.finditer(
+            r"(?:Found \d+ issue\(s\) to address:|Fixed \d+ issue\(s\)\.|All checks passed!)",
+            output,
+        )
+    ]
+    return output[summary_positions[-1]:] if summary_positions else ""
+
+
+def _run_doctor_with_fallback_spool_collector(
+    monkeypatch,
+    tmp_path,
+    collector,
+    *,
+    fix=False,
+    prepare_home=None,
+):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text("OPENAI_API_KEY=sk-test\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        f"_config_version: {DEFAULT_CONFIG['_config_version']}\nmemory: {{}}\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+    (project / "venv" / "bin").mkdir(parents=True, exist_ok=True)
+    (project / "venv" / "bin" / "hermes").write_text("#!/bin/sh\n", encoding="utf-8")
+    command_link = tmp_path / ".local" / "bin" / "hermes"
+    command_link.parent.mkdir(parents=True, exist_ok=True)
+    command_link.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    if prepare_home is not None:
+        prepare_home(home, project)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    from hermes_cli import auth as _auth_mod
+
+    monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    monkeypatch.setattr(
+        doctor_mod,
+        "collect_session_fallback_spool_status",
+        collector,
+        raising=False,
+    )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=fix))
+    return buf.getvalue(), home
+
+
+def _run_doctor_with_fallback_spool_snapshot(
+    monkeypatch,
+    tmp_path,
+    snapshot,
+    *,
+    fix=False,
+    prepare_home=None,
+):
+    return _run_doctor_with_fallback_spool_collector(
+        monkeypatch,
+        tmp_path,
+        lambda **_kwargs: snapshot,
+        fix=fix,
+        prepare_home=prepare_home,
+    )
+
+
+@pytest.mark.parametrize("fix", [False, True])
+def test_run_doctor_summary_includes_degraded_fallback_spool_manual_issue(
+    monkeypatch,
+    tmp_path,
+    fix,
+):
+    snapshot = _doctor_fallback_spool_snapshot(
+        state="degraded",
+        reasons=("inspection_error", "pending_backlog"),
+        pending_units=1,
+        pending_frames=1,
+        pending_bytes=64,
+        oldest_pending_age_seconds=12.0,
+        inspection_error_class="append_lock_busy",
+        blocker_source_kind="inspection",
+        capacity_state="constrained",
+        capacity_used_bytes=63,
+        capacity_remaining_bytes=1,
+        disk_state="unknown",
+        disk_free_bytes=None,
+        disk_total_bytes=None,
+    )
+    before = {}
+
+    def prepare_home(home, _project):
+        spool_root = home / "session_fallback_spool"
+        spool_root.mkdir(parents=True, exist_ok=True)
+        (spool_root / "sentinel.bin").write_bytes(b"truthful-bytes")
+        (spool_root / "sealed-frame.jsonl").write_bytes(b'{"frame":1}\n')
+        before.update(_doctor_spool_tree_snapshot(spool_root))
+
+    out, home = _run_doctor_with_fallback_spool_snapshot(
+        monkeypatch,
+        tmp_path,
+        snapshot,
+        fix=fix,
+        prepare_home=prepare_home,
+    )
+    detail = doctor_mod._doctor_fallback_spool_detail(snapshot)
+    spool_root = home / "session_fallback_spool"
+    summary_tail = _doctor_summary_tail(out)
+
+    assert f"Fallback spool degraded ({detail})" in out
+    assert "append_lock_busy" in out
+    assert "All checks passed!" not in summary_tail
+    if fix:
+        assert "issue(s) require manual intervention." in summary_tail
+    else:
+        assert "Found 1 issue(s) to address:" in summary_tail
+    assert "requires manual intervention" in summary_tail
+    assert f"Fallback spool degraded ({detail})" in summary_tail
+    assert out.count("Fallback spool degraded") == 2
+    assert summary_tail.count("Fallback spool degraded") == 1
+    assert "session-123" not in out
+    assert _doctor_spool_tree_snapshot(spool_root) == before
+
+
+@pytest.mark.parametrize("fix", [False, True])
+def test_run_doctor_summary_includes_inspection_error_fallback_spool_manual_issue(
+    monkeypatch,
+    tmp_path,
+    fix,
+):
+    before = {}
+
+    def prepare_home(home, _project):
+        spool_root = home / "session_fallback_spool"
+        spool_root.mkdir(parents=True, exist_ok=True)
+        (spool_root / "sentinel.bin").write_bytes(b"truthful-bytes")
+        (spool_root / "sealed-frame.jsonl").write_bytes(b'{"frame":2}\n')
+        before.update(_doctor_spool_tree_snapshot(spool_root))
+
+    raw_error = "unsafe session-123 payload detail"
+
+    def raise_inspection_error(**_kwargs):
+        raise RuntimeError(raw_error)
+
+    out, home = _run_doctor_with_fallback_spool_collector(
+        monkeypatch,
+        tmp_path,
+        raise_inspection_error,
+        fix=fix,
+        prepare_home=prepare_home,
+    )
+    detail = doctor_mod._doctor_fallback_spool_inspection_error_detail()
+    spool_root = home / "session_fallback_spool"
+    summary_tail = _doctor_summary_tail(out)
+
+    assert f"Fallback spool degraded ({detail})" in out
+    assert "All checks passed!" not in summary_tail
+    if fix:
+        assert "issue(s) require manual intervention." in summary_tail
+    else:
+        assert "Found 1 issue(s) to address:" in summary_tail
+    assert "requires manual intervention" in summary_tail
+    assert f"Fallback spool degraded ({detail})" in summary_tail
+    assert "inspection_error=inspection_error" in out
+    assert raw_error not in out
+    assert "session-123" not in out
+    assert out.count("Fallback spool degraded") == 2
+    assert summary_tail.count("Fallback spool degraded") == 1
+    assert _doctor_spool_tree_snapshot(spool_root) == before
+
+
+@pytest.mark.parametrize("state", ["empty", "healthy"])
+def test_run_doctor_does_not_warn_for_healthy_or_empty_fallback_spool(
+    monkeypatch, tmp_path, state
+):
+    snapshot = _doctor_fallback_spool_snapshot(state=state)
+
+    out, _ = _run_doctor_with_fallback_spool_snapshot(
+        monkeypatch,
+        tmp_path,
+        snapshot,
+        fix=False,
+    )
+
+    assert "Fallback spool degraded" not in out

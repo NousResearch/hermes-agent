@@ -991,28 +991,20 @@ class SessionSearchMixin:
                 # End rows came back DESC for the LIMIT cap; flip to ASC.
                 bookend_end_rows = list(reversed(bookend_end_rows))
 
-        def _hydrate(row) -> Dict[str, Any]:
-            msg = dict(row)
-            if "content" in msg:
-                msg["content"] = self._decode_content(msg["content"])
-            if msg.get("tool_calls"):
-                try:
-                    msg["tool_calls"] = json.loads(msg["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning(
-                        "Failed to deserialize tool_calls in get_anchored_view, falling back to []"
-                    )
-                    msg["tool_calls"] = []
-            if msg.get("display_metadata") is not None:
-                msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
-            return msg
+        hydrate_public_row = getattr(self, "_public_message_row_dict")
 
         return {
             "window": filtered_window,
             "messages_before": primitive["messages_before"],
             "messages_after": primitive["messages_after"],
-            "bookend_start": [_hydrate(r) for r in bookend_start_rows],
-            "bookend_end": [_hydrate(r) for r in bookend_end_rows],
+            "bookend_start": [
+                hydrate_public_row(r, log_context="get_anchored_view")
+                for r in bookend_start_rows
+            ],
+            "bookend_end": [
+                hydrate_public_row(r, log_context="get_anchored_view")
+                for r in bookend_end_rows
+            ],
         }
 
     def list_recent_user_messages(

@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from agent.codex_responses_adapter import _normalize_codex_response
+import session_fallback_spool as spool
 
 import run_agent
 from run_agent import AIAgent
@@ -88,6 +89,86 @@ def test_persist_user_message_override_rewrites_text_turns(agent):
     assert messages == [{"role": "user", "content": "hello"}]
 
 
+def _prime_batch_flush_agent(agent, session_db):
+    agent._session_db = session_db
+    agent._session_db_created = True
+    agent.session_id = "session-123"
+    agent._last_flushed_db_idx = 0
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
+    agent._persist_user_message_idx = None
+    agent._persist_user_message_override = None
+    agent._persist_user_message_timestamp = None
+    agent._persist_disabled = False
+    agent._session_persist_lock = threading.RLock()
+    agent._session_json_enabled = False
+    agent._db_flush_scan_prefix = None
+
+
+def _install_inflight_marker(agent):
+    from agent import agent_runtime_helpers as _helpers
+
+    agent._inflight_turn_id = "session-123:t1:aaaa"
+    agent._inflight_turn_session_id = agent.session_id
+    with _helpers._INFLIGHT_TURNS_LOCK:
+        _helpers._INFLIGHT_TURNS_BY_SESSION.clear()
+        _helpers._INFLIGHT_TURNS_BY_SESSION[agent.session_id] = (
+            agent._inflight_turn_id,
+            time.time(),
+        )
+
+
+def _clear_inflight_markers():
+    from agent import agent_runtime_helpers as _helpers
+
+    with _helpers._INFLIGHT_TURNS_LOCK:
+        _helpers._INFLIGHT_TURNS_BY_SESSION.clear()
+
+
+def _spool_append_result(*records):
+    return spool.SpoolAppendAttemptResult(
+        unit_results=tuple(
+            spool.SpoolUnitAppendResult(
+                persistence_unit_id=record.batch_messages[0].persistence_unit_id,
+                message_keys=tuple(
+                    message.persistence_message_key for message in record.batch_messages
+                ),
+                receipt=spool.SpoolFrameReceipt(
+                    path="/tmp/active.spool",
+                    offset=index * 100,
+                    frame_length=64,
+                    payload_length=32,
+                    checksum_hex=f"{index + 1:032x}",
+                ),
+            )
+            for index, record in enumerate(records)
+        )
+    )
+
+
+class _RecordingBatchDB:
+    def __init__(self, outcomes=None):
+        self.calls = []
+        self._outcomes = list(outcomes or [])
+        self.flush_token_counts = MagicMock()
+
+    def append_messages_batch(self, session_id, messages, *, compression_lock_holder=None):
+        batch = list(messages)
+        self.calls.append(
+            {
+                "session_id": session_id,
+                "messages": batch,
+                "compression_lock_holder": compression_lock_holder,
+            }
+        )
+        if self._outcomes:
+            outcome = self._outcomes.pop(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+        return SimpleNamespace(inserted_count=len(batch), duplicate_count=0)
+
+
 
 
 
@@ -103,17 +184,16 @@ def test_flush_persist_override_replaces_api_local_multimodal_note(agent):
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
     ]
     agent._session_db = MagicMock()
-    agent._session_db_created = True
-    agent.session_id = "session-123"
-    agent._last_flushed_db_idx = 0
+    _prime_batch_flush_agent(agent, agent._session_db)
     agent._persist_user_message_idx = 0
     agent._persist_user_message_override = clean_content
     agent._persist_user_message_timestamp = None
 
     agent._flush_messages_to_session_db([{"role": "user", "content": api_content}], [])
 
-    batch = agent._session_db.append_messages_batch.call_args.kwargs["messages"]
-    assert batch[0]["content"] == "Describe this screenshot\n[screenshot]"
+    batch_write = agent._session_db.append_messages_batch.call_args.kwargs["messages"]
+    assert len(batch_write) == 1
+    assert batch_write[0].content == "Describe this screenshot\n[screenshot]"
     assert api_content[0]["text"] == "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"
 
 
@@ -127,39 +207,21 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
             self.calls = 0
             self._lock = threading.Lock()
 
-        def append_message(self, **kwargs):
+        def append_messages_batch(self, _session_id, messages, *, compression_lock_holder=None):
             with self._lock:
                 self.calls += 1
                 first = self.calls == 1
             if first:
                 self.entered.set()
                 assert self.release.wait(timeout=5)
-            self.rows.append(kwargs["content"])
+            self.rows.extend(msg.content for msg in messages)
+            return SimpleNamespace(inserted_count=len(self.rows), duplicate_count=0)
 
-        def append_messages_batch(self, session_id, messages, **kwargs):
-            with self._lock:
-                self.calls += 1
-                first = self.calls == 1
-            if first:
-                self.entered.set()
-                assert self.release.wait(timeout=5)
-            for m in messages:
-                self.rows.append(m["content"])
-            return list(range(1, len(messages) + 1))
+        def flush_token_counts(self):
+            return None
 
     db = _BarrierDB()
-    agent._session_db = db
-    agent._session_db_created = True
-    agent.session_id = "session-123"
-    agent._last_flushed_db_idx = 0
-    agent._flushed_db_message_ids = set()
-    agent._flushed_db_message_session_id = None
-    agent._persist_user_message_idx = None
-    agent._persist_user_message_override = None
-    agent._persist_user_message_timestamp = None
-    agent._persist_disabled = False
-    agent._session_persist_lock = threading.RLock()
-    agent._session_json_enabled = False
+    _prime_batch_flush_agent(agent, db)
 
     message = {"role": "user", "content": "exactly once"}
     normal = threading.Thread(target=lambda: agent._persist_session([message], []))
@@ -177,6 +239,626 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
     assert not normal.is_alive()
     assert not direct.is_alive()
     assert db.rows == ["exactly once"]
+
+
+def test_flush_messages_to_session_db_batch_marks_only_after_success_and_clears_retry_identity(agent):
+    db = _RecordingBatchDB()
+    _prime_batch_flush_agent(agent, db)
+    message = {"role": "user", "content": "hello batch"}
+
+    result = agent._flush_messages_to_session_db([message], [])
+
+    assert result is True
+    assert message[run_agent._DB_PERSISTED_MARKER] is True
+    assert message[run_agent._DB_CANONICAL_COMMIT_MARKER] is True
+    assert run_agent._DB_PERSISTENCE_UNIT_ID not in message
+    assert run_agent._DB_PERSISTENCE_MESSAGE_KEY not in message
+    assert run_agent._DB_PERSISTENCE_TIMESTAMP not in message
+    assert "timestamp" not in message
+    assert len(db.calls) == 1
+    assert len(db.calls[0]["messages"]) == 1
+    batch_msg = db.calls[0]["messages"][0]
+    assert batch_msg.persistence_unit_id
+    assert batch_msg.persistence_message_key
+    assert batch_msg.persistence_ordinal == 0
+    assert batch_msg.timestamp > 0
+    assert dict(batch_msg)["timestamp"] is None
+
+
+def test_batch_message_mapping_preserves_explicit_legacy_timestamp(agent):
+    db = _RecordingBatchDB()
+    _prime_batch_flush_agent(agent, db)
+    message = {"role": "user", "content": "timestamped", "timestamp": 123.5}
+
+    assert agent._flush_messages_to_session_db([message], []) is True
+
+    batch_msg = db.calls[0]["messages"][0]
+    assert batch_msg.timestamp == 123.5
+    assert batch_msg["timestamp"] == 123.5
+    assert batch_msg.get("timestamp") == 123.5
+    assert dict(batch_msg)["timestamp"] == 123.5
+
+
+def test_persist_session_canonical_returns_explicit_state_and_forbids_bool_coercion(agent):
+    db = _RecordingBatchDB()
+    _prime_batch_flush_agent(agent, db)
+    message = {"role": "user", "content": "hello canonical"}
+
+    result = agent._persist_session([message], [])
+
+    assert result.state is run_agent.SessionPersistState.CANONICAL
+    assert result.canonical_units_committed == 1
+    assert result.spooled_units == 0
+    assert result.spool_receipts == ()
+    assert message[run_agent._DB_PERSISTED_MARKER] is True
+    db.flush_token_counts.assert_called_once()
+    with pytest.raises(TypeError):
+        bool(result)
+
+
+def test_persist_session_instance_override_requires_explicit_durability(agent):
+    seen = []
+    message = {"role": "user", "content": "override seam"}
+    agent._flush_messages_to_session_db = (
+        lambda messages, history: seen.append((messages, history))
+    )
+
+    result = agent._persist_session([message], [])
+
+    assert seen == [([message], [])]
+    assert result.state is run_agent.SessionPersistState.NOT_DURABLE
+    assert result.error_class == "PersistenceOverrideUnconfirmed"
+
+
+def test_persist_session_instance_override_accepts_explicit_success(agent):
+    message = {"role": "user", "content": "override seam"}
+    agent._flush_messages_to_session_db = lambda _messages, _history: True
+
+    result = agent._persist_session([message], [])
+
+    assert result.state is run_agent.SessionPersistState.CANONICAL
+
+
+def test_persist_session_spools_frozen_units_after_session_row_create_failure(agent, monkeypatch):
+    db = MagicMock()
+    db.create_session.side_effect = RuntimeError("session row locked")
+    db.append_messages_batch.side_effect = AssertionError(
+        "append should not run when session row creation fails"
+    )
+    db.flush_token_counts = MagicMock()
+    _prime_batch_flush_agent(agent, db)
+    agent._session_db_created = False
+    _install_inflight_marker(agent)
+    message = {"role": "user", "content": "hello spool"}
+    seen = {}
+
+    def _capture(records):
+        seen["records"] = records
+        return _spool_append_result(*records)
+
+    monkeypatch.setattr(run_agent.session_spool, "append_records", _capture)
+
+    try:
+        result = agent._persist_session([message], [])
+
+        assert result.state is run_agent.SessionPersistState.SPOOLED
+        assert result.canonical_units_committed == 0
+        assert result.spooled_units == 1
+        assert len(result.spool_receipts) == 1
+        assert run_agent._DB_PERSISTED_MARKER not in message
+        assert message[run_agent._DB_SPOOLED_MARKER] is True
+        assert agent._db_flush_scan_prefix is None
+        assert agent._last_flushed_db_idx == 0
+        db.flush_token_counts.assert_not_called()
+        assert agent._inflight_turn_id is None
+
+        planned = seen["records"]
+        assert len(planned) == 1
+        assert planned[0].canonical_failure["stage"] == "session_row_create"
+        assert planned[0].canonical_failure["session_row_created"] is False
+        assert planned[0].batch_messages[0].persistence_unit_id == message[
+            run_agent._DB_PERSISTENCE_UNIT_ID
+        ]
+        assert planned[0].batch_messages[0].persistence_message_key == message[
+            run_agent._DB_PERSISTENCE_MESSAGE_KEY
+        ]
+        assert planned[0].batch_messages[0].timestamp == message[
+            run_agent._DB_PERSISTENCE_TIMESTAMP
+        ]
+    finally:
+        _clear_inflight_markers()
+
+
+def test_flush_messages_to_session_db_failure_preserves_persistence_message_key_and_suppresses_token_drain(agent, monkeypatch):
+    db = _RecordingBatchDB(outcomes=[RuntimeError("db down")])
+    _prime_batch_flush_agent(agent, db)
+    message = {"role": "user", "content": "hello failure"}
+    monkeypatch.setattr(
+        run_agent.session_spool,
+        "append_records",
+        MagicMock(side_effect=spool.SpoolDurabilityError("spool down")),
+    )
+
+    result = agent._persist_session([message], [])
+
+    assert result.state is run_agent.SessionPersistState.NOT_DURABLE
+    assert run_agent._DB_PERSISTED_MARKER not in message
+    assert run_agent._DB_SPOOLED_MARKER not in message
+    assert run_agent._DB_PERSISTENCE_UNIT_ID in message
+    assert run_agent._DB_PERSISTENCE_MESSAGE_KEY in message
+    assert run_agent._DB_PERSISTENCE_TIMESTAMP in message
+    assert agent._db_flush_scan_prefix is None
+    assert agent._last_flushed_db_idx == 0
+    db.flush_token_counts.assert_not_called()
+
+
+def test_flush_messages_to_session_db_retry_reuses_persistence_message_key_and_timestamp(agent):
+    db = _RecordingBatchDB(
+        outcomes=[
+            RuntimeError("first failure"),
+            SimpleNamespace(inserted_count=1, duplicate_count=0),
+        ]
+    )
+    _prime_batch_flush_agent(agent, db)
+    message = {"role": "user", "content": "retry me"}
+
+    first = agent._flush_messages_to_session_db([message], [])
+    first_key = message[run_agent._DB_PERSISTENCE_MESSAGE_KEY]
+    first_unit = message[run_agent._DB_PERSISTENCE_UNIT_ID]
+    first_ts = message[run_agent._DB_PERSISTENCE_TIMESTAMP]
+
+    second = agent._flush_messages_to_session_db([message], [])
+
+    assert first is False
+    assert second is True
+    assert len(db.calls) == 2
+    assert db.calls[0]["messages"][0].persistence_message_key == first_key
+    assert db.calls[1]["messages"][0].persistence_message_key == first_key
+    assert db.calls[0]["messages"][0].persistence_unit_id == first_unit
+    assert db.calls[1]["messages"][0].persistence_unit_id == first_unit
+    assert db.calls[0]["messages"][0].timestamp == first_ts
+    assert db.calls[1]["messages"][0].timestamp == first_ts
+    assert message[run_agent._DB_PERSISTED_MARKER] is True
+
+
+def test_flush_messages_to_session_db_rekeys_after_persisted_message_is_rewritten(agent):
+    """Clearing the durable marker after an in-place rewrite starts a new unit.
+
+    Failed canonical writes must retry the same private identity, but a message
+    that was already committed and then rewritten must not be deduplicated as
+    the stale canonical row.
+    """
+    db = _RecordingBatchDB()
+    _prime_batch_flush_agent(agent, db)
+    message = {"role": "assistant", "content": ""}
+
+    assert agent._flush_messages_to_session_db([message], []) is True
+    first_key = db.calls[0]["messages"][0].persistence_message_key
+    first_unit = db.calls[0]["messages"][0].persistence_unit_id
+
+    message["content"] = "the final answer"
+    message.pop(run_agent._DB_PERSISTED_MARKER)
+    agent._db_flush_scan_prefix = None
+
+    assert agent._flush_messages_to_session_db([message], []) is True
+    assert len(db.calls) == 2
+    second = db.calls[1]["messages"][0]
+    assert second.content == "the final answer"
+    assert second.persistence_message_key != first_key
+    assert second.persistence_unit_id != first_unit
+
+
+def test_flush_messages_to_session_db_retries_old_batch_before_new_unkeyed_messages(agent):
+    db = _RecordingBatchDB(
+        outcomes=[
+            RuntimeError("first failure"),
+            SimpleNamespace(inserted_count=2, duplicate_count=0),
+            SimpleNamespace(inserted_count=1, duplicate_count=0),
+        ]
+    )
+    _prime_batch_flush_agent(agent, db)
+    messages = [
+        {"role": "user", "content": "old user"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+
+    assert agent._flush_messages_to_session_db(messages, []) is False
+    failed_unit = messages[0][run_agent._DB_PERSISTENCE_UNIT_ID]
+    failed_keys = [m[run_agent._DB_PERSISTENCE_MESSAGE_KEY] for m in messages]
+
+    messages.append({"role": "user", "content": "new tail"})
+    assert agent._flush_messages_to_session_db(messages, []) is True
+
+    assert len(db.calls) == 3
+    retried_batch = db.calls[1]["messages"]
+    new_batch = db.calls[2]["messages"]
+    assert [msg.persistence_message_key for msg in retried_batch] == failed_keys
+    assert all(msg.persistence_unit_id == failed_unit for msg in retried_batch)
+    assert len(new_batch) == 1
+    assert new_batch[0].persistence_unit_id != failed_unit
+    assert new_batch[0].persistence_message_key
+    assert run_agent._DB_PERSISTENCE_MESSAGE_KEY not in messages[2]
+    assert messages[0][run_agent._DB_PERSISTED_MARKER] is True
+    assert messages[1][run_agent._DB_PERSISTED_MARKER] is True
+    assert messages[2][run_agent._DB_PERSISTED_MARKER] is True
+
+
+def test_spooled_marker_skips_duplicate_spool_only_and_never_blocks_canonical_retry(agent, monkeypatch):
+    db = _RecordingBatchDB(
+        outcomes=[
+            RuntimeError("first failure"),
+            SimpleNamespace(inserted_count=1, duplicate_count=0),
+        ]
+    )
+    _prime_batch_flush_agent(agent, db)
+    message = {"role": "user", "content": "retry me canonically"}
+    spool_calls = []
+
+    def _capture(records):
+        spool_calls.append(records)
+        return _spool_append_result(*records)
+
+    monkeypatch.setattr(run_agent.session_spool, "append_records", _capture)
+
+    first = agent._persist_session([message], [])
+    second = agent._persist_session([message], [])
+
+    assert first.state is run_agent.SessionPersistState.SPOOLED
+    assert second.state is run_agent.SessionPersistState.CANONICAL
+    assert len(spool_calls) == 1
+    assert len(db.calls) == 2
+    assert message[run_agent._DB_SPOOLED_MARKER] is True
+    assert message[run_agent._DB_PERSISTED_MARKER] is True
+
+
+def test_rewritten_spooled_message_blocks_before_stale_replay(agent, monkeypatch):
+    db = _RecordingBatchDB(outcomes=[RuntimeError("first failure")])
+    _prime_batch_flush_agent(agent, db)
+    message = {"role": "user", "content": "spooled snapshot"}
+    spool_calls = []
+
+    monkeypatch.setattr(
+        run_agent.session_spool,
+        "append_records",
+        lambda records: (
+            spool_calls.append(records) or _spool_append_result(*records)
+        ),
+    )
+    replay = MagicMock(return_value=None)
+    agent._replay_pending_session_spool = replay
+
+    first = agent._persist_session([message], [])
+    assert first.state is run_agent.SessionPersistState.SPOOLED
+    assert "_db_persistence_payload_fingerprint" in message
+
+    message["content"] = "rewritten after spool"
+    direct = agent._flush_messages_to_session_db([message], [])
+    assert direct is False
+    assert replay.call_count == 1
+    assert len(db.calls) == 1
+
+    second = agent._persist_session([message], [])
+
+    assert second.state is run_agent.SessionPersistState.NOT_DURABLE
+    assert second.error_class == "SpooledPersistenceUnitMutated"
+    assert replay.call_count == 1
+    assert len(db.calls) == 1
+    assert len(spool_calls) == 1
+
+
+def test_removed_row_from_spooled_unit_blocks_before_stale_replay(agent, monkeypatch):
+    db = _RecordingBatchDB(outcomes=[RuntimeError("first failure")])
+    _prime_batch_flush_agent(agent, db)
+    messages = [
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "call-1"}]},
+        {"role": "tool", "content": "tool result", "tool_call_id": "call-1"},
+    ]
+    monkeypatch.setattr(
+        run_agent.session_spool,
+        "append_records",
+        lambda records: _spool_append_result(*records),
+    )
+    replay = MagicMock(return_value=None)
+    agent._replay_pending_session_spool = replay
+
+    first = agent._persist_session(messages, [])
+    assert first.state is run_agent.SessionPersistState.SPOOLED
+    assert messages[0]["_db_persistence_unit_fingerprint"] == messages[1][
+        "_db_persistence_unit_fingerprint"
+    ]
+
+    messages.pop()
+    direct = agent._flush_messages_to_session_db(messages, [])
+
+    assert direct is False
+    assert replay.call_count == 1
+    assert len(db.calls) == 1
+
+
+def test_rewritten_failed_nonspooled_unit_rekeys_before_retry(agent, monkeypatch):
+    db = _RecordingBatchDB(
+        outcomes=[
+            RuntimeError("first failure"),
+            SimpleNamespace(inserted_count=1, duplicate_count=0),
+        ]
+    )
+    _prime_batch_flush_agent(agent, db)
+    message = {"role": "user", "content": "first payload"}
+    monkeypatch.setattr(
+        run_agent.session_spool,
+        "append_records",
+        MagicMock(side_effect=spool.SpoolDurabilityError("spool down")),
+    )
+
+    first = agent._persist_session([message], [])
+    first_key = message[run_agent._DB_PERSISTENCE_MESSAGE_KEY]
+    assert first.state is run_agent.SessionPersistState.NOT_DURABLE
+
+    message["content"] = "replacement payload"
+    second = agent._persist_session([message], [])
+
+    assert second.state is run_agent.SessionPersistState.CANONICAL
+    assert len(db.calls) == 2
+    assert db.calls[1]["messages"][0].content == "replacement payload"
+    assert db.calls[1]["messages"][0].persistence_message_key != first_key
+
+
+def test_persist_session_disabled_never_touches_db_or_spool(agent, monkeypatch):
+    db = MagicMock()
+    db.flush_token_counts = MagicMock()
+    _prime_batch_flush_agent(agent, db)
+    agent._persist_disabled = True
+    spool_append = MagicMock()
+    monkeypatch.setattr(run_agent.session_spool, "append_records", spool_append)
+
+    result = agent._persist_session([{"role": "user", "content": "skip me"}], [])
+
+    assert result.state is run_agent.SessionPersistState.NOT_DURABLE
+    db.create_session.assert_not_called()
+    db.append_messages_batch.assert_not_called()
+    db.flush_token_counts.assert_not_called()
+    spool_append.assert_not_called()
+
+
+def test_persist_session_does_not_clear_inflight_marker_when_db_flush_fails(agent):
+    """A failed canonical flush must not be reported as a completed persist."""
+    db = _RecordingBatchDB(outcomes=[RuntimeError("db down")])
+    _prime_batch_flush_agent(agent, db)
+    _install_inflight_marker(agent)
+
+    try:
+        with patch.object(
+            run_agent.session_spool,
+            "append_records",
+            side_effect=spool.SpoolDurabilityError("spool down"),
+        ):
+            result = agent._persist_session([{"role": "user", "content": "hello"}], [])
+
+        assert result.state is run_agent.SessionPersistState.NOT_DURABLE
+        assert agent._inflight_turn_id == "session-123:t1:aaaa"
+        from agent import agent_runtime_helpers as _helpers
+        with _helpers._INFLIGHT_TURNS_LOCK:
+            assert _helpers._INFLIGHT_TURNS_BY_SESSION[agent.session_id][0] == (
+                "session-123:t1:aaaa"
+            )
+    finally:
+        _clear_inflight_markers()
+
+
+def test_save_session_log_strips_private_spool_marker(agent, tmp_path):
+    agent.logs_dir = tmp_path
+    agent.session_id = "session-123"
+    agent._session_json_enabled = True
+    message = {
+        "role": "user",
+        "content": "hello",
+        run_agent._DB_SPOOLED_MARKER: True,
+        run_agent._DB_PERSISTENCE_UNIT_ID: "unit-1",
+        "_db_canonical_commit": True,
+        "_db_persistence_payload_fingerprint": "fingerprint-1",
+        "_db_persistence_unit_fingerprint": "unit-fingerprint-1",
+    }
+
+    agent._save_session_log([message])
+
+    saved = json.loads((tmp_path / "session_session-123.json").read_text(encoding="utf-8"))
+    saved_message = saved["messages"][0]
+    assert run_agent._DB_SPOOLED_MARKER not in saved_message
+    assert run_agent._DB_PERSISTENCE_UNIT_ID not in saved_message
+    assert "_db_canonical_commit" not in saved_message
+    assert "_db_persistence_payload_fingerprint" not in saved_message
+    assert "_db_persistence_unit_fingerprint" not in saved_message
+
+
+def test_persist_session_replays_spool_before_canonical_append_under_persist_lock(agent, monkeypatch):
+    order = []
+
+    class _OrderingDB(_RecordingBatchDB):
+        def append_messages_batch(self, session_id, messages, *, compression_lock_holder=None):
+            order.append("append")
+            return super().append_messages_batch(
+                session_id,
+                messages,
+                compression_lock_holder=compression_lock_holder,
+            )
+
+    db = _OrderingDB()
+    _prime_batch_flush_agent(agent, db)
+
+    def _replay(session_db, *, trigger):
+        assert session_db is db
+        assert agent._session_persist_lock._is_owned()
+        order.append(("replay", trigger))
+        return SimpleNamespace(state="empty")
+
+    monkeypatch.setattr(run_agent.session_spool, "replay_to_session_db", _replay)
+
+    result = agent._persist_session([{"role": "user", "content": "hello replay hook"}], [])
+
+    assert result.state is run_agent.SessionPersistState.CANONICAL
+    assert order[0] == ("replay", "pre_persist")
+    assert order[1] == "append"
+
+
+def test_flush_messages_to_session_db_stops_when_replay_returns_blocked(agent, monkeypatch):
+    db = _RecordingBatchDB()
+    _prime_batch_flush_agent(agent, db)
+
+    monkeypatch.setattr(
+        run_agent.session_spool,
+        "replay_to_session_db",
+        lambda *_args, **_kwargs: SimpleNamespace(state="blocked_integrity"),
+    )
+
+    result = agent._flush_messages_to_session_db([{"role": "user", "content": "hello"}], [])
+
+    assert result is False
+    assert db.calls == []
+
+
+def test_persist_session_stops_when_replay_returns_retry_pending(agent, monkeypatch):
+    db = _RecordingBatchDB()
+    _prime_batch_flush_agent(agent, db)
+
+    monkeypatch.setattr(
+        run_agent.session_spool,
+        "replay_to_session_db",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            state=spool.ReplayRunState.RETRY_PENDING,
+            retry_class="ack_cleanup_busy",
+            ack_pending=True,
+            cooldown_seconds=1.0,
+        ),
+    )
+
+    result = agent._persist_session([{"role": "user", "content": "hello"}], [])
+
+    assert result.state is run_agent.SessionPersistState.NOT_DURABLE
+    assert result.error_class == "retry_pending"
+    assert db.calls == []
+
+
+def test_flush_messages_to_session_db_stops_when_replay_returns_retry_pending(agent, monkeypatch):
+    db = _RecordingBatchDB()
+    _prime_batch_flush_agent(agent, db)
+
+    monkeypatch.setattr(
+        run_agent.session_spool,
+        "replay_to_session_db",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            state=spool.ReplayRunState.RETRY_PENDING,
+            retry_class="ack_cleanup_busy",
+            ack_pending=True,
+            cooldown_seconds=1.0,
+        ),
+    )
+
+    result = agent._flush_messages_to_session_db([{"role": "user", "content": "hello"}], [])
+
+    assert result is False
+    assert db.calls == []
+
+
+@pytest.mark.parametrize(
+    "replay_result",
+    [
+        SimpleNamespace(state=spool.ReplayRunState.BLOCKED_INTEGRITY, error_class="CompressionSessionClosedError"),
+        SimpleNamespace(
+            state=spool.ReplayRunState.RETRY_PENDING,
+            retry_class="ack_cleanup_busy",
+            ack_pending=True,
+            cooldown_seconds=1.0,
+        ),
+        SimpleNamespace(state=spool.ReplayRunState.NOT_DURABLE, error_class="errno_enospc"),
+    ],
+)
+def test_persist_session_replay_degraded_does_not_flush_tokens_or_note_turn(
+    agent, monkeypatch, replay_result
+):
+    db = _RecordingBatchDB()
+    _prime_batch_flush_agent(agent, db)
+    monkeypatch.setattr(run_agent.session_spool, "replay_to_session_db", lambda *_args, **_kwargs: replay_result)
+
+    with patch("agent.agent_runtime_helpers.note_turn_persisted") as note_turn_persisted:
+        result = agent._persist_session([{"role": "user", "content": "hello"}], [])
+
+    assert result.state is run_agent.SessionPersistState.NOT_DURABLE
+    db.flush_token_counts.assert_not_called()
+    note_turn_persisted.assert_not_called()
+    assert db.calls == []
+
+
+def test_persist_session_historical_replay_does_not_stamp_live_markers(agent, monkeypatch):
+    db = _RecordingBatchDB()
+    _prime_batch_flush_agent(agent, db)
+    _install_inflight_marker(agent)
+    live_message = {"role": "user", "content": "hello replay then persist"}
+
+    def _replay(*_args, **_kwargs):
+        assert run_agent._DB_PERSISTED_MARKER not in live_message
+        assert run_agent._DB_SPOOLED_MARKER not in live_message
+        assert agent._inflight_turn_id == "session-123:t1:aaaa"
+        return SimpleNamespace(state=spool.ReplayRunState.REPLAYED)
+
+    monkeypatch.setattr(run_agent.session_spool, "replay_to_session_db", _replay)
+
+    try:
+        with patch("agent.agent_runtime_helpers.note_turn_persisted") as note_turn_persisted:
+            result = agent._persist_session([live_message], [])
+    finally:
+        _clear_inflight_markers()
+
+    assert result.state is run_agent.SessionPersistState.CANONICAL
+    assert live_message[run_agent._DB_PERSISTED_MARKER] is True
+    assert live_message.get(run_agent._DB_SPOOLED_MARKER) is not True
+    note_turn_persisted.assert_called_once()
+
+
+def test_persist_session_degraded_logs_are_redacted_deduped_and_recovery_visible(
+    agent, monkeypatch, caplog
+):
+    db = _RecordingBatchDB(outcomes=[RuntimeError("db down"), RuntimeError("db down"), RuntimeError("db down")])
+    _prime_batch_flush_agent(agent, db)
+    clock = {"now": 100.0}
+    monkeypatch.setattr(run_agent.time, "monotonic", lambda: clock["now"])
+    caplog.set_level(logging.INFO)
+
+    failure_append = MagicMock(side_effect=spool.SpoolDurabilityError("spool down"))
+    monkeypatch.setattr(run_agent.session_spool, "append_records", failure_append)
+
+    with patch("agent.agent_runtime_helpers.note_turn_persisted") as note_turn_persisted:
+        first = agent._persist_session([{"role": "user", "content": "hello one"}], [])
+        second = agent._persist_session([{"role": "user", "content": "hello two"}], [])
+        monkeypatch.setattr(
+            run_agent.session_spool,
+            "append_records",
+            lambda records: _spool_append_result(*records),
+        )
+        third = agent._persist_session([{"role": "user", "content": "hello three"}], [])
+        fourth = agent._persist_session([{"role": "user", "content": "hello four"}], [])
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == run_agent.__name__
+    ]
+    joined = "\n".join(messages)
+
+    assert first.state is run_agent.SessionPersistState.NOT_DURABLE
+    assert second.state is run_agent.SessionPersistState.NOT_DURABLE
+    assert third.state is run_agent.SessionPersistState.SPOOLED
+    assert fourth.state is run_agent.SessionPersistState.CANONICAL
+    assert len(messages) == 3
+    assert "outcome=not_durable" in messages[0]
+    assert "outcome=spooled" in messages[1]
+    assert "outcome=canonical" in messages[2]
+    assert "session-123" not in joined
+    assert "hello one" not in joined
+    assert "db down" not in joined
+    assert "spool down" not in joined
+    assert "unit_ids" not in joined
+    db.flush_token_counts.assert_called_once()
+    assert note_turn_persisted.call_count == 2
 
 
 @pytest.fixture()
@@ -5805,8 +6487,7 @@ class TestPersistUserMessageOverride:
 
     def test_persist_session_rewrites_current_turn_user_message(self, agent):
         agent._session_db = MagicMock()
-        agent.session_id = "session-123"
-        agent._last_flushed_db_idx = 0
+        _prime_batch_flush_agent(agent, agent._session_db)
         agent._persist_user_message_idx = 0
         agent._persist_user_message_override = "Hello there"
         messages = [
@@ -5832,10 +6513,10 @@ class TestPersistUserMessageOverride:
             "2-3 sentences max. No code blocks or markdown.] Hello there"
         )
         # But the DB write must get the override.
-        batch = agent._session_db.append_messages_batch.call_args_list[0].kwargs[
+        first_db_write = agent._session_db.append_messages_batch.call_args.kwargs[
             "messages"
-        ]
-        assert batch[0]["content"] == "Hello there"
+        ][0]
+        assert first_db_write.content == "Hello there"
 
 
 class TestReasoningReplayForStrictProviders:

@@ -10,6 +10,7 @@ import subprocess
 import shutil
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 from hermes_cli.config import (
     detect_install_method,
@@ -34,6 +35,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
+from session_fallback_spool import collect_session_fallback_spool_status
 from utils import base_url_host_matches
 
 
@@ -214,6 +216,44 @@ def check_fail(text: str, detail: str = ""):
 
 def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
+
+
+def _doctor_fallback_spool_detail(status) -> str:
+    details = [
+        f"pending={int(getattr(status, 'pending_units', 0))}u/"
+        f"{int(getattr(status, 'pending_frames', 0))}f/"
+        f"{int(getattr(status, 'pending_bytes', 0))}b"
+    ]
+    reasons = getattr(status, "reasons", ()) or ()
+    if reasons:
+        details.append(f"reasons={','.join(str(reason) for reason in reasons)}")
+    inspection_error = getattr(status, "inspection_error_class", None)
+    if inspection_error:
+        details.append(f"inspection_error={inspection_error}")
+    return "; ".join(details)
+
+
+def _doctor_fallback_spool_inspection_error_detail() -> str:
+    return _doctor_fallback_spool_detail(
+        SimpleNamespace(
+            pending_units=0,
+            pending_frames=0,
+            pending_bytes=0,
+            reasons=("inspection_error",),
+            inspection_error_class="inspection_error",
+        )
+    )
+
+
+def _doctor_fallback_spool_manual_issue(detail: str) -> str:
+    return f"Fallback spool degraded ({detail}) — requires manual intervention."
+
+
+def _report_doctor_fallback_spool_issue(detail: str, manual_issues: list[str]) -> None:
+    check_warn("Fallback spool degraded", f"({detail})")
+    issue = _doctor_fallback_spool_manual_issue(detail)
+    if issue not in manual_issues:
+        manual_issues.append(issue)
 
 
 def _section(title: str) -> None:
@@ -1621,6 +1661,19 @@ def run_doctor(args):
                 check_info(f"WAL file is {wal_size // (1024*1024)} MB (normal for active sessions)")
         except Exception:
             pass
+
+    try:
+        spool_status = collect_session_fallback_spool_status()
+        if str(getattr(spool_status, "state", "empty") or "empty") == "degraded":
+            _report_doctor_fallback_spool_issue(
+                _doctor_fallback_spool_detail(spool_status),
+                manual_issues,
+            )
+    except Exception:
+        _report_doctor_fallback_spool_issue(
+            _doctor_fallback_spool_inspection_error_detail(),
+            manual_issues,
+        )
 
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)

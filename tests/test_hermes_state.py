@@ -643,6 +643,550 @@ class TestTimestampPreservation:
 
 
 # =========================================================================
+# append_messages_batch
+# =========================================================================
+
+
+class TestAppendMessagesBatch:
+    @staticmethod
+    def _batch_message(
+        *,
+        unit: str,
+        key: str,
+        ordinal: int,
+        role: str,
+        content=None,
+        timestamp: float,
+        tool_calls=None,
+        tool_name=None,
+        tool_call_id=None,
+        finish_reason=None,
+        reasoning=None,
+        reasoning_content=None,
+        reasoning_details=None,
+        codex_reasoning_items=None,
+        codex_message_items=None,
+        api_content=None,
+        display_kind=None,
+        display_metadata=None,
+    ):
+        batch_cls = hermes_state.SessionDBBatchMessage
+        return batch_cls(
+            persistence_unit_id=unit,
+            persistence_message_key=key,
+            persistence_ordinal=ordinal,
+            role=role,
+            content=content,
+            timestamp=timestamp,
+            tool_name=tool_name,
+            tool_calls=tool_calls,
+            tool_call_id=tool_call_id,
+            finish_reason=finish_reason,
+            reasoning=reasoning,
+            reasoning_content=reasoning_content,
+            reasoning_details=reasoning_details,
+            codex_reasoning_items=codex_reasoning_items,
+            codex_message_items=codex_message_items,
+            api_content=api_content,
+            display_kind=display_kind,
+            display_metadata=display_metadata,
+        )
+
+    @staticmethod
+    def _index_sql(db, name):
+        row = db._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+            (name,),
+        ).fetchone()
+        return row[0] if row else None
+
+    @staticmethod
+    def _stored_identity_rows(db, session_id="s1"):
+        return db._conn.execute(
+            "SELECT content, persistence_unit_id, persistence_message_key, persistence_ordinal "
+            "FROM messages WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+
+    def test_persistence_unit_columns_and_indexes_exist_on_fresh_db(self, db):
+        columns = {
+            row[1]
+            for row in db._conn.execute('PRAGMA table_info("messages")').fetchall()
+        }
+
+        assert "persistence_unit_id" in columns
+        assert "persistence_message_key" in columns
+        assert "persistence_ordinal" in columns
+
+        key_sql = self._index_sql(db, "ux_messages_session_message_key")
+        ordinal_sql = self._index_sql(db, "ux_messages_session_unit_ordinal")
+        assert key_sql is not None and "persistence_message_key IS NOT NULL" in key_sql
+        assert ordinal_sql is not None and "persistence_unit_id IS NOT NULL" in ordinal_sql
+
+    def test_persistence_unit_columns_and_indexes_reconcile_on_legacy_db(self, tmp_path):
+        db_path = tmp_path / "legacy_state.db"
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version(version) VALUES (1);
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    parent_session_id TEXT,
+                    started_at REAL NOT NULL,
+                    message_count INTEGER DEFAULT 0,
+                    tool_call_count INTEGER DEFAULT 0
+                );
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id),
+                    role TEXT NOT NULL,
+                    content TEXT,
+                    tool_call_id TEXT,
+                    tool_calls TEXT,
+                    tool_name TEXT,
+                    timestamp REAL NOT NULL,
+                    finish_reason TEXT,
+                    reasoning TEXT,
+                    reasoning_content TEXT,
+                    reasoning_details TEXT,
+                    codex_reasoning_items TEXT,
+                    codex_message_items TEXT,
+                    api_content TEXT,
+                    display_kind TEXT,
+                    display_metadata TEXT
+                );
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        legacy = SessionDB(db_path=db_path)
+        try:
+            columns = {
+                row[1]
+                for row in legacy._conn.execute('PRAGMA table_info("messages")').fetchall()
+            }
+            assert "persistence_unit_id" in columns
+            assert "persistence_message_key" in columns
+            assert "persistence_ordinal" in columns
+            assert self._index_sql(legacy, "ux_messages_session_message_key") is not None
+            assert self._index_sql(legacy, "ux_messages_session_unit_ordinal") is not None
+        finally:
+            legacy.close()
+
+    def test_append_messages_batch_insert_and_exact_replay_are_idempotent(self, db):
+        db.create_session(session_id="s1", source="cli")
+        messages = [
+            self._batch_message(
+                unit="unit-a",
+                key="msg-a",
+                ordinal=0,
+                role="user",
+                content="alpha user",
+                timestamp=101.0,
+                display_metadata={"source": "test"},
+            ),
+            self._batch_message(
+                unit="unit-a",
+                key="msg-b",
+                ordinal=1,
+                role="assistant",
+                content="beta assistant",
+                timestamp=102.0,
+                tool_calls=[{"name": "terminal", "arguments": "{}"}],
+                reasoning="thinking",
+                reasoning_details={"depth": 1},
+                api_content="beta assistant",
+            ),
+        ]
+
+        result = db.append_messages_batch("s1", messages)
+        assert result.inserted_count == 2
+        assert result.duplicate_count == 0
+
+        session = db.get_session("s1")
+        assert session["message_count"] == 2
+        assert session["tool_call_count"] == 1
+        rows = db.get_messages("s1")
+        assert [row["content"] for row in rows] == ["alpha user", "beta assistant"]
+        assert [tuple(row) for row in self._stored_identity_rows(db)] == [
+            ("alpha user", "unit-a", "msg-a", 0),
+            ("beta assistant", "unit-a", "msg-b", 1),
+        ]
+        assert len(db.search_messages("alpha")) == 1
+
+        replay = db.append_messages_batch("s1", messages)
+        assert replay.inserted_count == 0
+        assert replay.duplicate_count == 2
+        session_after = db.get_session("s1")
+        assert session_after["message_count"] == 2
+        assert session_after["tool_call_count"] == 1
+        assert len(db.get_messages("s1")) == 2
+        assert len(db.search_messages("alpha")) == 1
+
+    def test_append_messages_batch_rejects_missing_session_without_mutation(self, db):
+        missing_session_id = "missing-session"
+        messages = [
+            self._batch_message(
+                unit="unit-a",
+                key="msg-a",
+                ordinal=0,
+                role="user",
+                content="must not persist",
+                timestamp=151.0,
+            )
+        ]
+
+        assert db.get_session(missing_session_id) is None
+        assert db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        assert db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+        assert db._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+
+        with pytest.raises(
+            hermes_state.AppendMessagesBatchConflictError,
+            match="existing session",
+        ):
+            db.append_messages_batch(missing_session_id, messages)
+
+        assert db.get_session(missing_session_id) is None
+        assert (
+            db._conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE id = ?",
+                (missing_session_id,),
+            ).fetchone()[0]
+            == 0
+        )
+        assert db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        assert (
+            db._conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+                (missing_session_id,),
+            ).fetchone()[0]
+            == 0
+        )
+        assert db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+        assert db._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            db.append_message(missing_session_id, role="user", content="legacy orphan")
+
+        assert db.get_session(missing_session_id) is None
+        assert db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        assert db._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+        assert db._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+
+    def test_append_messages_batch_rejects_duplicate_persistence_message_key_in_input(self, db):
+        db.create_session(session_id="s1", source="cli")
+        conflict_error = hermes_state.AppendMessagesBatchConflictError
+        messages = [
+            self._batch_message(
+                unit="unit-a",
+                key="dup-key",
+                ordinal=0,
+                role="user",
+                content="first",
+                timestamp=201.0,
+            ),
+            self._batch_message(
+                unit="unit-a",
+                key="dup-key",
+                ordinal=1,
+                role="assistant",
+                content="second",
+                timestamp=202.0,
+            ),
+        ]
+
+        with pytest.raises(conflict_error):
+            db.append_messages_batch("s1", messages)
+        assert db.get_messages("s1") == []
+
+    @pytest.mark.parametrize(
+        ("ordinals", "expected_rows"),
+        [
+            ([0.5], [("float-msg", "unit-a", "msg-a", 0.5)]),
+            (["0"], [("string-msg", "unit-a", "msg-a", "0")]),
+            (
+                [False, True],
+                [
+                    ("bool-false", "unit-a", "msg-a", False),
+                    ("bool-true", "unit-a", "msg-b", True),
+                ],
+            ),
+        ],
+    )
+    def test_append_messages_batch_rejects_non_integer_ordinals(self, db, ordinals, expected_rows):
+        db.create_session(session_id="s1", source="cli")
+        contents = [row[0] for row in expected_rows]
+        messages = [
+            self._batch_message(
+                unit="unit-a",
+                key=f"msg-{chr(ord('a') + idx)}",
+                ordinal=ordinal,
+                role="user" if idx % 2 == 0 else "assistant",
+                content=contents[idx],
+                timestamp=210.0 + idx,
+            )
+            for idx, ordinal in enumerate(ordinals)
+        ]
+
+        with pytest.raises(hermes_state.AppendMessagesBatchConflictError):
+            db.append_messages_batch("s1", messages)
+
+        assert db.get_messages("s1") == []
+        assert list(self._stored_identity_rows(db)) == []
+        assert db.get_session("s1")["message_count"] == 0
+        assert db.get_session("s1")["tool_call_count"] == 0
+
+    def test_append_messages_batch_rejects_partial_persistence_unit_and_rolls_back(self, db):
+        db.create_session(session_id="s1", source="cli")
+        first = self._batch_message(
+            unit="unit-a",
+            key="msg-a",
+            ordinal=0,
+            role="user",
+            content="first",
+            timestamp=301.0,
+        )
+        db.append_messages_batch("s1", [first])
+
+        full_batch = [
+            first,
+            self._batch_message(
+                unit="unit-a",
+                key="msg-b",
+                ordinal=1,
+                role="assistant",
+                content="second",
+                timestamp=302.0,
+            ),
+        ]
+
+        with pytest.raises(hermes_state.AppendMessagesBatchConflictError):
+            db.append_messages_batch("s1", full_batch)
+
+        rows = db.get_messages("s1")
+        assert len(rows) == 1
+        assert rows[0]["content"] == "first"
+        assert db.get_session("s1")["message_count"] == 1
+
+    def test_append_messages_batch_rejects_subset_replay_of_existing_persistence_unit(self, db):
+        db.create_session(session_id="s1", source="cli")
+        full_batch = [
+            self._batch_message(
+                unit="unit-a",
+                key="msg-a",
+                ordinal=0,
+                role="user",
+                content="alpha first",
+                timestamp=351.0,
+            ),
+            self._batch_message(
+                unit="unit-a",
+                key="msg-b",
+                ordinal=1,
+                role="assistant",
+                content="beta second",
+                timestamp=352.0,
+                tool_calls=[{"name": "terminal", "arguments": "{}"}],
+            ),
+            self._batch_message(
+                unit="unit-a",
+                key="msg-c",
+                ordinal=2,
+                role="assistant",
+                content="gamma third",
+                timestamp=353.0,
+            ),
+        ]
+        db.append_messages_batch("s1", full_batch)
+
+        session_before = db.get_session("s1")
+        rows_before = db.get_messages("s1")
+        alpha_before = db.search_messages("alpha")
+        gamma_before = db.search_messages("gamma")
+
+        with pytest.raises(hermes_state.AppendMessagesBatchConflictError):
+            db.append_messages_batch("s1", full_batch[:2])
+
+        session_after = db.get_session("s1")
+        assert session_after["message_count"] == session_before["message_count"] == 3
+        assert session_after["tool_call_count"] == session_before["tool_call_count"] == 1
+        assert db.get_messages("s1") == rows_before
+        assert db.search_messages("alpha") == alpha_before
+        assert db.search_messages("gamma") == gamma_before
+
+    def test_append_messages_batch_rejects_changed_timestamp_for_existing_persistence_message_key(self, db):
+        db.create_session(session_id="s1", source="cli")
+        original = self._batch_message(
+            unit="unit-a",
+            key="msg-a",
+            ordinal=0,
+            role="user",
+            content="stable",
+            timestamp=401.0,
+        )
+        db.append_messages_batch("s1", [original])
+
+        changed = self._batch_message(
+            unit="unit-a",
+            key="msg-a",
+            ordinal=0,
+            role="user",
+            content="stable",
+            timestamp=999.0,
+        )
+
+        with pytest.raises(hermes_state.AppendMessagesBatchConflictError):
+            db.append_messages_batch("s1", [changed])
+
+        rows = db.get_messages("s1")
+        assert len(rows) == 1
+        assert rows[0]["timestamp"] == 401.0
+
+    def test_append_messages_batch_rejects_persistence_unit_ordinal_collision(self, db):
+        db.create_session(session_id="s1", source="cli")
+        original = self._batch_message(
+            unit="unit-a",
+            key="msg-a",
+            ordinal=0,
+            role="user",
+            content="stable",
+            timestamp=501.0,
+        )
+        db.append_messages_batch("s1", [original])
+
+        colliding = self._batch_message(
+            unit="unit-a",
+            key="msg-b",
+            ordinal=0,
+            role="user",
+            content="changed",
+            timestamp=502.0,
+        )
+
+        with pytest.raises(hermes_state.AppendMessagesBatchConflictError):
+            db.append_messages_batch("s1", [colliding])
+
+        rows = db.get_messages("s1")
+        assert len(rows) == 1
+        assert [tuple(row) for row in self._stored_identity_rows(db)] == [
+            ("stable", "unit-a", "msg-a", 0)
+        ]
+
+    def test_append_message_still_writes_null_persistence_message_key(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="legacy row")
+
+        row = db._conn.execute(
+            "SELECT persistence_unit_id, persistence_message_key, persistence_ordinal "
+            "FROM messages WHERE session_id = ?",
+            ("s1",),
+        ).fetchone()
+        assert tuple(row) == (None, None, None)
+
+
+class TestPrivatePersistenceIdentityReadSurfaces:
+    PRIVATE_KEYS = {
+        "persistence_unit_id",
+        "persistence_message_key",
+        "persistence_ordinal",
+    }
+
+    @staticmethod
+    def _seed(db):
+        db.create_session(session_id="s1", source="cli")
+        messages = [
+            TestAppendMessagesBatch._batch_message(
+                unit="unit-a",
+                key=f"msg-{chr(ord('a') + idx)}",
+                ordinal=idx,
+                role="user" if idx % 2 == 0 else "assistant",
+                content=content,
+                timestamp=610.0 + idx,
+            )
+            for idx, content in enumerate(
+                [
+                    "alpha first",
+                    "beta second",
+                    "gamma third",
+                    "delta fourth",
+                    "epsilon fifth",
+                ]
+            )
+        ]
+        db.append_messages_batch("s1", messages)
+        return db._conn.execute(
+            "SELECT id, role, content, persistence_unit_id, persistence_message_key, persistence_ordinal "
+            "FROM messages WHERE session_id = ? ORDER BY id",
+            ("s1",),
+        ).fetchall()
+
+    @classmethod
+    def _assert_private_keys_absent(cls, message):
+        assert cls.PRIVATE_KEYS.isdisjoint(message.keys())
+
+    def test_public_read_surfaces_strip_private_persistence_identity(self, db):
+        stored_rows = self._seed(db)
+        anchor_id = stored_rows[2]["id"]
+
+        messages = db.get_messages("s1")
+        assert [row["content"] for row in messages] == [
+            "alpha first",
+            "beta second",
+            "gamma third",
+            "delta fourth",
+            "epsilon fifth",
+        ]
+        for row in messages:
+            self._assert_private_keys_absent(row)
+
+        around = db.get_messages_around("s1", anchor_id, window=1)
+        assert [row["content"] for row in around["window"]] == [
+            "beta second",
+            "gamma third",
+            "delta fourth",
+        ]
+        for row in around["window"]:
+            self._assert_private_keys_absent(row)
+
+        anchored = db.get_anchored_view("s1", anchor_id, window=0, bookend=1)
+        assert [row["content"] for row in anchored["window"]] == ["gamma third"]
+        assert [row["content"] for row in anchored["bookend_start"]] == ["alpha first"]
+        assert [row["content"] for row in anchored["bookend_end"]] == ["epsilon fifth"]
+        for row in (
+            anchored["window"]
+            + anchored["bookend_start"]
+            + anchored["bookend_end"]
+        ):
+            self._assert_private_keys_absent(row)
+
+        rewind = db.rewind_to_message("s1", anchor_id)
+        assert rewind["target_message"]["content"] == "gamma third"
+        self._assert_private_keys_absent(rewind["target_message"])
+
+    def test_direct_sql_still_exposes_exact_private_persistence_identity(self, db):
+        self._seed(db)
+
+        rows = db._conn.execute(
+            "SELECT persistence_unit_id, persistence_message_key, persistence_ordinal "
+            "FROM messages WHERE session_id = ? ORDER BY id",
+            ("s1",),
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [
+            ("unit-a", "msg-a", 0),
+            ("unit-a", "msg-b", 1),
+            ("unit-a", "msg-c", 2),
+            ("unit-a", "msg-d", 3),
+            ("unit-a", "msg-e", 4),
+        ]
+
+
+# =========================================================================
 # FTS5 search
 # =========================================================================
 

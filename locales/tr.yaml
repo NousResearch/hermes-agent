@@ -1,6 +1,17 @@
 # Hermes statik mesaj katalogu -- Turkce
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+qqbot:
+  owner: "Sahip"
+  administrator: "Yönetici"
+  unknown: "bilinmiyor"
+  attachment_label: "[Ek {index}]"
+  attachment_type: "Tür: {value}"
+  attachment_filename: "Dosya adı: {value}"
+  attachment_dimensions: "Boyutlar: {width}x{height}"
+  attachment_size: "Boyut: {value}"
+  attachment_url: "URL: {value}"
+
 approval:
   dangerous_header: "⚠️  TEHLİKELİ KOMUT: {description}"
   choose_long:     "      [b]ir kez  |  [o]turum  |  [h]er zaman  |  [r]eddet"

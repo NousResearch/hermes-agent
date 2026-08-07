@@ -1,6 +1,17 @@
 # Hermes statiese boodskap-katalogus -- Afrikaans
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+qqbot:
+  owner: "Eienaar"
+  administrator: "Administrateur"
+  unknown: "onbekend"
+  attachment_label: "[Aanhegsel {index}]"
+  attachment_type: "Tipe: {value}"
+  attachment_filename: "Lêernaam: {value}"
+  attachment_dimensions: "Afmetings: {width}x{height}"
+  attachment_size: "Grootte: {value}"
+  attachment_url: "URL: {value}"
+
 approval:
   dangerous_header: "⚠️  GEVAARLIKE OPDRAG: {description}"
   choose_long:     "      [o]eenmalig  |  [s]sessie  |  [a]altyd  |  [d]weier"

@@ -1,6 +1,17 @@
 # Каталог статичних повідомлень Hermes -- Українська
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+qqbot:
+  owner: "Власник"
+  administrator: "Адміністратор"
+  unknown: "невідомо"
+  attachment_label: "[Вкладення {index}]"
+  attachment_type: "Тип: {value}"
+  attachment_filename: "Назва файлу: {value}"
+  attachment_dimensions: "Розміри: {width}x{height}"
+  attachment_size: "Розмір: {value}"
+  attachment_url: "URL: {value}"
+
 approval:
   dangerous_header: "⚠️  НЕБЕЗПЕЧНА КОМАНДА: {description}"
   choose_long:     "      [o]один раз  |  [s]сеанс  |  [a]завжди  |  [d]відхилити"

@@ -1,6 +1,17 @@
 # Hermes-Katalog für statische Meldungen -- Deutsch
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+qqbot:
+  owner: "Inhaber"
+  administrator: "Administrator"
+  unknown: "unbekannt"
+  attachment_label: "[Anhang {index}]"
+  attachment_type: "Typ: {value}"
+  attachment_filename: "Dateiname: {value}"
+  attachment_dimensions: "Abmessungen: {width}x{height}"
+  attachment_size: "Größe: {value}"
+  attachment_url: "URL: {value}"
+
 approval:
   dangerous_header: "⚠️  GEFÄHRLICHER BEFEHL: {description}"
   choose_long:     "      [o]einmal  |  [s]sitzung  |  [a]immer  |  [d]ablehnen"

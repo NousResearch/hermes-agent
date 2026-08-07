@@ -1,6 +1,17 @@
 # Catálogo de mensajes estáticos de Hermes -- Español
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+qqbot:
+  owner: "Propietario"
+  administrator: "Administrador"
+  unknown: "desconocido"
+  attachment_label: "[Adjunto {index}]"
+  attachment_type: "Tipo: {value}"
+  attachment_filename: "Nombre de archivo: {value}"
+  attachment_dimensions: "Dimensiones: {width}x{height}"
+  attachment_size: "Tamaño: {value}"
+  attachment_url: "URL: {value}"
+
 approval:
   dangerous_header: "⚠️  COMANDO PELIGROSO: {description}"
   choose_long:     "      [o]una vez  |  [s]sesión  |  [a]siempre  |  [d]denegar"

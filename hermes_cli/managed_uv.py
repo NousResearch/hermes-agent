@@ -432,6 +432,141 @@ def _make_world_traversable(path: Path) -> None:
         pass
 
 
+def _capture_user_packages(venv_dir: Path) -> list[str]:
+    """Capture user-installed packages from the live venv via pip freeze.
+
+    Returns a list of package specifiers (e.g., 'mnemosyne-memory==3.14.0')
+    that are not part of Hermes' own declared dependencies. These are packages
+    the user installed separately and that should be preserved across a runtime
+    repair.
+    """
+    python = _venv_python(venv_dir)
+    if not python.is_file():
+        return []
+
+    try:
+        result = subprocess.run(
+            [str(python), "-m", "pip", "freeze"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            logger.warning("pip freeze failed (rc=%d): %s", result.returncode, result.stderr.strip())
+            return []
+
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        # Filter out Hermes' own declared dependencies (from pyproject.toml/uv.lock)
+        # and editable installs of hermes-agent itself. We keep everything else.
+        hermes_own = {
+            "hermes-agent",
+            "hermes-constants",
+            "hermes-state",
+            "mnemosyne",
+            "mnemosyne-memory",
+            "mnemosyne-hermes",
+        }
+        user_packages = []
+        for line in lines:
+            # Skip editable installs (-e ...) entirely — these are typically
+            # hermes-agent itself or local dev installs that uv sync will
+            # re-establish from the lock file.  Also skip lines that don't
+            # look like a normal pin (e.g. "-e git+...#egg=hermes_agent").
+            if line.startswith("-e ") or line.startswith("-e\t"):
+                continue
+            # Extract package name from specifier.  Handle normal pins
+            # (foo==1.0), version ranges (foo>=1.0), URL installs
+            # (foo @ https://...), and editable VCS lines we didn't skip
+            # above.  Also strip any fragment (e.g. "#egg=...").
+            name_part = line.split("#")[0]
+            pkg_name = (
+                name_part
+                .split("==")[0]
+                .split(">=")[0]
+                .split("<=")[0]
+                .split("~=")[0]
+                .split(" @ ")[0]
+                .split("@")[0]
+                .strip()
+                .lower()
+                .replace("_", "-")
+            )
+            if pkg_name and pkg_name not in hermes_own:
+                user_packages.append(line)
+
+        if user_packages:
+            logger.info("Captured %d user-installed packages for preservation: %s", len(user_packages), ", ".join(user_packages))
+        return user_packages
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Failed to capture user packages: %s", exc)
+        return []
+
+
+def _restore_user_packages(uv_bin: str, venv_dir: Path, packages: list[str]) -> bool:
+    """Reinstall user-captured packages into the new venv.
+
+    Returns True if all packages installed successfully, False otherwise.
+    """
+    if not packages:
+        return True
+
+    python = _venv_python(venv_dir)
+    if not python.is_file():
+        logger.error("Cannot restore user packages: new venv python not found at %s", python)
+        return False
+
+    print(f"  → Restoring {len(packages)} user-installed package(s)...")
+    try:
+        # Use uv pip install for speed and consistency with the rest of the flow
+        env = dict(os.environ)
+        for key in (
+            "CONDA_DEFAULT_ENV",
+            "CONDA_PREFIX",
+            "UV_PROJECT_ENVIRONMENT",
+            "UV_NO_MANAGED_PYTHON",
+            "UV_PYTHON",
+            "UV_PYTHON_DOWNLOADS",
+            "UV_SYSTEM_PYTHON",
+            "VIRTUAL_ENV",
+            "PYTHONHOME",
+            "PYTHONPATH",
+        ):
+            env.pop(key, None)
+        env.update({
+            "UV_PROJECT_ENVIRONMENT": str(venv_dir),
+            "UV_PYTHON": str(python),
+            "UV_PYTHON_DOWNLOADS": "never",
+            "VIRTUAL_ENV": str(venv_dir),
+            "UV_NO_CONFIG": "1",
+        })
+
+        result = subprocess.run(
+            [uv_bin, "pip", "install", "--python", str(python)] + packages,
+            cwd=venv_dir.parent,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            logger.warning("Failed to restore some user packages: %s", result.stderr.strip())
+            print(f"  ⚠ Some user packages failed to restore: {result.stderr.strip().splitlines()[-1] if result.stderr else 'unknown error'}")
+            return False
+
+        print(f"  ✓ Restored {len(packages)} user-installed package(s)")
+        return True
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Failed to restore user packages: %s", exc)
+        print(f"  ⚠ Failed to restore user packages: {exc}")
+        return False
+
+
 def _runtime_request(info: SQLiteRuntimeInfo) -> str:
     """Pin the candidate to the current CPython minor line (e.g. ``3.11``).
 
@@ -1129,6 +1264,10 @@ def repair_vulnerable_runtime(
     runtime_root = root / _RUNTIME_DIR_NAME
     lock = _acquire_repair_lock(runtime_root)
     if lock is None:
+        # Capture user packages even when we can't acquire lock (deferred repair)
+        user_packages = _capture_user_packages(live)
+        if user_packages:
+            logger.info("Captured %d user packages for deferred repair", len(user_packages))
         detail = "another runtime repair is already in progress"
         print(f"  ⚠ SQLite runtime repair deferred: {detail}")
         return RuntimeRepairResult(
@@ -1197,6 +1336,11 @@ def repair_vulnerable_runtime(
                 sqlite_after=candidate_info.sqlite_version_string,
             )
 
+        # Capture user-installed packages BEFORE the venv is rebuilt, so they
+        # can be restored into the fresh venv after cutover. After cutover,
+        # ``live`` points to the new venv which no longer has them.
+        user_packages = _capture_user_packages(live)
+
         cut_over, backup, final_info, cutover_detail = _cut_over_candidate(
             candidate,
             project_root=root,
@@ -1221,6 +1365,11 @@ def repair_vulnerable_runtime(
             if final_info is not None
             else candidate_info.sqlite_version_string
         )
+
+        # Restore user-captured packages into the fresh venv after cutover
+        if user_packages:
+            _restore_user_packages(uv_bin, live, user_packages)
+
         print(
             "  ✓ Managed Python runtime repaired "
             f"(SQLite {current.sqlite_version_string} → {final_version})"

@@ -742,6 +742,46 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let mobileInputCleanup: (() => void) | null = null;
     term.open(host);
 
+    // Composed input (dead keys / IME) cannot be trusted to arrive through
+    // xterm.js's own onData: its CompositionHelper flushes the hidden
+    // textarea on `compositionend` via a deferred `textarea.value` read,
+    // which browsers with dead-key layouts (e.g. German umlauts on Firefox)
+    // clear before the flush runs — so the composed character is silently
+    // dropped. We deliver the composed text ourselves on `compositionend`,
+    // but only when xterm.js delivered nothing during the composition.
+    let composing = false;
+    let compositionCharsDelivered = 0;
+
+    // Shared input path for both xterm's onData and the IME/dead-key
+    // fallback. Mirrors the pre-existing onData body: gate on PTY state and
+    // normalize mobile replacement input before sending over the socket.
+    const deliverPtyInput = (data: string) => {
+      const socket = wsRef.current;
+      if (
+        !socket ||
+        socket.readyState !== WebSocket.OPEN ||
+        shouldBlockPtyInput(ptyStateRef.current)
+      ) {
+        if (!blockedInputNoticeRef.current) {
+          blockedInputNoticeRef.current = true;
+          term.write(
+            `\r\n\x1b[33m[${PTY_RECONNECT_INPUT_MESSAGE}]\x1b[0m\r\n`,
+          );
+        }
+        return;
+      }
+      const normalized = normalizePtyMobileInput(
+        data,
+        ptyInputLineRef.current,
+        Date.now() <= mobileReplacementInputUntilRef.current,
+      );
+      ptyInputLineRef.current = normalized.nextLine;
+      if (normalized.normalized) {
+        mobileReplacementInputUntilRef.current = 0;
+      }
+      socket.send(normalized.data);
+    };
+
     const textarea = term.textarea;
     if (textarea) {
       textarea.setAttribute("autocomplete", "off");
@@ -764,15 +804,36 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
         }
       };
-      const markCompositionEnd = () => {
+      const handleCompositionStart = () => {
+        composing = true;
+        compositionCharsDelivered = 0;
+      };
+      const handleCompositionEnd = (ev: CompositionEvent) => {
         mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
+        composing = false;
+        // xterm.js flushes composition via a deferred `textarea.value` read
+        // (setTimeout(0)) that is unreliable for dead keys — Firefox clears
+        // the textarea before `compositionend`, so the flush sends nothing.
+        // Fall back to the browser-provided composed text, but only if
+        // xterm.js delivered nothing during the composition (avoids
+        // double-sending on browsers where the flush works).
+        const composed = ev.data ?? "";
+        if (composed) {
+          setTimeout(() => {
+            if (compositionCharsDelivered === 0) {
+              deliverPtyInput(composed);
+            }
+          }, 0);
+        }
       };
 
       textarea.addEventListener("beforeinput", markReplacementInput, true);
-      textarea.addEventListener("compositionend", markCompositionEnd, true);
+      textarea.addEventListener("compositionstart", handleCompositionStart, true);
+      textarea.addEventListener("compositionend", handleCompositionEnd, true);
       mobileInputCleanup = () => {
         textarea.removeEventListener("beforeinput", markReplacementInput, true);
-        textarea.removeEventListener("compositionend", markCompositionEnd, true);
+        textarea.removeEventListener("compositionstart", handleCompositionStart, true);
+        textarea.removeEventListener("compositionend", handleCompositionEnd, true);
       };
     }
 
@@ -1191,29 +1252,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           return;
         }
 
-        if (
-          ws.readyState !== WebSocket.OPEN ||
-          shouldBlockPtyInput(ptyStateRef.current)
-        ) {
-          if (!blockedInputNoticeRef.current) {
-            blockedInputNoticeRef.current = true;
-            term.write(
-              `\r\n\x1b[33m[${PTY_RECONNECT_INPUT_MESSAGE}]\x1b[0m\r\n`,
-            );
-          }
-          return;
+        // Track how much of a composition xterm.js delivered on its own; the
+        // `compositionend` fallback only fires when this stays 0. Control
+        // bytes (e.g. DEL from an IME backspace) don't count as delivered
+        // composition text.
+        // eslint-disable-next-line no-control-regex -- intentional control-byte test
+        if (composing && !/[\x00-\x1f\x7f]/.test(data)) {
+          compositionCharsDelivered += data.length;
         }
 
-        const normalized = normalizePtyMobileInput(
-          data,
-          ptyInputLineRef.current,
-          Date.now() <= mobileReplacementInputUntilRef.current,
-        );
-        ptyInputLineRef.current = normalized.nextLine;
-        if (normalized.normalized) {
-          mobileReplacementInputUntilRef.current = 0;
-        }
-        ws.send(normalized.data);
+        deliverPtyInput(data);
       });
 
       onResizeDisposable = term.onResize(({ cols, rows }) => {

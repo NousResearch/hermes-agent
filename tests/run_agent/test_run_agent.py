@@ -6170,6 +6170,39 @@ class TestSupportsReasoningExtraBody:
             agent.model = model
             assert agent._supports_reasoning_extra_body() is True, model
 
+    def test_custom_provider_known_reasoning_model(self):
+        """Custom provider + known reasoning model prefix → True."""
+        agent = self._make_agent()
+        agent.base_url = "https://my-custom-provider.example.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "deepseek/deepseek-chat"
+        assert agent._supports_reasoning_extra_body() is True
+
+    def test_custom_provider_unknown_model_reasoning_config_enabled(self):
+        """Custom provider + unknown model + reasoning_config enabled=True → True."""
+        agent = self._make_agent()
+        agent.base_url = "https://my-custom-provider.example.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "some-unknown-model"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        assert agent._supports_reasoning_extra_body() is True
+
+    def test_custom_provider_unknown_model_no_reasoning_config(self):
+        """Custom provider + unknown model + no reasoning_config → False."""
+        agent = self._make_agent()
+        agent.base_url = "https://my-custom-provider.example.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "some-unknown-model"
+        assert agent._supports_reasoning_extra_body() is False
+
+    def test_mistral_known_model_rejected(self):
+        """Mistral + known reasoning model → False (Mistral rejects unknown fields)."""
+        agent = self._make_agent()
+        agent.base_url = "https://api.mistral.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "deepseek/deepseek-chat"
+        assert agent._supports_reasoning_extra_body() is False
+
 
 class TestMemoryContextSanitization:
     """sanitize_context() helper correctness — used at provider boundaries."""

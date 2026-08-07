@@ -7039,12 +7039,16 @@ class AIAgent:
 
         OpenRouter forwards unknown extra_body fields to upstream providers.
         Some providers/routes reject `reasoning` with 400s, so gate it to
-        known reasoning-capable model families and direct Nous Portal.
+        known reasoning-capable model families, explicit user opt-in via
+        reasoning_config, and direct Nous Portal.
         """
+        # 1. Direct Nous Portal — always supports reasoning.
         if base_url_host_matches(self._base_url_lower, "nousresearch.com"):
             return True
         if base_url_host_matches(self._base_url_lower, "ai-gateway.vercel.sh"):
             return True
+
+        # 2. GitHub Models — check known reasoning-capable model list.
         if (
             base_url_host_matches(self._base_url_lower, "models.github.ai")
             or base_url_host_matches(self._base_url_lower, "githubcopilot.com")
@@ -7055,21 +7059,25 @@ class AIAgent:
                 return bool(github_model_reasoning_efforts(self.model))
             except Exception:
                 return False
+
+        # 3. LM Studio — check published reasoning allowed_options.
         if (self.provider or "").strip().lower() == "lmstudio":
             opts = self._lmstudio_reasoning_options_cached()
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in opts)
-        # Ollama Cloud (and any Ollama-compatible server): the native
-        # /api/show capabilities list is authoritative — emit reasoning_effort
-        # only for models that declare the "thinking" capability. deepseek-v4
-        # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
+
+        # 4. Ollama Cloud (and any Ollama-compatible server): the native
+        #    /api/show capabilities list is authoritative — emit reasoning_effort
+        #    only for models that declare the "thinking" capability.
         if base_url_host_matches(self._base_url_lower, "ollama.com"):
             return self._ollama_supports_thinking_cached()
-        if "openrouter" not in self._base_url_lower:
-            return False
+
+        # 5. Mistral API — explicitly reject reasoning extra_body (Mistral
+        #    rejects unknown fields with 400s, even for known reasoning models).
         if "api.mistral.ai" in self._base_url_lower:
             return False
 
+        # 6. Known reasoning model prefix — safe to emit for any provider.
         model = (self.model or "").lower()
         reasoning_model_prefixes = (
             "deepseek/",
@@ -7082,7 +7090,24 @@ class AIAgent:
             "tencent/hy3",
             "xiaomi/",
         )
-        return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
+        if any(model.startswith(prefix) for prefix in reasoning_model_prefixes):
+            return True
+
+        # 7. User explicitly opted into reasoning via reasoning_config — honour
+        #    this even for custom providers with unknown model names.
+        reasoning_config = getattr(self, "reasoning_config", None)
+        if reasoning_config and isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is True:
+                return True
+
+        # 8. Unknown models without reasoning_config on non-OpenRouter
+        #    providers — stay safe and don't emit reasoning extra_body.
+        if "openrouter" not in self._base_url_lower:
+            return False
+
+        # 9. Everything else (unknown model on OpenRouter without explicit
+        #    reasoning_config) — safe default: don't emit.
+        return False
 
     def _lmstudio_reasoning_options_cached(self) -> list[str]:
         """Probe LM Studio's published reasoning ``allowed_options`` once per

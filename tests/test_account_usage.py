@@ -95,6 +95,41 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_anthropic_treats_utilization_as_percent(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token",
+        lambda: "oauth-access-token",
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._is_oauth_token",
+        lambda token: True,
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "five_hour": {"utilization": 1.0, "resets_at": 1_900_000_000},
+                "seven_day": {"utilization": 55.0, "resets_at": 1_900_500_000},
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert snapshot.provider == "anthropic"
+    assert len(snapshot.windows) == 2
+    # The OAuth usage API already reports utilization as a percentage:
+    # 1.0 == 1% used (NOT a 0-1 fraction to be scaled to 100%).
+    assert snapshot.windows[0].label == "Current session"
+    assert snapshot.windows[0].used_percent == 1.0
+    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
+    assert snapshot.windows[1].label == "Current week"
+    assert snapshot.windows[1].used_percent == 55.0
+    lines = render_account_usage_lines(snapshot)
+    assert any("Current session: 99% remaining (1% used)" in line for line in lines)
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

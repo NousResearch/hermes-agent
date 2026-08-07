@@ -2635,7 +2635,9 @@ class MCPServerTask:
             # If any of the spawned PIDs are still alive, the SDK's
             # teardown failed (common when the task is cancelled mid-way
             # on Linux, where setsid() children escape the parent cgroup).
-            # Mark them as orphans so the next cleanup sweep can reap them.
+            # Mark them as orphans and reap them immediately so they cannot
+            # hold resource locks (e.g. PGLite single-writer) that block
+            # subsequent reconnect attempts (#72887).
             if new_pids:
                 from gateway.status import _pid_exists
                 _killpg = getattr(os, "killpg", None)
@@ -2665,6 +2667,20 @@ class MCPServerTask:
                             # Nothing left to reap — drop the pgid entry so
                             # PID-reuse can't surface stale pgroup state later.
                             _stdio_pgids.pop(pid, None)
+                # Reap orphans immediately instead of deferring to the next
+                # _run_stdio call.  An orphaned child that holds an exclusive
+                # resource lock (e.g. PGLite's single-writer lock) will cause
+                # every subsequent reconnect to fail with "resource busy",
+                # producing a permanent "connecting" loop (#72887).
+                try:
+                    await asyncio.to_thread(
+                        _kill_orphaned_mcp_children,
+                        server_name=self.name,
+                    )
+                except (asyncio.CancelledError, Exception):
+                    # Best-effort: the thread still runs to completion even
+                    # if the await is cancelled.
+                    pass
 
     # Content types a real MCP Streamable-HTTP endpoint may return on the
     # initial POST/GET. Anything else on a 2xx response means the URL is not

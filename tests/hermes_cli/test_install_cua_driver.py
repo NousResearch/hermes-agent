@@ -71,6 +71,170 @@ class TestInstallCuaDriverUpgrade:
             assert tools_config.install_cua_driver(upgrade=True) is True
             runner.assert_called_once()
 
+    def test_successful_macos_upgrade_restores_previously_running_daemon(self):
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        binary = "/usr/local/bin/cua-driver"
+        status_results = iter([0, 1, 0])
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd == [binary, "status"]:
+                # Running before the installer, stopped after it, then restored.
+                return MagicMock(returncode=next(status_results))
+            if cmd == [binary, "--version"]:
+                return MagicMock(returncode=0, stdout="cua-driver 0.14.2")
+            if cmd[0] == "/usr/bin/open":
+                return MagicMock(returncode=0)
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config, "_resolved_cua_driver_cmd", return_value=binary), \
+             patch.object(tools_config.shutil, "which", return_value="/usr/bin/curl"), \
+             patch("tools.computer_use.cua_backend.cua_driver_update_check",
+                   return_value=None), \
+             patch.object(tools_config, "_run_cua_driver_installer", return_value=True), \
+             patch.object(tools_config.subprocess, "run", side_effect=run), \
+             patch.object(tools_config, "_print_warning"):
+            assert tools_config.install_cua_driver(upgrade=True) is True
+
+        assert [binary, "status"] == calls[0]
+        assert [
+            "/usr/bin/open", "-n", "-g", "-a", "/Applications/CuaDriver.app",
+            "--args", "serve",
+        ] in calls
+        assert calls.count([binary, "status"]) == 3
+
+    def test_macos_upgrade_does_not_duplicate_daemon_if_installer_restores_it(self):
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        binary = "/usr/local/bin/cua-driver"
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd == [binary, "status"]:
+                return MagicMock(returncode=0)
+            if cmd == [binary, "--version"]:
+                return MagicMock(returncode=0, stdout="cua-driver 0.14.2")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config, "_resolved_cua_driver_cmd", return_value=binary), \
+             patch.object(tools_config.shutil, "which", return_value="/usr/bin/curl"), \
+             patch("tools.computer_use.cua_backend.cua_driver_update_check",
+                   return_value=None), \
+             patch.object(tools_config, "_run_cua_driver_installer", return_value=True), \
+             patch.object(tools_config.subprocess, "run", side_effect=run):
+            assert tools_config.install_cua_driver(upgrade=True) is True
+
+        assert calls.count([binary, "status"]) == 2
+        assert not any(cmd[0] == "/usr/bin/open" for cmd in calls)
+
+    def test_macos_daemon_restore_scrubs_hermes_secrets_from_children(self):
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        binary = "/usr/local/bin/cua-driver"
+        status_results = iter([1, 0])
+        child_envs = []
+
+        def run(cmd, **kwargs):
+            child_envs.append(kwargs["env"])
+            if cmd == [binary, "status"]:
+                return MagicMock(returncode=next(status_results))
+            if cmd[0] == "/usr/bin/open":
+                return MagicMock(returncode=0)
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with patch.object(
+            tools_config,
+            "_cua_driver_env",
+            return_value={"PATH": "/usr/bin", "GITHUB_TOKEN": "not-a-real-token"},
+        ), patch.object(tools_config.subprocess, "run", side_effect=run):
+            tools_config._restore_macos_cua_daemon(binary)
+
+        assert child_envs
+        assert all(env.get("PATH") == "/usr/bin" for env in child_envs)
+        assert all("GITHUB_TOKEN" not in env for env in child_envs)
+
+    @pytest.mark.parametrize(
+        ("system", "status_returncode", "installer_ok"),
+        [
+            ("Darwin", 1, True),
+            ("Darwin", 0, False),
+            ("Linux", 0, True),
+        ],
+    )
+    def test_upgrade_does_not_force_start_without_full_restore_contract(
+        self, system, status_returncode, installer_ok
+    ):
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        binary = "/usr/local/bin/cua-driver"
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd == [binary, "status"]:
+                return MagicMock(returncode=status_returncode)
+            if cmd == [binary, "--version"]:
+                return MagicMock(returncode=0, stdout="cua-driver 0.14.2")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with patch("platform.system", return_value=system), \
+             patch.object(tools_config, "_resolved_cua_driver_cmd", return_value=binary), \
+             patch.object(tools_config.shutil, "which", return_value="/usr/bin/curl"), \
+             patch("tools.computer_use.cua_backend.cua_driver_update_check",
+                   return_value=None), \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=installer_ok), \
+             patch.object(tools_config.subprocess, "run", side_effect=run):
+            assert tools_config.install_cua_driver(upgrade=True) is installer_ok
+
+        assert not any(cmd[0] == "/usr/bin/open" for cmd in calls)
+        if system != "Darwin":
+            assert [binary, "status"] not in calls
+
+    def test_restore_failure_warns_without_failing_successful_upgrade(self):
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        binary = "/usr/local/bin/cua-driver"
+
+        status_results = iter([0, 1])
+
+        def run(cmd, **kwargs):
+            if cmd == [binary, "status"]:
+                return MagicMock(returncode=next(status_results))
+            if cmd == [binary, "--version"]:
+                return MagicMock(returncode=0, stdout="cua-driver 0.14.2")
+            if cmd[0] == "/usr/bin/open":
+                return MagicMock(returncode=1, stderr="launch failed")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config, "_resolved_cua_driver_cmd", return_value=binary), \
+             patch.object(tools_config.shutil, "which", return_value="/usr/bin/curl"), \
+             patch("tools.computer_use.cua_backend.cua_driver_update_check",
+                   return_value=None), \
+             patch.object(tools_config, "_run_cua_driver_installer", return_value=True), \
+             patch.object(tools_config.subprocess, "run", side_effect=run), \
+             patch.object(tools_config, "_print_warning") as warning:
+            assert tools_config.install_cua_driver(upgrade=True) is True
+
+        assert any("could not be restored" in call.args[0]
+                   for call in warning.call_args_list)
+
     def test_quiet_refresh_prints_single_contextual_progress_line(self):
         import subprocess
         from unittest.mock import MagicMock

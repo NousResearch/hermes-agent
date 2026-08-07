@@ -905,6 +905,65 @@ def _cua_install_target_writable() -> bool:
         return True
 
 
+def _cua_driver_subprocess_env() -> dict:
+    """Return a cua-driver environment with Hermes-managed secrets removed."""
+    from tools.environments.local import _sanitize_subprocess_env
+
+    return _sanitize_subprocess_env(_cua_driver_env())
+
+
+def _cua_daemon_is_running(binary: str) -> bool:
+    """Best-effort daemon status probe using the pre-update binary."""
+    try:
+        return subprocess.run(
+            [binary, "status"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=2, env=_cua_driver_subprocess_env(),
+            creationflags=_post_setup_no_window_flags(),
+        ).returncode == 0
+    except Exception:
+        return False
+
+
+def _restore_macos_cua_daemon(binary: str) -> None:
+    """Ask LaunchServices to restore a daemon stopped by an app upgrade."""
+    import time
+
+    # The upstream installer may eventually learn to restart the daemon itself.
+    # Avoid forcing a second app instance if it already did so.
+    if _cua_daemon_is_running(binary):
+        return
+
+    try:
+        launched = subprocess.run(
+            [
+                "/usr/bin/open", "-n", "-g", "-a",
+                "/Applications/CuaDriver.app", "--args", "serve",
+            ],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5, env=_cua_driver_subprocess_env(),
+            creationflags=_post_setup_no_window_flags(),
+        )
+        if launched.returncode != 0:
+            raise RuntimeError(launched.stderr.strip() or "LaunchServices request failed")
+
+        # LaunchServices cold starts can include signature verification and take
+        # several seconds. Poll against a deadline so fast failures do not turn
+        # this into the sub-second window produced by a fixed small attempt count.
+        deadline = time.monotonic() + 10.0
+        while True:
+            if _cua_daemon_is_running(binary):
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.5, remaining))
+    except Exception as exc:
+        _print_warning(f"    cua-driver updated, but its daemon could not be restored: {exc}")
+        return
+    _print_warning("    cua-driver updated, but its daemon did not restart in time.")
+
+
 def install_cua_driver(
     upgrade: bool = False,
     require_confirmed_update: bool = False,
@@ -1072,6 +1131,10 @@ def install_cua_driver(
             if _re.fullmatch(r"\d+(\.\d+)*", _latest):
                 confirmed_version = _latest
 
+    daemon_was_running = (
+        system == "Darwin" and bool(binary) and _cua_daemon_is_running(binary)
+    )
+
     if binary:
         # Show before/after version when we have a baseline. Best-effort.
         try:
@@ -1091,6 +1154,8 @@ def install_cua_driver(
         pin_version=confirmed_version,
         show_progress=show_installer_progress,
     )
+    if ok and daemon_was_running and binary:
+        _restore_macos_cua_daemon(binary)
     if ok and before:
         try:
             after = subprocess.run(

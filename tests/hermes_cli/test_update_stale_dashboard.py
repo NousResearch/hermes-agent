@@ -62,7 +62,12 @@ def _refresh_bindings_against_live_module():
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
     _restart_managed_dashboard_service = live._restart_managed_dashboard_service
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
-    yield
+    with patch(
+        "hermes_cli.gateway._pid_in_current_namespace",
+        return_value=True,
+        create=True,
+    ):
+        yield
 
 
 def _ps_line(pid: int, cmd: str) -> str:
@@ -90,6 +95,23 @@ class TestFindStaleDashboardPids:
     """Unit tests for the ps/wmic-based detection step."""
 
 
+
+    def test_foreign_pid_namespace_dashboard_is_ignored(self):
+        """A PVE update must not stop a dashboard running inside an LXC."""
+        with patch("subprocess.run") as mock_run, patch(
+            "hermes_cli.gateway._pid_in_current_namespace",
+            side_effect=lambda pid: pid == 12345,
+            create=True,
+        ):
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(12345, "hermes dashboard --port 9119"),
+                    _ps_line(23456, "hermes dashboard --port 9122"),
+                ]) + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [12345]
 
     def test_self_pid_excluded(self):
         with patch("subprocess.run") as mock_run:

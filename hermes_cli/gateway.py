@@ -354,6 +354,31 @@ def _append_unique_pid(
     pids.append(pid)
 
 
+def _pid_in_current_namespace(pid: int) -> bool:
+    """Return whether *pid* shares this process's Linux PID namespace.
+
+    A Linux host can see processes running inside LXC containers in its global
+    ``/proc`` tree. A host-side ``hermes update`` must not classify those guest
+    gateways as local manual gateways and signal them.
+
+    Non-Linux platforms retain the existing process-scan behavior. If the
+    caller's namespace cannot be inspected, also retain legacy behavior; if
+    only the target cannot be inspected, skip it because it either exited or
+    is outside our authority.
+    """
+    if not sys.platform.startswith("linux"):
+        return True
+    try:
+        current_namespace = os.stat("/proc/self/ns/pid").st_ino
+    except OSError:
+        return True
+    try:
+        target_namespace = os.stat(f"/proc/{pid}/ns/pid").st_ino
+    except OSError:
+        return False
+    return target_namespace == current_namespace
+
+
 def _scan_gateway_pids(
     exclude_pids: set[int],
     all_profiles: bool = False,
@@ -507,6 +532,8 @@ def _scan_gateway_pids(
                         pid = int(entry)
                         if pid == my_pid or pid in exclude_pids:
                             continue
+                        if not _pid_in_current_namespace(pid):
+                            continue
                         try:
                             with open(f"/proc/{pid}/cmdline", "rb") as _f:
                                 cmdline = _f.read().decode("utf-8", errors="replace")
@@ -553,6 +580,8 @@ def _scan_gateway_pids(
                             command = " ".join(aux_parts[10:])
 
                     if pid is None:
+                        continue
+                    if not _pid_in_current_namespace(pid):
                         continue
                     if _matches_gateway_runtime(command) and (
                         all_profiles or _matches_current_profile(command)

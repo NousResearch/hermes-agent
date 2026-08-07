@@ -114,6 +114,8 @@ def _scan_dashboard_processes(
             # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
             # greedy regex matching unrelated cmdlines that merely contain
             # both words (e.g. a chat session discussing "dashboard").
+            from hermes_cli.gateway import _pid_in_current_namespace
+
             result = subprocess.run(
                 ["ps", "-A", "-o", "pid=,command="],
                 capture_output=True,
@@ -133,7 +135,11 @@ def _scan_dashboard_processes(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if (
+                        any(p in command for p in patterns)
+                        and pid != self_pid
+                        and _pid_in_current_namespace(pid)
+                    ):
                         dashboard_processes.append((pid, command))
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

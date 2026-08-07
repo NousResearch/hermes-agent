@@ -44,7 +44,7 @@ from agent.turn_context import (
     compose_user_api_content,
     reanchor_current_turn_user_idx,
 )
-from agent.turn_retry_state import TurnRetryState
+from agent.turn_retry_state import ZERO_DELIVERY_STREAM_TIMEOUT_ATTR, TurnRetryState
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
@@ -5489,6 +5489,16 @@ def run_conversation(
                         "error": _nonretryable_summary,
                     }
 
+                # The streaming layer identified a timeout before any response
+                # data arrived. Skip the duplicate outer backoff cycle, but
+                # keep the normal primary-transport rebuild and configured
+                # fallback pipeline.
+                _zero_delivery_stream_timeout = bool(
+                    getattr(api_error, ZERO_DELIVERY_STREAM_TIMEOUT_ATTR, False)
+                )
+                if _zero_delivery_stream_timeout:
+                    retry_count = max_retries
+
                 if retry_count >= max_retries:
                     # Before falling back, try rebuilding the primary
                     # client once for transient transport errors (stale
@@ -5509,7 +5519,15 @@ def run_conversation(
                         continue
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
-                        agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+                        if _zero_delivery_stream_timeout:
+                            agent._buffer_status(
+                                "⚠️ Provider timed out before delivering any response "
+                                "— trying fallback..."
+                            )
+                        else:
+                            agent._buffer_status(
+                                f"⚠️ Max retries ({max_retries}) exhausted — trying fallback..."
+                            )
                     if agent._try_activate_fallback():
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
@@ -5538,9 +5556,24 @@ def run_conversation(
                         )
                     elif is_rate_limited:
                         agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
+                    elif _zero_delivery_stream_timeout:
+                        agent._emit_status(
+                            "❌ Provider timed out before delivering any response after the "
+                            "available recovery options were exhausted."
+                        )
                     else:
                         agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
                     agent._vprint(f"{agent.log_prefix}   💀 Final error: {_final_summary}", force=True)
+
+                    if _zero_delivery_stream_timeout:
+                        agent._vprint(
+                            f"{agent.log_prefix}   💡 The request payload may be too large "
+                            f"for this provider. Try setting "
+                            f"`providers.{_provider}.request_timeout_seconds` in "
+                            f"~/.hermes/config.yaml, reducing the enabled toolset, or "
+                            f"configuring a different fallback provider.",
+                            force=True,
+                        )
 
                     # Detect SSE stream-drop pattern (e.g. "Network
                     # connection lost") and surface actionable guidance.
@@ -5630,14 +5663,28 @@ def run_conversation(
                             force=True,
                         )
 
-                    logger.error(
-                        "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
-                        agent.log_prefix, max_retries, _final_summary,
-                        _provider, _model, len(api_messages), f"{approx_tokens:,}",
-                    )
+                    if _zero_delivery_stream_timeout:
+                        logger.error(
+                            "%sAPI call failed: zero-delivery stream timeout recovery exhausted. "
+                            "%s | provider=%s model=%s msgs=%s tokens=~%s",
+                            agent.log_prefix, _final_summary,
+                            _provider, _model, len(api_messages), f"{approx_tokens:,}",
+                        )
+                    else:
+                        logger.error(
+                            "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
+                            agent.log_prefix, max_retries, _final_summary,
+                            _provider, _model, len(api_messages), f"{approx_tokens:,}",
+                        )
                     if api_kwargs is not None:
                         agent._dump_api_request_debug(
-                            api_kwargs, reason="max_retries_exhausted", error=api_error,
+                            api_kwargs,
+                            reason=(
+                                "zero_delivery_stream_timeout"
+                                if _zero_delivery_stream_timeout
+                                else "max_retries_exhausted"
+                            ),
+                            error=api_error,
                         )
                     agent._persist_session(messages, conversation_history)
                     _billing_block = None
@@ -5648,6 +5695,12 @@ def run_conversation(
                         # Structured recovery descriptor so every surface renders
                         # the same link + label from one signal (see helper).
                         _billing_block = _billing_block_dict(_provider, _base, _model, _billing_guidance)
+                    elif _zero_delivery_stream_timeout:
+                        _final_response = (
+                            "Provider timed out before delivering any response after "
+                            "the available recovery options were exhausted. "
+                            "The request payload may be too large for this provider."
+                        )
                     else:
                         _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
                     if _is_thinking_timeout:

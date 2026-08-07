@@ -29,6 +29,9 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 
 
+ZERO_DELIVERY_STREAM_TIMEOUT_ATTR = "hermes_zero_delivery_stream_timeout"
+
+
 @dataclass
 class TurnRetryState:
     """One-shot recovery guards + restart signals for a single API-call attempt.

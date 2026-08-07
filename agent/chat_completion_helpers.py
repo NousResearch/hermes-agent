@@ -41,11 +41,25 @@ from agent.message_sanitization import (
 )
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.turn_retry_state import ZERO_DELIVERY_STREAM_TIMEOUT_ATTR
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
+
+
+def _is_stream_timeout(error: BaseException) -> bool:
+    """Use one timeout classifier for stream retries and outer-loop routing."""
+    import httpx
+
+    return (
+        any(cls.__name__ == "APITimeoutError" for cls in type(error).__mro__)
+        or isinstance(
+            error,
+            (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout),
+        )
+    )
 
 # When the fallback chain is fully exhausted on a non-rate-limit failure
 # (e.g. every provider returns a non-retryable client error like HTTP 400),
@@ -3083,6 +3097,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     first_delta_fired = {"done": False}
     deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
     provider_tool_in_flight = {"yes": False}
+    response_progress_seen = {"yes": False}
     # Wall-clock timestamp of the last real streaming chunk.  The outer
     # poll loop uses this to detect stale connections that keep receiving
     # SSE keep-alive pings but no actual data.
@@ -3124,6 +3139,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             stream_attempt_state["current"] += 1
             attempt_id = int(stream_attempt_state["current"])
         provider_tool_in_flight["yes"] = False
+        response_progress_seen["yes"] = False
         return attempt_id
 
     def _cancel_current_stream_attempt(reason: str) -> None:
@@ -3416,6 +3432,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _discard_stale_stream_chunk(stream_attempt_id, chunk)
                 continue
 
+            response_progress_seen["yes"] = True
+
             if not chunk.choices:
                 if hasattr(chunk, "model") and chunk.model:
                     model_name = chunk.model
@@ -3442,6 +3460,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 reasoning_parts.append(reasoning_text)
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
+                deltas_were_sent["yes"] = True
 
             # Accumulate text content — fire callback only when no tool calls
             if delta and delta.content:
@@ -3839,6 +3858,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         try:
             for event in stream:
                 saw_stream_event = True
+                response_progress_seen["yes"] = True
                 last_chunk_time["t"] = time.time()
                 agent._touch_activity("receiving stream response")
                 try:
@@ -3875,6 +3895,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             if thinking_text:
                                 _fire_first_delta()
                                 agent._fire_reasoning_delta(thinking_text)
+                                deltas_were_sent["yes"] = True
             if not agent._interrupt_requested:
                 raw_stream = _stream_context["stream"]
                 if raw_stream is not None:
@@ -4008,14 +4029,26 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             type(e).__name__,
                         )
                         return
-                    _is_timeout = isinstance(
-                        e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
-                    )
+                    _is_timeout = _is_stream_timeout(e)
                     _is_conn_err = isinstance(
                         e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError)
                     )
                     _is_stream_parse_err = agent._is_provider_stream_parse_error(e)
                     _is_empty_stream = isinstance(e, EmptyStreamError)
+
+                    # A timeout before the first response event is escalated
+                    # immediately to the outer recovery pipeline. Retrying the
+                    # identical payload in both this loop and the outer loop
+                    # multiplies long provider timeouts. The marker lets the
+                    # outer loop preserve one primary transport rebuild and
+                    # configured fallbacks without another ordinary retry cycle.
+                    # Any event — including a tool-call or metadata event — means
+                    # the provider made progress, so existing mid-stream retry
+                    # behavior must remain in control.
+                    if _is_timeout and not response_progress_seen["yes"]:
+                        setattr(e, ZERO_DELIVERY_STREAM_TIMEOUT_ATTR, True)
+                        result["error"] = e
+                        return
 
                     # If the stream died AFTER some tokens were delivered:
                     # normally we don't retry (the user already saw text,

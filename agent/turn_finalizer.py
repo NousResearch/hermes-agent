@@ -483,9 +483,21 @@ def finalize_turn(
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
             if _failed and agent._file_mutation_verifier_enabled():
-                footer = agent._format_file_mutation_failure_footer(_failed)
-                if footer:
-                    final_response = final_response.rstrip() + "\n\n" + footer
+                # Skip the verifier footer when the response is a silence
+                # marker — appending the footer after [SILENT] defeats the
+                # silence detector (the footer becomes the last line, so
+                # is_autonomous_silence_response returns False and the
+                # message is delivered despite the agent saying "nothing to
+                # report").  See #75772.
+                from gateway.response_filters import (
+                    is_autonomous_silence_response,
+                )
+                if is_autonomous_silence_response(final_response):
+                    _failed = {}  # skip footer
+                if _failed:
+                    footer = agent._format_file_mutation_failure_footer(_failed)
+                    if footer:
+                        final_response = final_response.rstrip() + "\n\n" + footer
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 

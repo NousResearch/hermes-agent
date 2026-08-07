@@ -981,8 +981,19 @@ def _should_use_native_vision_fast_path() -> bool:
     known to accept images inside tool results, or the user explicitly declared
     the model vision-capable via the ``model.supports_vision`` config override.
     The override is the escape hatch for custom/local providers that aren't in
-    the static allowlist. Best-effort: any resolution failure returns False so
-    the caller falls back to the legacy aux-LLM path.
+    the static allowlist.
+
+    A model that is EXPLICITLY known to lack vision (``_lookup_supports_vision``
+    returns ``False``) never takes the native fast path — even when the provider
+    is an aggregator that supports media in tool results, or the user forced
+    ``image_input_mode: native``.  The image is instead routed to the auxiliary
+    vision model (or the auto-detection chain).  This prevents cryptic API
+    errors like ``unknown variant `image_url`, expected `text``` on providers
+    whose text-only models (e.g. DeepSeek V4, GPT-OSS without vision) reject
+    multimodal content even when proxied through a vision-capable aggregator.
+
+    Best-effort: any resolution failure returns False so the caller falls back
+    to the legacy aux-LLM path.
     """
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
@@ -994,9 +1005,19 @@ def _should_use_native_vision_fast_path() -> bool:
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
+
+        # Even when decide_image_input_mode returned "native" (e.g. forced
+        # image_input_mode: native, or an aggregator provider that accepts
+        # images in tool results), verify the model itself is NOT explicitly
+        # known to lack vision.  Sending image_url to a text-only model like
+        # DeepSeek V4 produces a cryptic provider error.
+        supports_vision = _lookup_supports_vision(provider, model, cfg)
+        if supports_vision is False:
+            return False
+
         return (
             _supports_media_in_tool_results(provider, model)
-            or _lookup_supports_vision(provider, model, cfg) is True
+            or supports_vision is True
         )
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)

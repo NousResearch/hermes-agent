@@ -57,10 +57,28 @@ class TestBuiltinSkins:
         assert len(wings[0]) == 2
 
 
+    def test_hades_skin_loads(self):
+        from hermes_cli.skin_engine import load_skin
 
+        skin = load_skin("hades")
+        assert skin.name == "hades"
+        assert skin.tool_prefix
+        # Cool underworld identity: accent border stays blue/violet dominant.
+        # Exact palette values are owned by test_skin_palettes.py.
+        border = skin.get_color("banner_border")
+        r, g, b = (int(border[i:i + 2], 16) for i in (1, 3, 5))
+        assert b > r and b > g, f"hades border lost its blue-violet identity: {border}"
+        assert "hades" in skin.get_branding("agent_name").lower()
+        assert skin.get_branding("prompt_symbol")
 
+    def test_hades_has_spinner_customization(self):
+        from hermes_cli.skin_engine import load_skin
 
-
+        skin = load_skin("hades")
+        wings = skin.get_spinner_wings()
+        assert len(wings) > 0
+        assert isinstance(wings[0], tuple)
+        assert len(wings[0]) == 2
 
 
 class TestSkinManagement:
@@ -80,6 +98,7 @@ class TestSkinManagement:
         assert "ares" in names
         assert "mono" in names
         assert "slate" in names
+        assert "hades" in names
         assert "daylight" in names
         assert "warm-lightmode" in names
         for s in skins:

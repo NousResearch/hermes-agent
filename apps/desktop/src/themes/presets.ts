@@ -170,6 +170,43 @@ export const emberTheme: DesktopTheme = {
   }
 }
 
+
+/** Deep underworld blue-violet. Matches the CLI Hades skin. */
+export const hadesTheme: DesktopTheme = {
+  name: 'hades',
+  label: 'Hades',
+  description: 'Deep underworld blue-violet with cool accents',
+  colors: {
+    background: '#0F172A',
+    foreground: '#DCEBFF',
+    card: '#111827',
+    cardForeground: '#DCEBFF',
+    muted: '#1E293B',
+    mutedForeground: '#93A4BC',
+    popover: '#111827',
+    popoverForeground: '#DCEBFF',
+    primary: '#7EB8F6',
+    primaryForeground: '#0F172A',
+    secondary: '#1E3A8A',
+    secondaryForeground: '#DCEBFF',
+    accent: '#1D4ED8',
+    accentForeground: '#DCEBFF',
+    border: '#334155',
+    input: '#334155',
+    ring: '#60A5FA',
+    midground: '#60A5FA',
+    destructive: '#F87171',
+    destructiveForeground: '#1F0A0A',
+    sidebarBackground: '#0B1220',
+    sidebarBorder: '#1E3A8A',
+    userBubble: '#172554',
+    userBubbleBorder: '#2563EB'
+  },
+  typography: {
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`
+  }
+}
+
 /** Clean grayscale. Matches the CLI mono skin and dashboard mono theme. */
 export const monoTheme: DesktopTheme = {
   name: 'mono',
@@ -280,6 +317,7 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
+  hades: hadesTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   slate: slateTheme

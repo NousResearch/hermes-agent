@@ -1103,6 +1103,7 @@ Built-in themes:
 | **Nous Blue** (`nous-blue`) | Nous-branded blue accents with airy spacing |
 | **Midnight** (`midnight`) | Deep blue-violet, Inter + JetBrains Mono |
 | **Ember** (`ember`) | Warm crimson + bronze, Spectral serif + IBM Plex Mono |
+| **Hades** (`hades`) | Deep underworld blue-violet, Inter + JetBrains Mono |
 | **Mono** (`mono`) | Grayscale, IBM Plex, compact |
 | **Cyberpunk** (`cyberpunk`) | Neon green on black, Share Tech Mono |
 | **Rosé** (`rose`) | Pink + ivory, Fraunces serif, spacious |

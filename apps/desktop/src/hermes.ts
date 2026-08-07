@@ -226,6 +226,10 @@ export type {
   WebhooksResponse
 } from '@/types/hermes'
 
+// Runtime values re-exported alongside the type catalog: the auth-state enum
+// and its wire-format mapper (see #76254).
+export { AuthenticationState, toAuthenticationState } from '@/types/hermes'
+
 export class HermesGateway extends JsonRpcGatewayClient {
   constructor() {
     super({

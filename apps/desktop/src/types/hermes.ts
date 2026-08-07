@@ -380,6 +380,36 @@ export interface ModelPricing {
   was_output?: string
 }
 
+/**
+ * Explicit three-state authentication contract for a model provider.
+ *
+ * Replaces the ambiguous `boolean | undefined` contract (see #76254):
+ * `undefined` used to mean "default-allowed" (built-ins need no auth),
+ * which made condition checks confusing under TypeScript strict mode.
+ *
+ * The backend still serializes the legacy wire form (`true`/`false`/absent);
+ * map inbound values with {@link toAuthenticationState}.
+ */
+export enum AuthenticationState {
+  /** Needs setup (no credentials configured). */
+  Unauthenticated = 'unauthenticated',
+  /** Ready to use (credentials present). */
+  Authenticated = 'authenticated',
+  /** Built-in provider — no auth required. */
+  DefaultAllowed = 'default-allowed',
+}
+
+/** Map the legacy wire form (`boolean | undefined`) onto the explicit enum. */
+export function toAuthenticationState(value?: boolean | AuthenticationState): AuthenticationState {
+  if (value === true || value === AuthenticationState.Authenticated) {
+    return AuthenticationState.Authenticated
+  }
+  if (value === false || value === AuthenticationState.Unauthenticated) {
+    return AuthenticationState.Unauthenticated
+  }
+  return AuthenticationState.DefaultAllowed
+}
+
 export interface ModelOptionProvider {
   is_current?: boolean
   models?: string[]
@@ -392,10 +422,11 @@ export interface ModelOptionProvider {
    *  for providers with no manifest entry — the picker falls back to top-N.
    *  The rest of `models` stays reachable via search / Edit Models. */
   featured_models?: string[]
-  /** True when the provider has usable credentials. False for canonical
-   *  providers surfaced by `include_unconfigured` that the user hasn't set up
-   *  yet — render these with a setup affordance instead of hiding them. */
-  authenticated?: boolean
+  /** Authentication state. Unconfigured canonical providers surfaced by
+   *  `include_unconfigured` are `Unauthenticated` — render these with a setup
+   *  affordance instead of hiding them. Map legacy wire booleans with
+   *  `toAuthenticationState()` when consuming REST/RPC payloads. */
+  authenticated?: AuthenticationState
   /** Auth flow for an unconfigured provider: "api_key" can be activated inline
    *  by pasting `key_env`; anything else (oauth_*, external, aws_sdk, …) needs
    *  the `hermes model` CLI / onboarding OAuth flow. */

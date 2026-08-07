@@ -452,9 +452,39 @@ export interface ToolsConfigureResponse {
 
 // ── Model picker ─────────────────────────────────────────────────────
 
+/**
+ * Explicit three-state authentication contract for a model provider.
+ *
+ * Replaces the ambiguous `boolean | undefined` contract (see #76254):
+ * `undefined` used to mean "default-allowed" (built-ins need no auth),
+ * which made condition checks confusing under TypeScript strict mode.
+ *
+ * The backend still serializes the legacy wire form (`true`/`false`/absent);
+ * map inbound values with {@link toAuthenticationState}.
+ */
+export enum AuthenticationState {
+  /** Needs setup (no credentials configured). */
+  Unauthenticated = 'unauthenticated',
+  /** Ready to use (credentials present). */
+  Authenticated = 'authenticated',
+  /** Built-in provider — no auth required. */
+  DefaultAllowed = 'default-allowed',
+}
+
+/** Map the legacy wire form (`boolean | undefined`) onto the explicit enum. */
+export function toAuthenticationState(value?: boolean | AuthenticationState): AuthenticationState {
+  if (value === true || value === AuthenticationState.Authenticated) {
+    return AuthenticationState.Authenticated
+  }
+  if (value === false || value === AuthenticationState.Unauthenticated) {
+    return AuthenticationState.Unauthenticated
+  }
+  return AuthenticationState.DefaultAllowed
+}
+
 export interface ModelOptionProvider {
   auth_type?: string
-  authenticated?: boolean
+  authenticated?: AuthenticationState
   is_current?: boolean
   key_env?: string
   models?: string[]

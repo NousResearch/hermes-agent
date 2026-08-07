@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
+import { AuthenticationState, toAuthenticationState, type ModelOptionProvider, type ModelOptionsResponse } from '../gatewayTypes.js'
 import { fuzzyRank } from '../lib/fuzzy.js'
 import { modelSearchText } from '../lib/model-search-text.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -283,7 +283,7 @@ export function ModelPicker({
                   p.slug === provider.slug
                     ? {
                         ...p,
-                        authenticated: false,
+                        authenticated: AuthenticationState.Unauthenticated,
                         models: [],
                         total_models: 0,
                         warning: p.key_env ? `paste ${p.key_env} to activate` : 'run `hermes model` to configure'
@@ -349,7 +349,7 @@ export function ModelPicker({
           return
         }
 
-        if (provider.authenticated === false) {
+        if (toAuthenticationState(provider.authenticated) === AuthenticationState.Unauthenticated) {
           // api_key providers: prompt for key inline
           if (provider.auth_type === 'api_key' && provider.key_env) {
             const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
@@ -421,7 +421,7 @@ export function ModelPicker({
     }
 
     // Disconnect (Ctrl+D): only in provider stage, only for authenticated providers.
-    if (key.ctrl && ch === 'd' && stage === 'provider' && provider?.authenticated !== false) {
+    if (key.ctrl && ch === 'd' && stage === 'provider' && toAuthenticationState(provider?.authenticated) !== AuthenticationState.Unauthenticated) {
       const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
 
       if (fullProviderIdx >= 0) {
@@ -552,11 +552,11 @@ export function ModelPicker({
   // ── Provider selection stage ─────────────────────────────────────────
   if (stage === 'provider') {
     const rows = filteredProviderRows.map(({ provider: p, name }) => {
-      const authMark = p.authenticated === false ? '○' : p.is_current ? '*' : '●'
+      const authMark = toAuthenticationState(p.authenticated) === AuthenticationState.Unauthenticated ? '○' : p.is_current ? '*' : '●'
       const modelCount = p.total_models ?? p.models?.length ?? 0
 
       const suffix =
-        p.authenticated === false ? (p.auth_type === 'api_key' ? '(no key)' : '(needs setup)') : `${modelCount} models`
+        toAuthenticationState(p.authenticated) === AuthenticationState.Unauthenticated ? (p.auth_type === 'api_key' ? '(no key)' : '(needs setup)') : `${modelCount} models`
 
       return `${authMark} ${name} · ${suffix}`
     })
@@ -596,7 +596,7 @@ export function ModelPicker({
             const row = items[i]
             const idx = offset + i
             const p = filteredProviderRows[idx]?.provider
-            const dimmed = p?.authenticated === false
+            const dimmed = toAuthenticationState(p?.authenticated) === AuthenticationState.Unauthenticated
 
             return row ? (
               <Text

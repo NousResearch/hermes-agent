@@ -6,6 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import {
+  AuthenticationState,
   getAuxiliaryModels,
   getGlobalModelInfo,
   getGlobalModelOptions,
@@ -14,7 +15,8 @@ import {
   saveHermesConfig,
   saveMoaModels,
   setEnvVar,
-  setModelAssignment
+  setModelAssignment,
+  toAuthenticationState
 } from '@/hermes'
 import type {
   AuxiliaryModelsResponse,
@@ -93,10 +95,10 @@ const isFastTier = (tier: unknown): boolean =>
 
 // A provider row is "ready" to pick a model from when it reports models. The
 // backend now surfaces the full `hermes model` universe (every canonical
-// provider), so unconfigured providers come back with `authenticated:false`
-// and an empty `models` list — those need a setup step before a model exists.
+// provider), so unconfigured providers come back as `AuthenticationState.Unauthenticated`
+// with an empty `models` list — those need a setup step before a model exists.
 function isProviderReady(p?: ModelOptionProvider): boolean {
-  return !!p && (p.authenticated !== false || (p.models?.length ?? 0) > 0)
+  return !!p && (toAuthenticationState(p.authenticated) !== AuthenticationState.Unauthenticated || (p.models?.length ?? 0) > 0)
 }
 
 // Mirrors `_AUX_TASK_SLOTS` in hermes_cli/web_server.py. Friendly labels and

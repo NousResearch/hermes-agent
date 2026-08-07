@@ -5,7 +5,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
-import { api } from "@/lib/api";
+import { api, AuthenticationState, toAuthenticationState } from "@/lib/api";
 import type {
   CronJob,
   CronDeliveryTarget,
@@ -202,7 +202,7 @@ function CronAdvancedFields({
   };
 
   const providers = (modelOptions?.providers ?? []).filter(
-    (p) => p.authenticated !== false,
+    (p) => toAuthenticationState(p.authenticated) !== AuthenticationState.Unauthenticated,
   );
   const selectedProvider = providers.find((p) => p.slug === form.provider);
   const models = selectedProvider?.models ?? [];

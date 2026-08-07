@@ -381,6 +381,19 @@ export function renderRpcResult(response: unknown, name: string): string {
 
   const r = response as Record<string, unknown>
 
+  // reload.mcp — the first invocation is confirmation-gated; an approved
+  // invocation returns a structured success payload. Keep both outcomes
+  // human-readable in the chat instead of exposing the raw RPC envelope.
+  if (name === 'reload-mcp') {
+    if (r.status === 'confirm_required' && typeof r.message === 'string') {
+      return r.message
+    }
+
+    if (r.status === 'reloaded') {
+      return r.coalesced ? '✓ MCP servers reloaded (coalesced with another reload).' : '✓ MCP servers reloaded.'
+    }
+  }
+
   const summary = r.summary as { headline?: string; token_line?: string; note?: string; noop?: boolean } | undefined
 
   if (summary && typeof summary === 'object' && typeof summary.headline === 'string' && summary.headline) {

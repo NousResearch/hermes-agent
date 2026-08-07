@@ -111,7 +111,8 @@ describe('desktop slash command curation', () => {
   it('routes only stateless session commands through dedicated gateway RPCs', () => {
     const expected = {
       '/save': 'session.save',
-      '/status': 'session.status'
+      '/status': 'session.status',
+      '/reload-mcp': 'reload.mcp'
     } as const
 
     for (const [name, rpcName] of Object.entries(expected)) {
@@ -123,10 +124,34 @@ describe('desktop slash command curation', () => {
       }
 
       expect(surface.rpc).toBe(rpcName)
-      expect(surface.buildParams({ arg: 'topic A', command: name, name: name.slice(1), sessionId: 's-1' })).toEqual({
-        session_id: 's-1'
-      })
+      const params = surface.buildParams({ arg: name === '/reload-mcp' ? 'now' : 'topic A', command: name, name: name.slice(1), sessionId: 's-1' })
+
+      expect(params).toEqual(
+        name === '/reload-mcp' ? { session_id: 's-1', confirm: true } : { session_id: 's-1' }
+      )
     }
+  })
+
+  it('supports reload-mcp confirmation choices and its alias', () => {
+    const surface = resolveDesktopCommand('/reload_mcp')?.surface
+
+    expect(surface?.kind).toBe('rpc')
+
+    if (surface?.kind !== 'rpc') {
+      return
+    }
+
+    expect(surface.rpc).toBe('reload.mcp')
+    expect(surface.buildParams({ arg: '', command: '/reload-mcp', name: 'reload-mcp', sessionId: 's-1' })).toEqual({
+      session_id: 's-1'
+    })
+    expect(surface.buildParams({ arg: 'always', command: '/reload-mcp', name: 'reload-mcp', sessionId: 's-1' })).toEqual({
+      session_id: 's-1',
+      confirm: true,
+      always: true
+    })
+    expect(isDesktopSlashSuggestion('/reload-mcp')).toBe(true)
+    expect(isDesktopSlashSuggestion('/reload_mcp')).toBe(false)
   })
 
   it('keeps commands with richer CLI semantics on the slash worker', () => {

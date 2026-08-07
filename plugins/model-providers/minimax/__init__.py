@@ -92,6 +92,28 @@ minimax_oauth = MiniMaxProfile(
     default_aux_model="MiniMax-M2.7",
 )
 
+# OpenAI-compatible variant of the OAuth provider. Same OAuth flow, but routes
+# to https://api.minimax.io/v1 instead of /anthropic. This endpoint honors
+# prompt caching for MiniMax-M3, which the Anthropic-compatible endpoint
+# silently ignores — see https://github.com/rwese/pi-minimax-m3-caching-fix
+# for the upstream pi-mono fix this profile mirrors. Inherits the M3
+# reasoning controls from MiniMaxProfile.build_api_kwargs_extras (the
+# _is_minimax_global_openai_base_url / _is_minimax_m3 guards at the top of
+# this file match this profile's base_url + model out of the box).
+minimax_oauth_openai = MiniMaxProfile(
+    name="minimax-oauth-openai",
+    aliases=("minimax_oauth_openai", "minimax-oai"),
+    api_mode="chat_completions",
+    display_name="MiniMax OAuth (OpenAI-compatible · caching)",
+    description="MiniMax via OAuth routed to /v1 — prompt caching enabled",
+    signup_url="https://api.minimax.io/",
+    env_vars=(),  # OAuth — tokens in auth.json, not env
+    base_url="https://api.minimax.io/v1",
+    auth_type="oauth_external",
+    default_aux_model="MiniMax-M3",
+)
+
 register_provider(minimax)
 register_provider(minimax_cn)
 register_provider(minimax_oauth)
+register_provider(minimax_oauth_openai)

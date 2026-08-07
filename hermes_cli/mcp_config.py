@@ -614,7 +614,7 @@ def cmd_mcp_add(args):
     if _save_mcp_server(name, server_config):
         print()
         _success(f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{total} tools enabled)")
-        _info("Start a new session to use these tools.")
+        _info("Run /reload-mcp (CLI/TUI/gateway) or restart the desktop app to use these tools.")
 
 
 # ─── hermes mcp remove ───────────────────────────────────────────────────────
@@ -1065,7 +1065,7 @@ def cmd_mcp_configure(args):
 
     new_count = len(chosen)
     _success(f"Updated config: {new_count}/{total} tools enabled")
-    _info("Start a new session for changes to take effect.")
+    _info("Run /reload-mcp (CLI/TUI/gateway) or restart the desktop app for changes to take effect.")
 
 
 # ─── Dispatcher ───────────────────────────────────────────────────────────────

@@ -2952,6 +2952,35 @@ class GatewaySlashCommandsMixin:
         idx = len(mgr.state.subgoals) if mgr.state else 0
         return f"✓ Added subgoal {idx}: {text}"
 
+    async def _rewind_last_turns(
+        self, source: SessionSource, n: int = 1,
+    ) -> Optional[dict]:
+        """Back up ``n`` user turns and re-arm the session for a rebuild.
+
+        Shared by /undo and /rollback — both have to truncate the persisted
+        transcript, reset the stored prompt-token count, and evict the cached
+        agent so the next message rebuilds context from the active-only rows.
+        Returns ``rewind_session``'s result, or ``None`` when there was
+        nothing to rewind.
+        """
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        result = await self.async_session_store.rewind_session(session_entry.session_id, n)
+
+        if result is None:
+            return None
+
+        # Reset stored token count — transcript was truncated.
+        session_entry.last_prompt_tokens = 0
+        # Evict the cached agent so the next turn rebuilds from the active-only
+        # transcript and memory providers refresh their per-session caches.
+        try:
+            session_key = build_session_key(source)
+            self._evict_cached_agent(session_key)
+        except Exception as e:
+            logger.debug("rewind: cached-agent eviction skipped: %s", e)
+
+        return result
+
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo [N] — back up N user turns (default 1), soft-deleting
         the truncated rows on disk and echoing the backed-up message text so
@@ -2976,21 +3005,10 @@ class GatewaySlashCommandsMixin:
             if n < 1:
                 n = 1
 
-        session_entry = await self.async_session_store.get_or_create_session(source)
-        result = await self.async_session_store.rewind_session(session_entry.session_id, n)
+        result = await self._rewind_last_turns(source, n)
 
         if result is None:
             return t("gateway.undo.nothing")
-
-        # Reset stored token count — transcript was truncated.
-        session_entry.last_prompt_tokens = 0
-        # Evict the cached agent so the next turn rebuilds from the active-only
-        # transcript and memory providers refresh their per-session caches.
-        try:
-            session_key = build_session_key(source)
-            self._evict_cached_agent(session_key)
-        except Exception as e:
-            logger.debug("undo: cached-agent eviction skipped: %s", e)
 
         target_text = result["target_text"]
         preview = target_text[:200] + "..." if len(target_text) > 200 else target_text
@@ -3194,6 +3212,16 @@ class GatewaySlashCommandsMixin:
 
         result = mgr.restore(cwd, target_hash)
         if result["success"]:
+            # Step 4 of the documented /rollback flow: undo the conversation
+            # turn that produced the now-reverted edits, so the agent's
+            # context matches the restored filesystem state.  Without this the
+            # cached agent keeps a transcript describing files that no longer
+            # look that way on disk.  Best-effort: the files are already
+            # restored, so a rewind failure must not report the restore failed.
+            try:
+                await self._rewind_last_turns(event.source, 1)
+            except Exception as e:
+                logger.warning("rollback: transcript rewind failed: %s", e)
             return t(
                 "gateway.rollback.restored",
                 hash=result["restored_to"],

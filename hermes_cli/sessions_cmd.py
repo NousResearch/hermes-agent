@@ -55,6 +55,48 @@ def _confirm_prompt(prompt: str) -> bool:
         return False
 
 
+# How far a numeric session reference may reach into the listing. `sessions
+# list` defaults to showing 20 rows; numeric references resolve against the
+# same (unfiltered) listing but allow up to this many so `--limit` listings
+# stay addressable without extra flags.
+_NUMERIC_REF_LIMIT = 1000
+
+
+def _resolve_session_ref(db, ref):
+    """Resolve a ``sessions delete`` argument to a full session ID.
+
+    Accepted forms, in precedence order:
+
+    * a 1-based line number as printed by ``hermes sessions list``
+      (``delete 3`` deletes the third listed session) — resolved against
+      the same default listing the command shows (tool sessions hidden,
+      newest first), so the numbers on screen map 1:1 to delete;
+    * an exact session ID;
+    * a unique session-ID prefix.
+
+    Returns the full ID, or None after printing a targeted error when a
+    numeric reference falls outside the listing.
+    """
+    ref = str(ref).strip()
+    if ref.isdigit():
+        n = int(ref)
+        if n < 1:
+            print(f"Session number {n} is not a valid line number (must be >= 1).")
+            return None
+        rows = db.list_sessions_rich(
+            source=None, exclude_sources=["tool"], limit=_NUMERIC_REF_LIMIT
+        )
+        if n <= len(rows):
+            return rows[n - 1]["id"]
+        print(
+            f"Session number {n} not found — the default listing shows "
+            f"{len(rows)} session(s) (use `hermes sessions list --limit` "
+            "to see more)."
+        )
+        return None
+    return db.resolve_session_id(ref)
+
+
 def cmd_sessions(args, sessions_parser=None):
     import json as _json
 
@@ -273,29 +315,29 @@ def cmd_sessions(args, sessions_parser=None):
 
         if has_ws:
             if has_titles:
-                print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
-                print("─" * 110)
+                print(f"{'#':>3}  {'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
+                print("─" * 115)
             else:
-                print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 100)
-            for s in sessions:
+                print(f"{'#':>3}  {'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
+                print("─" * 105)
+            for i, s in enumerate(sessions, 1):
                 last_active = _relative_time(s.get("last_active"))
                 ws = _ws_label(s)[:16]
                 if has_titles:
                     title = (s.get("title") or "—")[:26]
-                    print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                    print(f"{i:>3}  {title:<28} {ws:<18} {last_active:<13} {s['id']}")
                 else:
                     preview = s.get("preview", "")[:36]
-                    print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+                    print(f"{i:>3}  {preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
             return
 
         if has_titles:
-            print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-            print("─" * 110)
+            print(f"{'#':>3}  {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+            print("─" * 115)
         else:
-            print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-            print("─" * 95)
-        for s in sessions:
+            print(f"{'#':>3}  {'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
+            print("─" * 100)
+        for i, s in enumerate(sessions, 1):
             last_active = _relative_time(s.get("last_active"))
             preview = (
                 s.get("preview", "")[:38]
@@ -305,10 +347,10 @@ def cmd_sessions(args, sessions_parser=None):
             if has_titles:
                 title = (s.get("title") or "—")[:30]
                 sid = s["id"]
-                print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                print(f"{i:>3}  {title:<32} {preview:<40} {last_active:<13} {sid}")
             else:
                 sid = s["id"]
-                print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                print(f"{i:>3}  {preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
     elif action == "export":
         from hermes_cli.session_filters import (
@@ -778,9 +820,10 @@ def cmd_sessions(args, sessions_parser=None):
         print(f"Exported {exported} session(s) to {output_dir}")
 
     elif action == "delete":
-        resolved_session_id = db.resolve_session_id(args.session_id)
+        resolved_session_id = _resolve_session_ref(db, args.session_id)
         if not resolved_session_id:
-            print(f"Session '{args.session_id}' not found.")
+            if not str(args.session_id).strip().isdigit():
+                print(f"Session '{args.session_id}' not found.")
             return
         if not args.yes:
             if not _confirm_prompt(

@@ -425,6 +425,16 @@ hermes sessions delete 20250305_091523_a1b2c3d4
 hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 ```
 
+Instead of copying a full session ID, you can reference a session by its line number from `hermes sessions list` (the `#` column). The number maps 1:1 to the default listing — newest first, tool sessions hidden — so the rows you see on screen are the rows you delete:
+
+```bash
+# Delete the third session shown by `hermes sessions list`
+hermes sessions delete 3
+
+# Unique ID prefixes still work
+hermes sessions delete 20250305_091523_a1b2c3d --yes
+```
+
 ### Rename a Session
 
 ```bash
@@ -740,8 +750,8 @@ not deleted merely because it began before the retention window.
 # Prune sessions older than 90 days
 hermes sessions prune
 
-# Delete a specific session
-hermes sessions delete <session_id>
+# Delete a specific session (by ID, unique prefix, or list line number)
+hermes sessions delete <session_id|#N>
 
 # Export before pruning (backup)
 hermes sessions export backup.jsonl

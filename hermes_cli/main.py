@@ -11983,7 +11983,10 @@ def main():
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
-    sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
+    sessions_list = sessions_subparsers.add_parser(
+        "list",
+        help="List recent sessions (numbered — reference a line as #N in delete)",
+    )
     sessions_list.add_argument(
         "--source", help="Filter by source (cli, telegram, discord, etc.)"
     )
@@ -12176,7 +12179,12 @@ def main():
     sessions_delete = sessions_subparsers.add_parser(
         "delete", help="Delete a specific session"
     )
-    sessions_delete.add_argument("session_id", help="Session ID to delete")
+    sessions_delete.add_argument(
+        "session_id",
+        metavar="ID|#N",
+        help="Session ID, unique prefix, or the #N line number shown by "
+        "'hermes sessions list' (e.g. 'hermes sessions delete 3')",
+    )
     sessions_delete.add_argument(
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )

@@ -321,7 +321,7 @@ TIPS = [
     "Long dangerous commands (>70 chars) get a 'view' option in the approval prompt to see the full text first.",
     "Audio level visualization shows ▁▂▃▄▅▆▇ bars during voice recording based on microphone RMS levels.",
     "Profile names cannot collide with existing PATH binaries — 'hermes profile create ls' would be rejected.",
-    "hermes profile create backup --clone-all copies everything (config, keys, SOUL.md, memories, skills, sessions).",
+    "hermes profile create backup --clone-all copies everything (config, keys, SOUL.md, memories, skills, cron, plugins) except per-profile session history.",
     "The voice record key is configurable via voice.record_key in config.yaml — not just Ctrl+B.",
     ".cursorrules and .cursor/rules/*.mdc files are auto-detected and loaded as project context.",
     "Context files support 10+ prompt injection patterns — invisible Unicode, 'ignore instructions', exfil attempts.",

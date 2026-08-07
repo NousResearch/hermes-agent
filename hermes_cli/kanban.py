@@ -2328,7 +2328,10 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
-            if not kb.unblock_task(conn, tid):
+            # An interactive CLI unblock is a human/supervisor decision, so it
+            # clears the same-kind loop counter. Automated unblockers (crons,
+            # watchdogs) must keep the default and let the breaker accumulate.
+            if not kb.unblock_task(conn, tid, reset_recurrence=True):
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:

@@ -5898,8 +5898,23 @@ def promote_task(
     return True, None
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection, task_id: str, *, reset_recurrence: bool = False
+) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
+
+    ``reset_recurrence=True`` marks a HUMAN-driven release (CLI, dashboard,
+    decision click) and additionally zeroes ``block_recurrences`` +
+    ``block_kind``. An informed human release is a fresh start, so the next
+    same-kind re-block should not instantly trip the loop breaker into
+    ``triage``: without this, a supervised task gets exactly one
+    ``needs_input`` question before escalating, because the counter cannot
+    distinguish "a person answered" from "a cron spun it again".
+
+    Automated unblockers MUST keep the default ``False``. The counter
+    surviving a blind cron unblock is precisely what breaks the
+    cron-unblock <-> worker-re-block loop (Dale's report); resetting there
+    would restore the amnesia the breaker exists to prevent.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -5949,18 +5964,20 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # (the *dispatcher* spawn/crash/timeout counter — a different signal) is
         # still reset here, which is correct: a deliberate unblock is a fresh
         # start for the dispatcher's retry budget.
+        reset_sql = "block_recurrences = 0, block_kind = NULL, " if reset_recurrence else ""
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
+            + reset_sql +
             "consecutive_failures = 0, last_failure_error = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (new_status, task_id),
         )
         if cur.rowcount != 1:
             return False
-        _append_event(
-            conn, task_id, "unblocked",
-            {"status": new_status} if new_status != "ready" else None,
-        )
+        payload = {"status": new_status} if new_status != "ready" else None
+        if reset_recurrence:
+            payload = dict(payload or {}, recurrence_reset=True)
+        _append_event(conn, task_id, "unblocked", payload)
         return True
 
 

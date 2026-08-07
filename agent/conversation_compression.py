@@ -66,7 +66,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import (
     automatic_compaction_status_message,
     sanitize_memory_context,
@@ -2188,6 +2187,13 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    # Imported at call time so that ``import gateway`` (which reaches this
+    # module via agent.turn_context) stays free of the auxiliary-client →
+    # credential-pool → hermes_cli.auth → httpx chain. Minimal consumers
+    # (cross-repo E2E venvs, tooling) import the gateway package without the
+    # full agent dependency set.
+    from agent.auxiliary_client import AuxiliaryExplicitCancellation
+
     _compressor_attempt_snapshot = _snapshot_compressor_attempt_state(
         agent.context_compressor
     )

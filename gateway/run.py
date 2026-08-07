@@ -23747,6 +23747,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # persisted session JSON on the next turn, so dropping it here is safe.
         if hasattr(agent, "_session_messages"):
             agent._session_messages = []
+        # _db_flush_scan_prefix is a shallow copy of the flushed transcript
+        # (run_agent.py, stamped on every successful flush) — it shares every
+        # message dict, so leaving it pins the multi-MB content strings the
+        # eviction exists to free. Pressure-evictable agents have flushed by
+        # definition, so this attribute is always populated on exactly the
+        # agents the memory valve targets.
+        if hasattr(agent, "_db_flush_scan_prefix"):
+            agent._db_flush_scan_prefix = None
 
     def _agent_cache_bounds(self):
         """Operator-configured agent-cache bounds, resolved once per process.
@@ -23762,10 +23770,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 bounds = resolve_agent_cache_bounds(_load_gateway_config())
             except Exception as _e:
-                from gateway.agent_cache_pressure import AgentCacheBounds
-
                 logger.debug("Agent cache bounds config read failed: %s", _e)
-                bounds = AgentCacheBounds()
+                # Resolve from an empty config rather than bare
+                # AgentCacheBounds(): the dataclass default has
+                # memory_high_mb=None (pressure pass OFF), but an *absent*
+                # config section means "auto" — a transient config read
+                # failure must not permanently disable the OOM valve this
+                # feature exists to provide.
+                bounds = resolve_agent_cache_bounds({})
             self._agent_cache_bounds_cache = bounds
         return bounds
 
@@ -23850,18 +23862,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if not plan:
             _mid_turn = sum(1 for _, a in ordered if a is not None and id(a) in running_ids)
+            _unflushed = sum(
+                1
+                for _, a in ordered
+                if a is not None
+                and a is not _AGENT_PENDING_SENTINEL
+                and id(a) not in running_ids
+                and not transcript_persistence_caught_up(a)
+            )
             logger.warning(
                 "Agent cache pressure: anon RSS %dMB over budget %dMB but no "
-                "evictable session (%d cached, %d mid-turn) — memory will keep "
-                "climbing until those turns finish.",
-                rss_mb, bounds.memory_high_mb, len(ordered), _mid_turn,
+                "evictable session (%d cached, %d mid-turn, %d blocked on "
+                "un-flushed persistence)%s",
+                rss_mb, bounds.memory_high_mb, len(ordered), _mid_turn, _unflushed,
+                (
+                    " — transcripts are not reaching the session DB "
+                    "(session persistence disabled or failing?); the memory "
+                    "valve cannot shed sessions until they persist."
+                    if _unflushed and not _mid_turn
+                    else " — memory will keep climbing until those turns finish."
+                ),
             )
             return 0
 
+        evicted_count = len(plan)
         logger.warning(
             "Agent cache pressure: anon RSS %dMB over budget %dMB — evicting "
             "%d LRU session(s): %s",
-            rss_mb, bounds.memory_high_mb, len(plan),
+            rss_mb, bounds.memory_high_mb, evicted_count,
             ", ".join(key for key, _ in plan),
         )
         try:
@@ -23873,7 +23901,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ).start()
         except Exception:
             self._release_pressure_batch(plan)
-        return len(plan)
+        # NOTE: _release_pressure_batch drains `plan` in place (so the trim
+        # runs with no lingering agent references) — len(plan) is 0 by the
+        # time the daemon thread finishes, hence the pre-captured count.
+        return evicted_count
 
     def _release_pressure_batch(self, plan: List[tuple]) -> None:
         """Release a pressure-evicted batch, then return the heap to the OS.
@@ -23883,12 +23914,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         memory, not to race N teardowns. The trailing ``malloc_trim`` is what
         turns "Python dropped the transcript" into "RSS actually fell" —
         without it glibc keeps the freed arenas and the cgroup never notices.
+
+        The plan is drained (``pop`` + ``del``) rather than iterated so that
+        no local reference pins the evicted agents when ``gc.collect`` +
+        ``malloc_trim`` run — otherwise the trim frees almost nothing in this
+        pass, the next tick re-reads a still-high RSS, and the valve
+        over-evicts an extra batch of warm prompt caches every cycle.
         """
-        for key, agent in plan:
+        while plan:
+            key, agent = plan.pop(0)  # FIFO — evict LRU-first order preserved
             try:
                 self._commit_then_release_soft(agent, key)
             except Exception as _e:
                 logger.debug("Pressure release failed for %s: %s", key, _e)
+            del agent
         try:
             from hermes_cli.mem_trim import trim_memory
 

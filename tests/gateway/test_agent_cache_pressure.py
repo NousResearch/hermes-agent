@@ -393,3 +393,120 @@ def _wait_for(predicate, timeout: float = 3.0) -> None:
             return
         _t.sleep(0.02)
     assert predicate(), "background release did not complete in time"
+
+
+class TestSalvageFollowups:
+    """Follow-up behaviors added while salvaging PR #80795."""
+
+    def test_config_read_failure_still_resolves_auto_budget(self, monkeypatch):
+        """A transient config-read failure must not permanently disable the
+        pressure valve — the fallback resolves an empty config, whose absent
+        section means memory_high_mb='auto', not None."""
+        import gateway.run as gw_run
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr(
+            gw_run, "_load_gateway_config",
+            lambda: (_ for _ in ()).throw(OSError("transient")),
+        )
+        import gateway.agent_cache_pressure as acp
+
+        monkeypatch.setattr(acp, "_cgroup_limit_bytes", lambda: 8 * 1024**3)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        bounds = runner._agent_cache_bounds()
+        assert bounds.memory_high_mb is not None, (
+            "config-read failure fell back to a disabled valve — "
+            "the #80764 protection must survive a flaky config read"
+        )
+
+    def test_protect_recent_yaml_false_keeps_default(self):
+        """protect_recent: false (YAML-typo bool; False == 0) must keep the
+        default MRU protection, not silently disable it."""
+        bounds = resolve_agent_cache_bounds(
+            {"agent": {"agent_cache": {"protect_recent": False}}}
+        )
+        assert bounds.protect_recent > 0
+
+    def test_release_batch_drains_plan_before_trim(self, monkeypatch):
+        """The plan list must be empty when trim_memory runs, so no local
+        reference pins the evicted agents during gc.collect + malloc_trim
+        (otherwise the in-pass trim frees nothing and the next tick
+        over-evicts another batch)."""
+        from collections import OrderedDict as _OD
+
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        released = []
+        runner._commit_then_release_soft = lambda agent, key: released.append(key)
+
+        plan_len_at_trim = {}
+
+        import hermes_cli.mem_trim as mem_trim_mod
+
+        plan = [(f"s{i}", MagicMock()) for i in range(3)]
+
+        def fake_trim(force=False, reason=None):
+            plan_len_at_trim["len"] = len(plan)
+            return True
+
+        monkeypatch.setattr(mem_trim_mod, "trim_memory", fake_trim)
+
+        runner._release_pressure_batch(plan)
+
+        assert sorted(released) == ["s0", "s1", "s2"]
+        assert plan_len_at_trim["len"] == 0, (
+            "plan still held agent references when trim_memory ran"
+        )
+
+    def test_soft_release_clears_db_flush_scan_prefix(self):
+        """_db_flush_scan_prefix shallow-copies the flushed transcript and is
+        populated on exactly the agents the valve targets — leaving it pins
+        every message dict the eviction claims to free."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        agent = MagicMock()
+        transcript = [{"role": "user", "content": "x" * 1024}]
+        agent._session_messages = transcript
+        agent._db_flush_scan_prefix = transcript[:]
+
+        runner._release_evicted_agent_soft(agent)
+
+        assert agent._session_messages == []
+        assert agent._db_flush_scan_prefix is None
+
+    def test_no_evictable_warning_distinguishes_unflushed_persistence(self, monkeypatch, caplog):
+        """When everything is blocked on un-flushed persistence (e.g. the
+        session DB never initialized), the warning must say so instead of
+        blaming mid-turn agents."""
+        import logging as _logging
+
+        from collections import OrderedDict as _OD
+
+        import gateway.agent_cache_pressure as acp
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._agent_cache = _OD()
+        runner._agent_cache_lock = threading.Lock()
+        runner._running_agents = {}
+        runner._agent_cache_bounds_cache = AgentCacheBounds(
+            memory_high_mb=1000, max_evictions_per_pass=8, protect_recent=0
+        )
+        monkeypatch.setattr(acp, "read_anon_rss_mb", lambda: 4000)
+
+        for i in range(3):
+            agent = MagicMock()
+            agent._session_messages = [{"role": "user", "content": "x"}]
+            agent._last_flushed_db_idx = 0  # never flushed
+            runner._agent_cache[f"s{i}"] = (agent, "sig")
+
+        with caplog.at_level(_logging.WARNING, logger="gateway.run"):
+            evicted = runner._sweep_agent_cache_under_pressure()
+
+        assert evicted == 0
+        joined = " ".join(r.getMessage() for r in caplog.records)
+        assert "blocked on un-flushed persistence" in joined
+        assert "3 blocked" in joined

@@ -93,13 +93,34 @@ def _cgroup_limit_bytes() -> Optional[int]:
     Prefers cgroup v2 ``memory.high`` (the throttling point — passing it is
     what stalled the reported shutdown) over ``memory.max``, and falls back to
     cgroup v1.  ``max`` / absurd sentinel values mean "unlimited".
+
+    Checks the process's *own* cgroup first (where a systemd unit's
+    ``MemoryHigh=``/``MemoryMax=`` actually lands — the root files read
+    ``max`` on those deployments), then walks up to the root for
+    container-style limits.
     """
     if sys.platform != "linux":
         return None
-    candidates = (
-        "/sys/fs/cgroup/memory.high",
-        "/sys/fs/cgroup/memory.max",
-        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    candidates: list[str] = []
+    try:
+        from gateway.cgroup_cleanup import _own_cgroup_path
+
+        own = _own_cgroup_path()
+    except Exception:
+        own = None
+    if own and own != "/":
+        candidates.extend(
+            (
+                f"/sys/fs/cgroup{own}/memory.high",
+                f"/sys/fs/cgroup{own}/memory.max",
+            )
+        )
+    candidates.extend(
+        (
+            "/sys/fs/cgroup/memory.high",
+            "/sys/fs/cgroup/memory.max",
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+        )
     )
     for candidate in candidates:
         try:
@@ -179,7 +200,15 @@ def resolve_agent_cache_bounds(config: Any) -> AgentCacheBounds:
     max_evictions = _positive_int(section.get("max_evictions_per_pass"))
     protect_recent = section.get("protect_recent")
     protect_parsed = _positive_int(protect_recent)
-    if protect_parsed is None and protect_recent == 0:
+    if (
+        protect_parsed is None
+        and isinstance(protect_recent, int)
+        and not isinstance(protect_recent, bool)
+        and protect_recent == 0
+    ):
+        # 0 means "shed anything" — distinct from unset. The isinstance
+        # guards keep `protect_recent: false` (a YAML-typo bool, False == 0)
+        # on the default instead of silently disabling MRU protection.
         protect_parsed = 0
 
     return AgentCacheBounds(

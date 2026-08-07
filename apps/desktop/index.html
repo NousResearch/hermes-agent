@@ -19,9 +19,15 @@
         let bg = localStorage.getItem('hermes-boot-background')
         let scheme = localStorage.getItem('hermes-boot-color-scheme')
         if (!bg) {
-          const dark = window.matchMedia('(prefers-color-scheme: dark)').matches
-          bg = dark ? '#111111' : '#f7f7f7'
-          scheme = dark ? 'dark' : 'light'
+          // No cached boot paint (first launch, cleared storage, or an upgrade
+          // from a build that predates these keys). Before the bundle can resolve
+          // profile preferences, use DEFAULT_SKIN_NAME (ex-machina) as the safe
+          // fallback. That skin is single-mode dark, so prefers-color-scheme must
+          // NOT be consulted here: honouring a light OS would paint a white first
+          // frame that the bundle immediately repaints black. Keep this in sync
+          // with chromeBackground(exMachinaTheme.colors.background, true).
+          bg = '#070707'
+          scheme = 'dark'
         }
         document.documentElement.style.backgroundColor = bg
         if (scheme === 'dark' || scheme === 'light') {

@@ -1,11 +1,16 @@
 import { useCallback } from 'react'
 
 import { useTheme } from './context'
+import { DEFAULT_SKIN_NAME } from './presets'
 
-// Retired skin names land on the canonical Nous skin so old muscle memory works.
+// Retired skin names land on a still-shipping skin so old muscle memory works.
+// `default` is the one that isn't a rename: it means "no opinion", so it has to
+// track whichever skin is currently default (matching `normalizeSkin`) rather
+// than stay pinned to whatever that happened to be when it was retired. The rest
+// name a specific palette and keep resolving to the Nous skin that succeeded it.
 const ALIASES: Record<string, string> = {
   ares: 'ember',
-  default: 'nous',
+  default: DEFAULT_SKIN_NAME,
   gold: 'nous',
   hermes: 'nous',
   'nous-light': 'nous'

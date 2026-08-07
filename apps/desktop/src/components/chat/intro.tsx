@@ -2,6 +2,7 @@ import { type CSSProperties, useState } from 'react'
 
 import { capitalize, normalize } from '@/lib/text'
 
+import exMachinaCoverArtUrl from './ex-machina-cover-art.webp'
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
 type IntroCopy = {
@@ -166,9 +167,22 @@ export function Intro({ personality, seed }: IntroProps) {
       data-slot="aui_intro"
     >
       <div className="w-full min-w-0">
+        {/* Both headers always ship; `data-hermes-theme` on <html> picks one, so
+            the swap costs no re-render. The art belongs to the skin it was drawn
+            for — every other skin keeps the wordmark. */}
+        <img
+          alt=""
+          aria-hidden="true"
+          className="ex-machina-cover-art mx-auto mb-4 object-contain"
+          data-slot="ex-machina-cover-art"
+          decoding="async"
+          src={exMachinaCoverArtUrl}
+        />
+
         <p
           aria-label={WORDMARK}
-          className="fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
+          className="intro-wordmark fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
+          data-slot="aui_intro-wordmark"
           style={{ '--fit-min': '2.75rem' } as CSSProperties}
         >
           <span>

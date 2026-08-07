@@ -1361,6 +1361,37 @@ code {
   line-height: 1.45;
 }
 
+/* The intro ships both headers and the active skin picks one: the cover art
+   belongs to the skin it was drawn for, so it stays hidden until Ex Machina is
+   painted, and every other skin keeps the wordmark. */
+.ex-machina-cover-art {
+  display: none;
+
+  /* No lower bound: the art may shrink freely so a 420px-wide session window
+     never scrolls sideways. `max-inline-size` is the belt to that braces. */
+  inline-size: min(72vh, 92vw, 56rem);
+  max-inline-size: 100%;
+  block-size: auto;
+  aspect-ratio: 1;
+}
+
+[data-hermes-theme='ex-machina'] .ex-machina-cover-art {
+  display: block;
+}
+
+[data-hermes-theme='ex-machina'] .intro-wordmark {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 0;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+}
+
 .fit-text {
   --fit-captured-length: initial;
   --fit-support-sentinel: var(--fit-captured-length, 9999px);

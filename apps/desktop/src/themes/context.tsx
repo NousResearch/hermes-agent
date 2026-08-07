@@ -19,7 +19,7 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 import { $backendThemes, $pendingSkinApply } from './backend-sync'
 import { hexToRgb, mix, readableOn } from './color'
-import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
+import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, exMachinaTheme, nousTheme } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
 
@@ -299,12 +299,16 @@ interface ThemeContextValue {
 
 const SKIN_LIST = BUILTIN_THEME_LIST.map(({ name, label, description }) => ({ name, label, description }))
 
+// Mirrors what a fresh profile actually resolves to, so a consumer rendered
+// outside a provider reads the same appearance the app paints: DEFAULT_SKIN_NAME
+// with its palette, `normalizeMode`'s unset default of 'light' — and the `dark`
+// that Ex Machina's black background makes `renderedModeFor` return anyway.
 const ThemeContext = createContext<ThemeContextValue>({
-  theme: nousTheme,
+  theme: exMachinaTheme,
   themeName: DEFAULT_SKIN_NAME,
   mode: 'light',
   resolvedMode: 'light',
-  renderedMode: 'light',
+  renderedMode: 'dark',
   availableThemes: SKIN_LIST,
   setTheme: () => {},
   setMode: () => {}

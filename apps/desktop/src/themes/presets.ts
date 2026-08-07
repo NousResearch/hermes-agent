@@ -276,7 +276,88 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/**
+ * Ex Machina — the shipped default. Clinical monochrome with a signal-red accent.
+ *
+ * The palette below is the EXACT output of `skinToDesktopTheme()` for this
+ * skin's design tokens, which live in `ex-machina.test.tsx` and are asserted
+ * against it. Deriving it through the converter instead of hand-picking every
+ * surface is what keeps it honest: if this skin ever also ships as a CLI/TUI
+ * skin, the two surfaces are already the same paint, and until then the desktop
+ * still gets a palette built by the same rules as every synced skin. Re-derive
+ * from those tokens rather than hand-editing a hex here.
+ *
+ * Single-mode, like every skin: `colors` and `darkColors` hold one palette so
+ * the light/dark toggle can't invert a deliberately black identity, while
+ * `renderedModeFor` still resolves `.dark` from the real background luminance.
+ * Semantic success/error and diff colors are deliberately absent — they live as
+ * global `--ui-green`/`--ui-red`/`--ui-diff-*` vars in styles.css that
+ * `applyTheme` never overwrites, so green-is-success stays true under this skin.
+ */
+export const exMachinaTheme: DesktopTheme = {
+  name: 'ex-machina',
+  label: 'Ex Machina',
+  description: 'Clinical monochrome with signal red — synthetic cognition',
+  colors: {
+    background: '#050505',
+    foreground: '#e8e8e8',
+    card: '#0e0e0e',
+    cardForeground: '#e8e8e8',
+    muted: '#131313',
+    mutedForeground: '#747474',
+    popover: '#171717',
+    popoverForeground: '#e8e8e8',
+    primary: '#ff2020',
+    primaryForeground: '#ffffff',
+    secondary: '#4b0d0d',
+    secondaryForeground: '#e8e8e8',
+    accent: '#320a0a',
+    accentForeground: '#e8e8e8',
+    border: '#303030',
+    input: '#0b0b0b',
+    ring: '#ff2020',
+    midground: '#ff2020',
+    midgroundForeground: '#ffffff',
+    composerRing: '#ff2020',
+    destructive: '#ff2020',
+    destructiveForeground: '#ffffff',
+    sidebarBackground: '#0a0a0a',
+    sidebarBorder: '#303030',
+    userBubble: '#320a0a',
+    userBubbleBorder: '#303030'
+  },
+  darkColors: {
+    background: '#050505',
+    foreground: '#e8e8e8',
+    card: '#0e0e0e',
+    cardForeground: '#e8e8e8',
+    muted: '#131313',
+    mutedForeground: '#747474',
+    popover: '#171717',
+    popoverForeground: '#e8e8e8',
+    primary: '#ff2020',
+    primaryForeground: '#ffffff',
+    secondary: '#4b0d0d',
+    secondaryForeground: '#e8e8e8',
+    accent: '#320a0a',
+    accentForeground: '#e8e8e8',
+    border: '#303030',
+    input: '#0b0b0b',
+    ring: '#ff2020',
+    midground: '#ff2020',
+    midgroundForeground: '#ffffff',
+    composerRing: '#ff2020',
+    destructive: '#ff2020',
+    destructiveForeground: '#ffffff',
+    sidebarBackground: '#0a0a0a',
+    sidebarBorder: '#303030',
+    userBubble: '#320a0a',
+    userBubbleBorder: '#303030'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
+  'ex-machina': exMachinaTheme,
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
@@ -288,4 +369,4 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
 
 /** Skin used when nothing is persisted or the persisted name is retired. */
-export const DEFAULT_SKIN_NAME = 'nous'
+export const DEFAULT_SKIN_NAME = 'ex-machina'

@@ -724,6 +724,11 @@ class TestTerminalOutputRedaction:
         assert _command_reads_env_file("echo '---' && cat .env")
         # Windows-style backslash paths
         assert _command_reads_env_file("cat C:\\Users\\test\\.env")
+        # Quoted paths (plain split leaves the quotes attached)
+        assert _command_reads_env_file('cat ".env"')
+        assert _command_reads_env_file("cat '.env'")
+        # Case-insensitive basename (macOS/Windows filesystems)
+        assert _command_reads_env_file("cat .ENV")
 
     def test_command_reads_env_file_excludes_templates(self):
         from agent.redact import _command_reads_env_file
@@ -742,7 +747,6 @@ class TestTerminalOutputRedaction:
         assert not _command_reads_env_file("echo .env")  # echo is not a file-read cmd
         assert not _command_reads_env_file("")
         assert not _command_reads_env_file(None)
-
 
     def test_cat_env_file_masks_opaque_token(self):
         """cat .env → code_file=False → generic ENV pass redacts opaque keys."""

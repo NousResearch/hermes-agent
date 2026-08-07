@@ -13,6 +13,13 @@ import re
 import shlex
 from urllib.parse import unquote_plus
 
+# Basenames treated as ``.env`` files by _command_reads_env_file. Imported
+# from agent/file_safety (the read-block list) so the two defenses can't
+# drift: if file_tools blocks a read and the agent falls back to ``cat``,
+# the terminal redactor still catches it. file_safety matches
+# case-insensitively (``resolved.name.lower()``); the lookup mirrors that.
+from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
+
 logger = logging.getLogger(__name__)
 
 # Sensitive query-string parameter names (case-insensitive exact match).
@@ -130,10 +137,7 @@ _PREFIX_PATTERNS = [
     r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
 ]
 
-
-
-
-# Generic ENV assignment patterns: KEY=value where KEY contains a secret-like name.
+# ENV assignment patterns: KEY=value where KEY contains a secret-like name.
 # Uppercase keys tolerate spaces around "=" (e.g. ``FOO_SECRET = bar``) because
 # an all-caps key is almost never prose/code.
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
@@ -723,7 +727,6 @@ def redact_sensitive_text(
         _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
-
     # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
     if not code_file:
         if "=" in text:
@@ -902,27 +905,23 @@ _FILE_READ_COMMANDS = frozenset({
     "zcat", "tac", "view", "batcat",
 })
 
-# Basenames that are treated as ``.env`` files for redaction purposes.
-# Matches the list in ``agent/file_safety._BLOCKED_PROJECT_ENV_BASENAMES``
-# so the two defenses stay aligned: if file_tools blocks a read, and the
-# agent falls back to ``cat``, the terminal redactor still catches it.
-_ENV_FILE_BASENAMES = frozenset({
-    ".env", ".env.local", ".env.development", ".env.production",
-    ".env.test", ".env.staging", ".envrc",
-})
-
-# Filename suffixes that look like ``.env`` but are NOT secret-bearing
-# (templates, examples). These are explicitly excluded so the agent can
-# read template files without redaction interfering.
-_ENV_FILE_EXCLUDE_SUFFIXES = (".example", ".sample", ".template", ".dist")
+# Basenames that are treated as ``.env`` files for redaction purposes are
+# imported at module top as ``_ENV_FILE_BASENAMES`` (see the
+# ``agent.file_safety`` import).
 
 
-def _command_reads_env_file(command: str) -> bool:
+def _command_reads_env_file(command: str | None) -> bool:
     """Return True if ``command`` reads a ``.env`` file to stdout.
 
     Detects file-read commands (``cat``, ``head``, ``tail``, etc.) where any
-    argument ends with a ``.env``-style basename and is NOT a template
-    (``.env.example``, ``.env.sample``). Handles pipelines and sequences.
+    argument's basename is a ``.env``-style file. Template files
+    (``.env.example``, ``.env.sample``, ...) are not in the basename list and
+    therefore never match. Handles pipelines and command sequences.
+
+    Conservative defense-in-depth, not a boundary — indirect reads
+    (``sudo cat .env``, ``/bin/cat .env``, ``$(cat .env)``, redirection,
+    ``sed``/``awk``/``xxd`` readers) are not detected, matching the
+    precedent of ``is_env_dump_command`` below.
     """
     if not command:
         return False
@@ -942,12 +941,12 @@ def _command_reads_env_file(command: str) -> bool:
         for arg in tokens[1:]:
             if arg.startswith("-"):
                 continue
-            # Strip any leading path to get the basename. Handle both / and \.
+            # Strip shell quotes that plain split() leaves attached
+            # (``cat ".env"`` / ``cat '.env'``), then any leading path to
+            # get the basename. Handle both / and \.
+            arg = arg.strip("\"'")
             basename = arg.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            # Exclude templates/examples.
-            if any(basename.endswith(suf) for suf in _ENV_FILE_EXCLUDE_SUFFIXES):
-                continue
-            if basename in _ENV_FILE_BASENAMES:
+            if basename.lower() in _ENV_FILE_BASENAMES:
                 return True
     return False
 
@@ -993,7 +992,8 @@ def redact_terminal_output(
     - file-read command targeting a ``.env`` file (``cat .env``,
       ``head .env.local``, etc.) → ``code_file=False`` for the same reason.
       Per AGENTS.md, ``.env`` files contain only secrets, so the generic
-      ENV redactor is the correct pass — no list of known var names needed.
+      ENV pass is the right one (keys whose names carry no secret keyword
+      can still slip through it — same limit as the env-dump path).
     - anything else (or unknown command) → ``code_file=True`` to avoid
       false positives on source/config dumps.
 

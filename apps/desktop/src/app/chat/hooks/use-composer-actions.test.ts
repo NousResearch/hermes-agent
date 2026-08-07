@@ -1,3 +1,4 @@
+import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
@@ -6,8 +7,12 @@ import {
   attachmentPreviewDataUrl,
   type DroppedFile,
   extractDroppedFiles,
+  forgetRecentImageBlobPaste,
   HERMES_PATHS_MIME,
-  partitionDroppedFiles
+  imageBlobDedupeKey,
+  partitionDroppedFiles,
+  rememberRecentImageBlobPaste,
+  useComposerActions
 } from './use-composer-actions'
 
 // A Finder/Explorer drop carries a native File handle; an in-app drag (project
@@ -242,5 +247,155 @@ describe('attachmentPreviewDataUrl', () => {
     $connection.set({ mode: 'remote' } as never)
 
     await expect(attachmentPreviewDataUrl('/home/gateway/shot.png')).resolves.toBe(REMOTE_PREVIEW)
+  })
+})
+
+describe('recent image paste dedupe', () => {
+  it('drops a near-simultaneous byte-identical pasted image', () => {
+    const seen = new Map<string, number>()
+    const key = 'shot'
+
+    expect(rememberRecentImageBlobPaste(seen, key, 1000)).toBe(true)
+    expect(rememberRecentImageBlobPaste(seen, key, 1200)).toBe(false)
+  })
+
+  it('allows the same image again after the short dedupe window', () => {
+    const seen = new Map<string, number>()
+    const key = 'shot'
+
+    expect(rememberRecentImageBlobPaste(seen, key, 1000)).toBe(true)
+    expect(rememberRecentImageBlobPaste(seen, key, 2601)).toBe(true)
+  })
+
+  it('keeps distinct same-size images even when their File metadata matches', async () => {
+    const seen = new Map<string, number>()
+    const a = new File([new Uint8Array([1, 2, 3])], 'paste.png', { type: 'image/png', lastModified: 1 })
+    const b = new File([new Uint8Array([1, 2, 4])], 'paste.png', { type: 'image/png', lastModified: 1 })
+    const aKey = await imageBlobDedupeKey(a, new Uint8Array([1, 2, 3]))
+    const bKey = await imageBlobDedupeKey(b, new Uint8Array([1, 2, 4]))
+
+    expect(aKey).not.toBe(bKey)
+    expect(rememberRecentImageBlobPaste(seen, aKey, 1000)).toBe(true)
+    expect(rememberRecentImageBlobPaste(seen, bKey, 1200)).toBe(true)
+  })
+
+  it('dedupes byte-identical images across paste callbacks when File metadata differs', async () => {
+    const seen = new Map<string, number>()
+    const data = new Uint8Array([1, 2, 3, 4])
+    const file = new File([data], 'Screenshot 1.png', { type: 'image/png', lastModified: 1 })
+    const mirroredBlob = new File([data], 'Screenshot 2.png', { type: 'image/png', lastModified: 2 })
+    const fileKey = await imageBlobDedupeKey(file, data)
+    const mirroredKey = await imageBlobDedupeKey(mirroredBlob, data)
+
+    expect(fileKey).toBe(mirroredKey)
+    expect(fileKey).toContain('sha256:')
+    expect(rememberRecentImageBlobPaste(seen, fileKey, 1000)).toBe(true)
+    expect(rememberRecentImageBlobPaste(seen, mirroredKey, 1200)).toBe(false)
+  })
+
+  it('allows retrying the same pasted image after a save failure clears its key', () => {
+    const seen = new Map<string, number>()
+    const key = 'shot'
+
+    expect(rememberRecentImageBlobPaste(seen, key, 1000)).toBe(true)
+    forgetRecentImageBlobPaste(seen, key)
+    expect(rememberRecentImageBlobPaste(seen, key, 1200)).toBe(true)
+  })
+})
+
+describe('image paste persistence', () => {
+  afterEach(() => {
+    cleanup()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: undefined })
+  })
+
+  const renderActions = (saveImageBuffer: ReturnType<typeof vi.fn>) => {
+    const add = vi.fn()
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => 'data:image/png;base64,cHJldmlldw=='),
+        saveImageBuffer
+      }
+    })
+
+    const hook = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '',
+        requestGateway: vi.fn(async () => undefined) as never,
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'test'
+        }
+      })
+    )
+
+    return { add, ...hook }
+  }
+
+  it('retries the same bytes immediately after a save returns no path', async () => {
+    const saveImageBuffer = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce('/tmp/retried-image.png')
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })
+    const { add, result } = renderActions(saveImageBuffer)
+
+    await act(async () => {
+      await expect(result.current.attachImageBlob(blob)).resolves.toBe(false)
+      await expect(result.current.attachImageBlob(blob)).resolves.toBe(true)
+    })
+
+    expect(saveImageBuffer).toHaveBeenCalledTimes(2)
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ path: '/tmp/retried-image.png' }))
+  })
+
+  it('retries the same bytes immediately after a save throws', async () => {
+    const saveImageBuffer = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('disk unavailable'))
+      .mockResolvedValueOnce('/tmp/retried-after-error.png')
+
+    const blob = new Blob([new Uint8Array([4, 5, 6])], { type: 'image/png' })
+    const { add, result } = renderActions(saveImageBuffer)
+
+    await act(async () => {
+      await expect(result.current.attachImageBlob(blob)).resolves.toBe(false)
+      await expect(result.current.attachImageBlob(blob)).resolves.toBe(true)
+    })
+
+    expect(saveImageBuffer).toHaveBeenCalledTimes(2)
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ path: '/tmp/retried-after-error.png' }))
+  })
+
+  it('persists same-size images when their bytes differ', async () => {
+    const saveImageBuffer = vi
+      .fn()
+      .mockResolvedValueOnce('/tmp/first-image.png')
+      .mockResolvedValueOnce('/tmp/second-image.png')
+
+    const first = new Blob([new Uint8Array([7, 8, 9])], { type: 'image/png' })
+    const second = new Blob([new Uint8Array([7, 8, 10])], { type: 'image/png' })
+    const { result } = renderActions(saveImageBuffer)
+
+    await act(async () => {
+      await expect(result.current.attachImageBlob(first)).resolves.toBe(true)
+      await expect(result.current.attachImageBlob(second)).resolves.toBe(true)
+    })
+
+    expect(saveImageBuffer).toHaveBeenCalledTimes(2)
+  })
+
+  it('persists byte-identical near-simultaneous pastes once', async () => {
+    const saveImageBuffer = vi.fn(async () => '/tmp/only-image.png')
+    const blob = new Blob([new Uint8Array([11, 12, 13])], { type: 'image/png' })
+    const { result } = renderActions(saveImageBuffer)
+
+    await act(async () => {
+      await expect(result.current.attachImageBlob(blob)).resolves.toBe(true)
+      await expect(result.current.attachImageBlob(blob)).resolves.toBe(true)
+    })
+
+    expect(saveImageBuffer).toHaveBeenCalledTimes(1)
   })
 })

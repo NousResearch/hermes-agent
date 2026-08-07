@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
@@ -34,6 +34,41 @@ function blobExtension(blob: Blob): string {
   const mime = normalize(blob.type.split(';')[0])
 
   return BLOB_MIME_EXTENSION[mime] || '.png'
+}
+
+const RECENT_IMAGE_PASTE_DEDUPE_MS = 1500
+
+export async function imageBlobDedupeKey(blob: Blob, data: Uint8Array): Promise<string> {
+  // The composer already collapses mirrored items/files inside one DataTransfer.
+  // This content key spans separate attachImageBlob calls, where the same macOS
+  // screenshot can arrive with different File metadata.
+  const digestInput = Uint8Array.from(data).buffer
+  const digest = await crypto.subtle.digest('SHA-256', digestInput)
+  const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+
+  return [blob.size, `sha256:${hash}`].join('|')
+}
+
+export function rememberRecentImageBlobPaste(seen: Map<string, number>, key: string, now = Date.now()): boolean {
+  for (const [seenKey, seenAt] of seen) {
+    if (now - seenAt > RECENT_IMAGE_PASTE_DEDUPE_MS) {
+      seen.delete(seenKey)
+    }
+  }
+
+  if (seen.has(key)) {
+    seen.set(key, now)
+
+    return false
+  }
+
+  seen.set(key, now)
+
+  return true
+}
+
+export function forgetRecentImageBlobPaste(seen: Map<string, number>, key: string): void {
+  seen.delete(key)
 }
 
 export function isImagePath(filePath: string): boolean {
@@ -295,6 +330,8 @@ export function useComposerActions({
     [scope]
   )
 
+  const recentImageBlobPastesRef = useRef<Map<string, number>>(new Map())
+
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
   }, [])
@@ -444,19 +481,41 @@ export function useComposerActions({
         return false
       }
 
+      let dedupeKey: string | undefined
+
       try {
         const buffer = await blob.arrayBuffer()
         const data = new Uint8Array(buffer)
+        dedupeKey = await imageBlobDedupeKey(blob, data)
+
+        // macOS/Electron can fire the same Cmd+V screenshot through multiple
+        // clipboard paths/events. Drop only near-simultaneous byte-identical
+        // image blobs so a pasted screenshot attaches once.
+        if (!rememberRecentImageBlobPaste(recentImageBlobPastesRef.current, dedupeKey)) {
+          return true
+        }
+
         const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob))
 
         if (!savedPath) {
+          forgetRecentImageBlobPaste(recentImageBlobPastesRef.current, dedupeKey)
           notify({ kind: 'error', title: copy.imageAttach, message: copy.imageWriteFailed })
 
           return false
         }
 
-        return attachImagePath(savedPath)
+        const attached = await attachImagePath(savedPath)
+
+        if (!attached) {
+          forgetRecentImageBlobPaste(recentImageBlobPastesRef.current, dedupeKey)
+        }
+
+        return attached
       } catch (err) {
+        if (dedupeKey) {
+          forgetRecentImageBlobPaste(recentImageBlobPastesRef.current, dedupeKey)
+        }
+
         notifyError(err, copy.imageAttachFailed)
 
         return false

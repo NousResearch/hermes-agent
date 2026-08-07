@@ -11445,7 +11445,13 @@ def _run_prompt_submit(
                 "conversation_history": list(history),
                 "stream_callback": _stream,
                 "persist_user_message": (
-                    _build_persist_user_message(prompt, images, run_message) if images else prompt
+                    _build_persist_user_message(
+                        persist_user_message if persist_user_message is not None else text,
+                        images,
+                        run_message,
+                    )
+                    if images
+                    else (persist_user_message if persist_user_message is not None else prompt)
                 ),
             }
             # Type a synthesized turn at turn START so the crash persist writes

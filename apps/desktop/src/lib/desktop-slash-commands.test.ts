@@ -40,7 +40,6 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/redraw')).toBe(false)
     expect(isDesktopSlashSuggestion('/approve')).toBe(false)
     expect(isDesktopSlashSuggestion('/model')).toBe(false)
-    expect(isDesktopSlashSuggestion('/skills')).toBe(false)
     expect(isDesktopSlashSuggestion('/voice')).toBe(false)
     expect(isDesktopSlashSuggestion('/curator')).toBe(false)
   })
@@ -144,6 +143,7 @@ describe('desktop slash command curation', () => {
       '/queue',
       '/retry',
       '/rollback',
+      '/skills',
       '/tools',
       '/undo',
       '/version'
@@ -173,6 +173,16 @@ describe('desktop slash command curation', () => {
     // Aliases execute but stay out of the popover.
     expect(isDesktopSlashSuggestion('/memory-graph')).toBe(false)
     expect(desktopSlashUnavailableMessage('/journey')).toBeNull()
+  })
+
+  it('exposes /skills on the desktop with exec surface for pending/approve/reject/diff/approval subcommands', () => {
+    expect(resolveDesktopCommand('/skills')?.surface).toEqual({ kind: 'exec' })
+    expect(isDesktopSlashCommand('/skills')).toBe(true)
+    expect(isDesktopSlashSuggestion('/skills')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/skills')).toBeNull()
+    // args:true keeps typed subcommands (pending, approve, reject, diff, approval)
+    // from being committed as a sealed directive chip.
+    expect(resolveDesktopCommand('/skills')?.args).toBe(true)
   })
 
   it('allows aliases to execute without cluttering the popover', () => {
@@ -268,8 +278,8 @@ describe('desktop slash command curation', () => {
 
   it('explains known commands that desktop owns elsewhere', () => {
     expect(desktopSlashUnavailableMessage('/model sonnet')).toContain('model picker')
-    expect(desktopSlashUnavailableMessage('/skills')).toContain('desktop sidebar')
     expect(desktopSlashUnavailableMessage('/clear')).toContain('terminal interface')
+    expect(desktopSlashUnavailableMessage('/pets')).toContain('desktop sidebar')
   })
 
   it('flags /model as a picker-owned command so the desktop opens the overlay', () => {

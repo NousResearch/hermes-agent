@@ -942,10 +942,82 @@ function Resolve-UvCmd {
     throw "uv is not installed. Run install.ps1 -Stage uv first."
 }
 
+function Test-HermesPythonRuntime {
+    param([Parameter(Mandatory = $true)][string]$PythonPath)
+
+    # --version only proves that python.exe can start.  Windows Application
+    # Control can allow that executable while blocking native stdlib modules
+    # loaded later from .pyd files.  Probe the capabilities Hermes needs before
+    # uv creates a venv or installs dependencies from this interpreter.
+    $script:PythonRuntimeProbeOutput = $null
+    $probeOutput = @()
+    $probeExitCode = 1
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $probeOutput = & $PythonPath -c "import select, socket, ssl" 2>&1
+        $probeExitCode = $LASTEXITCODE
+    } catch {
+        $probeOutput = @($_.Exception.Message)
+        $probeExitCode = 1
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+
+    $script:PythonRuntimeProbeOutput = ((@($probeOutput) | ForEach-Object {
+        ([string]$_).Trim()
+    } | Where-Object { $_ }) -join [Environment]::NewLine).Trim()
+    return ($probeExitCode -eq 0)
+}
+
+function Find-UsablePythonForVersion {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    # uv normally prefers its managed interpreter.  On locked-down Windows
+    # machines that copy can be blocked while a Python.org installation is
+    # trusted.  Try uv's normal resolution first, then explicitly exclude
+    # managed/downloaded interpreters and ask for a system installation.
+    $queries = @(
+        @{ Label = "default"; Args = @("python", "find", $Version) },
+        @{ Label = "system"; Args = @("python", "find", "--system", "--no-managed-python", $Version) }
+    )
+    $seenPaths = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+
+    foreach ($query in $queries) {
+        try {
+            $findArgs = $query.Args
+            $findOutput = & $UvCmd @findArgs 2>$null
+            if (-not $findOutput) { continue }
+            $candidate = @($findOutput | ForEach-Object {
+                ([string]$_).Trim()
+            } | Where-Object { $_ } | Select-Object -Last 1)[0]
+            if (-not $candidate -or -not $seenPaths.Add($candidate)) { continue }
+
+            if (Test-HermesPythonRuntime -PythonPath $candidate) {
+                return $candidate
+            }
+
+            Write-Warn "Rejected Python $Version candidate ($($query.Label)): $candidate"
+            Write-Warn "Python started, but required native standard-library modules could not load."
+            if ($script:PythonRuntimeProbeOutput) {
+                Write-Host $script:PythonRuntimeProbeOutput -ForegroundColor DarkGray
+            }
+        } catch {
+            # A failed uv lookup is normal while walking the fallback list.
+        }
+    }
+
+    return $null
+}
+
 function Resolve-AvailablePythonVersion {
-    # Return the first Python minor version uv can actually find, preferring the
-    # requested $PythonVersion and then $PythonFallbackVersions.  Returns $null
-    # when none are available.
+    # Return the first Python minor version with a usable runtime, preferring
+    # the requested $PythonVersion and then $PythonFallbackVersions.  The
+    # Find-UsablePythonForVersion helper resolves candidates via `uv python find`
+    # and records the exact validated interpreter in $script:ResolvedPythonPath.
+    # Returns $null when none are available.
     #
     # This is the cross-process-safe counterpart to Test-Python's in-memory
     # ``$script:PythonVersion = $fallbackVer`` mutation.  Under Hermes-Setup.exe
@@ -954,17 +1026,30 @@ function Resolve-AvailablePythonVersion {
     # survive into the ``venv`` stage's process -- there $PythonVersion is back
     # at its "3.11" default.  Consumers re-resolve here instead of trusting that
     # default, which is exactly the propagation gap behind issue #50769.
+    $script:ResolvedPythonPath = $null
     $candidates = @($PythonVersion) + $PythonFallbackVersions
     $seen = @{}
     foreach ($ver in $candidates) {
         if (-not $ver -or $seen.ContainsKey($ver)) { continue }
         $seen[$ver] = $true
-        try {
-            $found = & $UvCmd python find $ver 2>$null
-            if ($found) { return $ver }
-        } catch { }
+        $found = Find-UsablePythonForVersion -Version $ver
+        if ($found) {
+            $script:ResolvedPythonPath = $found
+            return $ver
+        }
     }
     return $null
+}
+
+function Resolve-UsablePythonPath {
+    $resolvedVersion = Resolve-AvailablePythonVersion
+    if (-not $resolvedVersion -or -not $script:ResolvedPythonPath) {
+        return $null
+    }
+    if ($resolvedVersion -ne $PythonVersion) {
+        $script:PythonVersion = $resolvedVersion
+    }
+    return $script:ResolvedPythonPath
 }
 
 function Test-Python {
@@ -972,16 +1057,17 @@ function Test-Python {
     
     # Let uv find or install Python
     try {
-        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
+        $pythonPath = Find-UsablePythonForVersion -Version $PythonVersion
         if ($pythonPath) {
             $ver = & $pythonPath --version 2>$null
+            $script:ResolvedPythonPath = $pythonPath
             Write-Success "Python found: $ver"
             return $true
         }
     } catch { }
     
-    # Python not found -- use uv to install it (no admin needed!)
-    Write-Info "Python $PythonVersion not found, installing via uv..."
+    # No usable candidate found -- use uv to install one (no admin needed!)
+    Write-Info "No usable Python $PythonVersion runtime found, installing via uv..."
     # Capture EAP outside the try block so the catch's restore call always
     # has a meaningful value (see Install-Uv for the full rationale).
     $prevEAP = $ErrorActionPreference
@@ -1003,9 +1089,10 @@ function Test-Python {
 
         # Check if Python is now available (more reliable than exit code
         # since uv may return non-zero due to "already installed" etc.)
-        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
+        $pythonPath = Find-UsablePythonForVersion -Version $PythonVersion
         if ($pythonPath) {
             $ver = & $pythonPath --version 2>$null
+            $script:ResolvedPythonPath = $pythonPath
             Write-Success "Python installed: $ver"
             return $true
         }
@@ -1025,11 +1112,12 @@ function Test-Python {
     Write-Info "Trying to find any existing Python 3.10+..."
     foreach ($fallbackVer in $PythonFallbackVersions) {
         try {
-            $pythonPath = & $UvCmd python find $fallbackVer 2>$null
+            $pythonPath = Find-UsablePythonForVersion -Version $fallbackVer
             if ($pythonPath) {
                 $ver = & $pythonPath --version 2>$null
                 Write-Success "Found fallback: $ver"
                 $script:PythonVersion = $fallbackVer
+                $script:ResolvedPythonPath = $pythonPath
                 return $true
             }
         } catch { }
@@ -1059,11 +1147,17 @@ function Test-Python {
             try {
                 $prevEAP2 = $ErrorActionPreference
                 $ErrorActionPreference = "Continue"
-                $sysVer = & python --version 2>&1
+                $sysVer = & $pythonSource --version 2>&1
                 $ErrorActionPreference = $prevEAP2
-                if ($sysVer -match "Python 3\.(1[0-9]|[1-9][0-9])") {
+                if ($sysVer -match "Python 3\.(1[0-9]|[1-9][0-9])" -and
+                    (Test-HermesPythonRuntime -PythonPath $pythonSource)) {
+                    $script:ResolvedPythonPath = $pythonSource
                     Write-Success "Using system Python: $sysVer"
                     return $true
+                }
+                if ($script:PythonRuntimeProbeOutput) {
+                    Write-Warn "System Python started, but required native modules could not load:"
+                    Write-Host $script:PythonRuntimeProbeOutput -ForegroundColor DarkGray
                 }
             } catch {
                 if ($prevEAP2) { $ErrorActionPreference = $prevEAP2 }
@@ -1071,7 +1165,7 @@ function Test-Python {
         }
     }
 
-    Write-Err "Failed to install Python $PythonVersion"
+    Write-Err "Failed to find or install a usable Python $PythonVersion runtime"
     Write-Info "Install Python 3.11 manually, then re-run this script:"
     Write-Info "  https://www.python.org/downloads/"
     Write-Info "  Or: winget install Python.Python.3.11"
@@ -2208,10 +2302,14 @@ function Install-Venv {
     # here made `uv venv venv --python 3.11` fail with exit 2 on machines without
     # 3.11 even though the `python` stage reported success (issue #50769).
     $resolved = Resolve-AvailablePythonVersion
+    if (-not $resolved -or -not $script:ResolvedPythonPath) {
+        throw "No usable Python runtime was found for virtual environment creation."
+    }
     if ($resolved -and $resolved -ne $PythonVersion) {
         Write-Info "Python $PythonVersion not available; using detected Python $resolved"
         $script:PythonVersion = $resolved
     }
+    $resolvedPythonPath = $script:ResolvedPythonPath
 
     Write-Info "Creating virtual environment with Python $PythonVersion..."
     
@@ -2344,7 +2442,7 @@ function Install-Venv {
     # normal progress such as "Using CPython ..." on stderr; under Windows
     # PowerShell 5.1 with EAP=Stop that stderr is a NativeCommandError unless
     # we temporarily relax EAP and trust $LASTEXITCODE for real failures.
-    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $PythonVersion }
+    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $resolvedPythonPath }
     # Relaxing EAP above means a *genuine* uv-venv failure (exit != 0) no longer
     # aborts on its own. Capture $LASTEXITCODE immediately and fail fast, so the
     # `venv` stage can't falsely report success (and Invoke-Stage can't emit
@@ -2473,7 +2571,14 @@ function Install-Dependencies {
 
     # Parse [project.optional-dependencies].all from pyproject.toml.
     # tomllib is stdlib on Python 3.11+ which the bootstrap guarantees.
-    $pythonExeForParse = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
+    $pythonExeForParse = if (-not $NoVenv) {
+        "$InstallDir\venv\Scripts\python.exe"
+    } else {
+        Resolve-UsablePythonPath
+    }
+    if (-not $pythonExeForParse) {
+        throw "No usable Python runtime was found for dependency validation."
+    }
     $allExtras = @()
     if (Test-Path $pythonExeForParse) {
         $parsed = & $pythonExeForParse -c @"
@@ -2606,7 +2711,14 @@ print(','.join(scripts))
     # users hit and lazy-import errors from `hermes dashboard` are confusing.
     # If tier 1 failed (the common case), [web] was still picked up by tiers
     # 2-3; only tier 4 leaves you without it.
-    $pythonExe = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
+    $pythonExe = if (-not $NoVenv) {
+        "$InstallDir\venv\Scripts\python.exe"
+    } else {
+        Resolve-UsablePythonPath
+    }
+    if (-not $pythonExe) {
+        throw "No usable Python runtime was found for final import validation."
+    }
     if (Test-Path $pythonExe) {
         $webOk = $false
         $webServerSyntaxOk = $false

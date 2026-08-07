@@ -49,8 +49,14 @@ test('canImportHermesCli returns false when binary does not exist', () => {
   assert.equal(canImportHermesCli(ghost), false)
 })
 
-test('hermes runtime import probe checks config dependencies', () => {
+test('hermes runtime import probe checks native modules and config dependencies', () => {
   const probe = hermesRuntimeImportProbe()
+  // Windows Application Control can allow python.exe --version while blocking
+  // native stdlib modules loaded from .pyd files. Exercise the capability the
+  // desktop backend needs instead of trusting the executable alone.
+  assert.match(probe, /\bimport select\b/)
+  assert.match(probe, /\bimport socket\b/)
+  assert.match(probe, /\bimport ssl\b/)
   assert.match(probe, /\bimport yaml\b/)
   // dotenv is the first third-party import on the CLI boot path
   // (hermes_cli/env_loader.py); a mid-update venv missing python-dotenv

@@ -120,7 +120,7 @@ function execProbeSync(
  * @returns {string}
  */
 function hermesRuntimeImportProbe() {
-  return 'import yaml; import dotenv; import hermes_cli.config'
+  return 'import select; import socket; import ssl; import yaml; import dotenv; import hermes_cli.config'
 }
 
 /**
@@ -133,9 +133,12 @@ function hermesRuntimeImportProbe() {
  * site-packages -- and the resolver returns a backend that immediately
  * dies on spawn.
  *
- * The probe intentionally imports hermes_cli.config, not just the top-level
- * package: a broken/empty Windows launcher venv can still see the source tree
- * through PYTHONPATH but lack PyYAML, then die on the first real CLI import.
+ * The probe intentionally imports native standard-library networking modules
+ * before hermes_cli.config. Windows Application Control can allow python.exe
+ * itself while blocking select.pyd or _ssl.pyd, so a version/existence check
+ * is not enough. Importing hermes_cli.config (rather than only the top-level
+ * package) also catches a broken/empty launcher venv that can see the source
+ * tree through PYTHONPATH but lacks PyYAML.
  *
  * @param {string} pythonPath - Absolute path to a python.exe / python.
  * @param {object} [opts.env] - Additional environment for the probe.

@@ -134,6 +134,20 @@ def test_start_server_loopback_sets_auth_required_false(monkeypatch):
     assert web_server.app.state.auth_required is False
 
 
+def test_start_server_records_initial_profile_for_spa_bootstrap(monkeypatch):
+    _stub_uvicorn_run(monkeypatch)
+
+    web_server.start_server(
+        host="127.0.0.1",
+        port=9119,
+        open_browser=False,
+        allow_public=False,
+        initial_profile="worker_x",
+    )
+
+    assert web_server.app.state.initial_profile == "worker_x"
+
+
 def test_start_server_insecure_public_no_longer_bypasses_gate(monkeypatch):
     """``--insecure`` (allow_public=True) on a public host: gate now ENGAGES.
 

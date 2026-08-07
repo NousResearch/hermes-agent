@@ -49,6 +49,10 @@ DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S = 5.0
 DEFAULT_LOOP_WATCHDOG_INTERVAL_S = 30.0
 DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
 DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
+# Bound PID/lock release on the hard-exit path the same way drain_log_queue
+# bounds its join: try/except only catches exceptions, not wedged NFS/flock
+# hangs. Availability beats a perfect unlock when the disk is already stuck.
+DEFAULT_WATCHDOG_CLEANUP_TIMEOUT_S = 1.0
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
 
@@ -187,12 +191,11 @@ def start_loop_liveness_watchdog(
                 return
             # Record the watchdog exit in the lifecycle sentinel so the next
             # boot reports "watchdog hard-exit" instead of misclassifying
-            # this as an unclean SIGKILL/OOM death (NS-608).
-            try:
-                from gateway.lifecycle_ledger import mark_exited
-                mark_exited(exit_code, reason="loop_liveness_watchdog")
-            except Exception:
-                pass
+            # this as an unclean SIGKILL/OOM death (NS-608). Time-bounded:
+            # sentinel I/O must not freeze the hard-exit backstop.
+            mark_lifecycle_exited_bounded(
+                exit_code, reason="loop_liveness_watchdog"
+            )
             os._exit(exit_code)
             return
 
@@ -288,41 +291,129 @@ def resolve_shutdown_watchdog_delay(
     return drain + grace
 
 
+def _run_cleanup_bounded(
+    target: Callable[[], None],
+    *,
+    name: str,
+    timeout_s: Optional[float] = None,
+) -> None:
+    """Join a daemon cleanup worker with a deadline; never raise."""
+    if timeout_s is None:
+        timeout_s = DEFAULT_WATCHDOG_CLEANUP_TIMEOUT_S
+    try:
+        timeout = max(float(timeout_s), 0.0)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_WATCHDOG_CLEANUP_TIMEOUT_S
+    try:
+        worker = threading.Thread(target=target, name=name, daemon=True)
+        worker.start()
+        worker.join(timeout=timeout)
+    except Exception:
+        pass
+
+
+def release_pid_and_runtime_lock_bounded(
+    timeout_s: Optional[float] = None,
+) -> None:
+    """Best-effort PID/lock release that never blocks longer than ``timeout_s``.
+
+    Hard-exit paths must reach ``os._exit`` even when unlink/flock hangs on a
+    wedged disk. try/except alone cannot recover from a non-returning syscall;
+    mirror ``drain_log_queue`` and join a daemon worker with a deadline.
+    """
+    def _release() -> None:
+        try:
+            from gateway.status import remove_pid_file, release_gateway_runtime_lock
+            remove_pid_file()
+            release_gateway_runtime_lock()
+        except Exception:
+            pass
+
+    _run_cleanup_bounded(
+        _release,
+        name="gateway-pid-lock-release",
+        timeout_s=timeout_s,
+    )
+
+
+def mark_lifecycle_exited_bounded(
+    exit_code: int,
+    *,
+    reason: str,
+    timeout_s: Optional[float] = None,
+) -> None:
+    """Best-effort lifecycle sentinel write that never blocks past ``timeout_s``.
+
+    ``mark_exited`` reads and atomically rewrites HERMES_HOME state. On a wedged
+    mount that I/O can hang forever; hard-exit funnels must still reach
+    ``os._exit`` so the supervisor can revive the process.
+    """
+    def _mark() -> None:
+        try:
+            from gateway.lifecycle_ledger import mark_exited
+            mark_exited(exit_code, reason=reason)
+        except Exception:
+            pass
+
+    _run_cleanup_bounded(
+        _mark,
+        name="gateway-lifecycle-mark-exited",
+        timeout_s=timeout_s,
+    )
+
+
 def _write_watchdog_dump(
     dump_path: Path,
     *,
     delay_s: float,
     snapshot: Optional[Dict[str, Any]],
 ) -> None:
-    """Best-effort faulthandler + metadata dump before hard-exit."""
-    try:
-        dump_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return
+    """Best-effort faulthandler + metadata dump before hard-exit.
 
-    header = {
-        "event": "shutdown_watchdog_fired",
-        "pid": os.getpid(),
-        "delay_s": delay_s,
-        "fired_at": datetime.now(timezone.utc).isoformat(),
-        "snapshot": snapshot or {},
-    }
+    File I/O is time-bounded so a wedged HERMES_HOME mount cannot freeze the
+    shutdown watchdog before ``os._exit``. Stderr dump always runs afterward
+    so journald/launchd still capture stacks when the file path is stuck.
+    """
+    def _dump_to_file() -> None:
+        try:
+            dump_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+
+        header = {
+            "event": "shutdown_watchdog_fired",
+            "pid": os.getpid(),
+            "delay_s": delay_s,
+            "fired_at": datetime.now(timezone.utc).isoformat(),
+            "snapshot": snapshot or {},
+        }
+        try:
+            with open(dump_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(header, default=str) + "\n")
+                fh.write("--- faulthandler dump (all threads) ---\n")
+                fh.flush()
+                try:
+                    faulthandler.dump_traceback(file=fh, all_threads=True)
+                except Exception:
+                    fh.write("(faulthandler.dump_traceback failed)\n")
+                fh.write("--- end dump ---\n")
+                fh.flush()
+        except Exception:
+            pass
+
     try:
-        with open(dump_path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(header, default=str) + "\n")
-            fh.write("--- faulthandler dump (all threads) ---\n")
-            fh.flush()
-            try:
-                faulthandler.dump_traceback(file=fh, all_threads=True)
-            except Exception:
-                fh.write("(faulthandler.dump_traceback failed)\n")
-            fh.write("--- end dump ---\n")
-            fh.flush()
+        dump_thread = threading.Thread(
+            target=_dump_to_file,
+            name="gateway-watchdog-dump",
+            daemon=True,
+        )
+        dump_thread.start()
+        dump_thread.join(timeout=DEFAULT_WATCHDOG_CLEANUP_TIMEOUT_S)
     except Exception:
         pass
 
-    # Also dump to stderr so journald/launchd capture it even if the file
-    # write failed (wedged disk was one of the #66892 hypotheses).
+    # Always attempt stderr so journald/launchd capture it even if the file
+    # write hung or failed (wedged disk was one of the #66892 hypotheses).
     try:
         sys.stderr.write(
             f"Gateway shutdown watchdog fired after {delay_s:.0f}s "
@@ -401,24 +492,16 @@ def arm_shutdown_watchdog(
         # lock BEFORE the log drain (locks must never be stranded), then
         # drain the async log queue so the logger.critical above actually
         # reaches the file before os._exit bypasses atexit. (#66892)
-        try:
-            from gateway.status import remove_pid_file, release_gateway_runtime_lock
-            remove_pid_file()
-            release_gateway_runtime_lock()
-        except Exception:
-            pass
+        release_pid_and_runtime_lock_bounded()
         try:
             from hermes_logging import drain_log_queue
-            drain_log_queue(timeout=1.0)
+            drain_log_queue(timeout=DEFAULT_WATCHDOG_CLEANUP_TIMEOUT_S)
         except Exception:
             pass
         # Record the watchdog exit so the next boot's unclean-death detector
         # reports "shutdown watchdog fired" instead of SIGKILL/OOM (NS-608).
-        try:
-            from gateway.lifecycle_ledger import mark_exited
-            mark_exited(exit_code, reason="shutdown_watchdog")
-        except Exception:
-            pass
+        # Time-bounded: sentinel I/O must not freeze the hard-exit backstop.
+        mark_lifecycle_exited_bounded(exit_code, reason="shutdown_watchdog")
         os._exit(exit_code)
 
     try:

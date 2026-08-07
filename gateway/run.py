@@ -2414,9 +2414,12 @@ from gateway.platforms.base import (
 )
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
+    DEFAULT_WATCHDOG_CLEANUP_TIMEOUT_S,
     _arm_loop_floor_timer,
     arm_shutdown_watchdog,
     loop_heartbeat_forever,
+    mark_lifecycle_exited_bounded,
+    release_pid_and_runtime_lock_bounded,
     resolve_shutdown_watchdog_delay,
     start_loop_liveness_watchdog,
 )
@@ -27625,23 +27628,18 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     # Release PID + runtime lock BEFORE the log drain: the drain is bounded but
     # could still take up to its timeout on a wedged disk, and these locks must
     # never be stranded. os._exit skips atexit, and the early SystemExit exit
-    # paths never run _stop_impl, so release here (idempotent).
-    try:
-        from gateway.status import remove_pid_file, release_gateway_runtime_lock
-        remove_pid_file()
-        release_gateway_runtime_lock()
-    except Exception:
-        pass
+    # paths never run _stop_impl, so release here (idempotent). Time-bound the
+    # release the same way drain_log_queue is: a wedged unlink/flock must not
+    # freeze the hard-exit backstop.
+    release_pid_and_runtime_lock_bounded()
     # Mark this life cleanly exited in the lifecycle sentinel (NS-608). This
     # is the single funnel every graceful exit passes through, so the next
     # boot's unclean-death detector only fires for genuine SIGKILL/OOM/VM
     # deaths. Ownership-guarded internally: a --replace old life won't
-    # clobber the replacement's freshly claimed "running" sentinel.
-    try:
-        from gateway.lifecycle_ledger import mark_exited
-        mark_exited(exit_code, reason="graceful_shutdown")
-    except Exception:
-        pass
+    # clobber the replacement's freshly claimed "running" sentinel. Also
+    # time-bounded: sentinel read/write on a wedged mount must not freeze
+    # the hard-exit backstop before os._exit.
+    mark_lifecycle_exited_bounded(exit_code, reason="graceful_shutdown")
     # Drain the async log queue: os._exit bypasses atexit, so the listener's
     # atexit drain won't fire. Use drain_log_queue() (bounded, no restart), NOT
     # flush_log_queue(): if the listener is wedged on the rotation lock — the
@@ -27650,7 +27648,7 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     # never initialized a queue (very early aborts), so this is always safe.
     try:
         from hermes_logging import drain_log_queue
-        drain_log_queue(timeout=1.0)
+        drain_log_queue(timeout=DEFAULT_WATCHDOG_CLEANUP_TIMEOUT_S)
     except Exception:
         pass
     os._exit(exit_code)

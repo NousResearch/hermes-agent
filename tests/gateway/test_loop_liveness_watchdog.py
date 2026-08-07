@@ -53,6 +53,51 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     assert exit_codes == []
 
 
+def test_loop_liveness_watchdog_exits_despite_wedged_lifecycle_mark(monkeypatch):
+    """Hard-exit must survive a hung lifecycle-sentinel write (sweeper #71214)."""
+    monkeypatch.setattr(
+        "gateway.shutdown_watchdog.DEFAULT_WATCHDOG_CLEANUP_TIMEOUT_S",
+        0.15,
+    )
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    # Do not invoke the probe callback — every probe times out as a miss.
+    loop.call_soon_threadsafe = MagicMock()
+    fired = threading.Event()
+    blocked = threading.Event()
+    exit_codes = []
+
+    def wedged_mark_exited(*_args, **_kwargs):
+        blocked.set()
+        threading.Event().wait()
+
+    def fake_exit(code):
+        exit_codes.append(code)
+        fired.set()
+
+    with (
+        patch("gateway.shutdown_watchdog.logger.critical"),
+        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"),
+        patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit),
+        patch("gateway.lifecycle_ledger.mark_exited", side_effect=wedged_mark_exited),
+    ):
+        handle = start_loop_liveness_watchdog(
+            loop,
+            probe_interval=0.01,
+            probe_timeout=0.01,
+            max_strikes=1,
+            exit_code=14,
+        )
+        assert handle is not None
+        assert fired.wait(timeout=3.0), (
+            "loop liveness watchdog hung on lifecycle mark_exited and never exited"
+        )
+        handle.stop()
+        handle.join(timeout=1.0)
+
+    assert exit_codes == [14]
+    assert blocked.is_set()
+
+
 def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
     probe_scheduled = threading.Event()

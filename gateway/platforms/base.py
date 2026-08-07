@@ -3529,11 +3529,27 @@ class BasePlatformAdapter(ABC):
             finally:
                 admission.release()
 
-        threading.Thread(
-            target=_worker,
-            name="media-history-lookup",
-            daemon=True,
-        ).start()
+        try:
+            threading.Thread(
+                target=_worker,
+                name="media-history-lookup",
+                daemon=True,
+            ).start()
+        except BaseException:
+            # Thread could not be started (e.g. thread exhaustion). The
+            # worker never ran, so its finally-release never fires — release
+            # the admission permit here to avoid leaking it permanently, and
+            # fail open like every other path in this helper.
+            admission.release()
+            logger.warning(
+                "[%s] Could not start media-delivery history lookup worker "
+                "for %s; delivering bare local file path(s) without history "
+                "dedup",
+                self.name,
+                session_key,
+                exc_info=True,
+            )
+            return None
         try:
             return await asyncio.wait_for(
                 result_future,
@@ -3545,6 +3561,18 @@ class BasePlatformAdapter(ABC):
                 "delivering bare local file path(s) without history dedup",
                 self.name,
                 session_key,
+            )
+            return None
+        except Exception:
+            # The worker publishes its own failure via set_exception; this
+            # helper is documented as best-effort/fail-open, so swallow the
+            # error here instead of letting it kill media delivery.
+            logger.warning(
+                "[%s] Media-delivery history lookup failed for %s; "
+                "delivering bare local file path(s) without history dedup",
+                self.name,
+                session_key,
+                exc_info=True,
             )
             return None
 

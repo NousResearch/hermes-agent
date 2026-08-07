@@ -1454,6 +1454,12 @@ def _(rid, params: dict) -> dict:
         if not bool(pet_cfg.get("enabled")):
             return _ok(rid, {"enabled": False})
 
+        # render_mode is terminal-scoped. Keep pet.info / pet.info.meta enabled
+        # for Desktop, but do not build Unicode or graphics frames for the TUI.
+        configured = str(pet_cfg.get("render_mode", "auto") or "auto").strip().lower()
+        if configured == "off":
+            return _ok(rid, {"enabled": False})
+
         pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
         if pet is None or not pet.exists:
             return _ok(rid, {"enabled": False})
@@ -1470,7 +1476,6 @@ def _(rid, params: dict) -> dict:
         # such env, so it falls through to half-blocks automatically. Only
         # kitty is grid-safe in Ink — iTerm/sixel stay on the fallback.
         if params.get("graphics"):
-            configured = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
             gmode = render.detect_terminal_graphics() if configured in ("", "auto") else configured
             if gmode == "kitty":
                 image_id = render.kitty_image_id(pet.slug)

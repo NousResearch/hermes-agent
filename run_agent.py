@@ -4246,7 +4246,7 @@ class AIAgent:
         # 1. Kill background processes for this task
         try:
             from tools.process_registry import process_registry
-            process_registry.kill_all(task_id=task_id)
+            process_registry.kill_all(task_id=task_id, session_key=task_id)
         except Exception:
             pass
 

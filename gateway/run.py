@@ -3283,14 +3283,25 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     Without this, temporary AIAgent instances (e.g. /compress) fall
     back to the hardcoded default which fails when the active provider is
     openai-codex.
+
+    Env-var references (``${VAR}``) in the model value are expanded so that
+    callers that pass a fast-loaded (unexpanded) config still get a usable
+    model name.  See GH #71710.
     """
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
-        return model_cfg
+        model = model_cfg
     elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
-    return ""
+        model = model_cfg.get("default") or model_cfg.get("model") or ""
+    else:
+        return ""
+    if isinstance(model, str) and "${" in model:
+        from hermes_cli.config import _expand_env_vars
+        expanded = _expand_env_vars(model)
+        if isinstance(expanded, str):
+            model = expanded
+    return model
 
 
 def _channel_override_lookup_keys(

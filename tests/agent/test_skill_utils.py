@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from agent.skill_utils import (
     extract_skill_config_vars,
     extract_skill_conditions,
@@ -192,6 +194,19 @@ class TestNormalizeSkillLookupName:
 
         # Relative identifiers early-return before any root lookup.
         assert normalize_skill_lookup_name("foo/bar") == "foo/bar"
+
+
+    def test_absolute_nested_path_uses_posix_separators(self, tmp_path, monkeypatch):
+        from agent.skill_utils import normalize_skill_lookup_name
+
+        skills_dir = tmp_path / "skills"
+        nested = skills_dir / "category" / "my-skill"
+        nested.mkdir(parents=True)
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
+        # Skill names are matched as plain strings everywhere (skills.disabled,
+        # slash commands, the cron skill_name), so a nested skill resolved from
+        # an absolute path has to come back slash-separated on every platform.
+        assert normalize_skill_lookup_name(str(nested)) == "category/my-skill"
 
 
     def test_absolute_via_symlink_uses_lexical_relative_path(self, tmp_path, monkeypatch):
